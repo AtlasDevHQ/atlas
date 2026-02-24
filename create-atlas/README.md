@@ -35,35 +35,6 @@ A self-contained Next.js 16 project with:
 - Docker, Railway, Fly.io, Render, and Vercel deployment configs
 - SQLite (default) or PostgreSQL support
 
-## Local development
-
-To test changes to the scaffolding CLI from the repo root:
-
-```bash
-# Refresh template files from the repo
-cd create-atlas && bun run prepublishOnly && cd ..
-
-# Test interactive mode
-bun create-atlas/index.ts test-app
-
-# Test non-interactive mode
-bun create-atlas/index.ts test-app --defaults
-```
-
-## Publishing
-
-```bash
-cd create-atlas
-bun run prepublishOnly    # Copies src/, bin/, data/, docs/deploy.md into template/
-bun publish --access public
-```
-
-After publishing, verify from the registry:
-
-```bash
-bun create atlas-agent verify-test --defaults
-```
-
 ## License
 
 MIT

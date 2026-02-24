@@ -75,10 +75,11 @@ Make the agent smarter and the UI worth showing in a demo.
 - [ ] Clarifying questions — Agent asks before querying when terms are ambiguous (glossary-driven)
 
 ### UI
-- [ ] Rendered data tables — Sortable columns, formatted numbers/dates
-- [ ] Starter prompts — Suggested questions on empty state (driven by catalog.yml `common_questions`)
-- [ ] Tool call visibility — Show explore/SQL steps as collapsible cards
-- [ ] Copy/export — Copy SQL, download CSV from finalizeReport results
+- [x] Rendered data tables — Formatted numbers in styled tables
+- [ ] Sortable columns — Click-to-sort on data table headers
+- [x] Starter prompts — Suggested questions on empty state (driven by catalog.yml `common_questions`)
+- [x] Tool call visibility — Show explore/SQL steps as collapsible cards
+- [x] Copy/export — Copy SQL, download CSV from finalizeReport results
 - [ ] Dark/light theme — Respect system preference
 
 ---

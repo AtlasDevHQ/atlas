@@ -1,6 +1,7 @@
 import { type UIMessage } from "ai";
 import { runAgent } from "@/lib/agent";
 import { validateEnvironment } from "@/lib/startup";
+import { GatewayModelNotFoundError } from "@ai-sdk/gateway";
 
 export async function POST(req: Request) {
   // Startup diagnostics — fast-fail with actionable errors
@@ -35,6 +36,19 @@ export async function POST(req: Request) {
     return result.toUIMessageStreamResponse();
   } catch (err) {
     const message = err instanceof Error ? err.message : "";
+
+    // Gateway-specific errors (structured types, checked before regex fallbacks)
+    if (GatewayModelNotFoundError.isInstance(err)) {
+      console.error("[atlas] Gateway model not found in /api/chat:", message);
+      return Response.json(
+        {
+          error: "provider_model_not_found",
+          message:
+            "Model not found on the AI Gateway. Check that your ATLAS_MODEL uses the correct provider/model format (e.g., anthropic/claude-sonnet-4.6).",
+        },
+        { status: 400 }
+      );
+    }
 
     // LLM provider auth errors (invalid or expired API key)
     if (

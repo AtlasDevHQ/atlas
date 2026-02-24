@@ -14,7 +14,7 @@ The core text-to-SQL agent, end to end.
 - [x] Semantic layer — YAML on disk (catalog, entities, glossary, metrics)
 - [x] DB profiler CLI — `atlas init` with PK/FK detection, enum sampling, measures, virtual dimensions
 - [x] LLM enrichment — `atlas init --enrich` post-processing via generateText
-- [x] 4 LLM providers — Anthropic, OpenAI, Bedrock, Ollama
+- [x] 5 LLM providers — Anthropic, OpenAI, Bedrock, Ollama, Vercel AI Gateway
 - [x] Chat UI — Minimal useChat interface with streaming
 - [x] Docker + Railway deployment — Multi-stage Dockerfile, railway.json
 - [x] create-atlas scaffolding — `bun create atlas my-app` with interactive setup

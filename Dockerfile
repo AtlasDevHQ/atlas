@@ -3,7 +3,7 @@ FROM oven/bun:1 AS base
 FROM base AS deps
 WORKDIR /app
 COPY package.json bun.lock* ./
-RUN bun install --frozen-lockfile
+RUN bun install --frozen-lockfile --ignore-scripts
 
 FROM base AS builder
 WORKDIR /app
@@ -18,7 +18,6 @@ COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/semantic ./semantic
-COPY --from=builder /app/data ./data
 EXPOSE 3000
 ENV PORT=3000
 CMD ["bun", "server.js"]

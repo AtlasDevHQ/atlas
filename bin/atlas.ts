@@ -712,7 +712,8 @@ async function main() {
   const hasApiKey = !!(
     process.env.ANTHROPIC_API_KEY ||
     process.env.OPENAI_API_KEY ||
-    process.env.AWS_ACCESS_KEY_ID
+    process.env.AWS_ACCESS_KEY_ID ||
+    process.env.AI_GATEWAY_API_KEY
   );
   const shouldEnrich =
     explicitEnrich || (!explicitNoEnrich && hasApiKey && !!process.env.ATLAS_PROVIDER);

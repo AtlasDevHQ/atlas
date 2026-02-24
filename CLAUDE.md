@@ -90,7 +90,7 @@ src/
 │   └── api/chat/route.ts     # POST handler → runAgent() → data stream
 ├── lib/
 │   ├── agent.ts              # Agent loop (streamText, maxSteps: 25)
-│   ├── providers.ts          # LLM provider factory (anthropic/openai/bedrock/ollama)
+│   ├── providers.ts          # LLM provider factory (anthropic/openai/bedrock/ollama/gateway)
 │   ├── semantic.ts           # Reads entity YAMLs → builds table whitelist
 │   ├── startup.ts            # Environment validation (DB, API key, semantic layer)
 │   ├── db/
@@ -164,6 +164,7 @@ PostgreSQL via `pg` Pool with `statement_timeout` per query. Singleton `getDB()`
 | `openai` | `@ai-sdk/openai` | `gpt-4o` |
 | `bedrock` | `@ai-sdk/amazon-bedrock` | (region-specific) |
 | `ollama` | `@ai-sdk/openai` (compat) | (local model) |
+| `gateway` | `ai` (built-in) | `anthropic/claude-sonnet-4.6` |
 
 Override model: `ATLAS_MODEL=claude-opus-4-6`
 
@@ -206,7 +207,7 @@ const { columns, rows } = await db.query("SELECT ...", 30000);
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ATLAS_PROVIDER` | `anthropic` | LLM provider (anthropic/openai/bedrock/ollama) |
+| `ATLAS_PROVIDER` | `anthropic` | LLM provider (anthropic/openai/bedrock/ollama/gateway) |
 | `ATLAS_MODEL` | Provider default | Model ID override |
 | `DATABASE_URL` | — | PostgreSQL connection string |
 | `ATLAS_READ_ONLY` | `true` | Reject non-SELECT SQL |

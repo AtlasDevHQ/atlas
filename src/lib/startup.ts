@@ -18,6 +18,7 @@ const PROVIDER_KEY_MAP: Record<string, string> = {
   openai: "OPENAI_API_KEY",
   bedrock: "AWS_ACCESS_KEY_ID",
   ollama: "", // Ollama runs locally, no API key required
+  gateway: "AI_GATEWAY_API_KEY",
 };
 
 let _cached: DiagnosticError[] | null = null;
@@ -55,10 +56,11 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
     // Unknown provider — providers.ts will throw a descriptive error at model init,
     // so we don't duplicate that check here.
   } else if (requiredKey && !process.env[requiredKey]) {
-    errors.push({
-      code: "MISSING_API_KEY",
-      message: `${requiredKey} is not set. Atlas needs an API key for the ${provider} provider.`,
-    });
+    let message = `${requiredKey} is not set. Atlas needs an API key for the ${provider} provider.`;
+    if (provider === "gateway") {
+      message += " Create one at https://vercel.com/~/ai/api-keys";
+    }
+    errors.push({ code: "MISSING_API_KEY", message });
   }
 
   // 3. Semantic layer presence

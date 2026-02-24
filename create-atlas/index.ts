@@ -13,6 +13,7 @@ const PROVIDER_KEY_MAP: Record<string, { envVar: string; placeholder: string }> 
   openai: { envVar: "OPENAI_API_KEY", placeholder: "sk-..." },
   bedrock: { envVar: "AWS_ACCESS_KEY_ID", placeholder: "AKIA..." },
   ollama: { envVar: "OLLAMA_BASE_URL", placeholder: "http://localhost:11434" },
+  gateway: { envVar: "AI_GATEWAY_API_KEY", placeholder: "vcel_gw_..." },
 };
 
 // Default models per provider
@@ -21,6 +22,7 @@ const PROVIDER_DEFAULT_MODEL: Record<string, string> = {
   openai: "gpt-4o",
   bedrock: "anthropic.claude-sonnet-4-6-v1",
   ollama: "llama3.1",
+  gateway: "anthropic/claude-sonnet-4.6",
 };
 
 function copyDirRecursive(src: string, dest: string): void {
@@ -92,6 +94,7 @@ async function main() {
       { value: "openai", label: "OpenAI", hint: "GPT-4o" },
       { value: "bedrock", label: "AWS Bedrock", hint: "Region-specific" },
       { value: "ollama", label: "Ollama", hint: "Local models" },
+      { value: "gateway", label: "Vercel AI Gateway", hint: "One key, hundreds of models" },
     ],
     initialValue: "anthropic",
   });

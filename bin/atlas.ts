@@ -120,8 +120,7 @@ export async function profilePostgres(
     (r: { table_name: string }) => !filterTables || filterTables.includes(r.table_name)
   );
 
-  for (let i = 0; i < tablesToProfile.length; i++) {
-    const { table_name } = tablesToProfile[i];
+  for (const [i, { table_name }] of tablesToProfile.entries()) {
     console.log(`  [${i + 1}/${tablesToProfile.length}] Profiling ${table_name}...`);
 
     try {
@@ -135,13 +134,13 @@ export async function profilePostgres(
       let foreignKeys: ForeignKey[] = [];
       try {
         primaryKeyColumns = await queryPrimaryKeys(pool, table_name);
-      } catch {
-        // Table may not have PK constraints
+      } catch (pkErr) {
+        console.warn(`    Warning: Could not read PK constraints for ${table_name}: ${pkErr instanceof Error ? pkErr.message : String(pkErr)}`);
       }
       try {
         foreignKeys = await queryForeignKeys(pool, table_name);
-      } catch {
-        // Table may not have FK constraints
+      } catch (fkErr) {
+        console.warn(`    Warning: Could not read FK constraints for ${table_name}: ${fkErr instanceof Error ? fkErr.message : String(fkErr)}`);
       }
 
       const fkLookup = new Map(
@@ -164,6 +163,7 @@ export async function profilePostgres(
         let unique_count: number | null = null;
         let null_count: number | null = null;
         let sample_values: string[] = [];
+        let isEnumLike = false;
 
         const isPK = primaryKeyColumns.includes(col.column_name);
         const fkInfo = fkLookup.get(col.column_name);
@@ -185,7 +185,7 @@ export async function profilePostgres(
             col.data_type === "text" ||
             col.data_type === "character varying" ||
             col.data_type === "character";
-          const isEnumLike =
+          isEnumLike =
             isTextType &&
             unique_count !== null &&
             unique_count < 20 &&
@@ -197,35 +197,23 @@ export async function profilePostgres(
             `SELECT DISTINCT "${col.column_name}" as v FROM "${table_name}" WHERE "${col.column_name}" IS NOT NULL ORDER BY "${col.column_name}" LIMIT ${sampleLimit}`
           );
           sample_values = sv.rows.map((r: { v: unknown }) => String(r.v));
-
-          columns.push({
-            name: col.column_name,
-            type: col.data_type,
-            nullable: col.is_nullable === "YES",
-            unique_count,
-            null_count,
-            sample_values,
-            is_primary_key: isPK,
-            is_foreign_key: isFK,
-            fk_target_table: fkInfo?.to_table ?? null,
-            fk_target_column: fkInfo?.to_column ?? null,
-            is_enum_like: isEnumLike ?? false,
-          });
-        } catch {
-          columns.push({
-            name: col.column_name,
-            type: col.data_type,
-            nullable: col.is_nullable === "YES",
-            unique_count,
-            null_count,
-            sample_values,
-            is_primary_key: isPK,
-            is_foreign_key: isFK,
-            fk_target_table: fkInfo?.to_table ?? null,
-            fk_target_column: fkInfo?.to_column ?? null,
-            is_enum_like: false,
-          });
+        } catch (colErr) {
+          console.warn(`    Warning: Could not profile column ${table_name}.${col.column_name}: ${colErr instanceof Error ? colErr.message : String(colErr)}`);
         }
+
+        columns.push({
+          name: col.column_name,
+          type: col.data_type,
+          nullable: col.is_nullable === "YES",
+          unique_count,
+          null_count,
+          sample_values,
+          is_primary_key: isPK,
+          is_foreign_key: isFK,
+          fk_target_table: fkInfo?.to_table ?? null,
+          fk_target_column: fkInfo?.to_column ?? null,
+          is_enum_like: isEnumLike,
+        });
       }
 
       profiles.push({
@@ -760,6 +748,12 @@ async function main() {
 
   const profiles = await profilePostgres(connStr, filterTables);
 
+  if (profiles.length === 0) {
+    console.error("\nError: No tables were successfully profiled.");
+    console.error("Check the warnings above and verify your database permissions.");
+    process.exit(1);
+  }
+
   console.log(`Found ${profiles.length} tables:\n`);
   for (const p of profiles) {
     const fkCount = p.foreign_keys.length;
@@ -804,17 +798,22 @@ async function main() {
   }
 
   // LLM enrichment (optional)
+  let enrichmentSucceeded = false;
   if (shouldEnrich) {
     try {
       const { enrichSemanticLayer } = await import("./enrich.js");
       console.log(`\nEnriching with LLM (${process.env.ATLAS_PROVIDER ?? "anthropic"})...\n`);
       await enrichSemanticLayer(profiles);
+      enrichmentSucceeded = true;
     } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
       if (explicitEnrich) {
-        console.error(`\nLLM enrichment failed: ${e instanceof Error ? e.message : e}`);
+        console.error(`\nLLM enrichment failed: ${msg}`);
         console.error("Generated base semantic layer without enrichment.\n");
+      } else {
+        console.warn(`\nNote: LLM enrichment was auto-detected but failed: ${msg}`);
+        console.warn("The semantic layer was generated without LLM enrichment.\n");
       }
-      // Silent fallback if auto-detected
     }
   }
 
@@ -826,7 +825,7 @@ Generated:
   - catalog.yml with use_for guidance and common questions
   - glossary.yml with auto-detected terms and ambiguities
   - Metric definitions in metrics/*.yml
-${shouldEnrich ? "  - LLM-enriched descriptions, use cases, and business context\n" : ""}
+${enrichmentSucceeded ? "  - LLM-enriched descriptions, use cases, and business context\n" : ""}
 Next steps:
   1. Review the generated YAMLs and refine business context
   2. Run \`bun run dev\` to start Atlas

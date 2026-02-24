@@ -192,8 +192,8 @@ async function main() {
   // ── Pre-flight checks ───────────────────────────────────────────
   try {
     const bunVersion = execSync("bun --version", { encoding: "utf-8", stdio: "pipe" }).trim();
-    const [major] = bunVersion.split(".").map(Number);
-    if (major < 1) {
+    const major = parseInt(bunVersion.split(".")[0], 10);
+    if (isNaN(major) || major < 1) {
       p.log.warn(`Bun ${bunVersion} detected. Atlas requires Bun 1.0+.`);
     }
   } catch {
@@ -218,8 +218,12 @@ async function main() {
         { stdio: "pipe", timeout: 15_000, env: { ...process.env, DATABASE_URL: databaseUrl as string } }
       );
       connSpinner.stop("Database is reachable.");
-    } catch {
+    } catch (err) {
       connSpinner.stop("Could not connect to database.");
+      if (err && typeof err === "object" && "stderr" in err) {
+        const stderr = String((err as { stderr: unknown }).stderr).trim();
+        if (stderr) p.log.warn(stderr);
+      }
       const proceed = await p.confirm({
         message: "Database is not reachable. Try generating semantic layer anyway?",
         initialValue: false,
@@ -299,8 +303,9 @@ async function main() {
   } catch (err) {
     s.stop("Failed to install dependencies.");
     p.log.warn(
-      `Could not run ${pc.cyan("bun install")}. Run it manually in ${pc.yellow(projectName)}/`
+      `Could not run ${pc.cyan("bun install")}: ${err instanceof Error ? err.message : String(err)}`
     );
+    p.log.warn(`Run it manually in ${pc.yellow(projectName)}/`);
   }
 
   // Step 4: Generate semantic layer if requested
@@ -317,7 +322,10 @@ async function main() {
     } catch (err) {
       s.stop("Failed to generate semantic layer.");
       p.log.warn(
-        `Could not auto-generate semantic layer. Run ${pc.cyan("bun run atlas -- init --enrich")} manually after ensuring your database is accessible.`
+        `Semantic layer generation failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+      p.log.warn(
+        `Run ${pc.cyan("bun run atlas -- init --enrich")} manually after resolving the issue.`
       );
     }
   }
@@ -364,7 +372,7 @@ async function main() {
     vercel: [
       "",
       `${pc.bold("Deploy to Vercel:")}`,
-      `  1. Install Vercel CLI: ${pc.cyan("npm i -g vercel")}`,
+      `  1. Install Vercel CLI: ${pc.cyan("bun i -g vercel")}`,
       `  2. ${pc.cyan("vercel login")}`,
       `  3. ${pc.cyan("vercel")}`,
       `  4. Set env vars in Vercel dashboard: ATLAS_PROVIDER, ${keyInfo?.envVar ?? "API_KEY"}, DATABASE_URL`,

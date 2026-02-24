@@ -1,12 +1,15 @@
 /**
  * SQL execution tool with production-grade validation.
  *
- * Security layers:
- * 1. AST parsing — only SELECT/WITH statements allowed
- * 2. Single statement — no semicolon-separated batches
- * 3. Table whitelist — only tables defined in the semantic layer
- * 4. Row limit — auto-appended LIMIT clause
- * 5. Query timeout — configurable per-query deadline
+ * Validation layers (in validateSQL):
+ * 0. Empty check — reject empty/whitespace-only input
+ * 1. Regex mutation guard — quick reject of DML/DDL keywords
+ * 2. AST parse — node-sql-parser (PostgresQL mode), SELECT-only, single statement
+ * 3. Table whitelist — only tables defined in the semantic layer (CTE names excluded)
+ *
+ * Applied during execution:
+ * 4. Auto LIMIT — appended to every query (default 1000)
+ * 5. Statement timeout — configurable per-query deadline
  */
 
 import { tool } from "ai";
@@ -31,12 +34,7 @@ export function validateSQL(sql: string): { valid: boolean; error?: string } {
     return { valid: false, error: "Empty query" };
   }
 
-  // 1. Check for multiple statements
-  if (trimmed.includes(";")) {
-    return { valid: false, error: "Multiple statements are not allowed" };
-  }
-
-  // 2. Regex guard against mutation keywords
+  // 1. Regex guard against mutation keywords
   for (const pattern of FORBIDDEN_PATTERNS) {
     if (pattern.test(trimmed)) {
       return {
@@ -46,9 +44,9 @@ export function validateSQL(sql: string): { valid: boolean; error?: string } {
     }
   }
 
-  // 3. AST validation — must be a SELECT
+  // 2. AST validation — must be a single SELECT
   //
-  // Security rationale: if the regex guard (layer 2) passed but the AST parser
+  // Security rationale: if the regex guard (layer 1) passed but the AST parser
   // cannot parse the query, we REJECT it rather than allowing it through.
   // A query that passes regex but confuses the parser could be a crafted bypass
   // attempt. The agent can always reformulate into standard SQL that parses.
@@ -56,6 +54,11 @@ export function validateSQL(sql: string): { valid: boolean; error?: string } {
   try {
     const ast = parser.astify(trimmed, { database: "PostgresQL" });
     const statements = Array.isArray(ast) ? ast : [ast];
+
+    // Single-statement check — reject batched queries
+    if (statements.length > 1) {
+      return { valid: false, error: "Multiple statements are not allowed" };
+    }
 
     for (const stmt of statements) {
       if (stmt.type !== "select") {
@@ -74,15 +77,15 @@ export function validateSQL(sql: string): { valid: boolean; error?: string } {
         }
       }
     }
-  } catch {
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : "";
     return {
       valid: false,
-      error:
-        "Query could not be parsed. Rewrite using standard SQL syntax.",
+      error: `Query could not be parsed.${detail ? ` ${detail}.` : ""} Rewrite using standard SQL syntax.`,
     };
   }
 
-  // 4. Table whitelist check
+  // 3. Table whitelist check
   if (process.env.ATLAS_TABLE_WHITELIST !== "false") {
     try {
       const tables = parser.tableList(trimmed, { database: "PostgresQL" });
@@ -99,7 +102,11 @@ export function validateSQL(sql: string): { valid: boolean; error?: string } {
         }
       }
     } catch {
-      // If table extraction fails, allow — DB will catch unknown tables
+      return {
+        valid: false,
+        error:
+          "Could not verify table permissions. Rewrite using standard SQL syntax.",
+      };
     }
   }
 
@@ -159,8 +166,11 @@ Rules:
       const message =
         err instanceof Error ? err.message : "Unknown database error";
 
-      // Sanitize — only return safe error info
-      if (/column|relation|syntax|type/i.test(message)) {
+      // Log full error server-side for debugging
+      console.error("[executeSQL] Query failed:", message);
+
+      // Sanitize — only return safe error info to the agent
+      if (/column|relation|syntax|type|timeout|cancel/i.test(message)) {
         return { success: false, error: message };
       }
       return { success: false, error: "Database query failed" };

@@ -10,7 +10,7 @@
 The core text-to-SQL agent, end to end.
 
 - [x] Agent loop — streamText with 3 tools (explore, executeSQL, finalizeReport)
-- [x] SQL validation — 5-layer pipeline (regex, single-statement, AST, whitelist, auto-LIMIT)
+- [x] SQL validation — Multi-layer pipeline (empty check, regex, AST, whitelist, auto-LIMIT, statement timeout)
 - [x] Semantic layer — YAML on disk (catalog, entities, glossary, metrics)
 - [x] DB profiler CLI — `atlas init` with PK/FK detection, enum sampling, measures, virtual dimensions
 - [x] LLM enrichment — `atlas init --enrich` post-processing via generateText

@@ -96,7 +96,7 @@ src/
 │   │   └── connection.ts     # DBConnection interface, PostgreSQL adapter
 │   └── tools/
 │       ├── explore.ts        # Read-only semantic layer access (ls/cat/grep/find)
-│       ├── sql.ts            # SQL validation (5 layers) + execution
+│       ├── sql.ts            # SQL validation (4 + 2 layers) + execution
 │       └── report.ts         # Final report packaging
 bin/
 ├── atlas.ts                  # CLI — DB profiler + semantic layer generator
@@ -123,24 +123,27 @@ runAgent(messages)
     ↓
 streamText (Vercel AI SDK, maxSteps: 25)
     ├── explore → read semantic/*.yml files (path-traversal protected)
-    ├── executeSQL → validate (5 layers) → query DB → { columns, rows }
+    ├── executeSQL → validate (4 layers) → query DB → { columns, rows }
     └── finalizeReport → { sql, csv, narrative }
     ↓
 Data Stream Response → Chat UI
 ```
 
-### SQL Validation Pipeline (6 layers)
+### SQL Validation Pipeline
+
+**In `validateSQL` (4 layers):**
 
 0. **Empty check** — Reject empty/whitespace-only queries
-1. **Single-statement check** — No `;` chaining
-2. **Regex mutation guard** — Quick reject of obvious DML/DDL keywords
-3. **AST parse** — `node-sql-parser` (PostgreSQL mode) verifies SELECT-only. Unparseable queries are **rejected**, not allowed through. CTE names are extracted here for the whitelist check
-4. **Table whitelist** — All tables must exist in `semantic/entities/*.yml` (CTE names excluded)
-5. **Auto LIMIT** — Appended to every query (default 1000)
+1. **Regex mutation guard** — Quick reject of obvious DML/DDL keywords
+2. **AST parse** — `node-sql-parser` (database: `"PostgresQL"`) verifies single SELECT-only statement. Unparseable queries are **rejected**, not allowed through. CTE names are extracted here for the whitelist check
+3. **Table whitelist** — All tables must exist in `semantic/entities/*.yml` (CTE names excluded). Parse failure = rejection
 
-Then: `statement_timeout` set per-query on PostgreSQL connections.
+**Applied during execution (2 layers):**
 
-54 unit tests cover the validation pipeline — see `src/lib/tools/__tests__/sql.test.ts`.
+4. **Auto LIMIT** — Appended to every query (default 1000)
+5. **Statement timeout** — Configurable per-query deadline
+
+~60 unit tests cover the validation pipeline — see `src/lib/tools/__tests__/sql.test.ts`.
 
 ### Database Layer (`src/lib/db/connection.ts`)
 

@@ -134,7 +134,7 @@ describe("validateSQL", () => {
       expectValid("SELECT 1 ;   ");
     });
 
-    it("accepts COALESCE and NULLIF", () => {
+    it("accepts COALESCE", () => {
       expectValid("SELECT COALESCE(name, 'unknown') FROM companies");
     });
 
@@ -144,6 +144,12 @@ describe("validateSQL", () => {
              b AS (SELECT id FROM a)
         SELECT * FROM b
       `);
+    });
+
+    it("accepts semicolons inside string literals", () => {
+      // Semicolons in data values are legitimate — the AST parser handles
+      // them correctly as part of the string, not as statement separators.
+      expectValid("SELECT * FROM companies WHERE name = 'foo;bar'");
     });
   });
 
@@ -185,9 +191,9 @@ describe("validateSQL", () => {
     });
   });
 
-  // ----- Blocked privilege commands ------------------------------------------
+  // ----- Blocked privilege / admin commands -----------------------------------
 
-  describe("blocked privilege commands", () => {
+  describe("blocked privilege and admin commands", () => {
     it("rejects GRANT", () => {
       expectInvalid("GRANT ALL ON companies TO evil", "forbidden");
     });
@@ -204,33 +210,48 @@ describe("validateSQL", () => {
       expectInvalid("EXECUTE sp_addrolemember 'db_owner', 'evil'", "forbidden");
     });
 
+    it("rejects CALL", () => {
+      expectInvalid("CALL some_procedure()", "forbidden");
+    });
+
     it("rejects COPY", () => {
       expectInvalid("COPY companies TO '/tmp/data.csv'", "forbidden");
+    });
+
+    it("rejects LOAD", () => {
+      expectInvalid("LOAD DATA INFILE '/tmp/data.csv' INTO TABLE companies", "forbidden");
+    });
+
+    it("rejects VACUUM", () => {
+      expectInvalid("VACUUM companies", "forbidden");
+    });
+
+    it("rejects REINDEX", () => {
+      expectInvalid("REINDEX TABLE companies", "forbidden");
+    });
+
+    it("rejects INTO OUTFILE", () => {
+      expectInvalid(
+        "SELECT * INTO OUTFILE '/tmp/dump.csv' FROM companies",
+        "forbidden"
+      );
     });
   });
 
   // ----- Multi-statement injection -------------------------------------------
 
   describe("multi-statement injection", () => {
-    it("rejects semicolon-separated statements", () => {
-      expectInvalid(
-        "SELECT 1; DROP TABLE companies",
-        "multiple statements"
-      );
+    it("rejects semicolon-separated SELECT + DML", () => {
+      // DML caught by regex guard before AST even runs
+      expectInvalid("SELECT 1; DROP TABLE companies", "forbidden");
     });
 
-    it("rejects semicolons mid-query", () => {
-      expectInvalid(
-        "SELECT 1; SELECT 2",
-        "multiple statements"
-      );
+    it("rejects two SELECT statements", () => {
+      expectInvalid("SELECT 1; SELECT 2", "multiple statements");
     });
 
-    it("rejects inline semicolons even when disguised", () => {
-      expectInvalid(
-        "SELECT '1'; SELECT '2'",
-        "multiple statements"
-      );
+    it("rejects two statements with string literals", () => {
+      expectInvalid("SELECT '1'; SELECT '2'", "multiple statements");
     });
   });
 
@@ -252,25 +273,22 @@ describe("validateSQL", () => {
     });
 
     it("allows SELECT with harmless comments", () => {
-      // node-sql-parser may or may not handle this, but since there's no
-      // forbidden keyword the regex guard passes, and AST should parse it
+      // The regex guard passes (no forbidden keywords) and the parser
+      // handles inline comments, so this is valid.
       expectValid("SELECT /* this is a comment */ 1");
     });
   });
 
-  // ----- AST parse failure (the fix) -----------------------------------------
+  // ----- AST parse failure (reject unparseable) ------------------------------
 
-  describe("AST parse failure — reject, don't fall through", () => {
-    it("rejects queries the parser cannot understand", () => {
-      // Craft a query that passes regex but fails AST parsing.
-      // Using PG-specific syntax that node-sql-parser doesn't support.
-      const result = validateSQL("SELECT * FROM companies FOR UPDATE");
-      // FOR UPDATE is not a mutation keyword in FORBIDDEN_PATTERNS but
-      // node-sql-parser may fail or flag it. Either way the query
-      // should not silently pass through.
-      expect(result.valid === false || result.valid === true).toBe(true);
-      // The key invariant: if it does pass, it parsed successfully as SELECT.
-      // If it fails, we got a rejection (not silent fallthrough).
+  describe("AST parse failure — reject unparseable", () => {
+    it("rejects SELECT ... FOR UPDATE (locking clause)", () => {
+      // FOR UPDATE acquires row-level locks, violating read-only intent.
+      // Caught by the regex guard because "UPDATE" is a forbidden keyword.
+      expectInvalid(
+        "SELECT * FROM companies FOR UPDATE",
+        "forbidden"
+      );
     });
 
     it("rejects completely unparseable gibberish", () => {
@@ -315,6 +333,21 @@ describe("validateSQL", () => {
       );
     });
 
+    it("rejects non-whitelisted tables in subqueries", () => {
+      expectInvalid(
+        "SELECT * FROM companies WHERE id IN (SELECT id FROM secret_data)",
+        "not in the allowed list"
+      );
+    });
+
+    it("does not reject CTE names as non-whitelisted tables", () => {
+      // "my_temp" is not in the whitelist, but it's a CTE name —
+      // the validator extracts CTE names and excludes them from the check.
+      expectValid(
+        "WITH my_temp AS (SELECT id FROM companies) SELECT * FROM my_temp"
+      );
+    });
+
     it("allows all tables when whitelist is disabled", () => {
       process.env.ATLAS_TABLE_WHITELIST = "false";
       expectValid("SELECT * FROM anything_goes");
@@ -326,7 +359,7 @@ describe("validateSQL", () => {
   describe("auto-LIMIT", () => {
     // Auto-LIMIT is applied in the tool's execute function, not in validateSQL.
     // These tests verify that validateSQL itself doesn't reject queries with
-    // or without LIMIT — the limit logic is tested in integration.
+    // or without LIMIT — the limit logic is tested separately.
 
     it("accepts queries with explicit LIMIT", () => {
       expectValid("SELECT * FROM companies LIMIT 10");
@@ -350,8 +383,7 @@ describe("validateSQL", () => {
       expect(result.valid).toBe(false);
     });
 
-    it("rejects extremely long queries (parser will still try)", () => {
-      // This tests that we don't crash — validation should still work
+    it("accepts extremely long queries without crashing", () => {
       const longQuery = `SELECT ${Array(500).fill("1").join(", ")} FROM companies`;
       expectValid(longQuery);
     });

@@ -1,6 +1,6 @@
 # create-atlas-agent
 
-Scaffold a new [Atlas](https://github.com/msywu/data-agent) text-to-SQL agent project.
+Scaffold a new [Atlas](https://github.com/msywulak/data-agent) text-to-SQL agent project.
 
 ## Usage
 

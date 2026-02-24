@@ -213,8 +213,8 @@ async function main() {
     if (isNaN(major) || major < 1) {
       p.log.warn(`Bun ${bunVersion} detected. Atlas requires Bun 1.0+.`);
     }
-  } catch {
-    p.log.warn("Could not detect bun version.");
+  } catch (err) {
+    p.log.warn(`Could not detect bun version: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   // ── DB connectivity check (Postgres only) ────────────────────────
@@ -258,10 +258,21 @@ async function main() {
 
   copyDirRecursive(templateDir, targetDir);
 
-  // Replace %PROJECT_NAME% in package.json
-  const pkgJsonPath = path.join(targetDir, "package.json");
-  const pkgJson = fs.readFileSync(pkgJsonPath, "utf-8");
-  fs.writeFileSync(pkgJsonPath, pkgJson.replace(/%PROJECT_NAME%/g, projectName));
+  // Replace %PROJECT_NAME% in templated files
+  const filesToReplace = ["package.json", "fly.toml", "render.yaml"];
+  for (const file of filesToReplace) {
+    const filePath = path.join(targetDir, file);
+    if (!fs.existsSync(filePath)) {
+      s.stop(`Template file missing: ${file}`);
+      bail(`${file} was not found after copying the template. Is the package installed correctly?`);
+    }
+    const content = fs.readFileSync(filePath, "utf-8");
+    const replaced = content.replace(/%PROJECT_NAME%/g, projectName);
+    if (content === replaced && content.includes("PROJECT_NAME")) {
+      p.log.warn(`${file} may contain unreplaced template variables.`);
+    }
+    fs.writeFileSync(filePath, replaced);
+  }
 
   s.stop("Project files copied.");
 

@@ -4,3 +4,4 @@ template/bin/atlas.ts
 template/bin/enrich.ts
 template/data/demo.sql
 template/data/demo-sqlite.sql
+template/docs/deploy.md

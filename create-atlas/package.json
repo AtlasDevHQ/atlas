@@ -6,7 +6,7 @@
     "create-atlas": "./index.ts"
   },
   "scripts": {
-    "prepublishOnly": "rm -rf ./template/src ./template/bin ./template/data && cp -r ../src ./template/src && cp -r ../bin ./template/bin && cp -r ../data ./template/data"
+    "prepublishOnly": "test -f ../docs/deploy.md || (echo 'ERROR: docs/deploy.md not found in repo root. Cannot build template.' && exit 1) && rm -rf ./template/src ./template/bin ./template/data ./template/docs && cp -r ../src ./template/src && cp -r ../bin ./template/bin && cp -r ../data ./template/data && mkdir -p ./template/docs && cp ../docs/deploy.md ./template/docs/deploy.md"
   },
   "dependencies": {
     "@clack/prompts": "^0.10.0",

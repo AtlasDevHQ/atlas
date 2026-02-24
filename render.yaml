@@ -1,0 +1,19 @@
+# Render Blueprint — deploy Atlas with "New > Blueprint" pointing at this repo.
+# https://docs.render.com/infrastructure-as-code
+
+services:
+  - type: web
+    name: atlas
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    autoDeploy: false
+    healthCheckPath: /api/health
+    healthCheckTimeout: 15
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: ATLAS_PROVIDER
+        value: anthropic
+      - key: ANTHROPIC_API_KEY
+        sync: false

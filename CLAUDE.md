@@ -210,7 +210,6 @@ const { columns, rows } = await db.query("SELECT ...", 30000);
 | `ATLAS_PROVIDER` | `anthropic` | LLM provider (anthropic/openai/bedrock/ollama/gateway) |
 | `ATLAS_MODEL` | Provider default | Model ID override |
 | `DATABASE_URL` | — | PostgreSQL connection string |
-| `ATLAS_READ_ONLY` | `true` | Reject non-SELECT SQL |
 | `ATLAS_TABLE_WHITELIST` | `true` | Only allow tables in semantic layer |
 | `ATLAS_ROW_LIMIT` | `1000` | Max rows per query |
 | `ATLAS_QUERY_TIMEOUT` | `30000` | Query timeout in ms |

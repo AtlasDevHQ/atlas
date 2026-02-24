@@ -3,6 +3,8 @@ import { runAgent } from "@/lib/agent";
 import { validateEnvironment } from "@/lib/startup";
 import { GatewayModelNotFoundError } from "@ai-sdk/gateway";
 
+export const maxDuration = 60;
+
 export async function POST(req: Request) {
   // Startup diagnostics — fast-fail with actionable errors
   const diagnostics = await validateEnvironment();

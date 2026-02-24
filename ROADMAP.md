@@ -46,8 +46,9 @@ Make `bun create atlas`, deployment, and the getting-started path bulletproof. S
 ### Deployment configs
 - [x] Health endpoint — `GET /api/health` returns DB status, provider config, semantic layer presence
 - [x] Docker healthcheck — `HEALTHCHECK` instruction in Dockerfile using `/api/health`
-- [ ] Fly.io support — `fly.toml` config + Fly Postgres setup instructions
-- [ ] Render support — Deploy docs (Render auto-detects Dockerfile, just needs env var guide)
+- [x] Fly.io support — `fly.toml` config + Fly Postgres setup instructions
+- [x] Render support — `render.yaml` Blueprint + env var placeholders
+- [x] Deploy config audit — All configs (Docker, Fly, Render, Railway, Vercel) verified against current platform docs
 
 ### atlas init hardening
 - [x] Connection test first — `atlas init` pings DB and reports version/permissions before profiling
@@ -59,9 +60,29 @@ Make `bun create atlas`, deployment, and the getting-started path bulletproof. S
 - [x] Agent-facing errors — When a SQL query fails, return the Postgres error message to the agent (not a stack trace to the user)
 
 ### Documentation
-- [ ] Quick start guide — Step-by-step for local dev, from zero to asking questions
-- [ ] Deploy guides — One page each for Railway, Fly.io, Render, Docker, Vercel
-- [ ] Bring-your-own-DB guide — How to connect Atlas to an existing production database safely
+- [x] Quick start guide — Step-by-step for local dev, from zero to asking questions
+- [x] Deploy guides — One page each for Railway, Fly.io, Render, Docker, Vercel
+- [x] Bring-your-own-DB guide — How to connect Atlas to an existing production database safely
+
+---
+
+## v0.2.1 — Deploy Hardening (Shipped)
+
+Fixes found during a full audit of all deploy configs against current platform documentation.
+
+### Docker
+- [x] Non-root container — Run as `nextjs` user instead of root in the runner stage
+- [x] `bun ci` — Replace `bun install --frozen-lockfile` with idiomatic `bun ci`
+- [x] Copy `public/` — Add missing `COPY --from=builder /app/public ./public` for static assets
+
+### Fly.io
+- [x] Memory bump — Increase VM memory from 256mb to 512mb to avoid OOM with AI streaming
+
+### Vercel
+- [x] `maxDuration` — Add `export const maxDuration = 60` to chat API route to prevent serverless timeout during multi-step agent loops
+
+### Housekeeping
+- [x] Template sync — Mirror all Dockerfile fixes to `create-atlas/template/Dockerfile`
 
 ---
 

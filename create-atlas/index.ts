@@ -283,7 +283,6 @@ async function main() {
   }
 
   envContent += `\n# Security (defaults)\n`;
-  envContent += `ATLAS_READ_ONLY=true\n`;
   envContent += `ATLAS_TABLE_WHITELIST=true\n`;
   envContent += `ATLAS_ROW_LIMIT=1000\n`;
   envContent += `ATLAS_QUERY_TIMEOUT=30000\n`;

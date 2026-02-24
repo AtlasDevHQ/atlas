@@ -5,6 +5,9 @@
   "bin": {
     "create-atlas": "./index.ts"
   },
+  "scripts": {
+    "prepare": "cp -r ../src ./template/src && cp -r ../bin ./template/bin && cp -r ../data ./template/data"
+  },
   "dependencies": {
     "@clack/prompts": "^0.10.0",
     "picocolors": "^1.1.0"

@@ -108,6 +108,7 @@ export async function profilePostgres(
 ): Promise<TableProfile[]> {
   const pool = new Pool({ connectionString, max: 3 });
   const profiles: TableProfile[] = [];
+  const errors: { table: string; error: string }[] = [];
 
   const tablesResult = await pool.query(`
     SELECT table_name FROM information_schema.tables
@@ -115,122 +116,142 @@ export async function profilePostgres(
     ORDER BY table_name
   `);
 
-  for (const { table_name } of tablesResult.rows) {
-    if (filterTables && !filterTables.includes(table_name)) continue;
+  const tablesToProfile = tablesResult.rows.filter(
+    (r: { table_name: string }) => !filterTables || filterTables.includes(r.table_name)
+  );
 
-    const countResult = await pool.query(
-      `SELECT COUNT(*) as c FROM "${table_name}"`
-    );
-    const rowCount = parseInt(countResult.rows[0].c, 10);
+  for (let i = 0; i < tablesToProfile.length; i++) {
+    const { table_name } = tablesToProfile[i];
+    console.log(`  [${i + 1}/${tablesToProfile.length}] Profiling ${table_name}...`);
 
-    // Get primary keys and foreign keys from system catalogs
-    let primaryKeyColumns: string[] = [];
-    let foreignKeys: ForeignKey[] = [];
     try {
-      primaryKeyColumns = await queryPrimaryKeys(pool, table_name);
-    } catch {
-      // Table may not have PK constraints
-    }
-    try {
-      foreignKeys = await queryForeignKeys(pool, table_name);
-    } catch {
-      // Table may not have FK constraints
-    }
+      const countResult = await pool.query(
+        `SELECT COUNT(*) as c FROM "${table_name}"`
+      );
+      const rowCount = parseInt(countResult.rows[0].c, 10);
 
-    const fkLookup = new Map(
-      foreignKeys.map((fk) => [fk.from_column, fk])
-    );
-
-    const colResult = await pool.query(
-      `
-      SELECT column_name, data_type, is_nullable
-      FROM information_schema.columns
-      WHERE table_name = $1 AND table_schema = 'public'
-      ORDER BY ordinal_position
-    `,
-      [table_name]
-    );
-
-    const columns: ColumnProfile[] = [];
-
-    for (const col of colResult.rows) {
-      let unique_count: number | null = null;
-      let null_count: number | null = null;
-      let sample_values: string[] = [];
-
-      const isPK = primaryKeyColumns.includes(col.column_name);
-      const fkInfo = fkLookup.get(col.column_name);
-      const isFK = !!fkInfo;
-
+      // Get primary keys and foreign keys from system catalogs
+      let primaryKeyColumns: string[] = [];
+      let foreignKeys: ForeignKey[] = [];
       try {
-        const uq = await pool.query(
-          `SELECT COUNT(DISTINCT "${col.column_name}") as c FROM "${table_name}"`
-        );
-        unique_count = parseInt(uq.rows[0].c, 10);
-
-        const nc = await pool.query(
-          `SELECT COUNT(*) as c FROM "${table_name}" WHERE "${col.column_name}" IS NULL`
-        );
-        null_count = parseInt(nc.rows[0].c, 10);
-
-        // For enum-like columns, get ALL distinct values; otherwise sample 10
-        const isTextType =
-          col.data_type === "text" ||
-          col.data_type === "character varying" ||
-          col.data_type === "character";
-        const isEnumLike =
-          isTextType &&
-          unique_count !== null &&
-          unique_count < 20 &&
-          rowCount > 0 &&
-          unique_count / rowCount <= 0.05;
-
-        const sampleLimit = isEnumLike ? 100 : 10;
-        const sv = await pool.query(
-          `SELECT DISTINCT "${col.column_name}" as v FROM "${table_name}" WHERE "${col.column_name}" IS NOT NULL ORDER BY "${col.column_name}" LIMIT ${sampleLimit}`
-        );
-        sample_values = sv.rows.map((r: { v: unknown }) => String(r.v));
-
-        columns.push({
-          name: col.column_name,
-          type: col.data_type,
-          nullable: col.is_nullable === "YES",
-          unique_count,
-          null_count,
-          sample_values,
-          is_primary_key: isPK,
-          is_foreign_key: isFK,
-          fk_target_table: fkInfo?.to_table ?? null,
-          fk_target_column: fkInfo?.to_column ?? null,
-          is_enum_like: isEnumLike ?? false,
-        });
+        primaryKeyColumns = await queryPrimaryKeys(pool, table_name);
       } catch {
-        columns.push({
-          name: col.column_name,
-          type: col.data_type,
-          nullable: col.is_nullable === "YES",
-          unique_count,
-          null_count,
-          sample_values,
-          is_primary_key: isPK,
-          is_foreign_key: isFK,
-          fk_target_table: fkInfo?.to_table ?? null,
-          fk_target_column: fkInfo?.to_column ?? null,
-          is_enum_like: false,
-        });
+        // Table may not have PK constraints
       }
-    }
+      try {
+        foreignKeys = await queryForeignKeys(pool, table_name);
+      } catch {
+        // Table may not have FK constraints
+      }
 
-    profiles.push({
-      table_name,
-      row_count: rowCount,
-      columns,
-      primary_key_columns: primaryKeyColumns,
-      foreign_keys: foreignKeys,
-    });
+      const fkLookup = new Map(
+        foreignKeys.map((fk) => [fk.from_column, fk])
+      );
+
+      const colResult = await pool.query(
+        `
+        SELECT column_name, data_type, is_nullable
+        FROM information_schema.columns
+        WHERE table_name = $1 AND table_schema = 'public'
+        ORDER BY ordinal_position
+      `,
+        [table_name]
+      );
+
+      const columns: ColumnProfile[] = [];
+
+      for (const col of colResult.rows) {
+        let unique_count: number | null = null;
+        let null_count: number | null = null;
+        let sample_values: string[] = [];
+
+        const isPK = primaryKeyColumns.includes(col.column_name);
+        const fkInfo = fkLookup.get(col.column_name);
+        const isFK = !!fkInfo;
+
+        try {
+          const uq = await pool.query(
+            `SELECT COUNT(DISTINCT "${col.column_name}") as c FROM "${table_name}"`
+          );
+          unique_count = parseInt(uq.rows[0].c, 10);
+
+          const nc = await pool.query(
+            `SELECT COUNT(*) as c FROM "${table_name}" WHERE "${col.column_name}" IS NULL`
+          );
+          null_count = parseInt(nc.rows[0].c, 10);
+
+          // For enum-like columns, get ALL distinct values; otherwise sample 10
+          const isTextType =
+            col.data_type === "text" ||
+            col.data_type === "character varying" ||
+            col.data_type === "character";
+          const isEnumLike =
+            isTextType &&
+            unique_count !== null &&
+            unique_count < 20 &&
+            rowCount > 0 &&
+            unique_count / rowCount <= 0.05;
+
+          const sampleLimit = isEnumLike ? 100 : 10;
+          const sv = await pool.query(
+            `SELECT DISTINCT "${col.column_name}" as v FROM "${table_name}" WHERE "${col.column_name}" IS NOT NULL ORDER BY "${col.column_name}" LIMIT ${sampleLimit}`
+          );
+          sample_values = sv.rows.map((r: { v: unknown }) => String(r.v));
+
+          columns.push({
+            name: col.column_name,
+            type: col.data_type,
+            nullable: col.is_nullable === "YES",
+            unique_count,
+            null_count,
+            sample_values,
+            is_primary_key: isPK,
+            is_foreign_key: isFK,
+            fk_target_table: fkInfo?.to_table ?? null,
+            fk_target_column: fkInfo?.to_column ?? null,
+            is_enum_like: isEnumLike ?? false,
+          });
+        } catch {
+          columns.push({
+            name: col.column_name,
+            type: col.data_type,
+            nullable: col.is_nullable === "YES",
+            unique_count,
+            null_count,
+            sample_values,
+            is_primary_key: isPK,
+            is_foreign_key: isFK,
+            fk_target_table: fkInfo?.to_table ?? null,
+            fk_target_column: fkInfo?.to_column ?? null,
+            is_enum_like: false,
+          });
+        }
+      }
+
+      profiles.push({
+        table_name,
+        row_count: rowCount,
+        columns,
+        primary_key_columns: primaryKeyColumns,
+        foreign_keys: foreignKeys,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`  Warning: Failed to profile ${table_name}: ${msg}`);
+      errors.push({ table: table_name, error: msg });
+      continue;
+    }
   }
 
   await pool.end();
+
+  if (errors.length > 0) {
+    console.log(`\nWarning: ${errors.length} table(s) failed to profile:`);
+    for (const e of errors) {
+      console.log(`  - ${e.table}: ${e.error}`);
+    }
+  }
+
   return profiles;
 }
 
@@ -704,6 +725,23 @@ async function main() {
   if (!connStr) {
     console.error("Error: DATABASE_URL is required");
     process.exit(1);
+  }
+
+  // Test connection before profiling
+  console.log("Testing database connection...");
+  const testPool = new Pool({ connectionString: connStr, max: 1, connectionTimeoutMillis: 5000 });
+  try {
+    const client = await testPool.connect();
+    const versionResult = await client.query("SELECT version()");
+    console.log(`Connected: ${versionResult.rows[0].version.split(",")[0]}`);
+    client.release();
+  } catch (err) {
+    console.error(`\nError: Cannot connect to database.`);
+    console.error(err instanceof Error ? err.message : String(err));
+    console.error(`\nCheck that DATABASE_URL is correct and the server is running.`);
+    process.exit(1);
+  } finally {
+    await testPool.end();
   }
 
   // Determine enrichment mode

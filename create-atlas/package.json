@@ -1,6 +1,6 @@
 {
   "name": "create-atlas-agent",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "Create a new Atlas text-to-SQL agent project",
   "bin": {
     "create-atlas-agent": "./index.ts"

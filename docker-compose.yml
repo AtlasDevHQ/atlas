@@ -1,0 +1,33 @@
+services:
+  atlas:
+    build: .
+    ports:
+      - "3000:3000"
+    env_file: .env
+    volumes:
+      - ./semantic:/app/semantic
+      - ./data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Optional: swap SQLite for Postgres
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: atlas
+      POSTGRES_USER: atlas
+      POSTGRES_PASSWORD: atlas
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./data/demo.sql:/docker-entrypoint-initdb.d/demo.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atlas"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:

@@ -1,0 +1,49 @@
+# Engagement and retention metric definitions.
+
+metrics:
+  - id: churn_rate
+    label: Churn Rate
+    description: >
+      Percentage of accounts with status = 'Churned' out of total accounts.
+      This is a lifetime churn rate, not a period-based rate.
+    type: derived
+    sql: |
+      SELECT
+        ROUND(
+          100.0 * COUNT(CASE WHEN status = 'Churned' THEN 1 END) / COUNT(*),
+          1
+        ) as churn_rate_pct,
+        COUNT(CASE WHEN status = 'Churned' THEN 1 END) as churned_count,
+        COUNT(*) as total_accounts
+      FROM accounts
+    unit: percentage
+    objective: minimize
+    warning: >
+      This is lifetime churn, not monthly churn. For period-based churn,
+      you would need to compare account counts between two time periods,
+      which requires a snapshot table not currently available.
+
+  - id: avg_tenure
+    label: Average Employee Tenure
+    description: >
+      Average tenure in months across all employees.
+    type: atomic
+    sql: |
+      SELECT
+        ROUND(AVG((julianday('now') - julianday(start_date)) / 30.44), 1) as avg_tenure_months
+      FROM people
+    unit: months
+
+  - id: headcount_by_department
+    label: Headcount by Department
+    description: >
+      Number of people in each department, with percentage of total.
+    type: atomic
+    sql: |
+      SELECT
+        department,
+        COUNT(*) as headcount,
+        ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 1) as pct_of_total
+      FROM people
+      GROUP BY department
+      ORDER BY headcount DESC

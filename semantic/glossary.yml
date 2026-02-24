@@ -1,0 +1,63 @@
+# Atlas Glossary — Business term definitions and disambiguation.
+#
+# The agent consults this when encountering ambiguous terms.
+# Terms marked "ambiguous" should trigger a clarifying question.
+
+terms:
+  revenue:
+    status: defined
+    definition: >
+      Annual revenue in USD, stored on the companies table.
+      For recurring subscription revenue, use MRR (monthly_value on accounts).
+    disambiguation: >
+      "Revenue" can mean company-level annual revenue (companies.revenue)
+      or subscription MRR (accounts.monthly_value). If the user asks about
+      "revenue" without context, ask whether they mean company revenue or
+      subscription/MRR.
+    see_also: [mrr, arr]
+
+  mrr:
+    status: defined
+    definition: >
+      Monthly Recurring Revenue. Sum of monthly_value for active accounts.
+    canonical_metric: total_mrr
+
+  arr:
+    status: defined
+    definition: >
+      Annual Recurring Revenue. MRR * 12.
+    canonical_metric: arr
+
+  churn:
+    status: defined
+    definition: >
+      An account with status = 'Churned'. Lifetime churn rate is the
+      percentage of all accounts that have churned.
+    canonical_metric: churn_rate
+    warning: >
+      We only have lifetime churn data, not period-based cohort churn.
+
+  size:
+    status: ambiguous
+    note: >
+      "Size" could refer to employee_count (company size),
+      account count, or revenue magnitude. ASK the user which
+      dimension they mean.
+    possible_mappings:
+      - employee_count (companies table)
+      - account_count (number of accounts)
+      - revenue (financial size)
+
+  customer:
+    status: defined
+    definition: >
+      A customer is represented by a row in the accounts table.
+      Each account links to a company via company_id.
+      Use accounts for customer-level analysis, companies for company-level.
+
+  engagement:
+    status: ambiguous
+    note: >
+      "Engagement" has no standard definition in this dataset.
+      ASK the user: do they mean account activity (status, contract dates),
+      headcount trends, or something else?

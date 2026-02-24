@@ -1,0 +1,93 @@
+name: Accounts
+type: fact_table
+table: accounts
+grain: one row per customer account
+
+description: >
+  Customer accounts representing commercial relationships with companies.
+  Tracks plan type, monthly recurring value, contract dates, and account status.
+
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    primary_key: true
+
+  - name: company_id
+    sql: company_id
+    type: number
+    description: Foreign key to companies table
+
+  - name: plan
+    sql: plan
+    type: string
+    description: Subscription plan tier
+    unique_count: 4
+    sample_values: [Free, Starter, Pro, Enterprise]
+
+  - name: status
+    sql: status
+    type: string
+    description: Current account status
+    unique_count: 4
+    sample_values: [Active, Inactive, Suspended, Churned]
+
+  - name: is_active
+    sql: status = 'Active'
+    type: boolean
+    virtual: true
+
+  - name: monthly_value
+    sql: monthly_value
+    type: number
+    description: Monthly recurring revenue (MRR) in USD
+
+  - name: contract_start
+    sql: contract_start
+    type: date
+    description: Contract start date
+
+  - name: contract_end
+    sql: contract_end
+    type: date
+    description: Contract end date (NULL if ongoing)
+    null_count: 15
+
+  - name: contract_length_months
+    sql: |
+      CAST((julianday(COALESCE(contract_end, 'now')) - julianday(contract_start)) / 30.44 AS INTEGER)
+    type: number
+    description: Contract duration in months (derived)
+    virtual: true
+
+measures:
+  - name: total_mrr
+    sql: monthly_value
+    type: sum
+    description: Total monthly recurring revenue
+
+  - name: avg_mrr
+    sql: monthly_value
+    type: avg
+
+  - name: account_count
+    sql: id
+    type: count_distinct
+
+  - name: active_account_count
+    sql: "CASE WHEN status = 'Active' THEN id END"
+    type: count_distinct
+
+joins:
+  - target_entity: Companies
+    relationship: many_to_one
+    join_columns:
+      from: company_id
+      to: id
+    description: Each account belongs to one company
+
+use_cases:
+  - Use for revenue analysis (MRR, ARR projections)
+  - Use for churn and retention analysis by plan or status
+  - Join with Companies for revenue-by-industry or revenue-by-size analysis
+  - Avoid for people/headcount queries — use People entity

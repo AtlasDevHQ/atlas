@@ -1,0 +1,119 @@
+name: Companies
+type: fact_table
+table: companies
+grain: one row per company record
+
+description: >
+  Company information including industry classification, employee count,
+  founding year, and financial metrics. Primary entity for market and
+  industry analysis.
+
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Unique company identifier
+    primary_key: true
+
+  - name: name
+    sql: name
+    type: string
+    description: Company name
+    unique_count: 50
+    sample_values: [Acme Corp, TechVentures, DataFlow Inc, CloudSync, NetPulse]
+
+  - name: industry
+    sql: industry
+    type: string
+    description: Primary industry classification
+    unique_count: 8
+    sample_values: [Technology, Healthcare, Finance, Retail, Manufacturing, Education, Energy, Media]
+
+  - name: size_category
+    sql: |
+      CASE
+        WHEN employee_count < 50 THEN 'Small'
+        WHEN employee_count < 500 THEN 'Medium'
+        ELSE 'Large'
+      END
+    type: string
+    description: Derived company size bucket based on employee_count
+    virtual: true
+    sample_values: [Small, Medium, Large]
+
+  - name: employee_count
+    sql: employee_count
+    type: number
+    description: Total number of employees
+    null_count: 0
+
+  - name: founded_year
+    sql: founded_year
+    type: number
+    description: Year the company was founded
+    sample_values: [2005, 2010, 2015, 2018, 2020]
+
+  - name: country
+    sql: country
+    type: string
+    description: Country of headquarters
+    unique_count: 12
+    sample_values: [US, UK, DE, CA, AU, FR, JP, IN, BR, SG]
+
+  - name: revenue
+    sql: revenue
+    type: number
+    description: Annual revenue in USD
+    null_count: 3
+
+  - name: valuation
+    sql: valuation
+    type: number
+    description: Most recent company valuation in USD
+    null_count: 8
+
+measures:
+  - name: total_revenue
+    sql: revenue
+    type: sum
+    description: Sum of annual revenue across companies
+
+  - name: avg_revenue
+    sql: revenue
+    type: avg
+    description: Average annual revenue per company
+
+  - name: total_employees
+    sql: employee_count
+    type: sum
+
+  - name: company_count
+    sql: id
+    type: count_distinct
+
+use_cases:
+  - Use for industry-level analysis and market segmentation
+  - Use for company size distribution and growth patterns
+  - Use for geographic distribution of companies
+  - Avoid for individual person-level queries — use People entity instead
+
+query_patterns:
+  - description: Revenue by industry
+    sql: |
+      SELECT industry, SUM(revenue) as total_revenue, COUNT(*) as company_count
+      FROM companies
+      GROUP BY industry
+      ORDER BY total_revenue DESC
+
+  - description: Company size distribution
+    sql: |
+      SELECT
+        CASE
+          WHEN employee_count < 50 THEN 'Small'
+          WHEN employee_count < 500 THEN 'Medium'
+          ELSE 'Large'
+        END as size_category,
+        COUNT(*) as count
+      FROM companies
+      GROUP BY 1
+      ORDER BY count DESC

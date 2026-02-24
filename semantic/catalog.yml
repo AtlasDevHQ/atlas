@@ -1,0 +1,63 @@
+# Atlas Semantic Layer — Catalog
+#
+# This is the entry point. The agent reads this first to understand
+# what data is available before exploring entity schemas.
+#
+# To add a new data source, create an entity YAML in entities/ and
+# add it here. Run `npm run atlas -- init` to auto-generate from your DB.
+
+version: "1.0"
+
+entities:
+  - name: Companies
+    file: entities/companies.yml
+    grain: one row per company
+    description: >
+      Company records including industry, size, founding date,
+      and financial metrics (revenue, valuation).
+    use_for:
+      - Market segmentation and industry analysis
+      - Company size distribution and growth patterns
+      - Revenue and valuation comparisons
+    common_questions:
+      - How many companies are in each industry?
+      - What is the average revenue by company size?
+      - Which industries have the highest average valuation?
+
+  - name: People
+    file: entities/people.yml
+    grain: one row per person
+    description: >
+      People associated with companies, including their role,
+      department, seniority level, and tenure.
+    use_for:
+      - Headcount analysis by department or seniority
+      - Tenure and retention patterns
+      - Organizational structure analysis
+    common_questions:
+      - What is the headcount breakdown by department?
+      - What is the average tenure by seniority level?
+      - Which companies have the most employees?
+
+  - name: Accounts
+    file: entities/accounts.yml
+    grain: one row per customer account
+    description: >
+      Customer accounts with plan type, monthly value, status,
+      and contract dates. Links to companies.
+    use_for:
+      - Revenue analysis by plan type or status
+      - Customer lifecycle and retention
+      - Contract value distribution
+    common_questions:
+      - What is total MRR by plan type?
+      - How many accounts are active vs churned?
+      - What is the average contract length?
+
+metrics:
+  - file: metrics/revenue.yml
+    description: Revenue and ARR metric definitions
+  - file: metrics/engagement.yml
+    description: User engagement and retention metrics
+
+glossary: glossary.yml

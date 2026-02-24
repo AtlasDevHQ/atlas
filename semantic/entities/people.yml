@@ -1,0 +1,85 @@
+name: People
+type: fact_table
+table: people
+grain: one row per person
+
+description: >
+  People associated with companies, including role, department,
+  seniority, and employment dates. Use for headcount analysis,
+  organizational breakdowns, and tenure patterns.
+
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    primary_key: true
+
+  - name: name
+    sql: name
+    type: string
+    unique_count: 200
+
+  - name: email
+    sql: email
+    type: string
+    description: Work email address
+
+  - name: company_id
+    sql: company_id
+    type: number
+    description: Foreign key to companies table
+
+  - name: department
+    sql: department
+    type: string
+    unique_count: 6
+    sample_values: [Engineering, Sales, Marketing, Product, Operations, Finance]
+
+  - name: seniority
+    sql: seniority
+    type: string
+    unique_count: 4
+    sample_values: [Junior, Mid, Senior, Executive]
+
+  - name: title
+    sql: title
+    type: string
+    description: Job title
+    unique_count: 25
+    sample_values: [Software Engineer, Account Executive, VP Engineering, Product Manager, Data Analyst]
+
+  - name: start_date
+    sql: start_date
+    type: date
+    description: Employment start date
+
+  - name: tenure_months
+    sql: |
+      CAST((julianday('now') - julianday(start_date)) / 30.44 AS INTEGER)
+    type: number
+    description: Months since start_date (derived, SQLite syntax)
+    virtual: true
+
+measures:
+  - name: headcount
+    sql: id
+    type: count_distinct
+
+  - name: avg_tenure_months
+    sql: |
+      (julianday('now') - julianday(start_date)) / 30.44
+    type: avg
+
+joins:
+  - target_entity: Companies
+    relationship: many_to_one
+    join_columns:
+      from: company_id
+      to: id
+    description: Each person belongs to one company
+
+use_cases:
+  - Use for headcount and organizational analysis
+  - Use for tenure and retention analysis by department or seniority
+  - Join with Companies for company-level people aggregations
+  - Avoid for financial analysis — use Companies or Accounts instead

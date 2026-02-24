@@ -1,0 +1,66 @@
+# Canonical revenue metric definitions.
+#
+# The agent should use these SQL patterns exactly when answering
+# metric-related questions. Do not improvise alternative SQL.
+
+metrics:
+  - id: total_mrr
+    label: Total MRR
+    description: >
+      Sum of monthly_value for all Active accounts.
+      This is the primary revenue metric.
+    type: atomic
+    source:
+      entity: Accounts
+      measure: total_mrr
+      filters:
+        - field: status
+          operator: eq
+          values: ["Active"]
+    sql: |
+      SELECT SUM(monthly_value) as total_mrr
+      FROM accounts
+      WHERE status = 'Active'
+    unit: USD
+    aggregation: sum
+    objective: maximize
+
+  - id: arr
+    label: Annual Recurring Revenue
+    description: >
+      Total MRR multiplied by 12. Use this when users ask about
+      ARR, annual revenue, or yearly run rate.
+    type: derived
+    formula: total_mrr * 12
+    sql: |
+      SELECT SUM(monthly_value) * 12 as arr
+      FROM accounts
+      WHERE status = 'Active'
+    unit: USD
+    objective: maximize
+
+  - id: mrr_by_plan
+    label: MRR by Plan
+    description: >
+      Monthly recurring revenue broken down by subscription plan tier.
+    type: atomic
+    sql: |
+      SELECT plan, SUM(monthly_value) as mrr, COUNT(*) as account_count
+      FROM accounts
+      WHERE status = 'Active'
+      GROUP BY plan
+      ORDER BY mrr DESC
+    warning: >
+      Always filter to Active accounts. Including Churned or Suspended
+      accounts will inflate the number.
+
+  - id: average_contract_value
+    label: Average Contract Value (ACV)
+    description: >
+      Average monthly_value across all active accounts.
+    type: atomic
+    sql: |
+      SELECT AVG(monthly_value) as acv
+      FROM accounts
+      WHERE status = 'Active'
+    unit: USD

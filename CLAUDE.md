@@ -43,6 +43,8 @@ Guidance for Claude Code when working in this repository.
 
 **Atlas** — Deploy-anywhere text-to-SQL data analyst agent. Users ask natural language questions, the agent explores a semantic layer (YAML files on disk), writes validated SQL, and returns interpreted results.
 
+> Based on [vercel-labs/oss-data-analyst](https://github.com/vercel-labs/oss-data-analyst). Supports both self-hosted (Docker/Railway/Fly via `just-bash`) and Vercel-native deployment (via `@vercel/sandbox`).
+
 > Next.js 16 + TypeScript + Vercel AI SDK + bun
 
 ## Commands

@@ -2,11 +2,12 @@
  * SQL execution tool with production-grade validation.
  *
  * Security layers:
- * 1. AST parsing — only SELECT/WITH statements allowed
- * 2. Single statement — no semicolon-separated batches
- * 3. Table whitelist — only tables defined in the semantic layer
- * 4. Row limit — auto-appended LIMIT clause
- * 5. Query timeout — configurable per-query deadline
+ * 1. Single-statement check — no semicolon-separated batches
+ * 2. Regex mutation guard — quick reject of DML/DDL keywords
+ * 3. AST parsing — only SELECT/WITH statements allowed
+ * 4. Table whitelist — only tables defined in the semantic layer
+ * 5. Row limit — auto-appended LIMIT clause
+ * 6. Query timeout — configurable per-query deadline
  */
 
 import { tool } from "ai";
@@ -42,6 +43,8 @@ function validateSQL(sql: string): { valid: boolean; error?: string } {
   }
 
   // 3. AST validation — must be a SELECT
+  // Security: if the parser fails, we REJECT the query. A crafted query that
+  // confuses the parser must not bypass the SELECT-only check.
   try {
     const ast = parser.astify(trimmed);
     const statements = Array.isArray(ast) ? ast : [ast];
@@ -55,7 +58,10 @@ function validateSQL(sql: string): { valid: boolean; error?: string } {
       }
     }
   } catch {
-    // If parser fails, fall through — the DB will catch syntax errors
+    return {
+      valid: false,
+      error: "Could not parse the SQL statement. Check the syntax and try again.",
+    };
   }
 
   // 4. Table whitelist check
@@ -75,7 +81,12 @@ function validateSQL(sql: string): { valid: boolean; error?: string } {
         }
       }
     } catch {
-      // If table extraction fails, allow — DB will catch unknown tables
+      // Table extraction uses the same parser that just succeeded in step 3.
+      // If it fails here, reject to avoid bypassing the whitelist.
+      return {
+        valid: false,
+        error: "Could not validate table references. Simplify the query and try again.",
+      };
     }
   }
 
@@ -106,7 +117,6 @@ Rules:
   }),
 
   execute: async ({ sql, explanation }) => {
-    // Validate
     const validation = validateSQL(sql);
     if (!validation.valid) {
       return { success: false, error: validation.error };
@@ -118,7 +128,6 @@ Rules:
       querySql += ` LIMIT ${ROW_LIMIT}`;
     }
 
-    // Execute
     try {
       const db = getDB();
       const result = await db.query(querySql, QUERY_TIMEOUT);
@@ -135,11 +144,24 @@ Rules:
       const message =
         err instanceof Error ? err.message : "Unknown database error";
 
-      // Sanitize — only return safe error info
-      if (/column|relation|syntax|type/i.test(message)) {
-        return { success: false, error: message };
+      console.error("[atlas] SQL execution failed:", message);
+
+      // Block errors that might expose connection details or internal state
+      if (/password|connection string|pg_hba\.conf|SSL|certificate/i.test(message)) {
+        return { success: false, error: "Database query failed — check server logs for details." };
       }
-      return { success: false, error: "Database query failed" };
+
+      // Surface the full Postgres error to the agent for self-correction
+      // (includes column-not-found, syntax, timeout, type mismatch, etc.)
+      const pgErr = err as { hint?: string; position?: string };
+      let detail = message;
+      if (pgErr.hint) {
+        detail += ` — Hint: ${pgErr.hint}`;
+      }
+      if (pgErr.position) {
+        detail += ` (at character ${pgErr.position})`;
+      }
+      return { success: false, error: detail };
     }
   },
 });

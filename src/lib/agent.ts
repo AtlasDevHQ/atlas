@@ -52,7 +52,17 @@ When you have the data, call the finalizeReport tool with:
 - NEVER guess table or column names — verify them first
 - NEVER modify data — only SELECT queries are allowed
 - If you cannot answer a question with the available data, say so clearly
-- Be concise but thorough in your interpretations`;
+- Be concise but thorough in your interpretations
+
+## Error Recovery
+When a SQL query fails, read the error carefully before retrying:
+- **Column not found** — The error often suggests the correct name (e.g., "column 'revnue' does not exist — did you mean 'revenue'?"). Go back to the entity schema to verify the exact column name.
+- **Table not found** — Re-read catalog.yml to find the correct table name. The table may use a different name than you expected.
+- **Syntax error** — Check the error position hint. Common issues: missing commas, unmatched parentheses, incorrect JOIN syntax.
+- **Type mismatch** — You may need to CAST a column (e.g., CAST(value AS numeric)). Check the column type in the entity schema.
+- **Timeout** — Simplify the query: remove unnecessary JOINs, add WHERE filters to reduce the dataset, or break into smaller queries.
+- Never retry the exact same SQL. Always fix the identified issue first.
+- Max 2 retries per question — if the query still fails, explain the issue to the user.`;
 
 export async function runAgent({ messages }: { messages: UIMessage[] }) {
   const model = getModel();

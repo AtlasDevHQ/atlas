@@ -6,9 +6,18 @@ import { useState } from "react";
 
 const transport = new DefaultChatTransport({ api: "/api/chat" });
 
+function parseErrorMessage(raw: string): string {
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed.message ?? raw;
+  } catch {
+    return raw;
+  }
+}
+
 export default function Home() {
   const [input, setInput] = useState("");
-  const { messages, sendMessage, status } = useChat({ transport });
+  const { messages, sendMessage, status, error } = useChat({ transport });
 
   const isLoading = status === "streaming" || status === "submitted";
 
@@ -20,7 +29,14 @@ export default function Home() {
       </header>
 
       <div className="flex-1 space-y-4 overflow-y-auto pb-4">
-        {messages.length === 0 && (
+        {error && (
+          <div className="rounded-lg border border-red-800 bg-red-950/50 px-4 py-3 text-sm text-red-300">
+            <p className="font-medium text-red-200">Something went wrong</p>
+            <p className="mt-1 whitespace-pre-wrap">{parseErrorMessage(error.message)}</p>
+          </div>
+        )}
+
+        {messages.length === 0 && !error && (
           <div className="flex h-full items-center justify-center">
             <p className="text-zinc-600">
               Ask a question about your data to get started.

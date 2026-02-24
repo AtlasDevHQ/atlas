@@ -33,6 +33,9 @@
     "recharts": "^3.7.0",
     "zod": "^4.3.6"
   },
+  "optionalDependencies": {
+    "@vercel/sandbox": "^1"
+  },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@next/eslint-plugin-next": "^16.1.6",

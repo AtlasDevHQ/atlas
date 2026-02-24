@@ -103,7 +103,7 @@ What you need before handing Atlas to a real team.
 - [ ] Authentication — Protect `/api/chat` (API key, OAuth, or session-based)
 - [ ] Query audit log — Log every SQL execution with user, timestamp, duration, row count
 - [ ] Rate limiting — Per-user query throttle
-- [x] Test coverage — Unit tests for SQL validation (54 tests in `src/lib/tools/__tests__/sql.test.ts`)
+- [x] Test coverage — Unit tests for SQL validation (64 tests in `src/lib/tools/__tests__/sql.test.ts`)
 - [ ] Test coverage — Integration tests for agent loop
 - [ ] Error boundaries — Graceful UI handling of API failures, DB timeouts, provider errors
 - [ ] Observability — Structured logging, optional trace export (OpenTelemetry)

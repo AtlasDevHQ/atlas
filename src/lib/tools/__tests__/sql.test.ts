@@ -409,5 +409,30 @@ describe("validateSQL", () => {
     it("rejects UPDATE disguised with mixed case", () => {
       expectInvalid("uPdAtE companies SET name = 'x'", "forbidden");
     });
+
+    it("rejects forbidden keywords inside string literals (known false positive)", () => {
+      // The regex guard runs before AST parsing, so it catches "DELETE"
+      // even inside a WHERE string value. This is a deliberate conservative
+      // choice — security over usability. The agent can work around this by
+      // using different filter values or column aliases.
+      expectInvalid(
+        "SELECT * FROM companies WHERE status = 'DELETE'",
+        "forbidden"
+      );
+    });
+  });
+
+  // ----- Known limitations ---------------------------------------------------
+
+  describe("known limitations", () => {
+    it("does not block dangerous PostgreSQL functions (mitigated by statement_timeout and DB permissions)", () => {
+      // Functions like pg_sleep, pg_read_file, pg_terminate_backend pass
+      // validation because there is no function blocklist. Mitigation:
+      // - pg_sleep: bounded by statement_timeout (default 30s)
+      // - pg_read_file/pg_ls_dir: require superuser or explicit GRANT
+      // - pg_terminate_backend: requires pg_signal_backend role
+      // The DB user should have minimal permissions in production.
+      expectValid("SELECT pg_sleep(1) FROM companies");
+    });
   });
 });

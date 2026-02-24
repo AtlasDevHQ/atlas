@@ -55,9 +55,9 @@ dimensions:
 
   - name: tenure_months
     sql: |
-      CAST((julianday('now') - julianday(start_date)) / 30.44 AS INTEGER)
+      CAST(EXTRACT(EPOCH FROM (CURRENT_DATE - start_date)) / (30.44 * 86400) AS INTEGER)
     type: number
-    description: Months since start_date (derived, SQLite syntax)
+    description: Months since start_date (derived)
     virtual: true
 
 measures:
@@ -67,7 +67,7 @@ measures:
 
   - name: avg_tenure_months
     sql: |
-      (julianday('now') - julianday(start_date)) / 30.44
+      EXTRACT(EPOCH FROM (CURRENT_DATE - start_date)) / (30.44 * 86400)
     type: avg
 
 joins:

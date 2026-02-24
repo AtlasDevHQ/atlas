@@ -3,15 +3,13 @@
  * Atlas CLI — auto-generate semantic layer from your database.
  *
  * Usage:
- *   npx atlas init                     # Profile DB and generate semantic layer
- *   npx atlas init --db postgres       # Specify database type
+ *   npx atlas init                        # Profile DB and generate semantic layer
  *   npx atlas init --tables users,orders  # Only specific tables
  *
- * This is the "connect your DB, get a working analyst in 5 minutes" experience.
+ * Requires DATABASE_URL in environment.
  */
 
 import { Pool } from "pg";
-import Database from "better-sqlite3";
 import * as fs from "fs";
 import * as path from "path";
 import * as yaml from "js-yaml";
@@ -32,85 +30,6 @@ interface TableProfile {
   table_name: string;
   row_count: number;
   columns: ColumnProfile[];
-}
-
-// --- SQLite profiler ---
-async function profileSQLite(
-  dbPath: string,
-  filterTables?: string[]
-): Promise<TableProfile[]> {
-  const db = new Database(dbPath, { readonly: true });
-  const profiles: TableProfile[] = [];
-
-  const tables = db
-    .prepare(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`
-    )
-    .all() as { name: string }[];
-
-  for (const { name } of tables) {
-    if (filterTables && !filterTables.includes(name)) continue;
-
-    const rowCount = (
-      db.prepare(`SELECT COUNT(*) as c FROM "${name}"`).get() as { c: number }
-    ).c;
-
-    const columnInfo = db.prepare(`PRAGMA table_info("${name}")`).all() as {
-      name: string;
-      type: string;
-      notnull: number;
-    }[];
-
-    const columns: ColumnProfile[] = [];
-
-    for (const col of columnInfo) {
-      let unique_count: number | null = null;
-      let null_count: number | null = null;
-      let sample_values: string[] = [];
-
-      try {
-        unique_count = (
-          db
-            .prepare(
-              `SELECT COUNT(DISTINCT "${col.name}") as c FROM "${name}"`
-            )
-            .get() as { c: number }
-        ).c;
-
-        null_count = (
-          db
-            .prepare(
-              `SELECT COUNT(*) as c FROM "${name}" WHERE "${col.name}" IS NULL`
-            )
-            .get() as { c: number }
-        ).c;
-
-        const samples = db
-          .prepare(
-            `SELECT DISTINCT "${col.name}" as v FROM "${name}" WHERE "${col.name}" IS NOT NULL LIMIT 10`
-          )
-          .all() as { v: unknown }[];
-
-        sample_values = samples.map((s) => String(s.v));
-      } catch {
-        // Skip profiling errors for complex types
-      }
-
-      columns.push({
-        name: col.name,
-        type: col.type.toLowerCase() || "text",
-        nullable: !col.notnull,
-        unique_count,
-        null_count,
-        sample_values,
-      });
-    }
-
-    profiles.push({ table_name: name, row_count: rowCount, columns });
-  }
-
-  db.close();
-  return profiles;
 }
 
 // --- PostgreSQL profiler ---
@@ -247,32 +166,22 @@ async function main() {
   const command = args[0];
 
   if (command !== "init") {
-    console.log("Usage: npx atlas init [--db sqlite|postgres] [--tables t1,t2]");
+    console.log("Usage: npx atlas init [--tables t1,t2]");
     process.exit(1);
   }
 
-  const dbType = getFlag(args, "--db") ?? process.env.ATLAS_DB ?? "sqlite";
   const tablesArg = getFlag(args, "--tables");
   const filterTables = tablesArg ? tablesArg.split(",") : undefined;
 
-  console.log(`\nAtlas Init — profiling ${dbType} database...\n`);
-
-  let profiles: TableProfile[];
-
-  if (dbType === "sqlite") {
-    const dbPath = process.env.ATLAS_SQLITE_PATH ?? "./data/atlas.db";
-    profiles = await profileSQLite(dbPath, filterTables);
-  } else if (dbType === "postgres") {
-    const connStr = process.env.DATABASE_URL;
-    if (!connStr) {
-      console.error("Error: DATABASE_URL is required for postgres");
-      process.exit(1);
-    }
-    profiles = await profilePostgres(connStr, filterTables);
-  } else {
-    console.error(`Unknown db type: ${dbType}`);
+  const connStr = process.env.DATABASE_URL;
+  if (!connStr) {
+    console.error("Error: DATABASE_URL is required");
     process.exit(1);
   }
+
+  console.log(`\nAtlas Init — profiling database...\n`);
+
+  const profiles = await profilePostgres(connStr, filterTables);
 
   console.log(`Found ${profiles.length} tables:\n`);
   for (const p of profiles) {
@@ -318,7 +227,7 @@ Next steps:
   2. Add use_cases and common_questions to catalog.yml
   3. Create metric definitions in metrics/*.yml
   4. Add ambiguous terms to glossary.yml
-  5. Run \`npm run dev\` to start Atlas
+  5. Run \`bun run dev\` to start Atlas
 `);
 }
 

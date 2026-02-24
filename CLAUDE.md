@@ -17,13 +17,13 @@ Guidance for Claude Code when working in this repository.
 ### Security (General)
 - [ ] **Path traversal protection** — `resolveSafePath` in explore tool restricts reads to `semantic/` directory only
 - [ ] **No secrets in responses** — Never expose connection strings, API keys, or stack traces to the user or agent
-- [ ] **Readonly DB connections** — SQLite opens in `readonly: true` mode. PostgreSQL uses read-only queries enforced by validation
+- [ ] **Readonly DB connections** — PostgreSQL uses read-only queries enforced by validation
 
 ### Code Style
 - [ ] **bun only** — Package manager and runtime. Never npm, yarn, or node
 - [ ] **TypeScript strict mode** — Path alias `@/*` → `./src/*`
 - [ ] **Tailwind CSS 4** — Via `@tailwindcss/postcss`, not v3
-- [ ] **Server external packages** — `better-sqlite3`, `pg`, and `just-bash` must stay in `serverExternalPackages` (next.config.ts) — they have native bindings
+- [ ] **Server external packages** — `pg` and `just-bash` must stay in `serverExternalPackages` (next.config.ts) — they have native bindings
 - [ ] **Flat ESLint config** — `eslint.config.mjs`, not `.eslintrc`
 
 ### Agent Tools
@@ -62,15 +62,12 @@ bun run type             # TypeScript type-check (tsgo --noEmit)
 bun run db:up            # Start local Postgres (Docker, auto-seeds demo data)
 bun run db:down          # Stop local Postgres
 bun run db:reset         # Nuke volume + restart (fresh seed)
-bun run seed             # Seed demo SQLite DB (data/atlas.db)
 
 # Semantic layer
 bun run atlas -- init    # Profile DB and auto-generate semantic layer
 ```
 
-**Quick start (SQLite):** `bun run seed && bun run dev`
-
-**Quick start (Postgres):** `bun run db:up` → set `ATLAS_DB=postgres` and `DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas` in `.env` → `bun run dev`
+**Quick start:** `bun run db:up` → set `DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas` in `.env` → `bun run dev`
 
 **Production:** Set `DATABASE_URL` to your managed Postgres. No Docker needed.
 
@@ -88,7 +85,7 @@ src/
 │   ├── providers.ts          # LLM provider factory (anthropic/openai/bedrock/ollama)
 │   ├── semantic.ts           # Reads entity YAMLs → builds table whitelist
 │   ├── db/
-│   │   └── connection.ts     # DBConnection interface, SQLite + PostgreSQL adapters
+│   │   └── connection.ts     # DBConnection interface, PostgreSQL adapter
 │   └── tools/
 │       ├── explore.ts        # Read-only semantic layer access (ls/cat/grep/find)
 │       ├── sql.ts            # SQL validation (5 layers) + execution
@@ -99,8 +96,7 @@ semantic/                     # Semantic layer (YAML on disk)
 ├── entities/*.yml            # Table schemas + data profiling
 └── metrics/*.yml             # Canonical metric definitions
 data/
-├── demo.sql                  # Postgres seed data (auto-loaded by Docker)
-└── atlas.db                  # SQLite demo database (created by bun run seed)
+└── demo.sql                  # Postgres seed data (auto-loaded by Docker)
 ```
 
 ### Agent Loop
@@ -130,12 +126,7 @@ Then: `statement_timeout` set per-query on PostgreSQL connections.
 
 ### Database Layer (`src/lib/db/connection.ts`)
 
-| Adapter | Engine | Package | Mode | Selection |
-|---------|--------|---------|------|-----------|
-| SQLite | `better-sqlite3` | Native binding | `readonly: true` | `ATLAS_DB=sqlite` (default) |
-| PostgreSQL | `pg` Pool | Native binding | `statement_timeout` per query | `ATLAS_DB=postgres` |
-
-Singleton `getDB()` returns a `DBConnection` with `query(sql, timeout)`.
+PostgreSQL via `pg` Pool with `statement_timeout` per query. Singleton `getDB()` returns a `DBConnection` with `query(sql, timeout)`.
 
 ### Provider System (`src/lib/providers.ts`)
 
@@ -177,7 +168,7 @@ query_patterns:
 ```typescript
 import { getDB } from "@/lib/db/connection";
 
-const db = getDB();  // Singleton — SQLite or Postgres based on ATLAS_DB
+const db = getDB();  // Singleton — Postgres via DATABASE_URL
 const { columns, rows } = await db.query("SELECT ...", 30000);
 ```
 
@@ -189,9 +180,7 @@ const { columns, rows } = await db.query("SELECT ...", 30000);
 |----------|---------|-------------|
 | `ATLAS_PROVIDER` | `anthropic` | LLM provider (anthropic/openai/bedrock/ollama) |
 | `ATLAS_MODEL` | Provider default | Model ID override |
-| `ATLAS_DB` | `sqlite` | Database engine (sqlite/postgres) |
 | `DATABASE_URL` | — | PostgreSQL connection string |
-| `ATLAS_SQLITE_PATH` | `./data/atlas.db` | SQLite file path |
 | `ATLAS_READ_ONLY` | `true` | Reject non-SELECT SQL |
 | `ATLAS_TABLE_WHITELIST` | `true` | Only allow tables in semantic layer |
 | `ATLAS_ROW_LIMIT` | `1000` | Max rows per query |
@@ -220,7 +209,6 @@ docker build -t atlas .
 docker run -p 3000:3000 \
   -e ATLAS_PROVIDER=anthropic \
   -e ANTHROPIC_API_KEY=sk-ant-... \
-  -e ATLAS_DB=postgres \
   -e DATABASE_URL=postgresql://user:pass@host:5432/dbname \
   atlas
 ```
@@ -231,7 +219,6 @@ docker run -p 3000:3000 \
 2. Connect your repo — Railway detects `railway.json` and uses the Dockerfile
 3. Set environment variables in the Railway dashboard:
    - `ATLAS_PROVIDER` + its API key (e.g. `ANTHROPIC_API_KEY`)
-   - `ATLAS_DB=postgres`
    - `DATABASE_URL` — use the Railway-provided Postgres connection string
 4. Seed the database: connect to the Railway Postgres instance and run `data/demo.sql`, or use `bun run atlas -- init` to generate a semantic layer from your own data
 5. Deploy — Railway builds and starts the container automatically
@@ -242,7 +229,6 @@ docker run -p 3000:3000 \
 |----------|---------|
 | `ATLAS_PROVIDER` | `anthropic` |
 | Provider API key | `ANTHROPIC_API_KEY=sk-ant-...` |
-| `ATLAS_DB` | `postgres` |
 | `DATABASE_URL` | `postgresql://user:pass@host:5432/dbname` |
 
 `PORT` is set automatically by most platforms. All other vars have safe defaults.

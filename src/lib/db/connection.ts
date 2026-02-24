@@ -1,8 +1,8 @@
 /**
  * Database connection factory.
  *
- * Supports SQLite (demo/dev) and PostgreSQL (production).
- * Set ATLAS_DB=sqlite or ATLAS_DB=postgres in your .env.
+ * PostgreSQL via `pg` Pool with statement_timeout per query.
+ * Requires DATABASE_URL in environment.
  */
 
 export interface QueryResult {
@@ -15,27 +15,6 @@ export interface DBConnection {
   close(): Promise<void>;
 }
 
-// --- SQLite adapter ---
-function createSQLiteDB(): DBConnection {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const Database = require("better-sqlite3");
-  const dbPath = process.env.ATLAS_SQLITE_PATH ?? "./data/atlas.db";
-  const db = new Database(dbPath, { readonly: true });
-
-  return {
-    async query(sql: string) {
-      const stmt = db.prepare(sql);
-      const rows = stmt.all() as Record<string, unknown>[];
-      const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
-      return { columns, rows };
-    },
-    async close() {
-      db.close();
-    },
-  };
-}
-
-// --- PostgreSQL adapter ---
 function createPostgresDB(): DBConnection {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { Pool } = require("pg");
@@ -70,19 +49,7 @@ let _db: DBConnection | null = null;
 
 export function getDB(): DBConnection {
   if (!_db) {
-    const dbType = process.env.ATLAS_DB ?? "sqlite";
-    switch (dbType) {
-      case "sqlite":
-        _db = createSQLiteDB();
-        break;
-      case "postgres":
-        _db = createPostgresDB();
-        break;
-      default:
-        throw new Error(
-          `Unknown ATLAS_DB="${dbType}". Supported: sqlite, postgres`
-        );
-    }
+    _db = createPostgresDB();
   }
   return _db;
 }

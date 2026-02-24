@@ -10,7 +10,7 @@
 The core text-to-SQL agent, end to end.
 
 - [x] Agent loop — streamText with 3 tools (explore, executeSQL, finalizeReport)
-- [x] SQL validation — 5-layer pipeline (regex, single-statement, AST, whitelist, auto-LIMIT)
+- [x] SQL validation — Multi-layer pipeline (empty check, regex, AST, whitelist, auto-LIMIT, statement timeout)
 - [x] Semantic layer — YAML on disk (catalog, entities, glossary, metrics)
 - [x] DB profiler CLI — `atlas init` with PK/FK detection, enum sampling, measures, virtual dimensions
 - [x] LLM enrichment — `atlas init --enrich` post-processing via generateText
@@ -103,7 +103,8 @@ What you need before handing Atlas to a real team.
 - [ ] Authentication — Protect `/api/chat` (API key, OAuth, or session-based)
 - [ ] Query audit log — Log every SQL execution with user, timestamp, duration, row count
 - [ ] Rate limiting — Per-user query throttle
-- [ ] Test coverage — Unit tests for SQL validation, integration tests for agent loop
+- [x] Test coverage — Unit tests for SQL validation (64 tests in `src/lib/tools/__tests__/sql.test.ts`)
+- [ ] Test coverage — Integration tests for agent loop
 - [x] Error boundaries — Graceful UI handling of API failures, DB timeouts, provider errors
 - [ ] Observability — Structured logging, optional trace export (OpenTelemetry)
 

@@ -9,7 +9,7 @@ Guidance for Claude Code when working in this repository.
 ### Security (SQL)
 - [ ] **SELECT only** — SQL validation blocks all DML/DDL. Never allow INSERT, UPDATE, DELETE, DROP, TRUNCATE, ALTER, etc.
 - [ ] **Single statement** — No `;` chaining. One query per execution
-- [ ] **AST validation** — All SQL parsed via `node-sql-parser`. Regex guard is a first pass, not the only check
+- [ ] **AST validation** — All SQL parsed via `node-sql-parser` in PostgreSQL mode. Regex guard is a first pass, not the only check. If the AST parser cannot parse a query, it is **rejected** (never silently skipped)
 - [ ] **Table whitelist** — Only tables defined in `semantic/entities/*.yml` are queryable. `src/lib/semantic.ts` builds the allowed set
 - [ ] **Auto LIMIT** — Every query gets a LIMIT appended. Default 1000, configurable via `ATLAS_ROW_LIMIT`
 - [ ] **Statement timeout** — PostgreSQL queries get `SET statement_timeout`. Default 30s, configurable via `ATLAS_QUERY_TIMEOUT`
@@ -59,6 +59,7 @@ bun run start            # Start production server
 # Quality
 bun run lint             # ESLint (flat config)
 bun run type             # TypeScript type-check (tsgo --noEmit)
+bun run test             # Run tests (bun test)
 
 # Database
 bun run db:up            # Start local Postgres (Docker, auto-seeds demo data)
@@ -96,7 +97,7 @@ src/
 │   │   └── connection.ts     # DBConnection interface, PostgreSQL adapter
 │   └── tools/
 │       ├── explore.ts        # Read-only semantic layer access (ls/cat/grep/find)
-│       ├── sql.ts            # SQL validation (5 layers) + execution
+│       ├── sql.ts            # SQL validation (4 + 2 layers) + execution
 │       └── report.ts         # Final report packaging
 bin/
 ├── atlas.ts                  # CLI — DB profiler + semantic layer generator
@@ -127,7 +128,7 @@ runAgent(messages)
     ↓
 streamText (Vercel AI SDK, maxSteps: 25)
     ├── explore → read semantic/*.yml files (path-traversal protected)
-    ├── executeSQL → validate (5 layers) → query DB → { columns, rows }
+    ├── executeSQL → validate (4 layers) → query DB → { columns, rows }
     └── finalizeReport → { sql, csv, narrative }
     ↓
 Data Stream Response → Chat UI
@@ -135,15 +136,21 @@ Data Stream Response → Chat UI
 Error boundary catches provider/DB errors → structured JSON response
 ```
 
-### SQL Validation Pipeline (5 layers)
+### SQL Validation Pipeline
 
+**In `validateSQL` (4 layers):**
+
+0. **Empty check** — Reject empty/whitespace-only queries
 1. **Regex mutation guard** — Quick reject of obvious DML/DDL keywords
-2. **Single-statement check** — No `;` chaining
-3. **AST parse** — `node-sql-parser` verifies SELECT-only
-4. **Table whitelist** — All tables must exist in `semantic/entities/*.yml`
-5. **Auto LIMIT** — Appended to every query (default 1000)
+2. **AST parse** — `node-sql-parser` (database: `"PostgresQL"`) verifies single SELECT-only statement. Unparseable queries are **rejected**, not allowed through. CTE names are extracted here for the whitelist check
+3. **Table whitelist** — All tables must exist in `semantic/entities/*.yml` (CTE names excluded). Parse failure = rejection
 
-Then: `statement_timeout` set per-query on PostgreSQL connections.
+**Applied during execution (2 layers):**
+
+4. **Auto LIMIT** — Appended to every query (default 1000)
+5. **Statement timeout** — Configurable per-query deadline
+
+~60 unit tests cover the validation pipeline — see `src/lib/tools/__tests__/sql.test.ts`.
 
 ### Database Layer (`src/lib/db/connection.ts`)
 
@@ -291,6 +298,7 @@ The `create-atlas/` package provides `bun create atlas my-app`:
 |------|-------|
 | Agent loop | `src/lib/agent.ts` |
 | SQL validation + execution | `src/lib/tools/sql.ts` |
+| SQL validation tests | `src/lib/tools/__tests__/sql.test.ts` |
 | Semantic layer reader | `src/lib/tools/explore.ts` |
 | Table whitelist builder | `src/lib/semantic.ts` |
 | Startup diagnostics | `src/lib/startup.ts` |

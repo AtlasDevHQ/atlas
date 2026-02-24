@@ -1,13 +1,15 @@
 /**
  * SQL execution tool with production-grade validation.
  *
- * Security layers:
- * 1. Single-statement check — no semicolon-separated batches
- * 2. Regex mutation guard — quick reject of DML/DDL keywords
- * 3. AST parsing — only SELECT/WITH statements allowed
- * 4. Table whitelist — only tables defined in the semantic layer
- * 5. Row limit — auto-appended LIMIT clause
- * 6. Query timeout — configurable per-query deadline
+ * Validation layers (in validateSQL):
+ * 0. Empty check — reject empty/whitespace-only input
+ * 1. Regex mutation guard — quick reject of DML/DDL keywords
+ * 2. AST parse — node-sql-parser (PostgresQL mode), SELECT-only, single statement
+ * 3. Table whitelist — only tables defined in the semantic layer (CTE names excluded)
+ *
+ * Applied during execution:
+ * 4. Auto LIMIT — appended to every query (default 1000)
+ * 5. Statement timeout — configurable per-query deadline
  */
 
 import { tool } from "ai";
@@ -25,14 +27,14 @@ const FORBIDDEN_PATTERNS = [
   /\bINTO\s+OUTFILE\b/i,
 ];
 
-function validateSQL(sql: string): { valid: boolean; error?: string } {
-  // 1. Check for multiple statements
+export function validateSQL(sql: string): { valid: boolean; error?: string } {
+  // 0. Reject empty / whitespace-only input
   const trimmed = sql.trim().replace(/;\s*$/, "");
-  if (trimmed.includes(";")) {
-    return { valid: false, error: "Multiple statements are not allowed" };
+  if (!trimmed) {
+    return { valid: false, error: "Empty query" };
   }
 
-  // 2. Regex guard against mutation keywords
+  // 1. Regex guard against mutation keywords
   for (const pattern of FORBIDDEN_PATTERNS) {
     if (pattern.test(trimmed)) {
       return {
@@ -42,12 +44,21 @@ function validateSQL(sql: string): { valid: boolean; error?: string } {
     }
   }
 
-  // 3. AST validation — must be a SELECT
-  // Security: if the parser fails, we REJECT the query. A crafted query that
-  // confuses the parser must not bypass the SELECT-only check.
+  // 2. AST validation — must be a single SELECT
+  //
+  // Security rationale: if the regex guard (layer 1) passed but the AST parser
+  // cannot parse the query, we REJECT it rather than allowing it through.
+  // A query that passes regex but confuses the parser could be a crafted bypass
+  // attempt. The agent can always reformulate into standard SQL that parses.
+  const cteNames = new Set<string>();
   try {
-    const ast = parser.astify(trimmed);
+    const ast = parser.astify(trimmed, { database: "PostgresQL" });
     const statements = Array.isArray(ast) ? ast : [ast];
+
+    // Single-statement check — reject batched queries
+    if (statements.length > 1) {
+      return { valid: false, error: "Multiple statements are not allowed" };
+    }
 
     for (const stmt of statements) {
       if (stmt.type !== "select") {
@@ -56,24 +67,34 @@ function validateSQL(sql: string): { valid: boolean; error?: string } {
           error: `Only SELECT statements are allowed, got: ${stmt.type}`,
         };
       }
+      // Collect CTE names so the table whitelist can ignore them
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      if (Array.isArray((stmt as any).with)) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        for (const cte of (stmt as any).with) {
+          const name = cte?.name?.value ?? cte?.name;
+          if (typeof name === "string") cteNames.add(name.toLowerCase());
+        }
+      }
     }
-  } catch {
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : "";
     return {
       valid: false,
-      error: "Could not parse the SQL statement. Check the syntax and try again.",
+      error: `Query could not be parsed.${detail ? ` ${detail}.` : ""} Rewrite using standard SQL syntax.`,
     };
   }
 
-  // 4. Table whitelist check
+  // 3. Table whitelist check
   if (process.env.ATLAS_TABLE_WHITELIST !== "false") {
     try {
-      const tables = parser.tableList(trimmed);
+      const tables = parser.tableList(trimmed, { database: "PostgresQL" });
       const allowed = getWhitelistedTables();
 
       for (const ref of tables) {
         // tableList returns "select::schema::table" format
         const tableName = ref.split("::").pop()?.toLowerCase();
-        if (tableName && !allowed.has(tableName)) {
+        if (tableName && !allowed.has(tableName) && !cteNames.has(tableName)) {
           return {
             valid: false,
             error: `Table "${tableName}" is not in the allowed list. Check catalog.yml for available tables.`,
@@ -81,11 +102,11 @@ function validateSQL(sql: string): { valid: boolean; error?: string } {
         }
       }
     } catch {
-      // Table extraction uses the same parser that just succeeded in step 3.
+      // Table extraction uses the same parser that just succeeded in step 2.
       // If it fails here, reject to avoid bypassing the whitelist.
       return {
         valid: false,
-        error: "Could not validate table references. Simplify the query and try again.",
+        error: "Could not verify table permissions. Rewrite using standard SQL syntax.",
       };
     }
   }

@@ -209,6 +209,44 @@ Connection: `postgresql://atlas:atlas@localhost:5432/atlas`
 
 Demo data: 50 companies, ~200 people, 80 accounts (loaded from `data/demo.sql`).
 
+## Deployment
+
+### Docker (any platform)
+
+The multi-stage `Dockerfile` produces a standalone Next.js build. It works on Railway, Fly.io, Render, or any Docker-capable host.
+
+```bash
+docker build -t atlas .
+docker run -p 3000:3000 \
+  -e ATLAS_PROVIDER=anthropic \
+  -e ANTHROPIC_API_KEY=sk-ant-... \
+  -e ATLAS_DB=postgres \
+  -e DATABASE_URL=postgresql://user:pass@host:5432/dbname \
+  atlas
+```
+
+### Railway
+
+1. Create a new Railway project and add a **Postgres** plugin
+2. Connect your repo — Railway detects `railway.json` and uses the Dockerfile
+3. Set environment variables in the Railway dashboard:
+   - `ATLAS_PROVIDER` + its API key (e.g. `ANTHROPIC_API_KEY`)
+   - `ATLAS_DB=postgres`
+   - `DATABASE_URL` — use the Railway-provided Postgres connection string
+4. Seed the database: connect to the Railway Postgres instance and run `data/demo.sql`, or use `bun run atlas -- init` to generate a semantic layer from your own data
+5. Deploy — Railway builds and starts the container automatically
+
+### Required production env vars
+
+| Variable | Example |
+|----------|---------|
+| `ATLAS_PROVIDER` | `anthropic` |
+| Provider API key | `ANTHROPIC_API_KEY=sk-ant-...` |
+| `ATLAS_DB` | `postgres` |
+| `DATABASE_URL` | `postgresql://user:pass@host:5432/dbname` |
+
+`PORT` is set automatically by most platforms. All other vars have safe defaults.
+
 ## Quick Reference
 
 | Need | Where |

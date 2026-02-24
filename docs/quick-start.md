@@ -5,10 +5,20 @@ Get Atlas running locally in under 5 minutes.
 ## Prerequisites
 
 - [Bun](https://bun.sh/) v1.3+
-- [Docker](https://docs.docker.com/get-docker/) (for the local Postgres instance)
 - An LLM API key (Anthropic, OpenAI, or another [supported provider](../.env.example))
+- Docker is **optional** — only needed for PostgreSQL. SQLite works out of the box.
 
-## 1. Clone and install
+## Option A: `bun create atlas` (recommended)
+
+```bash
+bun create atlas my-app
+cd my-app
+bun run dev
+```
+
+The interactive setup asks for your database, LLM provider, and API key. SQLite is the default — no Docker needed.
+
+## Option B: Manual setup with SQLite
 
 ```bash
 git clone <your-repo-url> atlas
@@ -16,9 +26,33 @@ cd atlas
 bun install
 ```
 
-## 2. Start the database
+Configure your LLM provider:
 
 ```bash
+cp .env.example .env
+```
+
+Edit `.env`:
+
+```bash
+DATABASE_URL=file:./data/atlas.db
+ATLAS_PROVIDER=anthropic
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+Load demo data, generate the semantic layer, and start:
+
+```bash
+bun run atlas -- init --demo         # Creates DB, seeds data, generates YAMLs
+bun run dev                          # http://localhost:3000
+```
+
+## Option C: Manual setup with PostgreSQL
+
+```bash
+git clone <your-repo-url> atlas
+cd atlas
+bun install
 bun run db:up
 ```
 
@@ -28,15 +62,13 @@ This launches a `postgres:16-alpine` container via Docker Compose. It auto-seeds
 - **~200 people** (department, seniority, title, start date)
 - **80 accounts** (plan, status, monthly value, contract dates)
 
-The schema is defined in `data/demo.sql`.
-
-## 3. Configure environment
+Configure your environment:
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` and set these two values:
+Edit `.env`:
 
 ```bash
 DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas
@@ -44,17 +76,14 @@ ATLAS_PROVIDER=anthropic
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-Replace the API key with your own. For other providers, see `.env.example`.
-
-## 4. Start the dev server
+Generate the semantic layer and start:
 
 ```bash
-bun run dev
+bun run atlas -- init                # Profile DB and generate YAMLs
+bun run dev                          # http://localhost:3000
 ```
 
-Atlas starts on [http://localhost:3000](http://localhost:3000) with Turbopack for fast reloads.
-
-## 5. Ask your first question
+## Ask your first question
 
 Open [http://localhost:3000](http://localhost:3000) in your browser. The chat UI shows suggested starter questions derived from the semantic layer. Try one of these:
 
@@ -66,16 +95,16 @@ The agent will explore the semantic layer YAMLs, write validated SQL, execute it
 
 ## Using your own database
 
-To connect Atlas to your own Postgres database instead of the demo:
+To connect Atlas to your own database instead of the demo:
 
-1. Set `DATABASE_URL` in `.env` to your connection string
+1. Set `DATABASE_URL` in `.env`:
+   - PostgreSQL: `postgresql://user:pass@host:5432/dbname`
+   - SQLite: `file:./path/to/your.db`
 2. Generate a semantic layer from your schema:
 
 ```bash
 bun run atlas -- init
 ```
-
-This profiles every table in the `public` schema and generates YAML files under `semantic/`.
 
 To profile only specific tables:
 

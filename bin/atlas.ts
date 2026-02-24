@@ -4,17 +4,20 @@
  *
  * Usage:
  *   bun run atlas -- init                        # Profile DB and generate semantic layer
- *   bun run atlas -- init --tables users,orders  # Only specific tables
+ *   bun run atlas -- init --tables t1,t2         # Only specific tables
  *   bun run atlas -- init --enrich               # Profile + LLM enrichment (needs API key)
  *   bun run atlas -- init --no-enrich            # Explicitly skip LLM enrichment
+ *   bun run atlas -- init --demo                 # Load demo dataset then profile
  *
  * Requires DATABASE_URL in environment.
+ * Supports both PostgreSQL (postgresql://...) and SQLite (file:path or plain path).
  */
 
 import { Pool } from "pg";
 import * as fs from "fs";
 import * as path from "path";
 import * as yaml from "js-yaml";
+import { detectDBType, resolveSQLitePath, type DBType } from "../src/lib/db/connection";
 
 const SEMANTIC_DIR = path.resolve("semantic");
 const ENTITIES_DIR = path.join(SEMANTIC_DIR, "entities");
@@ -243,6 +246,142 @@ export async function profilePostgres(
   return profiles;
 }
 
+// --- SQLite profiler ---
+
+export async function profileSQLite(
+  dbPath: string,
+  filterTables?: string[]
+): Promise<TableProfile[]> {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { Database } = require("bun:sqlite");
+  const db = new Database(dbPath);
+  db.exec("PRAGMA foreign_keys = ON");
+
+  const profiles: TableProfile[] = [];
+  const errors: { table: string; error: string }[] = [];
+
+  // Discover tables
+  const tables: { name: string }[] = db
+    .query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+    .all();
+
+  const tablesToProfile = filterTables
+    ? tables.filter((t) => filterTables.includes(t.name))
+    : tables;
+
+  for (const [i, { name: table_name }] of tablesToProfile.entries()) {
+    console.log(`  [${i + 1}/${tablesToProfile.length}] Profiling ${table_name}...`);
+
+    try {
+      // Row count
+      const countRow = db.query(`SELECT COUNT(*) as c FROM "${table_name}"`).get() as { c: number };
+      const rowCount = countRow.c;
+
+      // Primary keys via PRAGMA table_info
+      const tableInfo: { cid: number; name: string; type: string; notnull: number; dflt_value: string | null; pk: number }[] =
+        db.query(`PRAGMA table_info("${table_name}")`).all();
+
+      const primaryKeyColumns = tableInfo.filter((r) => r.pk > 0).map((r) => r.name);
+
+      // Foreign keys via PRAGMA foreign_key_list
+      const fkList: { id: number; seq: number; table: string; from: string; to: string }[] =
+        db.query(`PRAGMA foreign_key_list("${table_name}")`).all();
+
+      const foreignKeys: ForeignKey[] = fkList.map((fk) => ({
+        from_column: fk.from,
+        to_table: fk.table,
+        to_column: fk.to,
+      }));
+
+      const fkLookup = new Map(
+        foreignKeys.map((fk) => [fk.from_column, fk])
+      );
+
+      const columns: ColumnProfile[] = [];
+
+      for (const col of tableInfo) {
+        let unique_count: number | null = null;
+        let null_count: number | null = null;
+        let sample_values: string[] = [];
+        let isEnumLike = false;
+
+        const isPK = col.pk > 0;
+        const fkInfo = fkLookup.get(col.name);
+        const isFK = !!fkInfo;
+
+        try {
+          const uqRow = db.query(`SELECT COUNT(DISTINCT "${col.name}") as c FROM "${table_name}"`).get() as { c: number };
+          unique_count = uqRow.c;
+
+          const ncRow = db.query(`SELECT COUNT(*) as c FROM "${table_name}" WHERE "${col.name}" IS NULL`).get() as { c: number };
+          null_count = ncRow.c;
+
+          // Enum-like detection: text columns with <20 distinct values and <5% cardinality
+          const colType = col.type.toLowerCase();
+          const isTextType = colType.includes("text") || colType.includes("char") || colType.includes("varchar");
+          isEnumLike =
+            isTextType &&
+            unique_count !== null &&
+            unique_count < 20 &&
+            rowCount > 0 &&
+            unique_count / rowCount <= 0.05;
+
+          const sampleLimit = isEnumLike ? 100 : 10;
+          const svRows: { v: unknown }[] = db
+            .query(`SELECT DISTINCT "${col.name}" as v FROM "${table_name}" WHERE "${col.name}" IS NOT NULL ORDER BY "${col.name}" LIMIT ${sampleLimit}`)
+            .all();
+          sample_values = svRows.map((r) => String(r.v));
+        } catch (colErr) {
+          console.warn(`    Warning: Could not profile column ${table_name}.${col.name}: ${colErr instanceof Error ? colErr.message : String(colErr)}`);
+        }
+
+        columns.push({
+          name: col.name,
+          type: col.type || "TEXT",
+          nullable: col.notnull === 0,
+          unique_count,
+          null_count,
+          sample_values,
+          is_primary_key: isPK,
+          is_foreign_key: isFK,
+          fk_target_table: fkInfo?.to_table ?? null,
+          fk_target_column: fkInfo?.to_column ?? null,
+          is_enum_like: isEnumLike,
+        });
+      }
+
+      profiles.push({
+        table_name,
+        row_count: rowCount,
+        columns,
+        primary_key_columns: primaryKeyColumns,
+        foreign_keys: foreignKeys,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Fail fast on database-level errors that will affect all tables
+      if (/SQLITE_CORRUPT|SQLITE_IOERR|SQLITE_NOTADB|SQLITE_FULL/i.test(msg)) {
+        db.close();
+        throw new Error(`Fatal database error while profiling ${table_name}: ${msg}`);
+      }
+      console.error(`  Warning: Failed to profile ${table_name}: ${msg}`);
+      errors.push({ table: table_name, error: msg });
+      continue;
+    }
+  }
+
+  db.close();
+
+  if (errors.length > 0) {
+    console.log(`\nWarning: ${errors.length} table(s) failed to profile:`);
+    for (const e of errors) {
+      console.log(`  - ${e.table}: ${e.error}`);
+    }
+  }
+
+  return profiles;
+}
+
 // --- Generate YAML from profile ---
 
 const IRREGULAR_PLURALS: Record<string, string> = {
@@ -275,7 +414,8 @@ function entityName(tableName: string): string {
 
 function generateEntityYAML(
   profile: TableProfile,
-  allProfiles: TableProfile[]
+  allProfiles: TableProfile[],
+  dbType: DBType
 ): string {
   const name = entityName(profile.table_name);
 
@@ -307,7 +447,7 @@ function generateEntityYAML(
     return dim;
   });
 
-  // Build virtual dimensions — CASE bucketing for numeric columns, date extractions
+  // Build virtual dimensions — dialect-aware CASE bucketing and date extractions
   const virtualDims: Record<string, unknown>[] = [];
   for (const col of profile.columns) {
     if (col.is_primary_key || col.is_foreign_key) continue;
@@ -315,31 +455,60 @@ function generateEntityYAML(
 
     if (mappedType === "number" && !col.name.endsWith("_id")) {
       const label = col.name.replace(/_/g, " ");
-      virtualDims.push({
-        name: `${col.name}_bucket`,
-        sql: `CASE\n  WHEN ${col.name} < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY ${col.name}) FROM ${profile.table_name}) THEN 'Low'\n  WHEN ${col.name} < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY ${col.name}) FROM ${profile.table_name}) THEN 'Medium'\n  ELSE 'High'\nEND`,
-        type: "string",
-        description: `${label} bucketed into Low/Medium/High terciles`,
-        virtual: true,
-        sample_values: ["Low", "Medium", "High"],
-      });
+      if (dbType === "sqlite") {
+        // SQLite: simple fixed-boundary bucketing (no PERCENTILE_CONT)
+        virtualDims.push({
+          name: `${col.name}_bucket`,
+          sql: `CASE\n  WHEN ${col.name} IS NULL THEN 'Unknown'\n  WHEN ${col.name} < (SELECT AVG(${col.name}) * 0.5 FROM ${profile.table_name}) THEN 'Low'\n  WHEN ${col.name} < (SELECT AVG(${col.name}) * 1.5 FROM ${profile.table_name}) THEN 'Medium'\n  ELSE 'High'\nEND`,
+          type: "string",
+          description: `${label} bucketed into Low/Medium/High`,
+          virtual: true,
+          sample_values: ["Low", "Medium", "High"],
+        });
+      } else {
+        virtualDims.push({
+          name: `${col.name}_bucket`,
+          sql: `CASE\n  WHEN ${col.name} < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY ${col.name}) FROM ${profile.table_name}) THEN 'Low'\n  WHEN ${col.name} < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY ${col.name}) FROM ${profile.table_name}) THEN 'Medium'\n  ELSE 'High'\nEND`,
+          type: "string",
+          description: `${label} bucketed into Low/Medium/High terciles`,
+          virtual: true,
+          sample_values: ["Low", "Medium", "High"],
+        });
+      }
     }
 
     if (mappedType === "date") {
-      virtualDims.push({
-        name: `${col.name}_year`,
-        sql: `EXTRACT(YEAR FROM ${col.name})`,
-        type: "number",
-        description: `Year extracted from ${col.name}`,
-        virtual: true,
-      });
-      virtualDims.push({
-        name: `${col.name}_month`,
-        sql: `TO_CHAR(${col.name}, 'YYYY-MM')`,
-        type: "string",
-        description: `Year-month extracted from ${col.name}`,
-        virtual: true,
-      });
+      if (dbType === "sqlite") {
+        virtualDims.push({
+          name: `${col.name}_year`,
+          sql: `CAST(strftime('%Y', ${col.name}) AS INTEGER)`,
+          type: "number",
+          description: `Year extracted from ${col.name}`,
+          virtual: true,
+        });
+        virtualDims.push({
+          name: `${col.name}_month`,
+          sql: `strftime('%Y-%m', ${col.name})`,
+          type: "string",
+          description: `Year-month extracted from ${col.name}`,
+          virtual: true,
+        });
+      } else {
+        virtualDims.push({
+          name: `${col.name}_year`,
+          sql: `EXTRACT(YEAR FROM ${col.name})`,
+          type: "number",
+          description: `Year extracted from ${col.name}`,
+          virtual: true,
+        });
+        virtualDims.push({
+          name: `${col.name}_month`,
+          sql: `TO_CHAR(${col.name}, 'YYYY-MM')`,
+          type: "string",
+          description: `Year-month extracted from ${col.name}`,
+          virtual: true,
+        });
+      }
     }
   }
 
@@ -693,6 +862,48 @@ function mapSQLType(sqlType: string): string {
   return "string";
 }
 
+// --- Demo data seeding ---
+
+function seedDemoSQLite(dbPath: string): void {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { Database } = require("bun:sqlite");
+  const sqlFile = path.resolve(__dirname, "..", "data", "demo-sqlite.sql");
+  if (!fs.existsSync(sqlFile)) {
+    throw new Error(`Demo SQL file not found: ${sqlFile}`);
+  }
+  const sql = fs.readFileSync(sqlFile, "utf-8");
+
+  // Ensure parent directory exists
+  const dir = path.dirname(dbPath);
+  if (dir !== ".") fs.mkdirSync(dir, { recursive: true });
+
+  const db = new Database(dbPath);
+  try {
+    db.exec(sql);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to seed demo data into ${dbPath}: ${msg}`);
+  } finally {
+    db.close();
+  }
+  console.log("Demo data loaded: 50 companies, ~200 people, 80 accounts");
+}
+
+async function seedDemoPostgres(connectionString: string): Promise<void> {
+  const sqlFile = path.resolve(__dirname, "..", "data", "demo.sql");
+  if (!fs.existsSync(sqlFile)) {
+    throw new Error(`Demo SQL file not found: ${sqlFile}`);
+  }
+  const sql = fs.readFileSync(sqlFile, "utf-8");
+  const pool = new Pool({ connectionString, max: 1 });
+  try {
+    await pool.query(sql);
+    console.log("Demo data loaded: 50 companies, ~200 people, 80 accounts");
+  } finally {
+    await pool.end();
+  }
+}
+
 // --- Main ---
 
 async function main() {
@@ -701,35 +912,73 @@ async function main() {
 
   if (command !== "init") {
     console.log(
-      "Usage: bun run atlas -- init [--tables t1,t2] [--enrich] [--no-enrich]"
+      "Usage: bun run atlas -- init [--tables t1,t2] [--enrich] [--no-enrich] [--demo]"
     );
     process.exit(1);
   }
 
   const tablesArg = getFlag(args, "--tables");
   const filterTables = tablesArg ? tablesArg.split(",") : undefined;
+  const demoMode = args.includes("--demo");
 
   const connStr = process.env.DATABASE_URL;
   if (!connStr) {
     console.error("Error: DATABASE_URL is required");
+    console.error("  PostgreSQL: DATABASE_URL=postgresql://user:pass@host:5432/dbname");
+    console.error("  SQLite:     DATABASE_URL=file:./data/atlas.db");
     process.exit(1);
+  }
+
+  const dbType = detectDBType(connStr);
+
+  // Seed demo data if requested
+  if (demoMode) {
+    console.log(`Seeding demo data (${dbType})...`);
+    if (dbType === "sqlite") {
+      const dbPath = resolveSQLitePath(connStr);
+      seedDemoSQLite(dbPath);
+    } else {
+      await seedDemoPostgres(connStr);
+    }
+    console.log("");
   }
 
   // Test connection before profiling
   console.log("Testing database connection...");
-  const testPool = new Pool({ connectionString: connStr, max: 1, connectionTimeoutMillis: 5000 });
-  try {
-    const client = await testPool.connect();
-    const versionResult = await client.query("SELECT version()");
-    console.log(`Connected: ${versionResult.rows[0].version.split(",")[0]}`);
-    client.release();
-  } catch (err) {
-    console.error(`\nError: Cannot connect to database.`);
-    console.error(err instanceof Error ? err.message : String(err));
-    console.error(`\nCheck that DATABASE_URL is correct and the server is running.`);
-    process.exit(1);
-  } finally {
-    await testPool.end();
+  if (dbType === "sqlite") {
+    const dbPath = resolveSQLitePath(connStr);
+    if (!demoMode && !fs.existsSync(dbPath)) {
+      console.error(`\nError: SQLite database not found: ${dbPath}`);
+      console.error(`Run with --demo to create a demo database, or check your DATABASE_URL.`);
+      process.exit(1);
+    }
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { Database } = require("bun:sqlite");
+    try {
+      const db = new Database(dbPath);
+      db.query("SELECT 1").get();
+      console.log(`Connected: SQLite (${dbPath})`);
+      db.close();
+    } catch (err) {
+      console.error(`\nError: Cannot open SQLite database: ${dbPath}`);
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  } else {
+    const testPool = new Pool({ connectionString: connStr, max: 1, connectionTimeoutMillis: 5000 });
+    try {
+      const client = await testPool.connect();
+      const versionResult = await client.query("SELECT version()");
+      console.log(`Connected: ${versionResult.rows[0].version.split(",")[0]}`);
+      client.release();
+    } catch (err) {
+      console.error(`\nError: Cannot connect to database.`);
+      console.error(err instanceof Error ? err.message : String(err));
+      console.error(`\nCheck that DATABASE_URL is correct and the server is running.`);
+      process.exit(1);
+    } finally {
+      await testPool.end();
+    }
   }
 
   // Determine enrichment mode
@@ -744,9 +993,12 @@ async function main() {
   const shouldEnrich =
     explicitEnrich || (!explicitNoEnrich && hasApiKey && !!process.env.ATLAS_PROVIDER);
 
-  console.log(`\nAtlas Init — profiling database...\n`);
+  console.log(`\nAtlas Init — profiling ${dbType} database...\n`);
 
-  const profiles = await profilePostgres(connStr, filterTables);
+  const profiles =
+    dbType === "sqlite"
+      ? await profileSQLite(resolveSQLitePath(connStr), filterTables)
+      : await profilePostgres(connStr, filterTables);
 
   if (profiles.length === 0) {
     console.error("\nError: No tables were successfully profiled.");
@@ -773,7 +1025,7 @@ async function main() {
 
   for (const profile of profiles) {
     const filePath = path.join(ENTITIES_DIR, `${profile.table_name}.yml`);
-    fs.writeFileSync(filePath, generateEntityYAML(profile, profiles));
+    fs.writeFileSync(filePath, generateEntityYAML(profile, profiles, dbType));
     console.log(`  wrote ${filePath}`);
   }
 

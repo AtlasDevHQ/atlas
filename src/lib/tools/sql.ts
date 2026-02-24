@@ -4,7 +4,7 @@
  * Validation layers (in validateSQL):
  * 0. Empty check — reject empty/whitespace-only input
  * 1. Regex mutation guard — quick reject of DML/DDL keywords
- * 2. AST parse — node-sql-parser (PostgresQL mode), SELECT-only, single statement
+ * 2. AST parse — node-sql-parser (PostgreSQL or SQLite mode, auto-detected), SELECT-only, single statement
  * 3. Table whitelist — only tables defined in the semantic layer (CTE names excluded)
  *
  * Applied during execution:
@@ -15,7 +15,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { Parser } from "node-sql-parser";
-import { getDB } from "@/lib/db/connection";
+import { getDB, detectDBType } from "@/lib/db/connection";
 import { getWhitelistedTables } from "@/lib/semantic";
 
 const parser = new Parser();
@@ -25,7 +25,20 @@ const FORBIDDEN_PATTERNS = [
   /\b(GRANT|REVOKE|EXEC|EXECUTE|CALL)\b/i,
   /\b(COPY|LOAD|VACUUM|REINDEX)\b/i,
   /\bINTO\s+OUTFILE\b/i,
+  /\b(PRAGMA|ATTACH|DETACH)\b/i,
 ];
+
+function parserDatabase(): "PostgresQL" | "Sqlite" {
+  const dbType = detectDBType();
+  switch (dbType) {
+    case "sqlite": return "Sqlite";
+    case "postgres": return "PostgresQL";
+    default: {
+      const _exhaustive: never = dbType;
+      throw new Error(`Unknown database type: ${_exhaustive}`);
+    }
+  }
+}
 
 export function validateSQL(sql: string): { valid: boolean; error?: string } {
   // 0. Reject empty / whitespace-only input
@@ -52,7 +65,7 @@ export function validateSQL(sql: string): { valid: boolean; error?: string } {
   // attempt. The agent can always reformulate into standard SQL that parses.
   const cteNames = new Set<string>();
   try {
-    const ast = parser.astify(trimmed, { database: "PostgresQL" });
+    const ast = parser.astify(trimmed, { database: parserDatabase() });
     const statements = Array.isArray(ast) ? ast : [ast];
 
     // Single-statement check — reject batched queries
@@ -88,7 +101,7 @@ export function validateSQL(sql: string): { valid: boolean; error?: string } {
   // 3. Table whitelist check
   if (process.env.ATLAS_TABLE_WHITELIST !== "false") {
     try {
-      const tables = parser.tableList(trimmed, { database: "PostgresQL" });
+      const tables = parser.tableList(trimmed, { database: parserDatabase() });
       const allowed = getWhitelistedTables();
 
       for (const ref of tables) {
@@ -168,19 +181,20 @@ Rules:
       console.error("[atlas] SQL execution failed:", message);
 
       // Block errors that might expose connection details or internal state
-      if (/password|connection string|pg_hba\.conf|SSL|certificate/i.test(message)) {
+      const sensitivePatterns = /password|connection string|pg_hba\.conf|SSL|certificate|SQLITE_CANTOPEN|SQLITE_CORRUPT|SQLITE_IOERR|SQLITE_READONLY|SQLITE_FULL|database is locked|unable to open|\/[^\s]+\.db/i;
+      if (sensitivePatterns.test(message)) {
         return { success: false, error: "Database query failed — check server logs for details." };
       }
 
-      // Surface the full Postgres error to the agent for self-correction
+      // Surface the full DB error to the agent for self-correction
       // (includes column-not-found, syntax, timeout, type mismatch, etc.)
-      const pgErr = err as { hint?: string; position?: string };
+      const dbErr = err as { hint?: string; position?: string };
       let detail = message;
-      if (pgErr.hint) {
-        detail += ` — Hint: ${pgErr.hint}`;
+      if (dbErr.hint) {
+        detail += ` — Hint: ${dbErr.hint}`;
       }
-      if (pgErr.position) {
-        detail += ` (at character ${pgErr.position})`;
+      if (dbErr.position) {
+        detail += ` (at character ${dbErr.position})`;
       }
       return { success: false, error: detail };
     }

@@ -5,7 +5,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { execSync } from "child_process";
 
-const ATLAS_VERSION = "0.1.0";
+const ATLAS_VERSION = "0.2.5";
 
 // Provider → API key env var mapping
 const PROVIDER_KEY_MAP: Record<string, { envVar: string; placeholder: string }> = {
@@ -86,7 +86,37 @@ async function main() {
     if (p.isCancel(overwrite) || !overwrite) bail("Directory already exists.");
   }
 
-  // ── 2. LLM Provider ──────────────────────────────────────────────
+  // ── 2. Database choice ────────────────────────────────────────────
+  const dbChoice = await p.select({
+    message: "Which database?",
+    options: [
+      { value: "sqlite", label: "SQLite", hint: "Instant start, no setup (default)" },
+      { value: "postgres", label: "PostgreSQL", hint: "Bring your connection string" },
+    ],
+    initialValue: "sqlite",
+  });
+  if (p.isCancel(dbChoice)) bail();
+
+  // ── 3. PostgreSQL connection string (if postgres) ─────────────────
+  let databaseUrl: string;
+  if (dbChoice === "postgres") {
+    const connResult = await p.text({
+      message: "PostgreSQL connection string:",
+      placeholder: "postgresql://atlas:atlas@localhost:5432/atlas",
+      defaultValue: "postgresql://atlas:atlas@localhost:5432/atlas",
+      validate(value) {
+        if (!value.trim()) return "Database URL is required.";
+        if (!value.startsWith("postgresql://") && !value.startsWith("postgres://"))
+          return "Must be a PostgreSQL connection string (postgresql://...).";
+      },
+    });
+    if (p.isCancel(connResult)) bail();
+    databaseUrl = connResult as string;
+  } else {
+    databaseUrl = "file:./data/atlas.db";
+  }
+
+  // ── 4. LLM Provider ──────────────────────────────────────────────
   const provider = await p.select({
     message: "Which LLM provider?",
     options: [
@@ -100,7 +130,7 @@ async function main() {
   });
   if (p.isCancel(provider)) bail();
 
-  // ── 3. API Key ────────────────────────────────────────────────────
+  // ── 5. API Key ────────────────────────────────────────────────────
   const keyInfo = PROVIDER_KEY_MAP[provider as string];
   let apiKey = "";
 
@@ -146,7 +176,7 @@ async function main() {
     apiKey = (keyPrompt as string) || keyInfo.placeholder;
   }
 
-  // ── 4. Model override ────────────────────────────────────────────
+  // ── 6. Model override ────────────────────────────────────────────
   const defaultModel = PROVIDER_DEFAULT_MODEL[provider as string];
   const modelOverride = await p.text({
     message: `Model override? ${pc.dim(`(default: ${defaultModel})`)}`,
@@ -155,39 +185,26 @@ async function main() {
   });
   if (p.isCancel(modelOverride)) bail();
 
-  // ── 5. Database URL ───────────────────────────────────────────────
-  const databaseUrl = await p.text({
-    message: "PostgreSQL connection string:",
-    placeholder: "postgresql://atlas:atlas@localhost:5432/atlas",
-    defaultValue: "postgresql://atlas:atlas@localhost:5432/atlas",
-    validate(value) {
-      if (!value.trim()) return "Database URL is required.";
-      if (!value.startsWith("postgresql://") && !value.startsWith("postgres://"))
-        return "Must be a PostgreSQL connection string (postgresql://...).";
-    },
-  });
-  if (p.isCancel(databaseUrl)) bail();
+  // ── 7. Semantic layer / demo data ─────────────────────────────────
+  let loadDemo = false;
+  let generateSemantic = false;
 
-  // ── 6. Generate semantic layer? ───────────────────────────────────
-  let generateSemantic = await p.confirm({
-    message: "Generate semantic layer now? (requires database access)",
-    initialValue: false,
-  });
-  if (p.isCancel(generateSemantic)) bail();
-
-  // ── 7. Deployment platform ────────────────────────────────────────
-  const platform = await p.select({
-    message: "Deployment platform:",
-    options: [
-      { value: "local", label: "Local only", hint: "Just dev for now" },
-      { value: "vercel", label: "Vercel", hint: "Serverless (recommended with Gateway provider)" },
-      { value: "railway", label: "Railway" },
-      { value: "flyio", label: "Fly.io" },
-      { value: "docker", label: "Docker (generic)" },
-    ],
-    initialValue: "local",
-  });
-  if (p.isCancel(platform)) bail();
+  if (dbChoice === "sqlite") {
+    const demoResult = await p.confirm({
+      message: "Load demo dataset? (50 companies, ~200 people, 80 accounts)",
+      initialValue: true,
+    });
+    if (p.isCancel(demoResult)) bail();
+    loadDemo = demoResult as boolean;
+  } else {
+    // Postgres: offer to generate semantic layer
+    const genResult = await p.confirm({
+      message: "Generate semantic layer now? (requires database access)",
+      initialValue: false,
+    });
+    if (p.isCancel(genResult)) bail();
+    generateSemantic = genResult as boolean;
+  }
 
   // ── Pre-flight checks ───────────────────────────────────────────
   try {
@@ -200,16 +217,8 @@ async function main() {
     p.log.warn("Could not detect bun version.");
   }
 
-  if (["railway", "docker", "flyio"].includes(platform as string)) {
-    try {
-      execSync("docker --version", { encoding: "utf-8", stdio: "pipe" });
-    } catch {
-      p.log.warn("Docker not found. You'll need it for deployment.");
-    }
-  }
-
-  // ── DB connectivity check ──────────────────────────────────────
-  if (generateSemantic) {
+  // ── DB connectivity check (Postgres only) ────────────────────────
+  if (generateSemantic && dbChoice === "postgres") {
     const connSpinner = p.spinner();
     connSpinner.start("Checking database connectivity...");
     try {
@@ -260,7 +269,18 @@ async function main() {
   s.start("Writing environment configuration...");
 
   let envContent = `# Generated by create-atlas v${ATLAS_VERSION}\n\n`;
-  envContent += `# LLM Provider\n`;
+
+  envContent += `# Database\n`;
+  if (dbChoice === "sqlite") {
+    envContent += `# SQLite — zero setup, data stored locally\n`;
+    envContent += `DATABASE_URL=${databaseUrl}\n`;
+    envContent += `# To switch to PostgreSQL later:\n`;
+    envContent += `# DATABASE_URL=postgresql://user:pass@host:5432/dbname\n`;
+  } else {
+    envContent += `DATABASE_URL=${databaseUrl}\n`;
+  }
+
+  envContent += `\n# LLM Provider\n`;
   envContent += `ATLAS_PROVIDER=${provider}\n`;
 
   if (provider === "bedrock") {
@@ -272,14 +292,6 @@ async function main() {
   if (modelOverride) {
     envContent += `\n# Model override\n`;
     envContent += `ATLAS_MODEL=${modelOverride}\n`;
-  }
-
-  envContent += `\n# Database\n`;
-  envContent += `DATABASE_URL=${databaseUrl}\n`;
-
-  if (platform === "vercel") {
-    envContent += `\n# Runtime\n`;
-    envContent += `ATLAS_RUNTIME=vercel\n`;
   }
 
   envContent += `\n# Security (defaults)\n`;
@@ -307,8 +319,33 @@ async function main() {
     p.log.warn(`Run it manually in ${pc.yellow(projectName)}/`);
   }
 
-  // Step 4: Generate semantic layer if requested
-  if (generateSemantic) {
+  // Step 4: Load demo data + generate semantic layer (SQLite)
+  if (loadDemo && dbChoice === "sqlite") {
+    s.start("Loading demo data and generating semantic layer...");
+    try {
+      execSync("bun run atlas -- init --demo", {
+        cwd: targetDir,
+        stdio: "pipe",
+        timeout: 60_000,
+        env: { ...process.env, DATABASE_URL: databaseUrl },
+      });
+      s.stop("Demo data loaded and semantic layer generated.");
+    } catch (err) {
+      s.stop("Failed to load demo data.");
+      let detail = err instanceof Error ? err.message : String(err);
+      if (err && typeof err === "object" && "stderr" in err) {
+        const stderr = String((err as { stderr: unknown }).stderr).trim();
+        if (stderr) detail = stderr;
+      }
+      p.log.warn(`Demo seeding failed: ${detail}`);
+      p.log.warn(
+        `Run ${pc.cyan("bun run atlas -- init --demo")} manually after resolving the issue.`
+      );
+    }
+  }
+
+  // Step 4b: Generate semantic layer (Postgres)
+  if (generateSemantic && dbChoice === "postgres") {
     s.start("Generating semantic layer from database...");
     try {
       execSync("bun run atlas -- init --enrich", {
@@ -330,61 +367,14 @@ async function main() {
   }
 
   // ── Success ───────────────────────────────────────────────────────
-  const nextSteps = [`cd ${projectName}`];
+  const nextSteps = [`cd ${projectName}`, "bun run dev"];
 
-  if (databaseUrl === "postgresql://atlas:atlas@localhost:5432/atlas") {
-    nextSteps.push("bun run db:up");
-  }
-
-  nextSteps.push("bun run dev");
-
-  // Platform-specific deploy instructions
-  const deployInstructions: Record<string, string[]> = {
-    railway: [
-      "",
-      `${pc.bold("Deploy to Railway:")}`,
-      `  1. Install Railway CLI: ${pc.cyan("npm i -g @railway/cli")}`,
-      `  2. ${pc.cyan("railway login")}`,
-      `  3. ${pc.cyan("railway init")}`,
-      `  4. ${pc.cyan("railway up")}`,
-      `  5. Add a Postgres plugin in the Railway dashboard`,
-      `  6. Set env vars: ATLAS_PROVIDER, ${keyInfo?.envVar ?? "API_KEY"}, DATABASE_URL`,
-    ],
-    flyio: [
-      "",
-      `${pc.bold("Deploy to Fly.io:")}`,
-      `  1. Install Fly CLI: ${pc.cyan("curl -L https://fly.io/install.sh | sh")}`,
-      `  2. ${pc.cyan("fly launch")}`,
-      `  3. ${pc.cyan("fly postgres create")} and ${pc.cyan("fly postgres attach")}`,
-      `  4. Set secrets: ${pc.cyan(`fly secrets set ATLAS_PROVIDER=${provider} ${keyInfo?.envVar ?? "API_KEY"}=...`)}`,
-    ],
-    docker: [
-      "",
-      `${pc.bold("Deploy with Docker:")}`,
-      `  ${pc.cyan(`docker build -t ${projectName} .`)}`,
-      `  ${pc.cyan(`docker run -p 3000:3000 \\`)}`,
-      `    ${pc.cyan(`-e ATLAS_PROVIDER=${provider} \\`)}`,
-      `    ${pc.cyan(`-e ${keyInfo?.envVar ?? "API_KEY"}=... \\`)}`,
-      `    ${pc.cyan(`-e DATABASE_URL=postgresql://... \\`)}`,
-      `    ${pc.cyan(projectName)}`,
-    ],
-    vercel: [
-      "",
-      `${pc.bold("Deploy to Vercel:")}`,
-      `  1. Install Vercel CLI: ${pc.cyan("bun i -g vercel")}`,
-      `  2. ${pc.cyan("vercel login")}`,
-      `  3. ${pc.cyan("vercel")}`,
-      `  4. Set env vars in Vercel dashboard: ATLAS_PROVIDER, ${keyInfo?.envVar ?? "API_KEY"}, DATABASE_URL`,
-    ],
-    local: [],
-  };
-
-  const allSteps = [
-    ...nextSteps.map((step) => pc.cyan(step)),
-    ...(deployInstructions[platform as string] ?? []),
-  ];
-
-  p.note(allSteps.join("\n"), "Next steps");
+  p.note(
+    nextSteps.map((step) => pc.cyan(step)).join("\n") +
+      "\n\n" +
+      pc.dim("See docs/deploy.md for deployment options (Railway, Fly.io, Docker, Vercel)."),
+    "Next steps"
+  );
 
   p.outro(
     `${pc.green("Done!")} Your Atlas project is ready at ${pc.cyan(`./${projectName}`)}`

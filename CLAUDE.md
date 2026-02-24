@@ -9,15 +9,16 @@ Guidance for Claude Code when working in this repository.
 ### Security (SQL)
 - [ ] **SELECT only** — SQL validation blocks all DML/DDL. Never allow INSERT, UPDATE, DELETE, DROP, TRUNCATE, ALTER, etc.
 - [ ] **Single statement** — No `;` chaining. One query per execution
-- [ ] **AST validation** — All SQL parsed via `node-sql-parser` in PostgreSQL mode. Regex guard is a first pass, not the only check. If the AST parser cannot parse a query, it is **rejected** (never silently skipped)
+- [ ] **AST validation** — All SQL parsed via `node-sql-parser` (PostgreSQL or SQLite mode, auto-detected). Regex guard is a first pass, not the only check. If the AST parser cannot parse a query, it is **rejected** (never silently skipped)
 - [ ] **Table whitelist** — Only tables defined in `semantic/entities/*.yml` are queryable. `src/lib/semantic.ts` builds the allowed set
 - [ ] **Auto LIMIT** — Every query gets a LIMIT appended. Default 1000, configurable via `ATLAS_ROW_LIMIT`
 - [ ] **Statement timeout** — PostgreSQL queries get `SET statement_timeout`. Default 30s, configurable via `ATLAS_QUERY_TIMEOUT`
+- [ ] **SQLite limitations** — No `statement_timeout` (queries run to completion). Read-only enforced by opening DB with `{ readonly: true }`. PRAGMA/ATTACH/DETACH blocked by regex guard
 
 ### Security (General)
 - [ ] **Path traversal protection** — `resolveSafePath` in explore tool restricts reads to `semantic/` directory only
 - [ ] **No secrets in responses** — Never expose connection strings, API keys, or stack traces to the user or agent
-- [ ] **Readonly DB connections** — PostgreSQL uses read-only queries enforced by validation
+- [ ] **Readonly DB connections** — PostgreSQL uses read-only queries enforced by validation; SQLite uses `{ readonly: true }` flag
 
 ### Code Style
 - [ ] **bun only** — Package manager and runtime. Never npm, yarn, or node
@@ -71,13 +72,16 @@ bun run atlas -- init              # Profile DB and auto-generate semantic layer
 bun run atlas -- init --enrich     # Profile + LLM enrichment (needs API key)
 bun run atlas -- init --no-enrich  # Explicitly skip LLM enrichment
 bun run atlas -- init --tables t1,t2  # Only profile specific tables
+bun run atlas -- init --demo          # Load demo dataset (SQLite or Postgres), then profile
 ```
 
-**Quick start:** `bun run db:up` → set `DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas` in `.env` → `bun run dev`
+**Quick start (SQLite):** Set `DATABASE_URL=file:./data/atlas.db` in `.env` → `bun run atlas -- init --demo` → `bun run dev`
 
-**New project:** `bun create atlas my-app` — interactive scaffolding with provider setup, DB config, and optional semantic layer generation.
+**Quick start (Postgres):** `bun run db:up` → set `DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas` in `.env` → `bun run dev`
 
-**Production:** Set `DATABASE_URL` to your managed Postgres. No Docker needed.
+**New project:** `bun create atlas my-app` — interactive scaffolding with provider setup, DB config (SQLite or Postgres), and optional semantic layer generation.
+
+**Production:** Set `DATABASE_URL` to a PostgreSQL connection string or SQLite path.
 
 ## Architecture
 
@@ -94,7 +98,7 @@ src/
 │   ├── semantic.ts           # Reads entity YAMLs → builds table whitelist
 │   ├── startup.ts            # Environment validation (DB, API key, semantic layer)
 │   ├── db/
-│   │   └── connection.ts     # DBConnection interface, PostgreSQL adapter
+│   │   └── connection.ts     # DBConnection interface, PostgreSQL + SQLite adapters
 │   └── tools/
 │       ├── explore.ts        # Read-only semantic layer access (ls/cat/grep/find)
 │       ├── sql.ts            # SQL validation (4 + 2 layers) + execution
@@ -108,7 +112,8 @@ semantic/                     # Semantic layer (YAML on disk)
 ├── entities/*.yml            # Table schemas + data profiling
 └── metrics/*.yml             # Canonical metric definitions
 data/
-└── demo.sql                  # Postgres seed data (auto-loaded by Docker)
+├── demo.sql                  # Postgres seed data (auto-loaded by Docker)
+└── demo-sqlite.sql           # SQLite seed data (used by atlas init --demo)
 create-atlas/                 # Scaffolding CLI package (bun create atlas)
 ├── index.ts                  # Interactive setup prompts
 ├── package.json              # npm package metadata
@@ -142,7 +147,7 @@ Error boundary catches provider/DB errors → structured JSON response
 
 0. **Empty check** — Reject empty/whitespace-only queries
 1. **Regex mutation guard** — Quick reject of obvious DML/DDL keywords
-2. **AST parse** — `node-sql-parser` (database: `"PostgresQL"`) verifies single SELECT-only statement. Unparseable queries are **rejected**, not allowed through. CTE names are extracted here for the whitelist check
+2. **AST parse** — `node-sql-parser` (database mode auto-detected: `"PostgresQL"` or `"Sqlite"`) verifies single SELECT-only statement. Unparseable queries are **rejected**, not allowed through. CTE names are extracted here for the whitelist check
 3. **Table whitelist** — All tables must exist in `semantic/entities/*.yml` (CTE names excluded). Parse failure = rejection
 
 **Applied during execution (2 layers):**
@@ -150,11 +155,11 @@ Error boundary catches provider/DB errors → structured JSON response
 4. **Auto LIMIT** — Appended to every query (default 1000)
 5. **Statement timeout** — Configurable per-query deadline
 
-~60 unit tests cover the validation pipeline — see `src/lib/tools/__tests__/sql.test.ts`.
+~80 unit tests cover the validation pipeline — see `src/lib/tools/__tests__/sql.test.ts`.
 
 ### Database Layer (`src/lib/db/connection.ts`)
 
-PostgreSQL via `pg` Pool with `statement_timeout` per query. Singleton `getDB()` returns a `DBConnection` with `query(sql, timeout)`.
+Supports PostgreSQL (via `pg` Pool with `statement_timeout`) and SQLite (via `bun:sqlite` with `{ readonly: true }`). Singleton `getDB()` auto-detects from `DATABASE_URL` and returns a `DBConnection` with `query(sql, timeout)`. Note: SQLite does not support per-query timeouts.
 
 ### Provider System (`src/lib/providers.ts`)
 
@@ -197,7 +202,7 @@ query_patterns:
 ```typescript
 import { getDB } from "@/lib/db/connection";
 
-const db = getDB();  // Singleton — Postgres via DATABASE_URL
+const db = getDB();  // Singleton — Postgres or SQLite, auto-detected from DATABASE_URL
 const { columns, rows } = await db.query("SELECT ...", 30000);
 ```
 
@@ -209,7 +214,7 @@ const { columns, rows } = await db.query("SELECT ...", 30000);
 |----------|---------|-------------|
 | `ATLAS_PROVIDER` | `anthropic` | LLM provider (anthropic/openai/bedrock/ollama/gateway) |
 | `ATLAS_MODEL` | Provider default | Model ID override |
-| `DATABASE_URL` | — | PostgreSQL connection string |
+| `DATABASE_URL` | — | PostgreSQL connection string or SQLite path |
 | `ATLAS_TABLE_WHITELIST` | `true` | Only allow tables in semantic layer |
 | `ATLAS_ROW_LIMIT` | `1000` | Max rows per query |
 | `ATLAS_QUERY_TIMEOUT` | `30000` | Query timeout in ms |
@@ -265,7 +270,7 @@ docker run -p 3000:3000 \
 
 ### `atlas init` — Enhanced Profiler
 
-The `bin/atlas.ts` profiler queries Postgres system catalogs (`pg_constraint`, `pg_attribute`) to extract:
+The `bin/atlas.ts` profiler queries the database to extract schema information. PostgreSQL uses system catalogs (`pg_constraint`, `pg_attribute`); SQLite uses `PRAGMA table_info` and `PRAGMA foreign_key_list`. Both paths extract:
 - **Primary keys** — marked with `primary_key: true` on dimensions
 - **Foreign keys** — auto-generates `joins` array with `many_to_one` relationships
 - **Enum-like columns** — text columns with <20 unique values and <5% cardinality get all distinct values
@@ -286,11 +291,11 @@ When `--enrich` is passed (or auto-enabled when `ATLAS_PROVIDER` + API key are s
 ### `create-atlas` — Project Scaffolding
 
 The `create-atlas/` package provides `bun create atlas my-app`:
-1. Interactive prompts for provider, API key, model, database URL
+1. Interactive prompts for project name, database choice (SQLite default), provider, API key, model
 2. Copies template files + source code from the Atlas repo
 3. Writes `.env` with collected configuration
-4. Runs `bun install` and optionally `atlas init --enrich`
-5. Prints platform-specific deploy instructions (Railway, Fly.io, Docker)
+4. Runs `bun install` and optionally `atlas init --demo` (SQLite) or `atlas init --enrich` (Postgres)
+5. Prints next steps (`cd my-app && bun run dev`)
 
 ## Quick Reference
 
@@ -310,6 +315,7 @@ The `create-atlas/` package provides `bun create atlas my-app`:
 | Entity schemas | `semantic/entities/*.yml` |
 | Metric definitions | `semantic/metrics/*.yml` |
 | Postgres seed data | `data/demo.sql` |
+| SQLite seed data | `data/demo-sqlite.sql` |
 | CLI (semantic layer generator) | `bin/atlas.ts` |
 | LLM enrichment module | `bin/enrich.ts` |
 | Scaffolding CLI | `create-atlas/index.ts` |

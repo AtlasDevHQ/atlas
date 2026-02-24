@@ -86,6 +86,37 @@ Fixes found during a full audit of all deploy configs against current platform d
 
 ---
 
+## v0.2.5 — SQLite & Quick Start
+
+Zero-setup getting-started path. No Docker, no Postgres required.
+
+### SQLite support
+- [x] Database abstraction — `detectDBType()` dispatches to PostgreSQL or SQLite based on `DATABASE_URL`
+- [x] `bun:sqlite` adapter — Synchronous queries wrapped in async `DBConnection` interface
+- [x] SQL validation — Parser mode switches between `PostgresQL` and `Sqlite` (node-sql-parser)
+- [x] PRAGMA/ATTACH/DETACH rejection — Added to regex forbidden patterns
+- [x] SQLite profiler — `profileSQLite()` uses PRAGMA table_info, foreign_key_list
+- [x] Dialect-aware virtual dimensions — `strftime()` for SQLite, `EXTRACT()` for Postgres
+- [x] Agent SQLite guidance — System prompt includes dialect-specific SQL tips
+
+### Demo data & CLI
+- [x] `data/demo-sqlite.sql` — SQLite-compatible demo schema (AUTOINCREMENT, REAL)
+- [x] `--demo` flag — `bun run atlas -- init --demo` seeds demo data then profiles
+- [x] Startup validation — SQLite file existence check, Postgres connectivity check
+
+### create-atlas TUI
+- [x] Database choice first — SQLite (default) or PostgreSQL
+- [x] SQLite demo flow — "Load demo dataset?" seeds data + generates semantic layer
+- [x] Removed deployment platform question — deployment docs linked instead
+- [x] Simplified success message — just `cd my-app && bun run dev`
+
+### Documentation
+- [x] README — Lead with `bun create atlas`, show both SQLite and Postgres paths
+- [x] .env.example — SQLite option first
+- [x] Quick start — Three paths: `bun create atlas`, manual SQLite, manual Postgres
+
+---
+
 ## v0.3 — Agent Quality & UI
 
 Make the agent smarter and the UI worth showing in a demo.
@@ -109,7 +140,7 @@ Make the agent smarter and the UI worth showing in a demo.
 
 Make `atlas init` work on real-world databases, not just demos.
 
-- [ ] MySQL support — Profiler + runtime (add mysql2 adapter to connection.ts)
+- [ ] MySQL support — Profiler + runtime (add mysql2 adapter to connection.ts, follow SQLite pattern from v0.2.5)
 - [ ] Schema drift detection — Compare current DB schema against existing entity YAMLs, flag changes
 - [ ] Table filtering UX — Interactive table selection during `atlas init` (not just `--tables`)
 - [ ] Relationship inference — Suggest joins from naming conventions when FKs are missing

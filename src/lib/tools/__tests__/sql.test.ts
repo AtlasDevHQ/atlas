@@ -13,6 +13,13 @@ mock.module("@/lib/db/connection", () => ({
   getDB: () => ({
     query: async () => ({ columns: [], rows: [] }),
   }),
+  detectDBType: () => {
+    const url = process.env.DATABASE_URL ?? "";
+    if (url.startsWith("postgresql://") || url.startsWith("postgres://")) {
+      return "postgres";
+    }
+    return "sqlite";
+  },
 }));
 
 // Import after mocks are registered
@@ -43,8 +50,9 @@ function expectInvalid(sql: string, messageSubstring?: string) {
 // ---------------------------------------------------------------------------
 
 describe("validateSQL", () => {
-  // Reset env between tests that tweak ATLAS_TABLE_WHITELIST
-  const origEnv = { ...process.env };
+  // Reset env between tests that tweak ATLAS_TABLE_WHITELIST.
+  // Force PostgreSQL mode — existing tests were written for it.
+  const origEnv = { ...process.env, DATABASE_URL: "postgresql://test:test@localhost:5432/test" };
   beforeEach(() => {
     process.env = { ...origEnv };
   });
@@ -433,6 +441,98 @@ describe("validateSQL", () => {
       // - pg_terminate_backend: requires pg_signal_backend role
       // The DB user should have minimal permissions in production.
       expectValid("SELECT pg_sleep(1) FROM companies");
+    });
+  });
+
+  // ----- SQLite-specific validation -------------------------------------------
+
+  describe("SQLite-specific", () => {
+    it("rejects PRAGMA statements", () => {
+      expectInvalid("PRAGMA table_info(companies)", "forbidden");
+    });
+
+    it("rejects lowercase pragma", () => {
+      expectInvalid("pragma journal_mode", "forbidden");
+    });
+
+    it("rejects PRAGMA database_list", () => {
+      expectInvalid("PRAGMA database_list", "forbidden");
+    });
+
+    it("rejects PRAGMA integrity_check", () => {
+      expectInvalid("PRAGMA integrity_check", "forbidden");
+    });
+
+    it("rejects ATTACH DATABASE", () => {
+      expectInvalid("ATTACH DATABASE '/tmp/evil.db' AS evil", "forbidden");
+    });
+
+    it("rejects ATTACH with in-memory DB", () => {
+      expectInvalid("ATTACH ':memory:' AS temp", "forbidden");
+    });
+
+    it("rejects DETACH DATABASE", () => {
+      expectInvalid("DETACH DATABASE evil", "forbidden");
+    });
+
+    it("rejects DETACH without DATABASE keyword", () => {
+      expectInvalid("DETACH evil", "forbidden");
+    });
+
+    it("rejects mixed-case PrAgMa", () => {
+      expectInvalid("PrAgMa table_info(companies)", "forbidden");
+    });
+  });
+
+  // ----- SQLite parser mode ---------------------------------------------------
+
+  describe("SQLite parser mode", () => {
+    beforeEach(() => {
+      process.env.DATABASE_URL = "file:test.db";
+    });
+
+    it("accepts a simple SELECT in SQLite mode", () => {
+      expectValid("SELECT id, name FROM companies");
+    });
+
+    it("accepts SELECT with JOIN in SQLite mode", () => {
+      expectValid(
+        "SELECT c.name, p.name FROM companies c JOIN people p ON c.id = p.company_id"
+      );
+    });
+
+    it("accepts CTEs in SQLite mode", () => {
+      expectValid(
+        "WITH top AS (SELECT id, name FROM companies LIMIT 10) SELECT * FROM top"
+      );
+    });
+
+    it("accepts subqueries in SQLite mode", () => {
+      expectValid(
+        "SELECT * FROM companies WHERE id IN (SELECT company_id FROM people)"
+      );
+    });
+
+    it("rejects INSERT in SQLite mode", () => {
+      expectInvalid(
+        "INSERT INTO companies (name) VALUES ('Evil')",
+        "forbidden"
+      );
+    });
+
+    it("rejects PRAGMA in SQLite mode", () => {
+      expectInvalid("PRAGMA table_info(companies)", "forbidden");
+    });
+
+    it("rejects non-whitelisted tables in SQLite mode", () => {
+      expectInvalid(
+        "SELECT * FROM secret_data",
+        "not in the allowed list"
+      );
+    });
+
+    it("accepts SQLite-specific functions (strftime) in SQLite mode", () => {
+      expectValid("SELECT strftime('%Y', '2024-01-01') as year FROM companies");
     });
   });
 });

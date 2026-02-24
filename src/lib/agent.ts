@@ -14,8 +14,9 @@ import { getModel } from "./providers";
 import { explore } from "./tools/explore";
 import { executeSQL } from "./tools/sql";
 import { finalizeReport } from "./tools/report";
+import { detectDBType } from "./db/connection";
 
-const SYSTEM_PROMPT = `You are Atlas, an expert data analyst AI. You answer questions about data by exploring a semantic layer, writing SQL, and interpreting results.
+const BASE_SYSTEM_PROMPT = `You are Atlas, an expert data analyst AI. You answer questions about data by exploring a semantic layer, writing SQL, and interpreting results.
 
 ## Your Workflow
 
@@ -64,12 +65,40 @@ When a SQL query fails, read the error carefully before retrying:
 - Never retry the exact same SQL. Always fix the identified issue first.
 - Max 2 retries per question — if the query still fails, explain the issue to the user.`;
 
+const SQLITE_DIALECT_GUIDE = `
+
+## SQL Dialect: SQLite
+This database uses SQLite. Key differences from PostgreSQL:
+- Use \`strftime('%Y', col)\` instead of \`EXTRACT(YEAR FROM col)\`
+- Use \`strftime('%Y-%m', col)\` instead of \`TO_CHAR(col, 'YYYY-MM')\`
+- Use \`LIKE\` (case-insensitive for ASCII by default) instead of \`ILIKE\`
+- Use \`||\` for string concatenation instead of \`CONCAT()\`
+- Use \`CAST(x AS INTEGER)\` or \`CAST(x AS REAL)\` — no \`::type\` casting
+- No \`LATERAL\` joins — use subqueries or CTEs instead
+- No \`PERCENTILE_CONT\` — use subqueries with ORDER BY and LIMIT for percentile-like calculations
+- \`GROUP_CONCAT(col, ', ')\` instead of \`STRING_AGG(col, ', ')\`
+- \`COALESCE\`, \`CASE\`, \`NULLIF\`, \`COUNT\`, \`SUM\`, \`AVG\`, \`MIN\`, \`MAX\` work identically`;
+
+function buildSystemPrompt(): string {
+  const dbType = detectDBType();
+  switch (dbType) {
+    case "sqlite":
+      return BASE_SYSTEM_PROMPT + SQLITE_DIALECT_GUIDE;
+    case "postgres":
+      return BASE_SYSTEM_PROMPT;
+    default: {
+      const _exhaustive: never = dbType;
+      throw new Error(`Unknown database type: ${_exhaustive}`);
+    }
+  }
+}
+
 export async function runAgent({ messages }: { messages: UIMessage[] }) {
   const model = getModel();
 
   const result = streamText({
     model,
-    system: SYSTEM_PROMPT,
+    system: buildSystemPrompt(),
     messages: await convertToModelMessages(messages),
     tools: {
       explore,

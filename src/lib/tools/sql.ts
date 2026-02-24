@@ -24,9 +24,14 @@ const FORBIDDEN_PATTERNS = [
   /\bINTO\s+OUTFILE\b/i,
 ];
 
-function validateSQL(sql: string): { valid: boolean; error?: string } {
-  // 1. Check for multiple statements
+export function validateSQL(sql: string): { valid: boolean; error?: string } {
+  // 0. Reject empty / whitespace-only input
   const trimmed = sql.trim().replace(/;\s*$/, "");
+  if (!trimmed) {
+    return { valid: false, error: "Empty query" };
+  }
+
+  // 1. Check for multiple statements
   if (trimmed.includes(";")) {
     return { valid: false, error: "Multiple statements are not allowed" };
   }
@@ -42,8 +47,14 @@ function validateSQL(sql: string): { valid: boolean; error?: string } {
   }
 
   // 3. AST validation — must be a SELECT
+  //
+  // Security rationale: if the regex guard (layer 2) passed but the AST parser
+  // cannot parse the query, we REJECT it rather than allowing it through.
+  // A query that passes regex but confuses the parser could be a crafted bypass
+  // attempt. The agent can always reformulate into standard SQL that parses.
+  const cteNames = new Set<string>();
   try {
-    const ast = parser.astify(trimmed);
+    const ast = parser.astify(trimmed, { database: "PostgresQL" });
     const statements = Array.isArray(ast) ? ast : [ast];
 
     for (const stmt of statements) {
@@ -53,21 +64,34 @@ function validateSQL(sql: string): { valid: boolean; error?: string } {
           error: `Only SELECT statements are allowed, got: ${stmt.type}`,
         };
       }
+      // Collect CTE names so the table whitelist can ignore them
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      if (Array.isArray((stmt as any).with)) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        for (const cte of (stmt as any).with) {
+          const name = cte?.name?.value ?? cte?.name;
+          if (typeof name === "string") cteNames.add(name.toLowerCase());
+        }
+      }
     }
   } catch {
-    // If parser fails, fall through — the DB will catch syntax errors
+    return {
+      valid: false,
+      error:
+        "Query could not be parsed. Rewrite using standard SQL syntax.",
+    };
   }
 
   // 4. Table whitelist check
   if (process.env.ATLAS_TABLE_WHITELIST !== "false") {
     try {
-      const tables = parser.tableList(trimmed);
+      const tables = parser.tableList(trimmed, { database: "PostgresQL" });
       const allowed = getWhitelistedTables();
 
       for (const ref of tables) {
         // tableList returns "select::schema::table" format
         const tableName = ref.split("::").pop()?.toLowerCase();
-        if (tableName && !allowed.has(tableName)) {
+        if (tableName && !allowed.has(tableName) && !cteNames.has(tableName)) {
           return {
             valid: false,
             error: `Table "${tableName}" is not in the allowed list. Check catalog.yml for available tables.`,

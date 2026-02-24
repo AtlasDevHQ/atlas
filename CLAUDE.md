@@ -9,7 +9,7 @@ Guidance for Claude Code when working in this repository.
 ### Security (SQL)
 - [ ] **SELECT only** — SQL validation blocks all DML/DDL. Never allow INSERT, UPDATE, DELETE, DROP, TRUNCATE, ALTER, etc.
 - [ ] **Single statement** — No `;` chaining. One query per execution
-- [ ] **AST validation** — All SQL parsed via `node-sql-parser`. Regex guard is a first pass, not the only check
+- [ ] **AST validation** — All SQL parsed via `node-sql-parser` in PostgreSQL mode. Regex guard is a first pass, not the only check. If the AST parser cannot parse a query, it is **rejected** (never silently skipped)
 - [ ] **Table whitelist** — Only tables defined in `semantic/entities/*.yml` are queryable. `src/lib/semantic.ts` builds the allowed set
 - [ ] **Auto LIMIT** — Every query gets a LIMIT appended. Default 1000, configurable via `ATLAS_ROW_LIMIT`
 - [ ] **Statement timeout** — PostgreSQL queries get `SET statement_timeout`. Default 30s, configurable via `ATLAS_QUERY_TIMEOUT`
@@ -59,6 +59,7 @@ bun run start            # Start production server
 # Quality
 bun run lint             # ESLint (flat config)
 bun run type             # TypeScript type-check (tsgo --noEmit)
+bun run test             # Run tests (bun test)
 
 # Database
 bun run db:up            # Start local Postgres (Docker, auto-seeds demo data)
@@ -128,15 +129,18 @@ streamText (Vercel AI SDK, maxSteps: 25)
 Data Stream Response → Chat UI
 ```
 
-### SQL Validation Pipeline (5 layers)
+### SQL Validation Pipeline (6 layers)
 
-1. **Regex mutation guard** — Quick reject of obvious DML/DDL keywords
-2. **Single-statement check** — No `;` chaining
-3. **AST parse** — `node-sql-parser` verifies SELECT-only
-4. **Table whitelist** — All tables must exist in `semantic/entities/*.yml`
+0. **Empty check** — Reject empty/whitespace-only queries
+1. **Single-statement check** — No `;` chaining
+2. **Regex mutation guard** — Quick reject of obvious DML/DDL keywords
+3. **AST parse** — `node-sql-parser` (PostgreSQL mode) verifies SELECT-only. Unparseable queries are **rejected**, not allowed through. CTE names are extracted here for the whitelist check
+4. **Table whitelist** — All tables must exist in `semantic/entities/*.yml` (CTE names excluded)
 5. **Auto LIMIT** — Appended to every query (default 1000)
 
 Then: `statement_timeout` set per-query on PostgreSQL connections.
+
+54 unit tests cover the validation pipeline — see `src/lib/tools/__tests__/sql.test.ts`.
 
 ### Database Layer (`src/lib/db/connection.ts`)
 
@@ -284,6 +288,7 @@ The `create-atlas/` package provides `bun create atlas my-app`:
 |------|-------|
 | Agent loop | `src/lib/agent.ts` |
 | SQL validation + execution | `src/lib/tools/sql.ts` |
+| SQL validation tests | `src/lib/tools/__tests__/sql.test.ts` |
 | Semantic layer reader | `src/lib/tools/explore.ts` |
 | Table whitelist builder | `src/lib/semantic.ts` |
 | DB connection factory | `src/lib/db/connection.ts` |

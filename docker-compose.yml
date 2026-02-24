@@ -1,17 +1,7 @@
-services:
-  atlas:
-    build: .
-    ports:
-      - "3000:3000"
-    env_file: .env
-    volumes:
-      - ./semantic:/app/semantic
-      - ./data:/app/data
-    depends_on:
-      postgres:
-        condition: service_healthy
+# Local dev: just Postgres. The app runs natively with `bun run dev`.
+# Production: set DATABASE_URL to your managed Postgres — no Docker needed.
 
-  # Optional: swap SQLite for Postgres
+services:
   postgres:
     image: postgres:16-alpine
     environment:

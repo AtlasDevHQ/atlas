@@ -10,7 +10,10 @@
     "lint": "eslint src/",
     "type": "tsgo --noEmit",
     "atlas": "bun bin/atlas.ts",
-    "seed": "bun scripts/seed-demo.ts"
+    "seed": "bun scripts/seed-demo.ts",
+    "db:up": "docker compose up -d postgres",
+    "db:down": "docker compose down",
+    "db:reset": "docker compose down -v && docker compose up -d postgres"
   },
   "dependencies": {
     "@ai-sdk/amazon-bedrock": "^4.0.63",

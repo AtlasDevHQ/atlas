@@ -17,7 +17,7 @@ The core text-to-SQL agent, end to end.
 - [x] 5 LLM providers — Anthropic, OpenAI, Bedrock, Ollama, Vercel AI Gateway
 - [x] Chat UI — Minimal useChat interface with streaming
 - [x] Docker + Railway deployment — Multi-stage Dockerfile, railway.json
-- [x] create-atlas scaffolding — `bun create atlas my-app` with interactive setup
+- [x] create-atlas-agent scaffolding — `bun create atlas-agent my-app` with interactive setup
 - [x] Demo dataset — 50 companies, ~200 people, 80 accounts
 - [x] PostgreSQL only — Singleton pool with statement_timeout
 
@@ -25,7 +25,7 @@ The core text-to-SQL agent, end to end.
 
 ## v0.2 — Deploy Anywhere
 
-Make `bun create atlas`, deployment, and the getting-started path bulletproof. Support both self-hosted (Docker/Railway/Fly) and Vercel-native deployment.
+Make `bun create atlas-agent`, deployment, and the getting-started path bulletproof. Support both self-hosted (Docker/Railway/Fly) and Vercel-native deployment.
 
 > **Origin:** Atlas is based on [vercel-labs/oss-data-analyst](https://github.com/vercel-labs/oss-data-analyst). The original uses Vercel Sandbox for the explore tool. We support both Vercel Sandbox and self-hosted (`just-bash`) via an adapter pattern.
 
@@ -37,7 +37,7 @@ Make `bun create atlas`, deployment, and the getting-started path bulletproof. S
 
 ### create-atlas CLI
 - [x] Self-contained template — Bundle source files into the package instead of copying from parent repo via relative path (current `path.resolve(import.meta.dir, "..")` breaks on npm install)
-- [ ] Publish to npm — `bun create atlas my-app` works from the registry
+- [x] Publish to npm — `bun create atlas-agent my-app` works from the registry
 - [x] Vercel as deployment option — Add Vercel to the platform select in create-atlas, generate appropriate config
 - [x] Pre-flight checks — Verify bun version, Docker availability, port conflicts before scaffolding
 - [x] DB connectivity check — Verify DATABASE_URL is reachable before running `atlas init`
@@ -111,9 +111,9 @@ Zero-setup getting-started path. No Docker, no Postgres required.
 - [x] Simplified success message — just `cd my-app && bun run dev`
 
 ### Documentation
-- [x] README — Lead with `bun create atlas`, show both SQLite and Postgres paths
+- [x] README — Lead with `bun create atlas-agent`, show both SQLite and Postgres paths
 - [x] .env.example — SQLite option first
-- [x] Quick start — Three paths: `bun create atlas`, manual SQLite, manual Postgres
+- [x] Quick start — Three paths: `bun create atlas-agent`, manual SQLite, manual Postgres
 
 ---
 

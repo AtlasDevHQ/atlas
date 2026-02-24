@@ -11,7 +11,7 @@ Go from zero to production in 5 minutes.
 1. **Scaffold your project:**
 
 ```bash
-bun create atlas my-app
+bun create atlas-agent my-app
 cd my-app
 ```
 
@@ -54,7 +54,7 @@ Go from zero to production with managed Postgres included.
 1. **Scaffold your project:**
 
 ```bash
-bun create atlas my-app
+bun create atlas-agent my-app
 cd my-app
 ```
 

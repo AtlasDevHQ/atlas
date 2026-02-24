@@ -9,7 +9,7 @@ Built with Next.js 16, Vercel AI SDK, and bun. Supports Anthropic, OpenAI, Bedro
 The fastest way to start:
 
 ```bash
-bun create atlas my-app
+bun create atlas-agent my-app
 ```
 
 The interactive setup asks for your database (SQLite or PostgreSQL), LLM provider, and API key. SQLite is the default — zero setup, no Docker required.

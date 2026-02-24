@@ -79,7 +79,7 @@ bun run atlas -- init --demo          # Load demo dataset (SQLite or Postgres), 
 
 **Quick start (Postgres):** `bun run db:up` → set `DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas` in `.env` → `bun run dev`
 
-**New project:** `bun create atlas my-app` — interactive scaffolding with provider setup, DB config (SQLite or Postgres), and optional semantic layer generation.
+**New project:** `bun create atlas-agent my-app` — interactive scaffolding with provider setup, DB config (SQLite or Postgres), and optional semantic layer generation.
 
 **Production:** Set `DATABASE_URL` to a PostgreSQL connection string or SQLite path.
 
@@ -114,7 +114,7 @@ semantic/                     # Semantic layer (YAML on disk)
 data/
 ├── demo.sql                  # Postgres seed data (auto-loaded by Docker)
 └── demo-sqlite.sql           # SQLite seed data (used by atlas init --demo)
-create-atlas/                 # Scaffolding CLI package (bun create atlas)
+create-atlas/                 # Scaffolding CLI package (bun create atlas-agent)
 ├── index.ts                  # Interactive setup prompts
 ├── package.json              # npm package metadata
 └── template/                 # Files copied to new projects
@@ -288,11 +288,11 @@ When `--enrich` is passed (or auto-enabled when `ATLAS_PROVIDER` + API key are s
 2. **Enrich glossary** — adds domain-specific definitions and disambiguation guidance
 3. **Enrich metrics** — fills in missing `unit`/`aggregation`/`objective` fields, suggests derived metrics
 
-### `create-atlas` — Project Scaffolding
+### `create-atlas-agent` — Project Scaffolding
 
-The `create-atlas/` package provides `bun create atlas my-app`:
-1. Interactive prompts for project name, database choice (SQLite default), provider, API key, model
-2. Copies template files + source code from the Atlas repo
+The `create-atlas/` package provides `bun create atlas-agent my-app`:
+1. Interactive prompts for project name, database choice (SQLite default), provider, API key, model. Pass `--defaults` or `-y` to skip all prompts
+2. Copies template files from the bundled template directory (includes src/, bin/, data/)
 3. Writes `.env` with collected configuration
 4. Runs `bun install` and optionally `atlas init --demo` (SQLite) or `atlas init --enrich` (Postgres)
 5. Prints next steps (`cd my-app && bun run dev`)

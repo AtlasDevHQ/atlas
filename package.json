@@ -13,7 +13,8 @@
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
     "db:reset": "docker compose down -v && docker compose up -d postgres",
-    "test": "bun test"
+    "test": "bun test",
+    "smoke": "bash create-atlas/smoke-test.sh"
   },
   "dependencies": {
     "@ai-sdk/amazon-bedrock": "^4.0.63",

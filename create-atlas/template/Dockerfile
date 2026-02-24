@@ -13,6 +13,8 @@ RUN bun run build
 
 FROM base AS runner
 WORKDIR /app
+# NOTE: SQLite data is ephemeral in containers — lost on restart/redeploy
+# unless a persistent volume is mounted. Use PostgreSQL for production.
 ENV NODE_ENV=production
 RUN echo "nodejs:x:1001:" >> /etc/group && \
     echo "nextjs:x:1001:1001:nextjs:/app:/bin/sh" >> /etc/passwd

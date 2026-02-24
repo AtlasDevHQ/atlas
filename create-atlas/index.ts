@@ -5,7 +5,11 @@ import * as fs from "fs";
 import * as path from "path";
 import { execSync } from "child_process";
 
-const ATLAS_VERSION = "0.2.5";
+// Read version from package.json to stay in sync
+const pkg = JSON.parse(
+  fs.readFileSync(path.join(import.meta.dir, "package.json"), "utf-8")
+);
+const ATLAS_VERSION: string = pkg.version;
 
 // Provider → API key env var mapping
 const PROVIDER_KEY_MAP: Record<string, { envVar: string; placeholder: string }> = {
@@ -48,19 +52,90 @@ function bail(message?: string): never {
   process.exit(1);
 }
 
+// Parse --defaults / -y flag for non-interactive mode
+const args = process.argv.slice(2);
+const useDefaults = args.includes("--defaults") || args.includes("-y");
+const positionalArgs = args.filter((a) => !a.startsWith("-"));
+
+// Handle --help / -h
+if (args.includes("--help") || args.includes("-h")) {
+  console.log(`
+  Usage: bun create atlas-agent [project-name] [options]
+
+  Options:
+    --defaults, -y   Use all default values (non-interactive)
+    --help, -h       Show this help message
+
+  Examples:
+    bun create atlas-agent my-app
+    bun create atlas-agent my-app --defaults
+`);
+  process.exit(0);
+}
+
+// Reject unknown flags
+const knownFlags = new Set(["--defaults", "-y", "--help", "-h"]);
+const unknownFlags = args.filter((a) => a.startsWith("-") && !knownFlags.has(a));
+if (unknownFlags.length > 0) {
+  console.error(`Unknown flag(s): ${unknownFlags.join(", ")}`);
+  console.error("Run with --help for usage information.");
+  process.exit(1);
+}
+
+// Helpers to deduplicate useDefaults branches
+async function selectOrDefault<T extends string>(opts: {
+  label: string;
+  message: string;
+  options: { value: T; label: string; hint?: string }[];
+  initialValue: T;
+  defaultDisplay: string;
+}): Promise<T> {
+  if (useDefaults) {
+    p.log.info(`${opts.label}: ${pc.cyan(opts.defaultDisplay)} ${pc.dim("(default)")}`);
+    return opts.initialValue;
+  }
+  const result = await p.select({
+    message: opts.message,
+    options: opts.options,
+    initialValue: opts.initialValue,
+  });
+  if (p.isCancel(result)) bail();
+  return result as T;
+}
+
+async function confirmOrDefault(opts: {
+  label: string;
+  message: string;
+  initialValue: boolean;
+  defaultDisplay: string;
+}): Promise<boolean> {
+  if (useDefaults) {
+    p.log.info(`${opts.label}: ${pc.cyan(opts.defaultDisplay)} ${pc.dim("(default)")}`);
+    return opts.initialValue;
+  }
+  const result = await p.confirm({
+    message: opts.message,
+    initialValue: opts.initialValue,
+  });
+  if (p.isCancel(result)) bail();
+  return result as boolean;
+}
+
 async function main() {
   console.log("");
   p.intro(
-    `${pc.bgCyan(pc.black(" create-atlas "))} ${pc.dim(`v${ATLAS_VERSION}`)}`
+    `${pc.bgCyan(pc.black(" create-atlas-agent "))} ${pc.dim(`v${ATLAS_VERSION}`)}`
   );
 
   // ── 1. Project name ──────────────────────────────────────────────
-  const cliArg = process.argv[2];
   let projectName: string;
 
-  if (cliArg && !cliArg.startsWith("-")) {
-    projectName = cliArg;
+  if (positionalArgs[0]) {
+    projectName = positionalArgs[0];
     p.log.info(`Project name: ${pc.cyan(projectName)}`);
+  } else if (useDefaults) {
+    projectName = "my-atlas-app";
+    p.log.info(`Project name: ${pc.cyan(projectName)} ${pc.dim("(default)")}`);
   } else {
     const result = await p.text({
       message: "What is your project name?",
@@ -79,6 +154,9 @@ async function main() {
   const targetDir = path.resolve(process.cwd(), projectName);
 
   if (fs.existsSync(targetDir)) {
+    if (useDefaults) {
+      bail(`Directory ${projectName} already exists.`);
+    }
     const overwrite = await p.confirm({
       message: `Directory ${pc.yellow(projectName)} already exists. Overwrite?`,
       initialValue: false,
@@ -87,37 +165,44 @@ async function main() {
   }
 
   // ── 2. Database choice ────────────────────────────────────────────
-  const dbChoice = await p.select({
+  const dbChoice = await selectOrDefault({
+    label: "Database",
     message: "Which database?",
     options: [
       { value: "sqlite", label: "SQLite", hint: "Instant start, no setup (default)" },
       { value: "postgres", label: "PostgreSQL", hint: "Bring your connection string" },
     ],
     initialValue: "sqlite",
+    defaultDisplay: "SQLite",
   });
-  if (p.isCancel(dbChoice)) bail();
 
   // ── 3. PostgreSQL connection string (if postgres) ─────────────────
   let databaseUrl: string;
   if (dbChoice === "postgres") {
-    const connResult = await p.text({
-      message: "PostgreSQL connection string:",
-      placeholder: "postgresql://atlas:atlas@localhost:5432/atlas",
-      defaultValue: "postgresql://atlas:atlas@localhost:5432/atlas",
-      validate(value) {
-        if (!value.trim()) return "Database URL is required.";
-        if (!value.startsWith("postgresql://") && !value.startsWith("postgres://"))
-          return "Must be a PostgreSQL connection string (postgresql://...).";
-      },
-    });
-    if (p.isCancel(connResult)) bail();
-    databaseUrl = connResult as string;
+    if (useDefaults) {
+      databaseUrl = "postgresql://atlas:atlas@localhost:5432/atlas";
+      p.log.info(`Database URL: ${pc.cyan(databaseUrl)} ${pc.dim("(default)")}`);
+    } else {
+      const connResult = await p.text({
+        message: "PostgreSQL connection string:",
+        placeholder: "postgresql://atlas:atlas@localhost:5432/atlas",
+        defaultValue: "postgresql://atlas:atlas@localhost:5432/atlas",
+        validate(value) {
+          if (!value.trim()) return "Database URL is required.";
+          if (!value.startsWith("postgresql://") && !value.startsWith("postgres://"))
+            return "Must be a PostgreSQL connection string (postgresql://...).";
+        },
+      });
+      if (p.isCancel(connResult)) bail();
+      databaseUrl = connResult as string;
+    }
   } else {
     databaseUrl = "file:./data/atlas.db";
   }
 
   // ── 4. LLM Provider ──────────────────────────────────────────────
-  const provider = await p.select({
+  const provider = await selectOrDefault({
+    label: "LLM provider",
     message: "Which LLM provider?",
     options: [
       { value: "anthropic", label: "Anthropic", hint: "Claude (default)" },
@@ -127,14 +212,19 @@ async function main() {
       { value: "gateway", label: "Vercel AI Gateway", hint: "One key, hundreds of models" },
     ],
     initialValue: "anthropic",
+    defaultDisplay: "Anthropic",
   });
-  if (p.isCancel(provider)) bail();
 
   // ── 5. API Key ────────────────────────────────────────────────────
-  const keyInfo = PROVIDER_KEY_MAP[provider as string];
+  const keyInfo = PROVIDER_KEY_MAP[provider];
   let apiKey = "";
 
-  if (provider === "bedrock") {
+  if (useDefaults) {
+    apiKey = keyInfo.placeholder;
+    p.log.warn(
+      `${keyInfo.envVar} set to placeholder value. Edit .env and set a real API key before running.`
+    );
+  } else if (provider === "bedrock") {
     // Bedrock needs multiple AWS credentials
     const accessKeyId = await p.text({
       message: `Enter your ${pc.cyan("AWS_ACCESS_KEY_ID")}:`,
@@ -177,33 +267,37 @@ async function main() {
   }
 
   // ── 6. Model override ────────────────────────────────────────────
-  const defaultModel = PROVIDER_DEFAULT_MODEL[provider as string];
-  const modelOverride = await p.text({
-    message: `Model override? ${pc.dim(`(default: ${defaultModel})`)}`,
-    placeholder: defaultModel,
-    defaultValue: "",
-  });
-  if (p.isCancel(modelOverride)) bail();
+  const defaultModel = PROVIDER_DEFAULT_MODEL[provider];
+  let modelOverride = "";
+
+  if (!useDefaults) {
+    const result = await p.text({
+      message: `Model override? ${pc.dim(`(default: ${defaultModel})`)}`,
+      placeholder: defaultModel,
+      defaultValue: "",
+    });
+    if (p.isCancel(result)) bail();
+    modelOverride = result as string;
+  }
 
   // ── 7. Semantic layer / demo data ─────────────────────────────────
   let loadDemo = false;
   let generateSemantic = false;
 
   if (dbChoice === "sqlite") {
-    const demoResult = await p.confirm({
+    loadDemo = await confirmOrDefault({
+      label: "Demo data",
       message: "Load demo dataset? (50 companies, ~200 people, 80 accounts)",
       initialValue: true,
+      defaultDisplay: "yes",
     });
-    if (p.isCancel(demoResult)) bail();
-    loadDemo = demoResult as boolean;
   } else {
-    // Postgres: offer to generate semantic layer
-    const genResult = await p.confirm({
+    generateSemantic = await confirmOrDefault({
+      label: "Generate semantic layer",
       message: "Generate semantic layer now? (requires database access)",
       initialValue: false,
+      defaultDisplay: "no",
     });
-    if (p.isCancel(genResult)) bail();
-    generateSemantic = genResult as boolean;
   }
 
   // ── Pre-flight checks ───────────────────────────────────────────
@@ -224,7 +318,7 @@ async function main() {
     try {
       execSync(
         `bun -e "const{Pool}=require('pg');const p=new Pool({connectionString:process.env.DATABASE_URL,connectionTimeoutMillis:5000});const c=await p.connect();c.release();await p.end()"`,
-        { stdio: "pipe", timeout: 15_000, env: { ...process.env, DATABASE_URL: databaseUrl as string } }
+        { stdio: "pipe", timeout: 15_000, env: { ...process.env, DATABASE_URL: databaseUrl } }
       );
       connSpinner.stop("Database is reachable.");
     } catch (err) {
@@ -256,7 +350,35 @@ async function main() {
     bail("Could not find template/ directory. Is the package installed correctly?");
   }
 
-  copyDirRecursive(templateDir, targetDir);
+  try {
+    copyDirRecursive(templateDir, targetDir);
+  } catch (err) {
+    s.stop("Failed to copy project files.");
+    p.log.error(`Copy failed: ${err instanceof Error ? err.message : String(err)}`);
+    if (fs.existsSync(targetDir)) {
+      p.log.warn(
+        `Partial directory may remain at ${pc.yellow(targetDir)}. Remove it manually before retrying.`
+      );
+    }
+    process.exit(1);
+  }
+
+  // Rename gitignore → .gitignore (npm/bun strips .gitignore from published tarballs)
+  const gitignoreSrc = path.join(targetDir, "gitignore");
+  const gitignoreDest = path.join(targetDir, ".gitignore");
+  if (fs.existsSync(gitignoreSrc)) {
+    try {
+      fs.renameSync(gitignoreSrc, gitignoreDest);
+    } catch (err) {
+      p.log.warn(
+        `Failed to rename gitignore to .gitignore: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  } else if (!fs.existsSync(gitignoreDest)) {
+    p.log.warn(
+      "No .gitignore found in template. Your project may accidentally commit secrets (.env). Add one manually."
+    );
+  }
 
   // Replace %PROJECT_NAME% in templated files
   const filesToReplace = ["package.json", "fly.toml", "render.yaml"];
@@ -279,7 +401,7 @@ async function main() {
   // Step 2: Write .env
   s.start("Writing environment configuration...");
 
-  let envContent = `# Generated by create-atlas v${ATLAS_VERSION}\n\n`;
+  let envContent = `# Generated by create-atlas-agent v${ATLAS_VERSION}\n\n`;
 
   envContent += `# Database\n`;
   if (dbChoice === "sqlite") {
@@ -363,7 +485,7 @@ async function main() {
         cwd: targetDir,
         stdio: "pipe",
         timeout: 300_000,
-        env: { ...process.env, DATABASE_URL: databaseUrl as string },
+        env: { ...process.env, DATABASE_URL: databaseUrl },
       });
       s.stop("Semantic layer generated.");
     } catch (err) {
@@ -384,6 +506,9 @@ async function main() {
     nextSteps.map((step) => pc.cyan(step)).join("\n") +
     "\n\n" +
     pc.dim("See docs/deploy.md for deployment options (Railway, Fly.io, Docker, Vercel).");
+  if (useDefaults) {
+    noteBody += "\n" + pc.yellow("Note: .env contains a placeholder API key. Edit it before running.");
+  }
   if (dbChoice === "sqlite") {
     noteBody += "\n" + pc.dim("Note: SQLite data is ephemeral in containers. Use PostgreSQL for production.");
   }

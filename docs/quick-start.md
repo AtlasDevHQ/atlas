@@ -8,10 +8,10 @@ Get Atlas running locally in under 5 minutes.
 - An LLM API key (Anthropic, OpenAI, or another [supported provider](../.env.example))
 - Docker is **optional** — only needed for PostgreSQL. SQLite works out of the box.
 
-## Option A: `bun create atlas` (recommended)
+## Option A: `bun create atlas-agent` (recommended)
 
 ```bash
-bun create atlas my-app
+bun create atlas-agent my-app
 cd my-app
 bun run dev
 ```

@@ -29,7 +29,7 @@ You are researching the Atlas codebase to answer a question or plan a change.
 **CLI tooling:**
 - `bin/atlas.ts` — DB profiler + semantic layer generator (`atlas init`)
 - `bin/enrich.ts` — LLM enrichment module (optional post-processing)
-- `create-atlas/index.ts` — Scaffolding CLI (`bun create atlas my-app`)
+- `create-atlas/index.ts` — Scaffolding CLI (`bun create atlas-agent my-app`)
 
 **Infrastructure:**
 - `next.config.ts` — Next.js config (serverExternalPackages: pg, just-bash)

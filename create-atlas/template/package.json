@@ -12,7 +12,8 @@
     "atlas": "bun bin/atlas.ts",
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
-    "db:reset": "docker compose down -v && docker compose up -d postgres"
+    "db:reset": "docker compose down -v && docker compose up -d postgres",
+    "test": "bun test"
   },
   "dependencies": {
     "@ai-sdk/amazon-bedrock": "^4.0.63",
@@ -31,6 +32,9 @@
     "react-syntax-highlighter": "^16.1.0",
     "recharts": "^3.7.0",
     "zod": "^4.3.6"
+  },
+  "optionalDependencies": {
+    "@vercel/sandbox": "^1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

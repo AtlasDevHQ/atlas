@@ -1,17 +1,33 @@
 {
-  "name": "create-atlas",
-  "version": "0.1.0",
+  "name": "create-atlas-agent",
+  "version": "0.2.5",
   "description": "Create a new Atlas text-to-SQL agent project",
   "bin": {
-    "create-atlas": "./index.ts"
+    "create-atlas-agent": "./index.ts"
   },
   "scripts": {
-    "prepublishOnly": "test -f ../docs/deploy.md || (echo 'ERROR: docs/deploy.md not found in repo root. Cannot build template.' && exit 1) && rm -rf ./template/src ./template/bin ./template/data ./template/docs && cp -r ../src ./template/src && cp -r ../bin ./template/bin && cp -r ../data ./template/data && mkdir -p ./template/docs && cp ../docs/deploy.md ./template/docs/deploy.md"
+    "prepublishOnly": "test -f ../docs/deploy.md || (echo 'ERROR: docs/deploy.md not found.' && exit 1) && test -f ../data/demo-sqlite.sql || (echo 'ERROR: data/demo-sqlite.sql not found.' && exit 1) && test -f ./template/gitignore || (echo 'ERROR: template/gitignore not found. .gitignore will be missing from scaffolded projects.' && exit 1) && rm -rf ./template/src ./template/bin ./template/data ./template/docs && cp -r ../src ./template/src && cp -r ../bin ./template/bin && cp -r ../data ./template/data && mkdir -p ./template/docs && cp ../docs/deploy.md ./template/docs/deploy.md && mkdir -p ./template/public && touch ./template/public/.gitkeep"
+  },
+  "keywords": [
+    "atlas",
+    "text-to-sql",
+    "data-analyst",
+    "agent",
+    "semantic-layer",
+    "bun",
+    "nextjs"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/msywu/data-agent"
+  },
+  "engines": {
+    "bun": ">=1.3"
   },
   "dependencies": {
     "@clack/prompts": "^0.10.0",
     "picocolors": "^1.1.0"
   },
-  "files": ["index.ts", "template/"],
+  "files": ["index.ts", "template/", "README.md"],
   "license": "MIT"
 }

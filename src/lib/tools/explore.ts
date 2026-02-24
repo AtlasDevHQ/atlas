@@ -1,39 +1,42 @@
 /**
  * Semantic layer exploration tool.
  *
- * Gives the agent read-only access to the semantic/ directory on disk.
- * No sandbox needed — these are static YAML files.
- *
- * Supports: ls, cat, grep, find (constrained to semantic/ root).
+ * Uses just-bash to give the agent a full sandboxed bash environment
+ * over the semantic/ directory. OverlayFs ensures read-only access:
+ * reads come from disk, writes stay in memory.
  */
 
 import { tool } from "ai";
 import { z } from "zod";
-import * as fs from "fs/promises";
+import { Bash, OverlayFs } from "just-bash";
 import * as path from "path";
 
 const SEMANTIC_ROOT = path.resolve(process.cwd(), "semantic");
 
-async function resolveSafePath(targetPath: string): Promise<string> {
-  // Normalize and resolve relative to semantic root
-  const resolved = path.resolve(SEMANTIC_ROOT, targetPath);
+let bashInstance: Bash | null = null;
 
-  // Prevent directory traversal
-  if (!resolved.startsWith(SEMANTIC_ROOT)) {
-    throw new Error("Access denied: path is outside the semantic directory");
+function getBash(): Bash {
+  if (!bashInstance) {
+    const overlay = new OverlayFs({
+      root: SEMANTIC_ROOT,
+      mountPoint: "/semantic",
+    });
+    bashInstance = new Bash({
+      fs: overlay,
+      cwd: "/semantic",
+      executionLimits: {
+        maxCommandCount: 5000,
+        maxLoopIterations: 1000,
+      },
+    });
   }
-
-  return resolved;
+  return bashInstance;
 }
 
 export const explore = tool({
-  description: `Read files from the semantic layer directory. Use this to understand the data model before writing SQL.
+  description: `Run bash commands to explore the semantic layer (YAML files describing the data model). The working directory is /semantic.
 
-Available commands:
-- ls [path]: List files and directories
-- cat <path>: Read a file's contents
-- grep <pattern> [path]: Search for text across files
-- find <pattern>: Find files matching a glob pattern
+Available commands include: ls, cat, head, tail, grep, find, wc, tree, sort, uniq, cut, awk, sed, and more. Use pipes and flags freely.
 
 The semantic directory contains:
 - catalog.yml: Index of all entities and their descriptions
@@ -44,86 +47,23 @@ The semantic directory contains:
 Always start by reading catalog.yml to understand what data is available.`,
 
   inputSchema: z.object({
-    command: z.enum(["ls", "cat", "grep", "find"]),
-    args: z
+    command: z
       .string()
       .describe(
-        "Command arguments: path for ls/cat, 'pattern [path]' for grep, 'pattern' for find"
+        "A bash command to run, e.g. 'cat catalog.yml', 'grep -r revenue entities/', 'find . -name \"*.yml\"'"
       ),
   }),
 
-  execute: async ({ command, args }) => {
+  execute: async ({ command }) => {
     try {
-      switch (command) {
-        case "ls": {
-          const target = await resolveSafePath(args || ".");
-          const entries = await fs.readdir(target, { withFileTypes: true });
-          return entries
-            .map((e) => (e.isDirectory() ? `${e.name}/` : e.name))
-            .join("\n");
-        }
+      const bash = getBash();
+      const result = await bash.exec(command);
 
-        case "cat": {
-          const target = await resolveSafePath(args);
-          const content = await fs.readFile(target, "utf-8");
-          return content;
-        }
-
-        case "grep": {
-          const parts = args.split(/\s+/);
-          const pattern = parts[0];
-          const searchPath = parts[1] || ".";
-          const target = await resolveSafePath(searchPath);
-          const regex = new RegExp(pattern, "gi");
-          const results: string[] = [];
-
-          async function searchDir(dir: string) {
-            const entries = await fs.readdir(dir, { withFileTypes: true });
-            for (const entry of entries) {
-              const full = path.join(dir, entry.name);
-              if (entry.isDirectory()) {
-                await searchDir(full);
-              } else if (entry.name.endsWith(".yml") || entry.name.endsWith(".yaml")) {
-                const content = await fs.readFile(full, "utf-8");
-                const lines = content.split("\n");
-                for (let i = 0; i < lines.length; i++) {
-                  if (regex.test(lines[i])) {
-                    const rel = path.relative(SEMANTIC_ROOT, full);
-                    results.push(`${rel}:${i + 1}: ${lines[i].trim()}`);
-                  }
-                }
-              }
-            }
-          }
-
-          await searchDir(target);
-          return results.length > 0
-            ? results.join("\n")
-            : `No matches for "${pattern}"`;
-        }
-
-        case "find": {
-          const pattern = args.toLowerCase();
-          const results: string[] = [];
-
-          async function findInDir(dir: string) {
-            const entries = await fs.readdir(dir, { withFileTypes: true });
-            for (const entry of entries) {
-              const full = path.join(dir, entry.name);
-              if (entry.name.toLowerCase().includes(pattern)) {
-                const rel = path.relative(SEMANTIC_ROOT, full);
-                results.push(entry.isDirectory() ? `${rel}/` : rel);
-              }
-              if (entry.isDirectory()) await findInDir(full);
-            }
-          }
-
-          await findInDir(SEMANTIC_ROOT);
-          return results.length > 0
-            ? results.join("\n")
-            : `No files matching "${pattern}"`;
-        }
+      if (result.exitCode !== 0) {
+        return `Error (exit ${result.exitCode}):\n${result.stderr}`;
       }
+
+      return result.stdout || "(no output)";
     } catch (err) {
       return `Error: ${err instanceof Error ? err.message : String(err)}`;
     }

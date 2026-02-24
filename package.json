@@ -13,22 +13,23 @@
     "seed": "bun scripts/seed-demo.ts"
   },
   "dependencies": {
-    "ai": "^6.0.97",
-    "@ai-sdk/react": "^3.0.99",
+    "@ai-sdk/amazon-bedrock": "^4.0.63",
     "@ai-sdk/anthropic": "^3.0.46",
     "@ai-sdk/openai": "^3.0.31",
-    "@ai-sdk/amazon-bedrock": "^4.0.63",
-    "next": "^16.1.6",
-    "react": "^19.2.4",
-    "react-dom": "^19.2.4",
-    "zod": "^4.3.6",
+    "@ai-sdk/react": "^3.0.99",
+    "ai": "^6.0.97",
+    "better-sqlite3": "^12.6.2",
     "js-yaml": "^4.1.1",
+    "just-bash": "^2.10.2",
+    "next": "^16.1.6",
     "node-sql-parser": "^5.4.0",
     "pg": "^8.18.0",
-    "better-sqlite3": "^12.6.2",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
     "react-markdown": "^10.1.0",
     "react-syntax-highlighter": "^16.1.0",
-    "recharts": "^3.7.0"
+    "recharts": "^3.7.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

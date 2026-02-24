@@ -72,7 +72,9 @@ See [`.env.example`](.env.example) for all options.
 ## Documentation
 
 - [Quick Start](docs/quick-start.md) -- Local dev from zero to asking questions
-- [Deploy Guide](docs/deploy.md) -- Railway, Fly.io, Render, Docker, Vercel
+- [Deploy to Vercel](docs/deploy.md#quick-deploy-vercel) -- Zero to production in 5 minutes
+- [Deploy to Railway](docs/deploy.md#quick-deploy-railway) -- Includes managed Postgres
+- [All deploy options](docs/deploy.md) -- Docker, Fly.io, Render, and more
 - [Bring Your Own DB](docs/bring-your-own-db.md) -- Connect to an existing database safely
 - [Roadmap](ROADMAP.md)
 

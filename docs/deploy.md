@@ -2,6 +2,106 @@
 
 Atlas ships a multi-stage `Dockerfile` that produces a standalone Next.js build. It runs on any Docker-capable platform. This guide covers Docker, Railway, Fly.io, Render, and Vercel.
 
+---
+
+## Quick Deploy: Vercel
+
+Go from zero to production in 5 minutes.
+
+1. **Scaffold your project:**
+
+```bash
+bun create atlas my-app
+cd my-app
+```
+
+2. **Push to GitHub:**
+
+```bash
+git init && git add -A && git commit -m "Initial commit"
+gh repo create my-app --public --source=. --push
+```
+
+3. **Import in Vercel:** Open the [Vercel Dashboard](https://vercel.com/), click **Add New > Project**, and import your repo. Vercel auto-detects Next.js via `vercel.json`.
+
+4. **Set environment variables** in the Vercel project settings:
+
+```
+ATLAS_PROVIDER=anthropic
+ANTHROPIC_API_KEY=sk-ant-...
+DATABASE_URL=postgresql://user:pass@host:5432/dbname
+```
+
+5. **Deploy.** Vercel builds and deploys automatically.
+
+6. **Verify:** `https://<your-app>.vercel.app/api/health` -- should return `{"status":"ok"}`
+
+**What happens automatically on Vercel:**
+
+- The explore tool uses `@vercel/sandbox` instead of `just-bash` when the `VERCEL` env var is present (no config needed)
+- `output: "standalone"` is auto-skipped on Vercel (see `next.config.ts` -- the `VERCEL` env var check)
+- `maxDuration` is already set to 60s in the chat API route
+- `pg` and `just-bash` are in `serverExternalPackages` for serverless compatibility
+
+For more details, see the [full Vercel section](#vercel) below.
+
+---
+
+## Quick Deploy: Railway
+
+Go from zero to production with managed Postgres included.
+
+1. **Scaffold your project:**
+
+```bash
+bun create atlas my-app
+cd my-app
+```
+
+2. **Push to GitHub:**
+
+```bash
+git init && git add -A && git commit -m "Initial commit"
+gh repo create my-app --public --source=. --push
+```
+
+3. **Create a Railway project:** Go to the [Railway Dashboard](https://railway.app/) and click **New Project**.
+
+4. **Add a Postgres plugin:** Click **+ New** inside the project and add **Database > PostgreSQL**. Link it to your web service -- Railway injects `DATABASE_URL` automatically.
+
+5. **Connect your repo:** Click **+ New > GitHub Repo** and select your repo. Railway detects `railway.json` and builds from the Dockerfile.
+
+6. **Set environment variables** in the Railway service settings (only 2 -- `DATABASE_URL` is already set):
+
+```
+ATLAS_PROVIDER=anthropic
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+7. **Seed your data.** Either seed the demo dataset or generate a semantic layer from your own tables:
+
+```bash
+# Option A: Demo data
+psql "$RAILWAY_DATABASE_URL" < data/demo.sql
+
+# Option B: Your own data
+DATABASE_URL="$RAILWAY_DATABASE_URL" bun run atlas -- init
+```
+
+8. **Deploy.** Railway builds and starts the container automatically.
+
+9. **Verify:** `https://<your-app>.up.railway.app/api/health` -- should return `{"status":"ok"}`
+
+**What happens automatically on Railway:**
+
+- `DATABASE_URL` is injected by the Postgres plugin -- no manual config needed
+- `railway.json` configures Dockerfile builds, health checks, and restart policy
+- The Docker `HEALTHCHECK` polls `/api/health` every 30 seconds
+
+For more details, see the [full Railway section](#railway) below.
+
+---
+
 ## Required environment variables
 
 Every deployment needs these three:

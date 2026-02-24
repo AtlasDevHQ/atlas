@@ -6,7 +6,7 @@
     "create-atlas": "./index.ts"
   },
   "scripts": {
-    "prepublishOnly": "cp -r ../src ./template/src && cp -r ../bin ./template/bin && cp -r ../data ./template/data"
+    "prepublishOnly": "rm -rf ./template/src ./template/bin ./template/data && cp -r ../src ./template/src && cp -r ../bin ./template/bin && cp -r ../data ./template/data"
   },
   "dependencies": {
     "@clack/prompts": "^0.10.0",

@@ -41,6 +41,7 @@
     "@types/pg": "^8.16.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
+    "@types/react-syntax-highlighter": "^15.5.13",
     "@typescript/native-preview": "^7.0.0-dev.20260223.1",
     "eslint": "^10.0.2",
     "tailwindcss": "^4.2.1",

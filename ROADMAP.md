@@ -30,29 +30,29 @@ Make `bun create atlas`, deployment, and the getting-started path bulletproof. S
 > **Origin:** Atlas is based on [vercel-labs/oss-data-analyst](https://github.com/vercel-labs/oss-data-analyst). The original uses Vercel Sandbox for the explore tool. We support both Vercel Sandbox and self-hosted (`just-bash`) via an adapter pattern.
 
 ### Vercel Sandbox integration
-- [ ] Explore tool adapter — Abstract the shell backend behind an interface: `just-bash` for self-hosted, `@vercel/sandbox` for Vercel. Same tool contract, two implementations
-- [ ] Sandbox lifecycle — Create sandbox on first explore call, write `semantic/` files into it, reuse for the session. Snapshot for fast cold starts
-- [ ] Vercel deployment — `vercel.json` or auto-detect, OIDC auth for sandbox, env var documentation
-- [ ] Add `@vercel/sandbox` as optional dependency — Only loaded when `ATLAS_RUNTIME=vercel` (or auto-detected via `VERCEL` env var)
+- [x] Explore tool adapter — Abstract the shell backend behind an interface: `just-bash` for self-hosted, `@vercel/sandbox` for Vercel. Same tool contract, two implementations
+- [x] Sandbox lifecycle — Create sandbox on first explore call, write `semantic/` files into it, reuse for the session. Snapshot for fast cold starts
+- [x] Vercel deployment — `vercel.json` or auto-detect, OIDC auth for sandbox, env var documentation
+- [x] Add `@vercel/sandbox` as optional dependency — Only loaded when `ATLAS_RUNTIME=vercel` (or auto-detected via `VERCEL` env var)
 
 ### create-atlas CLI
-- [ ] Self-contained template — Bundle source files into the package instead of copying from parent repo via relative path (current `path.resolve(import.meta.dir, "..")` breaks on npm install)
+- [x] Self-contained template — Bundle source files into the package instead of copying from parent repo via relative path (current `path.resolve(import.meta.dir, "..")` breaks on npm install)
 - [ ] Publish to npm — `bun create atlas my-app` works from the registry
-- [ ] Vercel as deployment option — Add Vercel to the platform select in create-atlas, generate appropriate config
-- [ ] Pre-flight checks — Verify bun version, Docker availability, port conflicts before scaffolding
-- [ ] DB connectivity check — Verify DATABASE_URL is reachable before running `atlas init`
-- [ ] Smoke test — CI test that scaffolds a project, installs deps, and runs `bun run build` successfully
+- [x] Vercel as deployment option — Add Vercel to the platform select in create-atlas, generate appropriate config
+- [x] Pre-flight checks — Verify bun version, Docker availability, port conflicts before scaffolding
+- [x] DB connectivity check — Verify DATABASE_URL is reachable before running `atlas init`
+- [x] Smoke test — CI test that scaffolds a project, installs deps, and runs `bun run build` successfully
 
 ### Deployment configs
-- [ ] Health endpoint — `GET /api/health` returns DB status, provider config, semantic layer presence
-- [ ] Docker healthcheck — `HEALTHCHECK` instruction in Dockerfile using `/api/health`
+- [x] Health endpoint — `GET /api/health` returns DB status, provider config, semantic layer presence
+- [x] Docker healthcheck — `HEALTHCHECK` instruction in Dockerfile using `/api/health`
 - [ ] Fly.io support — `fly.toml` config + Fly Postgres setup instructions
 - [ ] Render support — Deploy docs (Render auto-detects Dockerfile, just needs env var guide)
 
 ### atlas init hardening
-- [ ] Connection test first — `atlas init` pings DB and reports version/permissions before profiling
-- [ ] Progress output — Show table-by-table progress during profiling (not silent until done)
-- [ ] Graceful partial failure — If one table fails to profile, continue with others and report errors at end
+- [x] Connection test first — `atlas init` pings DB and reports version/permissions before profiling
+- [x] Progress output — Show table-by-table progress during profiling (not silent until done)
+- [x] Graceful partial failure — If one table fails to profile, continue with others and report errors at end
 
 ### Error messages
 - [x] Startup diagnostics — Clear error when DATABASE_URL is missing/unreachable, API key is missing, or provider is misconfigured

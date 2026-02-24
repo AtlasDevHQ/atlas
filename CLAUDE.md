@@ -64,10 +64,15 @@ bun run db:down          # Stop local Postgres
 bun run db:reset         # Nuke volume + restart (fresh seed)
 
 # Semantic layer
-bun run atlas -- init    # Profile DB and auto-generate semantic layer
+bun run atlas -- init              # Profile DB and auto-generate semantic layer
+bun run atlas -- init --enrich     # Profile + LLM enrichment (needs API key)
+bun run atlas -- init --no-enrich  # Explicitly skip LLM enrichment
+bun run atlas -- init --tables t1,t2  # Only profile specific tables
 ```
 
 **Quick start:** `bun run db:up` → set `DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas` in `.env` → `bun run dev`
+
+**New project:** `bun create atlas my-app` — interactive scaffolding with provider setup, DB config, and optional semantic layer generation.
 
 **Production:** Set `DATABASE_URL` to your managed Postgres. No Docker needed.
 
@@ -90,6 +95,9 @@ src/
 │       ├── explore.ts        # Read-only semantic layer access (ls/cat/grep/find)
 │       ├── sql.ts            # SQL validation (5 layers) + execution
 │       └── report.ts         # Final report packaging
+bin/
+├── atlas.ts                  # CLI — DB profiler + semantic layer generator
+└── enrich.ts                 # LLM enrichment module (optional post-processing)
 semantic/                     # Semantic layer (YAML on disk)
 ├── catalog.yml               # Entry point — lists all entities
 ├── glossary.yml              # Business term definitions
@@ -97,6 +105,10 @@ semantic/                     # Semantic layer (YAML on disk)
 └── metrics/*.yml             # Canonical metric definitions
 data/
 └── demo.sql                  # Postgres seed data (auto-loaded by Docker)
+create-atlas/                 # Scaffolding CLI package (bun create atlas)
+├── index.ts                  # Interactive setup prompts
+├── package.json              # npm package metadata
+└── template/                 # Files copied to new projects
 ```
 
 ### Agent Loop
@@ -233,6 +245,37 @@ docker run -p 3000:3000 \
 
 `PORT` is set automatically by most platforms. All other vars have safe defaults.
 
+## Semantic Layer Generation
+
+### `atlas init` — Enhanced Profiler
+
+The `bin/atlas.ts` profiler queries Postgres system catalogs (`pg_constraint`, `pg_attribute`) to extract:
+- **Primary keys** — marked with `primary_key: true` on dimensions
+- **Foreign keys** — auto-generates `joins` array with `many_to_one` relationships
+- **Enum-like columns** — text columns with <20 unique values and <5% cardinality get all distinct values
+- **Measures** — `count_distinct` on PKs, `sum`/`avg` on numeric non-FK columns
+- **Virtual dimensions** — CASE bucketing for numerics, year/month extraction for dates
+- **Query patterns** — count-by-enum and aggregate-by-enum patterns
+- **Auto-generated glossary** — ambiguous terms (same column name in multiple tables), FK relationships, enum definitions
+- **Auto-generated metrics** — per-table metric files with atomic and breakdown metrics
+- **Catalog enrichment** — `use_for` and `common_questions` derived from column types
+
+### `--enrich` — LLM Enrichment
+
+When `--enrich` is passed (or auto-enabled when `ATLAS_PROVIDER` + API key are set), `bin/enrich.ts` calls `generateText()` to:
+1. **Enrich entity YAMLs** — adds rich descriptions, improved use_cases, query_patterns, virtual dimensions
+2. **Enrich glossary** — adds domain-specific definitions and disambiguation guidance
+3. **Enrich metrics** — fills in missing `unit`/`aggregation`/`objective` fields, suggests derived metrics
+
+### `create-atlas` — Project Scaffolding
+
+The `create-atlas/` package provides `bun create atlas my-app`:
+1. Interactive prompts for provider, API key, model, database URL
+2. Copies template files + source code from the Atlas repo
+3. Writes `.env` with collected configuration
+4. Runs `bun install` and optionally `atlas init --enrich`
+5. Prints platform-specific deploy instructions (Railway, Fly.io, Docker)
+
 ## Quick Reference
 
 | Need | Where |
@@ -250,5 +293,7 @@ docker run -p 3000:3000 \
 | Metric definitions | `semantic/metrics/*.yml` |
 | Postgres seed data | `data/demo.sql` |
 | CLI (semantic layer generator) | `bin/atlas.ts` |
+| LLM enrichment module | `bin/enrich.ts` |
+| Scaffolding CLI | `create-atlas/index.ts` |
 | Docker setup | `docker-compose.yml` |
 | Environment reference | `.env.example` |

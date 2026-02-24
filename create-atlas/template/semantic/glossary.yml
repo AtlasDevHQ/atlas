@@ -1,0 +1,6 @@
+# Atlas Glossary — Business term definitions
+# Run `bun run atlas -- init` to auto-generate terms from your database.
+terms:
+  example_term:
+    status: defined
+    definition: Replace this with your own business terms

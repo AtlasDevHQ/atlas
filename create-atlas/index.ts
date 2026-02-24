@@ -369,12 +369,15 @@ async function main() {
   // ── Success ───────────────────────────────────────────────────────
   const nextSteps = [`cd ${projectName}`, "bun run dev"];
 
-  p.note(
+  let noteBody =
     nextSteps.map((step) => pc.cyan(step)).join("\n") +
-      "\n\n" +
-      pc.dim("See docs/deploy.md for deployment options (Railway, Fly.io, Docker, Vercel)."),
-    "Next steps"
-  );
+    "\n\n" +
+    pc.dim("See docs/deploy.md for deployment options (Railway, Fly.io, Docker, Vercel).");
+  if (dbChoice === "sqlite") {
+    noteBody += "\n" + pc.dim("Note: SQLite data is ephemeral in containers. Use PostgreSQL for production.");
+  }
+
+  p.note(noteBody, "Next steps");
 
   p.outro(
     `${pc.green("Done!")} Your Atlas project is ready at ${pc.cyan(`./${projectName}`)}`

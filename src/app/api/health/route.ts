@@ -1,4 +1,4 @@
-import { validateEnvironment } from "@/lib/startup";
+import { validateEnvironment, getStartupWarnings } from "@/lib/startup";
 import { getWhitelistedTables } from "@/lib/semantic";
 
 function findDiagnostic(
@@ -53,8 +53,11 @@ export async function GET(): Promise<Response> {
     else if (hasKeyError || hasSemanticError) status = "degraded";
     else status = "ok";
 
+    const warnings = getStartupWarnings();
+
     const response = {
       status,
+      ...(warnings.length > 0 && { warnings }),
       checks: {
         database: {
           status: hasDbError ? "error" : "ok",

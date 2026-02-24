@@ -24,7 +24,14 @@ const PROVIDER_KEY_MAP: Record<string, string> = {
 
 let _cached: DiagnosticError[] | null = null;
 let _cachedAt = 0;
+let _sqliteContainerWarned = false;
+const _startupWarnings: string[] = [];
 const ERROR_CACHE_TTL_MS = 30_000;
+
+/** Non-blocking warnings collected during validation (e.g. SQLite in a container). */
+export function getStartupWarnings(): readonly string[] {
+  return _startupWarnings;
+}
 
 /**
  * Validate the environment and return any configuration errors.
@@ -116,6 +123,35 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
             code: "DB_UNREACHABLE",
             message: "Cannot open the SQLite database. Check file permissions and that the file is a valid database.",
           });
+        }
+
+        // Warn if SQLite is running inside a container (data lost on redeploy/restart).
+        // Covers Docker/Compose, Podman, Railway, Fly.io, Render, Kubernetes, ECS, Cloud Run.
+        if (!_sqliteContainerWarned) {
+          let containerFileExists = false;
+          try {
+            containerFileExists =
+              fs.existsSync("/.dockerenv") || fs.existsSync("/run/.containerenv");
+          } catch {
+            // Permission denied or other OS error — not critical, skip detection
+          }
+          const inContainer =
+            containerFileExists ||
+            !!process.env.RAILWAY_ENVIRONMENT ||
+            !!process.env.FLY_APP_NAME ||
+            !!process.env.RENDER ||
+            !!process.env.KUBERNETES_SERVICE_HOST ||
+            !!process.env.ECS_CONTAINER_METADATA_URI ||
+            !!process.env.K_SERVICE;
+          if (inContainer) {
+            _sqliteContainerWarned = true;
+            const msg =
+              "SQLite is running inside a container. " +
+              "Data will be lost on restart. Use PostgreSQL for production: " +
+              "DATABASE_URL=postgresql://user:pass@host:5432/dbname";
+            console.warn(`[atlas] WARNING: ${msg}`);
+            _startupWarnings.push(msg);
+          }
         }
       }
     } else {

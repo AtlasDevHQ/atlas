@@ -55,8 +55,8 @@ Make `bun create atlas`, deployment, and the getting-started path bulletproof. S
 - [ ] Graceful partial failure — If one table fails to profile, continue with others and report errors at end
 
 ### Error messages
-- [ ] Startup diagnostics — Clear error when DATABASE_URL is missing/unreachable, API key is missing, or provider is misconfigured
-- [ ] Agent-facing errors — When a SQL query fails, return the Postgres error message to the agent (not a stack trace to the user)
+- [x] Startup diagnostics — Clear error when DATABASE_URL is missing/unreachable, API key is missing, or provider is misconfigured
+- [x] Agent-facing errors — When a SQL query fails, return the Postgres error message to the agent (not a stack trace to the user)
 
 ### Documentation
 - [ ] Quick start guide — Step-by-step for local dev, from zero to asking questions
@@ -70,7 +70,7 @@ Make `bun create atlas`, deployment, and the getting-started path bulletproof. S
 Make the agent smarter and the UI worth showing in a demo.
 
 ### Agent
-- [ ] Error recovery — Agent retries with corrected SQL when a query fails
+- [x] Error recovery — Agent retries with corrected SQL when a query fails
 - [ ] Multi-turn awareness — Agent references previous queries/results in follow-ups
 - [ ] Clarifying questions — Agent asks before querying when terms are ambiguous (glossary-driven)
 
@@ -105,7 +105,7 @@ What you need before handing Atlas to a real team.
 - [ ] Rate limiting — Per-user query throttle
 - [x] Test coverage — Unit tests for SQL validation (64 tests in `src/lib/tools/__tests__/sql.test.ts`)
 - [ ] Test coverage — Integration tests for agent loop
-- [ ] Error boundaries — Graceful UI handling of API failures, DB timeouts, provider errors
+- [x] Error boundaries — Graceful UI handling of API failures, DB timeouts, provider errors
 - [ ] Observability — Structured logging, optional trace export (OpenTelemetry)
 
 ---

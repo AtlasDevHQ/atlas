@@ -102,10 +102,11 @@ export function validateSQL(sql: string): { valid: boolean; error?: string } {
         }
       }
     } catch {
+      // Table extraction uses the same parser that just succeeded in step 2.
+      // If it fails here, reject to avoid bypassing the whitelist.
       return {
         valid: false,
-        error:
-          "Could not verify table permissions. Rewrite using standard SQL syntax.",
+        error: "Could not verify table permissions. Rewrite using standard SQL syntax.",
       };
     }
   }
@@ -137,7 +138,6 @@ Rules:
   }),
 
   execute: async ({ sql, explanation }) => {
-    // Validate
     const validation = validateSQL(sql);
     if (!validation.valid) {
       return { success: false, error: validation.error };
@@ -149,7 +149,6 @@ Rules:
       querySql += ` LIMIT ${ROW_LIMIT}`;
     }
 
-    // Execute
     try {
       const db = getDB();
       const result = await db.query(querySql, QUERY_TIMEOUT);
@@ -166,14 +165,24 @@ Rules:
       const message =
         err instanceof Error ? err.message : "Unknown database error";
 
-      // Log full error server-side for debugging
-      console.error("[executeSQL] Query failed:", message);
+      console.error("[atlas] SQL execution failed:", message);
 
-      // Sanitize — only return safe error info to the agent
-      if (/column|relation|syntax|type|timeout|cancel/i.test(message)) {
-        return { success: false, error: message };
+      // Block errors that might expose connection details or internal state
+      if (/password|connection string|pg_hba\.conf|SSL|certificate/i.test(message)) {
+        return { success: false, error: "Database query failed — check server logs for details." };
       }
-      return { success: false, error: "Database query failed" };
+
+      // Surface the full Postgres error to the agent for self-correction
+      // (includes column-not-found, syntax, timeout, type mismatch, etc.)
+      const pgErr = err as { hint?: string; position?: string };
+      let detail = message;
+      if (pgErr.hint) {
+        detail += ` — Hint: ${pgErr.hint}`;
+      }
+      if (pgErr.position) {
+        detail += ` (at character ${pgErr.position})`;
+      }
+      return { success: false, error: detail };
     }
   },
 });

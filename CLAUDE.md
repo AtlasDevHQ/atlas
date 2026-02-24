@@ -92,6 +92,7 @@ src/
 │   ├── agent.ts              # Agent loop (streamText, maxSteps: 25)
 │   ├── providers.ts          # LLM provider factory (anthropic/openai/bedrock/ollama)
 │   ├── semantic.ts           # Reads entity YAMLs → builds table whitelist
+│   ├── startup.ts            # Environment validation (DB, API key, semantic layer)
 │   ├── db/
 │   │   └── connection.ts     # DBConnection interface, PostgreSQL adapter
 │   └── tools/
@@ -119,6 +120,10 @@ create-atlas/                 # Scaffolding CLI package (bun create atlas)
 ```
 User Question
     ↓
+POST /api/chat
+    ↓
+validateEnvironment() → 400 if misconfigured
+    ↓
 runAgent(messages)
     ↓
 streamText (Vercel AI SDK, maxSteps: 25)
@@ -127,6 +132,8 @@ streamText (Vercel AI SDK, maxSteps: 25)
     └── finalizeReport → { sql, csv, narrative }
     ↓
 Data Stream Response → Chat UI
+    ↓
+Error boundary catches provider/DB errors → structured JSON response
 ```
 
 ### SQL Validation Pipeline
@@ -294,6 +301,7 @@ The `create-atlas/` package provides `bun create atlas my-app`:
 | SQL validation tests | `src/lib/tools/__tests__/sql.test.ts` |
 | Semantic layer reader | `src/lib/tools/explore.ts` |
 | Table whitelist builder | `src/lib/semantic.ts` |
+| Startup diagnostics | `src/lib/startup.ts` |
 | DB connection factory | `src/lib/db/connection.ts` |
 | LLM provider setup | `src/lib/providers.ts` |
 | Chat UI | `src/app/page.tsx` |

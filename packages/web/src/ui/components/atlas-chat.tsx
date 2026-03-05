@@ -16,6 +16,7 @@ import { ToolPart } from "./chat/tool-part";
 import { Markdown } from "./chat/markdown";
 import { STARTER_PROMPTS } from "./chat/starter-prompts";
 import { ConversationSidebar } from "./conversations/conversation-sidebar";
+import { ChangePasswordDialog } from "./admin/change-password-dialog";
 
 const API_KEY_STORAGE_KEY = "atlas-api-key";
 
@@ -43,6 +44,7 @@ export function AtlasChat() {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [loadingConversation, setLoadingConversation] = useState(false);
+  const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const managedSession = authClient.useSession();
@@ -119,6 +121,25 @@ export function AtlasChat() {
   useEffect(() => {
     convos.fetchList();
   }, [authMode, convos.fetchList]);
+
+  // Check if managed auth user needs to change their default password
+  useEffect(() => {
+    if (!isManaged || !managedSession.data?.user) return;
+
+    async function checkPasswordStatus() {
+      try {
+        const res = await fetch(`${apiUrl}/api/v1/admin/me/password-status`, {
+          credentials: isCrossOrigin ? "include" : "same-origin",
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.passwordChangeRequired) setPasswordChangeRequired(true);
+      } catch {
+        // Non-critical — skip silently
+      }
+    }
+    checkPasswordStatus();
+  }, [isManaged, managedSession.data?.user, apiUrl, isCrossOrigin]);
 
   const handleSaveApiKey = useCallback((key: string) => {
     setApiKey(key);
@@ -392,6 +413,10 @@ export function AtlasChat() {
           </div>
         </main>
       </div>
+      <ChangePasswordDialog
+        open={passwordChangeRequired}
+        onComplete={() => setPasswordChangeRequired(false)}
+      />
     </DarkModeContext.Provider>
   );
 }

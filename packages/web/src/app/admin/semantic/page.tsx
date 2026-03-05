@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState, useCallback, useMemo } from "react";
+import { useQueryStates } from "nuqs";
+import { semanticSearchParams, fileParamToSelection, selectionToFileParam } from "./search-params";
 import { useAtlasConfig } from "@/ui/context";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
@@ -310,8 +312,8 @@ export default function SemanticPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<FetchError | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
-  const [selection, setSelection] = useState<SemanticSelection>(null);
-  const [viewMode, setViewMode] = useState<ViewMode>("pretty");
+  const [{ file: fileParam, view: viewMode }, setParams] = useQueryStates(semanticSearchParams);
+  const selection = useMemo(() => fileParamToSelection(fileParam), [fileParam]);
   const [rawYaml, setRawYaml] = useState<string | null>(null);
   const [rawYamlLoading, setRawYamlLoading] = useState(false);
 
@@ -373,33 +375,48 @@ export default function SemanticPage() {
     return () => { cancelled = true; };
   }, [apiUrl]);
 
-  // Fetch entity detail when an entity is selected
   const handleSelect = useCallback(
-    async (sel: SemanticSelection) => {
-      setSelection(sel);
-      setDetailError(null);
-      setSelectedEntity(null);
-      setViewMode("pretty");
-      setRawYaml(null);
+    (sel: SemanticSelection) => {
+      setParams({ file: selectionToFileParam(sel), view: "pretty" });
+    },
+    [setParams],
+  );
 
-      if (sel?.type === "entity") {
-        try {
-          const res = await fetch(
-            `${apiUrl}/api/v1/admin/semantic/entities/${encodeURIComponent(sel.name)}`,
-            fetchOpts,
-          );
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          const data = await res.json();
-          setSelectedEntity(data?.entity ?? data);
-        } catch (err) {
+  // Fetch entity detail when selection changes (including from URL on mount)
+  useEffect(() => {
+    if (selection?.type !== "entity") {
+      setSelectedEntity(null);
+      return;
+    }
+
+    let cancelled = false;
+    setDetailError(null);
+    setSelectedEntity(null);
+
+    fetch(
+      `${apiUrl}/api/v1/admin/semantic/entities/${encodeURIComponent(selection.name)}`,
+      fetchOpts,
+    )
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((data) => { if (!cancelled) setSelectedEntity(data?.entity ?? data); })
+      .catch((err) => {
+        if (!cancelled) {
           setDetailError(
-            `Failed to load "${sel.name}": ${err instanceof Error ? err.message : "Network error"}`,
+            `Failed to load "${selection.name}": ${err instanceof Error ? err.message : "Network error"}`,
           );
         }
-      }
-    },
-    [apiUrl],
-  );
+      });
+
+    return () => { cancelled = true; };
+  }, [fileParam, apiUrl]);
+
+  // Reset raw YAML when file changes
+  useEffect(() => {
+    setRawYaml(null);
+  }, [fileParam]);
 
   // Fetch raw YAML when switching to YAML view
   useEffect(() => {
@@ -497,7 +514,7 @@ export default function SemanticPage() {
           {/* View toggle bar — only shown when a file is selected */}
           {selection && !detailError && (
             <div className="flex items-center justify-end border-b px-4 py-2">
-              <ViewToggle mode={viewMode} onChange={(m) => { setViewMode(m); }} />
+              <ViewToggle mode={viewMode} onChange={(m) => { setParams({ view: m }); }} />
             </div>
           )}
 

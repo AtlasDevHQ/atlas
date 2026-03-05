@@ -1,6 +1,8 @@
 "use client";
 
 import { Fragment, useEffect, useState, useCallback } from "react";
+import { useQueryStates } from "nuqs";
+import { scheduledTasksSearchParams } from "./search-params";
 import { useAtlasConfig } from "@/ui/context";
 import {
   Table,
@@ -130,11 +132,11 @@ export default function ScheduledTasksPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<FetchError | null>(null);
   const [mutationError, setMutationError] = useState<string | null>(null);
-  const [offset, setOffset] = useState(0);
-  const [enabledFilter, setEnabledFilter] = useState<EnabledFilter>("all");
+
+  const [{ page, enabled: enabledFilter, expanded: expandedId }, setParams] = useQueryStates(scheduledTasksSearchParams);
+  const offset = (page - 1) * PAGE_SIZE;
 
   const [selectedTask, setSelectedTask] = useState<TaskDetail | null>(null);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
 
@@ -148,14 +150,14 @@ export default function ScheduledTasksPage() {
       setLoading(true);
       setError(null);
       try {
-        const params = new URLSearchParams({
+        const qs = new URLSearchParams({
           limit: String(PAGE_SIZE),
           offset: String(offset),
         });
-        if (enabledFilter !== "all") params.set("enabled", enabledFilter);
+        if (enabledFilter !== "all") qs.set("enabled", enabledFilter);
 
         const res = await fetch(
-          `${apiUrl}/api/v1/scheduled-tasks?${params}`,
+          `${apiUrl}/api/v1/scheduled-tasks?${qs}`,
           { credentials },
         );
         if (!res.ok) {
@@ -200,12 +202,12 @@ export default function ScheduledTasksPage() {
   const handleRowClick = useCallback(
     async (taskId: string) => {
       if (expandedId === taskId) {
-        setExpandedId(null);
+        setParams({ expanded: null });
         setSelectedTask(null);
         setDetailError(null);
         return;
       }
-      setExpandedId(taskId);
+      setParams({ expanded: taskId });
       setSelectedTask(null);
       setDetailError(null);
       setDetailLoading(true);
@@ -225,7 +227,7 @@ export default function ScheduledTasksPage() {
         setDetailLoading(false);
       }
     },
-    [apiUrl, expandedId, credentials],
+    [apiUrl, expandedId, credentials, setParams],
   );
 
   // ── Toggle enabled ──────────────────────────────────────────────
@@ -292,9 +294,7 @@ export default function ScheduledTasksPage() {
 
   // ── Filter change resets pagination ─────────────────────────────
   function changeFilter(filter: EnabledFilter) {
-    setEnabledFilter(filter);
-    setOffset(0);
-    setExpandedId(null);
+    setParams({ enabled: filter, page: 1, expanded: null });
     setSelectedTask(null);
   }
 
@@ -494,8 +494,8 @@ export default function ScheduledTasksPage() {
                 <Button
                   size="sm"
                   variant="ghost"
-                  disabled={offset === 0}
-                  onClick={() => setOffset((o) => Math.max(0, o - PAGE_SIZE))}
+                  disabled={page <= 1}
+                  onClick={() => setParams((p) => ({ page: p.page - 1 }))}
                 >
                   Previous
                 </Button>
@@ -506,7 +506,7 @@ export default function ScheduledTasksPage() {
                   size="sm"
                   variant="ghost"
                   disabled={offset + PAGE_SIZE >= total}
-                  onClick={() => setOffset((o) => o + PAGE_SIZE)}
+                  onClick={() => setParams((p) => ({ page: p.page + 1 }))}
                 >
                   Next
                 </Button>

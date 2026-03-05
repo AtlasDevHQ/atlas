@@ -1,6 +1,8 @@
 "use client";
 
 import { Fragment, useEffect, useState } from "react";
+import { useQueryStates } from "nuqs";
+import { actionsSearchParams } from "./search-params";
 import { useAtlasConfig } from "@/ui/context";
 import {
   Table,
@@ -79,8 +81,7 @@ export default function ActionsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<FetchError | null>(null);
   const [mutationError, setMutationError] = useState<string | null>(null);
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("pending");
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [{ status: statusFilter, expanded: expandedId }, setParams] = useQueryStates(actionsSearchParams);
   const approving = useInProgressSet();
   const denying = useInProgressSet();
 
@@ -182,8 +183,7 @@ export default function ActionsPage() {
             size="sm"
             variant={statusFilter === opt.value ? "secondary" : "ghost"}
             onClick={() => {
-              setStatusFilter(opt.value);
-              setExpandedId(null);
+              setParams({ status: opt.value, expanded: null });
             }}
           >
             {opt.label}
@@ -221,7 +221,7 @@ export default function ActionsPage() {
                     <TableRow
                       className="cursor-pointer"
                       onClick={() =>
-                        setExpandedId(isExpanded ? null : action.id)
+                        setParams({ expanded: isExpanded ? null : action.id })
                       }
                     >
                       <TableCell>

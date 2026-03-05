@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useQueryStates } from "nuqs";
+import { auditSearchParams } from "./search-params";
 import { useAtlasConfig } from "@/ui/context";
 import {
   Table,
@@ -60,33 +62,40 @@ export default function AuditPage() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<FetchError | null>(null);
-  const [offset, setOffset] = useState(0);
 
-  const [filters, setFilters] = useState<Filters>(emptyFilters);
-  const [appliedFilters, setAppliedFilters] = useState<Filters>(emptyFilters);
+  const [params, setParams] = useQueryStates(auditSearchParams);
+  const offset = (params.page - 1) * LIMIT;
+
+  // Local form state — pushed to URL on "Apply"
+  const [filters, setFilters] = useState<Filters>({
+    user: params.user,
+    from: params.from,
+    to: params.to,
+    errorOnly: params.errorOnly,
+  });
 
   // Stats — non-critical, shown when available
   const { data: stats, error: statsError } = useAdminFetch<AuditStats>(
     "/api/v1/admin/audit/stats",
   );
 
-  // Fetch rows on mount and when offset/appliedFilters change
+  // Fetch rows on mount and when URL params change
   useEffect(() => {
     let cancelled = false;
     async function fetchRows() {
       setLoading(true);
       setError(null);
       try {
-        const params = new URLSearchParams({
+        const qs = new URLSearchParams({
           limit: String(LIMIT),
           offset: String(offset),
         });
-        if (appliedFilters.user) params.set("user", appliedFilters.user);
-        if (appliedFilters.from) params.set("from", appliedFilters.from);
-        if (appliedFilters.to) params.set("to", appliedFilters.to);
-        if (appliedFilters.errorOnly) params.set("success", "false");
+        if (params.user) qs.set("user", params.user);
+        if (params.from) qs.set("from", params.from);
+        if (params.to) qs.set("to", params.to);
+        if (params.errorOnly) qs.set("success", "false");
 
-        const res = await fetch(`${apiUrl}/api/v1/admin/audit?${params}`, { credentials });
+        const res = await fetch(`${apiUrl}/api/v1/admin/audit?${qs}`, { credentials });
         if (!res.ok) {
           if (!cancelled) setError({ message: `HTTP ${res.status}`, status: res.status });
           return;
@@ -108,11 +117,10 @@ export default function AuditPage() {
     }
     fetchRows();
     return () => { cancelled = true; };
-  }, [apiUrl, offset, appliedFilters, credentials]);
+  }, [apiUrl, offset, params.user, params.from, params.to, params.errorOnly, credentials]);
 
   function handleApply() {
-    setAppliedFilters({ ...filters });
-    setOffset(0);
+    setParams({ ...filters, page: 1 });
   }
 
   // Gate: 401/403/404
@@ -128,7 +136,7 @@ export default function AuditPage() {
     );
   }
 
-  const page = Math.floor(offset / LIMIT) + 1;
+  const page = params.page;
   const totalPages = Math.max(1, Math.ceil(total / LIMIT));
 
   return (
@@ -214,7 +222,7 @@ export default function AuditPage() {
 
         {/* Content */}
         {error ? (
-          <ErrorBanner message={friendlyError(error)} onRetry={() => { setOffset(0); setAppliedFilters({ ...appliedFilters }); }} />
+          <ErrorBanner message={friendlyError(error)} onRetry={() => { setParams({ page: 1 }); }} />
         ) : loading ? (
           <div className="flex h-64 items-center justify-center">
             <LoadingState message="Loading audit log..." />
@@ -282,16 +290,16 @@ export default function AuditPage() {
                 <Button
                   variant="outline"
                   size="sm"
-                  disabled={offset === 0}
-                  onClick={() => setOffset((o) => Math.max(0, o - LIMIT))}
+                  disabled={page <= 1}
+                  onClick={() => setParams((p) => ({ page: p.page - 1 }))}
                 >
                   Previous
                 </Button>
                 <Button
                   variant="outline"
                   size="sm"
-                  disabled={offset + LIMIT >= total}
-                  onClick={() => setOffset((o) => o + LIMIT)}
+                  disabled={page >= totalPages}
+                  onClick={() => setParams((p) => ({ page: p.page + 1 }))}
                 >
                   Next
                 </Button>

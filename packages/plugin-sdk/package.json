@@ -1,6 +1,6 @@
 {
   "name": "@useatlas/plugin-sdk",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Type definitions and helpers for authoring Atlas plugins",
   "type": "module",
   "scripts": {

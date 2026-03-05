@@ -355,7 +355,7 @@ describe("Admin routes — auth enforcement", () => {
     expect(res.status).toBe(401);
   });
 
-  it("returns 403 when auth mode is none (no user object)", async () => {
+  it("allows access when auth mode is none (implicit admin in dev)", async () => {
     mockAuthenticateRequest.mockResolvedValue({
       authenticated: true,
       mode: "none",
@@ -363,7 +363,7 @@ describe("Admin routes — auth enforcement", () => {
     });
 
     const res = await app.fetch(adminRequest("/api/v1/admin/overview"));
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(200);
   });
 
   it("returns 500 when authenticateRequest throws", async () => {

@@ -2684,6 +2684,21 @@ function parseDemoArg(args: string[]): DemoDataset | null {
   throw new Error(`Unknown demo dataset "${next}". Available: ${Object.keys(DEMO_DATASETS).join(", ")}`);
 }
 
+/** Recursively copy a directory, overwriting existing files. */
+function copyDirRecursive(src: string, dest: string): void {
+  fs.mkdirSync(dest, { recursive: true });
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const srcPath = path.join(src, entry.name);
+    const destPath = path.join(dest, entry.name);
+    if (entry.isDirectory()) {
+      copyDirRecursive(srcPath, destPath);
+    } else {
+      fs.copyFileSync(srcPath, destPath);
+      console.log(`  wrote ${destPath}`);
+    }
+  }
+}
+
 // --- Demo data seeding ---
 
 export async function seedDemoPostgres(
@@ -4371,6 +4386,15 @@ async function profileDatasource(opts: ProfileDatasourceOpts): Promise<void> {
       const filePath = path.join(metricsOutDir, `${profile.table_name}.yml`);
       fs.writeFileSync(filePath, metricYaml);
       console.log(`  wrote ${filePath}`);
+    }
+  }
+
+  // For --demo simple, overlay hand-crafted semantic files with richer descriptions
+  if (demoDataset === "simple") {
+    const demoSemanticDir = path.resolve(import.meta.dir, "..", "data", "demo-semantic");
+    if (fs.existsSync(demoSemanticDir)) {
+      console.log(`\nApplying curated demo semantic layer...\n`);
+      copyDirRecursive(demoSemanticDir, outputBase);
     }
   }
 

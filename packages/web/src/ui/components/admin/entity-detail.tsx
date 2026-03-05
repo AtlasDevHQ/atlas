@@ -211,8 +211,8 @@ export function EntityDetail({ entity }: { entity: EntityData }) {
           <section>
             <h3 className="mb-3 text-sm font-semibold">Query Patterns ({patterns.length})</h3>
             <div className="space-y-3">
-              {patterns.map((p) => (
-                <Card key={p.name} className="shadow-none">
+              {patterns.map((p, i) => (
+                <Card key={`${p.name}-${i}`} className="shadow-none">
                   <CardHeader className="py-3 pb-2">
                     <CardTitle className="text-sm">{p.name}</CardTitle>
                     <p className="text-xs text-muted-foreground">{p.description}</p>

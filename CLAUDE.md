@@ -24,7 +24,7 @@ Guidance for Claude Code when working in this repository.
 - [ ] **bun only** — Package manager and runtime. Never npm, yarn, or node
 - [ ] **TypeScript strict mode** — Monorepo path aliases: `@atlas/api/*` for cross-package imports, `@/*` → `./src/*` within web package only
 - [ ] **Tailwind CSS 4** — Via `@tailwindcss/postcss`, not v3
-- [ ] **shadcn/ui v2** — Component library for `@atlas/web`. New-york style, neutral base, Lucide icons. Add components: `npx shadcn@latest add <component>` from `packages/web/`. Config at `packages/web/components.json`. Uses `cn()` from `@/lib/utils` for class merging
+- [ ] **shadcn/ui v2** — Component library for `@atlas/web`. New-york style, neutral base, Lucide icons. **Always use shadcn/ui primitives** for UI elements (buttons, toggles, cards, dialogs, etc.) — never hand-roll equivalent components. If a needed primitive isn't installed yet, add it: `npx shadcn@latest add <component>` from `packages/web/`. Config at `packages/web/components.json`. Uses `cn()` from `@/lib/utils` for class merging
 - [ ] **Server external packages** — `pg`, `mysql2`, `@clickhouse/client`, `@duckdb/node-api`, `snowflake-sdk`, `jsforce`, `just-bash`, `pino`, and `pino-pretty` must stay in `serverExternalPackages` in the `create-atlas` template — they use native bindings or worker threads incompatible with Next.js bundling
 - [ ] **Frontend is a pure HTTP client** — `@atlas/web` depends on `@atlas/api` for shared types only — the frontend talks to the API over HTTP (same-origin rewrite or cross-origin fetch). The `nextjs-standalone` example embeds `@atlas/api` server-side via a Next.js catch-all route; the React client still communicates over HTTP
 - [ ] **Flat ESLint config** — `eslint.config.mjs`, not `.eslintrc`

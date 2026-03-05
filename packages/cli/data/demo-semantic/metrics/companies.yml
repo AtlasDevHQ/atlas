@@ -1,89 +1,63 @@
 metrics:
-  - id: companies_count
-    label: Total Companies
-    description: Count of distinct companies records.
+  - id: total_customers
+    label: Total Customers
+    description: Number of unique customer companies.
     type: atomic
     sql: |-
-      SELECT COUNT(DISTINCT id) as count
+      SELECT COUNT(DISTINCT id) AS total_customers
       FROM companies
     aggregation: count_distinct
-  - id: total_employee_count
-    label: Total employee count
-    description: Sum of employee_count across all companies.
+
+  - id: avg_customer_revenue
+    label: Avg Customer Revenue
+    description: Average annual revenue across customer companies.
     type: atomic
+    unit: USD
     source:
       entity: Companies
-      measure: total_employee_count
+      measure: avg_revenue
     sql: |-
-      SELECT SUM(employee_count) as total_employee_count
-      FROM companies
-    aggregation: sum
-    objective: maximize
-  - id: avg_employee_count
-    label: Average employee count
-    description: Average employee_count per company.
-    type: atomic
-    sql: |-
-      SELECT AVG(employee_count) as avg_employee_count
+      SELECT AVG(revenue) AS avg_customer_revenue
       FROM companies
     aggregation: avg
-  - id: total_founded_year
-    label: Total founded year
-    description: Sum of founded_year across all companies.
-    type: atomic
-    source:
-      entity: Companies
-      measure: total_founded_year
+
+  - id: customers_by_industry
+    label: Customers by Industry
+    description: Customer count and average revenue by industry vertical.
+    type: breakdown
     sql: |-
-      SELECT SUM(founded_year) as total_founded_year
+      SELECT industry,
+             COUNT(*) AS customer_count,
+             AVG(revenue) AS avg_revenue,
+             AVG(employee_count) AS avg_headcount
       FROM companies
-    aggregation: sum
-    objective: maximize
-  - id: avg_founded_year
-    label: Average founded year
-    description: Average founded_year per company.
-    type: atomic
+      GROUP BY industry
+      ORDER BY customer_count DESC
+
+  - id: customers_by_country
+    label: Customers by Country
+    description: Customer distribution by HQ country.
+    type: breakdown
     sql: |-
-      SELECT AVG(founded_year) as avg_founded_year
+      SELECT country,
+             COUNT(*) AS customer_count,
+             SUM(revenue) AS total_revenue
       FROM companies
-    aggregation: avg
-  - id: total_revenue
-    label: Total revenue
-    description: Sum of revenue across all companies.
-    type: atomic
-    source:
-      entity: Companies
-      measure: total_revenue
+      GROUP BY country
+      ORDER BY customer_count DESC
+
+  - id: revenue_per_customer
+    label: Revenue per Customer (our MRR)
+    description: Total MRR we earn from each customer company.
+    type: derived
+    unit: USD
     sql: |-
-      SELECT SUM(revenue) as total_revenue
-      FROM companies
-    aggregation: sum
-    objective: maximize
-  - id: avg_revenue
-    label: Average revenue
-    description: Average revenue per company.
-    type: atomic
-    sql: |-
-      SELECT AVG(revenue) as avg_revenue
-      FROM companies
-    aggregation: avg
-  - id: total_valuation
-    label: Total valuation
-    description: Sum of valuation across all companies.
-    type: atomic
-    source:
-      entity: Companies
-      measure: total_valuation
-    sql: |-
-      SELECT SUM(valuation) as total_valuation
-      FROM companies
-    aggregation: sum
-    objective: maximize
-  - id: avg_valuation
-    label: Average valuation
-    description: Average valuation per company.
-    type: atomic
-    sql: |-
-      SELECT AVG(valuation) as avg_valuation
-      FROM companies
-    aggregation: avg
+      SELECT c.name AS company,
+             c.industry,
+             SUM(a.monthly_value) AS total_mrr,
+             COUNT(a.id) AS account_count
+      FROM companies c
+      JOIN accounts a ON a.company_id = c.id
+      WHERE a.status = 'Active'
+      GROUP BY c.name, c.industry
+      ORDER BY total_mrr DESC

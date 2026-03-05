@@ -64,13 +64,15 @@ async function adminAuthPreamble(req: Request, requestId: string) {
     return { error: { error: "auth_error", message: authResult.error }, status: authResult.status as 401 | 403 | 500 };
   }
 
-  // Enforce admin role
-  if (!authResult.user || authResult.user.role !== "admin") {
+  // Enforce admin role — when auth mode is "none" (no auth configured, e.g.
+  // local dev), treat the request as an implicit admin since there is no
+  // identity boundary to enforce.
+  if (authResult.mode !== "none" && (!authResult.user || authResult.user.role !== "admin")) {
     return { error: { error: "forbidden", message: "Admin role required." }, status: 403 as const };
   }
 
   const ip = getClientIP(req);
-  const rateLimitKey = authResult.user.id ?? (ip ? `ip:${ip}` : "anon");
+  const rateLimitKey = authResult.user?.id ?? (ip ? `ip:${ip}` : "anon");
   const rateCheck = checkRateLimit(rateLimitKey);
   if (!rateCheck.allowed) {
     const retryAfterSeconds = Math.ceil((rateCheck.retryAfterMs ?? 60000) / 1000);
@@ -216,8 +218,8 @@ function findEntityFile(root: string, name: string): string | null {
   return null;
 }
 
-function discoverMetrics(root: string): Array<{ source: string; data: unknown }> {
-  const metrics: Array<{ source: string; data: unknown }> = [];
+function discoverMetrics(root: string): Array<{ source: string; file: string; data: unknown }> {
+  const metrics: Array<{ source: string; file: string; data: unknown }> = [];
 
   const defaultDir = path.join(root, "metrics");
   if (fs.existsSync(defaultDir)) {
@@ -243,7 +245,7 @@ function discoverMetrics(root: string): Array<{ source: string; data: unknown }>
   return metrics;
 }
 
-function loadMetricsFromDir(dir: string, source: string, out: Array<{ source: string; data: unknown }>): void {
+function loadMetricsFromDir(dir: string, source: string, out: Array<{ source: string; file: string; data: unknown }>): void {
   let files: string[];
   try {
     files = fs.readdirSync(dir).filter((f) => f.endsWith(".yml"));
@@ -255,7 +257,7 @@ function loadMetricsFromDir(dir: string, source: string, out: Array<{ source: st
   for (const file of files) {
     try {
       const raw = readYamlFile(path.join(dir, file));
-      out.push({ source, data: raw });
+      out.push({ source, file: file.replace(/\.yml$/, ""), data: raw });
     } catch (err) {
       log.warn({ err: err instanceof Error ? err : new Error(String(err)), file, dir, source }, "Failed to parse metric YAML file");
     }
@@ -474,6 +476,63 @@ admin.get("/semantic/catalog", async (c) => {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), file: catalogFile }, "Failed to parse catalog YAML");
       return c.json({ error: "internal_error", message: "Failed to parse catalog file." }, 500);
     }
+  });
+});
+
+// GET /semantic/raw/:file — serve raw YAML for top-level files (catalog.yml, glossary.yml)
+// GET /semantic/raw/:dir/:file — serve raw YAML for subdirectory files (entities/x.yml, metrics/x.yml)
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function serveRawYaml(c: any, requestId: string, filePath: string) {
+  // Validate: no traversal, must be .yml
+  if (filePath.includes("..") || filePath.includes("\0") || filePath.includes("\\") || !filePath.endsWith(".yml")) {
+    return c.json({ error: "invalid_request", message: "Invalid file path." }, 400);
+  }
+
+  const allowedPattern = /^(catalog|glossary)\.yml$|^(entities|metrics)\/[a-zA-Z0-9_-]+\.yml$/;
+  if (!allowedPattern.test(filePath)) {
+    return c.json({ error: "invalid_request", message: "File path not allowed." }, 400);
+  }
+
+  const root = getSemanticRoot();
+  const resolved = path.resolve(root, filePath);
+  if (!resolved.startsWith(path.resolve(root))) {
+    log.error({ requestId, filePath, resolved, root }, "Raw YAML path escaped semantic root");
+    return c.json({ error: "forbidden", message: "Access denied." }, 403);
+  }
+
+  if (!fs.existsSync(resolved)) {
+    return c.json({ error: "not_found", message: `File "${filePath}" not found.` }, 404);
+  }
+
+  try {
+    const content = fs.readFileSync(resolved, "utf-8");
+    return c.text(content);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), filePath }, "Failed to read raw YAML file");
+    return c.json({ error: "internal_error", message: "Failed to read file." }, 500);
+  }
+}
+
+admin.get("/semantic/raw/:dir/:file", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  const { authResult } = preamble;
+  return withRequestContext({ requestId, user: authResult.user }, () => {
+    return serveRawYaml(c, requestId, `${c.req.param("dir")}/${c.req.param("file")}`);
+  });
+});
+
+admin.get("/semantic/raw/:file", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  const { authResult } = preamble;
+  return withRequestContext({ requestId, user: authResult.user }, () => {
+    return serveRawYaml(c, requestId, c.req.param("file"));
   });
 });
 

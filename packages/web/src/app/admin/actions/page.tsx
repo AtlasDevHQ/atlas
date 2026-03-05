@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useState, useTransition } from "react";
 import { useQueryStates } from "nuqs";
 import { actionsSearchParams } from "./search-params";
 import { useAtlasConfig } from "@/ui/context";
@@ -82,6 +82,7 @@ export default function ActionsPage() {
   const [error, setError] = useState<FetchError | null>(null);
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [{ status: statusFilter, expanded: expandedId }, setParams] = useQueryStates(actionsSearchParams);
+  const [, startTransition] = useTransition();
   const approving = useInProgressSet();
   const denying = useInProgressSet();
 
@@ -183,7 +184,9 @@ export default function ActionsPage() {
             size="sm"
             variant={statusFilter === opt.value ? "secondary" : "ghost"}
             onClick={() => {
-              setParams({ status: opt.value, expanded: null });
+              startTransition(() => {
+                setParams({ status: opt.value, expanded: null });
+              });
             }}
           >
             {opt.label}

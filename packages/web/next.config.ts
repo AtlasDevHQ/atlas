@@ -2,6 +2,7 @@ import type { NextConfig } from "next";
 import path from "path";
 
 const nextConfig: NextConfig = {
+  reactCompiler: true,
   // standalone is for self-hosted deployments (Docker, Railway, etc.); Vercel uses its own build pipeline
   ...(process.env.VERCEL ? {} : { output: "standalone" }),
   // Monorepo: trace files up to the repo root so standalone output includes all packages

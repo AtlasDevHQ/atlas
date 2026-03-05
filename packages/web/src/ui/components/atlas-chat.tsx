@@ -19,6 +19,20 @@ import { ConversationSidebar } from "./conversations/conversation-sidebar";
 
 const API_KEY_STORAGE_KEY = "atlas-api-key";
 
+/* Static SVG icons — hoisted to avoid recreation on every render */
+const MenuIcon = (
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5">
+    <path fillRule="evenodd" d="M2 4.75A.75.75 0 0 1 2.75 4h14.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 4.75ZM2 10a.75.75 0 0 1 .75-.75h14.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 10Zm0 5.25a.75.75 0 0 1 .75-.75h14.5a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1-.75-.75Z" clipRule="evenodd" />
+  </svg>
+);
+
+const AtlasLogo = (
+  <svg viewBox="0 0 256 256" fill="none" className="h-7 w-7 shrink-0" aria-hidden="true">
+    <path d="M128 24 L232 208 L24 208 Z" stroke="#23CE9E" strokeWidth="14" fill="none" strokeLinejoin="round"/>
+    <circle cx="128" cy="28" r="16" fill="#23CE9E"/>
+  </svg>
+);
+
 export function AtlasChat() {
   const { apiUrl, isCrossOrigin, authClient } = useAtlasConfig();
   const dark = useDarkMode();
@@ -54,6 +68,9 @@ export function AtlasChat() {
 
   const refreshConvosRef = useRef(convos.refresh);
   refreshConvosRef.current = convos.refresh;
+
+  const conversationIdRef = useRef(conversationId);
+  conversationIdRef.current = conversationId;
 
   // Load API key from sessionStorage on mount + fetch auth mode + conversations
   useEffect(() => {
@@ -109,7 +126,9 @@ export function AtlasChat() {
     }
   }, []);
 
-  // Dynamic transport — captures x-conversation-id from response
+  // Dynamic transport — captures x-conversation-id from response.
+  // conversationId is accessed via ref to avoid recreating the transport mid-stream
+  // (which causes an infinite re-render loop in useChat).
   const transport = useMemo(() => {
     const headers: Record<string, string> = {};
     if (apiKey) {
@@ -119,11 +138,11 @@ export function AtlasChat() {
       api: `${apiUrl}/api/chat`,
       headers,
       credentials: isCrossOrigin ? "include" : undefined,
-      body: conversationId ? { conversationId } : undefined,
+      body: () => (conversationIdRef.current ? { conversationId: conversationIdRef.current } : {}),
       fetch: (async (input, init) => {
         const response = await globalThis.fetch(input, init);
         const convId = response.headers.get("x-conversation-id");
-        if (convId && convId !== conversationId) {
+        if (convId && convId !== conversationIdRef.current) {
           setConversationId(convId);
           setTimeout(() => {
             refreshConvosRef.current().catch((err) => {
@@ -134,7 +153,7 @@ export function AtlasChat() {
         return response;
       }) as typeof fetch,
     });
-  }, [apiKey, authMode, apiUrl, isCrossOrigin, conversationId]);
+  }, [apiKey, authMode, apiUrl, isCrossOrigin]);
 
   const { messages, setMessages, sendMessage, status, error } = useChat({ transport });
 
@@ -214,16 +233,11 @@ export function AtlasChat() {
                       className="rounded p-1 text-zinc-400 hover:text-zinc-700 md:hidden dark:hover:text-zinc-200"
                       aria-label="Open conversation history"
                     >
-                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5">
-                        <path fillRule="evenodd" d="M2 4.75A.75.75 0 0 1 2.75 4h14.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 4.75ZM2 10a.75.75 0 0 1 .75-.75h14.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 10Zm0 5.25a.75.75 0 0 1 .75-.75h14.5a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1-.75-.75Z" clipRule="evenodd" />
-                      </svg>
+                      {MenuIcon}
                     </button>
                   )}
                   <div className="flex items-center gap-2.5">
-                    <svg viewBox="0 0 256 256" fill="none" className="h-7 w-7 shrink-0" aria-hidden="true">
-                      <path d="M128 24 L232 208 L24 208 Z" stroke="#23CE9E" strokeWidth="14" fill="none" strokeLinejoin="round"/>
-                      <circle cx="128" cy="28" r="16" fill="#23CE9E"/>
-                    </svg>
+                    {AtlasLogo}
                     <div>
                       <h1 className="text-xl font-semibold tracking-tight">Atlas</h1>
                       <p className="text-sm text-zinc-500">Ask your data anything</p>

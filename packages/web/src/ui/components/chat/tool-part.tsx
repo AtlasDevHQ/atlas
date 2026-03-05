@@ -1,13 +1,14 @@
 "use client";
 
+import { memo } from "react";
 import { getToolName } from "ai";
-import { getToolResult } from "../../lib/helpers";
+import { getToolResult, isToolComplete } from "../../lib/helpers";
 import { isActionToolResult } from "../../lib/action-types";
 import { ExploreCard } from "./explore-card";
 import { SQLResultCard } from "./sql-result-card";
 import { ActionApprovalCard } from "../actions/action-approval-card";
 
-export function ToolPart({ part }: { part: unknown }) {
+export const ToolPart = memo(function ToolPart({ part }: { part: unknown }) {
   let name: string;
   try {
     name = getToolName(part as Parameters<typeof getToolName>[0]);
@@ -37,4 +38,9 @@ export function ToolPart({ part }: { part: unknown }) {
       );
     }
   }
-}
+}, (prev, next) => {
+  // Once a tool part is complete, its output won't change — skip re-renders.
+  // This prevents the Recharts render tree from contributing to React's update depth limit.
+  if (isToolComplete(prev.part) && isToolComplete(next.part)) return true;
+  return false;
+});

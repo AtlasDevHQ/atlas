@@ -100,6 +100,26 @@ function truncateLabel(label: unknown, maxLen = 12): string {
 /*  Tooltip                                                             */
 /* ------------------------------------------------------------------ */
 
+const TOOLTIP_LABEL_STYLE = { fontWeight: 600, marginBottom: 4 } as const;
+
+const tooltipStyleCache = new Map<boolean, React.CSSProperties>();
+function getTooltipStyle(dark: boolean): React.CSSProperties {
+  let style = tooltipStyleCache.get(dark);
+  if (!style) {
+    const t = themeTokens(dark);
+    style = {
+      background: t.tooltipBg,
+      border: `1px solid ${t.tooltipBorder}`,
+      borderRadius: 6,
+      padding: "8px 12px",
+      fontSize: 12,
+      color: t.tooltipText,
+    };
+    tooltipStyleCache.set(dark, style);
+  }
+  return style;
+}
+
 function ChartTooltip({ active, payload, label, dark }: {
   active?: boolean;
   payload?: Array<{ name: string; value: number; color: string }>;
@@ -107,19 +127,9 @@ function ChartTooltip({ active, payload, label, dark }: {
   dark: boolean;
 }) {
   if (!active || !payload?.length) return null;
-  const t = themeTokens(dark);
   return (
-    <div
-      style={{
-        background: t.tooltipBg,
-        border: `1px solid ${t.tooltipBorder}`,
-        borderRadius: 6,
-        padding: "8px 12px",
-        fontSize: 12,
-        color: t.tooltipText,
-      }}
-    >
-      <p style={{ fontWeight: 600, marginBottom: 4 }}>{label}</p>
+    <div style={getTooltipStyle(dark)}>
+      <p style={TOOLTIP_LABEL_STYLE}>{label}</p>
       {payload.map((entry, i) => (
         <p key={i} style={{ color: entry.color }}>
           {entry.name}: {typeof entry.value === "number" ? formatNumber(entry.value) : entry.value}
@@ -365,9 +375,9 @@ export function ResultChart({
       </div>
       <ChartErrorBoundary key={currentType}>
         <div className="p-2">
-          {currentType === "bar" && <BarChartView data={chartData} rec={currentRec} dark={dark} />}
-          {currentType === "line" && <LineChartView data={chartData} rec={currentRec} dark={dark} />}
-          {currentType === "pie" && <PieChartView data={chartData} rec={currentRec} dark={dark} />}
+          {currentType === "bar" ? <BarChartView data={chartData} rec={currentRec} dark={dark} />
+            : currentType === "line" ? <LineChartView data={chartData} rec={currentRec} dark={dark} />
+            : <PieChartView data={chartData} rec={currentRec} dark={dark} />}
         </div>
       </ChartErrorBoundary>
     </div>

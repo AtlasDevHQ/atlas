@@ -1,17 +1,24 @@
 "use client";
 
-import { createContext, useState, useEffect } from "react";
+import { createContext, useSyncExternalStore } from "react";
 
 export const DarkModeContext = createContext(false);
 
+/** SSR-safe snapshot: reads current prefers-color-scheme without hydration flicker. */
+function subscribeToColorScheme(onChange: () => void) {
+  const mq = window.matchMedia("(prefers-color-scheme: dark)");
+  mq.addEventListener("change", onChange);
+  return () => mq.removeEventListener("change", onChange);
+}
+
+function getSnapshot() {
+  return window.matchMedia("(prefers-color-scheme: dark)").matches;
+}
+
+function getServerSnapshot() {
+  return false;
+}
+
 export function useDarkMode() {
-  const [dark, setDark] = useState(false);
-  useEffect(() => {
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    setDark(mq.matches);
-    const handler = (e: MediaQueryListEvent) => setDark(e.matches);
-    mq.addEventListener("change", handler);
-    return () => mq.removeEventListener("change", handler);
-  }, []);
-  return dark;
+  return useSyncExternalStore(subscribeToColorScheme, getSnapshot, getServerSnapshot);
 }

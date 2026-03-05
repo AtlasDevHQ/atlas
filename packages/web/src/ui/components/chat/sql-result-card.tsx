@@ -4,7 +4,12 @@ import { useContext, useMemo, useState } from "react";
 import { getToolArgs, getToolResult, isToolComplete, downloadCSV, toCsvString } from "../../lib/helpers";
 import { DarkModeContext } from "../../hooks/use-dark-mode";
 import { detectCharts } from "../chart/chart-detection";
-import { ResultChart } from "../chart/result-chart";
+import dynamic from "next/dynamic";
+
+const ResultChart = dynamic(
+  () => import("../chart/result-chart").then((m) => ({ default: m.ResultChart })),
+  { ssr: false, loading: () => <div className="h-64 animate-pulse rounded-lg bg-zinc-100 dark:bg-zinc-800" /> },
+);
 import { LoadingCard } from "./loading-card";
 import { DataTable } from "./data-table";
 import { SQLBlock } from "./sql-block";

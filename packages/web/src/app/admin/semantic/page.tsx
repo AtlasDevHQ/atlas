@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useTransition } from "react";
 import { useQueryStates } from "nuqs";
 import { semanticSearchParams, fileParamToSelection, selectionToFileParam } from "./search-params";
 import { useAtlasConfig } from "@/ui/context";
@@ -313,6 +313,7 @@ export default function SemanticPage() {
   const [error, setError] = useState<FetchError | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [{ file: fileParam, view: viewMode }, setParams] = useQueryStates(semanticSearchParams);
+  const [, startTransition] = useTransition();
   const selection = useMemo(() => fileParamToSelection(fileParam), [fileParam]);
   const [rawYaml, setRawYaml] = useState<string | null>(null);
   const [rawYamlLoading, setRawYamlLoading] = useState(false);
@@ -377,9 +378,11 @@ export default function SemanticPage() {
 
   const handleSelect = useCallback(
     (sel: SemanticSelection) => {
-      setParams({ file: selectionToFileParam(sel), view: "pretty" });
+      startTransition(() => {
+        setParams({ file: selectionToFileParam(sel), view: "pretty" });
+      });
     },
-    [setParams],
+    [setParams, startTransition],
   );
 
   // Fetch entity detail when selection changes (including from URL on mount)
@@ -514,7 +517,7 @@ export default function SemanticPage() {
           {/* View toggle bar — only shown when a file is selected */}
           {selection && !detailError && (
             <div className="flex items-center justify-end border-b px-4 py-2">
-              <ViewToggle mode={viewMode} onChange={(m) => { setParams({ view: m }); }} />
+              <ViewToggle mode={viewMode} onChange={(m) => { startTransition(() => { setParams({ view: m }); }); }} />
             </div>
           )}
 

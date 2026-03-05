@@ -33,35 +33,43 @@ export default function AdminOverview() {
   useEffect(() => {
     let cancelled = false;
     async function fetchOverview() {
-      try {
-        const adminRes = await fetch(`${apiUrl}/api/v1/admin/overview`, fetchOpts);
-        if (adminRes.ok) {
-          const json = await adminRes.json();
-          if (!cancelled) setData(json);
-          return;
+      // Fetch both in parallel — use admin overview if available, fall back to health
+      const [adminResult, healthResult] = await Promise.allSettled([
+        fetch(`${apiUrl}/api/v1/admin/overview`, fetchOpts),
+        fetch(`${apiUrl}/api/health`, fetchOpts),
+      ]);
+
+      if (cancelled) return;
+
+      if (adminResult.status === "fulfilled" && adminResult.value.ok) {
+        const admin = await adminResult.value.json();
+        // Admin endpoint doesn't return health — derive it from the health endpoint
+        const healthOk = healthResult.status === "fulfilled" && healthResult.value.ok;
+        const healthJson = healthOk ? await healthResult.value.json() : null;
+        if (!cancelled) {
+          setData({
+            connections: admin.connections ?? 0,
+            entities: admin.entities ?? 0,
+            plugins: admin.plugins ?? 0,
+            health: healthJson?.status === "ok" ? "healthy" : "degraded",
+          });
         }
-        console.warn(`Admin overview endpoint returned ${adminRes.status}`);
-      } catch (err) {
-        console.warn("Admin overview endpoint unavailable, falling back to health:", err);
+        return;
       }
-      try {
-        const healthRes = await fetch(`${apiUrl}/api/health`, fetchOpts);
-        if (healthRes.ok) {
-          const json = await healthRes.json();
-          if (!cancelled) {
-            setData({
-              connections: json?.checks?.datasource?.ok ? 1 : 0,
-              entities: FALLBACK.entities,
-              plugins: FALLBACK.plugins,
-              health: json?.status === "ok" ? "healthy" : "degraded",
-            });
-          }
-          return;
+
+      if (healthResult.status === "fulfilled" && healthResult.value.ok) {
+        const json = await healthResult.value.json();
+        if (!cancelled) {
+          setData({
+            connections: json?.checks?.datasource?.ok ? 1 : 0,
+            entities: FALLBACK.entities,
+            plugins: FALLBACK.plugins,
+            health: json?.status === "ok" ? "healthy" : "degraded",
+          });
         }
-        console.warn(`Health endpoint returned ${healthRes.status}`);
-      } catch (err) {
-        console.warn("Health endpoint unreachable:", err);
+        return;
       }
+
       if (!cancelled) {
         setData({ ...FALLBACK, health: "down" });
         setError("Could not reach the API server. Check that your API is running.");

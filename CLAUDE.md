@@ -28,6 +28,10 @@ Guidance for Claude Code when working in this repository.
 - [ ] **Server external packages** — `pg`, `mysql2`, `@clickhouse/client`, `@duckdb/node-api`, `snowflake-sdk`, `jsforce`, `just-bash`, `pino`, and `pino-pretty` must stay in `serverExternalPackages` in the `create-atlas` template — they use native bindings or worker threads incompatible with Next.js bundling
 - [ ] **Frontend is a pure HTTP client** — `@atlas/web` depends on `@atlas/api` for shared types only — the frontend talks to the API over HTTP (same-origin rewrite or cross-origin fetch). The `nextjs-standalone` example embeds `@atlas/api` server-side via a Next.js catch-all route; the React client still communicates over HTTP
 - [ ] **nuqs for URL state** — Use [nuqs](https://nuqs.47ng.com/) for any state that belongs in the URL (pagination, filters, selected items, view modes). Define parsers in a `search-params.ts` file next to the page, use `useQueryStates` in client components. Transient UI state (loading, open dropdowns, form drafts) stays as `useState`. `NuqsAdapter` is in the root layout
+- [ ] **React Compiler handles memoization** — Do not add `useMemo`, `useCallback`, or `React.memo` for performance. The React Compiler (enabled in `next.config.ts`) auto-memoizes. Only use `useMemo` when a stable reference is required for correctness (e.g. TanStack Table controlled state). Only use `React.memo` with a custom comparator when skipping renders based on semantic equality (e.g. completed tool parts)
+- [ ] **No async waterfalls** — Use `Promise.all([a(), b()])` for independent awaits, not sequential `await a(); await b();`. Start promises early, await late
+- [ ] **Immutable array operations** — Use `toSorted()`, `toReversed()`, `toSpliced()` instead of `.sort()`, `.reverse()`, `.splice()` in React components to avoid mutating state
+- [ ] **Dynamic imports for heavy components** — Use `next/dynamic` for Monaco, Recharts, syntax highlighters, and other large client-only libraries
 - [ ] **Flat ESLint config** — `eslint.config.mjs`, not `.eslintrc`
 
 ### Testing

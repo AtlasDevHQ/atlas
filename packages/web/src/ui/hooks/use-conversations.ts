@@ -64,12 +64,12 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
       }
 
       if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        if (body?.code === "not_available") {
+        const errorBody = await res.json().catch(() => null);
+        if (errorBody?.code === "not_available") {
           setAvailable(false);
           return;
         }
-        console.warn(`fetchList: HTTP ${res.status}`, body);
+        console.warn(`fetchList: HTTP ${res.status}`, errorBody);
         return;
       }
 

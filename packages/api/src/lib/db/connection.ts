@@ -23,6 +23,24 @@ import { createDuckDBConnection, parseDuckDBUrl } from "./duckdb";
 
 const log = createLogger("db");
 
+/**
+ * Resolve the analytics datasource URL from env vars.
+ *
+ * Priority:
+ * 1. ATLAS_DATASOURCE_URL (explicit — always wins)
+ * 2. DATABASE_URL_UNPOOLED / DATABASE_URL (when ATLAS_DEMO_DATA=true — share
+ *    the Neon-provisioned DB for both internal and analytics)
+ *
+ * Returns undefined when no datasource is configured.
+ */
+export function resolveDatasourceUrl(): string | undefined {
+  if (process.env.ATLAS_DATASOURCE_URL) return process.env.ATLAS_DATASOURCE_URL;
+  if (process.env.ATLAS_DEMO_DATA === "true") {
+    return process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL;
+  }
+  return undefined;
+}
+
 export interface QueryResult {
   columns: string[];
   rows: Record<string, unknown>[];
@@ -113,7 +131,7 @@ export function rewriteClickHouseUrl(url: string): string {
  * Throws if the URL does not match a supported database type.
  */
 export function detectDBType(url?: string): DBType {
-  const connStr = url ?? process.env.ATLAS_DATASOURCE_URL ?? "";
+  const connStr = url ?? resolveDatasourceUrl() ?? "";
   if (!connStr) {
     throw new Error(
       "No database URL provided. Set ATLAS_DATASOURCE_URL to a PostgreSQL (postgresql://...), MySQL (mysql://...), ClickHouse (clickhouse://... or clickhouses://...), Snowflake (snowflake://...), DuckDB (duckdb://...), or Salesforce (salesforce://...) connection string."
@@ -617,13 +635,14 @@ export class ConnectionRegistry {
 
   getDefault(): DBConnection {
     if (!this.entries.has("default")) {
-      if (!process.env.ATLAS_DATASOURCE_URL) {
+      const url = resolveDatasourceUrl();
+      if (!url) {
         throw new Error(
           "No analytics datasource configured. Set ATLAS_DATASOURCE_URL to a PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, or Salesforce connection string."
         );
       }
       this.register("default", {
-        url: process.env.ATLAS_DATASOURCE_URL,
+        url,
         schema: process.env.ATLAS_SCHEMA,
       });
     }

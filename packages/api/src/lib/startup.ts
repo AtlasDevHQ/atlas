@@ -7,7 +7,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { detectDBType } from "./db/connection";
+import { detectDBType, resolveDatasourceUrl } from "./db/connection";
 import { detectAuthMode, getAuthModeSource } from "./auth/detect";
 import { createLogger } from "./logger";
 
@@ -67,14 +67,16 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
 
   const errors: DiagnosticError[] = [];
 
-  // 1. ATLAS_DATASOURCE_URL — error if DATABASE_URL looks like a migration leftover
-  if (!process.env.ATLAS_DATASOURCE_URL) {
+  // 1. Analytics datasource — resolve from ATLAS_DATASOURCE_URL or Neon fallback
+  const resolvedDatasourceUrl = resolveDatasourceUrl();
+  if (!resolvedDatasourceUrl) {
     if (process.env.DATABASE_URL) {
       const msg =
         "DATABASE_URL is set but ATLAS_DATASOURCE_URL is not. " +
         "As of v0.5, the analytics datasource uses ATLAS_DATASOURCE_URL. " +
         "DATABASE_URL is now reserved for Atlas's internal Postgres. " +
-        "Rename your analytics connection to ATLAS_DATASOURCE_URL.";
+        "Rename your analytics connection to ATLAS_DATASOURCE_URL, " +
+        "or set ATLAS_DEMO_DATA=true to use the same database for demo data.";
       log.error(msg);
       errors.push({ code: "MISSING_DATASOURCE_URL", message: msg });
     } else {
@@ -87,10 +89,14 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
       }
       log.warn(msg);
     }
+  } else if (!process.env.ATLAS_DATASOURCE_URL && process.env.ATLAS_DEMO_DATA === "true") {
+    const source = process.env.DATABASE_URL_UNPOOLED ? "DATABASE_URL_UNPOOLED" : "DATABASE_URL";
+    log.info("Demo mode: using %s as analytics datasource", source);
   }
 
   // 2. API key for configured provider
-  const provider = process.env.ATLAS_PROVIDER ?? "anthropic";
+  const defaultProvider = process.env.VERCEL ? "gateway" : "anthropic";
+  const provider = process.env.ATLAS_PROVIDER ?? defaultProvider;
   const requiredKey = PROVIDER_KEY_MAP[provider];
 
   if (requiredKey === undefined) {
@@ -129,11 +135,11 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
     });
   }
 
-  // 4. Datasource connectivity (only if ATLAS_DATASOURCE_URL is set)
-  if (process.env.ATLAS_DATASOURCE_URL) {
+  // 4. Datasource connectivity (only if a datasource URL is resolved)
+  if (resolvedDatasourceUrl) {
     let dbType: ReturnType<typeof detectDBType> | null = null;
     try {
-      dbType = detectDBType();
+      dbType = detectDBType(resolvedDatasourceUrl);
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       log.error({ err: detail }, "Unsupported datasource URL");
@@ -142,7 +148,7 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
 
     if (dbType === "mysql") {
       // MySQL: URL validation + connection test
-      if (!isValidUrl(process.env.ATLAS_DATASOURCE_URL)) {
+      if (!isValidUrl(resolvedDatasourceUrl)) {
         errors.push({
           code: "DB_UNREACHABLE",
           message: "ATLAS_DATASOURCE_URL appears malformed. Expected format: mysql://user:pass@host:3306/dbname",
@@ -153,7 +159,7 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
         let pool;
         try {
           pool = mysql.createPool({
-            uri: process.env.ATLAS_DATASOURCE_URL,
+            uri: resolvedDatasourceUrl,
             connectionLimit: 1,
             connectTimeout: 5000,
           });
@@ -200,7 +206,7 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
 
       if (createClient) {
         const { rewriteClickHouseUrl } = await import("./db/connection");
-        const httpUrl = rewriteClickHouseUrl(process.env.ATLAS_DATASOURCE_URL!);
+        const httpUrl = rewriteClickHouseUrl(resolvedDatasourceUrl);
         const client = createClient({ url: httpUrl });
         try {
           await client.query({ query: "SELECT 1", format: "JSON" });
@@ -238,7 +244,7 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
         });
       }
 
-      if (!isValidUrl(process.env.ATLAS_DATASOURCE_URL)) {
+      if (!isValidUrl(resolvedDatasourceUrl)) {
         errors.push({
           code: "DB_UNREACHABLE",
           message: "ATLAS_DATASOURCE_URL appears malformed. Expected format: postgresql://user:pass@host:5432/dbname",
@@ -247,7 +253,7 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         const { Pool } = require("pg");
         const pool = new Pool({
-          connectionString: process.env.ATLAS_DATASOURCE_URL,
+          connectionString: resolvedDatasourceUrl,
           max: 1,
           connectionTimeoutMillis: 5000,
         });
@@ -302,7 +308,7 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
       // Salesforce: test login + listObjects
       try {
         const { parseSalesforceURL, createSalesforceDataSource } = await import("./db/salesforce");
-        const config = parseSalesforceURL(process.env.ATLAS_DATASOURCE_URL!);
+        const config = parseSalesforceURL(resolvedDatasourceUrl);
         const source = createSalesforceDataSource(config);
         try {
           await source.listObjects();

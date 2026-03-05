@@ -43,7 +43,8 @@ function isBedrockAnthropicModel(modelId: string): boolean {
  * Returns the validated config provider string and the resolved model ID.
  */
 function resolveProvider(): { provider: ConfigProvider; modelId: string } {
-  const raw = process.env.ATLAS_PROVIDER ?? "anthropic";
+  const defaultProvider = process.env.VERCEL ? "gateway" : "anthropic";
+  const raw = process.env.ATLAS_PROVIDER ?? defaultProvider;
   if (!VALID_PROVIDERS.has(raw as ConfigProvider)) {
     throw new Error(
       `Unknown provider "${raw}". Supported: ${[...VALID_PROVIDERS].join(", ")}`

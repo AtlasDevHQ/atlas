@@ -20,6 +20,9 @@ import {
 import { connections } from "@atlas/api/lib/db/connection";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { plugins } from "@atlas/api/lib/plugins/registry";
+import { detectAuthMode } from "@atlas/api/lib/auth/detect";
+import type { AtlasRole } from "@atlas/api/lib/auth/types";
+import { ATLAS_ROLES } from "@atlas/api/lib/auth/types";
 
 const log = createLogger("admin-routes");
 
@@ -809,6 +812,476 @@ admin.post("/plugins/:id/health", async (c) => {
         message: "Plugin health check failed unexpectedly.",
         status: plugins.getStatus(id),
       }, 500);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Password change required — any authenticated managed-auth user (not admin-only)
+// ---------------------------------------------------------------------------
+
+// GET /me/password-status — check if current user must change password
+admin.get("/me/password-status", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  // Light auth: authenticate but don't require admin role
+  let authResult: AuthResult;
+  try {
+    authResult = await authenticateRequest(req);
+  } catch {
+    return c.json({ error: "auth_error", message: "Authentication system error" }, 500);
+  }
+  if (!authResult.authenticated) {
+    return c.json({ error: "auth_error", message: authResult.error }, authResult.status);
+  }
+  if (authResult.mode !== "managed" || !authResult.user) {
+    return c.json({ passwordChangeRequired: false });
+  }
+
+  if (!hasInternalDB()) return c.json({ passwordChangeRequired: false });
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    try {
+      const rows = await internalQuery<{ password_change_required: boolean }>(
+        `SELECT password_change_required FROM "user" WHERE id = $1`,
+        [authResult.user!.id],
+      );
+      return c.json({ passwordChangeRequired: rows[0]?.password_change_required === true });
+    } catch {
+      return c.json({ passwordChangeRequired: false });
+    }
+  });
+});
+
+// POST /me/password — change password and clear the flag
+admin.post("/me/password", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  let authResult: AuthResult;
+  try {
+    authResult = await authenticateRequest(req);
+  } catch {
+    return c.json({ error: "auth_error", message: "Authentication system error" }, 500);
+  }
+  if (!authResult.authenticated) {
+    return c.json({ error: "auth_error", message: authResult.error }, authResult.status);
+  }
+  if (authResult.mode !== "managed" || !authResult.user) {
+    return c.json({ error: "not_available", message: "Password change requires managed auth mode." }, 404);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const body = await c.req.json().catch(() => null);
+    const currentPassword = body?.currentPassword;
+    const newPassword = body?.newPassword;
+
+    if (typeof currentPassword !== "string" || typeof newPassword !== "string") {
+      return c.json({ error: "invalid_request", message: "currentPassword and newPassword are required." }, 400);
+    }
+    if (newPassword.length < 8) {
+      return c.json({ error: "invalid_request", message: "New password must be at least 8 characters." }, 400);
+    }
+
+    try {
+      const { getAuthInstance } = await import("@atlas/api/lib/auth/server");
+      const auth = getAuthInstance();
+      await (auth.api as unknown as {
+        changePassword(opts: { body: { currentPassword: string; newPassword: string }; headers: Headers }): Promise<unknown>;
+      }).changePassword({
+        body: { currentPassword, newPassword },
+        headers: req.headers,
+      });
+
+      // Clear the flag
+      if (hasInternalDB()) {
+        await internalQuery(
+          `UPDATE "user" SET password_change_required = false WHERE id = $1`,
+          [authResult.user!.id],
+        );
+      }
+
+      log.info({ requestId, userId: authResult.user!.id }, "Password changed and flag cleared");
+      return c.json({ success: true });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Password change failed";
+      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Password change failed");
+      // Better Auth throws if current password is wrong
+      if (message.includes("password") || message.includes("incorrect") || message.includes("invalid")) {
+        return c.json({ error: "invalid_request", message: "Current password is incorrect." }, 400);
+      }
+      return c.json({ error: "internal_error", message: "Failed to change password." }, 500);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// User management routes (requires managed auth mode + Better Auth admin plugin)
+// ---------------------------------------------------------------------------
+
+/**
+ * Server-side admin API methods from Better Auth's admin plugin.
+ * The base Auth type doesn't expose plugin-specific methods (see server.ts
+ * for why), but they exist at runtime. This interface types the subset we use.
+ */
+interface AdminApi {
+  listUsers(opts: { query: Record<string, unknown>; headers: Headers }): Promise<{
+    users: Array<Record<string, unknown>>;
+    total: number;
+  }>;
+  setRole(opts: { body: { userId: string; role: string }; headers: Headers }): Promise<unknown>;
+  banUser(opts: { body: Record<string, unknown>; headers: Headers }): Promise<unknown>;
+  unbanUser(opts: { body: { userId: string }; headers: Headers }): Promise<unknown>;
+  removeUser(opts: { body: { userId: string }; headers: Headers }): Promise<unknown>;
+  revokeSessions(opts: { body: { userId: string }; headers: Headers }): Promise<unknown>;
+}
+
+/**
+ * Get the Better Auth instance's admin API, or null if managed auth is not active.
+ * Lazy-imports to avoid pulling in Better Auth when not needed.
+ */
+async function getAdminApi(): Promise<AdminApi | null> {
+  if (detectAuthMode() !== "managed") return null;
+  const { getAuthInstance } = await import("@atlas/api/lib/auth/server");
+  // Cast: admin plugin methods exist at runtime but aren't in the base Auth type
+  return getAuthInstance().api as unknown as AdminApi;
+}
+
+/** Validate that a role string is a valid Atlas role. */
+function isValidRole(role: unknown): role is AtlasRole {
+  return typeof role === "string" && (ATLAS_ROLES as readonly string[]).includes(role);
+}
+
+// GET /users — list users (paginated, filterable)
+admin.get("/users", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  const adminApi = await getAdminApi();
+  if (!adminApi) {
+    return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const rawLimit = parseInt(c.req.query("limit") ?? "50", 10);
+    const rawOffset = parseInt(c.req.query("offset") ?? "0", 10);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 200) : 50;
+    const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
+    const search = c.req.query("search");
+    const role = c.req.query("role");
+
+    try {
+      const result = await adminApi.listUsers({
+        query: {
+          limit,
+          offset,
+          ...(search ? { searchField: "email", searchValue: search, searchOperator: "contains" } : {}),
+          ...(role && isValidRole(role) ? { filterField: "role", filterValue: role, filterOperator: "eq" } : {}),
+          sortBy: "createdAt",
+          sortDirection: "desc",
+        },
+        headers: req.headers,
+      });
+
+      return c.json({
+        users: result.users.map((u: Record<string, unknown>) => ({
+          id: u.id,
+          email: u.email,
+          name: u.name,
+          role: u.role ?? "viewer",
+          banned: u.banned ?? false,
+          banReason: u.banReason ?? null,
+          banExpires: u.banExpires ?? null,
+          createdAt: u.createdAt,
+        })),
+        total: result.total,
+        limit,
+        offset,
+      });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to list users");
+      return c.json({ error: "internal_error", message: "Failed to list users." }, 500);
+    }
+  });
+});
+
+// GET /users/stats — aggregate user stats
+admin.get("/users/stats", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  if (!hasInternalDB() || detectAuthMode() !== "managed") {
+    return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    try {
+      const totalResult = await internalQuery<{ count: string }>(
+        `SELECT COUNT(*) as count FROM "user"`,
+      );
+      const roleResult = await internalQuery<{ role: string; count: string }>(
+        `SELECT COALESCE(role, 'viewer') as role, COUNT(*) as count FROM "user" GROUP BY COALESCE(role, 'viewer')`,
+      );
+      const bannedResult = await internalQuery<{ count: string }>(
+        `SELECT COUNT(*) as count FROM "user" WHERE banned = true`,
+      );
+
+      const total = parseInt(String(totalResult[0]?.count ?? "0"), 10);
+      const banned = parseInt(String(bannedResult[0]?.count ?? "0"), 10);
+      const byRole: Record<string, number> = {};
+      for (const r of roleResult) {
+        byRole[r.role] = parseInt(String(r.count), 10);
+      }
+
+      return c.json({ total, banned, byRole });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "User stats query failed");
+      return c.json({ error: "internal_error", message: "Failed to query user stats." }, 500);
+    }
+  });
+});
+
+// PATCH /users/:id/role — change user role
+admin.patch("/users/:id/role", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  const adminApi = await getAdminApi();
+  if (!adminApi) {
+    return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const userId = c.req.param("id");
+    const body = await c.req.json().catch(() => null);
+    const newRole = body?.role;
+
+    if (!isValidRole(newRole)) {
+      return c.json({ error: "invalid_request", message: `Invalid role. Must be one of: ${ATLAS_ROLES.join(", ")}` }, 400);
+    }
+
+    // Self-protection: cannot change own role
+    if (authResult.user?.id === userId) {
+      return c.json({ error: "forbidden", message: "Cannot change your own role." }, 403);
+    }
+
+    // Last admin guard: if demoting an admin, ensure at least one admin remains
+    if (newRole !== "admin" && hasInternalDB()) {
+      try {
+        const currentUser = await internalQuery<{ role: string }>(
+          `SELECT role FROM "user" WHERE id = $1`,
+          [userId],
+        );
+        if (currentUser[0]?.role === "admin") {
+          const adminCount = await internalQuery<{ count: string }>(
+            `SELECT COUNT(*) as count FROM "user" WHERE role = 'admin'`,
+          );
+          if (parseInt(String(adminCount[0]?.count ?? "0"), 10) <= 1) {
+            return c.json({ error: "forbidden", message: "Cannot demote the last admin." }, 403);
+          }
+        }
+      } catch (err) {
+        log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Last admin guard check failed");
+        return c.json({ error: "internal_error", message: "Failed to verify admin count." }, 500);
+      }
+    }
+
+    try {
+      await adminApi.setRole({
+        body: { userId, role: newRole },
+        headers: req.headers,
+      });
+      log.info({ requestId, targetUserId: userId, newRole, actorId: authResult.user?.id }, "User role changed");
+      return c.json({ success: true });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to set user role");
+      return c.json({ error: "internal_error", message: "Failed to update user role." }, 500);
+    }
+  });
+});
+
+// POST /users/:id/ban — ban a user
+admin.post("/users/:id/ban", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  const adminApi = await getAdminApi();
+  if (!adminApi) {
+    return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const userId = c.req.param("id");
+
+    if (authResult.user?.id === userId) {
+      return c.json({ error: "forbidden", message: "Cannot ban yourself." }, 403);
+    }
+
+    const body = await c.req.json().catch(() => ({}));
+
+    try {
+      await adminApi.banUser({
+        body: {
+          userId,
+          ...(body.reason ? { banReason: body.reason } : {}),
+          ...(body.expiresIn ? { banExpiresIn: body.expiresIn } : {}),
+        },
+        headers: req.headers,
+      });
+      log.info({ requestId, targetUserId: userId, reason: body.reason, actorId: authResult.user?.id }, "User banned");
+      return c.json({ success: true });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to ban user");
+      return c.json({ error: "internal_error", message: "Failed to ban user." }, 500);
+    }
+  });
+});
+
+// POST /users/:id/unban — unban a user
+admin.post("/users/:id/unban", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  const adminApi = await getAdminApi();
+  if (!adminApi) {
+    return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const userId = c.req.param("id");
+
+    try {
+      await adminApi.unbanUser({
+        body: { userId },
+        headers: req.headers,
+      });
+      log.info({ requestId, targetUserId: userId, actorId: authResult.user?.id }, "User unbanned");
+      return c.json({ success: true });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to unban user");
+      return c.json({ error: "internal_error", message: "Failed to unban user." }, 500);
+    }
+  });
+});
+
+// DELETE /users/:id — delete a user
+admin.delete("/users/:id", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  const adminApi = await getAdminApi();
+  if (!adminApi) {
+    return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const userId = c.req.param("id");
+
+    if (authResult.user?.id === userId) {
+      return c.json({ error: "forbidden", message: "Cannot delete yourself." }, 403);
+    }
+
+    // Last admin guard
+    if (hasInternalDB()) {
+      try {
+        const currentUser = await internalQuery<{ role: string }>(
+          `SELECT role FROM "user" WHERE id = $1`,
+          [userId],
+        );
+        if (currentUser[0]?.role === "admin") {
+          const adminCount = await internalQuery<{ count: string }>(
+            `SELECT COUNT(*) as count FROM "user" WHERE role = 'admin'`,
+          );
+          if (parseInt(String(adminCount[0]?.count ?? "0"), 10) <= 1) {
+            return c.json({ error: "forbidden", message: "Cannot delete the last admin." }, 403);
+          }
+        }
+      } catch (err) {
+        log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Last admin guard check failed");
+        return c.json({ error: "internal_error", message: "Failed to verify admin count." }, 500);
+      }
+    }
+
+    try {
+      await adminApi.removeUser({
+        body: { userId },
+        headers: req.headers,
+      });
+      log.info({ requestId, targetUserId: userId, actorId: authResult.user?.id }, "User deleted");
+      return c.json({ success: true });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to delete user");
+      return c.json({ error: "internal_error", message: "Failed to delete user." }, 500);
+    }
+  });
+});
+
+// POST /users/:id/revoke — revoke all sessions (force logout)
+admin.post("/users/:id/revoke", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  const adminApi = await getAdminApi();
+  if (!adminApi) {
+    return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const userId = c.req.param("id");
+
+    try {
+      await adminApi.revokeSessions({
+        body: { userId },
+        headers: req.headers,
+      });
+      log.info({ requestId, targetUserId: userId, actorId: authResult.user?.id }, "User sessions revoked");
+      return c.json({ success: true });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to revoke sessions");
+      return c.json({ error: "internal_error", message: "Failed to revoke sessions." }, 500);
     }
   });
 });

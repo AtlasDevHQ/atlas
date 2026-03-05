@@ -16,6 +16,7 @@ import { ToolPart } from "./chat/tool-part";
 import { Markdown } from "./chat/markdown";
 import { STARTER_PROMPTS } from "./chat/starter-prompts";
 import { ConversationSidebar } from "./conversations/conversation-sidebar";
+import { ChangePasswordDialog } from "./admin/change-password-dialog";
 
 const API_KEY_STORAGE_KEY = "atlas-api-key";
 
@@ -37,15 +38,17 @@ export function AtlasChat() {
   const { apiUrl, isCrossOrigin, authClient } = useAtlasConfig();
   const dark = useDarkMode();
   const [input, setInput] = useState("");
-  const [authMode, setAuthMode] = useState<AuthMode>("none");
+  const [authMode, setAuthMode] = useState<AuthMode | null>(null);
   const [healthWarning, setHealthWarning] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [loadingConversation, setLoadingConversation] = useState(false);
+  const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const managedSession = authClient.useSession();
+  const authResolved = authMode !== null;
   const isManaged = authMode === "managed";
   const isSignedIn = isManaged && !!managedSession.data?.user;
 
@@ -93,6 +96,7 @@ export function AtlasChat() {
             return fetchHealth(attempt + 1);
           }
           setHealthWarning("Health check failed — check server logs. Try refreshing the page.");
+          setAuthMode("none");
           return;
         }
         const data = await res.json();
@@ -107,6 +111,7 @@ export function AtlasChat() {
           return fetchHealth(attempt + 1);
         }
         setHealthWarning("Unable to reach the API server. Try refreshing the page.");
+        setAuthMode("none");
       }
     }
     fetchHealth(1);
@@ -116,6 +121,25 @@ export function AtlasChat() {
   useEffect(() => {
     convos.fetchList();
   }, [authMode, convos.fetchList]);
+
+  // Check if managed auth user needs to change their default password
+  useEffect(() => {
+    if (!isManaged || !managedSession.data?.user) return;
+
+    async function checkPasswordStatus() {
+      try {
+        const res = await fetch(`${apiUrl}/api/v1/admin/me/password-status`, {
+          credentials: isCrossOrigin ? "include" : "same-origin",
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.passwordChangeRequired) setPasswordChangeRequired(true);
+      } catch {
+        // Non-critical — skip silently
+      }
+    }
+    checkPasswordStatus();
+  }, [isManaged, managedSession.data?.user, apiUrl, isCrossOrigin]);
 
   const handleSaveApiKey = useCallback((key: string) => {
     setApiKey(key);
@@ -203,6 +227,16 @@ export function AtlasChat() {
     convos.setSelectedId(null);
     setInput("");
     setMobileMenuOpen(false);
+  }
+
+  // Wait for auth mode detection before rendering — prevents flash of chat UI
+  // when managed auth is active but session hasn't been checked yet.
+  if (!authResolved || (isManaged && managedSession.isPending)) {
+    return (
+      <DarkModeContext.Provider value={dark}>
+        <div className="flex h-dvh items-center justify-center bg-white dark:bg-zinc-950" />
+      </DarkModeContext.Provider>
+    );
   }
 
   return (
@@ -379,6 +413,10 @@ export function AtlasChat() {
           </div>
         </main>
       </div>
+      <ChangePasswordDialog
+        open={passwordChangeRequired}
+        onComplete={() => setPasswordChangeRequired(false)}
+      />
     </DarkModeContext.Provider>
   );
 }

@@ -8,7 +8,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { BookOpen, BarChart3, FileText, FolderOpen, Code, LayoutDashboard } from "lucide-react";
+import { BookOpen, BarChart3, FileText, FolderOpen, Code, LayoutDashboard, Terminal } from "lucide-react";
 import { EntityDetail, type EntityData } from "@/ui/components/admin/entity-detail";
 import { EmptyState } from "@/ui/components/admin/empty-state";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
@@ -58,7 +58,8 @@ function CatalogViewer({ catalog }: { catalog: CatalogMeta | null }) {
     return (
       <EmptyState icon={FileText} message="No catalog metadata found">
         <p className="mt-1 text-xs">
-          Run <code className="rounded bg-muted px-1 py-0.5">atlas init</code> to generate a catalog
+          Run <code className="rounded bg-muted px-1 py-0.5">atlas init</code> to generate a catalog,
+          or create <code className="rounded bg-muted px-1 py-0.5">semantic/catalog.yml</code> manually.
         </p>
       </EmptyState>
     );
@@ -106,7 +107,8 @@ function GlossaryViewer({ glossary }: { glossary: GlossaryTerm[] }) {
     return (
       <EmptyState icon={BookOpen} message="No glossary terms found">
         <p className="mt-1 text-xs">
-          Run <code className="rounded bg-muted px-1 py-0.5">atlas init</code> to generate a glossary
+          Run <code className="rounded bg-muted px-1 py-0.5">atlas init</code> to generate a glossary,
+          or create <code className="rounded bg-muted px-1 py-0.5">semantic/glossary.yml</code> manually.
         </p>
       </EmptyState>
     );
@@ -149,7 +151,8 @@ function MetricsViewer({ metrics }: { metrics: MetricEntry[] }) {
     return (
       <EmptyState icon={BarChart3} message="No metrics found">
         <p className="mt-1 text-xs">
-          Run <code className="rounded bg-muted px-1 py-0.5">atlas init</code> to generate metrics
+          Run <code className="rounded bg-muted px-1 py-0.5">atlas init</code> to generate metrics,
+          or add YAML files to <code className="rounded bg-muted px-1 py-0.5">semantic/metrics/</code>.
         </p>
       </EmptyState>
     );
@@ -498,6 +501,15 @@ export default function SemanticPage() {
       <div className="border-b px-6 py-4">
         <h1 className="text-2xl font-bold tracking-tight">Semantic Layer</h1>
         <p className="text-sm text-muted-foreground">Browse entities, glossary, metrics, and catalog</p>
+      </div>
+
+      <div className="flex items-center gap-2 border-b bg-muted/30 px-6 py-2.5 text-xs text-muted-foreground">
+        <Terminal className="size-3.5 shrink-0" />
+        <span>
+          The semantic layer is managed through code.
+          Use <code className="rounded bg-muted px-1 py-0.5 font-mono">atlas init</code> to generate from your database
+          or edit YAML files directly in <code className="rounded bg-muted px-1 py-0.5 font-mono">semantic/</code>.
+        </span>
       </div>
 
       <div className="flex flex-1 overflow-hidden">

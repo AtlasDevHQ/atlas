@@ -1,0 +1,76 @@
+name: SystemSettings
+type: fact_table
+table: system_settings
+grain: one row per system setting record
+description: Auto-profiled schema for system_settings (20 rows). Contains 4 columns.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 20
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: key
+    sql: key
+    type: string
+    unique_count: 20
+    sample_values:
+      - analytics.enabled
+      - checkout.guest_allowed
+      - checkout.max_items
+      - email.from_address
+      - email.support_address
+      - inventory.low_stock_alert
+      - inventory.reorder_auto
+      - loyalty.points_per_dollar
+  - name: value
+    sql: value
+    type: string
+    unique_count: 16
+    sample_values:
+      - '0.08'
+      - '0.15'
+      - '1'
+      - '100'
+      - '15'
+      - '30'
+      - '50'
+      - '7500'
+  - name: updated_at
+    sql: updated_at
+    type: date
+    unique_count: 9
+    sample_values:
+      - Tue Jan 14 2020 19:00:00 GMT-0500 (Eastern Standard Time)
+      - Sun May 31 2020 20:00:00 GMT-0400 (Eastern Daylight Time)
+      - Mon Aug 31 2020 20:00:00 GMT-0400 (Eastern Daylight Time)
+      - Thu Dec 31 2020 19:00:00 GMT-0500 (Eastern Standard Time)
+      - Mon May 31 2021 20:00:00 GMT-0400 (Eastern Daylight Time)
+      - Fri Dec 31 2021 19:00:00 GMT-0500 (Eastern Standard Time)
+      - Sat Dec 31 2022 19:00:00 GMT-0500 (Eastern Standard Time)
+      - Wed May 31 2023 20:00:00 GMT-0400 (Eastern Daylight Time)
+  - name: updated_at_year
+    sql: EXTRACT(YEAR FROM updated_at)
+    type: number
+    description: Year extracted from updated_at
+    virtual: true
+  - name: updated_at_month
+    sql: TO_CHAR(updated_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from updated_at
+    virtual: true
+measures:
+  - name: system_setting_count
+    sql: id
+    type: count_distinct
+use_cases:
+  - Use for time-series analysis using updated_at

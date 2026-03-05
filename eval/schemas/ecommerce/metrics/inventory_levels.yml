@@ -1,0 +1,49 @@
+metrics:
+  - id: inventory_levels_count
+    label: Total InventoryLevels
+    description: Count of distinct inventory_levels records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM inventory_levels
+    aggregation: count_distinct
+  - id: total_quantity
+    label: Total quantity
+    description: Sum of quantity across all inventory_levels.
+    type: atomic
+    source:
+      entity: InventoryLevels
+      measure: total_quantity
+    sql: |-
+      SELECT SUM(quantity) as total_quantity
+      FROM inventory_levels
+    aggregation: sum
+    objective: maximize
+  - id: avg_quantity
+    label: Average quantity
+    description: Average quantity per inventory_level.
+    type: atomic
+    sql: |-
+      SELECT AVG(quantity) as avg_quantity
+      FROM inventory_levels
+    aggregation: avg
+  - id: total_reorder_point
+    label: Total reorder point
+    description: Sum of reorder_point across all inventory_levels.
+    type: atomic
+    source:
+      entity: InventoryLevels
+      measure: total_reorder_point
+    sql: |-
+      SELECT SUM(reorder_point) as total_reorder_point
+      FROM inventory_levels
+    aggregation: sum
+    objective: maximize
+  - id: avg_reorder_point
+    label: Average reorder point
+    description: Average reorder_point per inventory_level.
+    type: atomic
+    sql: |-
+      SELECT AVG(reorder_point) as avg_reorder_point
+      FROM inventory_levels
+    aggregation: avg

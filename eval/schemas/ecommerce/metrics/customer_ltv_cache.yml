@@ -1,0 +1,137 @@
+metrics:
+  - id: customer_ltv_cache_count
+    label: Total CustomerLtvCache
+    description: Count of distinct customer_ltv_cache records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM customer_ltv_cache
+    aggregation: count_distinct
+  - id: total_total_orders
+    label: Total total orders
+    description: Sum of total_orders across all customer_ltv_cache.
+    type: atomic
+    source:
+      entity: CustomerLtvCache
+      measure: total_total_orders
+    sql: |-
+      SELECT SUM(total_orders) as total_total_orders
+      FROM customer_ltv_cache
+    aggregation: sum
+    objective: maximize
+  - id: avg_total_orders
+    label: Average total orders
+    description: Average total_orders per customer_ltv_cache.
+    type: atomic
+    sql: |-
+      SELECT AVG(total_orders) as avg_total_orders
+      FROM customer_ltv_cache
+    aggregation: avg
+  - id: total_orders_by_segment
+    label: total orders by segment
+    description: total_orders broken down by segment.
+    type: atomic
+    sql: |-
+      SELECT segment, SUM(total_orders) as total_total_orders, AVG(total_orders) as avg_total_orders, COUNT(*) as count
+      FROM customer_ltv_cache
+      GROUP BY segment
+      ORDER BY total_total_orders DESC
+  - id: total_total_spent_cents
+    label: Total total spent cents
+    description: Sum of total_spent_cents across all customer_ltv_cache.
+    type: atomic
+    source:
+      entity: CustomerLtvCache
+      measure: total_total_spent_cents
+    sql: |-
+      SELECT SUM(total_spent_cents) as total_total_spent_cents
+      FROM customer_ltv_cache
+    aggregation: sum
+    objective: maximize
+  - id: avg_total_spent_cents
+    label: Average total spent cents
+    description: Average total_spent_cents per customer_ltv_cache.
+    type: atomic
+    sql: |-
+      SELECT AVG(total_spent_cents) as avg_total_spent_cents
+      FROM customer_ltv_cache
+    aggregation: avg
+  - id: total_spent_cents_by_segment
+    label: total spent cents by segment
+    description: total_spent_cents broken down by segment.
+    type: atomic
+    sql: >-
+      SELECT segment, SUM(total_spent_cents) as total_total_spent_cents, AVG(total_spent_cents) as
+      avg_total_spent_cents, COUNT(*) as count
+
+      FROM customer_ltv_cache
+
+      GROUP BY segment
+
+      ORDER BY total_total_spent_cents DESC
+  - id: total_avg_order_value_cents
+    label: Total avg order value cents
+    description: Sum of avg_order_value_cents across all customer_ltv_cache.
+    type: atomic
+    source:
+      entity: CustomerLtvCache
+      measure: total_avg_order_value_cents
+    sql: |-
+      SELECT SUM(avg_order_value_cents) as total_avg_order_value_cents
+      FROM customer_ltv_cache
+    aggregation: sum
+    objective: maximize
+  - id: avg_avg_order_value_cents
+    label: Average avg order value cents
+    description: Average avg_order_value_cents per customer_ltv_cache.
+    type: atomic
+    sql: |-
+      SELECT AVG(avg_order_value_cents) as avg_avg_order_value_cents
+      FROM customer_ltv_cache
+    aggregation: avg
+  - id: avg_order_value_cents_by_segment
+    label: avg order value cents by segment
+    description: avg_order_value_cents broken down by segment.
+    type: atomic
+    sql: >-
+      SELECT segment, SUM(avg_order_value_cents) as total_avg_order_value_cents, AVG(avg_order_value_cents) as
+      avg_avg_order_value_cents, COUNT(*) as count
+
+      FROM customer_ltv_cache
+
+      GROUP BY segment
+
+      ORDER BY total_avg_order_value_cents DESC
+  - id: total_predicted_ltv_cents
+    label: Total predicted ltv cents
+    description: Sum of predicted_ltv_cents across all customer_ltv_cache.
+    type: atomic
+    source:
+      entity: CustomerLtvCache
+      measure: total_predicted_ltv_cents
+    sql: |-
+      SELECT SUM(predicted_ltv_cents) as total_predicted_ltv_cents
+      FROM customer_ltv_cache
+    aggregation: sum
+    objective: maximize
+  - id: avg_predicted_ltv_cents
+    label: Average predicted ltv cents
+    description: Average predicted_ltv_cents per customer_ltv_cache.
+    type: atomic
+    sql: |-
+      SELECT AVG(predicted_ltv_cents) as avg_predicted_ltv_cents
+      FROM customer_ltv_cache
+    aggregation: avg
+  - id: predicted_ltv_cents_by_segment
+    label: predicted ltv cents by segment
+    description: predicted_ltv_cents broken down by segment.
+    type: atomic
+    sql: >-
+      SELECT segment, SUM(predicted_ltv_cents) as total_predicted_ltv_cents, AVG(predicted_ltv_cents) as
+      avg_predicted_ltv_cents, COUNT(*) as count
+
+      FROM customer_ltv_cache
+
+      GROUP BY segment
+
+      ORDER BY total_predicted_ltv_cents DESC

@@ -1,0 +1,67 @@
+metrics:
+  - id: payment_methods_count
+    label: Total PaymentMethods
+    description: Count of distinct payment_methods records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM payment_methods
+    aggregation: count_distinct
+  - id: total_expiry_month
+    label: Total expiry month
+    description: Sum of expiry_month across all payment_methods.
+    type: atomic
+    source:
+      entity: PaymentMethods
+      measure: total_expiry_month
+    sql: |-
+      SELECT SUM(expiry_month) as total_expiry_month
+      FROM payment_methods
+    aggregation: sum
+    objective: maximize
+  - id: avg_expiry_month
+    label: Average expiry month
+    description: Average expiry_month per payment_method.
+    type: atomic
+    sql: |-
+      SELECT AVG(expiry_month) as avg_expiry_month
+      FROM payment_methods
+    aggregation: avg
+  - id: expiry_month_by_type
+    label: expiry month by type
+    description: expiry_month broken down by type.
+    type: atomic
+    sql: |-
+      SELECT type, SUM(expiry_month) as total_expiry_month, AVG(expiry_month) as avg_expiry_month, COUNT(*) as count
+      FROM payment_methods
+      GROUP BY type
+      ORDER BY total_expiry_month DESC
+  - id: total_expiry_year
+    label: Total expiry year
+    description: Sum of expiry_year across all payment_methods.
+    type: atomic
+    source:
+      entity: PaymentMethods
+      measure: total_expiry_year
+    sql: |-
+      SELECT SUM(expiry_year) as total_expiry_year
+      FROM payment_methods
+    aggregation: sum
+    objective: maximize
+  - id: avg_expiry_year
+    label: Average expiry year
+    description: Average expiry_year per payment_method.
+    type: atomic
+    sql: |-
+      SELECT AVG(expiry_year) as avg_expiry_year
+      FROM payment_methods
+    aggregation: avg
+  - id: expiry_year_by_type
+    label: expiry year by type
+    description: expiry_year broken down by type.
+    type: atomic
+    sql: |-
+      SELECT type, SUM(expiry_year) as total_expiry_year, AVG(expiry_year) as avg_expiry_year, COUNT(*) as count
+      FROM payment_methods
+      GROUP BY type
+      ORDER BY total_expiry_year DESC

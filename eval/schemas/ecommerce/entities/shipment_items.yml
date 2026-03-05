@@ -1,0 +1,105 @@
+name: ShipmentItems
+type: fact_table
+table: shipment_items
+grain: one row per shipment item record
+description: Auto-profiled schema for shipment_items (48,000 rows). Contains 4 columns, linked to shipments, order_items.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 48000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: shipment_id
+    sql: shipment_id
+    type: number
+    unique_count: 19510
+    sample_values:
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '8'
+      - '9'
+      - '10'
+    profiler_notes:
+      - Likely FK to shipments.id (inferred from column name, no constraint exists)
+  - name: order_item_id
+    sql: order_item_id
+    type: number
+    unique_count: 32018
+    sample_values:
+      - '1'
+      - '10'
+      - '11'
+      - '12'
+      - '13'
+      - '18'
+      - '19'
+      - '20'
+    profiler_notes:
+      - Likely FK to order_items.id (inferred from column name, no constraint exists)
+  - name: quantity
+    sql: quantity
+    type: number
+    unique_count: 3
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+  - name: quantity_bucket
+    sql: |-
+      CASE
+        WHEN quantity < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY quantity) FROM shipment_items) THEN 'Low'
+        WHEN quantity < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY quantity) FROM shipment_items) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: quantity bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+measures:
+  - name: shipment_item_count
+    sql: id
+    type: count_distinct
+  - name: total_quantity
+    sql: quantity
+    type: sum
+    description: Sum of quantity
+  - name: avg_quantity
+    sql: quantity
+    type: avg
+    description: Average quantity
+joins:
+  - target_entity: Shipments
+    relationship: many_to_one
+    join_columns:
+      from: shipment_id
+      to: id
+    inferred: true
+    note: No FK constraint exists — inferred from column name shipment_id
+    description: Each shipment_item likely belongs to one shipment
+  - target_entity: OrderItems
+    relationship: many_to_one
+    join_columns:
+      from: order_item_id
+      to: id
+    inferred: true
+    note: No FK constraint exists — inferred from column name order_item_id
+    description: Each shipment_item likely belongs to one order_item
+use_cases:
+  - Use for aggregation and trends on quantity
+  - Join with shipments, order_items for cross-entity analysis

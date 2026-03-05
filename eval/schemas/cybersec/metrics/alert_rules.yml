@@ -1,0 +1,38 @@
+metrics:
+  - id: alert_rules_count
+    label: Total AlertRules
+    description: Count of distinct alert_rules records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM alert_rules
+    aggregation: count_distinct
+  - id: total_threshold
+    label: Total threshold
+    description: Sum of threshold across all alert_rules.
+    type: atomic
+    source:
+      entity: AlertRules
+      measure: total_threshold
+    sql: |-
+      SELECT SUM(threshold) as total_threshold
+      FROM alert_rules
+    aggregation: sum
+    objective: maximize
+  - id: avg_threshold
+    label: Average threshold
+    description: Average threshold per alert_rule.
+    type: atomic
+    sql: |-
+      SELECT AVG(threshold) as avg_threshold
+      FROM alert_rules
+    aggregation: avg
+  - id: threshold_by_condition_type
+    label: threshold by condition_type
+    description: threshold broken down by condition_type.
+    type: atomic
+    sql: |-
+      SELECT condition_type, SUM(threshold) as total_threshold, AVG(threshold) as avg_threshold, COUNT(*) as count
+      FROM alert_rules
+      GROUP BY condition_type
+      ORDER BY total_threshold DESC

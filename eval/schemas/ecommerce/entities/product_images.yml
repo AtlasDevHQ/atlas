@@ -1,0 +1,138 @@
+name: ProductImages
+type: fact_table
+table: product_images
+grain: one row per product image record
+description: Auto-profiled schema for product_images (4,000 rows). Contains 6 columns, linked to products.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 4000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: product_id
+    sql: product_id
+    type: number
+    description: Foreign key to products
+    unique_count: 789
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '6'
+      - '7'
+      - '8'
+      - '9'
+  - name: url
+    sql: url
+    type: string
+    unique_count: 4000
+    sample_values:
+      - https://cdn.novamart.com/products/0014347c3486db0d1425754795e66ac3.jpg
+      - https://cdn.novamart.com/products/001a44de25f966b7b6c31a30d2692999.jpg
+      - https://cdn.novamart.com/products/001dbe7e36e842caabecccb04485708d.jpg
+      - https://cdn.novamart.com/products/0040489164247b9d360417402b2579db.jpg
+      - https://cdn.novamart.com/products/0046e9e5e061e4ee7395b4e1e9d9724e.jpg
+      - https://cdn.novamart.com/products/00476747ad3ca874481555bf34db0c52.jpg
+      - https://cdn.novamart.com/products/00537f4a05a19af11478ab51a9df6dda.jpg
+      - https://cdn.novamart.com/products/00646f2e1e412be042d4750a12ead042.jpg
+  - name: alt_text
+    sql: alt_text
+    type: string
+    unique_count: 1
+    sample_values:
+      - Product image
+  - name: position
+    sql: position
+    type: number
+    unique_count: 5
+    sample_values:
+      - '0'
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 4000
+    sample_values:
+      - Sat Feb 01 2020 07:37:21 GMT-0500 (Eastern Standard Time)
+      - Sun Feb 02 2020 06:05:11 GMT-0500 (Eastern Standard Time)
+      - Sun Feb 02 2020 08:50:30 GMT-0500 (Eastern Standard Time)
+      - Sun Feb 02 2020 09:59:13 GMT-0500 (Eastern Standard Time)
+      - Sun Feb 02 2020 16:49:33 GMT-0500 (Eastern Standard Time)
+      - Sun Feb 02 2020 18:10:03 GMT-0500 (Eastern Standard Time)
+      - Mon Feb 03 2020 23:15:31 GMT-0500 (Eastern Standard Time)
+      - Tue Feb 04 2020 23:54:42 GMT-0500 (Eastern Standard Time)
+  - name: position_bucket
+    sql: |-
+      CASE
+        WHEN position < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY position) FROM product_images) THEN 'Low'
+        WHEN position < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY position) FROM product_images) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: position bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: product_image_count
+    sql: id
+    type: count_distinct
+  - name: total_position
+    sql: position
+    type: sum
+    description: Sum of position
+  - name: avg_position
+    sql: position
+    type: avg
+    description: Average position
+joins:
+  - target_entity: Products
+    relationship: many_to_one
+    join_columns:
+      from: product_id
+      to: id
+    description: Each product_image belongs to one product
+use_cases:
+  - Use for segmentation analysis by alt_text
+  - Use for aggregation and trends on position
+  - Use for time-series analysis using created_at
+  - Join with products for cross-entity analysis
+query_patterns:
+  - description: ProductImages by alt_text
+    sql: |-
+      SELECT alt_text, COUNT(*) as count
+      FROM product_images
+      GROUP BY alt_text
+      ORDER BY count DESC
+  - description: Total position by alt_text
+    sql: |-
+      SELECT alt_text, SUM(position) as total_position, COUNT(*) as count
+      FROM product_images
+      GROUP BY alt_text
+      ORDER BY total_position DESC

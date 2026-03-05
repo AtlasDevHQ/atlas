@@ -1,0 +1,249 @@
+name: Products
+type: fact_table
+table: products
+grain: one row per product record
+description: Auto-profiled schema for products (800 rows). Contains 11 columns, linked to categories, sellers.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 800
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: name
+    sql: name
+    type: string
+    unique_count: 249
+    sample_values:
+      - Area Rug Artisan
+      - Area Rug Classic
+      - Area Rug Coastal
+      - Area Rug Essential
+      - Area Rug Heritage
+      - Area Rug Luxe
+      - Area Rug Modern
+      - Area Rug Premium
+  - name: slug
+    sql: slug
+    type: string
+    unique_count: 800
+    sample_values:
+      - area-rug-artisan-21
+      - area-rug-artisan-265
+      - area-rug-artisan-503
+      - area-rug-artisan-672
+      - area-rug-artisan-790
+      - area-rug-classic-119
+      - area-rug-classic-713
+      - area-rug-classic-82
+  - name: category_id
+    sql: category_id
+    type: number
+    description: Foreign key to categories
+    unique_count: 25
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: seller_id
+    sql: seller_id
+    type: number
+    unique_count: 70
+    null_count: 632
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+    profiler_notes:
+      - Likely FK to sellers.id (inferred from column name, no constraint exists)
+  - name: price
+    sql: price
+    type: number
+    unique_count: 788
+    sample_values:
+      - '20.05'
+      - '20.71'
+      - '21.25'
+      - '21.35'
+      - '21.82'
+      - '22.78'
+      - '22.96'
+      - '23.02'
+  - name: price_cents
+    sql: price_cents
+    type: number
+    unique_count: 517
+    null_count: 278
+    sample_values:
+      - '2005'
+      - '2125'
+      - '2135'
+      - '2182'
+      - '2296'
+      - '2337'
+      - '2362'
+      - '2374'
+  - name: description
+    sql: description
+    type: string
+    unique_count: 249
+    sample_values:
+      - Premium quality area rug artisan for your home. Made with sustainable materials.
+      - Premium quality area rug classic for your home. Made with sustainable materials.
+      - Premium quality area rug coastal for your home. Made with sustainable materials.
+      - Premium quality area rug essential for your home. Made with sustainable materials.
+      - Premium quality area rug heritage for your home. Made with sustainable materials.
+      - Premium quality area rug luxe for your home. Made with sustainable materials.
+      - Premium quality area rug modern for your home. Made with sustainable materials.
+      - Premium quality area rug premium for your home. Made with sustainable materials.
+  - name: status
+    sql: status
+    type: string
+    unique_count: 3
+    sample_values:
+      - active
+      - discontinued
+      - draft
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 800
+    sample_values:
+      - Thu Feb 06 2020 06:56:32 GMT-0500 (Eastern Standard Time)
+      - Thu Feb 20 2020 22:19:46 GMT-0500 (Eastern Standard Time)
+      - Fri Feb 21 2020 21:19:53 GMT-0500 (Eastern Standard Time)
+      - Tue Feb 25 2020 07:49:24 GMT-0500 (Eastern Standard Time)
+      - Mon Mar 02 2020 11:36:12 GMT-0500 (Eastern Standard Time)
+      - Mon Mar 02 2020 15:55:21 GMT-0500 (Eastern Standard Time)
+      - Sat Mar 28 2020 07:19:16 GMT-0400 (Eastern Daylight Time)
+      - Wed Apr 01 2020 16:15:03 GMT-0400 (Eastern Daylight Time)
+  - name: updated_at
+    sql: updated_at
+    type: date
+    unique_count: 1
+    sample_values:
+      - Tue Mar 03 2026 13:37:39 GMT-0500 (Eastern Standard Time)
+  - name: price_bucket
+    sql: |-
+      CASE
+        WHEN price < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY price) FROM products) THEN 'Low'
+        WHEN price < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY price) FROM products) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: price bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: price_cents_bucket
+    sql: |-
+      CASE
+        WHEN price_cents < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY price_cents) FROM products) THEN 'Low'
+        WHEN price_cents < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY price_cents) FROM products) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: price cents bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+  - name: updated_at_year
+    sql: EXTRACT(YEAR FROM updated_at)
+    type: number
+    description: Year extracted from updated_at
+    virtual: true
+  - name: updated_at_month
+    sql: TO_CHAR(updated_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from updated_at
+    virtual: true
+measures:
+  - name: product_count
+    sql: id
+    type: count_distinct
+  - name: total_price
+    sql: price
+    type: sum
+    description: Sum of price
+  - name: avg_price
+    sql: price
+    type: avg
+    description: Average price
+  - name: total_price_cents
+    sql: price_cents
+    type: sum
+    description: Sum of price cents
+  - name: avg_price_cents
+    sql: price_cents
+    type: avg
+    description: Average price cents
+joins:
+  - target_entity: Categories
+    relationship: many_to_one
+    join_columns:
+      from: category_id
+      to: id
+    description: Each product belongs to one category
+  - target_entity: Sellers
+    relationship: many_to_one
+    join_columns:
+      from: seller_id
+      to: id
+    inferred: true
+    note: No FK constraint exists — inferred from column name seller_id
+    description: Each product likely belongs to one seller
+use_cases:
+  - Use for segmentation analysis by status
+  - Use for aggregation and trends on price, price_cents
+  - Use for time-series analysis using created_at, updated_at
+  - Join with categories, sellers for cross-entity analysis
+  - >-
+    Avoid for row-level
+    cart_events/product_images/product_performance_cache/product_reviews/product_tags/product_variants queries — use
+    those entities directly
+query_patterns:
+  - description: Products by status
+    sql: |-
+      SELECT status, COUNT(*) as count
+      FROM products
+      GROUP BY status
+      ORDER BY count DESC
+  - description: Total price by status
+    sql: |-
+      SELECT status, SUM(price) as total_price, COUNT(*) as count
+      FROM products
+      GROUP BY status
+      ORDER BY total_price DESC

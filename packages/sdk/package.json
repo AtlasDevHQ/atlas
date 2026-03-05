@@ -1,0 +1,49 @@
+{
+  "name": "@useatlas/sdk",
+  "version": "0.0.1",
+  "description": "TypeScript SDK for the Atlas text-to-SQL agent API",
+  "type": "module",
+  "scripts": {
+    "build": "rm -rf dist && bun build src/index.ts src/client.ts --outdir dist --target node --packages external && npx tsc -p tsconfig.build.json",
+    "prepublishOnly": "bun run build",
+    "test": "bun test src/__tests__/client.test.ts src/__tests__/type-compat.test.ts"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "import": "./dist/client.js",
+      "default": "./dist/client.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist/"
+  ],
+  "keywords": [
+    "atlas",
+    "text-to-sql",
+    "data-analyst",
+    "agent",
+    "sdk",
+    "typescript"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AtlasDevHQ/atlas",
+    "directory": "packages/sdk"
+  },
+  "homepage": "https://useatlas.dev",
+  "bugs": {
+    "url": "https://github.com/AtlasDevHQ/atlas/issues"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@atlas/api": "workspace:*"
+  }
+}

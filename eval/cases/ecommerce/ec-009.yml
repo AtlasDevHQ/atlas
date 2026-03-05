@@ -1,0 +1,19 @@
+id: "ec-009"
+question: "What are the most common return reasons and their total refund value?"
+schema: ecommerce
+difficulty: medium
+category: join
+tags: [returns, return_items, order_items, reasons]
+gold_sql: |
+  SELECT
+    r.reason,
+    COUNT(DISTINCT r.id) AS return_count,
+    SUM(ri.quantity) AS total_items_returned,
+    SUM(ri.quantity * oi.unit_price_cents) / 100.0 AS estimated_refund_value
+  FROM returns r
+  JOIN return_items ri ON ri.return_id = r.id
+  JOIN order_items oi ON ri.order_item_id = oi.id
+  GROUP BY r.reason
+  ORDER BY return_count DESC
+expected_rows: null
+notes: "Tests multi-table JOIN with DISTINCT count and value estimation"

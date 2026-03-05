@@ -1,0 +1,281 @@
+name: OrdersDenormalized
+type: fact_table
+table: orders_denormalized
+grain: one row per orders denormalized record
+description: >-
+  Auto-profiled schema for orders_denormalized (25,000 rows). Contains 12 columns, linked to orders, customers.
+  DENORMALIZED — data may duplicate other tables.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 25000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: order_id
+    sql: order_id
+    type: number
+    unique_count: 25000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+    profiler_notes:
+      - Likely FK to orders.id (inferred from column name, no constraint exists)
+  - name: customer_id
+    sql: customer_id
+    type: number
+    unique_count: 7652
+    sample_values:
+      - '1'
+      - '2'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+      - '9'
+    profiler_notes:
+      - Likely FK to customers.id (inferred from column name, no constraint exists)
+  - name: customer_name
+    sql: customer_name
+    type: string
+    unique_count: 1594
+    sample_values:
+      - Aiden Allen
+      - Aiden Anderson
+      - Aiden Brown
+      - Aiden Clark
+      - Aiden Davis
+      - Aiden Flores
+      - Aiden Garcia
+      - Aiden Gonzalez
+  - name: customer_email
+    sql: customer_email
+    type: string
+    unique_count: 7647
+    sample_values:
+      - aiden.allen132@protonmail.com
+      - aiden.allen223@protonmail.com
+      - aiden.allen248@outlook.com
+      - aiden.allen37@aol.com
+      - aiden.allen462@yahoo.com
+      - aiden.allen626@hotmail.com
+      - aiden.allen76@yahoo.com
+      - aiden.allen862@mail.com
+  - name: order_status
+    sql: order_status
+    type: string
+    unique_count: 7
+    sample_values:
+      - canceled
+      - confirmed
+      - delivered
+      - pending
+      - processing
+      - returned
+      - shipped
+  - name: total_cents
+    sql: total_cents
+    type: number
+    unique_count: 16426
+    sample_values:
+      - '3765'
+      - '3772'
+      - '3780'
+      - '3794'
+      - '3814'
+      - '3890'
+      - '3899'
+      - '3914'
+  - name: item_count
+    sql: item_count
+    type: number
+    unique_count: 11
+    sample_values:
+      - '0'
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+  - name: first_item_name
+    sql: first_item_name
+    type: string
+    unique_count: 20
+    null_count: 2776
+    sample_values:
+      - Area Rug
+      - Bamboo Pillowcase
+      - Cast Iron Skillet
+      - Ceramic Vase
+      - Chef Knife
+      - Cutting Board Set
+      - Egyptian Cotton Sheet Set
+      - Hand Towel Set
+  - name: shipping_city
+    sql: shipping_city
+    type: string
+    unique_count: 20
+    null_count: 5002
+    sample_values:
+      - Austin
+      - Charlotte
+      - Chicago
+      - Columbus
+      - Dallas
+      - Denver
+      - Houston
+      - Indianapolis
+  - name: shipping_state
+    sql: shipping_state
+    type: string
+    unique_count: 15
+    null_count: 5002
+    sample_values:
+      - AZ
+      - CA
+      - CO
+      - FL
+      - IL
+      - IN
+      - NC
+      - NV
+      - NY
+      - OH
+      - OR
+      - PA
+      - TN
+      - TX
+      - WA
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 25000
+    sample_values:
+      - Sun Mar 01 2020 04:32:04 GMT-0500 (Eastern Standard Time)
+      - Sun Mar 01 2020 08:57:07 GMT-0500 (Eastern Standard Time)
+      - Sun Mar 01 2020 13:53:14 GMT-0500 (Eastern Standard Time)
+      - Sun Mar 01 2020 15:21:20 GMT-0500 (Eastern Standard Time)
+      - Sun Mar 01 2020 22:08:43 GMT-0500 (Eastern Standard Time)
+      - Sun Mar 01 2020 22:22:57 GMT-0500 (Eastern Standard Time)
+      - Sun Mar 01 2020 22:31:43 GMT-0500 (Eastern Standard Time)
+      - Mon Mar 02 2020 02:04:45 GMT-0500 (Eastern Standard Time)
+  - name: total_cents_bucket
+    sql: |-
+      CASE
+        WHEN total_cents < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY total_cents) FROM orders_denormalized) THEN 'Low'
+        WHEN total_cents < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY total_cents) FROM orders_denormalized) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: total cents bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: item_count_bucket
+    sql: |-
+      CASE
+        WHEN item_count < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY item_count) FROM orders_denormalized) THEN 'Low'
+        WHEN item_count < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY item_count) FROM orders_denormalized) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: item count bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: orders_denormalized_count
+    sql: id
+    type: count_distinct
+  - name: total_total_cents
+    sql: total_cents
+    type: sum
+    description: Sum of total cents
+  - name: avg_total_cents
+    sql: total_cents
+    type: avg
+    description: Average total cents
+  - name: total_item_count
+    sql: item_count
+    type: sum
+    description: Sum of item count
+  - name: avg_item_count
+    sql: item_count
+    type: avg
+    description: Average item count
+joins:
+  - target_entity: Orders
+    relationship: many_to_one
+    join_columns:
+      from: order_id
+      to: id
+    inferred: true
+    note: No FK constraint exists — inferred from column name order_id
+    description: Each orders_denormalized likely belongs to one order
+  - target_entity: Customers
+    relationship: many_to_one
+    join_columns:
+      from: customer_id
+      to: id
+    inferred: true
+    note: No FK constraint exists — inferred from column name customer_id
+    description: Each orders_denormalized likely belongs to one customer
+use_cases:
+  - 'WARNING: This is a denormalized/materialized table. Data may be stale or duplicate other tables'
+  - Use for segmentation analysis by order_status, shipping_state
+  - Use for aggregation and trends on total_cents, item_count
+  - Use for time-series analysis using created_at
+  - Join with orders, customers for cross-entity analysis
+query_patterns:
+  - description: OrdersDenormalized by order_status
+    sql: |-
+      SELECT order_status, COUNT(*) as count
+      FROM orders_denormalized
+      GROUP BY order_status
+      ORDER BY count DESC
+  - description: OrdersDenormalized by shipping_state
+    sql: |-
+      SELECT shipping_state, COUNT(*) as count
+      FROM orders_denormalized
+      GROUP BY shipping_state
+      ORDER BY count DESC
+  - description: Total total_cents by order_status
+    sql: |-
+      SELECT order_status, SUM(total_cents) as total_total_cents, COUNT(*) as count
+      FROM orders_denormalized
+      GROUP BY order_status
+      ORDER BY total_total_cents DESC
+profiler_notes:
+  - 'Possibly denormalized/materialized table: name matches reporting pattern. Data may duplicate other tables'

@@ -1,0 +1,19 @@
+id: "cs-007"
+question: "What is the mean time to resolution for incidents by severity?"
+schema: cybersec
+difficulty: medium
+category: aggregation
+tags: [incidents, mttr, severity, time]
+gold_sql: |
+  SELECT
+    severity,
+    COUNT(*) AS resolved_count,
+    ROUND(AVG(EXTRACT(EPOCH FROM (resolved_at - created_at)) / 3600)::numeric, 1) AS avg_hours_to_resolve,
+    ROUND(MIN(EXTRACT(EPOCH FROM (resolved_at - created_at)) / 3600)::numeric, 1) AS min_hours,
+    ROUND(MAX(EXTRACT(EPOCH FROM (resolved_at - created_at)) / 3600)::numeric, 1) AS max_hours
+  FROM incidents
+  WHERE resolved_at IS NOT NULL
+  GROUP BY severity
+  ORDER BY avg_hours_to_resolve DESC
+expected_rows: null
+notes: "Tests date arithmetic with EXTRACT(EPOCH) for time-to-resolution metrics"

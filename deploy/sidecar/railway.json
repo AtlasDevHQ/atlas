@@ -1,0 +1,18 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "packages/sandbox-sidecar/Dockerfile",
+    "dockerfileContext": "../..",
+    "watchPatterns": [
+      "packages/sandbox-sidecar/**",
+      "packages/cli/data/demo-semantic/**"
+    ]
+  },
+  "deploy": {
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10,
+    "healthcheckPath": "/health",
+    "healthcheckTimeout": 30
+  }
+}

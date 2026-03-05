@@ -1,0 +1,127 @@
+name: IncidentEvents
+type: fact_table
+table: incident_events
+grain: one row per incident event record
+description: Auto-profiled schema for incident_events (6,000 rows). Contains 6 columns, linked to users, incidents.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 6000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: incident_id
+    sql: incident_id
+    type: number
+    description: Foreign key to incidents
+    unique_count: 1481
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: event_type
+    sql: event_type
+    type: string
+    unique_count: 10
+    sample_values:
+      - assigned
+      - comment
+      - containment_action
+      - created
+      - escalated
+      - evidence_added
+      - notification_sent
+      - playbook_executed
+      - resolution
+      - status_change
+  - name: description
+    sql: description
+    type: string
+    unique_count: 1
+    sample_values:
+      - Event recorded during incident investigation
+  - name: created_by
+    sql: created_by
+    type: number
+    description: Foreign key to users
+    unique_count: 1898
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '7'
+      - '8'
+      - '9'
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 6000
+    sample_values:
+      - Tue Jul 21 2020 19:55:57 GMT-0400 (Eastern Daylight Time)
+      - Wed Aug 05 2020 17:48:02 GMT-0400 (Eastern Daylight Time)
+      - Sat Aug 08 2020 08:04:53 GMT-0400 (Eastern Daylight Time)
+      - Fri Aug 21 2020 13:51:04 GMT-0400 (Eastern Daylight Time)
+      - Fri Sep 11 2020 01:11:30 GMT-0400 (Eastern Daylight Time)
+      - Sat Sep 26 2020 19:08:16 GMT-0400 (Eastern Daylight Time)
+      - Thu Oct 01 2020 21:04:02 GMT-0400 (Eastern Daylight Time)
+      - Fri Oct 02 2020 17:13:54 GMT-0400 (Eastern Daylight Time)
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: incident_event_count
+    sql: id
+    type: count_distinct
+joins:
+  - target_entity: Users
+    relationship: many_to_one
+    join_columns:
+      from: created_by
+      to: id
+    description: Each incident_event belongs to one user
+  - target_entity: Incidents
+    relationship: many_to_one
+    join_columns:
+      from: incident_id
+      to: id
+    description: Each incident_event belongs to one incident
+use_cases:
+  - Use for segmentation analysis by event_type, description
+  - Use for time-series analysis using created_at
+  - Join with users, incidents for cross-entity analysis
+query_patterns:
+  - description: IncidentEvents by event_type
+    sql: |-
+      SELECT event_type, COUNT(*) as count
+      FROM incident_events
+      GROUP BY event_type
+      ORDER BY count DESC
+  - description: IncidentEvents by description
+    sql: |-
+      SELECT description, COUNT(*) as count
+      FROM incident_events
+      GROUP BY description
+      ORDER BY count DESC

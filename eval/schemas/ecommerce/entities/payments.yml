@@ -1,0 +1,182 @@
+name: Payments
+type: fact_table
+table: payments
+grain: one row per payment record
+description: Auto-profiled schema for payments (26,000 rows). Contains 8 columns, linked to orders.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 26000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: order_id
+    sql: order_id
+    type: number
+    unique_count: 16209
+    sample_values:
+      - '1'
+      - '2'
+      - '4'
+      - '6'
+      - '8'
+      - '9'
+      - '10'
+      - '11'
+    profiler_notes:
+      - Likely FK to orders.id (inferred from column name, no constraint exists)
+  - name: method
+    sql: method
+    type: string
+    unique_count: 7
+    sample_values:
+      - apple_pay
+      - credit_card
+      - debit_card
+      - gift_card
+      - google_pay
+      - klarna
+      - paypal
+  - name: status
+    sql: status
+    type: string
+    unique_count: 4
+    sample_values:
+      - completed
+      - failed
+      - pending
+      - refunded
+  - name: amount_cents
+    sql: amount_cents
+    type: number
+    unique_count: 17368
+    sample_values:
+      - '3000'
+      - '3001'
+      - '3004'
+      - '3005'
+      - '3006'
+      - '3007'
+      - '3009'
+      - '3010'
+  - name: provider_ref
+    sql: provider_ref
+    type: string
+    unique_count: 26000
+    sample_values:
+      - pay_000338e8c0ace1402ecb9e08153ac4a5
+      - pay_00066ce6f3488d6397d7c9874c27c770
+      - pay_0007ff625898d15dcddfa1d5ef18f65c
+      - pay_000a372d847639f196eb14d6a30bf584
+      - pay_0010b16b2116e6b7a0878b4848340028
+      - pay_0015fbeffca9043dc5ee3c7eac07ff5b
+      - pay_001a0a40d7d501f6202f97f772fe697d
+      - pay_001b722af79b9e5d51056745d683c065
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 26000
+    sample_values:
+      - Sat Feb 29 2020 20:39:24 GMT-0500 (Eastern Standard Time)
+      - Sat Feb 29 2020 22:18:49 GMT-0500 (Eastern Standard Time)
+      - Sat Feb 29 2020 23:58:14 GMT-0500 (Eastern Standard Time)
+      - Sun Mar 01 2020 01:37:39 GMT-0500 (Eastern Standard Time)
+      - Sun Mar 01 2020 03:17:04 GMT-0500 (Eastern Standard Time)
+      - Sun Mar 01 2020 04:56:29 GMT-0500 (Eastern Standard Time)
+      - Sun Mar 01 2020 06:35:54 GMT-0500 (Eastern Standard Time)
+      - Sun Mar 01 2020 08:15:19 GMT-0500 (Eastern Standard Time)
+  - name: updated_at
+    sql: updated_at
+    type: date
+    unique_count: 1
+    sample_values:
+      - Tue Mar 03 2026 13:37:39 GMT-0500 (Eastern Standard Time)
+  - name: amount_cents_bucket
+    sql: |-
+      CASE
+        WHEN amount_cents < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY amount_cents) FROM payments) THEN 'Low'
+        WHEN amount_cents < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY amount_cents) FROM payments) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: amount cents bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+  - name: updated_at_year
+    sql: EXTRACT(YEAR FROM updated_at)
+    type: number
+    description: Year extracted from updated_at
+    virtual: true
+  - name: updated_at_month
+    sql: TO_CHAR(updated_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from updated_at
+    virtual: true
+measures:
+  - name: payment_count
+    sql: id
+    type: count_distinct
+  - name: total_amount_cents
+    sql: amount_cents
+    type: sum
+    description: Sum of amount cents
+  - name: avg_amount_cents
+    sql: amount_cents
+    type: avg
+    description: Average amount cents
+joins:
+  - target_entity: Orders
+    relationship: many_to_one
+    join_columns:
+      from: order_id
+      to: id
+    inferred: true
+    note: No FK constraint exists — inferred from column name order_id
+    description: Each payment likely belongs to one order
+use_cases:
+  - Use for segmentation analysis by method, status
+  - Use for aggregation and trends on amount_cents
+  - Use for time-series analysis using created_at, updated_at
+  - Join with orders for cross-entity analysis
+  - Avoid for row-level refunds queries — use those entities directly
+query_patterns:
+  - description: Payments by method
+    sql: |-
+      SELECT method, COUNT(*) as count
+      FROM payments
+      GROUP BY method
+      ORDER BY count DESC
+  - description: Payments by status
+    sql: |-
+      SELECT status, COUNT(*) as count
+      FROM payments
+      GROUP BY status
+      ORDER BY count DESC
+  - description: Total amount_cents by method
+    sql: |-
+      SELECT method, SUM(amount_cents) as total_amount_cents, COUNT(*) as count
+      FROM payments
+      GROUP BY method
+      ORDER BY total_amount_cents DESC

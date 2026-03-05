@@ -1,0 +1,129 @@
+metrics:
+  - id: daily_scan_stats_count
+    label: Total DailyScanStats
+    description: Count of distinct daily_scan_stats records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM daily_scan_stats
+    aggregation: count_distinct
+  - id: total_total_scans
+    label: Total total scans
+    description: Sum of total_scans across all daily_scan_stats.
+    type: atomic
+    source:
+      entity: DailyScanStats
+      measure: total_total_scans
+    sql: |-
+      SELECT SUM(total_scans) as total_total_scans
+      FROM daily_scan_stats
+    aggregation: sum
+    objective: maximize
+  - id: avg_total_scans
+    label: Average total scans
+    description: Average total_scans per daily_scan_stat.
+    type: atomic
+    sql: |-
+      SELECT AVG(total_scans) as avg_total_scans
+      FROM daily_scan_stats
+    aggregation: avg
+  - id: total_total_findings
+    label: Total total findings
+    description: Sum of total_findings across all daily_scan_stats.
+    type: atomic
+    source:
+      entity: DailyScanStats
+      measure: total_total_findings
+    sql: |-
+      SELECT SUM(total_findings) as total_total_findings
+      FROM daily_scan_stats
+    aggregation: sum
+    objective: maximize
+  - id: avg_total_findings
+    label: Average total findings
+    description: Average total_findings per daily_scan_stat.
+    type: atomic
+    sql: |-
+      SELECT AVG(total_findings) as avg_total_findings
+      FROM daily_scan_stats
+    aggregation: avg
+  - id: total_critical_count
+    label: Total critical count
+    description: Sum of critical_count across all daily_scan_stats.
+    type: atomic
+    source:
+      entity: DailyScanStats
+      measure: total_critical_count
+    sql: |-
+      SELECT SUM(critical_count) as total_critical_count
+      FROM daily_scan_stats
+    aggregation: sum
+    objective: maximize
+  - id: avg_critical_count
+    label: Average critical count
+    description: Average critical_count per daily_scan_stat.
+    type: atomic
+    sql: |-
+      SELECT AVG(critical_count) as avg_critical_count
+      FROM daily_scan_stats
+    aggregation: avg
+  - id: total_high_count
+    label: Total high count
+    description: Sum of high_count across all daily_scan_stats.
+    type: atomic
+    source:
+      entity: DailyScanStats
+      measure: total_high_count
+    sql: |-
+      SELECT SUM(high_count) as total_high_count
+      FROM daily_scan_stats
+    aggregation: sum
+    objective: maximize
+  - id: avg_high_count
+    label: Average high count
+    description: Average high_count per daily_scan_stat.
+    type: atomic
+    sql: |-
+      SELECT AVG(high_count) as avg_high_count
+      FROM daily_scan_stats
+    aggregation: avg
+  - id: total_medium_count
+    label: Total medium count
+    description: Sum of medium_count across all daily_scan_stats.
+    type: atomic
+    source:
+      entity: DailyScanStats
+      measure: total_medium_count
+    sql: |-
+      SELECT SUM(medium_count) as total_medium_count
+      FROM daily_scan_stats
+    aggregation: sum
+    objective: maximize
+  - id: avg_medium_count
+    label: Average medium count
+    description: Average medium_count per daily_scan_stat.
+    type: atomic
+    sql: |-
+      SELECT AVG(medium_count) as avg_medium_count
+      FROM daily_scan_stats
+    aggregation: avg
+  - id: total_low_count
+    label: Total low count
+    description: Sum of low_count across all daily_scan_stats.
+    type: atomic
+    source:
+      entity: DailyScanStats
+      measure: total_low_count
+    sql: |-
+      SELECT SUM(low_count) as total_low_count
+      FROM daily_scan_stats
+    aggregation: sum
+    objective: maximize
+  - id: avg_low_count
+    label: Average low count
+    description: Average low_count per daily_scan_stat.
+    type: atomic
+    sql: |-
+      SELECT AVG(low_count) as avg_low_count
+      FROM daily_scan_stats
+    aggregation: avg

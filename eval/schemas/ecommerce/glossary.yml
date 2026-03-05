@@ -1,0 +1,592 @@
+terms:
+  status:
+    status: ambiguous
+    note: >-
+      "status" appears in multiple tables: accounts, email_campaigns, email_sends, gift_cards, orders, payments,
+      products, refunds, returns, seller_applications, seller_payouts, sellers, shipments. ASK the user which table they
+      mean.
+    possible_mappings:
+      - accounts.status
+      - email_campaigns.status
+      - email_sends.status
+      - gift_cards.status
+      - orders.status
+      - payments.status
+      - products.status
+      - refunds.status
+      - returns.status
+      - seller_applications.status
+      - seller_payouts.status
+      - sellers.status
+      - shipments.status
+  created_at:
+    status: ambiguous
+    note: >-
+      "created_at" appears in multiple tables: admin_audit_log, admin_users, cart_events, categories,
+      customer_addresses, customer_segments, customers, email_campaigns, email_sends, gift_card_transactions,
+      gift_cards, loyalty_transactions, order_events, order_items, orders, orders_denormalized, page_views, payments,
+      product_images, product_reviews, product_tags, product_variants, products, promotion_usages, promotions, refunds,
+      returns, review_helpfulness, review_responses, search_queries, seller_payouts, seller_performance, shipments,
+      utm_tracking. ASK the user which table they mean.
+    possible_mappings:
+      - admin_audit_log.created_at
+      - admin_users.created_at
+      - cart_events.created_at
+      - categories.created_at
+      - customer_addresses.created_at
+      - customer_segments.created_at
+      - customers.created_at
+      - email_campaigns.created_at
+      - email_sends.created_at
+      - gift_card_transactions.created_at
+      - gift_cards.created_at
+      - loyalty_transactions.created_at
+      - order_events.created_at
+      - order_items.created_at
+      - orders.created_at
+      - orders_denormalized.created_at
+      - page_views.created_at
+      - payments.created_at
+      - product_images.created_at
+      - product_reviews.created_at
+      - product_tags.created_at
+      - product_variants.created_at
+      - products.created_at
+      - promotion_usages.created_at
+      - promotions.created_at
+      - refunds.created_at
+      - returns.created_at
+      - review_helpfulness.created_at
+      - review_responses.created_at
+      - search_queries.created_at
+      - seller_payouts.created_at
+      - seller_performance.created_at
+      - shipments.created_at
+      - utm_tracking.created_at
+  email:
+    status: ambiguous
+    note: '"email" appears in multiple tables: admin_users, customers, people. ASK the user which table they mean.'
+    possible_mappings:
+      - admin_users.email
+      - customers.email
+      - people.email
+  full_name:
+    status: ambiguous
+    note: '"full_name" appears in multiple tables: admin_users, customers. ASK the user which table they mean.'
+    possible_mappings:
+      - admin_users.full_name
+      - customers.full_name
+  is_active:
+    status: ambiguous
+    note: >-
+      "is_active" appears in multiple tables: admin_users, customers, product_variants, promotions, shipping_carriers,
+      warehouses. ASK the user which table they mean.
+    possible_mappings:
+      - admin_users.is_active
+      - customers.is_active
+      - product_variants.is_active
+      - promotions.is_active
+      - shipping_carriers.is_active
+      - warehouses.is_active
+  customer_id:
+    status: ambiguous
+    note: >-
+      "customer_id" appears in multiple tables: cart_events, customer_addresses, customer_ltv_cache,
+      orders_denormalized, page_views, review_helpfulness, search_queries, utm_tracking. ASK the user which table they
+      mean.
+    possible_mappings:
+      - cart_events.customer_id
+      - customer_addresses.customer_id
+      - customer_ltv_cache.customer_id
+      - orders_denormalized.customer_id
+      - page_views.customer_id
+      - review_helpfulness.customer_id
+      - search_queries.customer_id
+      - utm_tracking.customer_id
+  session_id:
+    status: ambiguous
+    note: >-
+      "session_id" appears in multiple tables: cart_events, page_views, search_queries. ASK the user which table they
+      mean.
+    possible_mappings:
+      - cart_events.session_id
+      - page_views.session_id
+      - search_queries.session_id
+  event_type:
+    status: ambiguous
+    note: '"event_type" appears in multiple tables: cart_events, order_events. ASK the user which table they mean.'
+    possible_mappings:
+      - cart_events.event_type
+      - order_events.event_type
+  product_id:
+    status: ambiguous
+    note: >-
+      "product_id" appears in multiple tables: cart_events, product_performance_cache. ASK the user which table they
+      mean.
+    possible_mappings:
+      - cart_events.product_id
+      - product_performance_cache.product_id
+  variant_id:
+    status: ambiguous
+    note: '"variant_id" appears in multiple tables: cart_events, inventory_levels. ASK the user which table they mean.'
+    possible_mappings:
+      - cart_events.variant_id
+      - inventory_levels.variant_id
+  quantity:
+    status: ambiguous
+    note: >-
+      "quantity" appears in multiple tables: cart_events, inventory_levels, order_items, return_items, shipment_items.
+      ASK the user which table they mean.
+    possible_mappings:
+      - cart_events.quantity
+      - inventory_levels.quantity
+      - order_items.quantity
+      - return_items.quantity
+      - shipment_items.quantity
+  name:
+    status: ambiguous
+    note: >-
+      "name" appears in multiple tables: categories, companies, customer_segments, email_campaigns, people,
+      product_variants, products, promotions, shipping_carriers, warehouses. ASK the user which table they mean.
+    possible_mappings:
+      - categories.name
+      - companies.name
+      - customer_segments.name
+      - email_campaigns.name
+      - people.name
+      - product_variants.name
+      - products.name
+      - promotions.name
+      - shipping_carriers.name
+      - warehouses.name
+  slug:
+    status: ambiguous
+    note: '"slug" appears in multiple tables: categories, products. ASK the user which table they mean.'
+    possible_mappings:
+      - categories.slug
+      - products.slug
+  description:
+    status: ambiguous
+    note: >-
+      "description" appears in multiple tables: categories, customer_segments, loyalty_transactions, order_events,
+      products. ASK the user which table they mean.
+    possible_mappings:
+      - categories.description
+      - customer_segments.description
+      - loyalty_transactions.description
+      - order_events.description
+      - products.description
+  country:
+    status: ambiguous
+    note: >-
+      "country" appears in multiple tables: companies, customer_addresses, warehouses. ASK the user which table they
+      mean.
+    possible_mappings:
+      - companies.country
+      - customer_addresses.country
+      - warehouses.country
+  city:
+    status: ambiguous
+    note: '"city" appears in multiple tables: customer_addresses, warehouses. ASK the user which table they mean.'
+    possible_mappings:
+      - customer_addresses.city
+      - warehouses.city
+  state:
+    status: ambiguous
+    note: '"state" appears in multiple tables: customer_addresses, warehouses. ASK the user which table they mean.'
+    possible_mappings:
+      - customer_addresses.state
+      - warehouses.state
+  total_orders:
+    status: ambiguous
+    note: >-
+      "total_orders" appears in multiple tables: customer_ltv_cache, daily_sales_summary, seller_performance. ASK the
+      user which table they mean.
+    possible_mappings:
+      - customer_ltv_cache.total_orders
+      - daily_sales_summary.total_orders
+      - seller_performance.total_orders
+  avg_order_value_cents:
+    status: ambiguous
+    note: >-
+      "avg_order_value_cents" appears in multiple tables: customer_ltv_cache, daily_sales_summary,
+      monthly_revenue_summary. ASK the user which table they mean.
+    possible_mappings:
+      - customer_ltv_cache.avg_order_value_cents
+      - daily_sales_summary.avg_order_value_cents
+      - monthly_revenue_summary.avg_order_value_cents
+  calculated_at:
+    status: ambiguous
+    note: >-
+      "calculated_at" appears in multiple tables: customer_ltv_cache, product_performance_cache. ASK the user which
+      table they mean.
+    possible_mappings:
+      - customer_ltv_cache.calculated_at
+      - product_performance_cache.calculated_at
+  updated_at:
+    status: ambiguous
+    note: >-
+      "updated_at" appears in multiple tables: customers, inventory_levels, loyalty_accounts, orders, payments,
+      products, sellers, system_settings. ASK the user which table they mean.
+    possible_mappings:
+      - customers.updated_at
+      - inventory_levels.updated_at
+      - loyalty_accounts.updated_at
+      - orders.updated_at
+      - payments.updated_at
+      - products.updated_at
+      - sellers.updated_at
+      - system_settings.updated_at
+  total_revenue_cents:
+    status: ambiguous
+    note: >-
+      "total_revenue_cents" appears in multiple tables: daily_sales_summary, product_performance_cache,
+      seller_performance. ASK the user which table they mean.
+    possible_mappings:
+      - daily_sales_summary.total_revenue_cents
+      - product_performance_cache.total_revenue_cents
+      - seller_performance.total_revenue_cents
+  type:
+    status: ambiguous
+    note: >-
+      "type" appears in multiple tables: email_campaigns, gift_card_transactions, loyalty_transactions, promotions. ASK
+      the user which table they mean.
+    possible_mappings:
+      - email_campaigns.type
+      - gift_card_transactions.type
+      - loyalty_transactions.type
+      - promotions.type
+  order_id:
+    status: ambiguous
+    note: >-
+      "order_id" appears in multiple tables: gift_card_transactions, loyalty_transactions, order_events,
+      orders_denormalized, payments, promotion_usages, utm_tracking. ASK the user which table they mean.
+    possible_mappings:
+      - gift_card_transactions.order_id
+      - loyalty_transactions.order_id
+      - order_events.order_id
+      - orders_denormalized.order_id
+      - payments.order_id
+      - promotion_usages.order_id
+      - utm_tracking.order_id
+  amount_cents:
+    status: ambiguous
+    note: >-
+      "amount_cents" appears in multiple tables: gift_card_transactions, payments, refunds, seller_payouts. ASK the user
+      which table they mean.
+    possible_mappings:
+      - gift_card_transactions.amount_cents
+      - payments.amount_cents
+      - refunds.amount_cents
+      - seller_payouts.amount_cents
+  code:
+    status: ambiguous
+    note: >-
+      "code" appears in multiple tables: gift_cards, promotions, shipping_carriers, warehouses. ASK the user which table
+      they mean.
+    possible_mappings:
+      - gift_cards.code
+      - promotions.code
+      - shipping_carriers.code
+      - warehouses.code
+  page_url:
+    status: ambiguous
+    note: '"page_url" appears in multiple tables: legacy_analytics_events, page_views. ASK the user which table they mean.'
+    possible_mappings:
+      - legacy_analytics_events.page_url
+      - page_views.page_url
+  points:
+    status: ambiguous
+    note: '"points" appears in multiple tables: loyalty_accounts, loyalty_transactions. ASK the user which table they mean.'
+    possible_mappings:
+      - loyalty_accounts.points
+      - loyalty_transactions.points
+  month:
+    status: ambiguous
+    note: >-
+      "month" appears in multiple tables: monthly_revenue_summary, seller_performance. ASK the user which table they
+      mean.
+    possible_mappings:
+      - monthly_revenue_summary.month
+      - seller_performance.month
+  order_status:
+    status: ambiguous
+    note: '"order_status" appears in multiple tables: old_orders_v1, orders_denormalized. ASK the user which table they mean.'
+    possible_mappings:
+      - old_orders_v1.order_status
+      - orders_denormalized.order_status
+  product_name:
+    status: ambiguous
+    note: >-
+      "product_name" appears in multiple tables: order_items, product_performance_cache. ASK the user which table they
+      mean.
+    possible_mappings:
+      - order_items.product_name
+      - product_performance_cache.product_name
+  total_cents:
+    status: ambiguous
+    note: >-
+      "total_cents" appears in multiple tables: order_items, orders, orders_denormalized. ASK the user which table they
+      mean.
+    possible_mappings:
+      - order_items.total_cents
+      - orders.total_cents
+      - orders_denormalized.total_cents
+  customer_email:
+    status: ambiguous
+    note: '"customer_email" appears in multiple tables: orders, orders_denormalized. ASK the user which table they mean.'
+    possible_mappings:
+      - orders.customer_email
+      - orders_denormalized.customer_email
+  promotion_id:
+    status: ambiguous
+    note: '"promotion_id" appears in multiple tables: orders, promotion_usages. ASK the user which table they mean.'
+    possible_mappings:
+      - orders.promotion_id
+      - promotion_usages.promotion_id
+  title:
+    status: ambiguous
+    note: '"title" appears in multiple tables: people, product_reviews. ASK the user which table they mean.'
+    possible_mappings:
+      - people.title
+      - product_reviews.title
+  avg_rating:
+    status: ambiguous
+    note: >-
+      "avg_rating" appears in multiple tables: product_performance_cache, seller_performance. ASK the user which table
+      they mean.
+    possible_mappings:
+      - product_performance_cache.avg_rating
+      - seller_performance.avg_rating
+  return_rate:
+    status: ambiguous
+    note: >-
+      "return_rate" appears in multiple tables: product_performance_cache, seller_performance. ASK the user which table
+      they mean.
+    possible_mappings:
+      - product_performance_cache.return_rate
+      - seller_performance.return_rate
+  body:
+    status: ambiguous
+    note: '"body" appears in multiple tables: product_reviews, review_responses. ASK the user which table they mean.'
+    possible_mappings:
+      - product_reviews.body
+      - review_responses.body
+  price_cents:
+    status: ambiguous
+    note: '"price_cents" appears in multiple tables: product_variants, products. ASK the user which table they mean.'
+    possible_mappings:
+      - product_variants.price_cents
+      - products.price_cents
+  value:
+    status: ambiguous
+    note: '"value" appears in multiple tables: promotions, system_settings. ASK the user which table they mean.'
+    possible_mappings:
+      - promotions.value
+      - system_settings.value
+  reason:
+    status: ambiguous
+    note: '"reason" appears in multiple tables: refunds, returns. ASK the user which table they mean.'
+    possible_mappings:
+      - refunds.reason
+      - returns.reason
+  order_item_id:
+    status: ambiguous
+    note: '"order_item_id" appears in multiple tables: return_items, shipment_items. ASK the user which table they mean.'
+    possible_mappings:
+      - return_items.order_item_id
+      - shipment_items.order_item_id
+  company_name:
+    status: ambiguous
+    note: '"company_name" appears in multiple tables: seller_applications, sellers. ASK the user which table they mean.'
+    possible_mappings:
+      - seller_applications.company_name
+      - sellers.company_name
+  contact_email:
+    status: ambiguous
+    note: '"contact_email" appears in multiple tables: seller_applications, sellers. ASK the user which table they mean.'
+    possible_mappings:
+      - seller_applications.contact_email
+      - sellers.contact_email
+  company:
+    status: defined
+    definition: Refers to the companies entity. Linked via accounts.company_id → companies.id.
+  admin_user:
+    status: defined
+    definition: Refers to the admin_users entity. Linked via admin_audit_log.admin_user_id → admin_users.id.
+  parent:
+    status: defined
+    definition: Refers to the categories entity. Linked via categories.parent_id → categories.id.
+  customer:
+    status: defined
+    definition: Refers to the customers entity. Linked via customer_segment_assignments.customer_id → customers.id.
+  segment:
+    status: defined
+    definition: Refers to the customer_segments entity. Linked via customer_segment_assignments.segment_id → customer_segments.id.
+  campaign:
+    status: defined
+    definition: Refers to the email_campaigns entity. Linked via email_sends.campaign_id → email_campaigns.id.
+  gift_card:
+    status: defined
+    definition: Refers to the gift_cards entity. Linked via gift_card_transactions.gift_card_id → gift_cards.id.
+  issued_to:
+    status: defined
+    definition: Refers to the customers entity. Linked via gift_cards.issued_to → customers.id.
+  warehouse:
+    status: defined
+    definition: Refers to the warehouses entity. Linked via inventory_levels.warehouse_id → warehouses.id.
+  loyalty_account:
+    status: defined
+    definition: Refers to the loyalty_accounts entity. Linked via loyalty_transactions.loyalty_account_id → loyalty_accounts.id.
+  order:
+    status: defined
+    definition: Refers to the orders entity. Linked via order_items.order_id → orders.id.
+  product:
+    status: defined
+    definition: Refers to the products entity. Linked via product_images.product_id → products.id.
+  category:
+    status: defined
+    definition: Refers to the categories entity. Linked via products.category_id → categories.id.
+  payment:
+    status: defined
+    definition: Refers to the payments entity. Linked via refunds.payment_id → payments.id.
+  return:
+    status: defined
+    definition: Refers to the returns entity. Linked via return_items.return_id → returns.id.
+  review:
+    status: defined
+    definition: Refers to the product_reviews entity. Linked via review_responses.review_id → product_reviews.id.
+  seller:
+    status: defined
+    definition: Refers to the sellers entity. Linked via seller_payouts.seller_id → sellers.id.
+  plan:
+    status: defined
+    definition: 'Categorical field on accounts. Possible values: Enterprise, Free, Pro, Starter.'
+  action:
+    status: defined
+    definition: >-
+      Categorical field on admin_audit_log. Possible values: cancel_order, create_promotion, export_data, issue_refund,
+      login, logout, manage_return, manage_seller, update_customer, update_order, update_product, update_settings,
+      view_analytics, view_order, view_report.
+  resource_type:
+    status: defined
+    definition: >-
+      Categorical field on admin_audit_log. Possible values: customer, order, product, promotion, report, return,
+      seller, settings.
+  label:
+    status: defined
+    definition: 'Categorical field on customer_addresses. Possible values: home, other, work.'
+  segment_name:
+    status: defined
+    definition: >-
+      Categorical field on customer_segment_assignments. Possible values: At-Risk, Bargain, Churned, Dormant,
+      High-Value, Loyal, Marketplace, New, Regular, VIP, VIP Customer, at-risk, bargain_hunter, high_value, new_user,
+      regular_customer, vip.
+  acquisition_source:
+    status: defined
+    definition: >-
+      Categorical field on customers. Possible values: Direct, Email, Facebook, GOOGLE, Google, Instagram, ORGANIC,
+      Organic, Referral, TikTok, direct, email, facebook, google, instagram, organic, referral, tiktok.
+  event_name:
+    status: defined
+    definition: >-
+      Categorical field on legacy_analytics_events. Possible values: add_to_cart, click, form_submit, login, page_view,
+      purchase, remove_from_cart, scroll, search, signup.
+  tier:
+    status: defined
+    definition: >-
+      Categorical field on loyalty_accounts. Possible values: Bronze, GOLD, Gold, Platinum, SILVER, Silver, gold,
+      silver.
+  shipping_state:
+    status: defined
+    definition: >-
+      Categorical field on orders_denormalized. Possible values: AZ, CA, CO, FL, IL, IN, NC, NV, NY, OH, OR, PA, TN, TX,
+      WA.
+  referrer:
+    status: defined
+    definition: >-
+      Categorical field on page_views. Possible values: https://facebook.com, https://google.com, https://instagram.com,
+      https://pinterest.com, https://tiktok.com.
+  device_type:
+    status: defined
+    definition: 'Categorical field on page_views. Possible values: desktop, mobile, tablet.'
+  card_type:
+    status: defined
+    definition: 'Categorical field on payment_methods_backup. Possible values: amex, discover, mastercard, visa.'
+  method:
+    status: defined
+    definition: >-
+      Categorical field on payments. Possible values: apple_pay, credit_card, debit_card, gift_card, google_pay, klarna,
+      paypal.
+  department:
+    status: defined
+    definition: 'Categorical field on people. Possible values: Engineering, Finance, Marketing, Operations, Product, Sales.'
+  seniority:
+    status: defined
+    definition: 'Categorical field on people. Possible values: Executive, Junior, Mid, Senior.'
+  alt_text:
+    status: defined
+    definition: 'Categorical field on product_images. Possible values: Product image.'
+  tag:
+    status: defined
+    definition: >-
+      Categorical field on product_tags. Possible values: bestseller, bundle, clearance, eco-friendly, exclusive,
+      gift-idea, handmade, limited-edition, luxury, new-arrival, organic, sale, seasonal, sustainable, trending.
+  condition:
+    status: defined
+    definition: 'Categorical field on return_items. Possible values: damaged, defective, opened, unopened.'
+  responder:
+    status: defined
+    definition: >-
+      Categorical field on review_responses. Possible values: NovaMart Team, Seller: Artisan Home Co, Seller: Heritage
+      Living, Seller: Pacific Goods, Seller: Summit Craft.
+  notes:
+    status: defined
+    definition: 'Categorical field on seller_applications. Possible values: Reviewed by marketplace ops team.'
+  carrier:
+    status: defined
+    definition: 'Categorical field on shipments. Possible values: DHL, FedEx, OnTrac, UPS, USPS.'
+  import_category:
+    status: defined
+    definition: 'Categorical field on temp_product_import_2023. Possible values: , bath, bedding, decor, kitchen, outdoor, unknown.'
+  utm_source:
+    status: defined
+    definition: >-
+      Categorical field on utm_tracking. Possible values: bing, email, facebook, google, instagram, pinterest, tiktok,
+      twitter.
+  utm_medium:
+    status: defined
+    definition: 'Categorical field on utm_tracking. Possible values: cpc, display, email, organic, referral, social.'
+  utm_campaign:
+    status: defined
+    definition: >-
+      Categorical field on utm_tracking. Possible values: back_to_school, brand_awareness, flash_sale, holiday_2024,
+      loyalty_program, new_arrivals, retargeting, spring_launch, summer_sale, winter_clearance.
+  utm_content:
+    status: defined
+    definition: 'Categorical field on utm_tracking. Possible values: carousel, footer, hero_banner, popup, sidebar.'
+  landing_page:
+    status: defined
+    definition: >-
+      Categorical field on utm_tracking. Possible values: /, /collections/bath, /collections/bedding,
+      /collections/kitchen, /collections/outdoor, /collections/sale, /products/bestseller.
+  customer_segment_assignments.segment_name:
+    status: ambiguous
+    note: >-
+      segment_name on customer_segment_assignments has case-inconsistent values. Use LOWER(segment_name) when grouping
+      or filtering.
+    guidance: 'Always wrap in LOWER() for reliable aggregation: GROUP BY LOWER(segment_name)'
+  customers.acquisition_source:
+    status: ambiguous
+    note: >-
+      acquisition_source on customers has case-inconsistent values. Use LOWER(acquisition_source) when grouping or
+      filtering.
+    guidance: 'Always wrap in LOWER() for reliable aggregation: GROUP BY LOWER(acquisition_source)'
+  loyalty_accounts.tier:
+    status: ambiguous
+    note: tier on loyalty_accounts has case-inconsistent values. Use LOWER(tier) when grouping or filtering.
+    guidance: 'Always wrap in LOWER() for reliable aggregation: GROUP BY LOWER(tier)'
+  returns.reason:
+    status: ambiguous
+    note: reason on returns has case-inconsistent values. Use LOWER(reason) when grouping or filtering.
+    guidance: 'Always wrap in LOWER() for reliable aggregation: GROUP BY LOWER(reason)'

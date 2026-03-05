@@ -1,0 +1,14 @@
+id: "sp-008"
+question: "Which companies have accounts but no employees in our system?"
+schema: simple
+difficulty: medium
+category: subquery
+tags: [companies, accounts, people, missing-data]
+gold_sql: |
+  SELECT c.name, c.industry, c.country
+  FROM companies c
+  WHERE c.id IN (SELECT DISTINCT company_id FROM accounts)
+    AND c.id NOT IN (SELECT DISTINCT company_id FROM people)
+  ORDER BY c.name
+expected_rows: null
+notes: "Tests subquery with IN / NOT IN to find data gaps"

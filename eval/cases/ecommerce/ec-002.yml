@@ -1,0 +1,18 @@
+id: "ec-002"
+question: "What are the top 10 best-selling products by quantity sold?"
+schema: ecommerce
+difficulty: simple
+category: join
+tags: [products, order_items, best-sellers]
+gold_sql: |
+  SELECT
+    p.name AS product_name,
+    SUM(oi.quantity) AS total_units_sold,
+    SUM(oi.total_cents) / 100.0 AS total_revenue
+  FROM order_items oi
+  JOIN product_variants pv ON oi.product_variant_id = pv.id
+  JOIN products p ON pv.product_id = p.id
+  GROUP BY p.name
+  ORDER BY total_units_sold DESC
+expected_rows: null
+notes: "Tests multi-hop JOIN through product_variants to products"

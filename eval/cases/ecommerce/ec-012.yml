@@ -1,0 +1,22 @@
+id: "ec-012"
+question: "What is the month-over-month revenue growth rate?"
+schema: ecommerce
+difficulty: complex
+category: window
+tags: [monthly_revenue_summary, growth, lag]
+gold_sql: |
+  SELECT
+    month,
+    total_revenue_cents / 100.0 AS revenue,
+    total_orders,
+    new_customers,
+    returning_customers,
+    LAG(total_revenue_cents) OVER (ORDER BY month) / 100.0 AS prev_month_revenue,
+    ROUND(
+      (total_revenue_cents - LAG(total_revenue_cents) OVER (ORDER BY month))::numeric
+      / NULLIF(LAG(total_revenue_cents) OVER (ORDER BY month), 0) * 100, 1
+    ) AS mom_growth_pct
+  FROM monthly_revenue_summary
+  ORDER BY month
+expected_rows: null
+notes: "Tests LAG window function for month-over-month growth calculation"

@@ -1,0 +1,129 @@
+name: SellerApplications
+type: fact_table
+table: seller_applications
+grain: one row per seller application record
+description: Auto-profiled schema for seller_applications (120 rows). Contains 7 columns.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 120
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: company_name
+    sql: company_name
+    type: string
+    unique_count: 120
+    sample_values:
+      - Applicant Store 1
+      - Applicant Store 10
+      - Applicant Store 100
+      - Applicant Store 101
+      - Applicant Store 102
+      - Applicant Store 103
+      - Applicant Store 104
+      - Applicant Store 105
+  - name: contact_email
+    sql: contact_email
+    type: string
+    unique_count: 120
+    sample_values:
+      - apply100@seller-app.com
+      - apply101@seller-app.com
+      - apply102@seller-app.com
+      - apply103@seller-app.com
+      - apply104@seller-app.com
+      - apply105@seller-app.com
+      - apply106@seller-app.com
+      - apply107@seller-app.com
+  - name: status
+    sql: status
+    type: string
+    unique_count: 3
+    sample_values:
+      - approved
+      - pending
+      - rejected
+  - name: applied_at
+    sql: applied_at
+    type: date
+    unique_count: 120
+    sample_values:
+      - Thu Jan 06 2022 05:15:05 GMT-0500 (Eastern Standard Time)
+      - Tue Feb 01 2022 21:58:40 GMT-0500 (Eastern Standard Time)
+      - Sun Feb 06 2022 06:15:23 GMT-0500 (Eastern Standard Time)
+      - Thu Feb 10 2022 14:16:29 GMT-0500 (Eastern Standard Time)
+      - Sat Feb 19 2022 03:41:29 GMT-0500 (Eastern Standard Time)
+      - Sun Feb 20 2022 22:48:50 GMT-0500 (Eastern Standard Time)
+      - Mon Feb 21 2022 23:38:08 GMT-0500 (Eastern Standard Time)
+      - Thu Feb 24 2022 09:27:37 GMT-0500 (Eastern Standard Time)
+  - name: reviewed_at
+    sql: reviewed_at
+    type: date
+    unique_count: 82
+    null_count: 38
+    sample_values:
+      - Fri Jan 07 2022 02:53:25 GMT-0500 (Eastern Standard Time)
+      - Tue Feb 15 2022 09:41:02 GMT-0500 (Eastern Standard Time)
+      - Sun Feb 20 2022 04:37:49 GMT-0500 (Eastern Standard Time)
+      - Sat Feb 26 2022 09:03:20 GMT-0500 (Eastern Standard Time)
+      - Sat Feb 26 2022 10:26:46 GMT-0500 (Eastern Standard Time)
+      - Fri Mar 04 2022 13:08:39 GMT-0500 (Eastern Standard Time)
+      - Tue Mar 15 2022 08:36:01 GMT-0400 (Eastern Daylight Time)
+      - Fri Mar 18 2022 01:49:31 GMT-0400 (Eastern Daylight Time)
+  - name: notes
+    sql: notes
+    type: string
+    unique_count: 1
+    null_count: 85
+    sample_values:
+      - Reviewed by marketplace ops team
+  - name: applied_at_year
+    sql: EXTRACT(YEAR FROM applied_at)
+    type: number
+    description: Year extracted from applied_at
+    virtual: true
+  - name: applied_at_month
+    sql: TO_CHAR(applied_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from applied_at
+    virtual: true
+  - name: reviewed_at_year
+    sql: EXTRACT(YEAR FROM reviewed_at)
+    type: number
+    description: Year extracted from reviewed_at
+    virtual: true
+  - name: reviewed_at_month
+    sql: TO_CHAR(reviewed_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from reviewed_at
+    virtual: true
+measures:
+  - name: seller_application_count
+    sql: id
+    type: count_distinct
+use_cases:
+  - Use for segmentation analysis by status, notes
+  - Use for time-series analysis using applied_at, reviewed_at
+query_patterns:
+  - description: SellerApplications by status
+    sql: |-
+      SELECT status, COUNT(*) as count
+      FROM seller_applications
+      GROUP BY status
+      ORDER BY count DESC
+  - description: SellerApplications by notes
+    sql: |-
+      SELECT notes, COUNT(*) as count
+      FROM seller_applications
+      GROUP BY notes
+      ORDER BY count DESC

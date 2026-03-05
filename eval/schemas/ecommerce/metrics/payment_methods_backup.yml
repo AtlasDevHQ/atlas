@@ -1,0 +1,67 @@
+metrics:
+  - id: payment_methods_backup_count
+    label: Total PaymentMethodsBackup
+    description: Count of distinct payment_methods_backup records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM payment_methods_backup
+    aggregation: count_distinct
+  - id: total_exp_month
+    label: Total exp month
+    description: Sum of exp_month across all payment_methods_backup.
+    type: atomic
+    source:
+      entity: PaymentMethodsBackup
+      measure: total_exp_month
+    sql: |-
+      SELECT SUM(exp_month) as total_exp_month
+      FROM payment_methods_backup
+    aggregation: sum
+    objective: maximize
+  - id: avg_exp_month
+    label: Average exp month
+    description: Average exp_month per payment_methods_backup.
+    type: atomic
+    sql: |-
+      SELECT AVG(exp_month) as avg_exp_month
+      FROM payment_methods_backup
+    aggregation: avg
+  - id: exp_month_by_card_type
+    label: exp month by card_type
+    description: exp_month broken down by card_type.
+    type: atomic
+    sql: |-
+      SELECT card_type, SUM(exp_month) as total_exp_month, AVG(exp_month) as avg_exp_month, COUNT(*) as count
+      FROM payment_methods_backup
+      GROUP BY card_type
+      ORDER BY total_exp_month DESC
+  - id: total_exp_year
+    label: Total exp year
+    description: Sum of exp_year across all payment_methods_backup.
+    type: atomic
+    source:
+      entity: PaymentMethodsBackup
+      measure: total_exp_year
+    sql: |-
+      SELECT SUM(exp_year) as total_exp_year
+      FROM payment_methods_backup
+    aggregation: sum
+    objective: maximize
+  - id: avg_exp_year
+    label: Average exp year
+    description: Average exp_year per payment_methods_backup.
+    type: atomic
+    sql: |-
+      SELECT AVG(exp_year) as avg_exp_year
+      FROM payment_methods_backup
+    aggregation: avg
+  - id: exp_year_by_card_type
+    label: exp year by card_type
+    description: exp_year broken down by card_type.
+    type: atomic
+    sql: |-
+      SELECT card_type, SUM(exp_year) as total_exp_year, AVG(exp_year) as avg_exp_year, COUNT(*) as count
+      FROM payment_methods_backup
+      GROUP BY card_type
+      ORDER BY total_exp_year DESC

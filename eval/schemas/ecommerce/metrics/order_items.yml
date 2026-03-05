@@ -1,0 +1,69 @@
+metrics:
+  - id: order_items_count
+    label: Total OrderItems
+    description: Count of distinct order_items records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM order_items
+    aggregation: count_distinct
+  - id: total_quantity
+    label: Total quantity
+    description: Sum of quantity across all order_items.
+    type: atomic
+    source:
+      entity: OrderItems
+      measure: total_quantity
+    sql: |-
+      SELECT SUM(quantity) as total_quantity
+      FROM order_items
+    aggregation: sum
+    objective: maximize
+  - id: avg_quantity
+    label: Average quantity
+    description: Average quantity per order_item.
+    type: atomic
+    sql: |-
+      SELECT AVG(quantity) as avg_quantity
+      FROM order_items
+    aggregation: avg
+  - id: total_unit_price_cents
+    label: Total unit price cents
+    description: Sum of unit_price_cents across all order_items.
+    type: atomic
+    source:
+      entity: OrderItems
+      measure: total_unit_price_cents
+    sql: |-
+      SELECT SUM(unit_price_cents) as total_unit_price_cents
+      FROM order_items
+    aggregation: sum
+    objective: maximize
+  - id: avg_unit_price_cents
+    label: Average unit price cents
+    description: Average unit_price_cents per order_item.
+    type: atomic
+    sql: |-
+      SELECT AVG(unit_price_cents) as avg_unit_price_cents
+      FROM order_items
+    aggregation: avg
+  - id: total_total_cents
+    label: Total total cents
+    description: Sum of total_cents across all order_items.
+    type: atomic
+    source:
+      entity: OrderItems
+      measure: total_total_cents
+    sql: |-
+      SELECT SUM(total_cents) as total_total_cents
+      FROM order_items
+    aggregation: sum
+    objective: maximize
+  - id: avg_total_cents
+    label: Average total cents
+    description: Average total_cents per order_item.
+    type: atomic
+    sql: |-
+      SELECT AVG(total_cents) as avg_total_cents
+      FROM order_items
+    aggregation: avg

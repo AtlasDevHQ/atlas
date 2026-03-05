@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@atlas/api/*": ["../api/src/*"]
+    }
+  },
+  "include": ["src", "bin"]
+}

@@ -1,0 +1,42 @@
+metrics:
+  - id: sellers_count
+    label: Total Sellers
+    description: Count of distinct sellers records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM sellers
+    aggregation: count_distinct
+  - id: total_commission_rate
+    label: Total commission rate
+    description: Sum of commission_rate across all sellers.
+    type: atomic
+    source:
+      entity: Sellers
+      measure: total_commission_rate
+    sql: |-
+      SELECT SUM(commission_rate) as total_commission_rate
+      FROM sellers
+    aggregation: sum
+    objective: maximize
+  - id: avg_commission_rate
+    label: Average commission rate
+    description: Average commission_rate per seller.
+    type: atomic
+    sql: |-
+      SELECT AVG(commission_rate) as avg_commission_rate
+      FROM sellers
+    aggregation: avg
+  - id: commission_rate_by_status
+    label: commission rate by status
+    description: commission_rate broken down by status.
+    type: atomic
+    sql: >-
+      SELECT status, SUM(commission_rate) as total_commission_rate, AVG(commission_rate) as avg_commission_rate,
+      COUNT(*) as count
+
+      FROM sellers
+
+      GROUP BY status
+
+      ORDER BY total_commission_rate DESC

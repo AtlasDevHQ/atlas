@@ -1,0 +1,38 @@
+metrics:
+  - id: loyalty_accounts_count
+    label: Total LoyaltyAccounts
+    description: Count of distinct loyalty_accounts records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM loyalty_accounts
+    aggregation: count_distinct
+  - id: total_points
+    label: Total points
+    description: Sum of points across all loyalty_accounts.
+    type: atomic
+    source:
+      entity: LoyaltyAccounts
+      measure: total_points
+    sql: |-
+      SELECT SUM(points) as total_points
+      FROM loyalty_accounts
+    aggregation: sum
+    objective: maximize
+  - id: avg_points
+    label: Average points
+    description: Average points per loyalty_account.
+    type: atomic
+    sql: |-
+      SELECT AVG(points) as avg_points
+      FROM loyalty_accounts
+    aggregation: avg
+  - id: points_by_tier
+    label: points by tier
+    description: points broken down by tier.
+    type: atomic
+    sql: |-
+      SELECT tier, SUM(points) as total_points, AVG(points) as avg_points, COUNT(*) as count
+      FROM loyalty_accounts
+      GROUP BY tier
+      ORDER BY total_points DESC

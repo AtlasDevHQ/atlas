@@ -1,0 +1,152 @@
+name: SearchQueries
+type: fact_table
+table: search_queries
+grain: one row per search query record
+description: Auto-profiled schema for search_queries (5,000 rows). Contains 7 columns, linked to customers.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 5000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: customer_id
+    sql: customer_id
+    type: number
+    unique_count: 2485
+    null_count: 2012
+    sample_values:
+      - '2'
+      - '3'
+      - '4'
+      - '9'
+      - '11'
+      - '16'
+      - '18'
+      - '19'
+    profiler_notes:
+      - Likely FK to customers.id (inferred from column name, no constraint exists)
+  - name: session_id
+    sql: session_id
+    type: string
+    unique_count: 5000
+    sample_values:
+      - sess_00040c79d8c8d9fb922279deb4eb021e
+      - sess_000a99c4438f909013cff2ce0d946233
+      - sess_00191c2e0c94570dddaf804a9a15b9c0
+      - sess_004fbbb2c31a012ac7a346f0e0286d7d
+      - sess_0067a31fc31196aba8c0574c68352165
+      - sess_0070bdcb06cbaed3fc9e2bd3af1dc07b
+      - sess_0072f7354dd492e1a0df30b728407f3d
+      - sess_00739f2e43673432daf5274e041a30c2
+  - name: query
+    sql: query
+    type: string
+    unique_count: 20
+    sample_values:
+      - bath mat
+      - bath towel set
+      - blanket
+      - candle
+      - cast iron
+      - duvet
+      - gift
+      - king duvet
+  - name: results_count
+    sql: results_count
+    type: number
+    unique_count: 50
+    sample_values:
+      - '0'
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+  - name: clicked_product_id
+    sql: clicked_product_id
+    type: number
+    unique_count: 742
+    null_count: 2911
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 5000
+    sample_values:
+      - Thu Feb 11 2021 17:25:50 GMT-0500 (Eastern Standard Time)
+      - Thu Apr 15 2021 06:28:03 GMT-0400 (Eastern Daylight Time)
+      - Mon Apr 26 2021 23:08:03 GMT-0400 (Eastern Daylight Time)
+      - Sun May 02 2021 23:42:02 GMT-0400 (Eastern Daylight Time)
+      - Tue May 11 2021 12:44:11 GMT-0400 (Eastern Daylight Time)
+      - Sat May 22 2021 01:06:24 GMT-0400 (Eastern Daylight Time)
+      - Wed Jun 02 2021 06:29:54 GMT-0400 (Eastern Daylight Time)
+      - Fri Jun 04 2021 14:50:04 GMT-0400 (Eastern Daylight Time)
+  - name: results_count_bucket
+    sql: |-
+      CASE
+        WHEN results_count < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY results_count) FROM search_queries) THEN 'Low'
+        WHEN results_count < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY results_count) FROM search_queries) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: results count bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: search_query_count
+    sql: id
+    type: count_distinct
+  - name: total_results_count
+    sql: results_count
+    type: sum
+    description: Sum of results count
+  - name: avg_results_count
+    sql: results_count
+    type: avg
+    description: Average results count
+joins:
+  - target_entity: Customers
+    relationship: many_to_one
+    join_columns:
+      from: customer_id
+      to: id
+    inferred: true
+    note: No FK constraint exists — inferred from column name customer_id
+    description: Each search_query likely belongs to one customer
+use_cases:
+  - Use for aggregation and trends on results_count
+  - Use for time-series analysis using created_at
+  - Join with customers for cross-entity analysis

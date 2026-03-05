@@ -1,0 +1,170 @@
+name: LoyaltyTransactions
+type: fact_table
+table: loyalty_transactions
+grain: one row per loyalty transaction record
+description: Auto-profiled schema for loyalty_transactions (18,000 rows). Contains 7 columns, linked to loyalty_accounts, orders.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 18000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: loyalty_account_id
+    sql: loyalty_account_id
+    type: number
+    description: Foreign key to loyalty_accounts
+    unique_count: 5298
+    sample_values:
+      - '1'
+      - '3'
+      - '4'
+      - '6'
+      - '7'
+      - '8'
+      - '9'
+      - '10'
+  - name: type
+    sql: type
+    type: string
+    unique_count: 4
+    sample_values:
+      - adjust
+      - earn
+      - expire
+      - redeem
+  - name: points
+    sql: points
+    type: number
+    unique_count: 759
+    sample_values:
+      - '-549'
+      - '-548'
+      - '-547'
+      - '-546'
+      - '-545'
+      - '-544'
+      - '-543'
+      - '-542'
+  - name: description
+    sql: description
+    type: string
+    unique_count: 4
+    sample_values:
+      - Manual adjustment by admin
+      - Points earned from order
+      - Points expired (12-month policy)
+      - Points redeemed for discount
+  - name: order_id
+    sql: order_id
+    type: number
+    unique_count: 11203
+    null_count: 3217
+    sample_values:
+      - '2'
+      - '3'
+      - '6'
+      - '8'
+      - '10'
+      - '11'
+      - '12'
+      - '14'
+    profiler_notes:
+      - Likely FK to orders.id (inferred from column name, no constraint exists)
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 18000
+    sample_values:
+      - Wed Sep 09 2020 16:19:06 GMT-0400 (Eastern Daylight Time)
+      - Thu Sep 10 2020 07:15:52 GMT-0400 (Eastern Daylight Time)
+      - Mon Sep 14 2020 10:28:25 GMT-0400 (Eastern Daylight Time)
+      - Sun Sep 20 2020 21:03:08 GMT-0400 (Eastern Daylight Time)
+      - Thu Oct 01 2020 17:20:13 GMT-0400 (Eastern Daylight Time)
+      - Wed Oct 14 2020 15:18:41 GMT-0400 (Eastern Daylight Time)
+      - Wed Oct 14 2020 15:25:54 GMT-0400 (Eastern Daylight Time)
+      - Fri Oct 16 2020 20:39:11 GMT-0400 (Eastern Daylight Time)
+  - name: points_bucket
+    sql: |-
+      CASE
+        WHEN points < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY points) FROM loyalty_transactions) THEN 'Low'
+        WHEN points < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY points) FROM loyalty_transactions) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: points bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: loyalty_transaction_count
+    sql: id
+    type: count_distinct
+  - name: total_points
+    sql: points
+    type: sum
+    description: Sum of points
+  - name: avg_points
+    sql: points
+    type: avg
+    description: Average points
+joins:
+  - target_entity: LoyaltyAccounts
+    relationship: many_to_one
+    join_columns:
+      from: loyalty_account_id
+      to: id
+    description: Each loyalty_transaction belongs to one loyalty_account
+  - target_entity: Orders
+    relationship: many_to_one
+    join_columns:
+      from: order_id
+      to: id
+    inferred: true
+    note: No FK constraint exists — inferred from column name order_id
+    description: Each loyalty_transaction likely belongs to one order
+use_cases:
+  - Use for segmentation analysis by type, description
+  - Use for aggregation and trends on points
+  - Use for time-series analysis using created_at
+  - Join with loyalty_accounts, orders for cross-entity analysis
+query_patterns:
+  - description: LoyaltyTransactions by type
+    sql: |-
+      SELECT type, COUNT(*) as count
+      FROM loyalty_transactions
+      GROUP BY type
+      ORDER BY count DESC
+  - description: LoyaltyTransactions by description
+    sql: |-
+      SELECT description, COUNT(*) as count
+      FROM loyalty_transactions
+      GROUP BY description
+      ORDER BY count DESC
+  - description: Total points by type
+    sql: |-
+      SELECT type, SUM(points) as total_points, COUNT(*) as count
+      FROM loyalty_transactions
+      GROUP BY type
+      ORDER BY total_points DESC

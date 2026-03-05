@@ -1,0 +1,71 @@
+metrics:
+  - id: legacy_risk_scores_count
+    label: Total LegacyRiskScores
+    description: Count of distinct legacy_risk_scores records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM legacy_risk_scores
+    aggregation: count_distinct
+  - id: total_score_value
+    label: Total score value
+    description: Sum of score_value across all legacy_risk_scores.
+    type: atomic
+    source:
+      entity: LegacyRiskScores
+      measure: total_score_value
+    sql: |-
+      SELECT SUM(score_value) as total_score_value
+      FROM legacy_risk_scores
+    aggregation: sum
+    objective: maximize
+  - id: avg_score_value
+    label: Average score value
+    description: Average score_value per legacy_risk_score.
+    type: atomic
+    sql: |-
+      SELECT AVG(score_value) as avg_score_value
+      FROM legacy_risk_scores
+    aggregation: avg
+  - id: score_value_by_risk_category
+    label: score value by risk_category
+    description: score_value broken down by risk_category.
+    type: atomic
+    sql: >-
+      SELECT risk_category, SUM(score_value) as total_score_value, AVG(score_value) as avg_score_value, COUNT(*) as
+      count
+
+      FROM legacy_risk_scores
+
+      GROUP BY risk_category
+
+      ORDER BY total_score_value DESC
+  - id: total_weight
+    label: Total weight
+    description: Sum of weight across all legacy_risk_scores.
+    type: atomic
+    source:
+      entity: LegacyRiskScores
+      measure: total_weight
+    sql: |-
+      SELECT SUM(weight) as total_weight
+      FROM legacy_risk_scores
+    aggregation: sum
+    objective: maximize
+  - id: avg_weight
+    label: Average weight
+    description: Average weight per legacy_risk_score.
+    type: atomic
+    sql: |-
+      SELECT AVG(weight) as avg_weight
+      FROM legacy_risk_scores
+    aggregation: avg
+  - id: weight_by_risk_category
+    label: weight by risk_category
+    description: weight broken down by risk_category.
+    type: atomic
+    sql: |-
+      SELECT risk_category, SUM(weight) as total_weight, AVG(weight) as avg_weight, COUNT(*) as count
+      FROM legacy_risk_scores
+      GROUP BY risk_category
+      ORDER BY total_weight DESC

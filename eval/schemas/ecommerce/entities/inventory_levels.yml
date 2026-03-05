@@ -1,0 +1,150 @@
+name: InventoryLevels
+type: fact_table
+table: inventory_levels
+grain: one row per inventory level record
+description: Auto-profiled schema for inventory_levels (3,200 rows). Contains 6 columns, linked to warehouses.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 3200
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: variant_id
+    sql: variant_id
+    type: number
+    unique_count: 3200
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: warehouse_id
+    sql: warehouse_id
+    type: number
+    description: Foreign key to warehouses
+    unique_count: 5
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+  - name: quantity
+    sql: quantity
+    type: number
+    unique_count: 200
+    sample_values:
+      - '0'
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+  - name: reorder_point
+    sql: reorder_point
+    type: number
+    unique_count: 5
+    sample_values:
+      - '5'
+      - '10'
+      - '15'
+      - '20'
+      - '25'
+  - name: updated_at
+    sql: updated_at
+    type: date
+    unique_count: 3200
+    sample_values:
+      - Sun Feb 01 2026 13:46:18 GMT-0500 (Eastern Standard Time)
+      - Sun Feb 01 2026 13:53:48 GMT-0500 (Eastern Standard Time)
+      - Sun Feb 01 2026 14:05:04 GMT-0500 (Eastern Standard Time)
+      - Sun Feb 01 2026 14:08:48 GMT-0500 (Eastern Standard Time)
+      - Sun Feb 01 2026 14:19:32 GMT-0500 (Eastern Standard Time)
+      - Sun Feb 01 2026 14:28:45 GMT-0500 (Eastern Standard Time)
+      - Sun Feb 01 2026 14:37:54 GMT-0500 (Eastern Standard Time)
+      - Sun Feb 01 2026 14:42:29 GMT-0500 (Eastern Standard Time)
+  - name: quantity_bucket
+    sql: |-
+      CASE
+        WHEN quantity < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY quantity) FROM inventory_levels) THEN 'Low'
+        WHEN quantity < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY quantity) FROM inventory_levels) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: quantity bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: reorder_point_bucket
+    sql: |-
+      CASE
+        WHEN reorder_point < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY reorder_point) FROM inventory_levels) THEN 'Low'
+        WHEN reorder_point < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY reorder_point) FROM inventory_levels) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: reorder point bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: updated_at_year
+    sql: EXTRACT(YEAR FROM updated_at)
+    type: number
+    description: Year extracted from updated_at
+    virtual: true
+  - name: updated_at_month
+    sql: TO_CHAR(updated_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from updated_at
+    virtual: true
+measures:
+  - name: inventory_level_count
+    sql: id
+    type: count_distinct
+  - name: total_quantity
+    sql: quantity
+    type: sum
+    description: Sum of quantity
+  - name: avg_quantity
+    sql: quantity
+    type: avg
+    description: Average quantity
+  - name: total_reorder_point
+    sql: reorder_point
+    type: sum
+    description: Sum of reorder point
+  - name: avg_reorder_point
+    sql: reorder_point
+    type: avg
+    description: Average reorder point
+joins:
+  - target_entity: Warehouses
+    relationship: many_to_one
+    join_columns:
+      from: warehouse_id
+      to: id
+    description: Each inventory_level belongs to one warehous
+use_cases:
+  - Use for aggregation and trends on quantity, reorder_point
+  - Use for time-series analysis using updated_at
+  - Join with warehouses for cross-entity analysis

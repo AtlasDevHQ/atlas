@@ -1,0 +1,125 @@
+name: IntegrationEvents
+type: fact_table
+table: integration_events
+grain: one row per integration event record
+description: Auto-profiled schema for integration_events (5,000 rows). Contains 7 columns, linked to integrations.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 5000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: integration_id
+    sql: integration_id
+    type: number
+    description: Foreign key to integrations
+    unique_count: 150
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: event_type
+    sql: event_type
+    type: string
+    unique_count: 6
+    sample_values:
+      - alert_sent
+      - incident_created
+      - notification_sent
+      - sync_completed
+      - ticket_updated
+      - webhook_received
+  - name: direction
+    sql: direction
+    type: string
+    unique_count: 2
+    sample_values:
+      - inbound
+      - outbound
+  - name: payload
+    sql: payload
+    type: string
+    unique_count: 5000
+    sample_values:
+      - '{"event_id":"0026028e3ae2d76e803c4ca702e19cb2"}'
+      - '{"event_id":"0030a3c2567d62cb15bde2aa36b14ee8"}'
+      - '{"event_id":"003800a9eeb9bb5049600aa6a06c82f7"}'
+      - '{"event_id":"00424c67c02e4109c6a40c77a19e8b13"}'
+      - '{"event_id":"004838ad81cd3f0a00e6e7c216edde42"}'
+      - '{"event_id":"004c8a44827c4d2bfa2de6413f20547b"}'
+      - '{"event_id":"005027f5a25207c613d17353e6e33885"}'
+      - '{"event_id":"0051df23f4bc5423f0334a89b78791b1"}'
+  - name: status
+    sql: status
+    type: string
+    unique_count: 3
+    sample_values:
+      - failed
+      - retrying
+      - success
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 5000
+    sample_values:
+      - Thu Feb 03 2022 05:40:52 GMT-0500 (Eastern Standard Time)
+      - Sat Feb 05 2022 19:42:46 GMT-0500 (Eastern Standard Time)
+      - Wed Mar 02 2022 19:05:23 GMT-0500 (Eastern Standard Time)
+      - Tue Mar 08 2022 23:20:37 GMT-0500 (Eastern Standard Time)
+      - Fri Mar 11 2022 02:29:39 GMT-0500 (Eastern Standard Time)
+      - Sat Mar 12 2022 20:42:34 GMT-0500 (Eastern Standard Time)
+      - Fri Apr 01 2022 23:02:27 GMT-0400 (Eastern Daylight Time)
+      - Mon Apr 04 2022 15:14:27 GMT-0400 (Eastern Daylight Time)
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: integration_event_count
+    sql: id
+    type: count_distinct
+joins:
+  - target_entity: Integrations
+    relationship: many_to_one
+    join_columns:
+      from: integration_id
+      to: id
+    description: Each integration_event belongs to one integration
+use_cases:
+  - Use for segmentation analysis by event_type, direction, status
+  - Use for time-series analysis using created_at
+  - Join with integrations for cross-entity analysis
+query_patterns:
+  - description: IntegrationEvents by event_type
+    sql: |-
+      SELECT event_type, COUNT(*) as count
+      FROM integration_events
+      GROUP BY event_type
+      ORDER BY count DESC
+  - description: IntegrationEvents by direction
+    sql: |-
+      SELECT direction, COUNT(*) as count
+      FROM integration_events
+      GROUP BY direction
+      ORDER BY count DESC

@@ -1,0 +1,38 @@
+metrics:
+  - id: payments_count
+    label: Total Payments
+    description: Count of distinct payments records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM payments
+    aggregation: count_distinct
+  - id: total_amount_cents
+    label: Total amount cents
+    description: Sum of amount_cents across all payments.
+    type: atomic
+    source:
+      entity: Payments
+      measure: total_amount_cents
+    sql: |-
+      SELECT SUM(amount_cents) as total_amount_cents
+      FROM payments
+    aggregation: sum
+    objective: maximize
+  - id: avg_amount_cents
+    label: Average amount cents
+    description: Average amount_cents per payment.
+    type: atomic
+    sql: |-
+      SELECT AVG(amount_cents) as avg_amount_cents
+      FROM payments
+    aggregation: avg
+  - id: amount_cents_by_method
+    label: amount cents by method
+    description: amount_cents broken down by method.
+    type: atomic
+    sql: |-
+      SELECT method, SUM(amount_cents) as total_amount_cents, AVG(amount_cents) as avg_amount_cents, COUNT(*) as count
+      FROM payments
+      GROUP BY method
+      ORDER BY total_amount_cents DESC

@@ -1,0 +1,95 @@
+name: ReviewHelpfulness
+type: fact_table
+table: review_helpfulness
+grain: one row per review helpfulness record
+description: Auto-profiled schema for review_helpfulness (8,000 rows). Contains 5 columns, linked to customers.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 8000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: review_id
+    sql: review_id
+    type: number
+    unique_count: 4438
+    sample_values:
+      - '1'
+      - '2'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+      - '9'
+      - '10'
+  - name: customer_id
+    sql: customer_id
+    type: number
+    unique_count: 5083
+    sample_values:
+      - '2'
+      - '5'
+      - '6'
+      - '8'
+      - '9'
+      - '10'
+      - '13'
+      - '14'
+    profiler_notes:
+      - Likely FK to customers.id (inferred from column name, no constraint exists)
+  - name: helpful
+    sql: helpful
+    type: boolean
+    unique_count: 2
+    sample_values:
+      - 'false'
+      - 'true'
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 8000
+    sample_values:
+      - Thu Sep 10 2020 01:04:50 GMT-0400 (Eastern Daylight Time)
+      - Sun Sep 27 2020 06:21:34 GMT-0400 (Eastern Daylight Time)
+      - Mon Oct 12 2020 16:13:54 GMT-0400 (Eastern Daylight Time)
+      - Fri Oct 16 2020 05:17:49 GMT-0400 (Eastern Daylight Time)
+      - Tue Oct 20 2020 20:15:04 GMT-0400 (Eastern Daylight Time)
+      - Fri Oct 23 2020 04:27:43 GMT-0400 (Eastern Daylight Time)
+      - Tue Oct 27 2020 03:50:02 GMT-0400 (Eastern Daylight Time)
+      - Wed Oct 28 2020 20:12:21 GMT-0400 (Eastern Daylight Time)
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: review_helpfulness_count
+    sql: id
+    type: count_distinct
+joins:
+  - target_entity: Customers
+    relationship: many_to_one
+    join_columns:
+      from: customer_id
+      to: id
+    inferred: true
+    note: No FK constraint exists — inferred from column name customer_id
+    description: Each review_helpfulness likely belongs to one customer
+use_cases:
+  - Use for time-series analysis using created_at
+  - Join with customers for cross-entity analysis

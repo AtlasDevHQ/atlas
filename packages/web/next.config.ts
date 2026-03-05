@@ -1,0 +1,28 @@
+import type { NextConfig } from "next";
+import path from "path";
+
+const nextConfig: NextConfig = {
+  // standalone is for self-hosted deployments (Docker, Railway, etc.); Vercel uses its own build pipeline
+  ...(process.env.VERCEL ? {} : { output: "standalone" }),
+  // Monorepo: trace files up to the repo root so standalone output includes all packages
+  outputFileTracingRoot: path.resolve(import.meta.dirname, "../.."),
+  // Type checking is handled by `bun run type` (tsgo); skip during Next.js build
+  // to avoid cross-package tsconfig path resolution issues.
+  typescript: { ignoreBuildErrors: true },
+  turbopack: {},
+  // When NEXT_PUBLIC_ATLAS_API_URL is set, the frontend talks directly to the API
+  // (cross-origin), so no server-side rewrite is needed. When unset, Next.js proxies
+  // /api/* to the Hono API server (ATLAS_API_URL, default localhost:3001).
+  async rewrites() {
+    const apiUrl = process.env.NEXT_PUBLIC_ATLAS_API_URL;
+    if (apiUrl) return [];
+    return [
+      {
+        source: "/api/:path*",
+        destination: `${process.env.ATLAS_API_URL || "http://localhost:3001"}/api/:path*`,
+      },
+    ];
+  },
+};
+
+export default nextConfig;

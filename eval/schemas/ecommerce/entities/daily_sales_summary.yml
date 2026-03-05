@@ -1,0 +1,230 @@
+name: DailySalesSummary
+type: fact_table
+table: daily_sales_summary
+grain: one row per daily sales summary record
+description: >-
+  Auto-profiled schema for daily_sales_summary (1,800 rows). Contains 7 columns. DENORMALIZED — data may duplicate other
+  tables.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 1800
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: sale_date
+    sql: sale_date
+    type: date
+    unique_count: 1800
+    sample_values:
+      - Sun Mar 01 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Mon Mar 02 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Tue Mar 03 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Wed Mar 04 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Thu Mar 05 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Fri Mar 06 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Sat Mar 07 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Sun Mar 08 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+  - name: total_orders
+    sql: total_orders
+    type: number
+    unique_count: 27
+    sample_values:
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+      - '9'
+      - '10'
+  - name: total_revenue_cents
+    sql: total_revenue_cents
+    type: number
+    unique_count: 1777
+    sample_values:
+      - '17076'
+      - '19089'
+      - '19965'
+      - '20200'
+      - '20212'
+      - '20883'
+      - '20934'
+      - '21072'
+  - name: total_items
+    sql: total_items
+    type: number
+    unique_count: 27
+    sample_values:
+      - '6'
+      - '8'
+      - '10'
+      - '12'
+      - '14'
+      - '16'
+      - '18'
+      - '20'
+  - name: avg_order_value_cents
+    sql: avg_order_value_cents
+    type: number
+    unique_count: 1648
+    sample_values:
+      - '5001'
+      - '5002'
+      - '5019'
+      - '5031'
+      - '5032'
+      - '5046'
+      - '5047'
+      - '5054'
+  - name: return_count
+    sql: return_count
+    type: number
+    unique_count: 5
+    sample_values:
+      - '0'
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+  - name: sale_date_year
+    sql: EXTRACT(YEAR FROM sale_date)
+    type: number
+    description: Year extracted from sale_date
+    virtual: true
+  - name: sale_date_month
+    sql: TO_CHAR(sale_date, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from sale_date
+    virtual: true
+  - name: total_orders_bucket
+    sql: |-
+      CASE
+        WHEN total_orders < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY total_orders) FROM daily_sales_summary) THEN 'Low'
+        WHEN total_orders < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY total_orders) FROM daily_sales_summary) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: total orders bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: total_revenue_cents_bucket
+    sql: |-
+      CASE
+        WHEN total_revenue_cents < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY total_revenue_cents) FROM daily_sales_summary) THEN 'Low'
+        WHEN total_revenue_cents < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY total_revenue_cents) FROM daily_sales_summary) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: total revenue cents bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: total_items_bucket
+    sql: |-
+      CASE
+        WHEN total_items < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY total_items) FROM daily_sales_summary) THEN 'Low'
+        WHEN total_items < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY total_items) FROM daily_sales_summary) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: total items bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: avg_order_value_cents_bucket
+    sql: |-
+      CASE
+        WHEN avg_order_value_cents < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY avg_order_value_cents) FROM daily_sales_summary) THEN 'Low'
+        WHEN avg_order_value_cents < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY avg_order_value_cents) FROM daily_sales_summary) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: avg order value cents bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: return_count_bucket
+    sql: |-
+      CASE
+        WHEN return_count < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY return_count) FROM daily_sales_summary) THEN 'Low'
+        WHEN return_count < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY return_count) FROM daily_sales_summary) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: return count bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+measures:
+  - name: daily_sales_summary_count
+    sql: id
+    type: count_distinct
+  - name: total_total_orders
+    sql: total_orders
+    type: sum
+    description: Sum of total orders
+  - name: avg_total_orders
+    sql: total_orders
+    type: avg
+    description: Average total orders
+  - name: total_total_revenue_cents
+    sql: total_revenue_cents
+    type: sum
+    description: Sum of total revenue cents
+  - name: avg_total_revenue_cents
+    sql: total_revenue_cents
+    type: avg
+    description: Average total revenue cents
+  - name: total_total_items
+    sql: total_items
+    type: sum
+    description: Sum of total items
+  - name: avg_total_items
+    sql: total_items
+    type: avg
+    description: Average total items
+  - name: total_avg_order_value_cents
+    sql: avg_order_value_cents
+    type: sum
+    description: Sum of avg order value cents
+  - name: avg_avg_order_value_cents
+    sql: avg_order_value_cents
+    type: avg
+    description: Average avg order value cents
+  - name: total_return_count
+    sql: return_count
+    type: sum
+    description: Sum of return count
+  - name: avg_return_count
+    sql: return_count
+    type: avg
+    description: Average return count
+use_cases:
+  - 'WARNING: This is a denormalized/materialized table. Data may be stale or duplicate other tables'
+  - >-
+    Use for aggregation and trends on total_orders, total_revenue_cents, total_items, avg_order_value_cents,
+    return_count
+  - Use for time-series analysis using sale_date
+profiler_notes:
+  - 'Possibly denormalized/materialized table: name matches reporting pattern. Data may duplicate other tables'

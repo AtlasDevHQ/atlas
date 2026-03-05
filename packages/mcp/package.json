@@ -1,0 +1,23 @@
+{
+  "name": "@atlas/mcp",
+  "version": "0.1.0",
+  "private": true,
+  "exports": {
+    "./server": "./src/server.ts",
+    "./sse": "./src/sse.ts"
+  },
+  "bin": {
+    "atlas-mcp": "./bin/serve.ts"
+  },
+  "scripts": {
+    "dev": "bun run --hot bin/serve.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@atlas/api": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.27.1"
+  },
+  "devDependencies": {
+    "zod": "^4.3.6"
+  }
+}

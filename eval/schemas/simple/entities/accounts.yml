@@ -1,0 +1,170 @@
+name: Accounts
+type: fact_table
+table: accounts
+grain: one row per account record
+description: Auto-profiled schema for accounts (160 rows). Contains 7 columns, linked to companies.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 160
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: company_id
+    sql: company_id
+    type: number
+    description: Foreign key to companies
+    unique_count: 50
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: plan
+    sql: plan
+    type: string
+    unique_count: 4
+    sample_values:
+      - Enterprise
+      - Free
+      - Pro
+      - Starter
+  - name: status
+    sql: status
+    type: string
+    unique_count: 4
+    sample_values:
+      - Active
+      - Churned
+      - Inactive
+      - Suspended
+  - name: monthly_value
+    sql: monthly_value
+    type: number
+    unique_count: 41
+    sample_values:
+      - '0'
+      - '49'
+      - '59'
+      - '69'
+      - '79'
+      - '89'
+      - '299'
+      - '350'
+  - name: contract_start
+    sql: contract_start
+    type: date
+    unique_count: 49
+    sample_values:
+      - Sat Jun 01 2019 00:00:00 GMT-0400 (Eastern Daylight Time)
+      - Thu Aug 01 2019 00:00:00 GMT-0400 (Eastern Daylight Time)
+      - Fri Nov 01 2019 00:00:00 GMT-0400 (Eastern Daylight Time)
+      - Wed Jan 01 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Sat Feb 01 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Sun Mar 01 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Wed Apr 01 2020 00:00:00 GMT-0400 (Eastern Daylight Time)
+      - Fri May 01 2020 00:00:00 GMT-0400 (Eastern Daylight Time)
+  - name: contract_end
+    sql: contract_end
+    type: date
+    unique_count: 10
+    null_count: 140
+    sample_values:
+      - Fri Jan 01 2021 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Sat May 01 2021 00:00:00 GMT-0400 (Eastern Daylight Time)
+      - Wed Feb 01 2023 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Wed Mar 01 2023 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Sat Apr 01 2023 00:00:00 GMT-0400 (Eastern Daylight Time)
+      - Mon May 01 2023 00:00:00 GMT-0400 (Eastern Daylight Time)
+      - Thu Jun 01 2023 00:00:00 GMT-0400 (Eastern Daylight Time)
+      - Tue Aug 01 2023 00:00:00 GMT-0400 (Eastern Daylight Time)
+  - name: monthly_value_bucket
+    sql: |-
+      CASE
+        WHEN monthly_value < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY monthly_value) FROM accounts) THEN 'Low'
+        WHEN monthly_value < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY monthly_value) FROM accounts) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: monthly value bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: contract_start_year
+    sql: EXTRACT(YEAR FROM contract_start)
+    type: number
+    description: Year extracted from contract_start
+    virtual: true
+  - name: contract_start_month
+    sql: TO_CHAR(contract_start, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from contract_start
+    virtual: true
+  - name: contract_end_year
+    sql: EXTRACT(YEAR FROM contract_end)
+    type: number
+    description: Year extracted from contract_end
+    virtual: true
+  - name: contract_end_month
+    sql: TO_CHAR(contract_end, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from contract_end
+    virtual: true
+measures:
+  - name: account_count
+    sql: id
+    type: count_distinct
+  - name: total_monthly_value
+    sql: monthly_value
+    type: sum
+    description: Sum of monthly value
+  - name: avg_monthly_value
+    sql: monthly_value
+    type: avg
+    description: Average monthly value
+joins:
+  - target_entity: Companies
+    relationship: many_to_one
+    join_columns:
+      from: company_id
+      to: id
+    description: Each account belongs to one company
+use_cases:
+  - Use for segmentation analysis by plan, status
+  - Use for aggregation and trends on monthly_value
+  - Use for time-series analysis using contract_start, contract_end
+  - Join with companies for cross-entity analysis
+query_patterns:
+  - description: Accounts by plan
+    sql: |-
+      SELECT plan, COUNT(*) as count
+      FROM accounts
+      GROUP BY plan
+      ORDER BY count DESC
+  - description: Accounts by status
+    sql: |-
+      SELECT status, COUNT(*) as count
+      FROM accounts
+      GROUP BY status
+      ORDER BY count DESC
+  - description: Total monthly_value by plan
+    sql: |-
+      SELECT plan, SUM(monthly_value) as total_monthly_value, COUNT(*) as count
+      FROM accounts
+      GROUP BY plan
+      ORDER BY total_monthly_value DESC

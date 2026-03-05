@@ -1,0 +1,122 @@
+name: LegacyAnalyticsEvents
+type: fact_table
+table: legacy_analytics_events
+grain: one row per legacy analytics event record
+description: >-
+  Auto-profiled schema for legacy_analytics_events (8,000 rows). Contains 6 columns. POSSIBLY ABANDONED — name matches
+  legacy/temp pattern and no tables reference it.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 8000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: event_name
+    sql: event_name
+    type: string
+    unique_count: 10
+    sample_values:
+      - add_to_cart
+      - click
+      - form_submit
+      - login
+      - page_view
+      - purchase
+      - remove_from_cart
+      - scroll
+      - search
+      - signup
+  - name: event_data
+    sql: event_data
+    type: string
+    unique_count: 8000
+    sample_values:
+      - '{"session":"000389b6de0f91b5a288eb56bb764c6e","ua":"Chrome"}'
+      - '{"session":"0006af94fadf74ed567281190f74c660","ua":"Chrome"}'
+      - '{"session":"00132ad12c279ff39f78c9193a4a0f67","ua":"Chrome"}'
+      - '{"session":"001357756f41b153715c8674ccbd27f4","ua":"Chrome"}'
+      - '{"session":"001bed6ab1a7656e2b4a4b9629952baf","ua":"Chrome"}'
+      - '{"session":"001d69095afa1e1e389c31ec6229d401","ua":"Chrome"}'
+      - '{"session":"001e36e434dd14ae36e31d97d509183d","ua":"Chrome"}'
+      - '{"session":"0021c82c00e9600b2cb643bbc71ed91e","ua":"Chrome"}'
+  - name: user_ref
+    sql: user_ref
+    type: string
+    unique_count: 3962
+    sample_values:
+      - user_0
+      - user_1
+      - user_10
+      - user_1000
+      - user_1001
+      - user_1002
+      - user_1003
+      - user_1004
+  - name: page_url
+    sql: page_url
+    type: string
+    unique_count: 7
+    sample_values:
+      - /
+      - /account
+      - /cart
+      - /checkout
+      - /collections
+      - /products
+      - /search
+  - name: timestamp
+    sql: timestamp
+    type: date
+    unique_count: 8000
+    sample_values:
+      - Mon Jun 01 2020 01:34:47 GMT-0400 (Eastern Daylight Time)
+      - Mon Jun 01 2020 02:57:04 GMT-0400 (Eastern Daylight Time)
+      - Mon Jun 01 2020 05:06:04 GMT-0400 (Eastern Daylight Time)
+      - Mon Jun 01 2020 06:59:34 GMT-0400 (Eastern Daylight Time)
+      - Mon Jun 01 2020 07:03:57 GMT-0400 (Eastern Daylight Time)
+      - Mon Jun 01 2020 08:32:22 GMT-0400 (Eastern Daylight Time)
+      - Mon Jun 01 2020 16:59:03 GMT-0400 (Eastern Daylight Time)
+      - Tue Jun 02 2020 00:11:58 GMT-0400 (Eastern Daylight Time)
+  - name: timestamp_year
+    sql: EXTRACT(YEAR FROM timestamp)
+    type: number
+    description: Year extracted from timestamp
+    virtual: true
+  - name: timestamp_month
+    sql: TO_CHAR(timestamp, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from timestamp
+    virtual: true
+measures:
+  - name: legacy_analytics_event_count
+    sql: id
+    type: count_distinct
+use_cases:
+  - 'WARNING: This table appears to be abandoned/legacy. Verify with the user before querying'
+  - Use for segmentation analysis by event_name, page_url
+  - Use for time-series analysis using timestamp
+query_patterns:
+  - description: LegacyAnalyticsEvents by event_name
+    sql: |-
+      SELECT event_name, COUNT(*) as count
+      FROM legacy_analytics_events
+      GROUP BY event_name
+      ORDER BY count DESC
+  - description: LegacyAnalyticsEvents by page_url
+    sql: |-
+      SELECT page_url, COUNT(*) as count
+      FROM legacy_analytics_events
+      GROUP BY page_url
+      ORDER BY count DESC
+profiler_notes:
+  - 'Possibly abandoned: name matches legacy/temp pattern and no other tables reference it'

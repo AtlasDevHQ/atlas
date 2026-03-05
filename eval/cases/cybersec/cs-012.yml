@@ -1,0 +1,13 @@
+id: "cs-012"
+question: "How many users have not logged in within the last 90 days?"
+schema: cybersec
+difficulty: simple
+category: filter
+tags: [users, login, inactive]
+gold_sql: |
+  SELECT COUNT(*) AS inactive_users
+  FROM users
+  WHERE is_active = true
+    AND (last_login_at IS NULL OR last_login_at < NOW() - INTERVAL '90 days')
+expected_rows: 1
+notes: "Tests NULL handling with date interval filter"

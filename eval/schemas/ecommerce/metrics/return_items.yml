@@ -1,0 +1,38 @@
+metrics:
+  - id: return_items_count
+    label: Total ReturnItems
+    description: Count of distinct return_items records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM return_items
+    aggregation: count_distinct
+  - id: total_quantity
+    label: Total quantity
+    description: Sum of quantity across all return_items.
+    type: atomic
+    source:
+      entity: ReturnItems
+      measure: total_quantity
+    sql: |-
+      SELECT SUM(quantity) as total_quantity
+      FROM return_items
+    aggregation: sum
+    objective: maximize
+  - id: avg_quantity
+    label: Average quantity
+    description: Average quantity per return_item.
+    type: atomic
+    sql: |-
+      SELECT AVG(quantity) as avg_quantity
+      FROM return_items
+    aggregation: avg
+  - id: quantity_by_condition
+    label: quantity by condition
+    description: quantity broken down by condition.
+    type: atomic
+    sql: |-
+      SELECT condition, SUM(quantity) as total_quantity, AVG(quantity) as avg_quantity, COUNT(*) as count
+      FROM return_items
+      GROUP BY condition
+      ORDER BY total_quantity DESC

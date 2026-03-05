@@ -1,0 +1,21 @@
+id: "cs-015"
+question: "Which teams have the most unresolved incidents assigned to their members?"
+schema: cybersec
+difficulty: complex
+category: join
+tags: [teams, team_memberships, incidents, users, unresolved]
+gold_sql: |
+  SELECT
+    t.name AS team_name,
+    o.name AS organization,
+    COUNT(i.id) AS open_incidents
+  FROM teams t
+  JOIN organizations o ON t.org_id = o.id
+  JOIN team_memberships tm ON tm.team_id = t.id
+  JOIN users u ON tm.user_id = u.id
+  JOIN incidents i ON i.assigned_to = u.id AND i.org_id = t.org_id
+  WHERE i.status NOT IN ('resolved', 'closed')
+  GROUP BY t.name, o.name
+  ORDER BY open_incidents DESC
+expected_rows: null
+notes: "Tests multi-hop JOIN through team memberships to correlate teams with incident load"

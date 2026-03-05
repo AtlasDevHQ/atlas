@@ -1,0 +1,29 @@
+metrics:
+  - id: old_scan_results_v2_count
+    label: Total OldScanResultsV2
+    description: Count of distinct old_scan_results_v2 records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM old_scan_results_v2
+    aggregation: count_distinct
+  - id: total_severity_score
+    label: Total severity score
+    description: Sum of severity_score across all old_scan_results_v2.
+    type: atomic
+    source:
+      entity: OldScanResultsV2
+      measure: total_severity_score
+    sql: |-
+      SELECT SUM(severity_score) as total_severity_score
+      FROM old_scan_results_v2
+    aggregation: sum
+    objective: maximize
+  - id: avg_severity_score
+    label: Average severity score
+    description: Average severity_score per old_scan_results_v2.
+    type: atomic
+    sql: |-
+      SELECT AVG(severity_score) as avg_severity_score
+      FROM old_scan_results_v2
+    aggregation: avg

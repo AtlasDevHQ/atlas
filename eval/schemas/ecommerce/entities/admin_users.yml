@@ -1,0 +1,93 @@
+name: AdminUsers
+type: fact_table
+table: admin_users
+grain: one row per admin user record
+description: Auto-profiled schema for admin_users (30 rows). Contains 6 columns.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 30
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: email
+    sql: email
+    type: string
+    unique_count: 30
+    sample_values:
+      - alex.larsen@novamart.com
+      - amanda.ivanov@novamart.com
+      - brian.kowalski@novamart.com
+      - casey.reyes@novamart.com
+      - chris.johansson@novamart.com
+      - david.nakamura@novamart.com
+      - diana.nguyen@novamart.com
+      - emily.mueller@novamart.com
+  - name: full_name
+    sql: full_name
+    type: string
+    unique_count: 30
+    sample_values:
+      - Alex Larsen
+      - Amanda Ivanov
+      - Brian Kowalski
+      - Casey Reyes
+      - Chris Johansson
+      - David Nakamura
+      - Diana Nguyen
+      - Emily Mueller
+  - name: role
+    sql: role
+    type: string
+    unique_count: 4
+    sample_values:
+      - admin
+      - manager
+      - support
+      - warehouse
+  - name: is_active
+    sql: is_active
+    type: boolean
+    unique_count: 2
+    sample_values:
+      - 'false'
+      - 'true'
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 30
+    sample_values:
+      - Wed Jan 15 2020 06:29:40 GMT-0500 (Eastern Standard Time)
+      - Fri Jan 17 2020 23:07:47 GMT-0500 (Eastern Standard Time)
+      - Sat Feb 08 2020 13:52:13 GMT-0500 (Eastern Standard Time)
+      - Sat Mar 07 2020 05:47:32 GMT-0500 (Eastern Standard Time)
+      - Sun Mar 15 2020 05:39:57 GMT-0400 (Eastern Daylight Time)
+      - Tue May 05 2020 11:39:29 GMT-0400 (Eastern Daylight Time)
+      - Wed May 13 2020 05:15:35 GMT-0400 (Eastern Daylight Time)
+      - Wed May 20 2020 18:51:30 GMT-0400 (Eastern Daylight Time)
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: admin_user_count
+    sql: id
+    type: count_distinct
+use_cases:
+  - Use for time-series analysis using created_at
+  - Avoid for row-level admin_audit_log queries — use those entities directly

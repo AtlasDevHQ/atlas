@@ -1,0 +1,233 @@
+name: MonthlyRevenueSummary
+type: fact_table
+table: monthly_revenue_summary
+grain: one row per monthly revenue summary record
+description: >-
+  Auto-profiled schema for monthly_revenue_summary (60 rows). Contains 7 columns. DENORMALIZED — data may duplicate
+  other tables.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 60
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: month
+    sql: month
+    type: date
+    unique_count: 60
+    sample_values:
+      - Sun Mar 01 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Tue Mar 31 2020 00:00:00 GMT-0400 (Eastern Daylight Time)
+      - Thu Apr 30 2020 00:00:00 GMT-0400 (Eastern Daylight Time)
+      - Sat May 30 2020 00:00:00 GMT-0400 (Eastern Daylight Time)
+      - Mon Jun 29 2020 00:00:00 GMT-0400 (Eastern Daylight Time)
+      - Wed Jul 29 2020 00:00:00 GMT-0400 (Eastern Daylight Time)
+      - Fri Aug 28 2020 00:00:00 GMT-0400 (Eastern Daylight Time)
+      - Sun Sep 27 2020 00:00:00 GMT-0400 (Eastern Daylight Time)
+  - name: revenue_cents
+    sql: revenue_cents
+    type: number
+    unique_count: 58
+    sample_values:
+      - '1080000'
+      - '1320000'
+      - '1610000'
+      - '1680000'
+      - '1700000'
+      - '1800000'
+      - '1820000'
+      - '1950000'
+  - name: order_count
+    sql: order_count
+    type: number
+    unique_count: 57
+    sample_values:
+      - '129'
+      - '155'
+      - '158'
+      - '195'
+      - '199'
+      - '241'
+      - '247'
+      - '257'
+  - name: new_customers
+    sql: new_customers
+    type: number
+    unique_count: 54
+    sample_values:
+      - '51'
+      - '62'
+      - '63'
+      - '78'
+      - '79'
+      - '96'
+      - '98'
+      - '102'
+  - name: returning_customers
+    sql: returning_customers
+    type: number
+    unique_count: 55
+    sample_values:
+      - '77'
+      - '93'
+      - '94'
+      - '117'
+      - '119'
+      - '144'
+      - '148'
+      - '154'
+  - name: avg_order_value_cents
+    sql: avg_order_value_cents
+    type: number
+    unique_count: 60
+    sample_values:
+      - '3634'
+      - '3744'
+      - '3942'
+      - '4180'
+      - '4400'
+      - '4529'
+      - '4602'
+      - '4722'
+  - name: month_year
+    sql: EXTRACT(YEAR FROM month)
+    type: number
+    description: Year extracted from month
+    virtual: true
+  - name: month_month
+    sql: TO_CHAR(month, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from month
+    virtual: true
+  - name: revenue_cents_bucket
+    sql: |-
+      CASE
+        WHEN revenue_cents < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY revenue_cents) FROM monthly_revenue_summary) THEN 'Low'
+        WHEN revenue_cents < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY revenue_cents) FROM monthly_revenue_summary) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: revenue cents bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: order_count_bucket
+    sql: |-
+      CASE
+        WHEN order_count < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY order_count) FROM monthly_revenue_summary) THEN 'Low'
+        WHEN order_count < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY order_count) FROM monthly_revenue_summary) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: order count bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: new_customers_bucket
+    sql: |-
+      CASE
+        WHEN new_customers < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY new_customers) FROM monthly_revenue_summary) THEN 'Low'
+        WHEN new_customers < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY new_customers) FROM monthly_revenue_summary) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: new customers bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: returning_customers_bucket
+    sql: |-
+      CASE
+        WHEN returning_customers < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY returning_customers) FROM monthly_revenue_summary) THEN 'Low'
+        WHEN returning_customers < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY returning_customers) FROM monthly_revenue_summary) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: returning customers bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: avg_order_value_cents_bucket
+    sql: |-
+      CASE
+        WHEN avg_order_value_cents < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY avg_order_value_cents) FROM monthly_revenue_summary) THEN 'Low'
+        WHEN avg_order_value_cents < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY avg_order_value_cents) FROM monthly_revenue_summary) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: avg order value cents bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+measures:
+  - name: monthly_revenue_summary_count
+    sql: id
+    type: count_distinct
+  - name: total_revenue_cents
+    sql: revenue_cents
+    type: sum
+    description: Sum of revenue cents
+  - name: avg_revenue_cents
+    sql: revenue_cents
+    type: avg
+    description: Average revenue cents
+  - name: total_order_count
+    sql: order_count
+    type: sum
+    description: Sum of order count
+  - name: avg_order_count
+    sql: order_count
+    type: avg
+    description: Average order count
+  - name: total_new_customers
+    sql: new_customers
+    type: sum
+    description: Sum of new customers
+  - name: avg_new_customers
+    sql: new_customers
+    type: avg
+    description: Average new customers
+  - name: total_returning_customers
+    sql: returning_customers
+    type: sum
+    description: Sum of returning customers
+  - name: avg_returning_customers
+    sql: returning_customers
+    type: avg
+    description: Average returning customers
+  - name: total_avg_order_value_cents
+    sql: avg_order_value_cents
+    type: sum
+    description: Sum of avg order value cents
+  - name: avg_avg_order_value_cents
+    sql: avg_order_value_cents
+    type: avg
+    description: Average avg order value cents
+use_cases:
+  - 'WARNING: This is a denormalized/materialized table. Data may be stale or duplicate other tables'
+  - >-
+    Use for aggregation and trends on revenue_cents, order_count, new_customers, returning_customers,
+    avg_order_value_cents
+  - Use for time-series analysis using month
+profiler_notes:
+  - 'Possibly denormalized/materialized table: name matches reporting pattern. Data may duplicate other tables'

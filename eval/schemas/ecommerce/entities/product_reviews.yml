@@ -1,0 +1,224 @@
+name: ProductReviews
+type: fact_table
+table: product_reviews
+grain: one row per product review record
+description: Auto-profiled schema for product_reviews (6,000 rows). Contains 9 columns, linked to customers, products.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 6000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: product_id
+    sql: product_id
+    type: number
+    description: Foreign key to products
+    unique_count: 800
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: customer_id
+    sql: customer_id
+    type: number
+    description: Foreign key to customers
+    unique_count: 4190
+    sample_values:
+      - '1'
+      - '3'
+      - '5'
+      - '6'
+      - '7'
+      - '9'
+      - '11'
+      - '13'
+  - name: rating
+    sql: rating
+    type: number
+    unique_count: 5
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+  - name: rating_decimal
+    sql: rating_decimal
+    type: number
+    unique_count: 45
+    null_count: 3215
+    sample_values:
+      - '0.6'
+      - '0.7'
+      - '0.8'
+      - '0.9'
+      - '1.0'
+      - '1.1'
+      - '1.2'
+      - '1.3'
+  - name: title
+    sql: title
+    type: string
+    unique_count: 15
+    sample_values:
+      - Amazing product
+      - Beautiful design
+      - Decent for the price
+      - Disappointed
+      - Exactly as described
+      - Exceeded expectations
+      - Good value
+      - Great quality
+      - Highly recommend
+      - Just okay
+      - Love it!
+      - Meh
+      - Not what I expected
+      - Perfect for our home
+      - Would buy again
+  - name: body
+    sql: body
+    type: string
+    unique_count: 10
+    sample_values:
+      - Arrived damaged. Customer service was helpful though.
+      - Bought this as a gift and the recipient loved it.
+      - Decent product but the stitching could be better.
+      - Its okay but not as soft as I expected for the price.
+      - Not worth the premium price. You can find similar quality elsewhere.
+      - Perfect addition to our bedroom. Looks and feels luxurious.
+      - The color was slightly different from the photo but still nice.
+      - The material feels premium and the color is accurate to the photos.
+      - This is exactly what I was looking for. Great quality and fast shipping.
+      - We bought two of these and love them both. Highly recommend!
+  - name: is_verified
+    sql: is_verified
+    type: boolean
+    unique_count: 2
+    sample_values:
+      - 'false'
+      - 'true'
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 6000
+    sample_values:
+      - Sat Jun 20 2020 20:26:30 GMT-0400 (Eastern Daylight Time)
+      - Fri Jul 03 2020 03:02:53 GMT-0400 (Eastern Daylight Time)
+      - Sat Jul 04 2020 08:04:20 GMT-0400 (Eastern Daylight Time)
+      - Fri Jul 10 2020 16:49:06 GMT-0400 (Eastern Daylight Time)
+      - Fri Jul 17 2020 05:50:07 GMT-0400 (Eastern Daylight Time)
+      - Sun Jul 26 2020 12:17:50 GMT-0400 (Eastern Daylight Time)
+      - Sun Jul 26 2020 19:19:28 GMT-0400 (Eastern Daylight Time)
+      - Tue Jul 28 2020 13:51:02 GMT-0400 (Eastern Daylight Time)
+  - name: rating_bucket
+    sql: |-
+      CASE
+        WHEN rating < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY rating) FROM product_reviews) THEN 'Low'
+        WHEN rating < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY rating) FROM product_reviews) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: rating bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: rating_decimal_bucket
+    sql: |-
+      CASE
+        WHEN rating_decimal < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY rating_decimal) FROM product_reviews) THEN 'Low'
+        WHEN rating_decimal < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY rating_decimal) FROM product_reviews) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: rating decimal bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: product_review_count
+    sql: id
+    type: count_distinct
+  - name: total_rating
+    sql: rating
+    type: sum
+    description: Sum of rating
+  - name: avg_rating
+    sql: rating
+    type: avg
+    description: Average rating
+  - name: total_rating_decimal
+    sql: rating_decimal
+    type: sum
+    description: Sum of rating decimal
+  - name: avg_rating_decimal
+    sql: rating_decimal
+    type: avg
+    description: Average rating decimal
+joins:
+  - target_entity: Customers
+    relationship: many_to_one
+    join_columns:
+      from: customer_id
+      to: id
+    description: Each product_review belongs to one customer
+  - target_entity: Products
+    relationship: many_to_one
+    join_columns:
+      from: product_id
+      to: id
+    description: Each product_review belongs to one product
+use_cases:
+  - Use for segmentation analysis by title, body
+  - Use for aggregation and trends on rating, rating_decimal
+  - Use for time-series analysis using created_at
+  - Join with customers, products for cross-entity analysis
+  - Avoid for row-level review_responses queries — use those entities directly
+query_patterns:
+  - description: ProductReviews by title
+    sql: |-
+      SELECT title, COUNT(*) as count
+      FROM product_reviews
+      GROUP BY title
+      ORDER BY count DESC
+  - description: ProductReviews by body
+    sql: |-
+      SELECT body, COUNT(*) as count
+      FROM product_reviews
+      GROUP BY body
+      ORDER BY count DESC
+  - description: Total rating by title
+    sql: |-
+      SELECT title, SUM(rating) as total_rating, COUNT(*) as count
+      FROM product_reviews
+      GROUP BY title
+      ORDER BY total_rating DESC

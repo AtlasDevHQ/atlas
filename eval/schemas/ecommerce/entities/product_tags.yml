@@ -1,0 +1,100 @@
+name: ProductTags
+type: fact_table
+table: product_tags
+grain: one row per product tag record
+description: Auto-profiled schema for product_tags (2,500 rows). Contains 4 columns, linked to products.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 2500
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: product_id
+    sql: product_id
+    type: number
+    description: Foreign key to products
+    unique_count: 762
+    sample_values:
+      - '2'
+      - '3'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+      - '10'
+      - '11'
+  - name: tag
+    sql: tag
+    type: string
+    unique_count: 15
+    sample_values:
+      - bestseller
+      - bundle
+      - clearance
+      - eco-friendly
+      - exclusive
+      - gift-idea
+      - handmade
+      - limited-edition
+      - luxury
+      - new-arrival
+      - organic
+      - sale
+      - seasonal
+      - sustainable
+      - trending
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 2500
+    sample_values:
+      - Mon Mar 02 2020 17:27:11 GMT-0500 (Eastern Standard Time)
+      - Fri Mar 06 2020 15:06:49 GMT-0500 (Eastern Standard Time)
+      - Sun Mar 08 2020 05:11:23 GMT-0400 (Eastern Daylight Time)
+      - Sun Mar 08 2020 16:00:50 GMT-0400 (Eastern Daylight Time)
+      - Mon Mar 09 2020 01:14:43 GMT-0400 (Eastern Daylight Time)
+      - Tue Mar 10 2020 18:03:15 GMT-0400 (Eastern Daylight Time)
+      - Wed Mar 11 2020 02:48:34 GMT-0400 (Eastern Daylight Time)
+      - Wed Mar 11 2020 11:41:23 GMT-0400 (Eastern Daylight Time)
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: product_tag_count
+    sql: id
+    type: count_distinct
+joins:
+  - target_entity: Products
+    relationship: many_to_one
+    join_columns:
+      from: product_id
+      to: id
+    description: Each product_tag belongs to one product
+use_cases:
+  - Use for segmentation analysis by tag
+  - Use for time-series analysis using created_at
+  - Join with products for cross-entity analysis
+query_patterns:
+  - description: ProductTags by tag
+    sql: |-
+      SELECT tag, COUNT(*) as count
+      FROM product_tags
+      GROUP BY tag
+      ORDER BY count DESC

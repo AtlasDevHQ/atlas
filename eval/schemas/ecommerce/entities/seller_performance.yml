@@ -1,0 +1,230 @@
+name: SellerPerformance
+type: fact_table
+table: seller_performance
+grain: one row per seller performance record
+description: Auto-profiled schema for seller_performance (400 rows). Contains 8 columns, linked to sellers.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 400
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: seller_id
+    sql: seller_id
+    type: number
+    description: Foreign key to sellers
+    unique_count: 80
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: month
+    sql: month
+    type: date
+    unique_count: 5
+    sample_values:
+      - Tue Feb 01 2022 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Thu Mar 03 2022 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Sat Apr 02 2022 00:00:00 GMT-0400 (Eastern Daylight Time)
+      - Mon May 02 2022 00:00:00 GMT-0400 (Eastern Daylight Time)
+      - Wed Jun 01 2022 00:00:00 GMT-0400 (Eastern Daylight Time)
+  - name: total_orders
+    sql: total_orders
+    type: number
+    unique_count: 50
+    sample_values:
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+      - '9'
+      - '10'
+      - '11'
+      - '12'
+  - name: total_revenue_cents
+    sql: total_revenue_cents
+    type: number
+    unique_count: 400
+    sample_values:
+      - '11766'
+      - '12164'
+      - '12471'
+      - '13231'
+      - '16321'
+      - '16654'
+      - '16928'
+      - '17161'
+  - name: return_rate
+    sql: return_rate
+    type: number
+    unique_count: 328
+    sample_values:
+      - '0.02'
+      - '0.12'
+      - '0.13'
+      - '0.23'
+      - '0.26'
+      - '0.28'
+      - '0.29'
+      - '0.30'
+  - name: avg_rating
+    sql: avg_rating
+    type: number
+    unique_count: 168
+    sample_values:
+      - '3.00'
+      - '3.02'
+      - '3.04'
+      - '3.06'
+      - '3.07'
+      - '3.08'
+      - '3.09'
+      - '3.10'
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 5
+    sample_values:
+      - Mon Feb 28 2022 19:00:00 GMT-0500 (Eastern Standard Time)
+      - Wed Mar 30 2022 20:00:00 GMT-0400 (Eastern Daylight Time)
+      - Fri Apr 29 2022 20:00:00 GMT-0400 (Eastern Daylight Time)
+      - Sun May 29 2022 20:00:00 GMT-0400 (Eastern Daylight Time)
+      - Tue Jun 28 2022 20:00:00 GMT-0400 (Eastern Daylight Time)
+  - name: month_year
+    sql: EXTRACT(YEAR FROM month)
+    type: number
+    description: Year extracted from month
+    virtual: true
+  - name: month_month
+    sql: TO_CHAR(month, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from month
+    virtual: true
+  - name: total_orders_bucket
+    sql: |-
+      CASE
+        WHEN total_orders < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY total_orders) FROM seller_performance) THEN 'Low'
+        WHEN total_orders < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY total_orders) FROM seller_performance) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: total orders bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: total_revenue_cents_bucket
+    sql: |-
+      CASE
+        WHEN total_revenue_cents < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY total_revenue_cents) FROM seller_performance) THEN 'Low'
+        WHEN total_revenue_cents < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY total_revenue_cents) FROM seller_performance) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: total revenue cents bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: return_rate_bucket
+    sql: |-
+      CASE
+        WHEN return_rate < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY return_rate) FROM seller_performance) THEN 'Low'
+        WHEN return_rate < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY return_rate) FROM seller_performance) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: return rate bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: avg_rating_bucket
+    sql: |-
+      CASE
+        WHEN avg_rating < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY avg_rating) FROM seller_performance) THEN 'Low'
+        WHEN avg_rating < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY avg_rating) FROM seller_performance) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: avg rating bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: seller_performance_count
+    sql: id
+    type: count_distinct
+  - name: total_total_orders
+    sql: total_orders
+    type: sum
+    description: Sum of total orders
+  - name: avg_total_orders
+    sql: total_orders
+    type: avg
+    description: Average total orders
+  - name: total_total_revenue_cents
+    sql: total_revenue_cents
+    type: sum
+    description: Sum of total revenue cents
+  - name: avg_total_revenue_cents
+    sql: total_revenue_cents
+    type: avg
+    description: Average total revenue cents
+  - name: total_return_rate
+    sql: return_rate
+    type: sum
+    description: Sum of return rate
+  - name: avg_return_rate
+    sql: return_rate
+    type: avg
+    description: Average return rate
+  - name: total_avg_rating
+    sql: avg_rating
+    type: sum
+    description: Sum of avg rating
+  - name: avg_avg_rating
+    sql: avg_rating
+    type: avg
+    description: Average avg rating
+joins:
+  - target_entity: Sellers
+    relationship: many_to_one
+    join_columns:
+      from: seller_id
+      to: id
+    description: Each seller_performance belongs to one seller
+use_cases:
+  - Use for aggregation and trends on total_orders, total_revenue_cents, return_rate, avg_rating
+  - Use for time-series analysis using month, created_at
+  - Join with sellers for cross-entity analysis

@@ -1,0 +1,163 @@
+name: LegacyRiskScores
+type: fact_table
+table: legacy_risk_scores
+grain: one row per legacy risk score record
+description: >-
+  Auto-profiled schema for legacy_risk_scores (1,000 rows). Contains 6 columns. POSSIBLY ABANDONED — name matches
+  legacy/temp pattern and no tables reference it.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 1000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: org_id
+    sql: org_id
+    type: number
+    unique_count: 198
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: risk_category
+    sql: risk_category
+    type: string
+    unique_count: 5
+    sample_values:
+      - compliance
+      - financial
+      - operational
+      - threat
+      - vulnerability
+  - name: score_value
+    sql: score_value
+    type: number
+    unique_count: 995
+    sample_values:
+      - '2.05'
+      - '3.11'
+      - '3.8'
+      - '4.01'
+      - '5.21'
+      - '5.87'
+      - '9.74'
+      - '11.17'
+  - name: weight
+    sql: weight
+    type: number
+    unique_count: 101
+    sample_values:
+      - '0'
+      - '0.01'
+      - '0.02'
+      - '0.03'
+      - '0.04'
+      - '0.05'
+      - '0.06'
+      - '0.07'
+  - name: computed_date
+    sql: computed_date
+    type: date
+    unique_count: 539
+    sample_values:
+      - Sat Jan 02 2021 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Mon Jan 04 2021 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Thu Jan 07 2021 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Sat Jan 09 2021 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Sun Jan 10 2021 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Mon Jan 11 2021 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Wed Jan 13 2021 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Thu Jan 14 2021 00:00:00 GMT-0500 (Eastern Standard Time)
+  - name: score_value_bucket
+    sql: |-
+      CASE
+        WHEN score_value < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY score_value) FROM legacy_risk_scores) THEN 'Low'
+        WHEN score_value < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY score_value) FROM legacy_risk_scores) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: score value bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: weight_bucket
+    sql: |-
+      CASE
+        WHEN weight < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY weight) FROM legacy_risk_scores) THEN 'Low'
+        WHEN weight < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY weight) FROM legacy_risk_scores) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: weight bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: computed_date_year
+    sql: EXTRACT(YEAR FROM computed_date)
+    type: number
+    description: Year extracted from computed_date
+    virtual: true
+  - name: computed_date_month
+    sql: TO_CHAR(computed_date, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from computed_date
+    virtual: true
+measures:
+  - name: legacy_risk_score_count
+    sql: id
+    type: count_distinct
+  - name: total_score_value
+    sql: score_value
+    type: sum
+    description: Sum of score value
+  - name: avg_score_value
+    sql: score_value
+    type: avg
+    description: Average score value
+  - name: total_weight
+    sql: weight
+    type: sum
+    description: Sum of weight
+  - name: avg_weight
+    sql: weight
+    type: avg
+    description: Average weight
+use_cases:
+  - 'WARNING: This table appears to be abandoned/legacy. Verify with the user before querying'
+  - Use for segmentation analysis by risk_category
+  - Use for aggregation and trends on score_value, weight
+  - Use for time-series analysis using computed_date
+query_patterns:
+  - description: LegacyRiskScores by risk_category
+    sql: |-
+      SELECT risk_category, COUNT(*) as count
+      FROM legacy_risk_scores
+      GROUP BY risk_category
+      ORDER BY count DESC
+  - description: Total score_value by risk_category
+    sql: |-
+      SELECT risk_category, SUM(score_value) as total_score_value, COUNT(*) as count
+      FROM legacy_risk_scores
+      GROUP BY risk_category
+      ORDER BY total_score_value DESC
+profiler_notes:
+  - 'Possibly abandoned: name matches legacy/temp pattern and no other tables reference it'

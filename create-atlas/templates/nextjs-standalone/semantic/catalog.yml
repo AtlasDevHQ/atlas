@@ -1,0 +1,5 @@
+# Atlas Semantic Layer — Catalog
+# Run `bun run atlas -- init` to auto-generate from your database.
+version: "1.0"
+entities: []
+glossary: glossary.yml

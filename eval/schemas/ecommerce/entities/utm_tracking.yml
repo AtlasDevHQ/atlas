@@ -1,0 +1,176 @@
+name: UtmTracking
+type: fact_table
+table: utm_tracking
+grain: one row per utm tracking record
+description: Auto-profiled schema for utm_tracking (15,000 rows). Contains 9 columns, linked to customers, orders.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 15000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: customer_id
+    sql: customer_id
+    type: number
+    unique_count: 5892
+    null_count: 4462
+    sample_values:
+      - '1'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+      - '9'
+    profiler_notes:
+      - Likely FK to customers.id (inferred from column name, no constraint exists)
+  - name: utm_source
+    sql: utm_source
+    type: string
+    unique_count: 8
+    sample_values:
+      - bing
+      - email
+      - facebook
+      - google
+      - instagram
+      - pinterest
+      - tiktok
+      - twitter
+  - name: utm_medium
+    sql: utm_medium
+    type: string
+    unique_count: 6
+    sample_values:
+      - cpc
+      - display
+      - email
+      - organic
+      - referral
+      - social
+  - name: utm_campaign
+    sql: utm_campaign
+    type: string
+    unique_count: 10
+    sample_values:
+      - back_to_school
+      - brand_awareness
+      - flash_sale
+      - holiday_2024
+      - loyalty_program
+      - new_arrivals
+      - retargeting
+      - spring_launch
+      - summer_sale
+      - winter_clearance
+  - name: utm_content
+    sql: utm_content
+    type: string
+    unique_count: 5
+    null_count: 7392
+    sample_values:
+      - carousel
+      - footer
+      - hero_banner
+      - popup
+      - sidebar
+  - name: landing_page
+    sql: landing_page
+    type: string
+    unique_count: 7
+    sample_values:
+      - /
+      - /collections/bath
+      - /collections/bedding
+      - /collections/kitchen
+      - /collections/outdoor
+      - /collections/sale
+      - /products/bestseller
+  - name: order_id
+    sql: order_id
+    type: number
+    unique_count: 2713
+    null_count: 12110
+    sample_values:
+      - '9'
+      - '20'
+      - '33'
+      - '51'
+      - '56'
+      - '58'
+      - '62'
+      - '74'
+    profiler_notes:
+      - Likely FK to orders.id (inferred from column name, no constraint exists)
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 15000
+    sample_values:
+      - Mon Jun 08 2020 16:36:58 GMT-0400 (Eastern Daylight Time)
+      - Thu Jun 25 2020 21:16:36 GMT-0400 (Eastern Daylight Time)
+      - Wed Jul 08 2020 17:08:40 GMT-0400 (Eastern Daylight Time)
+      - Fri Jul 10 2020 08:25:44 GMT-0400 (Eastern Daylight Time)
+      - Thu Jul 23 2020 01:22:28 GMT-0400 (Eastern Daylight Time)
+      - Tue Jul 28 2020 00:06:55 GMT-0400 (Eastern Daylight Time)
+      - Sun Aug 02 2020 15:44:05 GMT-0400 (Eastern Daylight Time)
+      - Mon Aug 03 2020 16:30:32 GMT-0400 (Eastern Daylight Time)
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: utm_tracking_count
+    sql: id
+    type: count_distinct
+joins:
+  - target_entity: Customers
+    relationship: many_to_one
+    join_columns:
+      from: customer_id
+      to: id
+    inferred: true
+    note: No FK constraint exists — inferred from column name customer_id
+    description: Each utm_tracking likely belongs to one customer
+  - target_entity: Orders
+    relationship: many_to_one
+    join_columns:
+      from: order_id
+      to: id
+    inferred: true
+    note: No FK constraint exists — inferred from column name order_id
+    description: Each utm_tracking likely belongs to one order
+use_cases:
+  - Use for segmentation analysis by utm_source, utm_medium, utm_campaign, utm_content, landing_page
+  - Use for time-series analysis using created_at
+  - Join with customers, orders for cross-entity analysis
+query_patterns:
+  - description: UtmTracking by utm_source
+    sql: |-
+      SELECT utm_source, COUNT(*) as count
+      FROM utm_tracking
+      GROUP BY utm_source
+      ORDER BY count DESC
+  - description: UtmTracking by utm_medium
+    sql: |-
+      SELECT utm_medium, COUNT(*) as count
+      FROM utm_tracking
+      GROUP BY utm_medium
+      ORDER BY count DESC

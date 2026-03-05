@@ -1,0 +1,214 @@
+name: Incidents
+type: fact_table
+table: incidents
+grain: one row per incident record
+description: Auto-profiled schema for incidents (1,500 rows). Contains 11 columns, linked to users, organizations.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 1500
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: organization_id
+    sql: organization_id
+    type: number
+    description: Foreign key to organizations
+    unique_count: 200
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: organization_name
+    sql: organization_name
+    type: string
+    unique_count: 200
+    sample_values:
+      - Aegis Corp
+      - Aegis Digital
+      - Aegis Dynamics
+      - Aegis Group
+      - Aegis Industries
+      - Aegis Labs
+      - Aegis Networks
+      - Aegis Solutions
+  - name: title
+    sql: title
+    type: string
+    unique_count: 150
+    sample_values:
+      - Brute force attack against API gateway
+      - Brute force attack against CI/CD pipeline
+      - Brute force attack against VPN endpoint
+      - Brute force attack against admin console
+      - Brute force attack against cloud infrastructure
+      - Brute force attack against customer portal
+      - Brute force attack against database cluster
+      - Brute force attack against email gateway
+  - name: description
+    sql: description
+    type: string
+    unique_count: 150
+    sample_values:
+      - Investigation into brute force attack against admin console. Multiple indicators observed.
+      - Investigation into brute force attack against api gateway. Multiple indicators observed.
+      - Investigation into brute force attack against ci/cd pipeline. Multiple indicators observed.
+      - Investigation into brute force attack against cloud infrastructure. Multiple indicators observed.
+      - Investigation into brute force attack against customer portal. Multiple indicators observed.
+      - Investigation into brute force attack against database cluster. Multiple indicators observed.
+      - Investigation into brute force attack against email gateway. Multiple indicators observed.
+      - Investigation into brute force attack against internal network. Multiple indicators observed.
+  - name: severity
+    sql: severity
+    type: string
+    unique_count: 4
+    sample_values:
+      - critical
+      - high
+      - low
+      - medium
+  - name: status
+    sql: status
+    type: string
+    unique_count: 6
+    sample_values:
+      - closed
+      - identified
+      - investigating
+      - monitoring
+      - open
+      - resolved
+  - name: assigned_to
+    sql: assigned_to
+    type: number
+    description: Foreign key to users
+    unique_count: 843
+    null_count: 452
+    sample_values:
+      - '1'
+      - '2'
+      - '6'
+      - '7'
+      - '8'
+      - '13'
+      - '18'
+      - '19'
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 1500
+    sample_values:
+      - Sat Mar 28 2020 11:10:05 GMT-0400 (Eastern Daylight Time)
+      - Mon May 04 2020 00:54:46 GMT-0400 (Eastern Daylight Time)
+      - Sun May 10 2020 22:10:44 GMT-0400 (Eastern Daylight Time)
+      - Sun May 17 2020 19:13:40 GMT-0400 (Eastern Daylight Time)
+      - Tue May 19 2020 13:17:06 GMT-0400 (Eastern Daylight Time)
+      - Sat Jun 27 2020 16:56:32 GMT-0400 (Eastern Daylight Time)
+      - Tue Jun 30 2020 20:04:36 GMT-0400 (Eastern Daylight Time)
+      - Sun Jul 05 2020 23:30:21 GMT-0400 (Eastern Daylight Time)
+  - name: updated_at
+    sql: updated_at
+    type: date
+    unique_count: 1500
+    sample_values:
+      - Thu Apr 16 2020 20:55:01 GMT-0400 (Eastern Daylight Time)
+      - Fri May 15 2020 15:33:46 GMT-0400 (Eastern Daylight Time)
+      - Thu May 21 2020 09:46:16 GMT-0400 (Eastern Daylight Time)
+      - Mon Jun 01 2020 12:14:06 GMT-0400 (Eastern Daylight Time)
+      - Tue Jun 09 2020 13:58:54 GMT-0400 (Eastern Daylight Time)
+      - Sun Jul 12 2020 08:34:42 GMT-0400 (Eastern Daylight Time)
+      - Sun Jul 12 2020 16:00:11 GMT-0400 (Eastern Daylight Time)
+      - Tue Jul 21 2020 21:35:48 GMT-0400 (Eastern Daylight Time)
+  - name: resolved_at
+    sql: resolved_at
+    type: date
+    unique_count: 350
+    null_count: 1150
+    sample_values:
+      - Tue Mar 31 2020 15:21:42 GMT-0400 (Eastern Daylight Time)
+      - Sat May 09 2020 20:42:07 GMT-0400 (Eastern Daylight Time)
+      - Wed May 20 2020 07:02:30 GMT-0400 (Eastern Daylight Time)
+      - Sun Oct 25 2020 17:53:30 GMT-0400 (Eastern Daylight Time)
+      - Fri Dec 04 2020 17:00:44 GMT-0500 (Eastern Standard Time)
+      - Mon Dec 14 2020 14:43:10 GMT-0500 (Eastern Standard Time)
+      - Mon Jan 11 2021 09:41:06 GMT-0500 (Eastern Standard Time)
+      - Wed Jan 13 2021 18:37:39 GMT-0500 (Eastern Standard Time)
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+  - name: updated_at_year
+    sql: EXTRACT(YEAR FROM updated_at)
+    type: number
+    description: Year extracted from updated_at
+    virtual: true
+  - name: updated_at_month
+    sql: TO_CHAR(updated_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from updated_at
+    virtual: true
+  - name: resolved_at_year
+    sql: EXTRACT(YEAR FROM resolved_at)
+    type: number
+    description: Year extracted from resolved_at
+    virtual: true
+  - name: resolved_at_month
+    sql: TO_CHAR(resolved_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from resolved_at
+    virtual: true
+measures:
+  - name: incident_count
+    sql: id
+    type: count_distinct
+joins:
+  - target_entity: Users
+    relationship: many_to_one
+    join_columns:
+      from: assigned_to
+      to: id
+    description: Each incident belongs to one user
+  - target_entity: Organizations
+    relationship: many_to_one
+    join_columns:
+      from: organization_id
+      to: id
+    description: Each incident belongs to one organization
+use_cases:
+  - Use for segmentation analysis by severity, status
+  - Use for time-series analysis using created_at, updated_at, resolved_at
+  - Join with users, organizations for cross-entity analysis
+  - Avoid for row-level alerts/incident_comments/incident_events queries — use those entities directly
+query_patterns:
+  - description: Incidents by severity
+    sql: |-
+      SELECT severity, COUNT(*) as count
+      FROM incidents
+      GROUP BY severity
+      ORDER BY count DESC
+  - description: Incidents by status
+    sql: |-
+      SELECT status, COUNT(*) as count
+      FROM incidents
+      GROUP BY status
+      ORDER BY count DESC

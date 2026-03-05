@@ -1,0 +1,34 @@
+id: "ec-011"
+question: "Show customer cohort retention — how many customers from each monthly cohort placed orders in subsequent months?"
+schema: ecommerce
+difficulty: complex
+category: cte
+tags: [customers, orders, cohort, retention]
+gold_sql: |
+  WITH customer_cohorts AS (
+    SELECT
+      c.id AS customer_id,
+      DATE_TRUNC('month', c.created_at)::date AS cohort_month
+    FROM customers c
+  ),
+  order_months AS (
+    SELECT
+      o.customer_id,
+      DATE_TRUNC('month', o.placed_at)::date AS order_month
+    FROM orders o
+    WHERE o.status NOT IN ('cancelled', 'refunded')
+    GROUP BY o.customer_id, DATE_TRUNC('month', o.placed_at)::date
+  )
+  SELECT
+    cc.cohort_month,
+    COUNT(DISTINCT cc.customer_id) AS cohort_size,
+    COUNT(DISTINCT CASE WHEN om.order_month = cc.cohort_month THEN cc.customer_id END) AS month_0,
+    COUNT(DISTINCT CASE WHEN om.order_month = cc.cohort_month + INTERVAL '1 month' THEN cc.customer_id END) AS month_1,
+    COUNT(DISTINCT CASE WHEN om.order_month = cc.cohort_month + INTERVAL '2 months' THEN cc.customer_id END) AS month_2,
+    COUNT(DISTINCT CASE WHEN om.order_month = cc.cohort_month + INTERVAL '3 months' THEN cc.customer_id END) AS month_3
+  FROM customer_cohorts cc
+  LEFT JOIN order_months om ON cc.customer_id = om.customer_id
+  GROUP BY cc.cohort_month
+  ORDER BY cc.cohort_month
+expected_rows: null
+notes: "Tests cohort retention analysis with dual CTE, CASE inside COUNT DISTINCT, and interval arithmetic"

@@ -1,0 +1,76 @@
+name: Warehouses
+type: fact_table
+table: warehouses
+grain: one row per warehous record
+description: Auto-profiled schema for warehouses (5 rows). Contains 7 columns.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 5
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+  - name: name
+    sql: name
+    type: string
+    unique_count: 5
+    sample_values:
+      - Central Warehouse
+      - East Coast Hub
+      - Pacific Northwest
+      - Southeast Fulfillment
+      - West Coast Hub
+  - name: code
+    sql: code
+    type: string
+    unique_count: 5
+    sample_values:
+      - CW1
+      - EC1
+      - PNW
+      - SE1
+      - WC1
+  - name: city
+    sql: city
+    type: string
+    unique_count: 5
+    sample_values:
+      - Atlanta
+      - Edison
+      - Louisville
+      - Ontario
+      - Portland
+  - name: state
+    sql: state
+    type: string
+    unique_count: 5
+    sample_values:
+      - CA
+      - GA
+      - KY
+      - NJ
+      - OR
+  - name: country
+    sql: country
+    type: string
+    unique_count: 1
+    sample_values:
+      - US
+  - name: is_active
+    sql: is_active
+    type: boolean
+    unique_count: 1
+    sample_values:
+      - 'true'
+measures:
+  - name: warehous_count
+    sql: id
+    type: count_distinct
+use_cases:
+  - Avoid for row-level inventory_levels/shipments queries — use those entities directly

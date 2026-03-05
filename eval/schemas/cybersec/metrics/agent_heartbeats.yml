@@ -1,0 +1,69 @@
+metrics:
+  - id: agent_heartbeats_count
+    label: Total AgentHeartbeats
+    description: Count of distinct agent_heartbeats records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM agent_heartbeats
+    aggregation: count_distinct
+  - id: total_cpu_percent
+    label: Total cpu percent
+    description: Sum of cpu_percent across all agent_heartbeats.
+    type: atomic
+    source:
+      entity: AgentHeartbeats
+      measure: total_cpu_percent
+    sql: |-
+      SELECT SUM(cpu_percent) as total_cpu_percent
+      FROM agent_heartbeats
+    aggregation: sum
+    objective: maximize
+  - id: avg_cpu_percent
+    label: Average cpu percent
+    description: Average cpu_percent per agent_heartbeat.
+    type: atomic
+    sql: |-
+      SELECT AVG(cpu_percent) as avg_cpu_percent
+      FROM agent_heartbeats
+    aggregation: avg
+  - id: total_memory_percent
+    label: Total memory percent
+    description: Sum of memory_percent across all agent_heartbeats.
+    type: atomic
+    source:
+      entity: AgentHeartbeats
+      measure: total_memory_percent
+    sql: |-
+      SELECT SUM(memory_percent) as total_memory_percent
+      FROM agent_heartbeats
+    aggregation: sum
+    objective: maximize
+  - id: avg_memory_percent
+    label: Average memory percent
+    description: Average memory_percent per agent_heartbeat.
+    type: atomic
+    sql: |-
+      SELECT AVG(memory_percent) as avg_memory_percent
+      FROM agent_heartbeats
+    aggregation: avg
+  - id: total_disk_percent
+    label: Total disk percent
+    description: Sum of disk_percent across all agent_heartbeats.
+    type: atomic
+    source:
+      entity: AgentHeartbeats
+      measure: total_disk_percent
+    sql: |-
+      SELECT SUM(disk_percent) as total_disk_percent
+      FROM agent_heartbeats
+    aggregation: sum
+    objective: maximize
+  - id: avg_disk_percent
+    label: Average disk percent
+    description: Average disk_percent per agent_heartbeat.
+    type: atomic
+    sql: |-
+      SELECT AVG(disk_percent) as avg_disk_percent
+      FROM agent_heartbeats
+    aggregation: avg

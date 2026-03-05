@@ -1,0 +1,18 @@
+id: "ec-003"
+question: "What is the average order value by customer acquisition source?"
+schema: ecommerce
+difficulty: simple
+category: join
+tags: [orders, customers, acquisition, aov]
+gold_sql: |
+  SELECT
+    c.acquisition_source,
+    COUNT(o.id) AS order_count,
+    ROUND(AVG(o.total_cents) / 100.0, 2) AS avg_order_value
+  FROM orders o
+  JOIN customers c ON o.customer_id = c.id
+  WHERE o.status NOT IN ('cancelled', 'refunded')
+  GROUP BY c.acquisition_source
+  ORDER BY avg_order_value DESC
+expected_rows: null
+notes: "Tests JOIN with aggregation; acquisition_source has known case inconsistency in the data"

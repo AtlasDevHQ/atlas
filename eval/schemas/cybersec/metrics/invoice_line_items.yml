@@ -1,0 +1,71 @@
+metrics:
+  - id: invoice_line_items_count
+    label: Total InvoiceLineItems
+    description: Count of distinct invoice_line_items records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM invoice_line_items
+    aggregation: count_distinct
+  - id: total_amount_cents
+    label: Total amount cents
+    description: Sum of amount_cents across all invoice_line_items.
+    type: atomic
+    source:
+      entity: InvoiceLineItems
+      measure: total_amount_cents
+    sql: |-
+      SELECT SUM(amount_cents) as total_amount_cents
+      FROM invoice_line_items
+    aggregation: sum
+    objective: maximize
+  - id: avg_amount_cents
+    label: Average amount cents
+    description: Average amount_cents per invoice_line_item.
+    type: atomic
+    sql: |-
+      SELECT AVG(amount_cents) as avg_amount_cents
+      FROM invoice_line_items
+    aggregation: avg
+  - id: amount_cents_by_description
+    label: amount cents by description
+    description: amount_cents broken down by description.
+    type: atomic
+    sql: >-
+      SELECT description, SUM(amount_cents) as total_amount_cents, AVG(amount_cents) as avg_amount_cents, COUNT(*) as
+      count
+
+      FROM invoice_line_items
+
+      GROUP BY description
+
+      ORDER BY total_amount_cents DESC
+  - id: total_quantity
+    label: Total quantity
+    description: Sum of quantity across all invoice_line_items.
+    type: atomic
+    source:
+      entity: InvoiceLineItems
+      measure: total_quantity
+    sql: |-
+      SELECT SUM(quantity) as total_quantity
+      FROM invoice_line_items
+    aggregation: sum
+    objective: maximize
+  - id: avg_quantity
+    label: Average quantity
+    description: Average quantity per invoice_line_item.
+    type: atomic
+    sql: |-
+      SELECT AVG(quantity) as avg_quantity
+      FROM invoice_line_items
+    aggregation: avg
+  - id: quantity_by_description
+    label: quantity by description
+    description: quantity broken down by description.
+    type: atomic
+    sql: |-
+      SELECT description, SUM(quantity) as total_quantity, AVG(quantity) as avg_quantity, COUNT(*) as count
+      FROM invoice_line_items
+      GROUP BY description
+      ORDER BY total_quantity DESC

@@ -1,0 +1,19 @@
+id: "cs-002"
+question: "What is the total MRR broken down by plan tier?"
+schema: cybersec
+difficulty: simple
+category: aggregation
+tags: [subscriptions, plans, mrr, revenue]
+gold_sql: |
+  SELECT
+    p.tier,
+    p.name AS plan_name,
+    SUM(s.mrr_cents) / 100.0 AS total_mrr_dollars,
+    COUNT(*) AS subscription_count
+  FROM subscriptions s
+  JOIN plans p ON s.plan_id = p.id
+  WHERE s.status = 'active'
+  GROUP BY p.tier, p.name
+  ORDER BY total_mrr_dollars DESC
+expected_rows: null
+notes: "Tests aggregation with JOIN, converting cents to dollars"

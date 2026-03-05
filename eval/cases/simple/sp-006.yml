@@ -1,0 +1,18 @@
+id: "sp-006"
+question: "What is the churn rate by industry?"
+schema: simple
+difficulty: medium
+category: join
+tags: [accounts, companies, churn, ratio]
+gold_sql: |
+  SELECT
+    c.industry,
+    COUNT(*) AS total_accounts,
+    COUNT(*) FILTER (WHERE a.status = 'Churned') AS churned_accounts,
+    ROUND(COUNT(*) FILTER (WHERE a.status = 'Churned')::numeric / COUNT(*) * 100, 1) AS churn_rate_pct
+  FROM accounts a
+  JOIN companies c ON a.company_id = c.id
+  GROUP BY c.industry
+  ORDER BY churn_rate_pct DESC
+expected_rows: null
+notes: "Tests FILTER clause and ratio calculation with a JOIN"

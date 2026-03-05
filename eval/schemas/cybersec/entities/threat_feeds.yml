@@ -1,0 +1,124 @@
+name: ThreatFeeds
+type: fact_table
+table: threat_feeds
+grain: one row per threat feed record
+description: Auto-profiled schema for threat_feeds (10 rows). Contains 8 columns.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 10
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: name
+    sql: name
+    type: string
+    unique_count: 10
+    sample_values:
+      - Abuse.ch URLhaus
+      - AlienVault OTX
+      - CISA Known Exploited
+      - CrowdStrike Intel
+      - MISP Community
+      - Mandiant Advantage
+      - PhishTank
+      - Recorded Future
+  - name: provider
+    sql: provider
+    type: string
+    unique_count: 10
+    sample_values:
+      - AlienVault
+      - CISA
+      - CrowdStrike
+      - Google
+      - MISP Project
+      - Mandiant
+      - OpenDNS
+      - Recorded Future
+  - name: url
+    sql: url
+    type: string
+    unique_count: 7
+    null_count: 3
+    sample_values:
+      - https://cisa.gov/known-exploited-vulnerabilities
+      - https://misp-project.org
+      - https://otx.alienvault.com
+      - https://phishtank.org
+      - https://shodan.io
+      - https://urlhaus.abuse.ch
+      - https://virustotal.com
+  - name: feed_type
+    sql: feed_type
+    type: string
+    unique_count: 6
+    sample_values:
+      - hash
+      - host
+      - ioc
+      - threat
+      - url
+      - vuln
+  - name: is_active
+    sql: is_active
+    type: boolean
+    unique_count: 2
+    sample_values:
+      - 'false'
+      - 'true'
+  - name: last_synced
+    sql: last_synced
+    type: date
+    unique_count: 10
+    sample_values:
+      - Fri May 31 2024 20:00:00 GMT-0400 (Eastern Daylight Time)
+      - Mon Mar 02 2026 13:38:31 GMT-0500 (Eastern Standard Time)
+      - Tue Mar 03 2026 01:38:31 GMT-0500 (Eastern Standard Time)
+      - Tue Mar 03 2026 05:38:31 GMT-0500 (Eastern Standard Time)
+      - Tue Mar 03 2026 07:38:31 GMT-0500 (Eastern Standard Time)
+      - Tue Mar 03 2026 08:38:31 GMT-0500 (Eastern Standard Time)
+      - Tue Mar 03 2026 09:38:31 GMT-0500 (Eastern Standard Time)
+      - Tue Mar 03 2026 10:38:31 GMT-0500 (Eastern Standard Time)
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 1
+    sample_values:
+      - Tue Mar 03 2026 13:38:31 GMT-0500 (Eastern Standard Time)
+  - name: last_synced_year
+    sql: EXTRACT(YEAR FROM last_synced)
+    type: number
+    description: Year extracted from last_synced
+    virtual: true
+  - name: last_synced_month
+    sql: TO_CHAR(last_synced, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from last_synced
+    virtual: true
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: threat_feed_count
+    sql: id
+    type: count_distinct
+use_cases:
+  - Use for time-series analysis using last_synced, created_at
+  - Avoid for row-level indicators_of_compromise queries — use those entities directly

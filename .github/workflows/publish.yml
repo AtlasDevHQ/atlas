@@ -1,0 +1,42 @@
+name: Publish @useatlas packages
+
+on:
+  push:
+    tags:
+      - 'create-v*'
+      - 'sdk-v*'
+      - 'plugin-sdk-v*'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.10"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - run: bun install --frozen-lockfile
+
+      - name: Publish @useatlas/create
+        if: startsWith(github.ref, 'refs/tags/create-v')
+        run: cd create-atlas && npm publish --access public
+
+      - name: Build, test, and publish @useatlas/sdk
+        if: startsWith(github.ref, 'refs/tags/sdk-v')
+        run: cd packages/sdk && bun run build && bun run test && npm publish --access public
+
+      - name: Build, test, and publish @useatlas/plugin-sdk
+        if: startsWith(github.ref, 'refs/tags/plugin-sdk-v')
+        run: cd packages/plugin-sdk && bun run build && bun run test && npm publish --access public

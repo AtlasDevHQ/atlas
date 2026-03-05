@@ -1,0 +1,164 @@
+name: Returns
+type: fact_table
+table: returns
+grain: one row per return record
+description: Auto-profiled schema for returns (3,000 rows). Contains 7 columns, linked to customers, orders.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 3000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: order_id
+    sql: order_id
+    type: number
+    description: Foreign key to orders
+    unique_count: 2805
+    sample_values:
+      - '1'
+      - '8'
+      - '38'
+      - '60'
+      - '67'
+      - '85'
+      - '91'
+      - '94'
+  - name: customer_id
+    sql: customer_id
+    type: number
+    description: Foreign key to customers
+    unique_count: 2492
+    sample_values:
+      - '3'
+      - '6'
+      - '10'
+      - '17'
+      - '19'
+      - '20'
+      - '23'
+      - '26'
+  - name: reason
+    sql: reason
+    type: string
+    unique_count: 15
+    sample_values:
+      - Arrived late
+      - Better price elsewhere
+      - Changed Mind
+      - Changed mind
+      - DEFECTIVE
+      - Defective
+      - Not as described
+      - Too large
+      - Too small
+      - WRONG ITEM
+      - Wrong Item
+      - changed_mind
+      - defective
+      - not_as_described
+      - wrong_item
+    profiler_notes:
+      - >-
+        Case-inconsistent enum values: [Changed Mind, Changed mind; DEFECTIVE, Defective, defective; WRONG ITEM, Wrong
+        Item]. Consider using LOWER() for grouping
+  - name: status
+    sql: status
+    type: string
+    unique_count: 4
+    sample_values:
+      - approved
+      - completed
+      - denied
+      - requested
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 3000
+    sample_values:
+      - Fri Jul 10 2020 14:55:06 GMT-0400 (Eastern Daylight Time)
+      - Sun Jul 19 2020 22:30:04 GMT-0400 (Eastern Daylight Time)
+      - Tue Jul 21 2020 01:23:05 GMT-0400 (Eastern Daylight Time)
+      - Tue Jul 28 2020 11:14:26 GMT-0400 (Eastern Daylight Time)
+      - Sat Aug 01 2020 07:54:34 GMT-0400 (Eastern Daylight Time)
+      - Mon Aug 03 2020 18:59:24 GMT-0400 (Eastern Daylight Time)
+      - Sun Aug 09 2020 07:01:37 GMT-0400 (Eastern Daylight Time)
+      - Wed Aug 12 2020 06:32:14 GMT-0400 (Eastern Daylight Time)
+  - name: resolved_at
+    sql: resolved_at
+    type: date
+    unique_count: 2107
+    null_count: 893
+    sample_values:
+      - Mon Jul 13 2020 00:25:39 GMT-0400 (Eastern Daylight Time)
+      - Tue Jul 21 2020 04:44:34 GMT-0400 (Eastern Daylight Time)
+      - Sat Jul 25 2020 05:31:47 GMT-0400 (Eastern Daylight Time)
+      - Wed Aug 12 2020 08:52:28 GMT-0400 (Eastern Daylight Time)
+      - Mon Aug 17 2020 07:26:42 GMT-0400 (Eastern Daylight Time)
+      - Sun Aug 23 2020 07:58:11 GMT-0400 (Eastern Daylight Time)
+      - Mon Sep 21 2020 19:43:15 GMT-0400 (Eastern Daylight Time)
+      - Tue Sep 29 2020 00:30:51 GMT-0400 (Eastern Daylight Time)
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+  - name: resolved_at_year
+    sql: EXTRACT(YEAR FROM resolved_at)
+    type: number
+    description: Year extracted from resolved_at
+    virtual: true
+  - name: resolved_at_month
+    sql: TO_CHAR(resolved_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from resolved_at
+    virtual: true
+measures:
+  - name: return_count
+    sql: id
+    type: count_distinct
+joins:
+  - target_entity: Customers
+    relationship: many_to_one
+    join_columns:
+      from: customer_id
+      to: id
+    description: Each return belongs to one customer
+  - target_entity: Orders
+    relationship: many_to_one
+    join_columns:
+      from: order_id
+      to: id
+    description: Each return belongs to one order
+use_cases:
+  - Use for segmentation analysis by reason, status
+  - Use for time-series analysis using created_at, resolved_at
+  - Join with customers, orders for cross-entity analysis
+  - Avoid for row-level return_items queries — use those entities directly
+query_patterns:
+  - description: Returns by reason
+    sql: |-
+      SELECT reason, COUNT(*) as count
+      FROM returns
+      GROUP BY reason
+      ORDER BY count DESC
+  - description: Returns by status
+    sql: |-
+      SELECT status, COUNT(*) as count
+      FROM returns
+      GROUP BY status
+      ORDER BY count DESC

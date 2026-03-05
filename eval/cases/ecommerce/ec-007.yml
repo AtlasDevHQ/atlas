@@ -1,0 +1,23 @@
+id: "ec-007"
+question: "Which products are low on stock across all warehouses?"
+schema: ecommerce
+difficulty: medium
+category: join
+tags: [inventory_levels, product_variants, products, stock]
+gold_sql: |
+  SELECT
+    p.name AS product_name,
+    pv.name AS variant_name,
+    pv.sku,
+    SUM(il.quantity) AS total_stock,
+    SUM(il.reserved_quantity) AS total_reserved,
+    SUM(il.quantity) - SUM(il.reserved_quantity) AS available_stock
+  FROM inventory_levels il
+  JOIN product_variants pv ON il.variant_id = pv.id
+  JOIN products p ON pv.product_id = p.id
+  WHERE p.is_active = true
+  GROUP BY p.name, pv.name, pv.sku
+  HAVING SUM(il.quantity) - SUM(il.reserved_quantity) < 10
+  ORDER BY available_stock ASC
+expected_rows: null
+notes: "Tests HAVING clause with multi-table JOIN for inventory management"

@@ -1,0 +1,26 @@
+id: "cs-019"
+question: "How many alerts were created per day in the last 30 days, and what is the 7-day moving average?"
+schema: cybersec
+difficulty: complex
+category: window
+tags: [alerts, timeseries, moving-average]
+gold_sql: |
+  WITH daily_alerts AS (
+    SELECT
+      DATE_TRUNC('day', created_at)::date AS alert_date,
+      COUNT(*) AS alert_count
+    FROM alerts
+    WHERE created_at >= NOW() - INTERVAL '30 days'
+    GROUP BY alert_date
+  )
+  SELECT
+    alert_date,
+    alert_count,
+    ROUND(AVG(alert_count) OVER (
+      ORDER BY alert_date
+      ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+    )::numeric, 1) AS moving_avg_7d
+  FROM daily_alerts
+  ORDER BY alert_date
+expected_rows: null
+notes: "Tests CTE with window function for 7-day moving average on time-series data"

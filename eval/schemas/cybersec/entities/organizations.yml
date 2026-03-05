@@ -1,0 +1,146 @@
+name: Organizations
+type: fact_table
+table: organizations
+grain: one row per organization record
+description: Auto-profiled schema for organizations (200 rows). Contains 9 columns.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 200
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: name
+    sql: name
+    type: string
+    unique_count: 200
+    sample_values:
+      - Aegis Corp
+      - Aegis Digital
+      - Aegis Dynamics
+      - Aegis Group
+      - Aegis Industries
+      - Aegis Labs
+      - Aegis Networks
+      - Aegis Solutions
+  - name: industry
+    sql: industry
+    type: string
+    unique_count: 13
+    sample_values:
+      - Defense
+      - Energy
+      - Finance
+      - Government
+      - Health Care
+      - Healthcare
+      - Manufacturing
+      - Retail
+  - name: size_tier
+    sql: size_tier
+    type: string
+    unique_count: 4
+    sample_values:
+      - enterprise
+      - mid_market
+      - smb
+      - startup
+  - name: domain
+    sql: domain
+    type: string
+    unique_count: 200
+    sample_values:
+      - aegiscorp.com
+      - aegisdigital.com
+      - aegisdynamics.com
+      - aegisgroup.com
+      - aegisindustries.com
+      - aegislabs.com
+      - aegisnetworks.com
+      - aegissolutions.com
+  - name: country
+    sql: country
+    type: string
+    unique_count: 13
+    sample_values:
+      - AU
+      - BR
+      - CA
+      - DE
+      - FR
+      - IL
+      - IN
+      - JP
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 200
+    sample_values:
+      - Sun Jan 06 2019 01:10:37 GMT-0500 (Eastern Standard Time)
+      - Wed Jan 09 2019 19:33:31 GMT-0500 (Eastern Standard Time)
+      - Thu Jan 10 2019 23:56:37 GMT-0500 (Eastern Standard Time)
+      - Fri Jan 11 2019 05:14:09 GMT-0500 (Eastern Standard Time)
+      - Sat Jan 19 2019 14:10:10 GMT-0500 (Eastern Standard Time)
+      - Mon Jan 21 2019 08:41:55 GMT-0500 (Eastern Standard Time)
+      - Wed Jan 23 2019 11:05:37 GMT-0500 (Eastern Standard Time)
+      - Sun Feb 03 2019 07:59:40 GMT-0500 (Eastern Standard Time)
+  - name: updated_at
+    sql: updated_at
+    type: date
+    unique_count: 1
+    sample_values:
+      - Tue Mar 03 2026 13:38:31 GMT-0500 (Eastern Standard Time)
+  - name: is_active
+    sql: is_active
+    type: boolean
+    unique_count: 2
+    sample_values:
+      - 'false'
+      - 'true'
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+  - name: updated_at_year
+    sql: EXTRACT(YEAR FROM updated_at)
+    type: number
+    description: Year extracted from updated_at
+    virtual: true
+  - name: updated_at_month
+    sql: TO_CHAR(updated_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from updated_at
+    virtual: true
+measures:
+  - name: organization_count
+    sql: id
+    type: count_distinct
+use_cases:
+  - Use for segmentation analysis by size_tier
+  - Use for time-series analysis using created_at, updated_at
+  - >-
+    Avoid for row-level
+    alert_rules/alerts/api_keys/asset_groups/assets/audit_log/compliance_assessments/daily_scan_stats/dashboards/executive_dashboard_cache/feature_usage/incidents/integrations/invitations/invoices/monthly_vulnerability_summary/notifications/organization_health_scores/organization_settings/payment_methods/reports/scan_configurations/scan_results_denormalized/scans/subscriptions/teams/users/vulnerability_exceptions
+    queries — use those entities directly
+query_patterns:
+  - description: Organizations by size_tier
+    sql: |-
+      SELECT size_tier, COUNT(*) as count
+      FROM organizations
+      GROUP BY size_tier
+      ORDER BY count DESC

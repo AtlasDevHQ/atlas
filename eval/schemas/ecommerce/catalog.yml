@@ -1,0 +1,726 @@
+version: '1.0'
+entities:
+  - name: Accounts
+    file: entities/accounts.yml
+    grain: one row per account record
+    description: accounts (80 rows, 7 columns)
+    use_for:
+      - Segmentation by plan, status
+      - Aggregation on monthly_value
+      - Cross-entity analysis via companies
+    common_questions:
+      - How many accounts by plan?
+      - How many accounts by status?
+      - What is the average monthly_value across accounts?
+      - How are accounts distributed across companies?
+  - name: AdminAuditLog
+    file: entities/admin_audit_log.yml
+    grain: one row per admin audit log record
+    description: admin_audit_log (10,000 rows, 8 columns)
+    use_for:
+      - Segmentation by action, resource_type
+      - Cross-entity analysis via admin_users
+    common_questions:
+      - How many admin_audit_log by action?
+      - How many admin_audit_log by resource_type?
+      - How are admin_audit_log distributed across admin_users?
+  - name: AdminUsers
+    file: entities/admin_users.yml
+    grain: one row per admin user record
+    description: admin_users (30 rows, 6 columns)
+    use_for:
+      - General queries on admin_users
+    common_questions:
+      - What data is in admin_users?
+  - name: CartEvents
+    file: entities/cart_events.yml
+    grain: one row per cart event record
+    description: cart_events (15,000 rows, 8 columns)
+    use_for:
+      - Segmentation by event_type
+      - Aggregation on quantity
+      - Cross-entity analysis via customers, products
+    common_questions:
+      - How many cart_events by event_type?
+      - What is the average quantity across cart_events?
+      - How are cart_events distributed across customers?
+  - name: Categories
+    file: entities/categories.yml
+    grain: one row per category record
+    description: categories (25 rows, 6 columns)
+    use_for:
+      - Cross-entity analysis via categories
+    common_questions:
+      - How are categories distributed across categories?
+  - name: Companies
+    file: entities/companies.yml
+    grain: one row per company record
+    description: companies (50 rows, 8 columns)
+    use_for:
+      - Aggregation on employee_count, founded_year, revenue, valuation
+    common_questions:
+      - What is the average employee_count across companies?
+  - name: CustomerAddresses
+    file: entities/customer_addresses.yml
+    grain: one row per customer address record
+    description: customer_addresses (12,000 rows, 10 columns)
+    use_for:
+      - Segmentation by label, state, country
+      - Cross-entity analysis via customers
+    common_questions:
+      - How many customer_addresses by label?
+      - How many customer_addresses by state?
+      - How are customer_addresses distributed across customers?
+  - name: CustomerLtvCache
+    file: entities/customer_ltv_cache.yml
+    grain: one row per customer ltv cache record
+    description: customer_ltv_cache (8,000 rows, 10 columns)
+    use_for:
+      - Segmentation by segment
+      - Aggregation on total_orders, total_spent_cents, avg_order_value_cents, predicted_ltv_cents
+      - Cross-entity analysis via customers
+    common_questions:
+      - How many customer_ltv_cache by segment?
+      - What is the average total_orders across customer_ltv_cache?
+      - How are customer_ltv_cache distributed across customers?
+  - name: CustomerSegmentAssignments
+    file: entities/customer_segment_assignments.yml
+    grain: one row per customer segment assignment record
+    description: customer_segment_assignments (9,000 rows, 5 columns)
+    use_for:
+      - Segmentation by segment_name
+      - Cross-entity analysis via customers, customer_segments
+    common_questions:
+      - How many customer_segment_assignments by segment_name?
+      - How are customer_segment_assignments distributed across customers?
+  - name: CustomerSegments
+    file: entities/customer_segments.yml
+    grain: one row per customer segment record
+    description: customer_segments (10 rows, 4 columns)
+    use_for:
+      - General queries on customer_segments
+    common_questions:
+      - What data is in customer_segments?
+  - name: Customers
+    file: entities/customers.yml
+    grain: one row per customer record
+    description: customers (8,000 rows, 9 columns)
+    use_for:
+      - Segmentation by acquisition_source
+    common_questions:
+      - How many customers by acquisition_source?
+  - name: DailySalesSummary
+    file: entities/daily_sales_summary.yml
+    grain: one row per daily sales summary record
+    description: daily_sales_summary (1,800 rows, 7 columns)
+    use_for:
+      - Aggregation on total_orders, total_revenue_cents, total_items, avg_order_value_cents, return_count
+    common_questions:
+      - What is the average total_orders across daily_sales_summary?
+  - name: EmailCampaigns
+    file: entities/email_campaigns.yml
+    grain: one row per email campaign record
+    description: email_campaigns (50 rows, 7 columns)
+    use_for:
+      - General queries on email_campaigns
+    common_questions:
+      - What data is in email_campaigns?
+  - name: EmailSends
+    file: entities/email_sends.yml
+    grain: one row per email send record
+    description: email_sends (30,000 rows, 7 columns)
+    use_for:
+      - Segmentation by status
+      - Cross-entity analysis via email_campaigns, customers
+    common_questions:
+      - How many email_sends by status?
+      - How are email_sends distributed across email_campaigns?
+  - name: GiftCardTransactions
+    file: entities/gift_card_transactions.yml
+    grain: one row per gift card transaction record
+    description: gift_card_transactions (1,200 rows, 6 columns)
+    use_for:
+      - Segmentation by type
+      - Aggregation on amount_cents
+      - Cross-entity analysis via gift_cards, orders
+    common_questions:
+      - How many gift_card_transactions by type?
+      - What is the average amount_cents across gift_card_transactions?
+      - How are gift_card_transactions distributed across gift_cards?
+  - name: GiftCards
+    file: entities/gift_cards.yml
+    grain: one row per gift card record
+    description: gift_cards (500 rows, 8 columns)
+    use_for:
+      - Segmentation by status
+      - Aggregation on initial_cents, balance_cents
+      - Cross-entity analysis via customers
+    common_questions:
+      - How many gift_cards by status?
+      - What is the average initial_cents across gift_cards?
+      - How are gift_cards distributed across customers?
+  - name: InventoryLevels
+    file: entities/inventory_levels.yml
+    grain: one row per inventory level record
+    description: inventory_levels (3,200 rows, 6 columns)
+    use_for:
+      - Aggregation on quantity, reorder_point
+      - Cross-entity analysis via warehouses
+    common_questions:
+      - What is the average quantity across inventory_levels?
+      - How are inventory_levels distributed across warehouses?
+  - name: LegacyAnalyticsEvents
+    file: entities/legacy_analytics_events.yml
+    grain: one row per legacy analytics event record
+    description: legacy_analytics_events (8,000 rows, 6 columns)
+    use_for:
+      - Segmentation by event_name, page_url
+    common_questions:
+      - How many legacy_analytics_events by event_name?
+      - How many legacy_analytics_events by page_url?
+  - name: LoyaltyAccounts
+    file: entities/loyalty_accounts.yml
+    grain: one row per loyalty account record
+    description: loyalty_accounts (5,500 rows, 6 columns)
+    use_for:
+      - Segmentation by tier
+      - Aggregation on points
+      - Cross-entity analysis via customers
+    common_questions:
+      - How many loyalty_accounts by tier?
+      - What is the average points across loyalty_accounts?
+      - How are loyalty_accounts distributed across customers?
+  - name: LoyaltyTransactions
+    file: entities/loyalty_transactions.yml
+    grain: one row per loyalty transaction record
+    description: loyalty_transactions (18,000 rows, 7 columns)
+    use_for:
+      - Segmentation by type, description
+      - Aggregation on points
+      - Cross-entity analysis via loyalty_accounts, orders
+    common_questions:
+      - How many loyalty_transactions by type?
+      - How many loyalty_transactions by description?
+      - What is the average points across loyalty_transactions?
+      - How are loyalty_transactions distributed across loyalty_accounts?
+  - name: MonthlyRevenueSummary
+    file: entities/monthly_revenue_summary.yml
+    grain: one row per monthly revenue summary record
+    description: monthly_revenue_summary (60 rows, 7 columns)
+    use_for:
+      - Aggregation on revenue_cents, order_count, new_customers, returning_customers, avg_order_value_cents
+    common_questions:
+      - What is the average revenue_cents across monthly_revenue_summary?
+  - name: OldOrdersV1
+    file: entities/old_orders_v1.yml
+    grain: one row per old orders v1 record
+    description: old_orders_v1 (3,000 rows, 7 columns)
+    use_for:
+      - Segmentation by order_status
+      - Aggregation on order_total
+    common_questions:
+      - How many old_orders_v1 by order_status?
+      - What is the average order_total across old_orders_v1?
+  - name: OrderEvents
+    file: entities/order_events.yml
+    grain: one row per order event record
+    description: order_events (60,000 rows, 5 columns)
+    use_for:
+      - Segmentation by event_type, description
+      - Cross-entity analysis via orders
+    common_questions:
+      - How many order_events by event_type?
+      - How many order_events by description?
+      - How are order_events distributed across orders?
+  - name: OrderItems
+    file: entities/order_items.yml
+    grain: one row per order item record
+    description: order_items (55,000 rows, 8 columns)
+    use_for:
+      - Aggregation on quantity, unit_price_cents, total_cents
+      - Cross-entity analysis via orders, product_variants
+    common_questions:
+      - What is the average quantity across order_items?
+      - How are order_items distributed across orders?
+  - name: Orders
+    file: entities/orders.yml
+    grain: one row per order record
+    description: orders (25,000 rows, 12 columns)
+    use_for:
+      - Segmentation by status
+      - Aggregation on subtotal_cents, shipping_cost, tax_cents, total_cents
+      - Cross-entity analysis via customers, promotions
+    common_questions:
+      - How many orders by status?
+      - What is the average subtotal_cents across orders?
+      - How are orders distributed across customers?
+  - name: OrdersDenormalized
+    file: entities/orders_denormalized.yml
+    grain: one row per orders denormalized record
+    description: orders_denormalized (25,000 rows, 12 columns)
+    use_for:
+      - Segmentation by order_status, shipping_state
+      - Aggregation on total_cents, item_count
+      - Cross-entity analysis via orders, customers
+    common_questions:
+      - How many orders_denormalized by order_status?
+      - How many orders_denormalized by shipping_state?
+      - What is the average total_cents across orders_denormalized?
+      - How are orders_denormalized distributed across orders?
+  - name: PageViews
+    file: entities/page_views.yml
+    grain: one row per page view record
+    description: page_views (20,000 rows, 7 columns)
+    use_for:
+      - Segmentation by referrer, device_type
+      - Cross-entity analysis via customers
+    common_questions:
+      - How many page_views by referrer?
+      - How many page_views by device_type?
+      - How are page_views distributed across customers?
+  - name: PaymentMethodsBackup
+    file: entities/payment_methods_backup.yml
+    grain: one row per payment methods backup record
+    description: payment_methods_backup (2,000 rows, 8 columns)
+    use_for:
+      - Segmentation by card_type
+      - Aggregation on exp_month, exp_year
+    common_questions:
+      - How many payment_methods_backup by card_type?
+      - What is the average exp_month across payment_methods_backup?
+  - name: Payments
+    file: entities/payments.yml
+    grain: one row per payment record
+    description: payments (26,000 rows, 8 columns)
+    use_for:
+      - Segmentation by method, status
+      - Aggregation on amount_cents
+      - Cross-entity analysis via orders
+    common_questions:
+      - How many payments by method?
+      - How many payments by status?
+      - What is the average amount_cents across payments?
+      - How are payments distributed across orders?
+  - name: People
+    file: entities/people.yml
+    grain: one row per person record
+    description: people (198 rows, 8 columns)
+    use_for:
+      - Segmentation by department, seniority
+      - Cross-entity analysis via companies
+    common_questions:
+      - How many people by department?
+      - How many people by seniority?
+      - How are people distributed across companies?
+  - name: ProductImages
+    file: entities/product_images.yml
+    grain: one row per product image record
+    description: product_images (4,000 rows, 6 columns)
+    use_for:
+      - Segmentation by alt_text
+      - Aggregation on position
+      - Cross-entity analysis via products
+    common_questions:
+      - How many product_images by alt_text?
+      - What is the average position across product_images?
+      - How are product_images distributed across products?
+  - name: ProductPerformanceCache
+    file: entities/product_performance_cache.yml
+    grain: one row per product performance cache record
+    description: product_performance_cache (800 rows, 10 columns)
+    use_for:
+      - Aggregation on total_sold, total_revenue_cents, avg_rating, review_count, return_rate
+      - Cross-entity analysis via products
+    common_questions:
+      - What is the average total_sold across product_performance_cache?
+      - How are product_performance_cache distributed across products?
+  - name: ProductReviews
+    file: entities/product_reviews.yml
+    grain: one row per product review record
+    description: product_reviews (6,000 rows, 9 columns)
+    use_for:
+      - Segmentation by title, body
+      - Aggregation on rating, rating_decimal
+      - Cross-entity analysis via customers, products
+    common_questions:
+      - How many product_reviews by title?
+      - How many product_reviews by body?
+      - What is the average rating across product_reviews?
+      - How are product_reviews distributed across customers?
+  - name: ProductTags
+    file: entities/product_tags.yml
+    grain: one row per product tag record
+    description: product_tags (2,500 rows, 4 columns)
+    use_for:
+      - Segmentation by tag
+      - Cross-entity analysis via products
+    common_questions:
+      - How many product_tags by tag?
+      - How are product_tags distributed across products?
+  - name: ProductVariants
+    file: entities/product_variants.yml
+    grain: one row per product variant record
+    description: product_variants (3,200 rows, 8 columns)
+    use_for:
+      - Aggregation on price_cents, weight_oz
+      - Cross-entity analysis via products
+    common_questions:
+      - What is the average price_cents across product_variants?
+      - How are product_variants distributed across products?
+  - name: Products
+    file: entities/products.yml
+    grain: one row per product record
+    description: products (800 rows, 11 columns)
+    use_for:
+      - Segmentation by status
+      - Aggregation on price, price_cents
+      - Cross-entity analysis via categories, sellers
+    common_questions:
+      - How many products by status?
+      - What is the average price across products?
+      - How are products distributed across categories?
+  - name: PromotionUsages
+    file: entities/promotion_usages.yml
+    grain: one row per promotion usage record
+    description: promotion_usages (8,000 rows, 6 columns)
+    use_for:
+      - Aggregation on discount_cents
+      - Cross-entity analysis via customers, promotions, orders
+    common_questions:
+      - What is the average discount_cents across promotion_usages?
+      - How are promotion_usages distributed across customers?
+  - name: Promotions
+    file: entities/promotions.yml
+    grain: one row per promotion record
+    description: promotions (200 rows, 12 columns)
+    use_for:
+      - Segmentation by type
+      - Aggregation on value, min_order_cents, max_uses, times_used
+    common_questions:
+      - How many promotions by type?
+      - What is the average value across promotions?
+  - name: Refunds
+    file: entities/refunds.yml
+    grain: one row per refund record
+    description: refunds (2,500 rows, 6 columns)
+    use_for:
+      - Segmentation by reason, status
+      - Aggregation on amount_cents
+      - Cross-entity analysis via payments
+    common_questions:
+      - How many refunds by reason?
+      - How many refunds by status?
+      - What is the average amount_cents across refunds?
+      - How are refunds distributed across payments?
+  - name: ReturnItems
+    file: entities/return_items.yml
+    grain: one row per return item record
+    description: return_items (4,500 rows, 5 columns)
+    use_for:
+      - Segmentation by condition
+      - Aggregation on quantity
+      - Cross-entity analysis via returns, order_items
+    common_questions:
+      - How many return_items by condition?
+      - What is the average quantity across return_items?
+      - How are return_items distributed across returns?
+  - name: Returns
+    file: entities/returns.yml
+    grain: one row per return record
+    description: returns (3,000 rows, 7 columns)
+    use_for:
+      - Segmentation by reason, status
+      - Cross-entity analysis via customers, orders
+    common_questions:
+      - How many returns by reason?
+      - How many returns by status?
+      - How are returns distributed across customers?
+  - name: ReviewHelpfulness
+    file: entities/review_helpfulness.yml
+    grain: one row per review helpfulness record
+    description: review_helpfulness (8,000 rows, 5 columns)
+    use_for:
+      - Cross-entity analysis via customers
+    common_questions:
+      - How are review_helpfulness distributed across customers?
+  - name: ReviewResponses
+    file: entities/review_responses.yml
+    grain: one row per review respons record
+    description: review_responses (1,500 rows, 5 columns)
+    use_for:
+      - Segmentation by responder, body
+      - Cross-entity analysis via product_reviews
+    common_questions:
+      - How many review_responses by responder?
+      - How many review_responses by body?
+      - How are review_responses distributed across product_reviews?
+  - name: SearchQueries
+    file: entities/search_queries.yml
+    grain: one row per search query record
+    description: search_queries (5,000 rows, 7 columns)
+    use_for:
+      - Aggregation on results_count
+      - Cross-entity analysis via customers
+    common_questions:
+      - What is the average results_count across search_queries?
+      - How are search_queries distributed across customers?
+  - name: SellerApplications
+    file: entities/seller_applications.yml
+    grain: one row per seller application record
+    description: seller_applications (120 rows, 7 columns)
+    use_for:
+      - Segmentation by status, notes
+    common_questions:
+      - How many seller_applications by status?
+      - How many seller_applications by notes?
+  - name: SellerPayouts
+    file: entities/seller_payouts.yml
+    grain: one row per seller payout record
+    description: seller_payouts (2,000 rows, 8 columns)
+    use_for:
+      - Segmentation by status
+      - Aggregation on amount_cents
+      - Cross-entity analysis via sellers
+    common_questions:
+      - How many seller_payouts by status?
+      - What is the average amount_cents across seller_payouts?
+      - How are seller_payouts distributed across sellers?
+  - name: SellerPerformance
+    file: entities/seller_performance.yml
+    grain: one row per seller performance record
+    description: seller_performance (400 rows, 8 columns)
+    use_for:
+      - Aggregation on total_orders, total_revenue_cents, return_rate, avg_rating
+      - Cross-entity analysis via sellers
+    common_questions:
+      - What is the average total_orders across seller_performance?
+      - How are seller_performance distributed across sellers?
+  - name: Sellers
+    file: entities/sellers.yml
+    grain: one row per seller record
+    description: sellers (80 rows, 7 columns)
+    use_for:
+      - Segmentation by status
+      - Aggregation on commission_rate
+    common_questions:
+      - How many sellers by status?
+      - What is the average commission_rate across sellers?
+  - name: ShipmentItems
+    file: entities/shipment_items.yml
+    grain: one row per shipment item record
+    description: shipment_items (48,000 rows, 4 columns)
+    use_for:
+      - Aggregation on quantity
+      - Cross-entity analysis via shipments, order_items
+    common_questions:
+      - What is the average quantity across shipment_items?
+      - How are shipment_items distributed across shipments?
+  - name: Shipments
+    file: entities/shipments.yml
+    grain: one row per shipment record
+    description: shipments (22,000 rows, 10 columns)
+    use_for:
+      - Segmentation by carrier, status
+      - Cross-entity analysis via orders, warehouses
+    common_questions:
+      - How many shipments by carrier?
+      - How many shipments by status?
+      - How are shipments distributed across orders?
+  - name: ShippingCarriers
+    file: entities/shipping_carriers.yml
+    grain: one row per shipping carrier record
+    description: shipping_carriers (8 rows, 5 columns)
+    use_for:
+      - General queries on shipping_carriers
+    common_questions:
+      - What data is in shipping_carriers?
+  - name: SystemSettings
+    file: entities/system_settings.yml
+    grain: one row per system setting record
+    description: system_settings (20 rows, 4 columns)
+    use_for:
+      - General queries on system_settings
+    common_questions:
+      - What data is in system_settings?
+  - name: TempProductImport2023
+    file: entities/temp_product_import_2023.yml
+    grain: one row per temp product import 2023 record
+    description: temp_product_import_2023 (500 rows, 7 columns)
+    use_for:
+      - Segmentation by import_category
+    common_questions:
+      - How many temp_product_import_2023 by import_category?
+  - name: UtmTracking
+    file: entities/utm_tracking.yml
+    grain: one row per utm tracking record
+    description: utm_tracking (15,000 rows, 9 columns)
+    use_for:
+      - Segmentation by utm_source, utm_medium, utm_campaign, utm_content, landing_page
+      - Cross-entity analysis via customers, orders
+    common_questions:
+      - How many utm_tracking by utm_source?
+      - How many utm_tracking by utm_medium?
+      - How are utm_tracking distributed across customers?
+  - name: Warehouses
+    file: entities/warehouses.yml
+    grain: one row per warehous record
+    description: warehouses (5 rows, 7 columns)
+    use_for:
+      - General queries on warehouses
+    common_questions:
+      - What data is in warehouses?
+glossary: glossary.yml
+metrics:
+  - file: metrics/accounts.yml
+    description: Auto-generated metrics for accounts
+  - file: metrics/cart_events.yml
+    description: Auto-generated metrics for cart_events
+  - file: metrics/companies.yml
+    description: Auto-generated metrics for companies
+  - file: metrics/customer_ltv_cache.yml
+    description: Auto-generated metrics for customer_ltv_cache
+  - file: metrics/daily_sales_summary.yml
+    description: Auto-generated metrics for daily_sales_summary
+  - file: metrics/gift_card_transactions.yml
+    description: Auto-generated metrics for gift_card_transactions
+  - file: metrics/gift_cards.yml
+    description: Auto-generated metrics for gift_cards
+  - file: metrics/inventory_levels.yml
+    description: Auto-generated metrics for inventory_levels
+  - file: metrics/loyalty_accounts.yml
+    description: Auto-generated metrics for loyalty_accounts
+  - file: metrics/loyalty_transactions.yml
+    description: Auto-generated metrics for loyalty_transactions
+  - file: metrics/monthly_revenue_summary.yml
+    description: Auto-generated metrics for monthly_revenue_summary
+  - file: metrics/old_orders_v1.yml
+    description: Auto-generated metrics for old_orders_v1
+  - file: metrics/order_items.yml
+    description: Auto-generated metrics for order_items
+  - file: metrics/orders.yml
+    description: Auto-generated metrics for orders
+  - file: metrics/orders_denormalized.yml
+    description: Auto-generated metrics for orders_denormalized
+  - file: metrics/payment_methods_backup.yml
+    description: Auto-generated metrics for payment_methods_backup
+  - file: metrics/payments.yml
+    description: Auto-generated metrics for payments
+  - file: metrics/product_images.yml
+    description: Auto-generated metrics for product_images
+  - file: metrics/product_performance_cache.yml
+    description: Auto-generated metrics for product_performance_cache
+  - file: metrics/product_reviews.yml
+    description: Auto-generated metrics for product_reviews
+  - file: metrics/product_variants.yml
+    description: Auto-generated metrics for product_variants
+  - file: metrics/products.yml
+    description: Auto-generated metrics for products
+  - file: metrics/promotion_usages.yml
+    description: Auto-generated metrics for promotion_usages
+  - file: metrics/promotions.yml
+    description: Auto-generated metrics for promotions
+  - file: metrics/refunds.yml
+    description: Auto-generated metrics for refunds
+  - file: metrics/return_items.yml
+    description: Auto-generated metrics for return_items
+  - file: metrics/search_queries.yml
+    description: Auto-generated metrics for search_queries
+  - file: metrics/seller_payouts.yml
+    description: Auto-generated metrics for seller_payouts
+  - file: metrics/seller_performance.yml
+    description: Auto-generated metrics for seller_performance
+  - file: metrics/sellers.yml
+    description: Auto-generated metrics for sellers
+  - file: metrics/shipment_items.yml
+    description: Auto-generated metrics for shipment_items
+tech_debt:
+  - table: cart_events
+    issues:
+      - missing_fk_constraints
+  - table: customer_addresses
+    issues:
+      - missing_fk_constraints
+  - table: customer_ltv_cache
+    issues:
+      - possibly_denormalized
+      - missing_fk_constraints
+  - table: customer_segment_assignments
+    issues:
+      - inconsistent_enums
+  - table: customers
+    issues:
+      - inconsistent_enums
+  - table: daily_sales_summary
+    issues:
+      - possibly_denormalized
+  - table: gift_card_transactions
+    issues:
+      - missing_fk_constraints
+  - table: legacy_analytics_events
+    issues:
+      - possibly_abandoned
+  - table: loyalty_accounts
+    issues:
+      - inconsistent_enums
+  - table: loyalty_transactions
+    issues:
+      - missing_fk_constraints
+  - table: monthly_revenue_summary
+    issues:
+      - possibly_denormalized
+  - table: old_orders_v1
+    issues:
+      - possibly_abandoned
+  - table: order_events
+    issues:
+      - missing_fk_constraints
+  - table: order_items
+    issues:
+      - missing_fk_constraints
+  - table: orders
+    issues:
+      - missing_fk_constraints
+  - table: orders_denormalized
+    issues:
+      - possibly_denormalized
+      - missing_fk_constraints
+  - table: page_views
+    issues:
+      - missing_fk_constraints
+  - table: payment_methods_backup
+    issues:
+      - possibly_abandoned
+  - table: payments
+    issues:
+      - missing_fk_constraints
+  - table: product_performance_cache
+    issues:
+      - possibly_denormalized
+      - missing_fk_constraints
+  - table: products
+    issues:
+      - missing_fk_constraints
+  - table: promotion_usages
+    issues:
+      - missing_fk_constraints
+  - table: return_items
+    issues:
+      - missing_fk_constraints
+  - table: returns
+    issues:
+      - inconsistent_enums
+  - table: review_helpfulness
+    issues:
+      - missing_fk_constraints
+  - table: search_queries
+    issues:
+      - missing_fk_constraints
+  - table: shipment_items
+    issues:
+      - missing_fk_constraints
+  - table: temp_product_import_2023
+    issues:
+      - possibly_abandoned
+  - table: utm_tracking
+    issues:
+      - missing_fk_constraints

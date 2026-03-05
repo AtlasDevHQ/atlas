@@ -1,0 +1,809 @@
+version: '1.0'
+entities:
+  - name: Accounts
+    file: entities/accounts.yml
+    grain: one row per account record
+    description: accounts (80 rows, 7 columns)
+    use_for:
+      - Segmentation by plan, status
+      - Aggregation on monthly_value
+      - Cross-entity analysis via companies
+    common_questions:
+      - How many accounts by plan?
+      - How many accounts by status?
+      - What is the average monthly_value across accounts?
+      - How are accounts distributed across companies?
+  - name: AgentHeartbeats
+    file: entities/agent_heartbeats.yml
+    grain: one row per agent heartbeat record
+    description: agent_heartbeats (50,000 rows, 6 columns)
+    use_for:
+      - Aggregation on cpu_percent, memory_percent, disk_percent
+      - Cross-entity analysis via agents
+    common_questions:
+      - What is the average cpu_percent across agent_heartbeats?
+      - How are agent_heartbeats distributed across agents?
+  - name: Agents
+    file: entities/agents.yml
+    grain: one row per agent record
+    description: agents (12,000 rows, 7 columns)
+    use_for:
+      - Segmentation by agent_version, status
+      - Cross-entity analysis via assets
+    common_questions:
+      - How many agents by agent_version?
+      - How many agents by status?
+      - How are agents distributed across assets?
+  - name: AlertAcknowledgments
+    file: entities/alert_acknowledgments.yml
+    grain: one row per alert acknowledgment record
+    description: alert_acknowledgments (8,000 rows, 5 columns)
+    use_for:
+      - Segmentation by note
+      - Cross-entity analysis via alerts, users
+    common_questions:
+      - How many alert_acknowledgments by note?
+      - How are alert_acknowledgments distributed across alerts?
+  - name: AlertRules
+    file: entities/alert_rules.yml
+    grain: one row per alert rule record
+    description: alert_rules (200 rows, 8 columns)
+    use_for:
+      - Segmentation by condition_type, severity
+      - Aggregation on threshold
+      - Cross-entity analysis via organizations
+    common_questions:
+      - How many alert_rules by condition_type?
+      - How many alert_rules by severity?
+      - What is the average threshold across alert_rules?
+      - How are alert_rules distributed across organizations?
+  - name: Alerts
+    file: entities/alerts.yml
+    grain: one row per alert record
+    description: alerts (12,000 rows, 10 columns)
+    use_for:
+      - Segmentation by severity, title, status, source
+      - Cross-entity analysis via alert_rules, organizations, incidents
+    common_questions:
+      - How many alerts by severity?
+      - How many alerts by title?
+      - How are alerts distributed across alert_rules?
+  - name: ApiKeys
+    file: entities/api_keys.yml
+    grain: one row per api key record
+    description: api_keys (300 rows, 11 columns)
+    use_for:
+      - Segmentation by name, permissions
+      - Cross-entity analysis via organizations, users
+    common_questions:
+      - How many api_keys by name?
+      - How many api_keys by permissions?
+      - How are api_keys distributed across organizations?
+  - name: ApiRequests
+    file: entities/api_requests.yml
+    grain: one row per api request record
+    description: api_requests (20,000 rows, 9 columns)
+    use_for:
+      - Segmentation by method, path, request_body
+      - Aggregation on status_code, response_time_ms
+      - Cross-entity analysis via api_keys, users
+    common_questions:
+      - How many api_requests by method?
+      - How many api_requests by path?
+      - What is the average status_code across api_requests?
+      - How are api_requests distributed across api_keys?
+  - name: AssetGroupMemberships
+    file: entities/asset_group_memberships.yml
+    grain: one row per asset group membership record
+    description: asset_group_memberships (24,976 rows, 3 columns)
+    use_for:
+      - Cross-entity analysis via asset_groups, assets
+    common_questions:
+      - How are asset_group_memberships distributed across asset_groups?
+  - name: AssetGroups
+    file: entities/asset_groups.yml
+    grain: one row per asset group record
+    description: asset_groups (600 rows, 5 columns)
+    use_for:
+      - Segmentation by description
+      - Cross-entity analysis via organizations
+    common_questions:
+      - How many asset_groups by description?
+      - How are asset_groups distributed across organizations?
+  - name: AssetTags
+    file: entities/asset_tags.yml
+    grain: one row per asset tag record
+    description: asset_tags (35,000 rows, 5 columns)
+    use_for:
+      - Segmentation by key
+      - Cross-entity analysis via assets
+    common_questions:
+      - How many asset_tags by key?
+      - How are asset_tags distributed across assets?
+  - name: Assets
+    file: entities/assets.yml
+    grain: one row per asset record
+    description: assets (15,000 rows, 13 columns)
+    use_for:
+      - Segmentation by asset_type, os, os_version, environment
+      - Cross-entity analysis via organizations
+    common_questions:
+      - How many assets by asset_type?
+      - How many assets by os?
+      - How are assets distributed across organizations?
+  - name: AuditLog
+    file: entities/audit_log.yml
+    grain: one row per audit log record
+    description: audit_log (25,000 rows, 9 columns)
+    use_for:
+      - Segmentation by action, resource_type
+      - Cross-entity analysis via organizations, users
+    common_questions:
+      - How many audit_log by action?
+      - How many audit_log by resource_type?
+      - How are audit_log distributed across organizations?
+  - name: Companies
+    file: entities/companies.yml
+    grain: one row per company record
+    description: companies (50 rows, 8 columns)
+    use_for:
+      - Aggregation on employee_count, founded_year, revenue, valuation
+    common_questions:
+      - What is the average employee_count across companies?
+  - name: ComplianceAssessments
+    file: entities/compliance_assessments.yml
+    grain: one row per compliance assessment record
+    description: compliance_assessments (600 rows, 8 columns)
+    use_for:
+      - Segmentation by status
+      - Aggregation on score
+      - Cross-entity analysis via compliance_frameworks, organizations
+    common_questions:
+      - How many compliance_assessments by status?
+      - What is the average score across compliance_assessments?
+      - How are compliance_assessments distributed across compliance_frameworks?
+  - name: ComplianceControls
+    file: entities/compliance_controls.yml
+    grain: one row per compliance control record
+    description: compliance_controls (200 rows, 6 columns)
+    use_for:
+      - Segmentation by category
+      - Cross-entity analysis via compliance_frameworks
+    common_questions:
+      - How many compliance_controls by category?
+      - How are compliance_controls distributed across compliance_frameworks?
+  - name: ComplianceFindings
+    file: entities/compliance_findings.yml
+    grain: one row per compliance finding record
+    description: compliance_findings (5,000 rows, 7 columns)
+    use_for:
+      - Segmentation by status, evidence, notes
+      - Cross-entity analysis via compliance_assessments, compliance_controls
+    common_questions:
+      - How many compliance_findings by status?
+      - How many compliance_findings by evidence?
+      - How are compliance_findings distributed across compliance_assessments?
+  - name: ComplianceFrameworks
+    file: entities/compliance_frameworks.yml
+    grain: one row per compliance framework record
+    description: compliance_frameworks (5 rows, 5 columns)
+    use_for:
+      - General queries on compliance_frameworks
+    common_questions:
+      - What data is in compliance_frameworks?
+  - name: DailyScanStats
+    file: entities/daily_scan_stats.yml
+    grain: one row per daily scan stat record
+    description: daily_scan_stats (2,000 rows, 9 columns)
+    use_for:
+      - Aggregation on total_scans, total_findings, critical_count, high_count, medium_count, low_count
+      - Cross-entity analysis via organizations
+    common_questions:
+      - What is the average total_scans across daily_scan_stats?
+      - How are daily_scan_stats distributed across organizations?
+  - name: DashboardWidgets
+    file: entities/dashboard_widgets.yml
+    grain: one row per dashboard widget record
+    description: dashboard_widgets (1,200 rows, 9 columns)
+    use_for:
+      - Segmentation by widget_type, title, config
+      - Aggregation on position_x, position_y, width, height
+      - Cross-entity analysis via dashboards
+    common_questions:
+      - How many dashboard_widgets by widget_type?
+      - How many dashboard_widgets by title?
+      - What is the average position_x across dashboard_widgets?
+      - How are dashboard_widgets distributed across dashboards?
+  - name: Dashboards
+    file: entities/dashboards.yml
+    grain: one row per dashboard record
+    description: dashboards (300 rows, 9 columns)
+    use_for:
+      - Segmentation by description, layout
+      - Cross-entity analysis via users, organizations
+    common_questions:
+      - How many dashboards by description?
+      - How many dashboards by layout?
+      - How are dashboards distributed across users?
+  - name: ExecutiveDashboardCache
+    file: entities/executive_dashboard_cache.yml
+    grain: one row per executive dashboard cache record
+    description: executive_dashboard_cache (200 rows, 9 columns)
+    use_for:
+      - >-
+        Aggregation on total_assets, active_agents, open_vulnerabilities, critical_incidents, compliance_score,
+        risk_score
+      - Cross-entity analysis via organizations
+    common_questions:
+      - What is the average total_assets across executive_dashboard_cache?
+      - How are executive_dashboard_cache distributed across organizations?
+  - name: FeatureFlagsLegacy
+    file: entities/feature_flags_legacy.yml
+    grain: one row per feature flags legacy record
+    description: feature_flags_legacy (50 rows, 6 columns)
+    use_for:
+      - Segmentation by description
+      - Aggregation on rollout_percentage
+    common_questions:
+      - How many feature_flags_legacy by description?
+      - What is the average rollout_percentage across feature_flags_legacy?
+  - name: FeatureUsage
+    file: entities/feature_usage.yml
+    grain: one row per feature usage record
+    description: feature_usage (15,000 rows, 7 columns)
+    use_for:
+      - Segmentation by feature_name, action, metadata
+      - Cross-entity analysis via organizations, users
+    common_questions:
+      - How many feature_usage by feature_name?
+      - How many feature_usage by action?
+      - How are feature_usage distributed across organizations?
+  - name: IncidentComments
+    file: entities/incident_comments.yml
+    grain: one row per incident comment record
+    description: incident_comments (3,500 rows, 5 columns)
+    use_for:
+      - Segmentation by content
+      - Cross-entity analysis via incidents, users
+    common_questions:
+      - How many incident_comments by content?
+      - How are incident_comments distributed across incidents?
+  - name: IncidentEvents
+    file: entities/incident_events.yml
+    grain: one row per incident event record
+    description: incident_events (6,000 rows, 6 columns)
+    use_for:
+      - Segmentation by event_type, description
+      - Cross-entity analysis via users, incidents
+    common_questions:
+      - How many incident_events by event_type?
+      - How many incident_events by description?
+      - How are incident_events distributed across users?
+  - name: Incidents
+    file: entities/incidents.yml
+    grain: one row per incident record
+    description: incidents (1,500 rows, 11 columns)
+    use_for:
+      - Segmentation by severity, status
+      - Cross-entity analysis via users, organizations
+    common_questions:
+      - How many incidents by severity?
+      - How many incidents by status?
+      - How are incidents distributed across users?
+  - name: IndicatorsOfCompromise
+    file: entities/indicators_of_compromise.yml
+    grain: one row per indicators of compromise record
+    description: indicators_of_compromise (2,000 rows, 9 columns)
+    use_for:
+      - Segmentation by ioc_type
+      - Aggregation on confidence
+      - Cross-entity analysis via threat_actors, threat_feeds
+    common_questions:
+      - How many indicators_of_compromise by ioc_type?
+      - What is the average confidence across indicators_of_compromise?
+      - How are indicators_of_compromise distributed across threat_actors?
+  - name: IntegrationEvents
+    file: entities/integration_events.yml
+    grain: one row per integration event record
+    description: integration_events (5,000 rows, 7 columns)
+    use_for:
+      - Segmentation by event_type, direction, status
+      - Cross-entity analysis via integrations
+    common_questions:
+      - How many integration_events by event_type?
+      - How many integration_events by direction?
+      - How are integration_events distributed across integrations?
+  - name: Integrations
+    file: entities/integrations.yml
+    grain: one row per integration record
+    description: integrations (150 rows, 8 columns)
+    use_for:
+      - Segmentation by status
+      - Cross-entity analysis via organizations
+    common_questions:
+      - How many integrations by status?
+      - How are integrations distributed across organizations?
+  - name: Invitations
+    file: entities/invitations.yml
+    grain: one row per invitation record
+    description: invitations (150 rows, 8 columns)
+    use_for:
+      - Segmentation by role_name, status
+      - Cross-entity analysis via users, organizations
+    common_questions:
+      - How many invitations by role_name?
+      - How many invitations by status?
+      - How are invitations distributed across users?
+  - name: InvoiceLineItems
+    file: entities/invoice_line_items.yml
+    grain: one row per invoice line item record
+    description: invoice_line_items (8,000 rows, 6 columns)
+    use_for:
+      - Segmentation by description
+      - Aggregation on amount_cents, quantity
+      - Cross-entity analysis via invoices, subscriptions
+    common_questions:
+      - How many invoice_line_items by description?
+      - What is the average amount_cents across invoice_line_items?
+      - How are invoice_line_items distributed across invoices?
+  - name: Invoices
+    file: entities/invoices.yml
+    grain: one row per invoice record
+    description: invoices (3,000 rows, 10 columns)
+    use_for:
+      - Segmentation by status
+      - Aggregation on amount_cents
+      - Cross-entity analysis via organizations, subscriptions
+    common_questions:
+      - How many invoices by status?
+      - What is the average amount_cents across invoices?
+      - How are invoices distributed across organizations?
+  - name: LegacyRiskScores
+    file: entities/legacy_risk_scores.yml
+    grain: one row per legacy risk score record
+    description: legacy_risk_scores (1,000 rows, 6 columns)
+    use_for:
+      - Segmentation by risk_category
+      - Aggregation on score_value, weight
+    common_questions:
+      - How many legacy_risk_scores by risk_category?
+      - What is the average score_value across legacy_risk_scores?
+  - name: LoginEvents
+    file: entities/login_events.yml
+    grain: one row per login event record
+    description: login_events (10,000 rows, 7 columns)
+    use_for:
+      - Segmentation by user_agent, failure_reason
+      - Cross-entity analysis via users
+    common_questions:
+      - How many login_events by user_agent?
+      - How many login_events by failure_reason?
+      - How are login_events distributed across users?
+  - name: MonthlyVulnerabilitySummary
+    file: entities/monthly_vulnerability_summary.yml
+    grain: one row per monthly vulnerability summary record
+    description: monthly_vulnerability_summary (500 rows, 9 columns)
+    use_for:
+      - Aggregation on total_vulns, critical_vulns, high_vulns, medium_vulns, low_vulns, avg_time_to_fix_days
+      - Cross-entity analysis via organizations
+    common_questions:
+      - What is the average total_vulns across monthly_vulnerability_summary?
+      - How are monthly_vulnerability_summary distributed across organizations?
+  - name: Notifications
+    file: entities/notifications.yml
+    grain: one row per notification record
+    description: notifications (5,000 rows, 8 columns)
+    use_for:
+      - Segmentation by type, title, message
+      - Cross-entity analysis via organizations, users
+    common_questions:
+      - How many notifications by type?
+      - How many notifications by title?
+      - How are notifications distributed across organizations?
+  - name: NotificationsBackup
+    file: entities/notifications_backup.yml
+    grain: one row per notifications backup record
+    description: notifications_backup (8,000 rows, 7 columns)
+    use_for:
+      - Segmentation by notification_type, subject, body
+    common_questions:
+      - How many notifications_backup by notification_type?
+      - How many notifications_backup by subject?
+  - name: OldScanResultsV2
+    file: entities/old_scan_results_v2.yml
+    grain: one row per old scan results v2 record
+    description: old_scan_results_v2 (5,000 rows, 7 columns)
+    use_for:
+      - Aggregation on severity_score
+    common_questions:
+      - What is the average severity_score across old_scan_results_v2?
+  - name: OrganizationHealthScores
+    file: entities/organization_health_scores.yml
+    grain: one row per organization health score record
+    description: organization_health_scores (200 rows, 7 columns)
+    use_for:
+      - Aggregation on score, vulnerability_score, compliance_score, asset_coverage_score
+      - Cross-entity analysis via organizations
+    common_questions:
+      - What is the average score across organization_health_scores?
+      - How are organization_health_scores distributed across organizations?
+  - name: OrganizationSettings
+    file: entities/organization_settings.yml
+    grain: one row per organization setting record
+    description: organization_settings (200 rows, 10 columns)
+    use_for:
+      - Segmentation by scan_frequency, settings_json
+      - Aggregation on retention_days
+      - Cross-entity analysis via organizations
+    common_questions:
+      - How many organization_settings by scan_frequency?
+      - How many organization_settings by settings_json?
+      - What is the average retention_days across organization_settings?
+      - How are organization_settings distributed across organizations?
+  - name: Organizations
+    file: entities/organizations.yml
+    grain: one row per organization record
+    description: organizations (200 rows, 9 columns)
+    use_for:
+      - Segmentation by size_tier
+    common_questions:
+      - How many organizations by size_tier?
+  - name: PaymentMethods
+    file: entities/payment_methods.yml
+    grain: one row per payment method record
+    description: payment_methods (180 rows, 8 columns)
+    use_for:
+      - Segmentation by type
+      - Aggregation on expiry_month, expiry_year
+      - Cross-entity analysis via organizations
+    common_questions:
+      - How many payment_methods by type?
+      - What is the average expiry_month across payment_methods?
+      - How are payment_methods distributed across organizations?
+  - name: People
+    file: entities/people.yml
+    grain: one row per person record
+    description: people (198 rows, 8 columns)
+    use_for:
+      - Segmentation by department, seniority
+      - Cross-entity analysis via companies
+    common_questions:
+      - How many people by department?
+      - How many people by seniority?
+      - How are people distributed across companies?
+  - name: Plans
+    file: entities/plans.yml
+    grain: one row per plan record
+    description: plans (5 rows, 8 columns)
+    use_for:
+      - Aggregation on price_cents, max_assets, max_users
+    common_questions:
+      - What is the average price_cents across plans?
+  - name: RemediationActions
+    file: entities/remediation_actions.yml
+    grain: one row per remediation action record
+    description: remediation_actions (8,000 rows, 9 columns)
+    use_for:
+      - Segmentation by status, priority
+      - Cross-entity analysis via users, vulnerability_instances
+    common_questions:
+      - How many remediation_actions by status?
+      - How many remediation_actions by priority?
+      - How are remediation_actions distributed across users?
+  - name: ReportSchedules
+    file: entities/report_schedules.yml
+    grain: one row per report schedule record
+    description: report_schedules (100 rows, 8 columns)
+    use_for:
+      - Segmentation by cron_expression, recipients
+      - Cross-entity analysis via reports
+    common_questions:
+      - How many report_schedules by cron_expression?
+      - How many report_schedules by recipients?
+      - How are report_schedules distributed across reports?
+  - name: Reports
+    file: entities/reports.yml
+    grain: one row per report record
+    description: reports (500 rows, 10 columns)
+    use_for:
+      - Segmentation by title, report_type, format, parameters, status
+      - Cross-entity analysis via users, organizations
+    common_questions:
+      - How many reports by title?
+      - How many reports by report_type?
+      - How are reports distributed across users?
+  - name: Roles
+    file: entities/roles.yml
+    grain: one row per role record
+    description: roles (5 rows, 3 columns)
+    use_for:
+      - General queries on roles
+    common_questions:
+      - What data is in roles?
+  - name: ScanConfigurations
+    file: entities/scan_configurations.yml
+    grain: one row per scan configuration record
+    description: scan_configurations (100 rows, 8 columns)
+    use_for:
+      - Segmentation by scan_type, schedule
+      - Cross-entity analysis via organizations
+    common_questions:
+      - How many scan_configurations by scan_type?
+      - How many scan_configurations by schedule?
+      - How are scan_configurations distributed across organizations?
+  - name: ScanResults
+    file: entities/scan_results.yml
+    grain: one row per scan result record
+    description: scan_results (80,000 rows, 9 columns)
+    use_for:
+      - Segmentation by status, details
+      - Aggregation on risk_level
+      - Cross-entity analysis via scans, assets, vulnerabilities
+    common_questions:
+      - How many scan_results by status?
+      - How many scan_results by details?
+      - What is the average risk_level across scan_results?
+      - How are scan_results distributed across scans?
+  - name: ScanResultsDenormalized
+    file: entities/scan_results_denormalized.yml
+    grain: one row per scan results denormalized record
+    description: scan_results_denormalized (80,000 rows, 17 columns)
+    use_for:
+      - Segmentation by scan_type, asset_type, severity, status
+      - Aggregation on cvss_score, risk_level
+      - Cross-entity analysis via scans, assets, organizations, vulnerabilities
+    common_questions:
+      - How many scan_results_denormalized by scan_type?
+      - How many scan_results_denormalized by asset_type?
+      - What is the average cvss_score across scan_results_denormalized?
+      - How are scan_results_denormalized distributed across scans?
+  - name: Scans
+    file: entities/scans.yml
+    grain: one row per scan record
+    description: scans (5,000 rows, 10 columns)
+    use_for:
+      - Segmentation by scan_type, status
+      - Aggregation on assets_scanned, findings_count
+      - Cross-entity analysis via organizations, scan_configurations
+    common_questions:
+      - How many scans by scan_type?
+      - How many scans by status?
+      - What is the average assets_scanned across scans?
+      - How are scans distributed across organizations?
+  - name: SubscriptionEvents
+    file: entities/subscription_events.yml
+    grain: one row per subscription event record
+    description: subscription_events (1,200 rows, 6 columns)
+    use_for:
+      - Segmentation by event_type
+      - Cross-entity analysis via plans, subscriptions
+    common_questions:
+      - How many subscription_events by event_type?
+      - How are subscription_events distributed across plans?
+  - name: Subscriptions
+    file: entities/subscriptions.yml
+    grain: one row per subscription record
+    description: subscriptions (250 rows, 10 columns)
+    use_for:
+      - Segmentation by plan_name, status
+      - Aggregation on mrr_cents
+      - Cross-entity analysis via organizations, plans
+    common_questions:
+      - How many subscriptions by plan_name?
+      - How many subscriptions by status?
+      - What is the average mrr_cents across subscriptions?
+      - How are subscriptions distributed across organizations?
+  - name: TeamMemberships
+    file: entities/team_memberships.yml
+    grain: one row per team membership record
+    description: team_memberships (3,495 rows, 4 columns)
+    use_for:
+      - Cross-entity analysis via roles, teams, users
+    common_questions:
+      - How are team_memberships distributed across roles?
+  - name: Teams
+    file: entities/teams.yml
+    grain: one row per team record
+    description: teams (400 rows, 5 columns)
+    use_for:
+      - Segmentation by name, description
+      - Cross-entity analysis via organizations
+    common_questions:
+      - How many teams by name?
+      - How many teams by description?
+      - How are teams distributed across organizations?
+  - name: TempAssetImport2024
+    file: entities/temp_asset_import_2024.yml
+    grain: one row per temp asset import 2024 record
+    description: temp_asset_import_2024 (1,200 rows, 7 columns)
+    use_for:
+      - Segmentation by import_os, import_env
+    common_questions:
+      - How many temp_asset_import_2024 by import_os?
+      - How many temp_asset_import_2024 by import_env?
+  - name: ThreatActors
+    file: entities/threat_actors.yml
+    grain: one row per threat actor record
+    description: threat_actors (50 rows, 8 columns)
+    use_for:
+      - General queries on threat_actors
+    common_questions:
+      - What data is in threat_actors?
+  - name: ThreatFeeds
+    file: entities/threat_feeds.yml
+    grain: one row per threat feed record
+    description: threat_feeds (10 rows, 8 columns)
+    use_for:
+      - General queries on threat_feeds
+    common_questions:
+      - What data is in threat_feeds?
+  - name: UserSessionsArchive
+    file: entities/user_sessions_archive.yml
+    grain: one row per user sessions archive record
+    description: user_sessions_archive (15,000 rows, 7 columns)
+    use_for:
+      - Segmentation by browser
+    common_questions:
+      - How many user_sessions_archive by browser?
+  - name: Users
+    file: entities/users.yml
+    grain: one row per user record
+    description: users (2,000 rows, 9 columns)
+    use_for:
+      - Segmentation by role
+      - Cross-entity analysis via organizations
+    common_questions:
+      - How many users by role?
+      - How are users distributed across organizations?
+  - name: Vulnerabilities
+    file: entities/vulnerabilities.yml
+    grain: one row per vulnerability record
+    description: vulnerabilities (500 rows, 9 columns)
+    use_for:
+      - Segmentation by severity, category
+      - Aggregation on cvss_score
+    common_questions:
+      - How many vulnerabilities by severity?
+      - How many vulnerabilities by category?
+      - What is the average cvss_score across vulnerabilities?
+  - name: VulnerabilityExceptions
+    file: entities/vulnerability_exceptions.yml
+    grain: one row per vulnerability exception record
+    description: vulnerability_exceptions (500 rows, 8 columns)
+    use_for:
+      - Segmentation by reason, status
+      - Cross-entity analysis via organizations, users, vulnerabilities
+    common_questions:
+      - How many vulnerability_exceptions by reason?
+      - How many vulnerability_exceptions by status?
+      - How are vulnerability_exceptions distributed across organizations?
+  - name: VulnerabilityInstances
+    file: entities/vulnerability_instances.yml
+    grain: one row per vulnerability instance record
+    description: vulnerability_instances (40,000 rows, 8 columns)
+    use_for:
+      - Segmentation by status
+      - Cross-entity analysis via assets, vulnerabilities, scan_results
+    common_questions:
+      - How many vulnerability_instances by status?
+      - How are vulnerability_instances distributed across assets?
+glossary: glossary.yml
+metrics:
+  - file: metrics/accounts.yml
+    description: Auto-generated metrics for accounts
+  - file: metrics/agent_heartbeats.yml
+    description: Auto-generated metrics for agent_heartbeats
+  - file: metrics/alert_rules.yml
+    description: Auto-generated metrics for alert_rules
+  - file: metrics/api_requests.yml
+    description: Auto-generated metrics for api_requests
+  - file: metrics/companies.yml
+    description: Auto-generated metrics for companies
+  - file: metrics/compliance_assessments.yml
+    description: Auto-generated metrics for compliance_assessments
+  - file: metrics/daily_scan_stats.yml
+    description: Auto-generated metrics for daily_scan_stats
+  - file: metrics/dashboard_widgets.yml
+    description: Auto-generated metrics for dashboard_widgets
+  - file: metrics/executive_dashboard_cache.yml
+    description: Auto-generated metrics for executive_dashboard_cache
+  - file: metrics/feature_flags_legacy.yml
+    description: Auto-generated metrics for feature_flags_legacy
+  - file: metrics/indicators_of_compromise.yml
+    description: Auto-generated metrics for indicators_of_compromise
+  - file: metrics/invoice_line_items.yml
+    description: Auto-generated metrics for invoice_line_items
+  - file: metrics/invoices.yml
+    description: Auto-generated metrics for invoices
+  - file: metrics/legacy_risk_scores.yml
+    description: Auto-generated metrics for legacy_risk_scores
+  - file: metrics/monthly_vulnerability_summary.yml
+    description: Auto-generated metrics for monthly_vulnerability_summary
+  - file: metrics/old_scan_results_v2.yml
+    description: Auto-generated metrics for old_scan_results_v2
+  - file: metrics/organization_health_scores.yml
+    description: Auto-generated metrics for organization_health_scores
+  - file: metrics/organization_settings.yml
+    description: Auto-generated metrics for organization_settings
+  - file: metrics/payment_methods.yml
+    description: Auto-generated metrics for payment_methods
+  - file: metrics/plans.yml
+    description: Auto-generated metrics for plans
+  - file: metrics/scan_results.yml
+    description: Auto-generated metrics for scan_results
+  - file: metrics/scan_results_denormalized.yml
+    description: Auto-generated metrics for scan_results_denormalized
+  - file: metrics/scans.yml
+    description: Auto-generated metrics for scans
+  - file: metrics/subscriptions.yml
+    description: Auto-generated metrics for subscriptions
+  - file: metrics/vulnerabilities.yml
+    description: Auto-generated metrics for vulnerabilities
+tech_debt:
+  - table: agent_heartbeats
+    issues:
+      - missing_fk_constraints
+  - table: agents
+    issues:
+      - missing_fk_constraints
+  - table: alerts
+    issues:
+      - missing_fk_constraints
+  - table: api_requests
+    issues:
+      - missing_fk_constraints
+  - table: audit_log
+    issues:
+      - missing_fk_constraints
+  - table: compliance_findings
+    issues:
+      - inconsistent_enums
+  - table: daily_scan_stats
+    issues:
+      - possibly_denormalized
+      - missing_fk_constraints
+  - table: executive_dashboard_cache
+    issues:
+      - possibly_denormalized
+      - missing_fk_constraints
+  - table: feature_flags_legacy
+    issues:
+      - possibly_abandoned
+  - table: invoice_line_items
+    issues:
+      - missing_fk_constraints
+  - table: legacy_risk_scores
+    issues:
+      - possibly_abandoned
+  - table: monthly_vulnerability_summary
+    issues:
+      - possibly_denormalized
+      - missing_fk_constraints
+  - table: notifications_backup
+    issues:
+      - possibly_abandoned
+  - table: old_scan_results_v2
+    issues:
+      - possibly_abandoned
+  - table: organization_health_scores
+    issues:
+      - missing_fk_constraints
+  - table: scan_results
+    issues:
+      - missing_fk_constraints
+  - table: scan_results_denormalized
+    issues:
+      - possibly_denormalized
+      - missing_fk_constraints
+  - table: subscriptions
+    issues:
+      - inconsistent_enums
+  - table: temp_asset_import_2024
+    issues:
+      - possibly_abandoned
+  - table: user_sessions_archive
+    issues:
+      - possibly_abandoned
+  - table: vulnerability_instances
+    issues:
+      - missing_fk_constraints

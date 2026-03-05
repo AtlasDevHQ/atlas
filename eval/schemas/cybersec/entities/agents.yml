@@ -1,0 +1,158 @@
+name: Agents
+type: fact_table
+table: agents
+grain: one row per agent record
+description: Auto-profiled schema for agents (12,000 rows). Contains 7 columns, linked to assets.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 12000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: asset_id
+    sql: asset_id
+    type: number
+    unique_count: 8400
+    sample_values:
+      - '2'
+      - '5'
+      - '6'
+      - '8'
+      - '11'
+      - '12'
+      - '15'
+      - '19'
+    profiler_notes:
+      - Likely FK to assets.id (inferred from column name, no constraint exists)
+  - name: agent_version
+    sql: agent_version
+    type: string
+    unique_count: 8
+    sample_values:
+      - v2.1.0
+      - v2.2.0
+      - v2.3.1
+      - v2.4.0
+      - v2.5.0
+      - v3.0.0
+      - v3.0.1
+      - v3.1.0
+  - name: status
+    sql: status
+    type: string
+    unique_count: 4
+    sample_values:
+      - active
+      - disconnected
+      - error
+      - inactive
+  - name: last_heartbeat
+    sql: last_heartbeat
+    type: date
+    unique_count: 12000
+    sample_values:
+      - Sun Feb 01 2026 13:40:48 GMT-0500 (Eastern Standard Time)
+      - Sun Feb 01 2026 14:07:08 GMT-0500 (Eastern Standard Time)
+      - Sun Feb 01 2026 14:14:02 GMT-0500 (Eastern Standard Time)
+      - Sun Feb 01 2026 14:20:49 GMT-0500 (Eastern Standard Time)
+      - Sun Feb 01 2026 14:25:50 GMT-0500 (Eastern Standard Time)
+      - Sun Feb 01 2026 14:59:30 GMT-0500 (Eastern Standard Time)
+      - Sun Feb 01 2026 15:21:25 GMT-0500 (Eastern Standard Time)
+      - Sun Feb 01 2026 15:27:03 GMT-0500 (Eastern Standard Time)
+  - name: installed_at
+    sql: installed_at
+    type: date
+    unique_count: 12000
+    sample_values:
+      - Sun Jan 12 2020 18:47:08 GMT-0500 (Eastern Standard Time)
+      - Wed Jan 15 2020 09:17:52 GMT-0500 (Eastern Standard Time)
+      - Tue Jan 21 2020 04:03:29 GMT-0500 (Eastern Standard Time)
+      - Wed Jan 22 2020 14:44:38 GMT-0500 (Eastern Standard Time)
+      - Fri Jan 31 2020 16:17:54 GMT-0500 (Eastern Standard Time)
+      - Sun Feb 02 2020 13:24:14 GMT-0500 (Eastern Standard Time)
+      - Mon Feb 03 2020 06:54:57 GMT-0500 (Eastern Standard Time)
+      - Wed Feb 05 2020 20:56:47 GMT-0500 (Eastern Standard Time)
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 12000
+    sample_values:
+      - Tue Jan 07 2020 00:18:45 GMT-0500 (Eastern Standard Time)
+      - Sat Jan 25 2020 19:30:48 GMT-0500 (Eastern Standard Time)
+      - Wed Jan 29 2020 23:56:00 GMT-0500 (Eastern Standard Time)
+      - Tue Feb 04 2020 10:13:43 GMT-0500 (Eastern Standard Time)
+      - Fri Feb 07 2020 07:44:39 GMT-0500 (Eastern Standard Time)
+      - Sat Feb 15 2020 06:29:10 GMT-0500 (Eastern Standard Time)
+      - Sat Feb 22 2020 06:20:16 GMT-0500 (Eastern Standard Time)
+      - Sat Feb 22 2020 15:18:50 GMT-0500 (Eastern Standard Time)
+  - name: last_heartbeat_year
+    sql: EXTRACT(YEAR FROM last_heartbeat)
+    type: number
+    description: Year extracted from last_heartbeat
+    virtual: true
+  - name: last_heartbeat_month
+    sql: TO_CHAR(last_heartbeat, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from last_heartbeat
+    virtual: true
+  - name: installed_at_year
+    sql: EXTRACT(YEAR FROM installed_at)
+    type: number
+    description: Year extracted from installed_at
+    virtual: true
+  - name: installed_at_month
+    sql: TO_CHAR(installed_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from installed_at
+    virtual: true
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: agent_count
+    sql: id
+    type: count_distinct
+joins:
+  - target_entity: Assets
+    relationship: many_to_one
+    join_columns:
+      from: asset_id
+      to: id
+    inferred: true
+    note: No FK constraint exists — inferred from column name asset_id
+    description: Each agent likely belongs to one asset
+use_cases:
+  - Use for segmentation analysis by agent_version, status
+  - Use for time-series analysis using last_heartbeat, installed_at, created_at
+  - Join with assets for cross-entity analysis
+  - Avoid for row-level agent_heartbeats queries — use those entities directly
+query_patterns:
+  - description: Agents by agent_version
+    sql: |-
+      SELECT agent_version, COUNT(*) as count
+      FROM agents
+      GROUP BY agent_version
+      ORDER BY count DESC
+  - description: Agents by status
+    sql: |-
+      SELECT status, COUNT(*) as count
+      FROM agents
+      GROUP BY status
+      ORDER BY count DESC

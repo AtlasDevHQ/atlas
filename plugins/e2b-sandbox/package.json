@@ -1,0 +1,24 @@
+{
+  "name": "@atlas/plugin-e2b-sandbox",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "test": "bun test __tests__/e2b-sandbox.test.ts"
+  },
+  "dependencies": {
+    "@useatlas/plugin-sdk": "workspace:*"
+  },
+  "peerDependencies": {
+    "e2b": ">=1.0.0"
+  },
+  "peerDependenciesMeta": {
+    "e2b": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "ai": "^6.0.97",
+    "hono": "^4.12.3",
+    "zod": "^4.3.6"
+  }
+}

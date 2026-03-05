@@ -1,0 +1,38 @@
+metrics:
+  - id: cart_events_count
+    label: Total CartEvents
+    description: Count of distinct cart_events records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM cart_events
+    aggregation: count_distinct
+  - id: total_quantity
+    label: Total quantity
+    description: Sum of quantity across all cart_events.
+    type: atomic
+    source:
+      entity: CartEvents
+      measure: total_quantity
+    sql: |-
+      SELECT SUM(quantity) as total_quantity
+      FROM cart_events
+    aggregation: sum
+    objective: maximize
+  - id: avg_quantity
+    label: Average quantity
+    description: Average quantity per cart_event.
+    type: atomic
+    sql: |-
+      SELECT AVG(quantity) as avg_quantity
+      FROM cart_events
+    aggregation: avg
+  - id: quantity_by_event_type
+    label: quantity by event_type
+    description: quantity broken down by event_type.
+    type: atomic
+    sql: |-
+      SELECT event_type, SUM(quantity) as total_quantity, AVG(quantity) as avg_quantity, COUNT(*) as count
+      FROM cart_events
+      GROUP BY event_type
+      ORDER BY total_quantity DESC

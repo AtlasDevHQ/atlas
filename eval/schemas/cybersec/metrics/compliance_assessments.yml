@@ -1,0 +1,38 @@
+metrics:
+  - id: compliance_assessments_count
+    label: Total ComplianceAssessments
+    description: Count of distinct compliance_assessments records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM compliance_assessments
+    aggregation: count_distinct
+  - id: total_score
+    label: Total score
+    description: Sum of score across all compliance_assessments.
+    type: atomic
+    source:
+      entity: ComplianceAssessments
+      measure: total_score
+    sql: |-
+      SELECT SUM(score) as total_score
+      FROM compliance_assessments
+    aggregation: sum
+    objective: maximize
+  - id: avg_score
+    label: Average score
+    description: Average score per compliance_assessment.
+    type: atomic
+    sql: |-
+      SELECT AVG(score) as avg_score
+      FROM compliance_assessments
+    aggregation: avg
+  - id: score_by_status
+    label: score by status
+    description: score broken down by status.
+    type: atomic
+    sql: |-
+      SELECT status, SUM(score) as total_score, AVG(score) as avg_score, COUNT(*) as count
+      FROM compliance_assessments
+      GROUP BY status
+      ORDER BY total_score DESC

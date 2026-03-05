@@ -1,0 +1,152 @@
+name: Integrations
+type: fact_table
+table: integrations
+grain: one row per integration record
+description: Auto-profiled schema for integrations (150 rows). Contains 8 columns, linked to organizations.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 150
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: organization_id
+    sql: organization_id
+    type: number
+    description: Foreign key to organizations
+    unique_count: 105
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '6'
+      - '7'
+      - '8'
+      - '10'
+      - '12'
+  - name: type
+    sql: type
+    type: string
+    unique_count: 9
+    sample_values:
+      - email
+      - jira
+      - opsgenie
+      - pagerduty
+      - servicenow
+      - slack
+      - splunk
+      - teams
+  - name: name
+    sql: name
+    type: string
+    unique_count: 9
+    sample_values:
+      - email Integration
+      - jira Integration
+      - opsgenie Integration
+      - pagerduty Integration
+      - servicenow Integration
+      - slack Integration
+      - splunk Integration
+      - teams Integration
+  - name: config
+    sql: config
+    type: string
+    unique_count: 150
+    sample_values:
+      - '{"webhook_url":"https://hooks.example.com/00becb760de22550164977c90ae59523"}'
+      - '{"webhook_url":"https://hooks.example.com/0271d6d03f13d0f7b3732c54073db4ce"}'
+      - '{"webhook_url":"https://hooks.example.com/067517e262d315e97aa390e508cc99d5"}'
+      - '{"webhook_url":"https://hooks.example.com/08f65e38bb5aa9ef27178cf028a10d98"}'
+      - '{"webhook_url":"https://hooks.example.com/091a19f0485b847afca2719446cc1ffe"}'
+      - '{"webhook_url":"https://hooks.example.com/0ac98dc764063cc6b1fa5c7f1d65f496"}'
+      - '{"webhook_url":"https://hooks.example.com/0b0877ca27fa6eb673bf2af9c1b2a9d3"}'
+      - '{"webhook_url":"https://hooks.example.com/0e86ce712b8a8dd59508e1d831eb6a4e"}'
+  - name: status
+    sql: status
+    type: string
+    unique_count: 3
+    sample_values:
+      - active
+      - disabled
+      - error
+  - name: last_sync
+    sql: last_sync
+    type: date
+    unique_count: 119
+    null_count: 31
+    sample_values:
+      - Mon Mar 02 2026 13:46:48 GMT-0500 (Eastern Standard Time)
+      - Mon Mar 02 2026 14:01:00 GMT-0500 (Eastern Standard Time)
+      - Mon Mar 02 2026 14:11:17 GMT-0500 (Eastern Standard Time)
+      - Mon Mar 02 2026 14:11:52 GMT-0500 (Eastern Standard Time)
+      - Mon Mar 02 2026 14:26:54 GMT-0500 (Eastern Standard Time)
+      - Mon Mar 02 2026 14:35:25 GMT-0500 (Eastern Standard Time)
+      - Mon Mar 02 2026 14:40:39 GMT-0500 (Eastern Standard Time)
+      - Mon Mar 02 2026 14:52:45 GMT-0500 (Eastern Standard Time)
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 150
+    sample_values:
+      - Fri Jan 15 2021 06:26:40 GMT-0500 (Eastern Standard Time)
+      - Sat Feb 20 2021 14:00:38 GMT-0500 (Eastern Standard Time)
+      - Thu Mar 25 2021 06:15:14 GMT-0400 (Eastern Daylight Time)
+      - Fri Apr 09 2021 09:38:23 GMT-0400 (Eastern Daylight Time)
+      - Thu Apr 15 2021 11:35:04 GMT-0400 (Eastern Daylight Time)
+      - Sat Apr 17 2021 03:06:16 GMT-0400 (Eastern Daylight Time)
+      - Mon Apr 26 2021 11:34:49 GMT-0400 (Eastern Daylight Time)
+      - Mon May 17 2021 06:13:22 GMT-0400 (Eastern Daylight Time)
+  - name: last_sync_year
+    sql: EXTRACT(YEAR FROM last_sync)
+    type: number
+    description: Year extracted from last_sync
+    virtual: true
+  - name: last_sync_month
+    sql: TO_CHAR(last_sync, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from last_sync
+    virtual: true
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: integration_count
+    sql: id
+    type: count_distinct
+joins:
+  - target_entity: Organizations
+    relationship: many_to_one
+    join_columns:
+      from: organization_id
+      to: id
+    description: Each integration belongs to one organization
+use_cases:
+  - Use for segmentation analysis by status
+  - Use for time-series analysis using last_sync, created_at
+  - Join with organizations for cross-entity analysis
+  - Avoid for row-level integration_events queries — use those entities directly
+query_patterns:
+  - description: Integrations by status
+    sql: |-
+      SELECT status, COUNT(*) as count
+      FROM integrations
+      GROUP BY status
+      ORDER BY count DESC

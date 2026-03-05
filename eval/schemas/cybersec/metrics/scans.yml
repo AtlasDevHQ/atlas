@@ -1,0 +1,75 @@
+metrics:
+  - id: scans_count
+    label: Total Scans
+    description: Count of distinct scans records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM scans
+    aggregation: count_distinct
+  - id: total_assets_scanned
+    label: Total assets scanned
+    description: Sum of assets_scanned across all scans.
+    type: atomic
+    source:
+      entity: Scans
+      measure: total_assets_scanned
+    sql: |-
+      SELECT SUM(assets_scanned) as total_assets_scanned
+      FROM scans
+    aggregation: sum
+    objective: maximize
+  - id: avg_assets_scanned
+    label: Average assets scanned
+    description: Average assets_scanned per scan.
+    type: atomic
+    sql: |-
+      SELECT AVG(assets_scanned) as avg_assets_scanned
+      FROM scans
+    aggregation: avg
+  - id: assets_scanned_by_scan_type
+    label: assets scanned by scan_type
+    description: assets_scanned broken down by scan_type.
+    type: atomic
+    sql: >-
+      SELECT scan_type, SUM(assets_scanned) as total_assets_scanned, AVG(assets_scanned) as avg_assets_scanned, COUNT(*)
+      as count
+
+      FROM scans
+
+      GROUP BY scan_type
+
+      ORDER BY total_assets_scanned DESC
+  - id: total_findings_count
+    label: Total findings count
+    description: Sum of findings_count across all scans.
+    type: atomic
+    source:
+      entity: Scans
+      measure: total_findings_count
+    sql: |-
+      SELECT SUM(findings_count) as total_findings_count
+      FROM scans
+    aggregation: sum
+    objective: maximize
+  - id: avg_findings_count
+    label: Average findings count
+    description: Average findings_count per scan.
+    type: atomic
+    sql: |-
+      SELECT AVG(findings_count) as avg_findings_count
+      FROM scans
+    aggregation: avg
+  - id: findings_count_by_scan_type
+    label: findings count by scan_type
+    description: findings_count broken down by scan_type.
+    type: atomic
+    sql: >-
+      SELECT scan_type, SUM(findings_count) as total_findings_count, AVG(findings_count) as avg_findings_count, COUNT(*)
+      as count
+
+      FROM scans
+
+      GROUP BY scan_type
+
+      ORDER BY total_findings_count DESC

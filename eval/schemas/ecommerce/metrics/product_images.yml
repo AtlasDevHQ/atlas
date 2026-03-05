@@ -1,0 +1,38 @@
+metrics:
+  - id: product_images_count
+    label: Total ProductImages
+    description: Count of distinct product_images records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM product_images
+    aggregation: count_distinct
+  - id: total_position
+    label: Total position
+    description: Sum of position across all product_images.
+    type: atomic
+    source:
+      entity: ProductImages
+      measure: total_position
+    sql: |-
+      SELECT SUM(position) as total_position
+      FROM product_images
+    aggregation: sum
+    objective: maximize
+  - id: avg_position
+    label: Average position
+    description: Average position per product_image.
+    type: atomic
+    sql: |-
+      SELECT AVG(position) as avg_position
+      FROM product_images
+    aggregation: avg
+  - id: position_by_alt_text
+    label: position by alt_text
+    description: position broken down by alt_text.
+    type: atomic
+    sql: |-
+      SELECT alt_text, SUM(position) as total_position, AVG(position) as avg_position, COUNT(*) as count
+      FROM product_images
+      GROUP BY alt_text
+      ORDER BY total_position DESC

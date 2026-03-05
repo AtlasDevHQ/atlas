@@ -1,0 +1,15 @@
+{
+  "name": "@atlas/plugin-yaml-context",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "test": "bun test __tests__/plugin.test.ts"
+  },
+  "dependencies": {
+    "@useatlas/plugin-sdk": "workspace:*",
+    "js-yaml": "^4.1.1"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9"
+  }
+}

@@ -1,0 +1,166 @@
+name: OldOrdersV1
+type: fact_table
+table: old_orders_v1
+grain: one row per old orders v1 record
+description: >-
+  Auto-profiled schema for old_orders_v1 (3,000 rows). Contains 7 columns. POSSIBLY ABANDONED — name matches legacy/temp
+  pattern and no tables reference it.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 3000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: cust_email
+    sql: cust_email
+    type: string
+    unique_count: 2361
+    sample_values:
+      - customer0@gmail.com
+      - customer1000@outlook.com
+      - customer1000@yahoo.com
+      - customer1001@yahoo.com
+      - customer1002@outlook.com
+      - customer1003@yahoo.com
+      - customer1004@yahoo.com
+      - customer1005@outlook.com
+  - name: order_total
+    sql: order_total
+    type: number
+    unique_count: 2841
+    sample_values:
+      - '30.00'
+      - '30.03'
+      - '30.06'
+      - '30.09'
+      - '30.10'
+      - '30.34'
+      - '30.36'
+      - '30.47'
+  - name: order_status
+    sql: order_status
+    type: string
+    unique_count: 6
+    sample_values:
+      - canceled
+      - complete
+      - pending
+      - processing
+      - refunded
+      - shipped
+  - name: item_list
+    sql: item_list
+    type: string
+    unique_count: 2575
+    sample_values:
+      - SKU-000 x1
+      - SKU-000 x3
+      - SKU-001 x1
+      - SKU-002 x2
+      - SKU-002 x3
+      - SKU-003 x1
+      - SKU-003 x2
+      - SKU-003 x3, SKU-570 x1
+  - name: placed_date
+    sql: placed_date
+    type: date
+    unique_count: 3000
+    sample_values:
+      - Tue Jan 14 2020 19:40:16 GMT-0500 (Eastern Standard Time)
+      - Tue Jan 14 2020 22:38:25 GMT-0500 (Eastern Standard Time)
+      - Wed Jan 15 2020 08:47:34 GMT-0500 (Eastern Standard Time)
+      - Wed Jan 15 2020 09:04:38 GMT-0500 (Eastern Standard Time)
+      - Wed Jan 15 2020 23:36:13 GMT-0500 (Eastern Standard Time)
+      - Thu Jan 16 2020 01:16:35 GMT-0500 (Eastern Standard Time)
+      - Thu Jan 16 2020 01:50:48 GMT-0500 (Eastern Standard Time)
+      - Thu Jan 16 2020 02:56:32 GMT-0500 (Eastern Standard Time)
+  - name: shipped_date
+    sql: shipped_date
+    type: date
+    unique_count: 1811
+    null_count: 1189
+    sample_values:
+      - Sat Jan 18 2020 09:04:03 GMT-0500 (Eastern Standard Time)
+      - Sat Jan 18 2020 16:30:02 GMT-0500 (Eastern Standard Time)
+      - Sat Jan 18 2020 20:37:13 GMT-0500 (Eastern Standard Time)
+      - Sat Jan 18 2020 22:14:40 GMT-0500 (Eastern Standard Time)
+      - Sun Jan 19 2020 12:44:26 GMT-0500 (Eastern Standard Time)
+      - Sun Jan 19 2020 17:09:21 GMT-0500 (Eastern Standard Time)
+      - Sun Jan 19 2020 18:46:23 GMT-0500 (Eastern Standard Time)
+      - Mon Jan 20 2020 03:23:19 GMT-0500 (Eastern Standard Time)
+  - name: order_total_bucket
+    sql: |-
+      CASE
+        WHEN order_total < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY order_total) FROM old_orders_v1) THEN 'Low'
+        WHEN order_total < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY order_total) FROM old_orders_v1) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: order total bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: placed_date_year
+    sql: EXTRACT(YEAR FROM placed_date)
+    type: number
+    description: Year extracted from placed_date
+    virtual: true
+  - name: placed_date_month
+    sql: TO_CHAR(placed_date, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from placed_date
+    virtual: true
+  - name: shipped_date_year
+    sql: EXTRACT(YEAR FROM shipped_date)
+    type: number
+    description: Year extracted from shipped_date
+    virtual: true
+  - name: shipped_date_month
+    sql: TO_CHAR(shipped_date, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from shipped_date
+    virtual: true
+measures:
+  - name: old_orders_v1_count
+    sql: id
+    type: count_distinct
+  - name: total_order_total
+    sql: order_total
+    type: sum
+    description: Sum of order total
+  - name: avg_order_total
+    sql: order_total
+    type: avg
+    description: Average order total
+use_cases:
+  - 'WARNING: This table appears to be abandoned/legacy. Verify with the user before querying'
+  - Use for segmentation analysis by order_status
+  - Use for aggregation and trends on order_total
+  - Use for time-series analysis using placed_date, shipped_date
+query_patterns:
+  - description: OldOrdersV1 by order_status
+    sql: |-
+      SELECT order_status, COUNT(*) as count
+      FROM old_orders_v1
+      GROUP BY order_status
+      ORDER BY count DESC
+  - description: Total order_total by order_status
+    sql: |-
+      SELECT order_status, SUM(order_total) as total_order_total, COUNT(*) as count
+      FROM old_orders_v1
+      GROUP BY order_status
+      ORDER BY total_order_total DESC
+profiler_notes:
+  - 'Possibly abandoned: name matches legacy/temp pattern and no other tables reference it'

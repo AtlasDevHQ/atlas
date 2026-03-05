@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Atlas — Prism Logo Brand Sheet</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,400;0,500;0,600;0,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg: #0c0c10;
+    --surface: #111116;
+    --border: #222230;
+    --text: #e8e8ec;
+    --text-dim: #9898a4;
+    --text-muted: #5c5c6a;
+    --accent: #23CE9E;
+    --accent-dark: #1a9b76;
+    --accent-deep: #148060;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'DM Sans', sans-serif;
+    min-height: 100vh;
+    padding: 48px;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+
+  /* ---- Header ---- */
+  .brand-header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 12px;
+  }
+  .brand-header svg { width: 36px; height: 36px; }
+  .brand-header h1 {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+  }
+  .brand-subtitle {
+    font-size: 14px;
+    color: var(--text-muted);
+    margin-bottom: 56px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  /* ---- Sections ---- */
+  .section {
+    margin-bottom: 64px;
+  }
+  .section-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent-dark);
+    margin-bottom: 20px;
+  }
+
+  /* ---- Hero ---- */
+  .hero {
+    display: flex;
+    gap: 20px;
+    margin-bottom: 64px;
+  }
+  .hero-card {
+    flex: 1;
+    border-radius: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 64px 48px;
+    position: relative;
+  }
+  .hero-card.dark {
+    background: var(--surface);
+    border: 1px solid var(--border);
+  }
+  .hero-card.light {
+    background: #f6f6f8;
+    border: 1px solid #e2e2e6;
+  }
+  .hero-card svg { width: 160px; height: 160px; }
+  .hero-card .ctx {
+    position: absolute;
+    bottom: 14px;
+    right: 18px;
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-muted);
+    opacity: 0.4;
+  }
+  .hero-card.light .ctx { color: #aaa; }
+
+  /* ---- Wordmarks ---- */
+  .wordmark-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .wm-card {
+    border-radius: 14px;
+    padding: 32px 36px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    position: relative;
+  }
+  .wm-card.dark {
+    background: var(--surface);
+    border: 1px solid var(--border);
+  }
+  .wm-card.light {
+    background: #f6f6f8;
+    border: 1px solid #e2e2e6;
+  }
+  .wm-card.mono-dark {
+    background: #000;
+    border: 1px solid #222;
+  }
+  .wm-card.mono-light {
+    background: #fff;
+    border: 1px solid #e0e0e0;
+  }
+  .wm-card svg.wm-icon { width: 32px; height: 32px; flex-shrink: 0; }
+  .wm-card .wm-text {
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+  .wm-card.light .wm-text { color: #1a1a22; }
+  .wm-card.mono-dark .wm-text { color: #fff; }
+  .wm-card.mono-light .wm-text { color: #111; }
+  .wm-card .wm-label {
+    position: absolute;
+    top: 12px;
+    right: 16px;
+    font-size: 9px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-muted);
+    opacity: 0.4;
+  }
+  .wm-card.light .wm-label { color: #aaa; }
+  .wm-card.mono-light .wm-label { color: #bbb; }
+  .wm-card.mono-dark .wm-label { color: #555; }
+
+  /* ---- Size Scale ---- */
+  .size-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 24px;
+    flex-wrap: wrap;
+  }
+  .size-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+  }
+  .size-item span {
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-muted);
+    opacity: 0.5;
+  }
+  .size-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* ---- Color Palette ---- */
+  .palette-row {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .swatch {
+    width: 140px;
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  .swatch-color {
+    height: 72px;
+  }
+  .swatch-info {
+    padding: 10px 12px;
+    background: var(--surface);
+  }
+  .swatch-info .hex {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--text);
+    margin-bottom: 2px;
+  }
+  .swatch-info .label {
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  /* ---- Usage / Clear Space ---- */
+  .usage-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .usage-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 28px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+  }
+  .usage-card .usage-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-align: center;
+  }
+  .usage-card .usage-desc {
+    font-size: 12px;
+    color: var(--text-muted);
+    text-align: center;
+    line-height: 1.5;
+  }
+
+  /* ---- Clearspace Demo ---- */
+  .clearspace-demo {
+    position: relative;
+    width: 180px;
+    height: 180px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .clearspace-demo .cs-border {
+    position: absolute;
+    inset: 0;
+    border: 1px dashed var(--accent-dark);
+    border-radius: 4px;
+    opacity: 0.3;
+  }
+  .clearspace-demo .cs-inner {
+    position: absolute;
+    inset: 36px;
+    border: 1px dashed var(--accent-dark);
+    border-radius: 2px;
+    opacity: 0.15;
+  }
+  .cs-arrow {
+    position: absolute;
+    font-size: 9px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--accent-dark);
+    opacity: 0.5;
+  }
+  .cs-arrow.top { top: 12px; left: 50%; transform: translateX(-50%); }
+  .cs-arrow.left { left: 6px; top: 50%; transform: translateY(-50%); }
+
+  @media (max-width: 768px) {
+    body { padding: 24px 16px; }
+    .hero { flex-direction: column; }
+    .wordmark-grid { grid-template-columns: 1fr; }
+    .usage-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="brand-header">
+  <svg viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M128 24 L232 208 L24 208 Z" stroke="#23CE9E" stroke-width="8" fill="none" stroke-linejoin="round"/>
+    <line x1="128" y1="24" x2="128" y2="208" stroke="#23CE9E" stroke-width="4" opacity="0.4"/>
+    <circle cx="128" cy="24" r="10" fill="#23CE9E"/>
+  </svg>
+  <h1>Atlas</h1>
+</div>
+<p class="brand-subtitle">Logo Brand Sheet — The Prism</p>
+
+<!-- ======================== -->
+<!-- HERO: Primary Mark       -->
+<!-- ======================== -->
+<div class="hero">
+  <div class="hero-card dark">
+    <svg viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <!-- Outer prism -->
+      <path d="M128 24 L232 208 L24 208 Z" stroke="url(#g)" stroke-width="5" fill="none" stroke-linejoin="round"/>
+      <!-- Inner rays -->
+      <line x1="128" y1="24" x2="76" y2="208" stroke="#23CE9E" stroke-width="2.5" opacity="0.25"/>
+      <line x1="128" y1="24" x2="128" y2="208" stroke="#23CE9E" stroke-width="2.5" opacity="0.45"/>
+      <line x1="128" y1="24" x2="180" y2="208" stroke="#23CE9E" stroke-width="2.5" opacity="0.25"/>
+      <!-- Horizontal strata -->
+      <line x1="58" y1="148" x2="198" y2="148" stroke="#23CE9E" stroke-width="1.5" opacity="0.12"/>
+      <line x1="41" y1="178" x2="215" y2="178" stroke="#23CE9E" stroke-width="1.5" opacity="0.08"/>
+      <!-- Apex node -->
+      <circle cx="128" cy="24" r="7" fill="#23CE9E"/>
+      <!-- Base nodes -->
+      <circle cx="76" cy="208" r="4" fill="#23CE9E" opacity="0.45"/>
+      <circle cx="128" cy="208" r="4.5" fill="#23CE9E" opacity="0.65"/>
+      <circle cx="180" cy="208" r="4" fill="#23CE9E" opacity="0.45"/>
+      <defs>
+        <!-- Gradient ID "g" matches the canonical atlas-mark-dark.svg -->
+        <linearGradient id="g" x1="128" y1="24" x2="128" y2="208" gradientUnits="userSpaceOnUse">
+          <stop stop-color="#23CE9E"/><stop offset="1" stop-color="#1a9b76"/>
+        </linearGradient>
+      </defs>
+    </svg>
+    <span class="ctx">on dark</span>
+  </div>
+  <div class="hero-card light">
+    <svg viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M128 24 L232 208 L24 208 Z" stroke="#1a9b76" stroke-width="5" fill="none" stroke-linejoin="round"/>
+      <line x1="128" y1="24" x2="76" y2="208" stroke="#1a9b76" stroke-width="2.5" opacity="0.18"/>
+      <line x1="128" y1="24" x2="128" y2="208" stroke="#1a9b76" stroke-width="2.5" opacity="0.35"/>
+      <line x1="128" y1="24" x2="180" y2="208" stroke="#1a9b76" stroke-width="2.5" opacity="0.18"/>
+      <line x1="58" y1="148" x2="198" y2="148" stroke="#1a9b76" stroke-width="1.5" opacity="0.08"/>
+      <line x1="41" y1="178" x2="215" y2="178" stroke="#1a9b76" stroke-width="1.5" opacity="0.06"/>
+      <circle cx="128" cy="24" r="7" fill="#1a9b76"/>
+      <circle cx="76" cy="208" r="4" fill="#1a9b76" opacity="0.35"/>
+      <circle cx="128" cy="208" r="4.5" fill="#1a9b76" opacity="0.55"/>
+      <circle cx="180" cy="208" r="4" fill="#1a9b76" opacity="0.35"/>
+    </svg>
+    <span class="ctx">on light</span>
+  </div>
+</div>
+
+<!-- ======================== -->
+<!-- WORDMARKS                -->
+<!-- ======================== -->
+<div class="section">
+  <div class="section-label">Wordmark Variants</div>
+  <div class="wordmark-grid">
+    <!-- Color on dark -->
+    <div class="wm-card dark">
+      <svg class="wm-icon" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M128 24 L232 208 L24 208 Z" stroke="#23CE9E" stroke-width="8" fill="none" stroke-linejoin="round"/>
+        <line x1="128" y1="24" x2="128" y2="208" stroke="#23CE9E" stroke-width="4" opacity="0.4"/>
+        <circle cx="128" cy="24" r="10" fill="#23CE9E"/>
+        <circle cx="128" cy="208" r="5" fill="#23CE9E" opacity="0.6"/>
+      </svg>
+      <span class="wm-text">Atlas</span>
+      <span class="wm-label">color / dark</span>
+    </div>
+    <!-- Color on light -->
+    <div class="wm-card light">
+      <svg class="wm-icon" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M128 24 L232 208 L24 208 Z" stroke="#1a9b76" stroke-width="8" fill="none" stroke-linejoin="round"/>
+        <line x1="128" y1="24" x2="128" y2="208" stroke="#1a9b76" stroke-width="4" opacity="0.3"/>
+        <circle cx="128" cy="24" r="10" fill="#1a9b76"/>
+        <circle cx="128" cy="208" r="5" fill="#1a9b76" opacity="0.5"/>
+      </svg>
+      <span class="wm-text">Atlas</span>
+      <span class="wm-label">color / light</span>
+    </div>
+    <!-- Mono white -->
+    <div class="wm-card mono-dark">
+      <svg class="wm-icon" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M128 24 L232 208 L24 208 Z" stroke="#fff" stroke-width="8" fill="none" stroke-linejoin="round"/>
+        <line x1="128" y1="24" x2="128" y2="208" stroke="#fff" stroke-width="4" opacity="0.3"/>
+        <circle cx="128" cy="24" r="10" fill="#fff"/>
+        <circle cx="128" cy="208" r="5" fill="#fff" opacity="0.5"/>
+      </svg>
+      <span class="wm-text">Atlas</span>
+      <span class="wm-label">mono / white</span>
+    </div>
+    <!-- Mono black -->
+    <div class="wm-card mono-light">
+      <svg class="wm-icon" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M128 24 L232 208 L24 208 Z" stroke="#111" stroke-width="8" fill="none" stroke-linejoin="round"/>
+        <line x1="128" y1="24" x2="128" y2="208" stroke="#111" stroke-width="4" opacity="0.2"/>
+        <circle cx="128" cy="24" r="10" fill="#111"/>
+        <circle cx="128" cy="208" r="5" fill="#111" opacity="0.4"/>
+      </svg>
+      <span class="wm-text">Atlas</span>
+      <span class="wm-label">mono / black</span>
+    </div>
+  </div>
+</div>
+
+<!-- ======================== -->
+<!-- SIZE SCALE               -->
+<!-- ======================== -->
+<div class="section">
+  <div class="section-label">Size Scale — Progressive Simplification</div>
+  <div class="size-row">
+    <!-- 128 -->
+    <div class="size-item">
+      <div class="size-box" style="width:148px;height:148px;">
+        <svg viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" width="128" height="128">
+          <path d="M128 24 L232 208 L24 208 Z" stroke="#23CE9E" stroke-width="5" fill="none" stroke-linejoin="round"/>
+          <line x1="128" y1="24" x2="76" y2="208" stroke="#23CE9E" stroke-width="2.5" opacity="0.25"/>
+          <line x1="128" y1="24" x2="128" y2="208" stroke="#23CE9E" stroke-width="2.5" opacity="0.45"/>
+          <line x1="128" y1="24" x2="180" y2="208" stroke="#23CE9E" stroke-width="2.5" opacity="0.25"/>
+          <circle cx="128" cy="24" r="7" fill="#23CE9E"/>
+          <circle cx="76" cy="208" r="4" fill="#23CE9E" opacity="0.45"/>
+          <circle cx="128" cy="208" r="4.5" fill="#23CE9E" opacity="0.65"/>
+          <circle cx="180" cy="208" r="4" fill="#23CE9E" opacity="0.45"/>
+        </svg>
+      </div>
+      <span>128px — full detail</span>
+    </div>
+    <!-- 64 -->
+    <div class="size-item">
+      <div class="size-box" style="width:80px;height:80px;">
+        <svg viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" width="64" height="64">
+          <path d="M128 24 L232 208 L24 208 Z" stroke="#23CE9E" stroke-width="8" fill="none" stroke-linejoin="round"/>
+          <line x1="128" y1="24" x2="128" y2="208" stroke="#23CE9E" stroke-width="5" opacity="0.4"/>
+          <circle cx="128" cy="24" r="12" fill="#23CE9E"/>
+        </svg>
+      </div>
+      <span>64px — reduced</span>
+    </div>
+    <!-- 48 -->
+    <div class="size-item">
+      <div class="size-box" style="width:62px;height:62px;">
+        <svg viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" width="48" height="48">
+          <path d="M128 24 L232 208 L24 208 Z" stroke="#23CE9E" stroke-width="10" fill="none" stroke-linejoin="round"/>
+          <circle cx="128" cy="24" r="14" fill="#23CE9E"/>
+        </svg>
+      </div>
+      <span>48px — minimal</span>
+    </div>
+    <!-- 32 -->
+    <div class="size-item">
+      <div class="size-box" style="width:48px;height:48px;">
+        <svg viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" width="32" height="32">
+          <path d="M128 24 L232 208 L24 208 Z" stroke="#23CE9E" stroke-width="14" fill="none" stroke-linejoin="round"/>
+          <circle cx="128" cy="28" r="16" fill="#23CE9E"/>
+        </svg>
+      </div>
+      <span>32px</span>
+    </div>
+    <!-- 24 -->
+    <div class="size-item">
+      <div class="size-box" style="width:38px;height:38px;">
+        <svg viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" width="24" height="24">
+          <path d="M128 28 L228 208 L28 208 Z" fill="#23CE9E" opacity="0.15"/>
+          <path d="M128 28 L228 208 L28 208 Z" stroke="#23CE9E" stroke-width="18" fill="none" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <span>24px</span>
+    </div>
+    <!-- 16 favicon -->
+    <div class="size-item">
+      <div class="size-box" style="width:32px;height:32px;">
+        <svg viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" width="16" height="16">
+          <path d="M128 28 L228 212 L28 212 Z" fill="#23CE9E"/>
+        </svg>
+      </div>
+      <span>16px — favicon</span>
+    </div>
+  </div>
+</div>
+
+<!-- ======================== -->
+<!-- COLOR PALETTE            -->
+<!-- ======================== -->
+<div class="section">
+  <div class="section-label">Color Palette</div>
+  <div class="palette-row">
+    <div class="swatch">
+      <div class="swatch-color" style="background:#23CE9E;"></div>
+      <div class="swatch-info">
+        <div class="hex">#23CE9E</div>
+        <div class="label">Primary</div>
+      </div>
+    </div>
+    <div class="swatch">
+      <div class="swatch-color" style="background:#1a9b76;"></div>
+      <div class="swatch-info">
+        <div class="hex">#1A9B76</div>
+        <div class="label">Primary Dark</div>
+      </div>
+    </div>
+    <div class="swatch">
+      <div class="swatch-color" style="background:#148060;"></div>
+      <div class="swatch-info">
+        <div class="hex">#148060</div>
+        <div class="label">Deep</div>
+      </div>
+    </div>
+    <div class="swatch">
+      <div class="swatch-color" style="background:#0c0c10;"></div>
+      <div class="swatch-info">
+        <div class="hex">#0C0C10</div>
+        <div class="label">Background</div>
+      </div>
+    </div>
+    <div class="swatch">
+      <div class="swatch-color" style="background:#f6f6f8;"></div>
+      <div class="swatch-info">
+        <div class="hex">#F6F6F8</div>
+        <div class="label">Light Surface</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================== -->
+<!-- USAGE GUIDELINES         -->
+<!-- ======================== -->
+<div class="section">
+  <div class="section-label">Usage Guidelines</div>
+  <div class="usage-grid">
+    <div class="usage-card">
+      <div class="clearspace-demo">
+        <div class="cs-border"></div>
+        <div class="cs-inner"></div>
+        <span class="cs-arrow top">△ height</span>
+        <span class="cs-arrow left">◁</span>
+        <svg viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" width="80" height="80">
+          <path d="M128 24 L232 208 L24 208 Z" stroke="#23CE9E" stroke-width="8" fill="none" stroke-linejoin="round"/>
+          <line x1="128" y1="24" x2="128" y2="208" stroke="#23CE9E" stroke-width="4" opacity="0.4"/>
+          <circle cx="128" cy="24" r="10" fill="#23CE9E"/>
+        </svg>
+      </div>
+      <div class="usage-title">Clear Space</div>
+      <div class="usage-desc">Maintain minimum padding equal to the triangle's height ÷ 5 on all sides. The apex node should never touch adjacent elements.</div>
+    </div>
+    <div class="usage-card">
+      <div style="display:flex;gap:20px;align-items:center;">
+        <!-- Simplified for small -->
+        <div style="display:flex;flex-direction:column;align-items:center;gap:6px;">
+          <svg viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" width="48" height="48">
+            <path d="M128 24 L232 208 L24 208 Z" stroke="#23CE9E" stroke-width="5" fill="none" stroke-linejoin="round"/>
+            <line x1="128" y1="24" x2="76" y2="208" stroke="#23CE9E" stroke-width="2.5" opacity="0.25"/>
+            <line x1="128" y1="24" x2="128" y2="208" stroke="#23CE9E" stroke-width="2.5" opacity="0.45"/>
+            <line x1="128" y1="24" x2="180" y2="208" stroke="#23CE9E" stroke-width="2.5" opacity="0.25"/>
+            <circle cx="128" cy="24" r="7" fill="#23CE9E"/>
+            <circle cx="76" cy="208" r="4" fill="#23CE9E" opacity="0.45"/>
+            <circle cx="128" cy="208" r="4.5" fill="#23CE9E" opacity="0.65"/>
+            <circle cx="180" cy="208" r="4" fill="#23CE9E" opacity="0.45"/>
+          </svg>
+          <span style="font-size:9px;font-family:'JetBrains Mono';color:var(--text-muted);">≥ 64px</span>
+        </div>
+        <span style="color:var(--text-muted);font-size:18px;">→</span>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:6px;">
+          <svg viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" width="32" height="32">
+            <path d="M128 24 L232 208 L24 208 Z" stroke="#23CE9E" stroke-width="14" fill="none" stroke-linejoin="round"/>
+            <circle cx="128" cy="28" r="16" fill="#23CE9E"/>
+          </svg>
+          <span style="font-size:9px;font-family:'JetBrains Mono';color:var(--text-muted);">32–48px</span>
+        </div>
+        <span style="color:var(--text-muted);font-size:18px;">→</span>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:6px;">
+          <svg viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" width="16" height="16">
+            <path d="M128 28 L228 212 L28 212 Z" fill="#23CE9E"/>
+          </svg>
+          <span style="font-size:9px;font-family:'JetBrains Mono';color:var(--text-muted);">≤ 24px</span>
+        </div>
+      </div>
+      <div class="usage-title">Progressive Simplification</div>
+      <div class="usage-desc">Full detail above 128px. Drop diagonal rays and base nodes at 64px (center ray only). Outline + apex circle at 24–48px. Solid filled triangle below 24px (favicons).</div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

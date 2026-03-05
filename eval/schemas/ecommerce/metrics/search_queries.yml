@@ -1,0 +1,29 @@
+metrics:
+  - id: search_queries_count
+    label: Total SearchQueries
+    description: Count of distinct search_queries records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM search_queries
+    aggregation: count_distinct
+  - id: total_results_count
+    label: Total results count
+    description: Sum of results_count across all search_queries.
+    type: atomic
+    source:
+      entity: SearchQueries
+      measure: total_results_count
+    sql: |-
+      SELECT SUM(results_count) as total_results_count
+      FROM search_queries
+    aggregation: sum
+    objective: maximize
+  - id: avg_results_count
+    label: Average results count
+    description: Average results_count per search_query.
+    type: atomic
+    sql: |-
+      SELECT AVG(results_count) as avg_results_count
+      FROM search_queries
+    aggregation: avg

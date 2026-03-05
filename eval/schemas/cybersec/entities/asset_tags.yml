@@ -1,0 +1,108 @@
+name: AssetTags
+type: fact_table
+table: asset_tags
+grain: one row per asset tag record
+description: Auto-profiled schema for asset_tags (35,000 rows). Contains 5 columns, linked to assets.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 35000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: asset_id
+    sql: asset_id
+    type: number
+    description: Foreign key to assets
+    unique_count: 13559
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+      - '9'
+  - name: key
+    sql: key
+    type: string
+    unique_count: 10
+    sample_values:
+      - backup_policy
+      - compliance
+      - cost_center
+      - criticality
+      - env
+      - owner
+      - project
+      - region
+      - team
+      - tier
+  - name: value
+    sql: value
+    type: string
+    unique_count: 22
+    sample_values:
+      - cc-1001
+      - cc-2002
+      - daily
+      - dev
+      - eu-west-1
+      - high
+      - hipaa
+      - infra
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 35000
+    sample_values:
+      - Tue Dec 31 2019 19:06:32 GMT-0500 (Eastern Standard Time)
+      - Tue Dec 31 2019 20:52:54 GMT-0500 (Eastern Standard Time)
+      - Tue Dec 31 2019 21:55:10 GMT-0500 (Eastern Standard Time)
+      - Tue Dec 31 2019 22:18:41 GMT-0500 (Eastern Standard Time)
+      - Tue Dec 31 2019 22:37:52 GMT-0500 (Eastern Standard Time)
+      - Tue Dec 31 2019 23:11:02 GMT-0500 (Eastern Standard Time)
+      - Tue Dec 31 2019 23:30:58 GMT-0500 (Eastern Standard Time)
+      - Wed Jan 01 2020 00:03:14 GMT-0500 (Eastern Standard Time)
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: asset_tag_count
+    sql: id
+    type: count_distinct
+joins:
+  - target_entity: Assets
+    relationship: many_to_one
+    join_columns:
+      from: asset_id
+      to: id
+    description: Each asset_tag belongs to one asset
+use_cases:
+  - Use for segmentation analysis by key
+  - Use for time-series analysis using created_at
+  - Join with assets for cross-entity analysis
+query_patterns:
+  - description: AssetTags by key
+    sql: |-
+      SELECT key, COUNT(*) as count
+      FROM asset_tags
+      GROUP BY key
+      ORDER BY count DESC

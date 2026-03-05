@@ -1,0 +1,18 @@
+id: "ec-013"
+question: "What is the payment success rate by payment method?"
+schema: ecommerce
+difficulty: simple
+category: aggregation
+tags: [payments, method, success-rate]
+gold_sql: |
+  SELECT
+    method,
+    COUNT(*) AS total_payments,
+    COUNT(*) FILTER (WHERE status = 'completed') AS successful_payments,
+    ROUND(COUNT(*) FILTER (WHERE status = 'completed')::numeric / COUNT(*) * 100, 1) AS success_rate_pct,
+    SUM(amount_cents) FILTER (WHERE status = 'completed') / 100.0 AS successful_revenue
+  FROM payments
+  GROUP BY method
+  ORDER BY success_rate_pct DESC
+expected_rows: null
+notes: "Tests FILTER clause for success rate metric by payment method"

@@ -1,0 +1,29 @@
+# Local dev: Postgres with two databases.
+#   atlas       — Atlas internal DB (auth, audit, settings)
+#   atlas_demo  — Demo analytics datasource (disposable, re-seedable)
+#
+# .env should have:
+#   DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas
+#   ATLAS_DATASOURCE_URL=postgresql://atlas:atlas@localhost:5432/atlas_demo
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: atlas
+      POSTGRES_USER: atlas
+      POSTGRES_PASSWORD: atlas
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./packages/cli/data/init-demo-db.sql:/docker-entrypoint-initdb.d/00-init.sql
+      - ./packages/cli/data/demo.sql:/data/demo.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atlas"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:

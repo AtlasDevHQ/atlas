@@ -1,0 +1,133 @@
+metrics:
+  - id: orders_count
+    label: Total Orders
+    description: Count of distinct orders records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM orders
+    aggregation: count_distinct
+  - id: total_subtotal_cents
+    label: Total subtotal cents
+    description: Sum of subtotal_cents across all orders.
+    type: atomic
+    source:
+      entity: Orders
+      measure: total_subtotal_cents
+    sql: |-
+      SELECT SUM(subtotal_cents) as total_subtotal_cents
+      FROM orders
+    aggregation: sum
+    objective: maximize
+  - id: avg_subtotal_cents
+    label: Average subtotal cents
+    description: Average subtotal_cents per order.
+    type: atomic
+    sql: |-
+      SELECT AVG(subtotal_cents) as avg_subtotal_cents
+      FROM orders
+    aggregation: avg
+  - id: subtotal_cents_by_status
+    label: subtotal cents by status
+    description: subtotal_cents broken down by status.
+    type: atomic
+    sql: >-
+      SELECT status, SUM(subtotal_cents) as total_subtotal_cents, AVG(subtotal_cents) as avg_subtotal_cents, COUNT(*) as
+      count
+
+      FROM orders
+
+      GROUP BY status
+
+      ORDER BY total_subtotal_cents DESC
+  - id: total_shipping_cost
+    label: Total shipping cost
+    description: Sum of shipping_cost across all orders.
+    type: atomic
+    source:
+      entity: Orders
+      measure: total_shipping_cost
+    sql: |-
+      SELECT SUM(shipping_cost) as total_shipping_cost
+      FROM orders
+    aggregation: sum
+    objective: maximize
+  - id: avg_shipping_cost
+    label: Average shipping cost
+    description: Average shipping_cost per order.
+    type: atomic
+    sql: |-
+      SELECT AVG(shipping_cost) as avg_shipping_cost
+      FROM orders
+    aggregation: avg
+  - id: shipping_cost_by_status
+    label: shipping cost by status
+    description: shipping_cost broken down by status.
+    type: atomic
+    sql: >-
+      SELECT status, SUM(shipping_cost) as total_shipping_cost, AVG(shipping_cost) as avg_shipping_cost, COUNT(*) as
+      count
+
+      FROM orders
+
+      GROUP BY status
+
+      ORDER BY total_shipping_cost DESC
+  - id: total_tax_cents
+    label: Total tax cents
+    description: Sum of tax_cents across all orders.
+    type: atomic
+    source:
+      entity: Orders
+      measure: total_tax_cents
+    sql: |-
+      SELECT SUM(tax_cents) as total_tax_cents
+      FROM orders
+    aggregation: sum
+    objective: maximize
+  - id: avg_tax_cents
+    label: Average tax cents
+    description: Average tax_cents per order.
+    type: atomic
+    sql: |-
+      SELECT AVG(tax_cents) as avg_tax_cents
+      FROM orders
+    aggregation: avg
+  - id: tax_cents_by_status
+    label: tax cents by status
+    description: tax_cents broken down by status.
+    type: atomic
+    sql: |-
+      SELECT status, SUM(tax_cents) as total_tax_cents, AVG(tax_cents) as avg_tax_cents, COUNT(*) as count
+      FROM orders
+      GROUP BY status
+      ORDER BY total_tax_cents DESC
+  - id: total_total_cents
+    label: Total total cents
+    description: Sum of total_cents across all orders.
+    type: atomic
+    source:
+      entity: Orders
+      measure: total_total_cents
+    sql: |-
+      SELECT SUM(total_cents) as total_total_cents
+      FROM orders
+    aggregation: sum
+    objective: maximize
+  - id: avg_total_cents
+    label: Average total cents
+    description: Average total_cents per order.
+    type: atomic
+    sql: |-
+      SELECT AVG(total_cents) as avg_total_cents
+      FROM orders
+    aggregation: avg
+  - id: total_cents_by_status
+    label: total cents by status
+    description: total_cents broken down by status.
+    type: atomic
+    sql: |-
+      SELECT status, SUM(total_cents) as total_total_cents, AVG(total_cents) as avg_total_cents, COUNT(*) as count
+      FROM orders
+      GROUP BY status
+      ORDER BY total_total_cents DESC

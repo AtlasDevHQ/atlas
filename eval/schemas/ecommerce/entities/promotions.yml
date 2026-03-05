@@ -1,0 +1,289 @@
+name: Promotions
+type: fact_table
+table: promotions
+grain: one row per promotion record
+description: Auto-profiled schema for promotions (200 rows). Contains 12 columns.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 200
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: code
+    sql: code
+    type: string
+    unique_count: 185
+    sample_values:
+      - BDAY21
+      - BDAY47
+      - BDAY6
+      - BDAY72
+      - BDAY80
+      - BDAY81
+      - BDAY82
+      - BDAY85
+  - name: name
+    sql: name
+    type: string
+    unique_count: 66
+    sample_values:
+      - BDAY Offer
+      - BDAY Sale
+      - BDAY Special
+      - CLEARANCE Deal
+      - CLEARANCE Offer
+      - CLEARANCE Sale
+      - CLEARANCE Savings
+      - CLEARANCE Special
+  - name: type
+    sql: type
+    type: string
+    unique_count: 4
+    sample_values:
+      - bogo
+      - fixed_amount
+      - free_shipping
+      - percentage
+  - name: value
+    sql: value
+    type: number
+    unique_count: 8
+    sample_values:
+      - '0.00'
+      - '5.00'
+      - '10.00'
+      - '15.00'
+      - '20.00'
+      - '25.00'
+      - '30.00'
+      - '50.00'
+  - name: min_order_cents
+    sql: min_order_cents
+    type: number
+    unique_count: 4
+    null_count: 77
+    sample_values:
+      - '2500'
+      - '5000'
+      - '7500'
+      - '10000'
+  - name: max_uses
+    sql: max_uses
+    type: number
+    unique_count: 4
+    null_count: 101
+    sample_values:
+      - '100'
+      - '500'
+      - '1000'
+      - '5000'
+  - name: times_used
+    sql: times_used
+    type: number
+    unique_count: 166
+    sample_values:
+      - '3'
+      - '4'
+      - '8'
+      - '10'
+      - '11'
+      - '12'
+      - '19'
+      - '21'
+  - name: starts_at
+    sql: starts_at
+    type: date
+    unique_count: 200
+    sample_values:
+      - Sat Mar 07 2020 13:26:00 GMT-0500 (Eastern Standard Time)
+      - Sat Apr 18 2020 13:49:46 GMT-0400 (Eastern Daylight Time)
+      - Mon Apr 20 2020 04:11:26 GMT-0400 (Eastern Daylight Time)
+      - Tue Apr 28 2020 07:44:30 GMT-0400 (Eastern Daylight Time)
+      - Wed May 13 2020 06:28:07 GMT-0400 (Eastern Daylight Time)
+      - Sun May 24 2020 09:23:28 GMT-0400 (Eastern Daylight Time)
+      - Sun May 31 2020 07:06:15 GMT-0400 (Eastern Daylight Time)
+      - Wed Jul 01 2020 03:38:07 GMT-0400 (Eastern Daylight Time)
+  - name: ends_at
+    sql: ends_at
+    type: date
+    unique_count: 144
+    null_count: 56
+    sample_values:
+      - Thu Apr 30 2020 04:11:26 GMT-0400 (Eastern Daylight Time)
+      - Thu May 21 2020 14:26:00 GMT-0400 (Eastern Daylight Time)
+      - Fri Jun 05 2020 09:23:28 GMT-0400 (Eastern Daylight Time)
+      - Wed Jul 01 2020 13:49:46 GMT-0400 (Eastern Daylight Time)
+      - Sun Jul 26 2020 07:06:15 GMT-0400 (Eastern Daylight Time)
+      - Tue Sep 08 2020 16:40:45 GMT-0400 (Eastern Daylight Time)
+      - Mon Sep 14 2020 14:36:38 GMT-0400 (Eastern Daylight Time)
+      - Sun Sep 20 2020 21:49:33 GMT-0400 (Eastern Daylight Time)
+  - name: is_active
+    sql: is_active
+    type: boolean
+    unique_count: 2
+    sample_values:
+      - 'false'
+      - 'true'
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 200
+    sample_values:
+      - Sat Mar 07 2020 13:26:00 GMT-0500 (Eastern Standard Time)
+      - Sat Apr 18 2020 13:49:46 GMT-0400 (Eastern Daylight Time)
+      - Mon Apr 20 2020 04:11:26 GMT-0400 (Eastern Daylight Time)
+      - Tue Apr 28 2020 07:44:30 GMT-0400 (Eastern Daylight Time)
+      - Wed May 13 2020 06:28:07 GMT-0400 (Eastern Daylight Time)
+      - Sun May 24 2020 09:23:28 GMT-0400 (Eastern Daylight Time)
+      - Sun May 31 2020 07:06:15 GMT-0400 (Eastern Daylight Time)
+      - Wed Jul 01 2020 03:38:07 GMT-0400 (Eastern Daylight Time)
+  - name: value_bucket
+    sql: |-
+      CASE
+        WHEN value < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY value) FROM promotions) THEN 'Low'
+        WHEN value < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY value) FROM promotions) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: value bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: min_order_cents_bucket
+    sql: |-
+      CASE
+        WHEN min_order_cents < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY min_order_cents) FROM promotions) THEN 'Low'
+        WHEN min_order_cents < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY min_order_cents) FROM promotions) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: min order cents bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: max_uses_bucket
+    sql: |-
+      CASE
+        WHEN max_uses < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY max_uses) FROM promotions) THEN 'Low'
+        WHEN max_uses < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY max_uses) FROM promotions) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: max uses bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: times_used_bucket
+    sql: |-
+      CASE
+        WHEN times_used < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY times_used) FROM promotions) THEN 'Low'
+        WHEN times_used < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY times_used) FROM promotions) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: times used bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: starts_at_year
+    sql: EXTRACT(YEAR FROM starts_at)
+    type: number
+    description: Year extracted from starts_at
+    virtual: true
+  - name: starts_at_month
+    sql: TO_CHAR(starts_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from starts_at
+    virtual: true
+  - name: ends_at_year
+    sql: EXTRACT(YEAR FROM ends_at)
+    type: number
+    description: Year extracted from ends_at
+    virtual: true
+  - name: ends_at_month
+    sql: TO_CHAR(ends_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from ends_at
+    virtual: true
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: promotion_count
+    sql: id
+    type: count_distinct
+  - name: total_value
+    sql: value
+    type: sum
+    description: Sum of value
+  - name: avg_value
+    sql: value
+    type: avg
+    description: Average value
+  - name: total_min_order_cents
+    sql: min_order_cents
+    type: sum
+    description: Sum of min order cents
+  - name: avg_min_order_cents
+    sql: min_order_cents
+    type: avg
+    description: Average min order cents
+  - name: total_max_uses
+    sql: max_uses
+    type: sum
+    description: Sum of max uses
+  - name: avg_max_uses
+    sql: max_uses
+    type: avg
+    description: Average max uses
+  - name: total_times_used
+    sql: times_used
+    type: sum
+    description: Sum of times used
+  - name: avg_times_used
+    sql: times_used
+    type: avg
+    description: Average times used
+use_cases:
+  - Use for segmentation analysis by type
+  - Use for aggregation and trends on value, min_order_cents, max_uses, times_used
+  - Use for time-series analysis using starts_at, ends_at, created_at
+  - Avoid for row-level orders/promotion_usages queries — use those entities directly
+query_patterns:
+  - description: Promotions by type
+    sql: |-
+      SELECT type, COUNT(*) as count
+      FROM promotions
+      GROUP BY type
+      ORDER BY count DESC
+  - description: Total value by type
+    sql: |-
+      SELECT type, SUM(value) as total_value, COUNT(*) as count
+      FROM promotions
+      GROUP BY type
+      ORDER BY total_value DESC

@@ -1,0 +1,127 @@
+name: TempProductImport2023
+type: fact_table
+table: temp_product_import_2023
+grain: one row per temp product import 2023 record
+description: >-
+  Auto-profiled schema for temp_product_import_2023 (500 rows). Contains 7 columns. POSSIBLY ABANDONED — name matches
+  legacy/temp pattern and no tables reference it.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 500
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: import_name
+    sql: import_name
+    type: string
+    unique_count: 500
+    sample_values:
+      - Imported Product 1
+      - Imported Product 10
+      - Imported Product 100
+      - Imported Product 101
+      - Imported Product 102
+      - Imported Product 103
+      - Imported Product 104
+      - Imported Product 105
+  - name: import_sku
+    sql: import_sku
+    type: string
+    unique_count: 500
+    sample_values:
+      - IMP-0001
+      - IMP-0002
+      - IMP-0003
+      - IMP-0004
+      - IMP-0005
+      - IMP-0006
+      - IMP-0007
+      - IMP-0008
+  - name: import_price
+    sql: import_price
+    type: string
+    unique_count: 497
+    sample_values:
+      - $10.12
+      - $10.40
+      - $10.71
+      - $10.98
+      - $10.99
+      - $100.98
+      - $101.24
+      - $101.67
+  - name: import_category
+    sql: import_category
+    type: string
+    unique_count: 7
+    sample_values:
+      - ''
+      - bath
+      - bedding
+      - decor
+      - kitchen
+      - outdoor
+      - unknown
+  - name: raw_csv_line
+    sql: raw_csv_line
+    type: string
+    unique_count: 500
+    sample_values:
+      - Imported Product 1,IMP-0001,$185.15,bedding
+      - Imported Product 10,IMP-0010,$168.24,bedding
+      - Imported Product 100,IMP-0100,$43.48,bedding
+      - Imported Product 101,IMP-0101,$73.09,bedding
+      - Imported Product 102,IMP-0102,$78.21,bedding
+      - Imported Product 103,IMP-0103,$59.04,bedding
+      - Imported Product 104,IMP-0104,$180.42,bedding
+      - Imported Product 105,IMP-0105,$92.68,bedding
+  - name: imported_at
+    sql: imported_at
+    type: date
+    unique_count: 500
+    sample_values:
+      - Thu Sep 14 2023 20:00:22 GMT-0400 (Eastern Daylight Time)
+      - Thu Sep 14 2023 20:01:02 GMT-0400 (Eastern Daylight Time)
+      - Thu Sep 14 2023 20:01:19 GMT-0400 (Eastern Daylight Time)
+      - Thu Sep 14 2023 20:01:19 GMT-0400 (Eastern Daylight Time)
+      - Thu Sep 14 2023 20:01:37 GMT-0400 (Eastern Daylight Time)
+      - Thu Sep 14 2023 20:02:14 GMT-0400 (Eastern Daylight Time)
+      - Thu Sep 14 2023 20:02:45 GMT-0400 (Eastern Daylight Time)
+      - Thu Sep 14 2023 20:03:04 GMT-0400 (Eastern Daylight Time)
+  - name: imported_at_year
+    sql: EXTRACT(YEAR FROM imported_at)
+    type: number
+    description: Year extracted from imported_at
+    virtual: true
+  - name: imported_at_month
+    sql: TO_CHAR(imported_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from imported_at
+    virtual: true
+measures:
+  - name: temp_product_import_2023_count
+    sql: id
+    type: count_distinct
+use_cases:
+  - 'WARNING: This table appears to be abandoned/legacy. Verify with the user before querying'
+  - Use for segmentation analysis by import_category
+  - Use for time-series analysis using imported_at
+query_patterns:
+  - description: TempProductImport2023 by import_category
+    sql: |-
+      SELECT import_category, COUNT(*) as count
+      FROM temp_product_import_2023
+      GROUP BY import_category
+      ORDER BY count DESC
+profiler_notes:
+  - 'Possibly abandoned: name matches legacy/temp pattern and no other tables reference it'

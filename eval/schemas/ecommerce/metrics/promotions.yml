@@ -1,0 +1,129 @@
+metrics:
+  - id: promotions_count
+    label: Total Promotions
+    description: Count of distinct promotions records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM promotions
+    aggregation: count_distinct
+  - id: total_value
+    label: Total value
+    description: Sum of value across all promotions.
+    type: atomic
+    source:
+      entity: Promotions
+      measure: total_value
+    sql: |-
+      SELECT SUM(value) as total_value
+      FROM promotions
+    aggregation: sum
+    objective: maximize
+  - id: avg_value
+    label: Average value
+    description: Average value per promotion.
+    type: atomic
+    sql: |-
+      SELECT AVG(value) as avg_value
+      FROM promotions
+    aggregation: avg
+  - id: value_by_type
+    label: value by type
+    description: value broken down by type.
+    type: atomic
+    sql: |-
+      SELECT type, SUM(value) as total_value, AVG(value) as avg_value, COUNT(*) as count
+      FROM promotions
+      GROUP BY type
+      ORDER BY total_value DESC
+  - id: total_min_order_cents
+    label: Total min order cents
+    description: Sum of min_order_cents across all promotions.
+    type: atomic
+    source:
+      entity: Promotions
+      measure: total_min_order_cents
+    sql: |-
+      SELECT SUM(min_order_cents) as total_min_order_cents
+      FROM promotions
+    aggregation: sum
+    objective: maximize
+  - id: avg_min_order_cents
+    label: Average min order cents
+    description: Average min_order_cents per promotion.
+    type: atomic
+    sql: |-
+      SELECT AVG(min_order_cents) as avg_min_order_cents
+      FROM promotions
+    aggregation: avg
+  - id: min_order_cents_by_type
+    label: min order cents by type
+    description: min_order_cents broken down by type.
+    type: atomic
+    sql: >-
+      SELECT type, SUM(min_order_cents) as total_min_order_cents, AVG(min_order_cents) as avg_min_order_cents, COUNT(*)
+      as count
+
+      FROM promotions
+
+      GROUP BY type
+
+      ORDER BY total_min_order_cents DESC
+  - id: total_max_uses
+    label: Total max uses
+    description: Sum of max_uses across all promotions.
+    type: atomic
+    source:
+      entity: Promotions
+      measure: total_max_uses
+    sql: |-
+      SELECT SUM(max_uses) as total_max_uses
+      FROM promotions
+    aggregation: sum
+    objective: maximize
+  - id: avg_max_uses
+    label: Average max uses
+    description: Average max_uses per promotion.
+    type: atomic
+    sql: |-
+      SELECT AVG(max_uses) as avg_max_uses
+      FROM promotions
+    aggregation: avg
+  - id: max_uses_by_type
+    label: max uses by type
+    description: max_uses broken down by type.
+    type: atomic
+    sql: |-
+      SELECT type, SUM(max_uses) as total_max_uses, AVG(max_uses) as avg_max_uses, COUNT(*) as count
+      FROM promotions
+      GROUP BY type
+      ORDER BY total_max_uses DESC
+  - id: total_times_used
+    label: Total times used
+    description: Sum of times_used across all promotions.
+    type: atomic
+    source:
+      entity: Promotions
+      measure: total_times_used
+    sql: |-
+      SELECT SUM(times_used) as total_times_used
+      FROM promotions
+    aggregation: sum
+    objective: maximize
+  - id: avg_times_used
+    label: Average times used
+    description: Average times_used per promotion.
+    type: atomic
+    sql: |-
+      SELECT AVG(times_used) as avg_times_used
+      FROM promotions
+    aggregation: avg
+  - id: times_used_by_type
+    label: times used by type
+    description: times_used broken down by type.
+    type: atomic
+    sql: |-
+      SELECT type, SUM(times_used) as total_times_used, AVG(times_used) as avg_times_used, COUNT(*) as count
+      FROM promotions
+      GROUP BY type
+      ORDER BY total_times_used DESC

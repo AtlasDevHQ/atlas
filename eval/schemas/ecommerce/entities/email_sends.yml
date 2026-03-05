@@ -1,0 +1,156 @@
+name: EmailSends
+type: fact_table
+table: email_sends
+grain: one row per email send record
+description: Auto-profiled schema for email_sends (30,000 rows). Contains 7 columns, linked to email_campaigns, customers.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 30000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: campaign_id
+    sql: campaign_id
+    type: number
+    description: Foreign key to email_campaigns
+    unique_count: 50
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: customer_id
+    sql: customer_id
+    type: number
+    description: Foreign key to customers
+    unique_count: 7829
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: status
+    sql: status
+    type: string
+    unique_count: 3
+    sample_values:
+      - bounced
+      - delivered
+      - unsubscribed
+  - name: opened_at
+    sql: opened_at
+    type: date
+    unique_count: 10526
+    null_count: 19474
+    sample_values:
+      - Tue Jun 30 2020 22:43:07 GMT-0400 (Eastern Daylight Time)
+      - Thu Jul 02 2020 17:09:54 GMT-0400 (Eastern Daylight Time)
+      - Wed Jul 08 2020 23:09:45 GMT-0400 (Eastern Daylight Time)
+      - Fri Jul 10 2020 09:28:41 GMT-0400 (Eastern Daylight Time)
+      - Wed Jul 15 2020 01:28:48 GMT-0400 (Eastern Daylight Time)
+      - Thu Jul 16 2020 07:58:03 GMT-0400 (Eastern Daylight Time)
+      - Sun Jul 19 2020 01:22:21 GMT-0400 (Eastern Daylight Time)
+      - Wed Jul 22 2020 14:51:45 GMT-0400 (Eastern Daylight Time)
+  - name: clicked_at
+    sql: clicked_at
+    type: date
+    unique_count: 3629
+    null_count: 26371
+    sample_values:
+      - Thu Jul 02 2020 20:35:27 GMT-0400 (Eastern Daylight Time)
+      - Fri Jul 10 2020 04:52:49 GMT-0400 (Eastern Daylight Time)
+      - Mon Jul 13 2020 13:36:05 GMT-0400 (Eastern Daylight Time)
+      - Mon Jul 13 2020 20:55:03 GMT-0400 (Eastern Daylight Time)
+      - Mon Jul 20 2020 01:22:48 GMT-0400 (Eastern Daylight Time)
+      - Tue Jul 21 2020 13:29:51 GMT-0400 (Eastern Daylight Time)
+      - Tue Aug 04 2020 13:57:27 GMT-0400 (Eastern Daylight Time)
+      - Thu Aug 06 2020 01:26:17 GMT-0400 (Eastern Daylight Time)
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 30000
+    sample_values:
+      - Thu Jun 11 2020 23:33:23 GMT-0400 (Eastern Daylight Time)
+      - Mon Jun 15 2020 21:00:47 GMT-0400 (Eastern Daylight Time)
+      - Tue Jun 16 2020 18:43:16 GMT-0400 (Eastern Daylight Time)
+      - Thu Jun 18 2020 12:21:13 GMT-0400 (Eastern Daylight Time)
+      - Sun Jun 21 2020 05:39:03 GMT-0400 (Eastern Daylight Time)
+      - Sun Jun 21 2020 11:19:01 GMT-0400 (Eastern Daylight Time)
+      - Fri Jun 26 2020 07:09:27 GMT-0400 (Eastern Daylight Time)
+      - Mon Jun 29 2020 10:26:34 GMT-0400 (Eastern Daylight Time)
+  - name: opened_at_year
+    sql: EXTRACT(YEAR FROM opened_at)
+    type: number
+    description: Year extracted from opened_at
+    virtual: true
+  - name: opened_at_month
+    sql: TO_CHAR(opened_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from opened_at
+    virtual: true
+  - name: clicked_at_year
+    sql: EXTRACT(YEAR FROM clicked_at)
+    type: number
+    description: Year extracted from clicked_at
+    virtual: true
+  - name: clicked_at_month
+    sql: TO_CHAR(clicked_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from clicked_at
+    virtual: true
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: email_send_count
+    sql: id
+    type: count_distinct
+joins:
+  - target_entity: EmailCampaigns
+    relationship: many_to_one
+    join_columns:
+      from: campaign_id
+      to: id
+    description: Each email_send belongs to one email_campaign
+  - target_entity: Customers
+    relationship: many_to_one
+    join_columns:
+      from: customer_id
+      to: id
+    description: Each email_send belongs to one customer
+use_cases:
+  - Use for segmentation analysis by status
+  - Use for time-series analysis using opened_at, clicked_at, created_at
+  - Join with email_campaigns, customers for cross-entity analysis
+query_patterns:
+  - description: EmailSends by status
+    sql: |-
+      SELECT status, COUNT(*) as count
+      FROM email_sends
+      GROUP BY status
+      ORDER BY count DESC

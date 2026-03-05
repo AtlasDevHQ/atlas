@@ -1,0 +1,205 @@
+name: Alerts
+type: fact_table
+table: alerts
+grain: one row per alert record
+description: Auto-profiled schema for alerts (12,000 rows). Contains 10 columns, linked to alert_rules, organizations, incidents.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 12000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: organization_id
+    sql: organization_id
+    type: number
+    description: Foreign key to organizations
+    unique_count: 200
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: alert_rule_id
+    sql: alert_rule_id
+    type: number
+    description: Foreign key to alert_rules
+    unique_count: 200
+    null_count: 2433
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: severity
+    sql: severity
+    type: string
+    unique_count: 4
+    null_count: 200
+    sample_values:
+      - critical
+      - high
+      - low
+      - medium
+  - name: title
+    sql: title
+    type: string
+    unique_count: 12
+    sample_values:
+      - Certificate expiration warning
+      - DNS query anomaly
+      - Endpoint agent offline
+      - Failed login threshold exceeded
+      - Firewall policy violation
+      - Malware signature match
+      - New admin account
+      - Port scan activity
+      - Suspicious login detected
+      - Unauthorized API access
+      - Unusual outbound traffic
+      - Vulnerability scan finding
+  - name: status
+    sql: status
+    type: string
+    unique_count: 4
+    sample_values:
+      - acknowledged
+      - dismissed
+      - open
+      - resolved
+  - name: incident_id
+    sql: incident_id
+    type: number
+    unique_count: 838
+    null_count: 10764
+    sample_values:
+      - '2'
+      - '4'
+      - '6'
+      - '7'
+      - '9'
+      - '10'
+      - '11'
+      - '14'
+    profiler_notes:
+      - Likely FK to incidents.id (inferred from column name, no constraint exists)
+  - name: source
+    sql: source
+    type: string
+    unique_count: 8
+    sample_values:
+      - agent
+      - cloud_trail
+      - edr
+      - firewall
+      - ids
+      - scanner
+      - siem
+      - user_report
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 12000
+    sample_values:
+      - Mon Feb 03 2020 09:10:55 GMT-0500 (Eastern Standard Time)
+      - Sat Mar 28 2020 05:20:57 GMT-0400 (Eastern Daylight Time)
+      - Sun Mar 29 2020 05:05:16 GMT-0400 (Eastern Daylight Time)
+      - Fri Apr 17 2020 22:53:11 GMT-0400 (Eastern Daylight Time)
+      - Fri Apr 24 2020 16:19:20 GMT-0400 (Eastern Daylight Time)
+      - Thu May 07 2020 03:15:24 GMT-0400 (Eastern Daylight Time)
+      - Wed May 13 2020 06:59:48 GMT-0400 (Eastern Daylight Time)
+      - Wed May 27 2020 17:28:21 GMT-0400 (Eastern Daylight Time)
+  - name: acknowledged_at
+    sql: acknowledged_at
+    type: date
+    unique_count: 7107
+    null_count: 4893
+    sample_values:
+      - Mon Feb 03 2020 11:08:05 GMT-0500 (Eastern Standard Time)
+      - Sat Mar 28 2020 05:35:09 GMT-0400 (Eastern Daylight Time)
+      - Sun Mar 29 2020 07:58:30 GMT-0400 (Eastern Daylight Time)
+      - Sat Apr 18 2020 01:33:30 GMT-0400 (Eastern Daylight Time)
+      - Fri Apr 24 2020 20:08:59 GMT-0400 (Eastern Daylight Time)
+      - Wed May 13 2020 07:40:22 GMT-0400 (Eastern Daylight Time)
+      - Sun Jun 07 2020 11:26:18 GMT-0400 (Eastern Daylight Time)
+      - Mon Jun 15 2020 00:39:40 GMT-0400 (Eastern Daylight Time)
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+  - name: acknowledged_at_year
+    sql: EXTRACT(YEAR FROM acknowledged_at)
+    type: number
+    description: Year extracted from acknowledged_at
+    virtual: true
+  - name: acknowledged_at_month
+    sql: TO_CHAR(acknowledged_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from acknowledged_at
+    virtual: true
+measures:
+  - name: alert_count
+    sql: id
+    type: count_distinct
+joins:
+  - target_entity: AlertRules
+    relationship: many_to_one
+    join_columns:
+      from: alert_rule_id
+      to: id
+    description: Each alert belongs to one alert_rule
+  - target_entity: Organizations
+    relationship: many_to_one
+    join_columns:
+      from: organization_id
+      to: id
+    description: Each alert belongs to one organization
+  - target_entity: Incidents
+    relationship: many_to_one
+    join_columns:
+      from: incident_id
+      to: id
+    inferred: true
+    note: No FK constraint exists — inferred from column name incident_id
+    description: Each alert likely belongs to one incident
+use_cases:
+  - Use for segmentation analysis by severity, title, status, source
+  - Use for time-series analysis using created_at, acknowledged_at
+  - Join with alert_rules, organizations, incidents for cross-entity analysis
+  - Avoid for row-level alert_acknowledgments queries — use those entities directly
+query_patterns:
+  - description: Alerts by severity
+    sql: |-
+      SELECT severity, COUNT(*) as count
+      FROM alerts
+      GROUP BY severity
+      ORDER BY count DESC
+  - description: Alerts by title
+    sql: |-
+      SELECT title, COUNT(*) as count
+      FROM alerts
+      GROUP BY title
+      ORDER BY count DESC

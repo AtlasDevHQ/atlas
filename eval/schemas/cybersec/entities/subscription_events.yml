@@ -1,0 +1,123 @@
+name: SubscriptionEvents
+type: fact_table
+table: subscription_events
+grain: one row per subscription event record
+description: Auto-profiled schema for subscription_events (1,200 rows). Contains 6 columns, linked to plans, subscriptions.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 1200
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: subscription_id
+    sql: subscription_id
+    type: number
+    description: Foreign key to subscriptions
+    unique_count: 250
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: event_type
+    sql: event_type
+    type: string
+    unique_count: 4
+    sample_values:
+      - cancel
+      - downgrade
+      - renew
+      - upgrade
+  - name: old_plan_id
+    sql: old_plan_id
+    type: number
+    description: Foreign key to plans
+    unique_count: 5
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+  - name: new_plan_id
+    sql: new_plan_id
+    type: number
+    description: Foreign key to plans
+    unique_count: 5
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 1200
+    sample_values:
+      - Mon Jan 13 2020 10:31:51 GMT-0500 (Eastern Standard Time)
+      - Tue Feb 18 2020 12:07:59 GMT-0500 (Eastern Standard Time)
+      - Fri Feb 28 2020 22:57:47 GMT-0500 (Eastern Standard Time)
+      - Fri Mar 06 2020 21:20:41 GMT-0500 (Eastern Standard Time)
+      - Wed Mar 11 2020 11:26:00 GMT-0400 (Eastern Daylight Time)
+      - Mon Mar 23 2020 03:51:38 GMT-0400 (Eastern Daylight Time)
+      - Tue Mar 24 2020 10:36:45 GMT-0400 (Eastern Daylight Time)
+      - Sun Mar 29 2020 02:25:54 GMT-0400 (Eastern Daylight Time)
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: subscription_event_count
+    sql: id
+    type: count_distinct
+joins:
+  - target_entity: Plans
+    relationship: many_to_one
+    join_columns:
+      from: new_plan_id
+      to: id
+    description: Each subscription_event belongs to one plan
+  - target_entity: Plans
+    relationship: many_to_one
+    join_columns:
+      from: old_plan_id
+      to: id
+    description: Each subscription_event belongs to one plan
+  - target_entity: Subscriptions
+    relationship: many_to_one
+    join_columns:
+      from: subscription_id
+      to: id
+    description: Each subscription_event belongs to one subscription
+use_cases:
+  - Use for segmentation analysis by event_type
+  - Use for time-series analysis using created_at
+  - Join with plans, subscriptions for cross-entity analysis
+query_patterns:
+  - description: SubscriptionEvents by event_type
+    sql: |-
+      SELECT event_type, COUNT(*) as count
+      FROM subscription_events
+      GROUP BY event_type
+      ORDER BY count DESC

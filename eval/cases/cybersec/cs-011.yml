@@ -1,0 +1,18 @@
+id: "cs-011"
+question: "What percentage of scan findings are critical, by organization?"
+schema: cybersec
+difficulty: medium
+category: join
+tags: [daily_scan_stats, organizations, critical, percentage]
+gold_sql: |
+  SELECT
+    o.name AS organization,
+    SUM(dss.total_findings) AS total_findings,
+    SUM(dss.critical_findings) AS critical_findings,
+    ROUND(SUM(dss.critical_findings)::numeric / NULLIF(SUM(dss.total_findings), 0) * 100, 1) AS critical_pct
+  FROM daily_scan_stats dss
+  JOIN organizations o ON dss.org_id = o.id
+  GROUP BY o.name
+  ORDER BY critical_pct DESC
+expected_rows: null
+notes: "Tests NULLIF for safe division and percentage calculation on pre-aggregated stats"

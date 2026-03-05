@@ -1,0 +1,38 @@
+metrics:
+  - id: subscriptions_count
+    label: Total Subscriptions
+    description: Count of distinct subscriptions records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM subscriptions
+    aggregation: count_distinct
+  - id: total_mrr_cents
+    label: Total mrr cents
+    description: Sum of mrr_cents across all subscriptions.
+    type: atomic
+    source:
+      entity: Subscriptions
+      measure: total_mrr_cents
+    sql: |-
+      SELECT SUM(mrr_cents) as total_mrr_cents
+      FROM subscriptions
+    aggregation: sum
+    objective: maximize
+  - id: avg_mrr_cents
+    label: Average mrr cents
+    description: Average mrr_cents per subscription.
+    type: atomic
+    sql: |-
+      SELECT AVG(mrr_cents) as avg_mrr_cents
+      FROM subscriptions
+    aggregation: avg
+  - id: mrr_cents_by_plan_name
+    label: mrr cents by plan_name
+    description: mrr_cents broken down by plan_name.
+    type: atomic
+    sql: |-
+      SELECT plan_name, SUM(mrr_cents) as total_mrr_cents, AVG(mrr_cents) as avg_mrr_cents, COUNT(*) as count
+      FROM subscriptions
+      GROUP BY plan_name
+      ORDER BY total_mrr_cents DESC

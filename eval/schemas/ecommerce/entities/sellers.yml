@@ -1,0 +1,147 @@
+name: Sellers
+type: fact_table
+table: sellers
+grain: one row per seller record
+description: Auto-profiled schema for sellers (80 rows). Contains 7 columns.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 80
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: company_name
+    sql: company_name
+    type: string
+    unique_count: 80
+    sample_values:
+      - Alpine Craft
+      - Alpine Designs
+      - Alpine Goods
+      - Alpine Home Co
+      - Alpine Living
+      - Artisan Craft
+      - Artisan Designs
+      - Artisan Goods
+  - name: contact_email
+    sql: contact_email
+    type: string
+    unique_count: 80
+    sample_values:
+      - alpine@craft.com
+      - alpine@designs.com
+      - alpine@goods.com
+      - alpine@home co.com
+      - alpine@living.com
+      - artisan@craft.com
+      - artisan@designs.com
+      - artisan@goods.com
+  - name: commission_rate
+    sql: commission_rate
+    type: number
+    unique_count: 4
+    sample_values:
+      - '12.00'
+      - '15.00'
+      - '18.00'
+      - '20.00'
+  - name: status
+    sql: status
+    type: string
+    unique_count: 3
+    sample_values:
+      - active
+      - pending
+      - suspended
+  - name: joined_at
+    sql: joined_at
+    type: date
+    unique_count: 80
+    sample_values:
+      - Mon Jan 10 2022 00:44:53 GMT-0500 (Eastern Standard Time)
+      - Fri Jan 14 2022 08:31:09 GMT-0500 (Eastern Standard Time)
+      - Fri Feb 18 2022 18:58:20 GMT-0500 (Eastern Standard Time)
+      - Fri Feb 25 2022 23:10:43 GMT-0500 (Eastern Standard Time)
+      - Fri Mar 04 2022 11:14:19 GMT-0500 (Eastern Standard Time)
+      - Thu Mar 24 2022 09:12:43 GMT-0400 (Eastern Daylight Time)
+      - Wed Mar 30 2022 22:29:49 GMT-0400 (Eastern Daylight Time)
+      - Thu Mar 31 2022 13:54:16 GMT-0400 (Eastern Daylight Time)
+  - name: updated_at
+    sql: updated_at
+    type: date
+    unique_count: 1
+    sample_values:
+      - Tue Mar 03 2026 13:37:39 GMT-0500 (Eastern Standard Time)
+  - name: commission_rate_bucket
+    sql: |-
+      CASE
+        WHEN commission_rate < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY commission_rate) FROM sellers) THEN 'Low'
+        WHEN commission_rate < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY commission_rate) FROM sellers) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: commission rate bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: joined_at_year
+    sql: EXTRACT(YEAR FROM joined_at)
+    type: number
+    description: Year extracted from joined_at
+    virtual: true
+  - name: joined_at_month
+    sql: TO_CHAR(joined_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from joined_at
+    virtual: true
+  - name: updated_at_year
+    sql: EXTRACT(YEAR FROM updated_at)
+    type: number
+    description: Year extracted from updated_at
+    virtual: true
+  - name: updated_at_month
+    sql: TO_CHAR(updated_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from updated_at
+    virtual: true
+measures:
+  - name: seller_count
+    sql: id
+    type: count_distinct
+  - name: total_commission_rate
+    sql: commission_rate
+    type: sum
+    description: Sum of commission rate
+  - name: avg_commission_rate
+    sql: commission_rate
+    type: avg
+    description: Average commission rate
+use_cases:
+  - Use for segmentation analysis by status
+  - Use for aggregation and trends on commission_rate
+  - Use for time-series analysis using joined_at, updated_at
+  - Avoid for row-level products/seller_payouts/seller_performance queries — use those entities directly
+query_patterns:
+  - description: Sellers by status
+    sql: |-
+      SELECT status, COUNT(*) as count
+      FROM sellers
+      GROUP BY status
+      ORDER BY count DESC
+  - description: Total commission_rate by status
+    sql: |-
+      SELECT status, SUM(commission_rate) as total_commission_rate, COUNT(*) as count
+      FROM sellers
+      GROUP BY status
+      ORDER BY total_commission_rate DESC

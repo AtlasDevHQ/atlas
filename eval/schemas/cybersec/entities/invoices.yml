@@ -1,0 +1,239 @@
+name: Invoices
+type: fact_table
+table: invoices
+grain: one row per invoice record
+description: Auto-profiled schema for invoices (3,000 rows). Contains 10 columns, linked to organizations, subscriptions.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 3000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: organization_id
+    sql: organization_id
+    type: number
+    description: Foreign key to organizations
+    unique_count: 200
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: subscription_id
+    sql: subscription_id
+    type: number
+    description: Foreign key to subscriptions
+    unique_count: 250
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: amount_cents
+    sql: amount_cents
+    type: number
+    unique_count: 3
+    sample_values:
+      - '4900'
+      - '14900'
+      - '49900'
+  - name: status
+    sql: status
+    type: string
+    unique_count: 3
+    sample_values:
+      - open
+      - paid
+      - void
+  - name: period_start
+    sql: period_start
+    type: date
+    unique_count: 600
+    sample_values:
+      - Wed Jan 01 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Sat Jan 04 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Tue Jan 07 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Fri Jan 10 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Mon Jan 13 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Thu Jan 16 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Sun Jan 19 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Wed Jan 22 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+  - name: period_end
+    sql: period_end
+    type: date
+    unique_count: 599
+    sample_values:
+      - Sat Feb 01 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Tue Feb 04 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Fri Feb 07 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Mon Feb 10 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Thu Feb 13 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Sun Feb 16 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Wed Feb 19 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Sat Feb 22 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+  - name: due_date
+    sql: due_date
+    type: date
+    unique_count: 599
+    sample_values:
+      - Sun Feb 16 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Wed Feb 19 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Sat Feb 22 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Tue Feb 25 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Fri Feb 28 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Mon Mar 02 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Thu Mar 05 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Sun Mar 08 2020 00:00:00 GMT-0500 (Eastern Standard Time)
+  - name: paid_at
+    sql: paid_at
+    type: date
+    unique_count: 2547
+    null_count: 453
+    sample_values:
+      - Wed Jan 01 2020 00:50:54 GMT-0500 (Eastern Standard Time)
+      - Sun Jan 05 2020 13:00:40 GMT-0500 (Eastern Standard Time)
+      - Tue Jan 07 2020 12:33:17 GMT-0500 (Eastern Standard Time)
+      - Fri Jan 10 2020 09:21:00 GMT-0500 (Eastern Standard Time)
+      - Sat Jan 11 2020 01:16:22 GMT-0500 (Eastern Standard Time)
+      - Sat Jan 11 2020 14:41:59 GMT-0500 (Eastern Standard Time)
+      - Sun Jan 12 2020 23:50:42 GMT-0500 (Eastern Standard Time)
+      - Mon Jan 13 2020 19:51:12 GMT-0500 (Eastern Standard Time)
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 600
+    sample_values:
+      - Tue Dec 31 2019 19:00:00 GMT-0500 (Eastern Standard Time)
+      - Fri Jan 03 2020 19:00:00 GMT-0500 (Eastern Standard Time)
+      - Mon Jan 06 2020 19:00:00 GMT-0500 (Eastern Standard Time)
+      - Thu Jan 09 2020 19:00:00 GMT-0500 (Eastern Standard Time)
+      - Sun Jan 12 2020 19:00:00 GMT-0500 (Eastern Standard Time)
+      - Wed Jan 15 2020 19:00:00 GMT-0500 (Eastern Standard Time)
+      - Sat Jan 18 2020 19:00:00 GMT-0500 (Eastern Standard Time)
+      - Tue Jan 21 2020 19:00:00 GMT-0500 (Eastern Standard Time)
+  - name: amount_cents_bucket
+    sql: |-
+      CASE
+        WHEN amount_cents < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY amount_cents) FROM invoices) THEN 'Low'
+        WHEN amount_cents < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY amount_cents) FROM invoices) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: amount cents bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: period_start_year
+    sql: EXTRACT(YEAR FROM period_start)
+    type: number
+    description: Year extracted from period_start
+    virtual: true
+  - name: period_start_month
+    sql: TO_CHAR(period_start, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from period_start
+    virtual: true
+  - name: period_end_year
+    sql: EXTRACT(YEAR FROM period_end)
+    type: number
+    description: Year extracted from period_end
+    virtual: true
+  - name: period_end_month
+    sql: TO_CHAR(period_end, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from period_end
+    virtual: true
+  - name: due_date_year
+    sql: EXTRACT(YEAR FROM due_date)
+    type: number
+    description: Year extracted from due_date
+    virtual: true
+  - name: due_date_month
+    sql: TO_CHAR(due_date, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from due_date
+    virtual: true
+  - name: paid_at_year
+    sql: EXTRACT(YEAR FROM paid_at)
+    type: number
+    description: Year extracted from paid_at
+    virtual: true
+  - name: paid_at_month
+    sql: TO_CHAR(paid_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from paid_at
+    virtual: true
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: invoice_count
+    sql: id
+    type: count_distinct
+  - name: total_amount_cents
+    sql: amount_cents
+    type: sum
+    description: Sum of amount cents
+  - name: avg_amount_cents
+    sql: amount_cents
+    type: avg
+    description: Average amount cents
+joins:
+  - target_entity: Organizations
+    relationship: many_to_one
+    join_columns:
+      from: organization_id
+      to: id
+    description: Each invoice belongs to one organization
+  - target_entity: Subscriptions
+    relationship: many_to_one
+    join_columns:
+      from: subscription_id
+      to: id
+    description: Each invoice belongs to one subscription
+use_cases:
+  - Use for segmentation analysis by status
+  - Use for aggregation and trends on amount_cents
+  - Use for time-series analysis using period_start, period_end, due_date, paid_at, created_at
+  - Join with organizations, subscriptions for cross-entity analysis
+  - Avoid for row-level invoice_line_items queries — use those entities directly
+query_patterns:
+  - description: Invoices by status
+    sql: |-
+      SELECT status, COUNT(*) as count
+      FROM invoices
+      GROUP BY status
+      ORDER BY count DESC
+  - description: Total amount_cents by status
+    sql: |-
+      SELECT status, SUM(amount_cents) as total_amount_cents, COUNT(*) as count
+      FROM invoices
+      GROUP BY status
+      ORDER BY total_amount_cents DESC

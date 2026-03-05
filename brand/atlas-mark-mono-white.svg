@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" fill="none">
+  <!-- Atlas Prism Mark — Monochrome White -->
+  <path d="M128 24 L232 208 L24 208 Z" stroke="#fff" stroke-width="5" fill="none" stroke-linejoin="round"/>
+  <line x1="128" y1="24" x2="76" y2="208" stroke="#fff" stroke-width="2.5" opacity="0.2"/>
+  <line x1="128" y1="24" x2="128" y2="208" stroke="#fff" stroke-width="2.5" opacity="0.35"/>
+  <line x1="128" y1="24" x2="180" y2="208" stroke="#fff" stroke-width="2.5" opacity="0.2"/>
+  <circle cx="128" cy="24" r="7" fill="#fff"/>
+  <circle cx="76" cy="208" r="4" fill="#fff" opacity="0.4"/>
+  <circle cx="128" cy="208" r="4.5" fill="#fff" opacity="0.6"/>
+  <circle cx="180" cy="208" r="4" fill="#fff" opacity="0.4"/>
+</svg>

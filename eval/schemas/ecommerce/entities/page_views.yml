@@ -1,0 +1,135 @@
+name: PageViews
+type: fact_table
+table: page_views
+grain: one row per page view record
+description: Auto-profiled schema for page_views (20,000 rows). Contains 7 columns, linked to customers.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 20000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: customer_id
+    sql: customer_id
+    type: number
+    unique_count: 6252
+    null_count: 7862
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+    profiler_notes:
+      - Likely FK to customers.id (inferred from column name, no constraint exists)
+  - name: session_id
+    sql: session_id
+    type: string
+    unique_count: 20000
+    sample_values:
+      - sess_000428f9b8da09fdfc912c108592c558
+      - sess_0009ba5b44075b05847eb6beb8ce8fcd
+      - sess_0009e3d45c52789cfe902b5f42205f8e
+      - sess_001974940dd0a0a663e88c851d0b3295
+      - sess_001c71e3fc54c5541b6caa8b8262da78
+      - sess_001d5f3cdb0c8dd5a691bff7442413f3
+      - sess_001deef6a5f2d3b28b67df8ac7897173
+      - sess_00239fff503bf45a5063fc003e893581
+  - name: page_url
+    sql: page_url
+    type: string
+    unique_count: 672
+    sample_values:
+      - /
+      - /about
+      - /account
+      - /account/orders
+      - /cart
+      - /checkout
+      - /collections/bath
+      - /collections/bedding
+  - name: referrer
+    sql: referrer
+    type: string
+    unique_count: 5
+    null_count: 7476
+    sample_values:
+      - https://facebook.com
+      - https://google.com
+      - https://instagram.com
+      - https://pinterest.com
+      - https://tiktok.com
+  - name: device_type
+    sql: device_type
+    type: string
+    unique_count: 3
+    sample_values:
+      - desktop
+      - mobile
+      - tablet
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 20000
+    sample_values:
+      - Sat Jan 09 2021 11:41:30 GMT-0500 (Eastern Standard Time)
+      - Mon Feb 15 2021 08:26:42 GMT-0500 (Eastern Standard Time)
+      - Mon Mar 29 2021 04:23:44 GMT-0400 (Eastern Daylight Time)
+      - Fri Apr 02 2021 14:08:13 GMT-0400 (Eastern Daylight Time)
+      - Sat Apr 03 2021 10:09:12 GMT-0400 (Eastern Daylight Time)
+      - Sun Apr 04 2021 20:58:07 GMT-0400 (Eastern Daylight Time)
+      - Mon Apr 05 2021 18:28:37 GMT-0400 (Eastern Daylight Time)
+      - Tue Apr 06 2021 18:51:48 GMT-0400 (Eastern Daylight Time)
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: page_view_count
+    sql: id
+    type: count_distinct
+joins:
+  - target_entity: Customers
+    relationship: many_to_one
+    join_columns:
+      from: customer_id
+      to: id
+    inferred: true
+    note: No FK constraint exists — inferred from column name customer_id
+    description: Each page_view likely belongs to one customer
+use_cases:
+  - Use for segmentation analysis by referrer, device_type
+  - Use for time-series analysis using created_at
+  - Join with customers for cross-entity analysis
+query_patterns:
+  - description: PageViews by referrer
+    sql: |-
+      SELECT referrer, COUNT(*) as count
+      FROM page_views
+      GROUP BY referrer
+      ORDER BY count DESC
+  - description: PageViews by device_type
+    sql: |-
+      SELECT device_type, COUNT(*) as count
+      FROM page_views
+      GROUP BY device_type
+      ORDER BY count DESC

@@ -1,0 +1,134 @@
+name: NotificationsBackup
+type: fact_table
+table: notifications_backup
+grain: one row per notifications backup record
+description: >-
+  Auto-profiled schema for notifications_backup (8,000 rows). Contains 7 columns. POSSIBLY ABANDONED — name matches
+  legacy/temp pattern and no tables reference it.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 8000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: recipient_id
+    sql: recipient_id
+    type: number
+    unique_count: 1494
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: notification_type
+    sql: notification_type
+    type: string
+    unique_count: 4
+    sample_values:
+      - email
+      - in_app
+      - push
+      - sms
+  - name: subject
+    sql: subject
+    type: string
+    unique_count: 8
+    sample_values:
+      - Account Activity
+      - Action Required
+      - Compliance Reminder
+      - New Incident
+      - Scan Complete
+      - Security Alert
+      - System Update
+      - Weekly Report
+  - name: body
+    sql: body
+    type: string
+    unique_count: 1
+    sample_values:
+      - This is a legacy notification from the old notification system.
+  - name: sent_at
+    sql: sent_at
+    type: date
+    unique_count: 8000
+    sample_values:
+      - Thu Dec 31 2020 19:08:11 GMT-0500 (Eastern Standard Time)
+      - Thu Dec 31 2020 21:11:37 GMT-0500 (Eastern Standard Time)
+      - Thu Dec 31 2020 21:33:23 GMT-0500 (Eastern Standard Time)
+      - Thu Dec 31 2020 22:44:24 GMT-0500 (Eastern Standard Time)
+      - Fri Jan 01 2021 03:29:45 GMT-0500 (Eastern Standard Time)
+      - Fri Jan 01 2021 07:06:00 GMT-0500 (Eastern Standard Time)
+      - Fri Jan 01 2021 09:38:01 GMT-0500 (Eastern Standard Time)
+      - Fri Jan 01 2021 09:41:50 GMT-0500 (Eastern Standard Time)
+  - name: read_at
+    sql: read_at
+    type: date
+    unique_count: 4027
+    null_count: 3973
+    sample_values:
+      - Thu Dec 31 2020 19:40:01 GMT-0500 (Eastern Standard Time)
+      - Thu Dec 31 2020 23:23:50 GMT-0500 (Eastern Standard Time)
+      - Fri Jan 01 2021 08:22:11 GMT-0500 (Eastern Standard Time)
+      - Fri Jan 01 2021 12:43:13 GMT-0500 (Eastern Standard Time)
+      - Fri Jan 01 2021 15:41:13 GMT-0500 (Eastern Standard Time)
+      - Sat Jan 02 2021 03:25:27 GMT-0500 (Eastern Standard Time)
+      - Sat Jan 02 2021 11:56:58 GMT-0500 (Eastern Standard Time)
+      - Sat Jan 02 2021 23:40:55 GMT-0500 (Eastern Standard Time)
+  - name: sent_at_year
+    sql: EXTRACT(YEAR FROM sent_at)
+    type: number
+    description: Year extracted from sent_at
+    virtual: true
+  - name: sent_at_month
+    sql: TO_CHAR(sent_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from sent_at
+    virtual: true
+  - name: read_at_year
+    sql: EXTRACT(YEAR FROM read_at)
+    type: number
+    description: Year extracted from read_at
+    virtual: true
+  - name: read_at_month
+    sql: TO_CHAR(read_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from read_at
+    virtual: true
+measures:
+  - name: notifications_backup_count
+    sql: id
+    type: count_distinct
+use_cases:
+  - 'WARNING: This table appears to be abandoned/legacy. Verify with the user before querying'
+  - Use for segmentation analysis by notification_type, subject, body
+  - Use for time-series analysis using sent_at, read_at
+query_patterns:
+  - description: NotificationsBackup by notification_type
+    sql: |-
+      SELECT notification_type, COUNT(*) as count
+      FROM notifications_backup
+      GROUP BY notification_type
+      ORDER BY count DESC
+  - description: NotificationsBackup by subject
+    sql: |-
+      SELECT subject, COUNT(*) as count
+      FROM notifications_backup
+      GROUP BY subject
+      ORDER BY count DESC
+profiler_notes:
+  - 'Possibly abandoned: name matches legacy/temp pattern and no other tables reference it'

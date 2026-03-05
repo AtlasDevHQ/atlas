@@ -1,0 +1,35 @@
+{
+  "source": [
+    "package.json",
+    "packages/*/package.json",
+    "apps/*/package.json",
+    "examples/nextjs-standalone/package.json",
+    "plugins/*/package.json",
+    "create-atlas/templates/*/package.json"
+  ],
+  "versionGroups": [
+    {
+      "label": "Workspace packages use workspace: protocol",
+      "dependencies": ["@atlas/**", "@useatlas/**"],
+      "dependencyTypes": ["prod", "dev"],
+      "pinVersion": "workspace:*"
+    },
+    {
+      "label": "Plugin peer deps use wide ranges for compatibility",
+      "packages": ["@useatlas/plugin-sdk", "@atlas/plugin-clickhouse-datasource", "@atlas/plugin-jira-action"],
+      "dependencyTypes": ["peer"],
+      "isIgnored": true
+    },
+    {
+      "label": "Templates and examples use loose ranges for framework deps",
+      "dependencies": ["react", "react-dom", "better-auth"],
+      "packages": [
+        "%PROJECT_NAME%",
+        "@atlas/web",
+        "@atlas/nextjs-standalone",
+        "@atlas/www"
+      ],
+      "isIgnored": true
+    }
+  ]
+}

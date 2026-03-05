@@ -1,0 +1,71 @@
+name: ShippingCarriers
+type: fact_table
+table: shipping_carriers
+grain: one row per shipping carrier record
+description: Auto-profiled schema for shipping_carriers (8 rows). Contains 5 columns.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 8
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: name
+    sql: name
+    type: string
+    unique_count: 8
+    sample_values:
+      - Amazon Logistics
+      - DHL
+      - FedEx
+      - LaserShip
+      - OnTrac
+      - UPS
+      - USPS
+      - Veho
+  - name: code
+    sql: code
+    type: string
+    unique_count: 8
+    sample_values:
+      - AMZL
+      - DHL
+      - FEDEX
+      - LASER
+      - ONTRC
+      - UPS
+      - USPS
+      - VEHO
+  - name: tracking_url_template
+    sql: tracking_url_template
+    type: string
+    unique_count: 5
+    null_count: 3
+    sample_values:
+      - https://tools.usps.com/go/TrackConfirmAction?tLabels={tracking}
+      - https://www.dhl.com/us-en/home/tracking.html?tracking-id={tracking}
+      - https://www.fedex.com/fedextrack/?tracknumbers={tracking}
+      - https://www.ontrac.com/tracking.asp?tracking={tracking}
+      - https://www.ups.com/track?tracknum={tracking}
+  - name: is_active
+    sql: is_active
+    type: boolean
+    unique_count: 2
+    sample_values:
+      - 'false'
+      - 'true'
+measures:
+  - name: shipping_carrier_count
+    sql: id
+    type: count_distinct
+use_cases:
+  - Use for querying shipping_carriers data

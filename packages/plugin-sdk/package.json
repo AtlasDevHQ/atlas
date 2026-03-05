@@ -1,0 +1,69 @@
+{
+  "name": "@useatlas/plugin-sdk",
+  "version": "0.0.1",
+  "description": "Type definitions and helpers for authoring Atlas plugins",
+  "type": "module",
+  "scripts": {
+    "build": "rm -rf dist && bun build src/index.ts src/types.ts src/helpers.ts src/ai.ts src/hono.ts --outdir dist --target node --packages external && npx tsc -p tsconfig.build.json",
+    "prepublishOnly": "bun run build",
+    "test": "bun test src/__tests__/types.test.ts && bun test src/__tests__/infer.test.ts"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./types": {
+      "types": "./dist/types.d.ts",
+      "import": "./dist/types.js",
+      "default": "./dist/types.js"
+    },
+    "./helpers": {
+      "types": "./dist/helpers.d.ts",
+      "import": "./dist/helpers.js",
+      "default": "./dist/helpers.js"
+    },
+    "./ai": {
+      "types": "./dist/ai.d.ts",
+      "import": "./dist/ai.js",
+      "default": "./dist/ai.js"
+    },
+    "./hono": {
+      "types": "./dist/hono.d.ts",
+      "import": "./dist/hono.js",
+      "default": "./dist/hono.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist/"
+  ],
+  "keywords": [
+    "atlas",
+    "text-to-sql",
+    "plugin",
+    "sdk",
+    "typescript"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AtlasDevHQ/atlas",
+    "directory": "packages/plugin-sdk"
+  },
+  "homepage": "https://useatlas.dev",
+  "bugs": {
+    "url": "https://github.com/AtlasDevHQ/atlas/issues"
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "ai": "^6.0.0",
+    "hono": "^4.0.0"
+  },
+  "devDependencies": {
+    "ai": "^6.0.97",
+    "hono": "^4.12.3",
+    "zod": "^4.3.6"
+  }
+}

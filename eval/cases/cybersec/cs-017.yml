@@ -1,0 +1,19 @@
+id: "cs-017"
+question: "What is the average time between vulnerability detection and resolution, by asset criticality?"
+schema: cybersec
+difficulty: complex
+category: join
+tags: [vulnerability_instances, assets, mttr, criticality]
+gold_sql: |
+  SELECT
+    a.criticality,
+    COUNT(*) AS resolved_count,
+    ROUND(AVG(EXTRACT(EPOCH FROM (vi.resolved_at - vi.first_detected_at)) / 86400)::numeric, 1) AS avg_days_to_resolve,
+    ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (vi.resolved_at - vi.first_detected_at)) / 86400)::numeric, 1) AS median_days_to_resolve
+  FROM vulnerability_instances vi
+  JOIN assets a ON vi.asset_id = a.id
+  WHERE vi.resolved_at IS NOT NULL
+  GROUP BY a.criticality
+  ORDER BY avg_days_to_resolve DESC
+expected_rows: null
+notes: "Tests PERCENTILE_CONT for median calculation and EXTRACT for time duration by asset priority"

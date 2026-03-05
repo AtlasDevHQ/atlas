@@ -1,0 +1,22 @@
+id: "ec-006"
+question: "What is the email campaign open rate and click-through rate?"
+schema: ecommerce
+difficulty: medium
+category: join
+tags: [email_campaigns, email_sends, open-rate, ctr]
+gold_sql: |
+  SELECT
+    ec.name AS campaign_name,
+    ec.subject,
+    COUNT(es.id) AS total_sends,
+    COUNT(es.opened_at) AS opens,
+    COUNT(es.clicked_at) AS clicks,
+    ROUND(COUNT(es.opened_at)::numeric / NULLIF(COUNT(es.id), 0) * 100, 1) AS open_rate_pct,
+    ROUND(COUNT(es.clicked_at)::numeric / NULLIF(COUNT(es.opened_at), 0) * 100, 1) AS click_through_rate_pct
+  FROM email_campaigns ec
+  JOIN email_sends es ON es.campaign_id = ec.id
+  WHERE ec.status = 'sent'
+  GROUP BY ec.name, ec.subject
+  ORDER BY open_rate_pct DESC
+expected_rows: null
+notes: "Tests ratio calculations with NULLIF for marketing funnel metrics"

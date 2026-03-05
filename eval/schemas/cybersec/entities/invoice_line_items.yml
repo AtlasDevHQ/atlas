@@ -1,0 +1,162 @@
+name: InvoiceLineItems
+type: fact_table
+table: invoice_line_items
+grain: one row per invoice line item record
+description: Auto-profiled schema for invoice_line_items (8,000 rows). Contains 6 columns, linked to invoices, subscriptions.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 8000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: invoice_id
+    sql: invoice_id
+    type: number
+    description: Foreign key to invoices
+    unique_count: 2791
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: subscription_id
+    sql: subscription_id
+    type: number
+    unique_count: 250
+    null_count: 790
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+    profiler_notes:
+      - Likely FK to subscriptions.id (inferred from column name, no constraint exists)
+  - name: description
+    sql: description
+    type: string
+    unique_count: 8
+    sample_values:
+      - API call overage
+      - Asset overage
+      - Compliance module
+      - Extended retention
+      - Platform subscription
+      - Premium support
+      - SSO add-on
+      - Threat intel add-on
+  - name: amount_cents
+    sql: amount_cents
+    type: number
+    unique_count: 7
+    sample_values:
+      - '500'
+      - '1900'
+      - '2500'
+      - '2900'
+      - '4900'
+      - '9900'
+      - '14900'
+  - name: quantity
+    sql: quantity
+    type: number
+    unique_count: 1
+    sample_values:
+      - '1'
+  - name: amount_cents_bucket
+    sql: |-
+      CASE
+        WHEN amount_cents < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY amount_cents) FROM invoice_line_items) THEN 'Low'
+        WHEN amount_cents < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY amount_cents) FROM invoice_line_items) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: amount cents bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: quantity_bucket
+    sql: |-
+      CASE
+        WHEN quantity < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY quantity) FROM invoice_line_items) THEN 'Low'
+        WHEN quantity < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY quantity) FROM invoice_line_items) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: quantity bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+measures:
+  - name: invoice_line_item_count
+    sql: id
+    type: count_distinct
+  - name: total_amount_cents
+    sql: amount_cents
+    type: sum
+    description: Sum of amount cents
+  - name: avg_amount_cents
+    sql: amount_cents
+    type: avg
+    description: Average amount cents
+  - name: total_quantity
+    sql: quantity
+    type: sum
+    description: Sum of quantity
+  - name: avg_quantity
+    sql: quantity
+    type: avg
+    description: Average quantity
+joins:
+  - target_entity: Invoices
+    relationship: many_to_one
+    join_columns:
+      from: invoice_id
+      to: id
+    description: Each invoice_line_item belongs to one invoice
+  - target_entity: Subscriptions
+    relationship: many_to_one
+    join_columns:
+      from: subscription_id
+      to: id
+    inferred: true
+    note: No FK constraint exists — inferred from column name subscription_id
+    description: Each invoice_line_item likely belongs to one subscription
+use_cases:
+  - Use for segmentation analysis by description
+  - Use for aggregation and trends on amount_cents, quantity
+  - Join with invoices, subscriptions for cross-entity analysis
+query_patterns:
+  - description: InvoiceLineItems by description
+    sql: |-
+      SELECT description, COUNT(*) as count
+      FROM invoice_line_items
+      GROUP BY description
+      ORDER BY count DESC
+  - description: Total amount_cents by description
+    sql: |-
+      SELECT description, SUM(amount_cents) as total_amount_cents, COUNT(*) as count
+      FROM invoice_line_items
+      GROUP BY description
+      ORDER BY total_amount_cents DESC

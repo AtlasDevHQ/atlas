@@ -1,0 +1,128 @@
+name: TempAssetImport2024
+type: fact_table
+table: temp_asset_import_2024
+grain: one row per temp asset import 2024 record
+description: >-
+  Auto-profiled schema for temp_asset_import_2024 (1,200 rows). Contains 7 columns. POSSIBLY ABANDONED — name matches
+  legacy/temp pattern and no tables reference it.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 1200
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: import_hostname
+    sql: import_hostname
+    type: string
+    unique_count: 1200
+    sample_values:
+      - imported-host-1
+      - imported-host-10
+      - imported-host-100
+      - imported-host-1000
+      - imported-host-1001
+      - imported-host-1002
+      - imported-host-1003
+      - imported-host-1004
+  - name: import_ip
+    sql: import_ip
+    type: string
+    unique_count: 1191
+    sample_values:
+      - 10.0.0.113
+      - 10.0.0.154
+      - 10.0.0.162
+      - 10.0.0.169
+      - 10.0.0.241
+      - 10.0.1.12
+      - 10.0.1.154
+      - 10.0.1.155
+  - name: import_os
+    sql: import_os
+    type: string
+    unique_count: 5
+    sample_values:
+      - RHEL 9
+      - Ubuntu 22.04
+      - Windows 10
+      - Windows 11
+      - macOS 14
+  - name: import_env
+    sql: import_env
+    type: string
+    unique_count: 5
+    sample_values:
+      - ''
+      - dev
+      - prod
+      - staging
+      - unknown
+  - name: raw_csv_line
+    sql: raw_csv_line
+    type: string
+    unique_count: 1200
+    sample_values:
+      - imported-host-1,10.0.123.225,Windows,prod
+      - imported-host-10,10.0.35.129,Windows,prod
+      - imported-host-100,10.0.143.96,Windows,prod
+      - imported-host-1000,10.0.119.242,Windows,prod
+      - imported-host-1001,10.0.212.117,Windows,prod
+      - imported-host-1002,10.0.111.16,Windows,prod
+      - imported-host-1003,10.0.245.204,Windows,prod
+      - imported-host-1004,10.0.95.94,Windows,prod
+  - name: imported_at
+    sql: imported_at
+    type: date
+    unique_count: 1200
+    sample_values:
+      - Thu Mar 14 2024 20:00:08 GMT-0400 (Eastern Daylight Time)
+      - Thu Mar 14 2024 20:00:22 GMT-0400 (Eastern Daylight Time)
+      - Thu Mar 14 2024 20:00:29 GMT-0400 (Eastern Daylight Time)
+      - Thu Mar 14 2024 20:00:42 GMT-0400 (Eastern Daylight Time)
+      - Thu Mar 14 2024 20:00:52 GMT-0400 (Eastern Daylight Time)
+      - Thu Mar 14 2024 20:01:11 GMT-0400 (Eastern Daylight Time)
+      - Thu Mar 14 2024 20:01:13 GMT-0400 (Eastern Daylight Time)
+      - Thu Mar 14 2024 20:01:17 GMT-0400 (Eastern Daylight Time)
+  - name: imported_at_year
+    sql: EXTRACT(YEAR FROM imported_at)
+    type: number
+    description: Year extracted from imported_at
+    virtual: true
+  - name: imported_at_month
+    sql: TO_CHAR(imported_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from imported_at
+    virtual: true
+measures:
+  - name: temp_asset_import_2024_count
+    sql: id
+    type: count_distinct
+use_cases:
+  - 'WARNING: This table appears to be abandoned/legacy. Verify with the user before querying'
+  - Use for segmentation analysis by import_os, import_env
+  - Use for time-series analysis using imported_at
+query_patterns:
+  - description: TempAssetImport2024 by import_os
+    sql: |-
+      SELECT import_os, COUNT(*) as count
+      FROM temp_asset_import_2024
+      GROUP BY import_os
+      ORDER BY count DESC
+  - description: TempAssetImport2024 by import_env
+    sql: |-
+      SELECT import_env, COUNT(*) as count
+      FROM temp_asset_import_2024
+      GROUP BY import_env
+      ORDER BY count DESC
+profiler_notes:
+  - 'Possibly abandoned: name matches legacy/temp pattern and no other tables reference it'

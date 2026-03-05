@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" fill="none">
+  <!-- Atlas Prism Mark — Dark Background -->
+  <path d="M128 24 L232 208 L24 208 Z" stroke="url(#g)" stroke-width="5" fill="none" stroke-linejoin="round"/>
+  <line x1="128" y1="24" x2="76" y2="208" stroke="#23CE9E" stroke-width="2.5" opacity="0.25"/>
+  <line x1="128" y1="24" x2="128" y2="208" stroke="#23CE9E" stroke-width="2.5" opacity="0.45"/>
+  <line x1="128" y1="24" x2="180" y2="208" stroke="#23CE9E" stroke-width="2.5" opacity="0.25"/>
+  <line x1="58" y1="148" x2="198" y2="148" stroke="#23CE9E" stroke-width="1.5" opacity="0.12"/>
+  <line x1="41" y1="178" x2="215" y2="178" stroke="#23CE9E" stroke-width="1.5" opacity="0.08"/>
+  <circle cx="128" cy="24" r="7" fill="#23CE9E"/>
+  <circle cx="76" cy="208" r="4" fill="#23CE9E" opacity="0.45"/>
+  <circle cx="128" cy="208" r="4.5" fill="#23CE9E" opacity="0.65"/>
+  <circle cx="180" cy="208" r="4" fill="#23CE9E" opacity="0.45"/>
+  <defs>
+    <linearGradient id="g" x1="128" y1="24" x2="128" y2="208" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#23CE9E"/><stop offset="1" stop-color="#1a9b76"/>
+    </linearGradient>
+  </defs>
+</svg>

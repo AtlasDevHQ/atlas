@@ -1,0 +1,19 @@
+id: "cs-010"
+question: "Which organizations have overdue invoices and how much do they owe?"
+schema: cybersec
+difficulty: medium
+category: filter
+tags: [invoices, organizations, overdue, accounts-receivable]
+gold_sql: |
+  SELECT
+    o.name AS organization,
+    COUNT(*) AS overdue_invoices,
+    SUM(i.amount_cents) / 100.0 AS total_overdue_dollars
+  FROM invoices i
+  JOIN organizations o ON i.org_id = o.id
+  WHERE i.status = 'overdue'
+    AND i.due_date < NOW()
+  GROUP BY o.name
+  ORDER BY total_overdue_dollars DESC
+expected_rows: null
+notes: "Tests date comparison filter with aggregation for AR analysis"

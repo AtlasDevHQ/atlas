@@ -1,0 +1,89 @@
+metrics:
+  - id: seller_performance_count
+    label: Total SellerPerformance
+    description: Count of distinct seller_performance records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM seller_performance
+    aggregation: count_distinct
+  - id: total_total_orders
+    label: Total total orders
+    description: Sum of total_orders across all seller_performance.
+    type: atomic
+    source:
+      entity: SellerPerformance
+      measure: total_total_orders
+    sql: |-
+      SELECT SUM(total_orders) as total_total_orders
+      FROM seller_performance
+    aggregation: sum
+    objective: maximize
+  - id: avg_total_orders
+    label: Average total orders
+    description: Average total_orders per seller_performance.
+    type: atomic
+    sql: |-
+      SELECT AVG(total_orders) as avg_total_orders
+      FROM seller_performance
+    aggregation: avg
+  - id: total_total_revenue_cents
+    label: Total total revenue cents
+    description: Sum of total_revenue_cents across all seller_performance.
+    type: atomic
+    source:
+      entity: SellerPerformance
+      measure: total_total_revenue_cents
+    sql: |-
+      SELECT SUM(total_revenue_cents) as total_total_revenue_cents
+      FROM seller_performance
+    aggregation: sum
+    objective: maximize
+  - id: avg_total_revenue_cents
+    label: Average total revenue cents
+    description: Average total_revenue_cents per seller_performance.
+    type: atomic
+    sql: |-
+      SELECT AVG(total_revenue_cents) as avg_total_revenue_cents
+      FROM seller_performance
+    aggregation: avg
+  - id: total_return_rate
+    label: Total return rate
+    description: Sum of return_rate across all seller_performance.
+    type: atomic
+    source:
+      entity: SellerPerformance
+      measure: total_return_rate
+    sql: |-
+      SELECT SUM(return_rate) as total_return_rate
+      FROM seller_performance
+    aggregation: sum
+    objective: maximize
+  - id: avg_return_rate
+    label: Average return rate
+    description: Average return_rate per seller_performance.
+    type: atomic
+    sql: |-
+      SELECT AVG(return_rate) as avg_return_rate
+      FROM seller_performance
+    aggregation: avg
+  - id: total_avg_rating
+    label: Total avg rating
+    description: Sum of avg_rating across all seller_performance.
+    type: atomic
+    source:
+      entity: SellerPerformance
+      measure: total_avg_rating
+    sql: |-
+      SELECT SUM(avg_rating) as total_avg_rating
+      FROM seller_performance
+    aggregation: sum
+    objective: maximize
+  - id: avg_avg_rating
+    label: Average avg rating
+    description: Average avg_rating per seller_performance.
+    type: atomic
+    sql: |-
+      SELECT AVG(avg_rating) as avg_avg_rating
+      FROM seller_performance
+    aggregation: avg

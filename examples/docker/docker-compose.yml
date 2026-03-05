@@ -1,0 +1,58 @@
+# Development: Postgres + Atlas app.
+# Run from repo root: docker compose -f examples/docker/docker-compose.yml up
+#
+# Or for just Postgres (run app natively): docker compose -f examples/docker/docker-compose.yml up postgres
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: atlas
+      POSTGRES_USER: atlas
+      POSTGRES_PASSWORD: atlas
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../../packages/cli/data/init-demo-db.sql:/docker-entrypoint-initdb.d/00-init.sql
+      - ../../packages/cli/data/demo.sql:/data/demo.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atlas"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build:
+      context: ../..
+      dockerfile: examples/docker/Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      DATABASE_URL: postgresql://atlas:atlas@postgres:5432/atlas
+      ATLAS_DATASOURCE_URL: postgresql://atlas:atlas@postgres:5432/atlas_demo
+    env_file:
+      - ../../.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # --- Optional: sandbox sidecar for Railway/Render (no kernel namespaces) ---
+  # Uncomment to run the explore tool in an isolated sidecar container.
+  # The sidecar has no secrets — only semantic/ files and bash/coreutils.
+  #
+  # sandbox-sidecar:
+  #   build:
+  #     context: ../..
+  #     dockerfile: packages/sandbox-sidecar/Dockerfile
+  #   environment:
+  #     PORT: "8080"
+  #     SEMANTIC_DIR: /semantic
+  #   expose:
+  #     - "8080"
+  #   volumes:
+  #     - ../../semantic:/semantic:ro
+  #   # Add ATLAS_SANDBOX_URL=http://sandbox-sidecar:8080 to the app service's environment
+
+volumes:
+  pgdata:

@@ -1,0 +1,38 @@
+metrics:
+  - id: accounts_count
+    label: Total Accounts
+    description: Count of distinct accounts records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM accounts
+    aggregation: count_distinct
+  - id: total_monthly_value
+    label: Total monthly value
+    description: Sum of monthly_value across all accounts.
+    type: atomic
+    source:
+      entity: Accounts
+      measure: total_monthly_value
+    sql: |-
+      SELECT SUM(monthly_value) as total_monthly_value
+      FROM accounts
+    aggregation: sum
+    objective: maximize
+  - id: avg_monthly_value
+    label: Average monthly value
+    description: Average monthly_value per account.
+    type: atomic
+    sql: |-
+      SELECT AVG(monthly_value) as avg_monthly_value
+      FROM accounts
+    aggregation: avg
+  - id: monthly_value_by_plan
+    label: monthly value by plan
+    description: monthly_value broken down by plan.
+    type: atomic
+    sql: |-
+      SELECT plan, SUM(monthly_value) as total_monthly_value, AVG(monthly_value) as avg_monthly_value, COUNT(*) as count
+      FROM accounts
+      GROUP BY plan
+      ORDER BY total_monthly_value DESC

@@ -1,0 +1,78 @@
+# E2E test services.
+# Postgres and MySQL ports are offset (+1) from standard defaults to avoid
+# conflicts with local dev. ClickHouse and Mailpit use standard ports (no
+# dev equivalents to conflict with).
+#
+# Usage:
+#   docker compose -f e2e/docker-compose.yml up -d --wait
+#   docker compose -f e2e/docker-compose.yml down -v
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: atlas_e2e
+      POSTGRES_USER: atlas
+      POSTGRES_PASSWORD: atlas
+    ports:
+      - "5433:5432"
+    volumes:
+      - e2e_pgdata:/var/lib/postgresql/data
+      - ./seeds/pg-seed.sql:/docker-entrypoint-initdb.d/01-seed.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atlas"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_DATABASE: atlas_e2e
+      MYSQL_ROOT_PASSWORD: atlas
+      MYSQL_USER: atlas
+      MYSQL_PASSWORD: atlas
+    ports:
+      - "3307:3306"
+    volumes:
+      - e2e_mydata:/var/lib/mysql
+      - ./seeds/mysql-seed.sql:/docker-entrypoint-initdb.d/01-seed.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-patlas"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24-alpine
+    environment:
+      CLICKHOUSE_DB: atlas_e2e
+      CLICKHOUSE_USER: atlas
+      CLICKHOUSE_PASSWORD: atlas
+    ports:
+      - "8124:8123"
+      - "9001:9000"
+    volumes:
+      - e2e_chdata:/var/lib/clickhouse
+      - ./seeds/clickhouse-seed.sql:/docker-entrypoint-initdb.d/01-seed.sql
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8123/ping || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # Web UI
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8025/api/v1/info || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  e2e_pgdata:
+  e2e_mydata:
+  e2e_chdata:

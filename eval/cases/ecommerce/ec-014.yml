@@ -1,0 +1,36 @@
+id: "ec-014"
+question: "Identify customers who are likely to churn — placed orders in the first 3 months but not in the last 3 months"
+schema: ecommerce
+difficulty: complex
+category: subquery
+tags: [customers, orders, churn, at-risk]
+gold_sql: |
+  WITH customer_activity AS (
+    SELECT
+      c.id AS customer_id,
+      c.full_name,
+      c.email,
+      MIN(o.placed_at) AS first_order_at,
+      MAX(o.placed_at) AS last_order_at,
+      COUNT(o.id) AS total_orders,
+      SUM(o.total_cents) / 100.0 AS lifetime_value
+    FROM customers c
+    JOIN orders o ON o.customer_id = c.id
+    WHERE o.status NOT IN ('cancelled', 'refunded')
+    GROUP BY c.id, c.full_name, c.email
+  )
+  SELECT
+    customer_id,
+    full_name,
+    email,
+    first_order_at,
+    last_order_at,
+    total_orders,
+    lifetime_value,
+    EXTRACT(DAY FROM NOW() - last_order_at)::int AS days_since_last_order
+  FROM customer_activity
+  WHERE first_order_at <= NOW() - INTERVAL '3 months'
+    AND last_order_at < NOW() - INTERVAL '3 months'
+  ORDER BY lifetime_value DESC
+expected_rows: null
+notes: "Tests CTE with date interval logic for churn risk identification based on recency"

@@ -1,0 +1,19 @@
+{
+  "name": "@atlas/plugin-slack-interaction",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "test": "bun test __tests__/plugin.test.ts"
+  },
+  "dependencies": {
+    "@useatlas/plugin-sdk": "workspace:*"
+  },
+  "peerDependencies": {
+    "hono": "^4.12.3",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "hono": "^4.12.3",
+    "zod": "^4.3.6"
+  }
+}

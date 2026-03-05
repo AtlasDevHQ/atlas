@@ -1,0 +1,111 @@
+/**
+ * Better Auth table migration — runs once at server boot.
+ *
+ * Extracted from validateEnvironment() so the startup diagnostics
+ * function stays pure (diagnose-only, never mutate). The Hono server
+ * entry point (server.ts) calls migrateAuthTables() once on startup.
+ */
+
+import { detectAuthMode } from "@atlas/api/lib/auth/detect";
+import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { createLogger } from "@atlas/api/lib/logger";
+
+const log = createLogger("auth-migrate");
+
+let _migrated = false;
+let _migrationError: string | null = null;
+
+/** Return the last migration error message, or null if migrations succeeded (or haven't run). */
+export function getMigrationError(): string | null {
+  return _migrationError;
+}
+
+/**
+ * Run Better Auth table migrations (user, session, account, etc.)
+ * if managed auth mode is active and DATABASE_URL is configured.
+ *
+ * Safe to call multiple times — only runs once (idempotent guard).
+ * Also runs the internal DB migration (audit_log table).
+ */
+export async function migrateAuthTables(): Promise<void> {
+  if (_migrated) return;
+
+  // Internal DB migration (audit_log) — runs regardless of auth mode
+  if (hasInternalDB()) {
+    try {
+      const { migrateInternalDB } = await import("@atlas/api/lib/db/internal");
+      await migrateInternalDB();
+    } catch (err) {
+      log.error({ err }, "Internal DB migration failed");
+      _migrationError = "Connected to the internal database but migration failed. Check database permissions (CREATE TABLE, CREATE INDEX).";
+      // Don't block server start — audit will fall back to pino-only
+    }
+  }
+
+  // Better Auth migration — only in managed mode
+  const authMode = detectAuthMode();
+  if (authMode !== "managed") {
+    _migrated = true;
+    return;
+  }
+
+  if (!hasInternalDB()) {
+    log.error(
+      "Managed auth mode requires DATABASE_URL for session storage. Skipping auth migration.",
+    );
+    _migrated = true;
+    return;
+  }
+
+  try {
+    const { getAuthInstance } = await import("@atlas/api/lib/auth/server");
+    const auth = getAuthInstance();
+    const ctx = await auth.$context;
+    await ctx.runMigrations();
+    log.info("Better Auth migration complete");
+    await bootstrapAdminUser();
+  } catch (err) {
+    log.error({ err }, "Better Auth migration failed — managed auth may not work");
+    _migrationError = "Connected to the internal database but Better Auth migration failed. Managed auth may not work. Check database permissions (CREATE TABLE).";
+  }
+
+  _migrated = true;
+}
+
+/**
+ * Promote an existing user to admin on upgrade if ATLAS_ADMIN_EMAIL is set
+ * and no admin exists yet. Handles the case where users were created before
+ * the admin plugin added the `role` column.
+ */
+async function bootstrapAdminUser(): Promise<void> {
+  const adminEmail = process.env.ATLAS_ADMIN_EMAIL?.toLowerCase().trim();
+  if (!adminEmail) return;
+
+  try {
+    const existing = await internalQuery<{ count: string }>(
+      `SELECT COUNT(*) as count FROM "user" WHERE role = 'admin'`,
+    );
+    if (parseInt(String(existing[0]?.count ?? "0"), 10) > 0) {
+      log.debug("Bootstrap: admin user already exists — skipping promotion");
+      return;
+    }
+
+    const result = await internalQuery<{ id: string; email: string }>(
+      `UPDATE "user" SET role = 'admin' WHERE LOWER(email) = $1 RETURNING id, email`,
+      [adminEmail],
+    );
+    if (result.length > 0) {
+      log.info({ email: result[0].email, id: result[0].id }, "Bootstrap: existing user promoted to admin via ATLAS_ADMIN_EMAIL");
+    } else {
+      log.warn({ adminEmail }, "Bootstrap: ATLAS_ADMIN_EMAIL is set but no user with that email exists yet — role will be assigned on first signup");
+    }
+  } catch (err) {
+    log.error({ err }, "Bootstrap admin promotion failed — admin console may be inaccessible");
+  }
+}
+
+/** Reset migration state. For testing only. */
+export function resetMigrationState(): void {
+  _migrated = false;
+  _migrationError = null;
+}

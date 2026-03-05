@@ -1,0 +1,18 @@
+id: "sp-011"
+question: "For each country, what is the average company valuation and how does it compare to the overall average?"
+schema: simple
+difficulty: complex
+category: window
+tags: [companies, valuation, country, comparison]
+gold_sql: |
+  SELECT
+    country,
+    COUNT(*) AS company_count,
+    ROUND(AVG(valuation)::numeric, 2) AS avg_valuation,
+    ROUND(AVG(valuation) OVER ()::numeric, 2) AS overall_avg_valuation,
+    ROUND((AVG(valuation) - AVG(valuation) OVER ())::numeric, 2) AS diff_from_avg
+  FROM companies
+  GROUP BY country
+  ORDER BY avg_valuation DESC
+expected_rows: null
+notes: "Tests window function over grouped results to compare per-group vs overall averages"

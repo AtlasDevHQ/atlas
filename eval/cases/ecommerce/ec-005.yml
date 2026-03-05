@@ -1,0 +1,18 @@
+id: "ec-005"
+question: "What is the average product rating by category?"
+schema: ecommerce
+difficulty: simple
+category: join
+tags: [product_reviews, products, categories, rating]
+gold_sql: |
+  SELECT
+    cat.name AS category_name,
+    COUNT(pr.id) AS review_count,
+    ROUND(AVG(pr.rating)::numeric, 2) AS avg_rating
+  FROM product_reviews pr
+  JOIN products p ON pr.product_id = p.id
+  JOIN categories cat ON p.category_id = cat.id
+  GROUP BY cat.name
+  ORDER BY avg_rating DESC
+expected_rows: null
+notes: "Tests multi-table JOIN for product review aggregation"

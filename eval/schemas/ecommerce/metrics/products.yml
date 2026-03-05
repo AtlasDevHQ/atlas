@@ -1,0 +1,67 @@
+metrics:
+  - id: products_count
+    label: Total Products
+    description: Count of distinct products records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM products
+    aggregation: count_distinct
+  - id: total_price
+    label: Total price
+    description: Sum of price across all products.
+    type: atomic
+    source:
+      entity: Products
+      measure: total_price
+    sql: |-
+      SELECT SUM(price) as total_price
+      FROM products
+    aggregation: sum
+    objective: maximize
+  - id: avg_price
+    label: Average price
+    description: Average price per product.
+    type: atomic
+    sql: |-
+      SELECT AVG(price) as avg_price
+      FROM products
+    aggregation: avg
+  - id: price_by_status
+    label: price by status
+    description: price broken down by status.
+    type: atomic
+    sql: |-
+      SELECT status, SUM(price) as total_price, AVG(price) as avg_price, COUNT(*) as count
+      FROM products
+      GROUP BY status
+      ORDER BY total_price DESC
+  - id: total_price_cents
+    label: Total price cents
+    description: Sum of price_cents across all products.
+    type: atomic
+    source:
+      entity: Products
+      measure: total_price_cents
+    sql: |-
+      SELECT SUM(price_cents) as total_price_cents
+      FROM products
+    aggregation: sum
+    objective: maximize
+  - id: avg_price_cents
+    label: Average price cents
+    description: Average price_cents per product.
+    type: atomic
+    sql: |-
+      SELECT AVG(price_cents) as avg_price_cents
+      FROM products
+    aggregation: avg
+  - id: price_cents_by_status
+    label: price cents by status
+    description: price_cents broken down by status.
+    type: atomic
+    sql: |-
+      SELECT status, SUM(price_cents) as total_price_cents, AVG(price_cents) as avg_price_cents, COUNT(*) as count
+      FROM products
+      GROUP BY status
+      ORDER BY total_price_cents DESC

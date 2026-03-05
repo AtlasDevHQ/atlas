@@ -1,0 +1,75 @@
+metrics:
+  - id: gift_cards_count
+    label: Total GiftCards
+    description: Count of distinct gift_cards records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM gift_cards
+    aggregation: count_distinct
+  - id: total_initial_cents
+    label: Total initial cents
+    description: Sum of initial_cents across all gift_cards.
+    type: atomic
+    source:
+      entity: GiftCards
+      measure: total_initial_cents
+    sql: |-
+      SELECT SUM(initial_cents) as total_initial_cents
+      FROM gift_cards
+    aggregation: sum
+    objective: maximize
+  - id: avg_initial_cents
+    label: Average initial cents
+    description: Average initial_cents per gift_card.
+    type: atomic
+    sql: |-
+      SELECT AVG(initial_cents) as avg_initial_cents
+      FROM gift_cards
+    aggregation: avg
+  - id: initial_cents_by_status
+    label: initial cents by status
+    description: initial_cents broken down by status.
+    type: atomic
+    sql: >-
+      SELECT status, SUM(initial_cents) as total_initial_cents, AVG(initial_cents) as avg_initial_cents, COUNT(*) as
+      count
+
+      FROM gift_cards
+
+      GROUP BY status
+
+      ORDER BY total_initial_cents DESC
+  - id: total_balance_cents
+    label: Total balance cents
+    description: Sum of balance_cents across all gift_cards.
+    type: atomic
+    source:
+      entity: GiftCards
+      measure: total_balance_cents
+    sql: |-
+      SELECT SUM(balance_cents) as total_balance_cents
+      FROM gift_cards
+    aggregation: sum
+    objective: maximize
+  - id: avg_balance_cents
+    label: Average balance cents
+    description: Average balance_cents per gift_card.
+    type: atomic
+    sql: |-
+      SELECT AVG(balance_cents) as avg_balance_cents
+      FROM gift_cards
+    aggregation: avg
+  - id: balance_cents_by_status
+    label: balance cents by status
+    description: balance_cents broken down by status.
+    type: atomic
+    sql: >-
+      SELECT status, SUM(balance_cents) as total_balance_cents, AVG(balance_cents) as avg_balance_cents, COUNT(*) as
+      count
+
+      FROM gift_cards
+
+      GROUP BY status
+
+      ORDER BY total_balance_cents DESC

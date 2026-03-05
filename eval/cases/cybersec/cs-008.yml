@@ -1,0 +1,18 @@
+id: "cs-008"
+question: "Show the monthly trend of new vulnerabilities discovered over the past year"
+schema: cybersec
+difficulty: medium
+category: timeseries
+tags: [vulnerabilities, monthly, trend]
+gold_sql: |
+  SELECT
+    DATE_TRUNC('month', published_at)::date AS month,
+    COUNT(*) AS new_vulnerabilities,
+    COUNT(*) FILTER (WHERE severity = 'critical') AS critical_count,
+    COUNT(*) FILTER (WHERE severity = 'high') AS high_count
+  FROM vulnerabilities
+  WHERE published_at >= NOW() - INTERVAL '12 months'
+  GROUP BY month
+  ORDER BY month
+expected_rows: null
+notes: "Tests DATE_TRUNC for time-series grouping with FILTER aggregation"

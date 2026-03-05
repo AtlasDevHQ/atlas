@@ -1,0 +1,151 @@
+name: GiftCardTransactions
+type: fact_table
+table: gift_card_transactions
+grain: one row per gift card transaction record
+description: Auto-profiled schema for gift_card_transactions (1,200 rows). Contains 6 columns, linked to gift_cards, orders.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 1200
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: gift_card_id
+    sql: gift_card_id
+    type: number
+    description: Foreign key to gift_cards
+    unique_count: 456
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+      - '9'
+  - name: order_id
+    sql: order_id
+    type: number
+    unique_count: 782
+    null_count: 402
+    sample_values:
+      - '8'
+      - '31'
+      - '102'
+      - '112'
+      - '131'
+      - '161'
+      - '182'
+      - '305'
+    profiler_notes:
+      - Likely FK to orders.id (inferred from column name, no constraint exists)
+  - name: amount_cents
+    sql: amount_cents
+    type: number
+    unique_count: 5
+    sample_values:
+      - '1000'
+      - '2500'
+      - '3000'
+      - '5000'
+      - '7500'
+  - name: type
+    sql: type
+    type: string
+    unique_count: 3
+    sample_values:
+      - issue
+      - redeem
+      - refund
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 1200
+    sample_values:
+      - Tue Sep 01 2020 18:40:15 GMT-0400 (Eastern Daylight Time)
+      - Wed Sep 02 2020 09:09:38 GMT-0400 (Eastern Daylight Time)
+      - Wed Sep 02 2020 19:04:17 GMT-0400 (Eastern Daylight Time)
+      - Thu Sep 03 2020 01:57:58 GMT-0400 (Eastern Daylight Time)
+      - Mon Sep 07 2020 18:27:04 GMT-0400 (Eastern Daylight Time)
+      - Thu Sep 10 2020 04:11:00 GMT-0400 (Eastern Daylight Time)
+      - Thu Sep 10 2020 10:09:37 GMT-0400 (Eastern Daylight Time)
+      - Thu Sep 10 2020 11:04:07 GMT-0400 (Eastern Daylight Time)
+  - name: amount_cents_bucket
+    sql: |-
+      CASE
+        WHEN amount_cents < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY amount_cents) FROM gift_card_transactions) THEN 'Low'
+        WHEN amount_cents < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY amount_cents) FROM gift_card_transactions) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: amount cents bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: gift_card_transaction_count
+    sql: id
+    type: count_distinct
+  - name: total_amount_cents
+    sql: amount_cents
+    type: sum
+    description: Sum of amount cents
+  - name: avg_amount_cents
+    sql: amount_cents
+    type: avg
+    description: Average amount cents
+joins:
+  - target_entity: GiftCards
+    relationship: many_to_one
+    join_columns:
+      from: gift_card_id
+      to: id
+    description: Each gift_card_transaction belongs to one gift_card
+  - target_entity: Orders
+    relationship: many_to_one
+    join_columns:
+      from: order_id
+      to: id
+    inferred: true
+    note: No FK constraint exists — inferred from column name order_id
+    description: Each gift_card_transaction likely belongs to one order
+use_cases:
+  - Use for segmentation analysis by type
+  - Use for aggregation and trends on amount_cents
+  - Use for time-series analysis using created_at
+  - Join with gift_cards, orders for cross-entity analysis
+query_patterns:
+  - description: GiftCardTransactions by type
+    sql: |-
+      SELECT type, COUNT(*) as count
+      FROM gift_card_transactions
+      GROUP BY type
+      ORDER BY count DESC
+  - description: Total amount_cents by type
+    sql: |-
+      SELECT type, SUM(amount_cents) as total_amount_cents, COUNT(*) as count
+      FROM gift_card_transactions
+      GROUP BY type
+      ORDER BY total_amount_cents DESC

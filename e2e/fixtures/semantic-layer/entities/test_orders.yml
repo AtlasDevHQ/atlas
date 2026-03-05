@@ -1,0 +1,23 @@
+table: test_orders
+description: |
+  E2E test table. Each row is a customer order with amount and status.
+dimensions:
+  id:
+    type: integer
+    description: Auto-incrementing primary key
+    primary_key: true
+  customer_name:
+    type: text
+    description: Name of the customer
+    sample_values: [Alice, Bob, Charlie, Diana, Eve]
+  amount:
+    type: numeric
+    description: Order amount in dollars
+    sample_values: [150.00, 250.00, 75.50]
+  status:
+    type: text
+    description: Order status
+    sample_values: [completed, pending, cancelled]
+  created_at:
+    type: date
+    description: When the order was created

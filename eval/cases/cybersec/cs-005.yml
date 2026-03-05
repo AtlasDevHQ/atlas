@@ -1,0 +1,18 @@
+id: "cs-005"
+question: "What is the average CVSS score by vulnerability severity level?"
+schema: cybersec
+difficulty: simple
+category: aggregation
+tags: [vulnerabilities, cvss, severity]
+gold_sql: |
+  SELECT
+    severity,
+    COUNT(*) AS vuln_count,
+    ROUND(AVG(cvss_score)::numeric, 2) AS avg_cvss,
+    ROUND(MIN(cvss_score)::numeric, 2) AS min_cvss,
+    ROUND(MAX(cvss_score)::numeric, 2) AS max_cvss
+  FROM vulnerabilities
+  GROUP BY severity
+  ORDER BY avg_cvss DESC
+expected_rows: null
+notes: "Tests basic aggregation with multiple aggregate functions"

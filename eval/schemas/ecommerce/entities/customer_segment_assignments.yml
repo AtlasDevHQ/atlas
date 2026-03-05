@@ -1,0 +1,126 @@
+name: CustomerSegmentAssignments
+type: fact_table
+table: customer_segment_assignments
+grain: one row per customer segment assignment record
+description: >-
+  Auto-profiled schema for customer_segment_assignments (9,000 rows). Contains 5 columns, linked to customers,
+  customer_segments.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 9000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: customer_id
+    sql: customer_id
+    type: number
+    description: Foreign key to customers
+    unique_count: 5416
+    sample_values:
+      - '2'
+      - '3'
+      - '5'
+      - '6'
+      - '7'
+      - '9'
+      - '10'
+      - '11'
+  - name: segment_id
+    sql: segment_id
+    type: number
+    description: Foreign key to customer_segments
+    unique_count: 10
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: segment_name
+    sql: segment_name
+    type: string
+    unique_count: 17
+    sample_values:
+      - At-Risk
+      - Bargain
+      - Churned
+      - Dormant
+      - High-Value
+      - Loyal
+      - Marketplace
+      - New
+      - Regular
+      - VIP
+      - VIP Customer
+      - at-risk
+      - bargain_hunter
+      - high_value
+      - new_user
+      - regular_customer
+      - vip
+    profiler_notes:
+      - 'Case-inconsistent enum values: [At-Risk, at-risk; VIP, vip]. Consider using LOWER() for grouping'
+  - name: assigned_at
+    sql: assigned_at
+    type: date
+    unique_count: 9000
+    sample_values:
+      - Sun May 31 2020 21:53:36 GMT-0400 (Eastern Daylight Time)
+      - Mon Jun 01 2020 00:27:35 GMT-0400 (Eastern Daylight Time)
+      - Mon Jun 01 2020 01:07:38 GMT-0400 (Eastern Daylight Time)
+      - Mon Jun 01 2020 05:11:56 GMT-0400 (Eastern Daylight Time)
+      - Mon Jun 01 2020 06:55:55 GMT-0400 (Eastern Daylight Time)
+      - Mon Jun 01 2020 16:45:30 GMT-0400 (Eastern Daylight Time)
+      - Mon Jun 01 2020 18:01:17 GMT-0400 (Eastern Daylight Time)
+      - Tue Jun 02 2020 06:24:52 GMT-0400 (Eastern Daylight Time)
+  - name: assigned_at_year
+    sql: EXTRACT(YEAR FROM assigned_at)
+    type: number
+    description: Year extracted from assigned_at
+    virtual: true
+  - name: assigned_at_month
+    sql: TO_CHAR(assigned_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from assigned_at
+    virtual: true
+measures:
+  - name: customer_segment_assignment_count
+    sql: id
+    type: count_distinct
+joins:
+  - target_entity: Customers
+    relationship: many_to_one
+    join_columns:
+      from: customer_id
+      to: id
+    description: Each customer_segment_assignment belongs to one customer
+  - target_entity: CustomerSegments
+    relationship: many_to_one
+    join_columns:
+      from: segment_id
+      to: id
+    description: Each customer_segment_assignment belongs to one customer_segment
+use_cases:
+  - Use for segmentation analysis by segment_name
+  - Use for time-series analysis using assigned_at
+  - Join with customers, customer_segments for cross-entity analysis
+query_patterns:
+  - description: CustomerSegmentAssignments by segment_name
+    sql: |-
+      SELECT segment_name, COUNT(*) as count
+      FROM customer_segment_assignments
+      GROUP BY segment_name
+      ORDER BY count DESC

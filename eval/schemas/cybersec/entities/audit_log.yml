@@ -1,0 +1,187 @@
+name: AuditLog
+type: fact_table
+table: audit_log
+grain: one row per audit log record
+description: Auto-profiled schema for audit_log (25,000 rows). Contains 9 columns, linked to organizations, users.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 25000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: organization_id
+    sql: organization_id
+    type: number
+    unique_count: 200
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+    profiler_notes:
+      - Likely FK to organizations.id (inferred from column name, no constraint exists)
+  - name: user_id
+    sql: user_id
+    type: number
+    unique_count: 2000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+    profiler_notes:
+      - Likely FK to users.id (inferred from column name, no constraint exists)
+  - name: action
+    sql: action
+    type: string
+    unique_count: 15
+    sample_values:
+      - alert_acknowledge
+      - api_key_create
+      - configure
+      - create
+      - delete
+      - export
+      - incident_create
+      - invite
+      - login
+      - logout
+      - report_generate
+      - revoke
+      - role_change
+      - scan_start
+      - update
+  - name: resource_type
+    sql: resource_type
+    type: string
+    unique_count: 10
+    sample_values:
+      - alert
+      - api_key
+      - asset
+      - dashboard
+      - incident
+      - integration
+      - report
+      - scan
+      - team
+      - user
+  - name: resource_id
+    sql: resource_id
+    type: string
+    unique_count: 9184
+    sample_values:
+      - '0'
+      - '1'
+      - '10'
+      - '1000'
+      - '1001'
+      - '1002'
+      - '1003'
+      - '1004'
+  - name: details
+    sql: details
+    type: string
+    unique_count: 255
+    null_count: 17448
+    sample_values:
+      - '{"ip":"192.168.1.0"}'
+      - '{"ip":"192.168.1.1"}'
+      - '{"ip":"192.168.1.10"}'
+      - '{"ip":"192.168.1.100"}'
+      - '{"ip":"192.168.1.101"}'
+      - '{"ip":"192.168.1.102"}'
+      - '{"ip":"192.168.1.103"}'
+      - '{"ip":"192.168.1.104"}'
+  - name: ip_address
+    sql: ip_address
+    type: string
+    unique_count: 25000
+    sample_values:
+      - 1.10.213.28
+      - 1.101.67.126
+      - 1.103.187.21
+      - 1.109.32.67
+      - 1.113.77.64
+      - 1.114.91.200
+      - 1.115.155.181
+      - 1.116.168.122
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 25000
+    sample_values:
+      - Thu Feb 13 2020 11:24:46 GMT-0500 (Eastern Standard Time)
+      - Fri Mar 20 2020 00:51:49 GMT-0400 (Eastern Daylight Time)
+      - Fri Mar 27 2020 15:47:22 GMT-0400 (Eastern Daylight Time)
+      - Wed Apr 22 2020 02:52:29 GMT-0400 (Eastern Daylight Time)
+      - Wed Apr 22 2020 05:22:03 GMT-0400 (Eastern Daylight Time)
+      - Wed Apr 29 2020 23:04:49 GMT-0400 (Eastern Daylight Time)
+      - Wed May 27 2020 22:11:28 GMT-0400 (Eastern Daylight Time)
+      - Sun Jun 07 2020 03:35:40 GMT-0400 (Eastern Daylight Time)
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: audit_log_count
+    sql: id
+    type: count_distinct
+joins:
+  - target_entity: Organizations
+    relationship: many_to_one
+    join_columns:
+      from: organization_id
+      to: id
+    inferred: true
+    note: No FK constraint exists — inferred from column name organization_id
+    description: Each audit_log likely belongs to one organization
+  - target_entity: Users
+    relationship: many_to_one
+    join_columns:
+      from: user_id
+      to: id
+    inferred: true
+    note: No FK constraint exists — inferred from column name user_id
+    description: Each audit_log likely belongs to one user
+use_cases:
+  - Use for segmentation analysis by action, resource_type
+  - Use for time-series analysis using created_at
+  - Join with organizations, users for cross-entity analysis
+query_patterns:
+  - description: AuditLog by action
+    sql: |-
+      SELECT action, COUNT(*) as count
+      FROM audit_log
+      GROUP BY action
+      ORDER BY count DESC
+  - description: AuditLog by resource_type
+    sql: |-
+      SELECT resource_type, COUNT(*) as count
+      FROM audit_log
+      GROUP BY resource_type
+      ORDER BY count DESC

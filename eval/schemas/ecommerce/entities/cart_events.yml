@@ -1,0 +1,179 @@
+name: CartEvents
+type: fact_table
+table: cart_events
+grain: one row per cart event record
+description: Auto-profiled schema for cart_events (15,000 rows). Contains 8 columns, linked to customers, products.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 15000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: customer_id
+    sql: customer_id
+    type: number
+    unique_count: 5833
+    null_count: 4526
+    sample_values:
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+      - '9'
+    profiler_notes:
+      - Likely FK to customers.id (inferred from column name, no constraint exists)
+  - name: session_id
+    sql: session_id
+    type: string
+    unique_count: 15000
+    sample_values:
+      - sess_0000f25aac949be7d4a631edd3228eec
+      - sess_0005ae7e8d530d239e3c517aff619e8d
+      - sess_0006557d35c6c0391731cc251d2e6797
+      - sess_0007edef5f1ea0a196e4553e9f6c5543
+      - sess_0012c99fe019dcaff16e945d69aec88f
+      - sess_001325dc6b19119884817f2c956c503d
+      - sess_0015a6be3f03f7b53a38790ed4189fec
+      - sess_0026d5a26a23435dc94b1a7b5011b970
+  - name: event_type
+    sql: event_type
+    type: string
+    unique_count: 4
+    sample_values:
+      - abandon
+      - add
+      - remove
+      - update_qty
+  - name: product_id
+    sql: product_id
+    type: number
+    unique_count: 800
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+    profiler_notes:
+      - Likely FK to products.id (inferred from column name, no constraint exists)
+  - name: variant_id
+    sql: variant_id
+    type: number
+    unique_count: 3170
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: quantity
+    sql: quantity
+    type: number
+    unique_count: 3
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 15000
+    sample_values:
+      - Fri Mar 05 2021 01:00:29 GMT-0500 (Eastern Standard Time)
+      - Tue Mar 09 2021 02:49:11 GMT-0500 (Eastern Standard Time)
+      - Mon Apr 12 2021 12:17:18 GMT-0400 (Eastern Daylight Time)
+      - Thu Apr 15 2021 16:15:10 GMT-0400 (Eastern Daylight Time)
+      - Fri Apr 23 2021 10:41:40 GMT-0400 (Eastern Daylight Time)
+      - Wed Apr 28 2021 00:25:45 GMT-0400 (Eastern Daylight Time)
+      - Tue May 04 2021 20:50:18 GMT-0400 (Eastern Daylight Time)
+      - Wed May 05 2021 13:24:05 GMT-0400 (Eastern Daylight Time)
+  - name: quantity_bucket
+    sql: |-
+      CASE
+        WHEN quantity < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY quantity) FROM cart_events) THEN 'Low'
+        WHEN quantity < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY quantity) FROM cart_events) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: quantity bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: cart_event_count
+    sql: id
+    type: count_distinct
+  - name: total_quantity
+    sql: quantity
+    type: sum
+    description: Sum of quantity
+  - name: avg_quantity
+    sql: quantity
+    type: avg
+    description: Average quantity
+joins:
+  - target_entity: Customers
+    relationship: many_to_one
+    join_columns:
+      from: customer_id
+      to: id
+    inferred: true
+    note: No FK constraint exists — inferred from column name customer_id
+    description: Each cart_event likely belongs to one customer
+  - target_entity: Products
+    relationship: many_to_one
+    join_columns:
+      from: product_id
+      to: id
+    inferred: true
+    note: No FK constraint exists — inferred from column name product_id
+    description: Each cart_event likely belongs to one product
+use_cases:
+  - Use for segmentation analysis by event_type
+  - Use for aggregation and trends on quantity
+  - Use for time-series analysis using created_at
+  - Join with customers, products for cross-entity analysis
+query_patterns:
+  - description: CartEvents by event_type
+    sql: |-
+      SELECT event_type, COUNT(*) as count
+      FROM cart_events
+      GROUP BY event_type
+      ORDER BY count DESC
+  - description: Total quantity by event_type
+    sql: |-
+      SELECT event_type, SUM(quantity) as total_quantity, COUNT(*) as count
+      FROM cart_events
+      GROUP BY event_type
+      ORDER BY total_quantity DESC

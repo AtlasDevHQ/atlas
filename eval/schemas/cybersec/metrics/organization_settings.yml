@@ -1,0 +1,42 @@
+metrics:
+  - id: organization_settings_count
+    label: Total OrganizationSettings
+    description: Count of distinct organization_settings records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM organization_settings
+    aggregation: count_distinct
+  - id: total_retention_days
+    label: Total retention days
+    description: Sum of retention_days across all organization_settings.
+    type: atomic
+    source:
+      entity: OrganizationSettings
+      measure: total_retention_days
+    sql: |-
+      SELECT SUM(retention_days) as total_retention_days
+      FROM organization_settings
+    aggregation: sum
+    objective: maximize
+  - id: avg_retention_days
+    label: Average retention days
+    description: Average retention_days per organization_setting.
+    type: atomic
+    sql: |-
+      SELECT AVG(retention_days) as avg_retention_days
+      FROM organization_settings
+    aggregation: avg
+  - id: retention_days_by_scan_frequency
+    label: retention days by scan_frequency
+    description: retention_days broken down by scan_frequency.
+    type: atomic
+    sql: >-
+      SELECT scan_frequency, SUM(retention_days) as total_retention_days, AVG(retention_days) as avg_retention_days,
+      COUNT(*) as count
+
+      FROM organization_settings
+
+      GROUP BY scan_frequency
+
+      ORDER BY total_retention_days DESC

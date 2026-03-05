@@ -1,0 +1,28 @@
+{
+  "name": "@atlas/cli",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "atlas": "bun bin/atlas.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@atlas/api": "workspace:*",
+    "@atlas/mcp": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@clickhouse/client": "^1.17.0",
+    "@duckdb/node-api": "^1.4.4-r.1",
+    "ai": "^6.0.97",
+    "js-yaml": "^4.1.1",
+    "jsforce": "^3.10.14",
+    "mysql2": "^3.18.0",
+    "pg": "^8.18.0",
+    "snowflake-sdk": "^2.3.4"
+  },
+  "devDependencies": {
+    "@clack/prompts": "^0.10.0",
+    "@types/js-yaml": "^4.0.9",
+    "@types/pg": "^8.16.0",
+    "picocolors": "^1.1.0"
+  }
+}

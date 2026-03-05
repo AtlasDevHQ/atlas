@@ -1,0 +1,29 @@
+metrics:
+  - id: shipment_items_count
+    label: Total ShipmentItems
+    description: Count of distinct shipment_items records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM shipment_items
+    aggregation: count_distinct
+  - id: total_quantity
+    label: Total quantity
+    description: Sum of quantity across all shipment_items.
+    type: atomic
+    source:
+      entity: ShipmentItems
+      measure: total_quantity
+    sql: |-
+      SELECT SUM(quantity) as total_quantity
+      FROM shipment_items
+    aggregation: sum
+    objective: maximize
+  - id: avg_quantity
+    label: Average quantity
+    description: Average quantity per shipment_item.
+    type: atomic
+    sql: |-
+      SELECT AVG(quantity) as avg_quantity
+      FROM shipment_items
+    aggregation: avg

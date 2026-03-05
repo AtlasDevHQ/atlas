@@ -1,0 +1,70 @@
+name: CustomerSegments
+type: fact_table
+table: customer_segments
+grain: one row per customer segment record
+description: Auto-profiled schema for customer_segments (10 rows). Contains 4 columns.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 10
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: name
+    sql: name
+    type: string
+    unique_count: 10
+    sample_values:
+      - At-Risk
+      - Bargain
+      - Churned
+      - Dormant
+      - High-Value
+      - Loyal
+      - Marketplace
+      - New
+  - name: description
+    sql: description
+    type: string
+    unique_count: 10
+    sample_values:
+      - Active customers with 3+ orders
+      - Average order value >$150
+      - Enrolled in loyalty program, active
+      - First order within last 90 days
+      - Has account but never ordered
+      - No orders in last 180 days
+      - No orders in last 365 days
+      - Primarily buys from marketplace sellers
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 1
+    sample_values:
+      - Tue Mar 03 2026 13:37:39 GMT-0500 (Eastern Standard Time)
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: customer_segment_count
+    sql: id
+    type: count_distinct
+use_cases:
+  - Use for time-series analysis using created_at
+  - Avoid for row-level customer_segment_assignments queries — use those entities directly

@@ -1,0 +1,67 @@
+metrics:
+  - id: orders_denormalized_count
+    label: Total OrdersDenormalized
+    description: Count of distinct orders_denormalized records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM orders_denormalized
+    aggregation: count_distinct
+  - id: total_total_cents
+    label: Total total cents
+    description: Sum of total_cents across all orders_denormalized.
+    type: atomic
+    source:
+      entity: OrdersDenormalized
+      measure: total_total_cents
+    sql: |-
+      SELECT SUM(total_cents) as total_total_cents
+      FROM orders_denormalized
+    aggregation: sum
+    objective: maximize
+  - id: avg_total_cents
+    label: Average total cents
+    description: Average total_cents per orders_denormalized.
+    type: atomic
+    sql: |-
+      SELECT AVG(total_cents) as avg_total_cents
+      FROM orders_denormalized
+    aggregation: avg
+  - id: total_cents_by_order_status
+    label: total cents by order_status
+    description: total_cents broken down by order_status.
+    type: atomic
+    sql: |-
+      SELECT order_status, SUM(total_cents) as total_total_cents, AVG(total_cents) as avg_total_cents, COUNT(*) as count
+      FROM orders_denormalized
+      GROUP BY order_status
+      ORDER BY total_total_cents DESC
+  - id: total_item_count
+    label: Total item count
+    description: Sum of item_count across all orders_denormalized.
+    type: atomic
+    source:
+      entity: OrdersDenormalized
+      measure: total_item_count
+    sql: |-
+      SELECT SUM(item_count) as total_item_count
+      FROM orders_denormalized
+    aggregation: sum
+    objective: maximize
+  - id: avg_item_count
+    label: Average item count
+    description: Average item_count per orders_denormalized.
+    type: atomic
+    sql: |-
+      SELECT AVG(item_count) as avg_item_count
+      FROM orders_denormalized
+    aggregation: avg
+  - id: item_count_by_order_status
+    label: item count by order_status
+    description: item_count broken down by order_status.
+    type: atomic
+    sql: |-
+      SELECT order_status, SUM(item_count) as total_item_count, AVG(item_count) as avg_item_count, COUNT(*) as count
+      FROM orders_denormalized
+      GROUP BY order_status
+      ORDER BY total_item_count DESC

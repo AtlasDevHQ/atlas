@@ -1,0 +1,310 @@
+name: Orders
+type: fact_table
+table: orders
+grain: one row per order record
+description: Auto-profiled schema for orders (25,000 rows). Contains 12 columns, linked to customers, promotions.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 25000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: customer_id
+    sql: customer_id
+    type: number
+    description: Foreign key to customers
+    unique_count: 7652
+    sample_values:
+      - '1'
+      - '2'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+      - '9'
+  - name: customer_email
+    sql: customer_email
+    type: string
+    unique_count: 7647
+    sample_values:
+      - aiden.allen132@protonmail.com
+      - aiden.allen223@protonmail.com
+      - aiden.allen248@outlook.com
+      - aiden.allen37@aol.com
+      - aiden.allen462@yahoo.com
+      - aiden.allen626@hotmail.com
+      - aiden.allen76@yahoo.com
+      - aiden.allen862@mail.com
+  - name: status
+    sql: status
+    type: string
+    unique_count: 7
+    sample_values:
+      - canceled
+      - confirmed
+      - delivered
+      - pending
+      - processing
+      - returned
+      - shipped
+  - name: subtotal_cents
+    sql: subtotal_cents
+    type: number
+    unique_count: 15795
+    sample_values:
+      - '3001'
+      - '3002'
+      - '3004'
+      - '3006'
+      - '3010'
+      - '3011'
+      - '3013'
+      - '3014'
+  - name: shipping_cost
+    sql: shipping_cost
+    type: number
+    unique_count: 11116
+    sample_values:
+      - '5.00'
+      - '5.01'
+      - '5.02'
+      - '5.03'
+      - '5.04'
+      - '5.05'
+      - '5.06'
+      - '5.07'
+  - name: tax_cents
+    sql: tax_cents
+    type: number
+    unique_count: 2000
+    sample_values:
+      - '240'
+      - '241'
+      - '242'
+      - '243'
+      - '244'
+      - '245'
+      - '246'
+      - '247'
+  - name: total_cents
+    sql: total_cents
+    type: number
+    unique_count: 16426
+    sample_values:
+      - '3765'
+      - '3772'
+      - '3780'
+      - '3794'
+      - '3814'
+      - '3890'
+      - '3899'
+      - '3914'
+  - name: shipping_address_id
+    sql: shipping_address_id
+    type: number
+    unique_count: 9810
+    null_count: 5002
+    sample_values:
+      - '2'
+      - '3'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+      - '9'
+      - '10'
+  - name: promotion_id
+    sql: promotion_id
+    type: number
+    unique_count: 200
+    null_count: 21277
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+    profiler_notes:
+      - Likely FK to promotions.id (inferred from column name, no constraint exists)
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 25000
+    sample_values:
+      - Sun Mar 01 2020 04:32:04 GMT-0500 (Eastern Standard Time)
+      - Sun Mar 01 2020 08:57:07 GMT-0500 (Eastern Standard Time)
+      - Sun Mar 01 2020 13:53:14 GMT-0500 (Eastern Standard Time)
+      - Sun Mar 01 2020 15:21:20 GMT-0500 (Eastern Standard Time)
+      - Sun Mar 01 2020 22:08:43 GMT-0500 (Eastern Standard Time)
+      - Sun Mar 01 2020 22:22:57 GMT-0500 (Eastern Standard Time)
+      - Sun Mar 01 2020 22:31:43 GMT-0500 (Eastern Standard Time)
+      - Mon Mar 02 2020 02:04:45 GMT-0500 (Eastern Standard Time)
+  - name: updated_at
+    sql: updated_at
+    type: date
+    unique_count: 1
+    sample_values:
+      - Tue Mar 03 2026 13:37:39 GMT-0500 (Eastern Standard Time)
+  - name: subtotal_cents_bucket
+    sql: |-
+      CASE
+        WHEN subtotal_cents < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY subtotal_cents) FROM orders) THEN 'Low'
+        WHEN subtotal_cents < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY subtotal_cents) FROM orders) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: subtotal cents bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: shipping_cost_bucket
+    sql: |-
+      CASE
+        WHEN shipping_cost < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY shipping_cost) FROM orders) THEN 'Low'
+        WHEN shipping_cost < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY shipping_cost) FROM orders) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: shipping cost bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: tax_cents_bucket
+    sql: |-
+      CASE
+        WHEN tax_cents < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY tax_cents) FROM orders) THEN 'Low'
+        WHEN tax_cents < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY tax_cents) FROM orders) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: tax cents bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: total_cents_bucket
+    sql: |-
+      CASE
+        WHEN total_cents < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY total_cents) FROM orders) THEN 'Low'
+        WHEN total_cents < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY total_cents) FROM orders) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: total cents bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+  - name: updated_at_year
+    sql: EXTRACT(YEAR FROM updated_at)
+    type: number
+    description: Year extracted from updated_at
+    virtual: true
+  - name: updated_at_month
+    sql: TO_CHAR(updated_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from updated_at
+    virtual: true
+measures:
+  - name: order_count
+    sql: id
+    type: count_distinct
+  - name: total_subtotal_cents
+    sql: subtotal_cents
+    type: sum
+    description: Sum of subtotal cents
+  - name: avg_subtotal_cents
+    sql: subtotal_cents
+    type: avg
+    description: Average subtotal cents
+  - name: total_shipping_cost
+    sql: shipping_cost
+    type: sum
+    description: Sum of shipping cost
+  - name: avg_shipping_cost
+    sql: shipping_cost
+    type: avg
+    description: Average shipping cost
+  - name: total_tax_cents
+    sql: tax_cents
+    type: sum
+    description: Sum of tax cents
+  - name: avg_tax_cents
+    sql: tax_cents
+    type: avg
+    description: Average tax cents
+  - name: total_total_cents
+    sql: total_cents
+    type: sum
+    description: Sum of total cents
+  - name: avg_total_cents
+    sql: total_cents
+    type: avg
+    description: Average total cents
+joins:
+  - target_entity: Customers
+    relationship: many_to_one
+    join_columns:
+      from: customer_id
+      to: id
+    description: Each order belongs to one customer
+  - target_entity: Promotions
+    relationship: many_to_one
+    join_columns:
+      from: promotion_id
+      to: id
+    inferred: true
+    note: No FK constraint exists — inferred from column name promotion_id
+    description: Each order likely belongs to one promotion
+use_cases:
+  - Use for segmentation analysis by status
+  - Use for aggregation and trends on subtotal_cents, shipping_cost, tax_cents, total_cents
+  - Use for time-series analysis using created_at, updated_at
+  - Join with customers, promotions for cross-entity analysis
+  - >-
+    Avoid for row-level
+    gift_card_transactions/loyalty_transactions/order_events/order_items/orders_denormalized/payments/promotion_usages/returns/shipments/utm_tracking
+    queries — use those entities directly
+query_patterns:
+  - description: Orders by status
+    sql: |-
+      SELECT status, COUNT(*) as count
+      FROM orders
+      GROUP BY status
+      ORDER BY count DESC
+  - description: Total subtotal_cents by status
+    sql: |-
+      SELECT status, SUM(subtotal_cents) as total_subtotal_cents, COUNT(*) as count
+      FROM orders
+      GROUP BY status
+      ORDER BY total_subtotal_cents DESC

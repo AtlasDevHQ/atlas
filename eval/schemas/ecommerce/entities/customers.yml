@@ -1,0 +1,166 @@
+name: Customers
+type: fact_table
+table: customers
+grain: one row per customer record
+description: Auto-profiled schema for customers (8,000 rows). Contains 9 columns.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 8000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: email
+    sql: email
+    type: string
+    unique_count: 7995
+    sample_values:
+      - aiden.allen132@protonmail.com
+      - aiden.allen223@protonmail.com
+      - aiden.allen248@outlook.com
+      - aiden.allen37@aol.com
+      - aiden.allen462@yahoo.com
+      - aiden.allen626@hotmail.com
+      - aiden.allen76@yahoo.com
+      - aiden.allen862@mail.com
+  - name: full_name
+    sql: full_name
+    type: string
+    unique_count: 1595
+    sample_values:
+      - Aiden Allen
+      - Aiden Anderson
+      - Aiden Brown
+      - Aiden Clark
+      - Aiden Davis
+      - Aiden Flores
+      - Aiden Garcia
+      - Aiden Gonzalez
+  - name: phone
+    sql: phone
+    type: string
+    unique_count: 8000
+    sample_values:
+      - (200) 062-6575
+      - (200) 192-6922
+      - (200) 237-1979
+      - (200) 241-6298
+      - (200) 315-8373
+      - (200) 439-0677
+      - (200) 509-6201
+      - (200) 549-0510
+  - name: mobile_phone
+    sql: mobile_phone
+    type: string
+    unique_count: 6828
+    null_count: 1172
+    sample_values:
+      - '+12000570789'
+      - '+12000683180'
+      - '+12001910811'
+      - '+12003421131'
+      - '+12004118723'
+      - '+12006587877'
+      - '+12007507386'
+      - '+12007631294'
+  - name: acquisition_source
+    sql: acquisition_source
+    type: string
+    unique_count: 18
+    sample_values:
+      - Direct
+      - Email
+      - Facebook
+      - GOOGLE
+      - Google
+      - Instagram
+      - ORGANIC
+      - Organic
+      - Referral
+      - TikTok
+      - direct
+      - email
+      - facebook
+      - google
+      - instagram
+      - organic
+      - referral
+      - tiktok
+    profiler_notes:
+      - >-
+        Case-inconsistent enum values: [Direct, direct; Email, email; Facebook, facebook; GOOGLE, Google, google;
+        Instagram, instagram; ORGANIC, Organic, organic; Referral, referral; TikTok, tiktok]. Consider using LOWER() for
+        grouping
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 8000
+    sample_values:
+      - Mon Jan 20 2020 21:45:30 GMT-0500 (Eastern Standard Time)
+      - Tue Jan 21 2020 02:36:18 GMT-0500 (Eastern Standard Time)
+      - Wed Jan 29 2020 23:08:51 GMT-0500 (Eastern Standard Time)
+      - Wed Feb 05 2020 03:54:32 GMT-0500 (Eastern Standard Time)
+      - Sat Feb 08 2020 01:12:36 GMT-0500 (Eastern Standard Time)
+      - Sat Feb 08 2020 04:52:07 GMT-0500 (Eastern Standard Time)
+      - Thu Feb 13 2020 13:08:20 GMT-0500 (Eastern Standard Time)
+      - Sat Feb 15 2020 02:10:05 GMT-0500 (Eastern Standard Time)
+  - name: updated_at
+    sql: updated_at
+    type: date
+    unique_count: 1
+    sample_values:
+      - Tue Mar 03 2026 13:37:39 GMT-0500 (Eastern Standard Time)
+  - name: is_active
+    sql: is_active
+    type: boolean
+    unique_count: 2
+    sample_values:
+      - 'false'
+      - 'true'
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+  - name: updated_at_year
+    sql: EXTRACT(YEAR FROM updated_at)
+    type: number
+    description: Year extracted from updated_at
+    virtual: true
+  - name: updated_at_month
+    sql: TO_CHAR(updated_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from updated_at
+    virtual: true
+measures:
+  - name: customer_count
+    sql: id
+    type: count_distinct
+use_cases:
+  - Use for segmentation analysis by acquisition_source
+  - Use for time-series analysis using created_at, updated_at
+  - >-
+    Avoid for row-level
+    cart_events/customer_addresses/customer_ltv_cache/customer_segment_assignments/email_sends/gift_cards/loyalty_accounts/orders/orders_denormalized/page_views/product_reviews/promotion_usages/returns/review_helpfulness/search_queries/utm_tracking
+    queries — use those entities directly
+query_patterns:
+  - description: Customers by acquisition_source
+    sql: |-
+      SELECT acquisition_source, COUNT(*) as count
+      FROM customers
+      GROUP BY acquisition_source
+      ORDER BY count DESC

@@ -1,0 +1,109 @@
+metrics:
+  - id: product_performance_cache_count
+    label: Total ProductPerformanceCache
+    description: Count of distinct product_performance_cache records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM product_performance_cache
+    aggregation: count_distinct
+  - id: total_total_sold
+    label: Total total sold
+    description: Sum of total_sold across all product_performance_cache.
+    type: atomic
+    source:
+      entity: ProductPerformanceCache
+      measure: total_total_sold
+    sql: |-
+      SELECT SUM(total_sold) as total_total_sold
+      FROM product_performance_cache
+    aggregation: sum
+    objective: maximize
+  - id: avg_total_sold
+    label: Average total sold
+    description: Average total_sold per product_performance_cache.
+    type: atomic
+    sql: |-
+      SELECT AVG(total_sold) as avg_total_sold
+      FROM product_performance_cache
+    aggregation: avg
+  - id: total_total_revenue_cents
+    label: Total total revenue cents
+    description: Sum of total_revenue_cents across all product_performance_cache.
+    type: atomic
+    source:
+      entity: ProductPerformanceCache
+      measure: total_total_revenue_cents
+    sql: |-
+      SELECT SUM(total_revenue_cents) as total_total_revenue_cents
+      FROM product_performance_cache
+    aggregation: sum
+    objective: maximize
+  - id: avg_total_revenue_cents
+    label: Average total revenue cents
+    description: Average total_revenue_cents per product_performance_cache.
+    type: atomic
+    sql: |-
+      SELECT AVG(total_revenue_cents) as avg_total_revenue_cents
+      FROM product_performance_cache
+    aggregation: avg
+  - id: total_avg_rating
+    label: Total avg rating
+    description: Sum of avg_rating across all product_performance_cache.
+    type: atomic
+    source:
+      entity: ProductPerformanceCache
+      measure: total_avg_rating
+    sql: |-
+      SELECT SUM(avg_rating) as total_avg_rating
+      FROM product_performance_cache
+    aggregation: sum
+    objective: maximize
+  - id: avg_avg_rating
+    label: Average avg rating
+    description: Average avg_rating per product_performance_cache.
+    type: atomic
+    sql: |-
+      SELECT AVG(avg_rating) as avg_avg_rating
+      FROM product_performance_cache
+    aggregation: avg
+  - id: total_review_count
+    label: Total review count
+    description: Sum of review_count across all product_performance_cache.
+    type: atomic
+    source:
+      entity: ProductPerformanceCache
+      measure: total_review_count
+    sql: |-
+      SELECT SUM(review_count) as total_review_count
+      FROM product_performance_cache
+    aggregation: sum
+    objective: maximize
+  - id: avg_review_count
+    label: Average review count
+    description: Average review_count per product_performance_cache.
+    type: atomic
+    sql: |-
+      SELECT AVG(review_count) as avg_review_count
+      FROM product_performance_cache
+    aggregation: avg
+  - id: total_return_rate
+    label: Total return rate
+    description: Sum of return_rate across all product_performance_cache.
+    type: atomic
+    source:
+      entity: ProductPerformanceCache
+      measure: total_return_rate
+    sql: |-
+      SELECT SUM(return_rate) as total_return_rate
+      FROM product_performance_cache
+    aggregation: sum
+    objective: maximize
+  - id: avg_return_rate
+    label: Average return rate
+    description: Average return_rate per product_performance_cache.
+    type: atomic
+    sql: |-
+      SELECT AVG(return_rate) as avg_return_rate
+      FROM product_performance_cache
+    aggregation: avg

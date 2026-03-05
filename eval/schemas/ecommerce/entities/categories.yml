@@ -1,0 +1,103 @@
+name: Categories
+type: fact_table
+table: categories
+grain: one row per category record
+description: Auto-profiled schema for categories (25 rows). Contains 6 columns, linked to categories.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 25
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: name
+    sql: name
+    type: string
+    unique_count: 25
+    sample_values:
+      - Accessories
+      - Bath
+      - Bedding
+      - Candles
+      - Cookware
+      - Duvets & Covers
+      - Home Decor
+      - Kitchen
+  - name: parent_id
+    sql: parent_id
+    type: number
+    description: Foreign key to categories
+    unique_count: 5
+    null_count: 5
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+  - name: slug
+    sql: slug
+    type: string
+    unique_count: 25
+    sample_values:
+      - bath
+      - bath-accessories
+      - bath-shower
+      - bath-towels
+      - bedding
+      - bedding-duvets
+      - bedding-pillows
+      - bedding-sheets
+  - name: description
+    sql: description
+    type: string
+    unique_count: 25
+    sample_values:
+      - Area rugs, runners, mats
+      - Bath towels, hand towels, washcloths
+      - Blenders, toasters, coffee makers
+      - Candles, art, mirrors, rugs
+      - Chef knives, knife blocks, sharpeners
+      - Containers, organizers, pantry
+      - Cookware, utensils, storage, appliances
+      - Curtains, caddies, mats
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 1
+    sample_values:
+      - Tue Mar 03 2026 13:37:39 GMT-0500 (Eastern Standard Time)
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: category_count
+    sql: id
+    type: count_distinct
+joins:
+  - target_entity: Categories
+    relationship: many_to_one
+    join_columns:
+      from: parent_id
+      to: id
+    description: Each category belongs to one category
+use_cases:
+  - Use for time-series analysis using created_at
+  - Join with categories for cross-entity analysis
+  - Avoid for row-level categories/products queries — use those entities directly

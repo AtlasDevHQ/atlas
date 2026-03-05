@@ -1,0 +1,290 @@
+name: ExecutiveDashboardCache
+type: fact_table
+table: executive_dashboard_cache
+grain: one row per executive dashboard cache record
+description: >-
+  Auto-profiled schema for executive_dashboard_cache (200 rows). Contains 9 columns, linked to organizations.
+  DENORMALIZED — data may duplicate other tables.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 200
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: organization_id
+    sql: organization_id
+    type: number
+    unique_count: 200
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+    profiler_notes:
+      - Likely FK to organizations.id (inferred from column name, no constraint exists)
+  - name: total_assets
+    sql: total_assets
+    type: number
+    unique_count: 39
+    sample_values:
+      - '56'
+      - '57'
+      - '58'
+      - '59'
+      - '60'
+      - '61'
+      - '62'
+      - '63'
+  - name: active_agents
+    sql: active_agents
+    type: number
+    unique_count: 36
+    sample_values:
+      - '21'
+      - '24'
+      - '25'
+      - '26'
+      - '27'
+      - '28'
+      - '29'
+      - '30'
+  - name: open_vulnerabilities
+    sql: open_vulnerabilities
+    type: number
+    unique_count: 125
+    sample_values:
+      - '0'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '9'
+      - '12'
+      - '13'
+  - name: critical_incidents
+    sql: critical_incidents
+    type: number
+    unique_count: 5
+    sample_values:
+      - '0'
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+  - name: compliance_score
+    sql: compliance_score
+    type: number
+    unique_count: 166
+    sample_values:
+      - '40.4'
+      - '40.8'
+      - '40.9'
+      - '41'
+      - '41.1'
+      - '41.3'
+      - '41.4'
+      - '41.5'
+  - name: risk_score
+    sql: risk_score
+    type: number
+    unique_count: 181
+    sample_values:
+      - '1.9'
+      - '2.9'
+      - '3'
+      - '3.4'
+      - '3.7'
+      - '4.2'
+      - '4.8'
+      - '7'
+  - name: generated_at
+    sql: generated_at
+    type: date
+    unique_count: 200
+    sample_values:
+      - Mon Mar 02 2026 13:51:26 GMT-0500 (Eastern Standard Time)
+      - Mon Mar 02 2026 14:11:36 GMT-0500 (Eastern Standard Time)
+      - Mon Mar 02 2026 14:18:25 GMT-0500 (Eastern Standard Time)
+      - Mon Mar 02 2026 14:21:53 GMT-0500 (Eastern Standard Time)
+      - Mon Mar 02 2026 14:22:53 GMT-0500 (Eastern Standard Time)
+      - Mon Mar 02 2026 14:30:34 GMT-0500 (Eastern Standard Time)
+      - Mon Mar 02 2026 14:31:53 GMT-0500 (Eastern Standard Time)
+      - Mon Mar 02 2026 15:01:20 GMT-0500 (Eastern Standard Time)
+  - name: total_assets_bucket
+    sql: |-
+      CASE
+        WHEN total_assets < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY total_assets) FROM executive_dashboard_cache) THEN 'Low'
+        WHEN total_assets < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY total_assets) FROM executive_dashboard_cache) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: total assets bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: active_agents_bucket
+    sql: |-
+      CASE
+        WHEN active_agents < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY active_agents) FROM executive_dashboard_cache) THEN 'Low'
+        WHEN active_agents < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY active_agents) FROM executive_dashboard_cache) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: active agents bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: open_vulnerabilities_bucket
+    sql: |-
+      CASE
+        WHEN open_vulnerabilities < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY open_vulnerabilities) FROM executive_dashboard_cache) THEN 'Low'
+        WHEN open_vulnerabilities < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY open_vulnerabilities) FROM executive_dashboard_cache) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: open vulnerabilities bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: critical_incidents_bucket
+    sql: |-
+      CASE
+        WHEN critical_incidents < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY critical_incidents) FROM executive_dashboard_cache) THEN 'Low'
+        WHEN critical_incidents < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY critical_incidents) FROM executive_dashboard_cache) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: critical incidents bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: compliance_score_bucket
+    sql: |-
+      CASE
+        WHEN compliance_score < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY compliance_score) FROM executive_dashboard_cache) THEN 'Low'
+        WHEN compliance_score < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY compliance_score) FROM executive_dashboard_cache) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: compliance score bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: risk_score_bucket
+    sql: |-
+      CASE
+        WHEN risk_score < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY risk_score) FROM executive_dashboard_cache) THEN 'Low'
+        WHEN risk_score < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY risk_score) FROM executive_dashboard_cache) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: risk score bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: generated_at_year
+    sql: EXTRACT(YEAR FROM generated_at)
+    type: number
+    description: Year extracted from generated_at
+    virtual: true
+  - name: generated_at_month
+    sql: TO_CHAR(generated_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from generated_at
+    virtual: true
+measures:
+  - name: executive_dashboard_cache_count
+    sql: id
+    type: count_distinct
+  - name: total_total_assets
+    sql: total_assets
+    type: sum
+    description: Sum of total assets
+  - name: avg_total_assets
+    sql: total_assets
+    type: avg
+    description: Average total assets
+  - name: total_active_agents
+    sql: active_agents
+    type: sum
+    description: Sum of active agents
+  - name: avg_active_agents
+    sql: active_agents
+    type: avg
+    description: Average active agents
+  - name: total_open_vulnerabilities
+    sql: open_vulnerabilities
+    type: sum
+    description: Sum of open vulnerabilities
+  - name: avg_open_vulnerabilities
+    sql: open_vulnerabilities
+    type: avg
+    description: Average open vulnerabilities
+  - name: total_critical_incidents
+    sql: critical_incidents
+    type: sum
+    description: Sum of critical incidents
+  - name: avg_critical_incidents
+    sql: critical_incidents
+    type: avg
+    description: Average critical incidents
+  - name: total_compliance_score
+    sql: compliance_score
+    type: sum
+    description: Sum of compliance score
+  - name: avg_compliance_score
+    sql: compliance_score
+    type: avg
+    description: Average compliance score
+  - name: total_risk_score
+    sql: risk_score
+    type: sum
+    description: Sum of risk score
+  - name: avg_risk_score
+    sql: risk_score
+    type: avg
+    description: Average risk score
+joins:
+  - target_entity: Organizations
+    relationship: many_to_one
+    join_columns:
+      from: organization_id
+      to: id
+    inferred: true
+    note: No FK constraint exists — inferred from column name organization_id
+    description: Each executive_dashboard_cache likely belongs to one organization
+use_cases:
+  - 'WARNING: This is a denormalized/materialized table. Data may be stale or duplicate other tables'
+  - >-
+    Use for aggregation and trends on total_assets, active_agents, open_vulnerabilities, critical_incidents,
+    compliance_score, risk_score
+  - Use for time-series analysis using generated_at
+  - Join with organizations for cross-entity analysis
+profiler_notes:
+  - 'Possibly denormalized/materialized table: name matches reporting pattern. Data may duplicate other tables'

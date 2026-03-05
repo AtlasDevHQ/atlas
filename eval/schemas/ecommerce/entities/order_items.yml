@@ -1,0 +1,210 @@
+name: OrderItems
+type: fact_table
+table: order_items
+grain: one row per order item record
+description: Auto-profiled schema for order_items (55,000 rows). Contains 8 columns, linked to orders, product_variants.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 55000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: order_id
+    sql: order_id
+    type: number
+    description: Foreign key to orders
+    unique_count: 22224
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '7'
+      - '9'
+      - '10'
+      - '11'
+  - name: product_variant_id
+    sql: product_variant_id
+    type: number
+    unique_count: 3200
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+    profiler_notes:
+      - Likely FK to product_variants.id (inferred from column name, no constraint exists)
+  - name: product_name
+    sql: product_name
+    type: string
+    unique_count: 20
+    sample_values:
+      - Area Rug
+      - Bamboo Pillowcase
+      - Cast Iron Skillet
+      - Ceramic Vase
+      - Chef Knife
+      - Cutting Board Set
+      - Egyptian Cotton Sheet Set
+      - Hand Towel Set
+  - name: quantity
+    sql: quantity
+    type: number
+    unique_count: 3
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+  - name: unit_price_cents
+    sql: unit_price_cents
+    type: number
+    unique_count: 14633
+    sample_values:
+      - '1999'
+      - '2000'
+      - '2001'
+      - '2002'
+      - '2003'
+      - '2004'
+      - '2005'
+      - '2006'
+  - name: total_cents
+    sql: total_cents
+    type: number
+    unique_count: 22058
+    sample_values:
+      - '1999'
+      - '2000'
+      - '2001'
+      - '2002'
+      - '2003'
+      - '2004'
+      - '2005'
+      - '2006'
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 55000
+    sample_values:
+      - Sat Feb 29 2020 19:46:59 GMT-0500 (Eastern Standard Time)
+      - Sat Feb 29 2020 20:33:59 GMT-0500 (Eastern Standard Time)
+      - Sat Feb 29 2020 21:20:59 GMT-0500 (Eastern Standard Time)
+      - Sat Feb 29 2020 22:07:59 GMT-0500 (Eastern Standard Time)
+      - Sat Feb 29 2020 22:54:58 GMT-0500 (Eastern Standard Time)
+      - Sat Feb 29 2020 23:41:58 GMT-0500 (Eastern Standard Time)
+      - Sun Mar 01 2020 00:28:58 GMT-0500 (Eastern Standard Time)
+      - Sun Mar 01 2020 01:15:58 GMT-0500 (Eastern Standard Time)
+  - name: quantity_bucket
+    sql: |-
+      CASE
+        WHEN quantity < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY quantity) FROM order_items) THEN 'Low'
+        WHEN quantity < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY quantity) FROM order_items) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: quantity bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: unit_price_cents_bucket
+    sql: |-
+      CASE
+        WHEN unit_price_cents < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY unit_price_cents) FROM order_items) THEN 'Low'
+        WHEN unit_price_cents < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY unit_price_cents) FROM order_items) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: unit price cents bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: total_cents_bucket
+    sql: |-
+      CASE
+        WHEN total_cents < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY total_cents) FROM order_items) THEN 'Low'
+        WHEN total_cents < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY total_cents) FROM order_items) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: total cents bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: order_item_count
+    sql: id
+    type: count_distinct
+  - name: total_quantity
+    sql: quantity
+    type: sum
+    description: Sum of quantity
+  - name: avg_quantity
+    sql: quantity
+    type: avg
+    description: Average quantity
+  - name: total_unit_price_cents
+    sql: unit_price_cents
+    type: sum
+    description: Sum of unit price cents
+  - name: avg_unit_price_cents
+    sql: unit_price_cents
+    type: avg
+    description: Average unit price cents
+  - name: total_total_cents
+    sql: total_cents
+    type: sum
+    description: Sum of total cents
+  - name: avg_total_cents
+    sql: total_cents
+    type: avg
+    description: Average total cents
+joins:
+  - target_entity: Orders
+    relationship: many_to_one
+    join_columns:
+      from: order_id
+      to: id
+    description: Each order_item belongs to one order
+  - target_entity: ProductVariants
+    relationship: many_to_one
+    join_columns:
+      from: product_variant_id
+      to: id
+    inferred: true
+    note: No FK constraint exists — inferred from column name product_variant_id
+    description: Each order_item likely belongs to one product_variant
+use_cases:
+  - Use for aggregation and trends on quantity, unit_price_cents, total_cents
+  - Use for time-series analysis using created_at
+  - Join with orders, product_variants for cross-entity analysis
+  - Avoid for row-level return_items/shipment_items queries — use those entities directly

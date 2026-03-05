@@ -1,0 +1,168 @@
+name: Reports
+type: fact_table
+table: reports
+grain: one row per report record
+description: Auto-profiled schema for reports (500 rows). Contains 10 columns, linked to users, organizations.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 500
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: organization_id
+    sql: organization_id
+    type: number
+    description: Foreign key to organizations
+    unique_count: 185
+    sample_values:
+      - '1'
+      - '2'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+      - '9'
+  - name: created_by
+    sql: created_by
+    type: number
+    description: Foreign key to users
+    unique_count: 443
+    sample_values:
+      - '8'
+      - '11'
+      - '15'
+      - '18'
+      - '21'
+      - '25'
+      - '27'
+      - '33'
+  - name: title
+    sql: title
+    type: string
+    unique_count: 10
+    sample_values:
+      - Asset Inventory Report
+      - Audit Trail Report
+      - Compliance Assessment Report
+      - Executive Security Summary
+      - Incident Response Summary
+      - Monthly Vulnerability Report
+      - Remediation Progress Report
+      - Risk Scorecard
+      - Scan Coverage Report
+      - Threat Landscape Analysis
+  - name: report_type
+    sql: report_type
+    type: string
+    unique_count: 6
+    sample_values:
+      - asset
+      - compliance
+      - executive
+      - incident
+      - threat
+      - vulnerability
+  - name: format
+    sql: format
+    type: string
+    unique_count: 3
+    sample_values:
+      - csv
+      - pdf
+      - xlsx
+  - name: parameters
+    sql: parameters
+    type: string
+    unique_count: 1
+    sample_values:
+      - '{"period":"monthly","org_filter":null}'
+  - name: status
+    sql: status
+    type: string
+    unique_count: 3
+    sample_values:
+      - completed
+      - failed
+      - generating
+  - name: file_path
+    sql: file_path
+    type: string
+    unique_count: 500
+    sample_values:
+      - /reports/00c6844868981160a26707cdb6516c1d.pdf
+      - /reports/017f1a3c5e59350cb1b8ddbf5839f890.pdf
+      - /reports/0194aa250ffbcf4e95043855aa821c72.pdf
+      - /reports/01a8cfe6d07cca5adb42586f3febf770.pdf
+      - /reports/0291c758bc2c355f241d10226cc43339.pdf
+      - /reports/02cbc95caaac31bd80e0be382e30121f.pdf
+      - /reports/02f5d8d56447f068f48473a49f0a7267.pdf
+      - /reports/04016c6af42c7fd3dee5daef8b16e7d0.pdf
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 500
+    sample_values:
+      - Sat Feb 06 2021 19:36:12 GMT-0500 (Eastern Standard Time)
+      - Sat Mar 27 2021 22:59:03 GMT-0400 (Eastern Daylight Time)
+      - Sun Mar 28 2021 21:29:23 GMT-0400 (Eastern Daylight Time)
+      - Thu Apr 08 2021 05:36:02 GMT-0400 (Eastern Daylight Time)
+      - Sun May 02 2021 10:08:59 GMT-0400 (Eastern Daylight Time)
+      - Fri May 07 2021 04:57:18 GMT-0400 (Eastern Daylight Time)
+      - Fri May 07 2021 10:01:36 GMT-0400 (Eastern Daylight Time)
+      - Wed May 26 2021 00:39:00 GMT-0400 (Eastern Daylight Time)
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: report_count
+    sql: id
+    type: count_distinct
+joins:
+  - target_entity: Users
+    relationship: many_to_one
+    join_columns:
+      from: created_by
+      to: id
+    description: Each report belongs to one user
+  - target_entity: Organizations
+    relationship: many_to_one
+    join_columns:
+      from: organization_id
+      to: id
+    description: Each report belongs to one organization
+use_cases:
+  - Use for segmentation analysis by title, report_type, format, parameters, status
+  - Use for time-series analysis using created_at
+  - Join with users, organizations for cross-entity analysis
+  - Avoid for row-level report_schedules queries — use those entities directly
+query_patterns:
+  - description: Reports by title
+    sql: |-
+      SELECT title, COUNT(*) as count
+      FROM reports
+      GROUP BY title
+      ORDER BY count DESC
+  - description: Reports by report_type
+    sql: |-
+      SELECT report_type, COUNT(*) as count
+      FROM reports
+      GROUP BY report_type
+      ORDER BY count DESC

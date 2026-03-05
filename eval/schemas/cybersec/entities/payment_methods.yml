@@ -1,0 +1,181 @@
+name: PaymentMethods
+type: fact_table
+table: payment_methods
+grain: one row per payment method record
+description: Auto-profiled schema for payment_methods (180 rows). Contains 8 columns, linked to organizations.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 180
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: organization_id
+    sql: organization_id
+    type: number
+    description: Foreign key to organizations
+    unique_count: 119
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '6'
+      - '7'
+      - '8'
+      - '10'
+  - name: type
+    sql: type
+    type: string
+    unique_count: 3
+    sample_values:
+      - bank_transfer
+      - credit_card
+      - wire
+  - name: last4
+    sql: last4
+    type: string
+    unique_count: 180
+    sample_values:
+      - '0053'
+      - '0057'
+      - '0058'
+      - '0075'
+      - '0149'
+      - '0150'
+      - '0189'
+      - '0193'
+  - name: expiry_month
+    sql: expiry_month
+    type: number
+    unique_count: 12
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: expiry_year
+    sql: expiry_year
+    type: number
+    unique_count: 4
+    sample_values:
+      - '2025'
+      - '2026'
+      - '2027'
+      - '2028'
+  - name: is_default
+    sql: is_default
+    type: boolean
+    unique_count: 2
+    sample_values:
+      - 'false'
+      - 'true'
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 180
+    sample_values:
+      - Sat Jan 04 2020 15:56:11 GMT-0500 (Eastern Standard Time)
+      - Sun Jan 05 2020 18:40:38 GMT-0500 (Eastern Standard Time)
+      - Wed Jan 08 2020 14:11:07 GMT-0500 (Eastern Standard Time)
+      - Sun Jan 12 2020 01:13:32 GMT-0500 (Eastern Standard Time)
+      - Sun Jan 12 2020 05:51:49 GMT-0500 (Eastern Standard Time)
+      - Sun Jan 19 2020 21:45:21 GMT-0500 (Eastern Standard Time)
+      - Mon Jan 27 2020 00:11:39 GMT-0500 (Eastern Standard Time)
+      - Tue Feb 11 2020 20:41:07 GMT-0500 (Eastern Standard Time)
+  - name: expiry_month_bucket
+    sql: |-
+      CASE
+        WHEN expiry_month < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY expiry_month) FROM payment_methods) THEN 'Low'
+        WHEN expiry_month < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY expiry_month) FROM payment_methods) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: expiry month bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: expiry_year_bucket
+    sql: |-
+      CASE
+        WHEN expiry_year < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY expiry_year) FROM payment_methods) THEN 'Low'
+        WHEN expiry_year < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY expiry_year) FROM payment_methods) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: expiry year bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: payment_method_count
+    sql: id
+    type: count_distinct
+  - name: total_expiry_month
+    sql: expiry_month
+    type: sum
+    description: Sum of expiry month
+  - name: avg_expiry_month
+    sql: expiry_month
+    type: avg
+    description: Average expiry month
+  - name: total_expiry_year
+    sql: expiry_year
+    type: sum
+    description: Sum of expiry year
+  - name: avg_expiry_year
+    sql: expiry_year
+    type: avg
+    description: Average expiry year
+joins:
+  - target_entity: Organizations
+    relationship: many_to_one
+    join_columns:
+      from: organization_id
+      to: id
+    description: Each payment_method belongs to one organization
+use_cases:
+  - Use for segmentation analysis by type
+  - Use for aggregation and trends on expiry_month, expiry_year
+  - Use for time-series analysis using created_at
+  - Join with organizations for cross-entity analysis
+query_patterns:
+  - description: PaymentMethods by type
+    sql: |-
+      SELECT type, COUNT(*) as count
+      FROM payment_methods
+      GROUP BY type
+      ORDER BY count DESC
+  - description: Total expiry_month by type
+    sql: |-
+      SELECT type, SUM(expiry_month) as total_expiry_month, COUNT(*) as count
+      FROM payment_methods
+      GROUP BY type
+      ORDER BY total_expiry_month DESC

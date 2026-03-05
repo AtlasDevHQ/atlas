@@ -1,0 +1,106 @@
+name: ReviewResponses
+type: fact_table
+table: review_responses
+grain: one row per review respons record
+description: Auto-profiled schema for review_responses (1,500 rows). Contains 5 columns, linked to product_reviews.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 1500
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: review_id
+    sql: review_id
+    type: number
+    description: Foreign key to product_reviews
+    unique_count: 1327
+    sample_values:
+      - '4'
+      - '18'
+      - '21'
+      - '25'
+      - '33'
+      - '35'
+      - '38'
+      - '46'
+  - name: responder
+    sql: responder
+    type: string
+    unique_count: 5
+    sample_values:
+      - NovaMart Team
+      - 'Seller: Artisan Home Co'
+      - 'Seller: Heritage Living'
+      - 'Seller: Pacific Goods'
+      - 'Seller: Summit Craft'
+  - name: body
+    sql: body
+    type: string
+    unique_count: 5
+    sample_values:
+      - Sorry for the inconvenience. We have issued a replacement.
+      - Thank you for your feedback! We are glad you love it.
+      - Thanks for the kind words! We hope you enjoy it for years to come.
+      - We appreciate your honest review. We have forwarded your feedback to our quality team.
+      - We are sorry to hear about your experience. Please reach out to our support team.
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 1500
+    sample_values:
+      - Sun Oct 11 2020 12:02:32 GMT-0400 (Eastern Daylight Time)
+      - Tue Oct 20 2020 09:14:40 GMT-0400 (Eastern Daylight Time)
+      - Wed Nov 25 2020 07:03:21 GMT-0500 (Eastern Standard Time)
+      - Sun Dec 13 2020 18:54:12 GMT-0500 (Eastern Standard Time)
+      - Wed Dec 23 2020 16:09:08 GMT-0500 (Eastern Standard Time)
+      - Fri Jan 01 2021 16:30:32 GMT-0500 (Eastern Standard Time)
+      - Sat Jan 09 2021 19:14:23 GMT-0500 (Eastern Standard Time)
+      - Sun Jan 17 2021 10:02:30 GMT-0500 (Eastern Standard Time)
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: review_respons_count
+    sql: id
+    type: count_distinct
+joins:
+  - target_entity: ProductReviews
+    relationship: many_to_one
+    join_columns:
+      from: review_id
+      to: id
+    description: Each review_respons belongs to one product_review
+use_cases:
+  - Use for segmentation analysis by responder, body
+  - Use for time-series analysis using created_at
+  - Join with product_reviews for cross-entity analysis
+query_patterns:
+  - description: ReviewResponses by responder
+    sql: |-
+      SELECT responder, COUNT(*) as count
+      FROM review_responses
+      GROUP BY responder
+      ORDER BY count DESC
+  - description: ReviewResponses by body
+    sql: |-
+      SELECT body, COUNT(*) as count
+      FROM review_responses
+      GROUP BY body
+      ORDER BY count DESC

@@ -1,0 +1,13 @@
+{
+  "name": "@atlas/sandbox-sidecar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/server.ts",
+    "dev": "bun run --watch src/server.ts"
+  },
+  "dependencies": {
+    "@atlas/api": "workspace:*"
+  }
+}

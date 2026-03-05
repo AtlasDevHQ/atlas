@@ -1,0 +1,198 @@
+name: Shipments
+type: fact_table
+table: shipments
+grain: one row per shipment record
+description: Auto-profiled schema for shipments (22,000 rows). Contains 10 columns, linked to orders, warehouses.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 22000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: order_id
+    sql: order_id
+    type: number
+    description: Foreign key to orders
+    unique_count: 14657
+    sample_values:
+      - '3'
+      - '6'
+      - '7'
+      - '9'
+      - '10'
+      - '11'
+      - '12'
+      - '13'
+  - name: warehouse_id
+    sql: warehouse_id
+    type: number
+    description: Foreign key to warehouses
+    unique_count: 5
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+  - name: carrier
+    sql: carrier
+    type: string
+    unique_count: 5
+    sample_values:
+      - DHL
+      - FedEx
+      - OnTrac
+      - UPS
+      - USPS
+  - name: carrier_id
+    sql: carrier_id
+    type: number
+    unique_count: 8
+    null_count: 14563
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: tracking_number
+    sql: tracking_number
+    type: string
+    unique_count: 22000
+    sample_values:
+      - NVM00000A351317
+      - NVM00001404C498
+      - NVM0000C8CE4838
+      - NVM0001F991FAA7
+      - NVM00079F10499B
+      - NVM000809BE8441
+      - NVM0008EA8EDFBD
+      - NVM0009CFC4F927
+  - name: status
+    sql: status
+    type: string
+    unique_count: 5
+    sample_values:
+      - delivered
+      - in_transit
+      - pending
+      - returned
+      - shipped
+  - name: shipped_at
+    sql: shipped_at
+    type: date
+    unique_count: 22000
+    sample_values:
+      - Sat Mar 14 2020 21:56:30 GMT-0400 (Eastern Daylight Time)
+      - Sat Mar 14 2020 23:53:01 GMT-0400 (Eastern Daylight Time)
+      - Sun Mar 15 2020 01:49:31 GMT-0400 (Eastern Daylight Time)
+      - Sun Mar 15 2020 03:46:02 GMT-0400 (Eastern Daylight Time)
+      - Sun Mar 15 2020 05:42:32 GMT-0400 (Eastern Daylight Time)
+      - Sun Mar 15 2020 07:39:03 GMT-0400 (Eastern Daylight Time)
+      - Sun Mar 15 2020 09:35:33 GMT-0400 (Eastern Daylight Time)
+      - Sun Mar 15 2020 11:32:04 GMT-0400 (Eastern Daylight Time)
+  - name: delivered_at
+    sql: delivered_at
+    type: date
+    unique_count: 18721
+    null_count: 3279
+    sample_values:
+      - Wed Mar 18 2020 08:58:08 GMT-0400 (Eastern Daylight Time)
+      - Thu Mar 19 2020 10:06:49 GMT-0400 (Eastern Daylight Time)
+      - Thu Mar 19 2020 12:45:02 GMT-0400 (Eastern Daylight Time)
+      - Thu Mar 19 2020 21:45:26 GMT-0400 (Eastern Daylight Time)
+      - Fri Mar 20 2020 00:38:16 GMT-0400 (Eastern Daylight Time)
+      - Fri Mar 20 2020 11:13:25 GMT-0400 (Eastern Daylight Time)
+      - Fri Mar 20 2020 12:00:22 GMT-0400 (Eastern Daylight Time)
+      - Fri Mar 20 2020 12:53:40 GMT-0400 (Eastern Daylight Time)
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 22000
+    sample_values:
+      - Fri Mar 13 2020 07:51:32 GMT-0400 (Eastern Daylight Time)
+      - Fri Mar 13 2020 08:49:20 GMT-0400 (Eastern Daylight Time)
+      - Fri Mar 13 2020 09:47:27 GMT-0400 (Eastern Daylight Time)
+      - Fri Mar 13 2020 17:29:37 GMT-0400 (Eastern Daylight Time)
+      - Fri Mar 13 2020 17:53:06 GMT-0400 (Eastern Daylight Time)
+      - Fri Mar 13 2020 18:31:23 GMT-0400 (Eastern Daylight Time)
+      - Sat Mar 14 2020 05:55:51 GMT-0400 (Eastern Daylight Time)
+      - Sat Mar 14 2020 12:06:16 GMT-0400 (Eastern Daylight Time)
+  - name: shipped_at_year
+    sql: EXTRACT(YEAR FROM shipped_at)
+    type: number
+    description: Year extracted from shipped_at
+    virtual: true
+  - name: shipped_at_month
+    sql: TO_CHAR(shipped_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from shipped_at
+    virtual: true
+  - name: delivered_at_year
+    sql: EXTRACT(YEAR FROM delivered_at)
+    type: number
+    description: Year extracted from delivered_at
+    virtual: true
+  - name: delivered_at_month
+    sql: TO_CHAR(delivered_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from delivered_at
+    virtual: true
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: shipment_count
+    sql: id
+    type: count_distinct
+joins:
+  - target_entity: Orders
+    relationship: many_to_one
+    join_columns:
+      from: order_id
+      to: id
+    description: Each shipment belongs to one order
+  - target_entity: Warehouses
+    relationship: many_to_one
+    join_columns:
+      from: warehouse_id
+      to: id
+    description: Each shipment belongs to one warehous
+use_cases:
+  - Use for segmentation analysis by carrier, status
+  - Use for time-series analysis using shipped_at, delivered_at, created_at
+  - Join with orders, warehouses for cross-entity analysis
+  - Avoid for row-level shipment_items queries — use those entities directly
+query_patterns:
+  - description: Shipments by carrier
+    sql: |-
+      SELECT carrier, COUNT(*) as count
+      FROM shipments
+      GROUP BY carrier
+      ORDER BY count DESC
+  - description: Shipments by status
+    sql: |-
+      SELECT status, COUNT(*) as count
+      FROM shipments
+      GROUP BY status
+      ORDER BY count DESC

@@ -1,0 +1,36 @@
+id: "cs-018"
+question: "Show each organization's plan tier and whether they upgraded or downgraded over time"
+schema: cybersec
+difficulty: complex
+category: window
+tags: [subscriptions, plans, organizations, upgrade, lag]
+gold_sql: |
+  WITH sub_history AS (
+    SELECT
+      o.name AS organization,
+      p.tier,
+      p.name AS plan_name,
+      s.started_at,
+      s.status,
+      LAG(p.tier) OVER (PARTITION BY s.org_id ORDER BY s.started_at) AS previous_tier
+    FROM subscriptions s
+    JOIN organizations o ON s.org_id = o.id
+    JOIN plans p ON s.plan_id = p.id
+  )
+  SELECT
+    organization,
+    plan_name,
+    tier,
+    previous_tier,
+    started_at,
+    status,
+    CASE
+      WHEN previous_tier IS NULL THEN 'initial'
+      WHEN tier > previous_tier THEN 'upgrade'
+      WHEN tier < previous_tier THEN 'downgrade'
+      ELSE 'same'
+    END AS change_type
+  FROM sub_history
+  ORDER BY organization, started_at
+expected_rows: null
+notes: "Tests LAG window function to detect subscription plan changes over time"

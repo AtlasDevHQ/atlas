@@ -1,0 +1,219 @@
+name: ScanResults
+type: fact_table
+table: scan_results
+grain: one row per scan result record
+description: Auto-profiled schema for scan_results (80,000 rows). Contains 9 columns, linked to scans, assets, vulnerabilities.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 80000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: scan_id
+    sql: scan_id
+    type: number
+    unique_count: 5000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+    profiler_notes:
+      - Likely FK to scans.id (inferred from column name, no constraint exists)
+  - name: asset_id
+    sql: asset_id
+    type: number
+    unique_count: 15263
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+    profiler_notes:
+      - Likely FK to assets.id (inferred from column name, no constraint exists)
+  - name: vulnerability_id
+    sql: vulnerability_id
+    type: number
+    unique_count: 500
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+    profiler_notes:
+      - Likely FK to vulnerabilities.id (inferred from column name, no constraint exists)
+  - name: risk_level
+    sql: risk_level
+    type: number
+    unique_count: 10
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: status
+    sql: status
+    type: string
+    unique_count: 5
+    sample_values:
+      - accepted_risk
+      - false_positive
+      - fixed
+      - in_progress
+      - open
+  - name: details
+    sql: details
+    type: string
+    unique_count: 1
+    null_count: 71881
+    sample_values:
+      - Auto-detected during scheduled scan
+  - name: found_at
+    sql: found_at
+    type: date
+    unique_count: 80000
+    sample_values:
+      - Tue Dec 31 2019 19:32:51 GMT-0500 (Eastern Standard Time)
+      - Tue Dec 31 2019 20:05:42 GMT-0500 (Eastern Standard Time)
+      - Tue Dec 31 2019 20:38:33 GMT-0500 (Eastern Standard Time)
+      - Tue Dec 31 2019 21:11:24 GMT-0500 (Eastern Standard Time)
+      - Tue Dec 31 2019 21:44:15 GMT-0500 (Eastern Standard Time)
+      - Tue Dec 31 2019 22:17:06 GMT-0500 (Eastern Standard Time)
+      - Tue Dec 31 2019 22:49:57 GMT-0500 (Eastern Standard Time)
+      - Tue Dec 31 2019 23:22:48 GMT-0500 (Eastern Standard Time)
+  - name: resolved_at
+    sql: resolved_at
+    type: date
+    unique_count: 28122
+    null_count: 51878
+    sample_values:
+      - Fri Jan 03 2020 18:35:38 GMT-0500 (Eastern Standard Time)
+      - Sat Jan 04 2020 00:30:26 GMT-0500 (Eastern Standard Time)
+      - Sun Jan 05 2020 10:27:50 GMT-0500 (Eastern Standard Time)
+      - Mon Jan 06 2020 23:41:56 GMT-0500 (Eastern Standard Time)
+      - Tue Jan 07 2020 07:58:56 GMT-0500 (Eastern Standard Time)
+      - Wed Jan 08 2020 16:25:49 GMT-0500 (Eastern Standard Time)
+      - Thu Jan 09 2020 12:14:49 GMT-0500 (Eastern Standard Time)
+      - Thu Jan 09 2020 16:53:52 GMT-0500 (Eastern Standard Time)
+  - name: risk_level_bucket
+    sql: |-
+      CASE
+        WHEN risk_level < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY risk_level) FROM scan_results) THEN 'Low'
+        WHEN risk_level < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY risk_level) FROM scan_results) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: risk level bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: found_at_year
+    sql: EXTRACT(YEAR FROM found_at)
+    type: number
+    description: Year extracted from found_at
+    virtual: true
+  - name: found_at_month
+    sql: TO_CHAR(found_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from found_at
+    virtual: true
+  - name: resolved_at_year
+    sql: EXTRACT(YEAR FROM resolved_at)
+    type: number
+    description: Year extracted from resolved_at
+    virtual: true
+  - name: resolved_at_month
+    sql: TO_CHAR(resolved_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from resolved_at
+    virtual: true
+measures:
+  - name: scan_result_count
+    sql: id
+    type: count_distinct
+  - name: total_risk_level
+    sql: risk_level
+    type: sum
+    description: Sum of risk level
+  - name: avg_risk_level
+    sql: risk_level
+    type: avg
+    description: Average risk level
+joins:
+  - target_entity: Scans
+    relationship: many_to_one
+    join_columns:
+      from: scan_id
+      to: id
+    inferred: true
+    note: No FK constraint exists — inferred from column name scan_id
+    description: Each scan_result likely belongs to one scan
+  - target_entity: Assets
+    relationship: many_to_one
+    join_columns:
+      from: asset_id
+      to: id
+    inferred: true
+    note: No FK constraint exists — inferred from column name asset_id
+    description: Each scan_result likely belongs to one asset
+  - target_entity: Vulnerabilities
+    relationship: many_to_one
+    join_columns:
+      from: vulnerability_id
+      to: id
+    inferred: true
+    note: No FK constraint exists — inferred from column name vulnerability_id
+    description: Each scan_result likely belongs to one vulnerability
+use_cases:
+  - Use for segmentation analysis by status, details
+  - Use for aggregation and trends on risk_level
+  - Use for time-series analysis using found_at, resolved_at
+  - Join with scans, assets, vulnerabilities for cross-entity analysis
+  - Avoid for row-level vulnerability_instances queries — use those entities directly
+query_patterns:
+  - description: ScanResults by status
+    sql: |-
+      SELECT status, COUNT(*) as count
+      FROM scan_results
+      GROUP BY status
+      ORDER BY count DESC
+  - description: ScanResults by details
+    sql: |-
+      SELECT details, COUNT(*) as count
+      FROM scan_results
+      GROUP BY details
+      ORDER BY count DESC
+  - description: Total risk_level by status
+    sql: |-
+      SELECT status, SUM(risk_level) as total_risk_level, COUNT(*) as count
+      FROM scan_results
+      GROUP BY status
+      ORDER BY total_risk_level DESC

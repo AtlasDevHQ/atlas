@@ -1,0 +1,38 @@
+metrics:
+  - id: old_orders_v1_count
+    label: Total OldOrdersV1
+    description: Count of distinct old_orders_v1 records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM old_orders_v1
+    aggregation: count_distinct
+  - id: total_order_total
+    label: Total order total
+    description: Sum of order_total across all old_orders_v1.
+    type: atomic
+    source:
+      entity: OldOrdersV1
+      measure: total_order_total
+    sql: |-
+      SELECT SUM(order_total) as total_order_total
+      FROM old_orders_v1
+    aggregation: sum
+    objective: maximize
+  - id: avg_order_total
+    label: Average order total
+    description: Average order_total per old_orders_v1.
+    type: atomic
+    sql: |-
+      SELECT AVG(order_total) as avg_order_total
+      FROM old_orders_v1
+    aggregation: avg
+  - id: order_total_by_order_status
+    label: order total by order_status
+    description: order_total broken down by order_status.
+    type: atomic
+    sql: |-
+      SELECT order_status, SUM(order_total) as total_order_total, AVG(order_total) as avg_order_total, COUNT(*) as count
+      FROM old_orders_v1
+      GROUP BY order_status
+      ORDER BY total_order_total DESC

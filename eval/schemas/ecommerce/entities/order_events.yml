@@ -1,0 +1,115 @@
+name: OrderEvents
+type: fact_table
+table: order_events
+grain: one row per order event record
+description: Auto-profiled schema for order_events (60,000 rows). Contains 5 columns, linked to orders.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 60000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: order_id
+    sql: order_id
+    type: number
+    unique_count: 22772
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+      - '9'
+    profiler_notes:
+      - Likely FK to orders.id (inferred from column name, no constraint exists)
+  - name: event_type
+    sql: event_type
+    type: string
+    unique_count: 7
+    sample_values:
+      - canceled
+      - confirmed
+      - delivered
+      - placed
+      - processing
+      - returned
+      - shipped
+  - name: description
+    sql: description
+    type: string
+    unique_count: 9
+    sample_values:
+      - Canceled by customer
+      - Delivered to customer
+      - Order placed by customer
+      - Order sent to fulfillment
+      - Out for delivery
+      - Payment confirmed
+      - Refund processed
+      - Return initiated
+      - Shipped via carrier
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 60000
+    sample_values:
+      - Sat Feb 29 2020 19:43:04 GMT-0500 (Eastern Standard Time)
+      - Sat Feb 29 2020 20:26:09 GMT-0500 (Eastern Standard Time)
+      - Sat Feb 29 2020 21:09:14 GMT-0500 (Eastern Standard Time)
+      - Sat Feb 29 2020 21:52:19 GMT-0500 (Eastern Standard Time)
+      - Sat Feb 29 2020 22:35:24 GMT-0500 (Eastern Standard Time)
+      - Sat Feb 29 2020 23:18:28 GMT-0500 (Eastern Standard Time)
+      - Sun Mar 01 2020 00:01:33 GMT-0500 (Eastern Standard Time)
+      - Sun Mar 01 2020 00:44:38 GMT-0500 (Eastern Standard Time)
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: order_event_count
+    sql: id
+    type: count_distinct
+joins:
+  - target_entity: Orders
+    relationship: many_to_one
+    join_columns:
+      from: order_id
+      to: id
+    inferred: true
+    note: No FK constraint exists — inferred from column name order_id
+    description: Each order_event likely belongs to one order
+use_cases:
+  - Use for segmentation analysis by event_type, description
+  - Use for time-series analysis using created_at
+  - Join with orders for cross-entity analysis
+query_patterns:
+  - description: OrderEvents by event_type
+    sql: |-
+      SELECT event_type, COUNT(*) as count
+      FROM order_events
+      GROUP BY event_type
+      ORDER BY count DESC
+  - description: OrderEvents by description
+    sql: |-
+      SELECT description, COUNT(*) as count
+      FROM order_events
+      GROUP BY description
+      ORDER BY count DESC

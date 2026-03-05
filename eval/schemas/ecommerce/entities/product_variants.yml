@@ -1,0 +1,177 @@
+name: ProductVariants
+type: fact_table
+table: product_variants
+grain: one row per product variant record
+description: Auto-profiled schema for product_variants (3,200 rows). Contains 8 columns, linked to products.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 3200
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: product_id
+    sql: product_id
+    type: number
+    description: Foreign key to products
+    unique_count: 800
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: sku
+    sql: sku
+    type: string
+    unique_count: 1770
+    sample_values:
+      - NVM-0001-001
+      - NVM-0001-002
+      - NVM-0001-003
+      - NVM-0001-004
+      - NVM-0002-005
+      - NVM-0002-006
+      - NVM-0002-007
+      - NVM-0002-008
+  - name: name
+    sql: name
+    type: string
+    unique_count: 80
+    sample_values:
+      - Full / Blush
+      - Full / Charcoal
+      - Full / Gray
+      - Full / Ivory
+      - Full / Navy
+      - Full / Ocean
+      - Full / Sage
+      - Full / Sand
+  - name: price_cents
+    sql: price_cents
+    type: number
+    unique_count: 2954
+    sample_values:
+      - '3000'
+      - '3008'
+      - '3011'
+      - '3012'
+      - '3017'
+      - '3022'
+      - '3028'
+      - '3030'
+  - name: weight_oz
+    sql: weight_oz
+    type: number
+    unique_count: 120
+    sample_values:
+      - '8'
+      - '9'
+      - '10'
+      - '11'
+      - '12'
+      - '13'
+      - '14'
+      - '15'
+  - name: is_active
+    sql: is_active
+    type: boolean
+    unique_count: 2
+    sample_values:
+      - 'false'
+      - 'true'
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 3200
+    sample_values:
+      - Fri Jan 31 2020 19:40:55 GMT-0500 (Eastern Standard Time)
+      - Sat Feb 01 2020 14:22:11 GMT-0500 (Eastern Standard Time)
+      - Sat Feb 01 2020 18:28:54 GMT-0500 (Eastern Standard Time)
+      - Sun Feb 02 2020 05:40:17 GMT-0500 (Eastern Standard Time)
+      - Sun Feb 02 2020 21:15:13 GMT-0500 (Eastern Standard Time)
+      - Sun Feb 02 2020 22:17:40 GMT-0500 (Eastern Standard Time)
+      - Mon Feb 03 2020 03:55:18 GMT-0500 (Eastern Standard Time)
+      - Mon Feb 03 2020 14:49:24 GMT-0500 (Eastern Standard Time)
+  - name: price_cents_bucket
+    sql: |-
+      CASE
+        WHEN price_cents < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY price_cents) FROM product_variants) THEN 'Low'
+        WHEN price_cents < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY price_cents) FROM product_variants) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: price cents bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: weight_oz_bucket
+    sql: |-
+      CASE
+        WHEN weight_oz < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY weight_oz) FROM product_variants) THEN 'Low'
+        WHEN weight_oz < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY weight_oz) FROM product_variants) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: weight oz bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: product_variant_count
+    sql: id
+    type: count_distinct
+  - name: total_price_cents
+    sql: price_cents
+    type: sum
+    description: Sum of price cents
+  - name: avg_price_cents
+    sql: price_cents
+    type: avg
+    description: Average price cents
+  - name: total_weight_oz
+    sql: weight_oz
+    type: sum
+    description: Sum of weight oz
+  - name: avg_weight_oz
+    sql: weight_oz
+    type: avg
+    description: Average weight oz
+joins:
+  - target_entity: Products
+    relationship: many_to_one
+    join_columns:
+      from: product_id
+      to: id
+    description: Each product_variant belongs to one product
+use_cases:
+  - Use for aggregation and trends on price_cents, weight_oz
+  - Use for time-series analysis using created_at
+  - Join with products for cross-entity analysis
+  - Avoid for row-level order_items queries — use those entities directly

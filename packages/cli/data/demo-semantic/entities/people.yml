@@ -1,0 +1,145 @@
+name: People
+type: fact_table
+table: people
+grain: one row per person record
+description: Auto-profiled schema for people (198 rows). Contains 8 columns, linked to companies.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 198
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: name
+    sql: name
+    type: string
+    unique_count: 198
+    sample_values:
+      - Alex Brown
+      - Alex Chen
+      - Alex Garcia
+      - Alex Kim
+      - Alex Mueller
+      - Alex Patel
+      - Alex Silva
+      - Alex Smith
+  - name: email
+    sql: email
+    type: string
+    unique_count: 198
+    sample_values:
+      - alex.brown@company32.com
+      - alex.chen@company12.com
+      - alex.garcia@company42.com
+      - alex.kim@company32.com
+      - alex.mueller@company2.com
+      - alex.patel@company22.com
+      - alex.silva@company22.com
+      - alex.smith@company1.com
+  - name: company_id
+    sql: company_id
+    type: number
+    description: Foreign key to companies
+    unique_count: 50
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: department
+    sql: department
+    type: string
+    unique_count: 6
+    sample_values:
+      - Engineering
+      - Finance
+      - Marketing
+      - Operations
+      - Product
+      - Sales
+  - name: seniority
+    sql: seniority
+    type: string
+    unique_count: 4
+    sample_values:
+      - Executive
+      - Junior
+      - Mid
+      - Senior
+  - name: title
+    sql: title
+    type: string
+    unique_count: 30
+    sample_values:
+      - Accountant
+      - Account Executive
+      - Backend Engineer
+      - Brand Manager
+      - CFO
+      - Content Strategist
+      - Controller
+      - Data Analyst
+  - name: start_date
+    sql: start_date
+    type: date
+    unique_count: 158
+    sample_values:
+      - Wed Jan 10 2018 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Mon Jan 15 2018 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Thu Feb 01 2018 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Sat Mar 10 2018 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Tue Mar 20 2018 00:00:00 GMT-0400 (Eastern Daylight Time)
+      - Sun Apr 01 2018 00:00:00 GMT-0400 (Eastern Daylight Time)
+      - Sun Apr 15 2018 00:00:00 GMT-0400 (Eastern Daylight Time)
+      - Thu May 10 2018 00:00:00 GMT-0400 (Eastern Daylight Time)
+  - name: start_date_year
+    sql: EXTRACT(YEAR FROM start_date)
+    type: number
+    description: Year extracted from start_date
+    virtual: true
+  - name: start_date_month
+    sql: TO_CHAR(start_date, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from start_date
+    virtual: true
+measures:
+  - name: person_count
+    sql: id
+    type: count_distinct
+joins:
+  - target_entity: Companies
+    relationship: many_to_one
+    join_columns:
+      from: company_id
+      to: id
+    description: Each person belongs to one company
+use_cases:
+  - Use for segmentation analysis by department, seniority
+  - Use for time-series analysis using start_date
+  - Join with companies for cross-entity analysis
+query_patterns:
+  - description: People by department
+    sql: |-
+      SELECT department, COUNT(*) as count
+      FROM people
+      GROUP BY department
+      ORDER BY count DESC
+  - description: People by seniority
+    sql: |-
+      SELECT seniority, COUNT(*) as count
+      FROM people
+      GROUP BY seniority
+      ORDER BY count DESC

@@ -1,0 +1,38 @@
+id: "ec-004"
+question: "What is the return rate by product category?"
+schema: ecommerce
+difficulty: medium
+category: cte
+tags: [returns, return_items, order_items, products, categories, return-rate]
+gold_sql: |
+  WITH category_orders AS (
+    SELECT
+      cat.name AS category_name,
+      SUM(oi.quantity) AS total_units_sold
+    FROM order_items oi
+    JOIN product_variants pv ON oi.product_variant_id = pv.id
+    JOIN products p ON pv.product_id = p.id
+    JOIN categories cat ON p.category_id = cat.id
+    GROUP BY cat.name
+  ),
+  category_returns AS (
+    SELECT
+      cat.name AS category_name,
+      SUM(ri.quantity) AS total_units_returned
+    FROM return_items ri
+    JOIN order_items oi ON ri.order_item_id = oi.id
+    JOIN product_variants pv ON oi.product_variant_id = pv.id
+    JOIN products p ON pv.product_id = p.id
+    JOIN categories cat ON p.category_id = cat.id
+    GROUP BY cat.name
+  )
+  SELECT
+    co.category_name,
+    co.total_units_sold,
+    COALESCE(cr.total_units_returned, 0) AS total_units_returned,
+    ROUND(COALESCE(cr.total_units_returned, 0)::numeric / co.total_units_sold * 100, 1) AS return_rate_pct
+  FROM category_orders co
+  LEFT JOIN category_returns cr ON co.category_name = cr.category_name
+  ORDER BY return_rate_pct DESC
+expected_rows: null
+notes: "Tests dual-CTE pattern with multi-hop JOINs and LEFT JOIN for return rate analysis"

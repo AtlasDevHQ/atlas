@@ -1,0 +1,29 @@
+metrics:
+  - id: promotion_usages_count
+    label: Total PromotionUsages
+    description: Count of distinct promotion_usages records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM promotion_usages
+    aggregation: count_distinct
+  - id: total_discount_cents
+    label: Total discount cents
+    description: Sum of discount_cents across all promotion_usages.
+    type: atomic
+    source:
+      entity: PromotionUsages
+      measure: total_discount_cents
+    sql: |-
+      SELECT SUM(discount_cents) as total_discount_cents
+      FROM promotion_usages
+    aggregation: sum
+    objective: maximize
+  - id: avg_discount_cents
+    label: Average discount cents
+    description: Average discount_cents per promotion_usage.
+    type: atomic
+    sql: |-
+      SELECT AVG(discount_cents) as avg_discount_cents
+      FROM promotion_usages
+    aggregation: avg

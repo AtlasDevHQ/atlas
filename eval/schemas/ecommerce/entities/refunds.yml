@@ -1,0 +1,150 @@
+name: Refunds
+type: fact_table
+table: refunds
+grain: one row per refund record
+description: Auto-profiled schema for refunds (2,500 rows). Contains 6 columns, linked to payments.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 2500
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: payment_id
+    sql: payment_id
+    type: number
+    description: Foreign key to payments
+    unique_count: 2390
+    sample_values:
+      - '12'
+      - '14'
+      - '39'
+      - '42'
+      - '44'
+      - '46'
+      - '54'
+      - '59'
+  - name: amount_cents
+    sql: amount_cents
+    type: number
+    unique_count: 2303
+    sample_values:
+      - '1016'
+      - '1026'
+      - '1034'
+      - '1036'
+      - '1039'
+      - '1040'
+      - '1048'
+      - '1056'
+  - name: reason
+    sql: reason
+    type: string
+    unique_count: 8
+    sample_values:
+      - Better price found
+      - Changed mind
+      - Defective product
+      - Duplicate order
+      - Item not as described
+      - Late delivery
+      - Quality issue
+      - Wrong item shipped
+  - name: status
+    sql: status
+    type: string
+    unique_count: 4
+    sample_values:
+      - completed
+      - denied
+      - pending
+      - processing
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 2500
+    sample_values:
+      - Fri Jun 12 2020 14:31:34 GMT-0400 (Eastern Daylight Time)
+      - Sun Jul 26 2020 05:56:33 GMT-0400 (Eastern Daylight Time)
+      - Thu Aug 06 2020 15:16:15 GMT-0400 (Eastern Daylight Time)
+      - Sat Aug 08 2020 01:21:13 GMT-0400 (Eastern Daylight Time)
+      - Tue Aug 11 2020 13:23:48 GMT-0400 (Eastern Daylight Time)
+      - Fri Aug 14 2020 12:55:17 GMT-0400 (Eastern Daylight Time)
+      - Sat Aug 22 2020 19:25:43 GMT-0400 (Eastern Daylight Time)
+      - Mon Aug 24 2020 11:38:30 GMT-0400 (Eastern Daylight Time)
+  - name: amount_cents_bucket
+    sql: |-
+      CASE
+        WHEN amount_cents < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY amount_cents) FROM refunds) THEN 'Low'
+        WHEN amount_cents < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY amount_cents) FROM refunds) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: amount cents bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: refund_count
+    sql: id
+    type: count_distinct
+  - name: total_amount_cents
+    sql: amount_cents
+    type: sum
+    description: Sum of amount cents
+  - name: avg_amount_cents
+    sql: amount_cents
+    type: avg
+    description: Average amount cents
+joins:
+  - target_entity: Payments
+    relationship: many_to_one
+    join_columns:
+      from: payment_id
+      to: id
+    description: Each refund belongs to one payment
+use_cases:
+  - Use for segmentation analysis by reason, status
+  - Use for aggregation and trends on amount_cents
+  - Use for time-series analysis using created_at
+  - Join with payments for cross-entity analysis
+query_patterns:
+  - description: Refunds by reason
+    sql: |-
+      SELECT reason, COUNT(*) as count
+      FROM refunds
+      GROUP BY reason
+      ORDER BY count DESC
+  - description: Refunds by status
+    sql: |-
+      SELECT status, COUNT(*) as count
+      FROM refunds
+      GROUP BY status
+      ORDER BY count DESC
+  - description: Total amount_cents by reason
+    sql: |-
+      SELECT reason, SUM(amount_cents) as total_amount_cents, COUNT(*) as count
+      FROM refunds
+      GROUP BY reason
+      ORDER BY total_amount_cents DESC

@@ -1,0 +1,178 @@
+name: PaymentMethodsBackup
+type: fact_table
+table: payment_methods_backup
+grain: one row per payment methods backup record
+description: >-
+  Auto-profiled schema for payment_methods_backup (2,000 rows). Contains 8 columns. POSSIBLY ABANDONED — name matches
+  legacy/temp pattern and no tables reference it.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 2000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: cust_id
+    sql: cust_id
+    type: number
+    unique_count: 1792
+    sample_values:
+      - '5001'
+      - '5006'
+      - '5008'
+      - '5010'
+      - '5014'
+      - '5018'
+      - '5027'
+      - '5032'
+  - name: card_type
+    sql: card_type
+    type: string
+    unique_count: 4
+    sample_values:
+      - amex
+      - discover
+      - mastercard
+      - visa
+  - name: last_four
+    sql: last_four
+    type: string
+    unique_count: 1799
+    sample_values:
+      - '0000'
+      - '0003'
+      - '0007'
+      - '0011'
+      - '0013'
+      - '0014'
+      - '0015'
+      - '0017'
+  - name: exp_month
+    sql: exp_month
+    type: number
+    unique_count: 12
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: exp_year
+    sql: exp_year
+    type: number
+    unique_count: 4
+    sample_values:
+      - '2023'
+      - '2024'
+      - '2025'
+      - '2026'
+  - name: is_primary
+    sql: is_primary
+    type: boolean
+    unique_count: 2
+    sample_values:
+      - 'false'
+      - 'true'
+  - name: created_date
+    sql: created_date
+    type: date
+    unique_count: 2000
+    sample_values:
+      - Tue Jan 14 2020 19:09:19 GMT-0500 (Eastern Standard Time)
+      - Wed Jan 15 2020 01:03:56 GMT-0500 (Eastern Standard Time)
+      - Wed Jan 15 2020 03:42:36 GMT-0500 (Eastern Standard Time)
+      - Wed Jan 15 2020 09:44:14 GMT-0500 (Eastern Standard Time)
+      - Wed Jan 15 2020 16:22:12 GMT-0500 (Eastern Standard Time)
+      - Wed Jan 15 2020 18:13:36 GMT-0500 (Eastern Standard Time)
+      - Thu Jan 16 2020 09:53:50 GMT-0500 (Eastern Standard Time)
+      - Thu Jan 16 2020 19:20:18 GMT-0500 (Eastern Standard Time)
+  - name: exp_month_bucket
+    sql: |-
+      CASE
+        WHEN exp_month < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY exp_month) FROM payment_methods_backup) THEN 'Low'
+        WHEN exp_month < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY exp_month) FROM payment_methods_backup) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: exp month bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: exp_year_bucket
+    sql: |-
+      CASE
+        WHEN exp_year < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY exp_year) FROM payment_methods_backup) THEN 'Low'
+        WHEN exp_year < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY exp_year) FROM payment_methods_backup) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: exp year bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: created_date_year
+    sql: EXTRACT(YEAR FROM created_date)
+    type: number
+    description: Year extracted from created_date
+    virtual: true
+  - name: created_date_month
+    sql: TO_CHAR(created_date, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_date
+    virtual: true
+measures:
+  - name: payment_methods_backup_count
+    sql: id
+    type: count_distinct
+  - name: total_exp_month
+    sql: exp_month
+    type: sum
+    description: Sum of exp month
+  - name: avg_exp_month
+    sql: exp_month
+    type: avg
+    description: Average exp month
+  - name: total_exp_year
+    sql: exp_year
+    type: sum
+    description: Sum of exp year
+  - name: avg_exp_year
+    sql: exp_year
+    type: avg
+    description: Average exp year
+use_cases:
+  - 'WARNING: This table appears to be abandoned/legacy. Verify with the user before querying'
+  - Use for segmentation analysis by card_type
+  - Use for aggregation and trends on exp_month, exp_year
+  - Use for time-series analysis using created_date
+query_patterns:
+  - description: PaymentMethodsBackup by card_type
+    sql: |-
+      SELECT card_type, COUNT(*) as count
+      FROM payment_methods_backup
+      GROUP BY card_type
+      ORDER BY count DESC
+  - description: Total exp_month by card_type
+    sql: |-
+      SELECT card_type, SUM(exp_month) as total_exp_month, COUNT(*) as count
+      FROM payment_methods_backup
+      GROUP BY card_type
+      ORDER BY total_exp_month DESC
+profiler_notes:
+  - 'Possibly abandoned: name matches legacy/temp pattern and no other tables reference it'

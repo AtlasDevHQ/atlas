@@ -1,0 +1,118 @@
+name: EmailCampaigns
+type: fact_table
+table: email_campaigns
+grain: one row per email campaign record
+description: Auto-profiled schema for email_campaigns (50 rows). Contains 7 columns.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 50
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: name
+    sql: name
+    type: string
+    unique_count: 50
+    sample_values:
+      - Anniversary - 14
+      - Anniversary - 28
+      - Anniversary - 30
+      - Anniversary - 50
+      - Flash Sale - 11
+      - Flash Sale - 16
+      - Flash Sale - 40
+      - Flash Sale - 45
+  - name: subject
+    sql: subject
+    type: string
+    unique_count: 12
+    sample_values:
+      - Come back for 20% off
+      - Dont miss our biggest sale!
+      - Its been a while...
+      - New arrivals just dropped
+      - Special offer just for you
+      - Time for a refresh?
+      - We miss you!
+      - Welcome to NovaMart
+  - name: type
+    sql: type
+    type: string
+    unique_count: 4
+    sample_values:
+      - promotional
+      - retention
+      - transactional
+      - winback
+  - name: status
+    sql: status
+    type: string
+    unique_count: 3
+    sample_values:
+      - draft
+      - scheduled
+      - sent
+  - name: sent_at
+    sql: sent_at
+    type: date
+    unique_count: 38
+    null_count: 12
+    sample_values:
+      - Thu Aug 06 2020 17:26:35 GMT-0400 (Eastern Daylight Time)
+      - Mon Sep 28 2020 04:08:55 GMT-0400 (Eastern Daylight Time)
+      - Fri Oct 16 2020 19:18:26 GMT-0400 (Eastern Daylight Time)
+      - Tue Oct 20 2020 06:52:40 GMT-0400 (Eastern Daylight Time)
+      - Fri Nov 20 2020 16:01:29 GMT-0500 (Eastern Standard Time)
+      - Thu Dec 03 2020 08:48:35 GMT-0500 (Eastern Standard Time)
+      - Thu Dec 24 2020 17:18:50 GMT-0500 (Eastern Standard Time)
+      - Thu Jan 07 2021 10:05:42 GMT-0500 (Eastern Standard Time)
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 50
+    sample_values:
+      - Tue Jul 14 2020 08:55:36 GMT-0400 (Eastern Daylight Time)
+      - Fri Jul 24 2020 17:42:06 GMT-0400 (Eastern Daylight Time)
+      - Mon Oct 05 2020 04:54:07 GMT-0400 (Eastern Daylight Time)
+      - Fri Oct 30 2020 22:10:03 GMT-0400 (Eastern Daylight Time)
+      - Fri Nov 13 2020 10:05:18 GMT-0500 (Eastern Standard Time)
+      - Sun Dec 06 2020 09:26:33 GMT-0500 (Eastern Standard Time)
+      - Mon Dec 07 2020 05:03:57 GMT-0500 (Eastern Standard Time)
+      - Wed Dec 30 2020 05:40:36 GMT-0500 (Eastern Standard Time)
+  - name: sent_at_year
+    sql: EXTRACT(YEAR FROM sent_at)
+    type: number
+    description: Year extracted from sent_at
+    virtual: true
+  - name: sent_at_month
+    sql: TO_CHAR(sent_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from sent_at
+    virtual: true
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: email_campaign_count
+    sql: id
+    type: count_distinct
+use_cases:
+  - Use for time-series analysis using sent_at, created_at
+  - Avoid for row-level email_sends queries — use those entities directly

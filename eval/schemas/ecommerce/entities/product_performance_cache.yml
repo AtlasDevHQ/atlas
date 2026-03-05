@@ -1,0 +1,268 @@
+name: ProductPerformanceCache
+type: fact_table
+table: product_performance_cache
+grain: one row per product performance cache record
+description: >-
+  Auto-profiled schema for product_performance_cache (800 rows). Contains 10 columns, linked to products. DENORMALIZED —
+  data may duplicate other tables.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 800
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: product_id
+    sql: product_id
+    type: number
+    unique_count: 800
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+    profiler_notes:
+      - Likely FK to products.id (inferred from column name, no constraint exists)
+  - name: product_name
+    sql: product_name
+    type: string
+    unique_count: 249
+    sample_values:
+      - Area Rug Artisan
+      - Area Rug Classic
+      - Area Rug Coastal
+      - Area Rug Essential
+      - Area Rug Heritage
+      - Area Rug Luxe
+      - Area Rug Modern
+      - Area Rug Premium
+  - name: category_name
+    sql: category_name
+    type: string
+    unique_count: 25
+    sample_values:
+      - Accessories
+      - Bath
+      - Bedding
+      - Candles
+      - Cookware
+      - Duvets & Covers
+      - Home Decor
+      - Kitchen
+  - name: total_sold
+    sql: total_sold
+    type: number
+    unique_count: 1
+    sample_values:
+      - '0'
+  - name: total_revenue_cents
+    sql: total_revenue_cents
+    type: number
+    unique_count: 1
+    sample_values:
+      - '0'
+  - name: avg_rating
+    sql: avg_rating
+    type: number
+    unique_count: 108
+    sample_values:
+      - '1.00'
+      - '1.50'
+      - '2.00'
+      - '2.25'
+      - '2.33'
+      - '2.40'
+      - '2.50'
+      - '2.56'
+  - name: review_count
+    sql: review_count
+    type: number
+    unique_count: 17
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: return_rate
+    sql: return_rate
+    type: number
+    unique_count: 502
+    sample_values:
+      - '0.01'
+      - '0.04'
+      - '0.05'
+      - '0.06'
+      - '0.07'
+      - '0.08'
+      - '0.10'
+      - '0.11'
+  - name: calculated_at
+    sql: calculated_at
+    type: date
+    unique_count: 800
+    sample_values:
+      - Tue Feb 24 2026 14:26:04 GMT-0500 (Eastern Standard Time)
+      - Tue Feb 24 2026 14:36:21 GMT-0500 (Eastern Standard Time)
+      - Tue Feb 24 2026 15:01:08 GMT-0500 (Eastern Standard Time)
+      - Tue Feb 24 2026 15:11:46 GMT-0500 (Eastern Standard Time)
+      - Tue Feb 24 2026 15:23:06 GMT-0500 (Eastern Standard Time)
+      - Tue Feb 24 2026 15:24:30 GMT-0500 (Eastern Standard Time)
+      - Tue Feb 24 2026 15:31:43 GMT-0500 (Eastern Standard Time)
+      - Tue Feb 24 2026 15:39:29 GMT-0500 (Eastern Standard Time)
+  - name: total_sold_bucket
+    sql: |-
+      CASE
+        WHEN total_sold < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY total_sold) FROM product_performance_cache) THEN 'Low'
+        WHEN total_sold < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY total_sold) FROM product_performance_cache) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: total sold bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: total_revenue_cents_bucket
+    sql: |-
+      CASE
+        WHEN total_revenue_cents < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY total_revenue_cents) FROM product_performance_cache) THEN 'Low'
+        WHEN total_revenue_cents < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY total_revenue_cents) FROM product_performance_cache) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: total revenue cents bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: avg_rating_bucket
+    sql: |-
+      CASE
+        WHEN avg_rating < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY avg_rating) FROM product_performance_cache) THEN 'Low'
+        WHEN avg_rating < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY avg_rating) FROM product_performance_cache) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: avg rating bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: review_count_bucket
+    sql: |-
+      CASE
+        WHEN review_count < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY review_count) FROM product_performance_cache) THEN 'Low'
+        WHEN review_count < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY review_count) FROM product_performance_cache) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: review count bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: return_rate_bucket
+    sql: |-
+      CASE
+        WHEN return_rate < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY return_rate) FROM product_performance_cache) THEN 'Low'
+        WHEN return_rate < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY return_rate) FROM product_performance_cache) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: return rate bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: calculated_at_year
+    sql: EXTRACT(YEAR FROM calculated_at)
+    type: number
+    description: Year extracted from calculated_at
+    virtual: true
+  - name: calculated_at_month
+    sql: TO_CHAR(calculated_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from calculated_at
+    virtual: true
+measures:
+  - name: product_performance_cache_count
+    sql: id
+    type: count_distinct
+  - name: total_total_sold
+    sql: total_sold
+    type: sum
+    description: Sum of total sold
+  - name: avg_total_sold
+    sql: total_sold
+    type: avg
+    description: Average total sold
+  - name: total_total_revenue_cents
+    sql: total_revenue_cents
+    type: sum
+    description: Sum of total revenue cents
+  - name: avg_total_revenue_cents
+    sql: total_revenue_cents
+    type: avg
+    description: Average total revenue cents
+  - name: total_avg_rating
+    sql: avg_rating
+    type: sum
+    description: Sum of avg rating
+  - name: avg_avg_rating
+    sql: avg_rating
+    type: avg
+    description: Average avg rating
+  - name: total_review_count
+    sql: review_count
+    type: sum
+    description: Sum of review count
+  - name: avg_review_count
+    sql: review_count
+    type: avg
+    description: Average review count
+  - name: total_return_rate
+    sql: return_rate
+    type: sum
+    description: Sum of return rate
+  - name: avg_return_rate
+    sql: return_rate
+    type: avg
+    description: Average return rate
+joins:
+  - target_entity: Products
+    relationship: many_to_one
+    join_columns:
+      from: product_id
+      to: id
+    inferred: true
+    note: No FK constraint exists — inferred from column name product_id
+    description: Each product_performance_cache likely belongs to one product
+use_cases:
+  - 'WARNING: This is a denormalized/materialized table. Data may be stale or duplicate other tables'
+  - Use for aggregation and trends on total_sold, total_revenue_cents, avg_rating, review_count, return_rate
+  - Use for time-series analysis using calculated_at
+  - Join with products for cross-entity analysis
+profiler_notes:
+  - 'Possibly denormalized/materialized table: name matches reporting pattern. Data may duplicate other tables'

@@ -1,0 +1,200 @@
+name: SellerPayouts
+type: fact_table
+table: seller_payouts
+grain: one row per seller payout record
+description: Auto-profiled schema for seller_payouts (2,000 rows). Contains 8 columns, linked to sellers.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 2000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: seller_id
+    sql: seller_id
+    type: number
+    description: Foreign key to sellers
+    unique_count: 80
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: amount_cents
+    sql: amount_cents
+    type: number
+    unique_count: 1965
+    sample_values:
+      - '5030'
+      - '5086'
+      - '5087'
+      - '5131'
+      - '5170'
+      - '5185'
+      - '5189'
+      - '5195'
+  - name: period_start
+    sql: period_start
+    type: date
+    unique_count: 73
+    sample_values:
+      - Tue Feb 01 2022 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Wed Feb 16 2022 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Thu Mar 03 2022 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Fri Mar 18 2022 00:00:00 GMT-0400 (Eastern Daylight Time)
+      - Sat Apr 02 2022 00:00:00 GMT-0400 (Eastern Daylight Time)
+      - Sun Apr 17 2022 00:00:00 GMT-0400 (Eastern Daylight Time)
+      - Mon May 02 2022 00:00:00 GMT-0400 (Eastern Daylight Time)
+      - Tue May 17 2022 00:00:00 GMT-0400 (Eastern Daylight Time)
+  - name: period_end
+    sql: period_end
+    type: date
+    unique_count: 73
+    sample_values:
+      - Tue Mar 01 2022 00:00:00 GMT-0500 (Eastern Standard Time)
+      - Wed Mar 16 2022 00:00:00 GMT-0400 (Eastern Daylight Time)
+      - Sun Apr 03 2022 00:00:00 GMT-0400 (Eastern Daylight Time)
+      - Mon Apr 18 2022 00:00:00 GMT-0400 (Eastern Daylight Time)
+      - Mon May 02 2022 00:00:00 GMT-0400 (Eastern Daylight Time)
+      - Tue May 17 2022 00:00:00 GMT-0400 (Eastern Daylight Time)
+      - Thu Jun 02 2022 00:00:00 GMT-0400 (Eastern Daylight Time)
+      - Fri Jun 17 2022 00:00:00 GMT-0400 (Eastern Daylight Time)
+  - name: status
+    sql: status
+    type: string
+    unique_count: 3
+    sample_values:
+      - paid
+      - pending
+      - processing
+  - name: paid_at
+    sql: paid_at
+    type: date
+    unique_count: 1591
+    null_count: 409
+    sample_values:
+      - Mon Feb 28 2022 23:06:07 GMT-0500 (Eastern Standard Time)
+      - Tue Mar 01 2022 00:58:30 GMT-0500 (Eastern Standard Time)
+      - Tue Mar 01 2022 10:14:01 GMT-0500 (Eastern Standard Time)
+      - Tue Mar 01 2022 12:32:13 GMT-0500 (Eastern Standard Time)
+      - Tue Mar 01 2022 23:27:44 GMT-0500 (Eastern Standard Time)
+      - Tue Mar 01 2022 23:34:43 GMT-0500 (Eastern Standard Time)
+      - Wed Mar 02 2022 11:27:17 GMT-0500 (Eastern Standard Time)
+      - Wed Mar 02 2022 19:45:37 GMT-0500 (Eastern Standard Time)
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 73
+    sample_values:
+      - Mon Jan 31 2022 19:00:00 GMT-0500 (Eastern Standard Time)
+      - Tue Feb 15 2022 19:00:00 GMT-0500 (Eastern Standard Time)
+      - Wed Mar 02 2022 19:00:00 GMT-0500 (Eastern Standard Time)
+      - Thu Mar 17 2022 20:00:00 GMT-0400 (Eastern Daylight Time)
+      - Fri Apr 01 2022 20:00:00 GMT-0400 (Eastern Daylight Time)
+      - Sat Apr 16 2022 20:00:00 GMT-0400 (Eastern Daylight Time)
+      - Sun May 01 2022 20:00:00 GMT-0400 (Eastern Daylight Time)
+      - Mon May 16 2022 20:00:00 GMT-0400 (Eastern Daylight Time)
+  - name: amount_cents_bucket
+    sql: |-
+      CASE
+        WHEN amount_cents < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY amount_cents) FROM seller_payouts) THEN 'Low'
+        WHEN amount_cents < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY amount_cents) FROM seller_payouts) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: amount cents bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: period_start_year
+    sql: EXTRACT(YEAR FROM period_start)
+    type: number
+    description: Year extracted from period_start
+    virtual: true
+  - name: period_start_month
+    sql: TO_CHAR(period_start, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from period_start
+    virtual: true
+  - name: period_end_year
+    sql: EXTRACT(YEAR FROM period_end)
+    type: number
+    description: Year extracted from period_end
+    virtual: true
+  - name: period_end_month
+    sql: TO_CHAR(period_end, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from period_end
+    virtual: true
+  - name: paid_at_year
+    sql: EXTRACT(YEAR FROM paid_at)
+    type: number
+    description: Year extracted from paid_at
+    virtual: true
+  - name: paid_at_month
+    sql: TO_CHAR(paid_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from paid_at
+    virtual: true
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: seller_payout_count
+    sql: id
+    type: count_distinct
+  - name: total_amount_cents
+    sql: amount_cents
+    type: sum
+    description: Sum of amount cents
+  - name: avg_amount_cents
+    sql: amount_cents
+    type: avg
+    description: Average amount cents
+joins:
+  - target_entity: Sellers
+    relationship: many_to_one
+    join_columns:
+      from: seller_id
+      to: id
+    description: Each seller_payout belongs to one seller
+use_cases:
+  - Use for segmentation analysis by status
+  - Use for aggregation and trends on amount_cents
+  - Use for time-series analysis using period_start, period_end, paid_at, created_at
+  - Join with sellers for cross-entity analysis
+query_patterns:
+  - description: SellerPayouts by status
+    sql: |-
+      SELECT status, COUNT(*) as count
+      FROM seller_payouts
+      GROUP BY status
+      ORDER BY count DESC
+  - description: Total amount_cents by status
+    sql: |-
+      SELECT status, SUM(amount_cents) as total_amount_cents, COUNT(*) as count
+      FROM seller_payouts
+      GROUP BY status
+      ORDER BY total_amount_cents DESC

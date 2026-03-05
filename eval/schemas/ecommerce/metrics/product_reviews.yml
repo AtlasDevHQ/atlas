@@ -1,0 +1,71 @@
+metrics:
+  - id: product_reviews_count
+    label: Total ProductReviews
+    description: Count of distinct product_reviews records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM product_reviews
+    aggregation: count_distinct
+  - id: total_rating
+    label: Total rating
+    description: Sum of rating across all product_reviews.
+    type: atomic
+    source:
+      entity: ProductReviews
+      measure: total_rating
+    sql: |-
+      SELECT SUM(rating) as total_rating
+      FROM product_reviews
+    aggregation: sum
+    objective: maximize
+  - id: avg_rating
+    label: Average rating
+    description: Average rating per product_review.
+    type: atomic
+    sql: |-
+      SELECT AVG(rating) as avg_rating
+      FROM product_reviews
+    aggregation: avg
+  - id: rating_by_title
+    label: rating by title
+    description: rating broken down by title.
+    type: atomic
+    sql: |-
+      SELECT title, SUM(rating) as total_rating, AVG(rating) as avg_rating, COUNT(*) as count
+      FROM product_reviews
+      GROUP BY title
+      ORDER BY total_rating DESC
+  - id: total_rating_decimal
+    label: Total rating decimal
+    description: Sum of rating_decimal across all product_reviews.
+    type: atomic
+    source:
+      entity: ProductReviews
+      measure: total_rating_decimal
+    sql: |-
+      SELECT SUM(rating_decimal) as total_rating_decimal
+      FROM product_reviews
+    aggregation: sum
+    objective: maximize
+  - id: avg_rating_decimal
+    label: Average rating decimal
+    description: Average rating_decimal per product_review.
+    type: atomic
+    sql: |-
+      SELECT AVG(rating_decimal) as avg_rating_decimal
+      FROM product_reviews
+    aggregation: avg
+  - id: rating_decimal_by_title
+    label: rating decimal by title
+    description: rating_decimal broken down by title.
+    type: atomic
+    sql: >-
+      SELECT title, SUM(rating_decimal) as total_rating_decimal, AVG(rating_decimal) as avg_rating_decimal, COUNT(*) as
+      count
+
+      FROM product_reviews
+
+      GROUP BY title
+
+      ORDER BY total_rating_decimal DESC

@@ -1,0 +1,19 @@
+id: "ec-008"
+question: "What is the average delivery time by shipping carrier?"
+schema: ecommerce
+difficulty: medium
+category: aggregation
+tags: [shipments, delivery-time, carriers]
+gold_sql: |
+  SELECT
+    carrier_id,
+    COUNT(*) AS deliveries,
+    ROUND(AVG(EXTRACT(EPOCH FROM (delivered_at - shipped_at)) / 86400)::numeric, 1) AS avg_days_to_deliver,
+    ROUND(MIN(EXTRACT(EPOCH FROM (delivered_at - shipped_at)) / 86400)::numeric, 1) AS fastest_days,
+    ROUND(MAX(EXTRACT(EPOCH FROM (delivered_at - shipped_at)) / 86400)::numeric, 1) AS slowest_days
+  FROM shipments
+  WHERE delivered_at IS NOT NULL AND shipped_at IS NOT NULL
+  GROUP BY carrier_id
+  ORDER BY avg_days_to_deliver ASC
+expected_rows: null
+notes: "Tests date arithmetic for delivery duration analysis"

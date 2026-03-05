@@ -1,0 +1,202 @@
+name: GiftCards
+type: fact_table
+table: gift_cards
+grain: one row per gift card record
+description: Auto-profiled schema for gift_cards (500 rows). Contains 8 columns, linked to customers.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 500
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: code
+    sql: code
+    type: string
+    unique_count: 500
+    sample_values:
+      - NVM-0074-2CE3
+      - NVM-00E8-0467
+      - NVM-01F1-9D0C
+      - NVM-02FA-E6A3
+      - NVM-032F-4990
+      - NVM-03D7-A1E1
+      - NVM-0428-8C6A
+      - NVM-0520-274E
+  - name: initial_cents
+    sql: initial_cents
+    type: number
+    unique_count: 6
+    sample_values:
+      - '2500'
+      - '5000'
+      - '7500'
+      - '10000'
+      - '15000'
+      - '25000'
+  - name: balance_cents
+    sql: balance_cents
+    type: number
+    unique_count: 341
+    sample_values:
+      - '0'
+      - '100'
+      - '118'
+      - '125'
+      - '157'
+      - '158'
+      - '170'
+      - '179'
+  - name: issued_to
+    sql: issued_to
+    type: number
+    description: Foreign key to customers
+    unique_count: 329
+    null_count: 160
+    sample_values:
+      - '4'
+      - '41'
+      - '53'
+      - '64'
+      - '72'
+      - '90'
+      - '115'
+      - '147'
+  - name: status
+    sql: status
+    type: string
+    unique_count: 4
+    sample_values:
+      - active
+      - disabled
+      - expired
+      - redeemed
+  - name: expires_at
+    sql: expires_at
+    type: date
+    unique_count: 500
+    sample_values:
+      - Sun Sep 07 2025 21:34:02 GMT-0400 (Eastern Daylight Time)
+      - Sat Sep 13 2025 04:47:25 GMT-0400 (Eastern Daylight Time)
+      - Sun Sep 14 2025 16:21:50 GMT-0400 (Eastern Daylight Time)
+      - Thu Sep 18 2025 05:53:04 GMT-0400 (Eastern Daylight Time)
+      - Thu Sep 18 2025 19:39:27 GMT-0400 (Eastern Daylight Time)
+      - Sun Sep 21 2025 18:39:20 GMT-0400 (Eastern Daylight Time)
+      - Mon Sep 22 2025 21:13:24 GMT-0400 (Eastern Daylight Time)
+      - Thu Sep 25 2025 07:58:13 GMT-0400 (Eastern Daylight Time)
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 500
+    sample_values:
+      - Tue Jun 02 2020 23:48:46 GMT-0400 (Eastern Daylight Time)
+      - Wed Jun 03 2020 10:49:14 GMT-0400 (Eastern Daylight Time)
+      - Sat Jun 06 2020 06:37:01 GMT-0400 (Eastern Daylight Time)
+      - Sun Jun 07 2020 17:59:17 GMT-0400 (Eastern Daylight Time)
+      - Tue Jun 09 2020 06:27:38 GMT-0400 (Eastern Daylight Time)
+      - Sat Jun 13 2020 02:16:14 GMT-0400 (Eastern Daylight Time)
+      - Mon Jun 22 2020 11:44:31 GMT-0400 (Eastern Daylight Time)
+      - Thu Jun 25 2020 06:45:17 GMT-0400 (Eastern Daylight Time)
+  - name: initial_cents_bucket
+    sql: |-
+      CASE
+        WHEN initial_cents < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY initial_cents) FROM gift_cards) THEN 'Low'
+        WHEN initial_cents < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY initial_cents) FROM gift_cards) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: initial cents bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: balance_cents_bucket
+    sql: |-
+      CASE
+        WHEN balance_cents < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY balance_cents) FROM gift_cards) THEN 'Low'
+        WHEN balance_cents < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY balance_cents) FROM gift_cards) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: balance cents bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: expires_at_year
+    sql: EXTRACT(YEAR FROM expires_at)
+    type: number
+    description: Year extracted from expires_at
+    virtual: true
+  - name: expires_at_month
+    sql: TO_CHAR(expires_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from expires_at
+    virtual: true
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: gift_card_count
+    sql: id
+    type: count_distinct
+  - name: total_initial_cents
+    sql: initial_cents
+    type: sum
+    description: Sum of initial cents
+  - name: avg_initial_cents
+    sql: initial_cents
+    type: avg
+    description: Average initial cents
+  - name: total_balance_cents
+    sql: balance_cents
+    type: sum
+    description: Sum of balance cents
+  - name: avg_balance_cents
+    sql: balance_cents
+    type: avg
+    description: Average balance cents
+joins:
+  - target_entity: Customers
+    relationship: many_to_one
+    join_columns:
+      from: issued_to
+      to: id
+    description: Each gift_card belongs to one customer
+use_cases:
+  - Use for segmentation analysis by status
+  - Use for aggregation and trends on initial_cents, balance_cents
+  - Use for time-series analysis using expires_at, created_at
+  - Join with customers for cross-entity analysis
+  - Avoid for row-level gift_card_transactions queries — use those entities directly
+query_patterns:
+  - description: GiftCards by status
+    sql: |-
+      SELECT status, COUNT(*) as count
+      FROM gift_cards
+      GROUP BY status
+      ORDER BY count DESC
+  - description: Total initial_cents by status
+    sql: |-
+      SELECT status, SUM(initial_cents) as total_initial_cents, COUNT(*) as count
+      FROM gift_cards
+      GROUP BY status
+      ORDER BY total_initial_cents DESC

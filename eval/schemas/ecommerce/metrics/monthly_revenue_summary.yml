@@ -1,0 +1,109 @@
+metrics:
+  - id: monthly_revenue_summary_count
+    label: Total MonthlyRevenueSummary
+    description: Count of distinct monthly_revenue_summary records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM monthly_revenue_summary
+    aggregation: count_distinct
+  - id: total_revenue_cents
+    label: Total revenue cents
+    description: Sum of revenue_cents across all monthly_revenue_summary.
+    type: atomic
+    source:
+      entity: MonthlyRevenueSummary
+      measure: total_revenue_cents
+    sql: |-
+      SELECT SUM(revenue_cents) as total_revenue_cents
+      FROM monthly_revenue_summary
+    aggregation: sum
+    objective: maximize
+  - id: avg_revenue_cents
+    label: Average revenue cents
+    description: Average revenue_cents per monthly_revenue_summary.
+    type: atomic
+    sql: |-
+      SELECT AVG(revenue_cents) as avg_revenue_cents
+      FROM monthly_revenue_summary
+    aggregation: avg
+  - id: total_order_count
+    label: Total order count
+    description: Sum of order_count across all monthly_revenue_summary.
+    type: atomic
+    source:
+      entity: MonthlyRevenueSummary
+      measure: total_order_count
+    sql: |-
+      SELECT SUM(order_count) as total_order_count
+      FROM monthly_revenue_summary
+    aggregation: sum
+    objective: maximize
+  - id: avg_order_count
+    label: Average order count
+    description: Average order_count per monthly_revenue_summary.
+    type: atomic
+    sql: |-
+      SELECT AVG(order_count) as avg_order_count
+      FROM monthly_revenue_summary
+    aggregation: avg
+  - id: total_new_customers
+    label: Total new customers
+    description: Sum of new_customers across all monthly_revenue_summary.
+    type: atomic
+    source:
+      entity: MonthlyRevenueSummary
+      measure: total_new_customers
+    sql: |-
+      SELECT SUM(new_customers) as total_new_customers
+      FROM monthly_revenue_summary
+    aggregation: sum
+    objective: maximize
+  - id: avg_new_customers
+    label: Average new customers
+    description: Average new_customers per monthly_revenue_summary.
+    type: atomic
+    sql: |-
+      SELECT AVG(new_customers) as avg_new_customers
+      FROM monthly_revenue_summary
+    aggregation: avg
+  - id: total_returning_customers
+    label: Total returning customers
+    description: Sum of returning_customers across all monthly_revenue_summary.
+    type: atomic
+    source:
+      entity: MonthlyRevenueSummary
+      measure: total_returning_customers
+    sql: |-
+      SELECT SUM(returning_customers) as total_returning_customers
+      FROM monthly_revenue_summary
+    aggregation: sum
+    objective: maximize
+  - id: avg_returning_customers
+    label: Average returning customers
+    description: Average returning_customers per monthly_revenue_summary.
+    type: atomic
+    sql: |-
+      SELECT AVG(returning_customers) as avg_returning_customers
+      FROM monthly_revenue_summary
+    aggregation: avg
+  - id: total_avg_order_value_cents
+    label: Total avg order value cents
+    description: Sum of avg_order_value_cents across all monthly_revenue_summary.
+    type: atomic
+    source:
+      entity: MonthlyRevenueSummary
+      measure: total_avg_order_value_cents
+    sql: |-
+      SELECT SUM(avg_order_value_cents) as total_avg_order_value_cents
+      FROM monthly_revenue_summary
+    aggregation: sum
+    objective: maximize
+  - id: avg_avg_order_value_cents
+    label: Average avg order value cents
+    description: Average avg_order_value_cents per monthly_revenue_summary.
+    type: atomic
+    sql: |-
+      SELECT AVG(avg_order_value_cents) as avg_avg_order_value_cents
+      FROM monthly_revenue_summary
+    aggregation: avg

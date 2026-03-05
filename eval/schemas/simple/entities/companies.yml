@@ -1,0 +1,207 @@
+name: Companies
+type: fact_table
+table: companies
+grain: one row per company record
+description: Auto-profiled schema for companies (100 rows). Contains 8 columns.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 100
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: name
+    sql: name
+    type: string
+    unique_count: 50
+    sample_values:
+      - Acme Corp
+      - AdTech Global
+      - AutoForge
+      - BioGenix
+      - BrightMinds
+      - CartFlow
+      - CastMedia
+      - CleanJoule
+  - name: industry
+    sql: industry
+    type: string
+    unique_count: 8
+    sample_values:
+      - Education
+      - Energy
+      - Finance
+      - Healthcare
+      - Manufacturing
+      - Media
+      - Retail
+      - Technology
+  - name: employee_count
+    sql: employee_count
+    type: number
+    unique_count: 46
+    sample_values:
+      - '50'
+      - '55'
+      - '60'
+      - '65'
+      - '70'
+      - '75'
+      - '80'
+      - '85'
+  - name: founded_year
+    sql: founded_year
+    type: number
+    unique_count: 19
+    sample_values:
+      - '2004'
+      - '2005'
+      - '2006'
+      - '2007'
+      - '2008'
+      - '2009'
+      - '2010'
+      - '2011'
+  - name: country
+    sql: country
+    type: string
+    unique_count: 10
+    sample_values:
+      - AU
+      - BR
+      - CA
+      - DE
+      - FR
+      - IN
+      - JP
+      - SG
+  - name: revenue
+    sql: revenue
+    type: number
+    unique_count: 50
+    sample_values:
+      - '2000000'
+      - '2500000'
+      - '3500000'
+      - '4000000'
+      - '5000000'
+      - '6000000'
+      - '6500000'
+      - '7000000'
+  - name: valuation
+    sql: valuation
+    type: number
+    unique_count: 46
+    sample_values:
+      - '16000000'
+      - '20000000'
+      - '25000000'
+      - '28000000'
+      - '30000000'
+      - '32000000'
+      - '35000000'
+      - '40000000'
+  - name: employee_count_bucket
+    sql: |-
+      CASE
+        WHEN employee_count < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY employee_count) FROM companies) THEN 'Low'
+        WHEN employee_count < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY employee_count) FROM companies) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: employee count bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: founded_year_bucket
+    sql: |-
+      CASE
+        WHEN founded_year < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY founded_year) FROM companies) THEN 'Low'
+        WHEN founded_year < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY founded_year) FROM companies) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: founded year bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: revenue_bucket
+    sql: |-
+      CASE
+        WHEN revenue < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY revenue) FROM companies) THEN 'Low'
+        WHEN revenue < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY revenue) FROM companies) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: revenue bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: valuation_bucket
+    sql: |-
+      CASE
+        WHEN valuation < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY valuation) FROM companies) THEN 'Low'
+        WHEN valuation < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY valuation) FROM companies) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: valuation bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+measures:
+  - name: company_count
+    sql: id
+    type: count_distinct
+  - name: total_employee_count
+    sql: employee_count
+    type: sum
+    description: Sum of employee count
+  - name: avg_employee_count
+    sql: employee_count
+    type: avg
+    description: Average employee count
+  - name: total_founded_year
+    sql: founded_year
+    type: sum
+    description: Sum of founded year
+  - name: avg_founded_year
+    sql: founded_year
+    type: avg
+    description: Average founded year
+  - name: total_revenue
+    sql: revenue
+    type: sum
+    description: Sum of revenue
+  - name: avg_revenue
+    sql: revenue
+    type: avg
+    description: Average revenue
+  - name: total_valuation
+    sql: valuation
+    type: sum
+    description: Sum of valuation
+  - name: avg_valuation
+    sql: valuation
+    type: avg
+    description: Average valuation
+use_cases:
+  - Use for aggregation and trends on employee_count, founded_year, revenue, valuation
+  - Avoid for row-level accounts/people queries — use those entities directly

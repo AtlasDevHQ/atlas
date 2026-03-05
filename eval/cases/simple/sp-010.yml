@@ -1,0 +1,15 @@
+id: "sp-010"
+question: "How many people started each year?"
+schema: simple
+difficulty: simple
+category: timeseries
+tags: [people, start_date, yearly]
+gold_sql: |
+  SELECT
+    EXTRACT(YEAR FROM start_date)::int AS start_year,
+    COUNT(*) AS hires
+  FROM people
+  GROUP BY start_year
+  ORDER BY start_year
+expected_rows: null
+notes: "Tests date extraction for time-series grouping"

@@ -1,0 +1,32 @@
+id: "cs-013"
+question: "Show the top 10 most vulnerable assets with their open vulnerability counts by severity"
+schema: cybersec
+difficulty: complex
+category: cte
+tags: [assets, vulnerability_instances, vulnerabilities, severity, ranking]
+gold_sql: |
+  WITH asset_vulns AS (
+    SELECT
+      a.id AS asset_id,
+      a.hostname,
+      a.ip_address,
+      a.asset_type,
+      a.criticality,
+      o.name AS organization,
+      COUNT(*) FILTER (WHERE v.severity = 'critical') AS critical_vulns,
+      COUNT(*) FILTER (WHERE v.severity = 'high') AS high_vulns,
+      COUNT(*) FILTER (WHERE v.severity = 'medium') AS medium_vulns,
+      COUNT(*) FILTER (WHERE v.severity = 'low') AS low_vulns,
+      COUNT(*) AS total_vulns
+    FROM assets a
+    JOIN organizations o ON a.org_id = o.id
+    JOIN vulnerability_instances vi ON vi.asset_id = a.id
+    JOIN vulnerabilities v ON vi.vulnerability_id = v.id
+    WHERE vi.status = 'open'
+    GROUP BY a.id, a.hostname, a.ip_address, a.asset_type, a.criticality, o.name
+  )
+  SELECT *
+  FROM asset_vulns
+  ORDER BY critical_vulns DESC, high_vulns DESC, total_vulns DESC
+expected_rows: null
+notes: "Tests CTE with multi-table JOIN and FILTER aggregation for security risk ranking"

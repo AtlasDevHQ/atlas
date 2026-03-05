@@ -1,0 +1,49 @@
+metrics:
+  - id: product_variants_count
+    label: Total ProductVariants
+    description: Count of distinct product_variants records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM product_variants
+    aggregation: count_distinct
+  - id: total_price_cents
+    label: Total price cents
+    description: Sum of price_cents across all product_variants.
+    type: atomic
+    source:
+      entity: ProductVariants
+      measure: total_price_cents
+    sql: |-
+      SELECT SUM(price_cents) as total_price_cents
+      FROM product_variants
+    aggregation: sum
+    objective: maximize
+  - id: avg_price_cents
+    label: Average price cents
+    description: Average price_cents per product_variant.
+    type: atomic
+    sql: |-
+      SELECT AVG(price_cents) as avg_price_cents
+      FROM product_variants
+    aggregation: avg
+  - id: total_weight_oz
+    label: Total weight oz
+    description: Sum of weight_oz across all product_variants.
+    type: atomic
+    source:
+      entity: ProductVariants
+      measure: total_weight_oz
+    sql: |-
+      SELECT SUM(weight_oz) as total_weight_oz
+      FROM product_variants
+    aggregation: sum
+    objective: maximize
+  - id: avg_weight_oz
+    label: Average weight oz
+    description: Average weight_oz per product_variant.
+    type: atomic
+    sql: |-
+      SELECT AVG(weight_oz) as avg_weight_oz
+      FROM product_variants
+    aggregation: avg

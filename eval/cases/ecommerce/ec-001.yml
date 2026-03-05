@@ -1,0 +1,17 @@
+id: "ec-001"
+question: "What is the total revenue by month?"
+schema: ecommerce
+difficulty: simple
+category: timeseries
+tags: [orders, revenue, monthly]
+gold_sql: |
+  SELECT
+    DATE_TRUNC('month', placed_at)::date AS month,
+    SUM(total_cents) / 100.0 AS total_revenue,
+    COUNT(*) AS order_count
+  FROM orders
+  WHERE status NOT IN ('cancelled', 'refunded')
+  GROUP BY month
+  ORDER BY month
+expected_rows: null
+notes: "Basic time-series aggregation on orders table"

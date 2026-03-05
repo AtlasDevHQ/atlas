@@ -1,0 +1,12 @@
+id: "sp-002"
+question: "What is the average revenue of companies founded after 2015?"
+schema: simple
+difficulty: simple
+category: filter
+tags: [companies, average, revenue]
+gold_sql: |
+  SELECT AVG(revenue) AS avg_revenue
+  FROM companies
+  WHERE founded_year > 2015
+expected_rows: 1
+notes: "Tests basic filtering with an aggregate function"

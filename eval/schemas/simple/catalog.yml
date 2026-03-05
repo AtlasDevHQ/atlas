@@ -1,0 +1,40 @@
+version: '1.0'
+entities:
+  - name: Accounts
+    file: entities/accounts.yml
+    grain: one row per account record
+    description: accounts (160 rows, 7 columns)
+    use_for:
+      - Segmentation by plan, status
+      - Aggregation on monthly_value
+      - Cross-entity analysis via companies
+    common_questions:
+      - How many accounts by plan?
+      - How many accounts by status?
+      - What is the average monthly_value across accounts?
+      - How are accounts distributed across companies?
+  - name: Companies
+    file: entities/companies.yml
+    grain: one row per company record
+    description: companies (100 rows, 8 columns)
+    use_for:
+      - Aggregation on employee_count, founded_year, revenue, valuation
+    common_questions:
+      - What is the average employee_count across companies?
+  - name: People
+    file: entities/people.yml
+    grain: one row per person record
+    description: people (396 rows, 8 columns)
+    use_for:
+      - Segmentation by department, seniority
+      - Cross-entity analysis via companies
+    common_questions:
+      - How many people by department?
+      - How many people by seniority?
+      - How are people distributed across companies?
+glossary: glossary.yml
+metrics:
+  - file: metrics/accounts.yml
+    description: Auto-generated metrics for accounts
+  - file: metrics/companies.yml
+    description: Auto-generated metrics for companies

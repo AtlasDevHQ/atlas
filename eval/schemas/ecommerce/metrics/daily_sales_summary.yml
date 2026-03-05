@@ -1,0 +1,109 @@
+metrics:
+  - id: daily_sales_summary_count
+    label: Total DailySalesSummary
+    description: Count of distinct daily_sales_summary records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM daily_sales_summary
+    aggregation: count_distinct
+  - id: total_total_orders
+    label: Total total orders
+    description: Sum of total_orders across all daily_sales_summary.
+    type: atomic
+    source:
+      entity: DailySalesSummary
+      measure: total_total_orders
+    sql: |-
+      SELECT SUM(total_orders) as total_total_orders
+      FROM daily_sales_summary
+    aggregation: sum
+    objective: maximize
+  - id: avg_total_orders
+    label: Average total orders
+    description: Average total_orders per daily_sales_summary.
+    type: atomic
+    sql: |-
+      SELECT AVG(total_orders) as avg_total_orders
+      FROM daily_sales_summary
+    aggregation: avg
+  - id: total_total_revenue_cents
+    label: Total total revenue cents
+    description: Sum of total_revenue_cents across all daily_sales_summary.
+    type: atomic
+    source:
+      entity: DailySalesSummary
+      measure: total_total_revenue_cents
+    sql: |-
+      SELECT SUM(total_revenue_cents) as total_total_revenue_cents
+      FROM daily_sales_summary
+    aggregation: sum
+    objective: maximize
+  - id: avg_total_revenue_cents
+    label: Average total revenue cents
+    description: Average total_revenue_cents per daily_sales_summary.
+    type: atomic
+    sql: |-
+      SELECT AVG(total_revenue_cents) as avg_total_revenue_cents
+      FROM daily_sales_summary
+    aggregation: avg
+  - id: total_total_items
+    label: Total total items
+    description: Sum of total_items across all daily_sales_summary.
+    type: atomic
+    source:
+      entity: DailySalesSummary
+      measure: total_total_items
+    sql: |-
+      SELECT SUM(total_items) as total_total_items
+      FROM daily_sales_summary
+    aggregation: sum
+    objective: maximize
+  - id: avg_total_items
+    label: Average total items
+    description: Average total_items per daily_sales_summary.
+    type: atomic
+    sql: |-
+      SELECT AVG(total_items) as avg_total_items
+      FROM daily_sales_summary
+    aggregation: avg
+  - id: total_avg_order_value_cents
+    label: Total avg order value cents
+    description: Sum of avg_order_value_cents across all daily_sales_summary.
+    type: atomic
+    source:
+      entity: DailySalesSummary
+      measure: total_avg_order_value_cents
+    sql: |-
+      SELECT SUM(avg_order_value_cents) as total_avg_order_value_cents
+      FROM daily_sales_summary
+    aggregation: sum
+    objective: maximize
+  - id: avg_avg_order_value_cents
+    label: Average avg order value cents
+    description: Average avg_order_value_cents per daily_sales_summary.
+    type: atomic
+    sql: |-
+      SELECT AVG(avg_order_value_cents) as avg_avg_order_value_cents
+      FROM daily_sales_summary
+    aggregation: avg
+  - id: total_return_count
+    label: Total return count
+    description: Sum of return_count across all daily_sales_summary.
+    type: atomic
+    source:
+      entity: DailySalesSummary
+      measure: total_return_count
+    sql: |-
+      SELECT SUM(return_count) as total_return_count
+      FROM daily_sales_summary
+    aggregation: sum
+    objective: maximize
+  - id: avg_return_count
+    label: Average return count
+    description: Average return_count per daily_sales_summary.
+    type: atomic
+    sql: |-
+      SELECT AVG(return_count) as avg_return_count
+      FROM daily_sales_summary
+    aggregation: avg

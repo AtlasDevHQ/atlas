@@ -1,0 +1,295 @@
+name: CustomerLtvCache
+type: fact_table
+table: customer_ltv_cache
+grain: one row per customer ltv cache record
+description: >-
+  Auto-profiled schema for customer_ltv_cache (8,000 rows). Contains 10 columns, linked to customers. DENORMALIZED —
+  data may duplicate other tables.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 8000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: customer_id
+    sql: customer_id
+    type: number
+    unique_count: 8000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+    profiler_notes:
+      - Likely FK to customers.id (inferred from column name, no constraint exists)
+  - name: total_orders
+    sql: total_orders
+    type: number
+    unique_count: 14
+    sample_values:
+      - '0'
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+  - name: total_spent_cents
+    sql: total_spent_cents
+    type: number
+    unique_count: 7406
+    sample_values:
+      - '0'
+      - '3794'
+      - '4018'
+      - '4052'
+      - '4053'
+      - '4273'
+      - '4296'
+      - '4324'
+  - name: first_order_at
+    sql: first_order_at
+    type: date
+    unique_count: 7652
+    null_count: 348
+    sample_values:
+      - Sun Mar 01 2020 04:32:04 GMT-0500 (Eastern Standard Time)
+      - Sun Mar 01 2020 08:57:07 GMT-0500 (Eastern Standard Time)
+      - Sun Mar 01 2020 13:53:14 GMT-0500 (Eastern Standard Time)
+      - Sun Mar 01 2020 15:21:20 GMT-0500 (Eastern Standard Time)
+      - Sun Mar 01 2020 22:08:43 GMT-0500 (Eastern Standard Time)
+      - Sun Mar 01 2020 22:22:57 GMT-0500 (Eastern Standard Time)
+      - Sun Mar 01 2020 22:31:43 GMT-0500 (Eastern Standard Time)
+      - Mon Mar 02 2020 02:04:45 GMT-0500 (Eastern Standard Time)
+  - name: last_order_at
+    sql: last_order_at
+    type: date
+    unique_count: 7652
+    null_count: 348
+    sample_values:
+      - Mon Mar 02 2020 02:04:45 GMT-0500 (Eastern Standard Time)
+      - Mon Mar 09 2020 07:36:08 GMT-0400 (Eastern Daylight Time)
+      - Mon Mar 16 2020 03:33:36 GMT-0400 (Eastern Daylight Time)
+      - Wed Mar 18 2020 00:24:19 GMT-0400 (Eastern Daylight Time)
+      - Wed Mar 18 2020 03:34:14 GMT-0400 (Eastern Daylight Time)
+      - Sat Mar 21 2020 21:58:44 GMT-0400 (Eastern Daylight Time)
+      - Tue Mar 24 2020 14:34:11 GMT-0400 (Eastern Daylight Time)
+      - Mon Mar 30 2020 01:32:58 GMT-0400 (Eastern Daylight Time)
+  - name: avg_order_value_cents
+    sql: avg_order_value_cents
+    type: number
+    unique_count: 6204
+    sample_values:
+      - '0'
+      - '3794'
+      - '4018'
+      - '4052'
+      - '4053'
+      - '4273'
+      - '4296'
+      - '4324'
+  - name: predicted_ltv_cents
+    sql: predicted_ltv_cents
+    type: number
+    unique_count: 7517
+    sample_values:
+      - '0'
+      - '5870'
+      - '6462'
+      - '6882'
+      - '7027'
+      - '7751'
+      - '7797'
+      - '7900'
+  - name: segment
+    sql: segment
+    type: string
+    unique_count: 7
+    sample_values:
+      - At-Risk
+      - Churned
+      - Dormant
+      - High-Value
+      - New
+      - Regular
+      - VIP
+  - name: calculated_at
+    sql: calculated_at
+    type: date
+    unique_count: 8000
+    sample_values:
+      - Tue Feb 24 2026 13:37:52 GMT-0500 (Eastern Standard Time)
+      - Tue Feb 24 2026 13:38:10 GMT-0500 (Eastern Standard Time)
+      - Tue Feb 24 2026 13:38:27 GMT-0500 (Eastern Standard Time)
+      - Tue Feb 24 2026 13:41:09 GMT-0500 (Eastern Standard Time)
+      - Tue Feb 24 2026 13:42:21 GMT-0500 (Eastern Standard Time)
+      - Tue Feb 24 2026 13:43:46 GMT-0500 (Eastern Standard Time)
+      - Tue Feb 24 2026 13:43:56 GMT-0500 (Eastern Standard Time)
+      - Tue Feb 24 2026 13:46:13 GMT-0500 (Eastern Standard Time)
+  - name: total_orders_bucket
+    sql: |-
+      CASE
+        WHEN total_orders < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY total_orders) FROM customer_ltv_cache) THEN 'Low'
+        WHEN total_orders < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY total_orders) FROM customer_ltv_cache) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: total orders bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: total_spent_cents_bucket
+    sql: |-
+      CASE
+        WHEN total_spent_cents < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY total_spent_cents) FROM customer_ltv_cache) THEN 'Low'
+        WHEN total_spent_cents < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY total_spent_cents) FROM customer_ltv_cache) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: total spent cents bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: first_order_at_year
+    sql: EXTRACT(YEAR FROM first_order_at)
+    type: number
+    description: Year extracted from first_order_at
+    virtual: true
+  - name: first_order_at_month
+    sql: TO_CHAR(first_order_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from first_order_at
+    virtual: true
+  - name: last_order_at_year
+    sql: EXTRACT(YEAR FROM last_order_at)
+    type: number
+    description: Year extracted from last_order_at
+    virtual: true
+  - name: last_order_at_month
+    sql: TO_CHAR(last_order_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from last_order_at
+    virtual: true
+  - name: avg_order_value_cents_bucket
+    sql: |-
+      CASE
+        WHEN avg_order_value_cents < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY avg_order_value_cents) FROM customer_ltv_cache) THEN 'Low'
+        WHEN avg_order_value_cents < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY avg_order_value_cents) FROM customer_ltv_cache) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: avg order value cents bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: predicted_ltv_cents_bucket
+    sql: |-
+      CASE
+        WHEN predicted_ltv_cents < (SELECT PERCENTILE_CONT(0.33) WITHIN GROUP (ORDER BY predicted_ltv_cents) FROM customer_ltv_cache) THEN 'Low'
+        WHEN predicted_ltv_cents < (SELECT PERCENTILE_CONT(0.66) WITHIN GROUP (ORDER BY predicted_ltv_cents) FROM customer_ltv_cache) THEN 'Medium'
+        ELSE 'High'
+      END
+    type: string
+    description: predicted ltv cents bucketed into Low/Medium/High terciles
+    virtual: true
+    sample_values:
+      - Low
+      - Medium
+      - High
+  - name: calculated_at_year
+    sql: EXTRACT(YEAR FROM calculated_at)
+    type: number
+    description: Year extracted from calculated_at
+    virtual: true
+  - name: calculated_at_month
+    sql: TO_CHAR(calculated_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from calculated_at
+    virtual: true
+measures:
+  - name: customer_ltv_cache_count
+    sql: id
+    type: count_distinct
+  - name: total_total_orders
+    sql: total_orders
+    type: sum
+    description: Sum of total orders
+  - name: avg_total_orders
+    sql: total_orders
+    type: avg
+    description: Average total orders
+  - name: total_total_spent_cents
+    sql: total_spent_cents
+    type: sum
+    description: Sum of total spent cents
+  - name: avg_total_spent_cents
+    sql: total_spent_cents
+    type: avg
+    description: Average total spent cents
+  - name: total_avg_order_value_cents
+    sql: avg_order_value_cents
+    type: sum
+    description: Sum of avg order value cents
+  - name: avg_avg_order_value_cents
+    sql: avg_order_value_cents
+    type: avg
+    description: Average avg order value cents
+  - name: total_predicted_ltv_cents
+    sql: predicted_ltv_cents
+    type: sum
+    description: Sum of predicted ltv cents
+  - name: avg_predicted_ltv_cents
+    sql: predicted_ltv_cents
+    type: avg
+    description: Average predicted ltv cents
+joins:
+  - target_entity: Customers
+    relationship: many_to_one
+    join_columns:
+      from: customer_id
+      to: id
+    inferred: true
+    note: No FK constraint exists — inferred from column name customer_id
+    description: Each customer_ltv_cache likely belongs to one customer
+use_cases:
+  - 'WARNING: This is a denormalized/materialized table. Data may be stale or duplicate other tables'
+  - Use for segmentation analysis by segment
+  - Use for aggregation and trends on total_orders, total_spent_cents, avg_order_value_cents, predicted_ltv_cents
+  - Use for time-series analysis using first_order_at, last_order_at, calculated_at
+  - Join with customers for cross-entity analysis
+query_patterns:
+  - description: CustomerLtvCache by segment
+    sql: |-
+      SELECT segment, COUNT(*) as count
+      FROM customer_ltv_cache
+      GROUP BY segment
+      ORDER BY count DESC
+  - description: Total total_orders by segment
+    sql: |-
+      SELECT segment, SUM(total_orders) as total_total_orders, COUNT(*) as count
+      FROM customer_ltv_cache
+      GROUP BY segment
+      ORDER BY total_total_orders DESC
+profiler_notes:
+  - 'Possibly denormalized/materialized table: name matches reporting pattern. Data may duplicate other tables'

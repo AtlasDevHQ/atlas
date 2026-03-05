@@ -1,0 +1,230 @@
+name: Assets
+type: fact_table
+table: assets
+grain: one row per asset record
+description: Auto-profiled schema for assets (15,000 rows). Contains 13 columns, linked to organizations.
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key
+    primary_key: true
+    unique_count: 15000
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: organization_id
+    sql: organization_id
+    type: number
+    description: Foreign key to organizations
+    unique_count: 200
+    sample_values:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+  - name: hostname
+    sql: hostname
+    type: string
+    unique_count: 15000
+    sample_values:
+      - api-00048.eu-west.internal
+      - api-00082.prod.sentinel.local
+      - api-00086.prod.sentinel.local
+      - api-00088.prod.sentinel.local
+      - api-00103.eu-west.internal
+      - api-00114.prod.sentinel.local
+      - api-00184.prod.sentinel.local
+      - api-00186.eu-west.internal
+  - name: display_name
+    sql: display_name
+    type: string
+    unique_count: 8881
+    null_count: 6119
+    sample_values:
+      - api-00048 (production)
+      - api-00086 (production)
+      - api-00088 (staging)
+      - api-00114 (production)
+      - api-00186 (development)
+      - api-00192 (production)
+      - api-00217 (staging)
+      - api-00241 (production)
+  - name: asset_type
+    sql: asset_type
+    type: string
+    unique_count: 6
+    sample_values:
+      - cloud_vm
+      - container
+      - endpoint
+      - network
+      - server
+      - serverless
+  - name: ip_address
+    sql: ip_address
+    type: string
+    unique_count: 14724
+    sample_values:
+      - 192.168.0.11
+      - 192.168.0.116
+      - 192.168.0.189
+      - 192.168.0.200
+      - 192.168.0.220
+      - 192.168.0.225
+      - 192.168.0.25
+      - 192.168.0.253
+  - name: os
+    sql: os
+    type: string
+    unique_count: 8
+    sample_values:
+      - Alpine
+      - Amazon Linux
+      - CentOS
+      - Debian
+      - RHEL
+      - Ubuntu
+      - Windows Server
+      - macOS
+  - name: os_version
+    sql: os_version
+    type: string
+    unique_count: 9
+    sample_values:
+      - '12'
+      - '14'
+      - '20.04'
+      - '2019'
+      - '2022'
+      - '22.04'
+      - '3.18'
+      - '7'
+      - '8'
+  - name: environment
+    sql: environment
+    type: string
+    unique_count: 4
+    sample_values:
+      - development
+      - dmz
+      - production
+      - staging
+  - name: is_active
+    sql: is_active
+    type: boolean
+    unique_count: 2
+    sample_values:
+      - 'false'
+      - 'true'
+  - name: first_seen
+    sql: first_seen
+    type: date
+    unique_count: 15000
+    sample_values:
+      - Thu Jun 13 2019 12:57:13 GMT-0400 (Eastern Daylight Time)
+      - Wed Jun 19 2019 10:05:45 GMT-0400 (Eastern Daylight Time)
+      - Thu Jun 20 2019 06:09:02 GMT-0400 (Eastern Daylight Time)
+      - Sat Jun 22 2019 00:06:10 GMT-0400 (Eastern Daylight Time)
+      - Mon Jun 24 2019 13:51:18 GMT-0400 (Eastern Daylight Time)
+      - Tue Jun 25 2019 20:34:49 GMT-0400 (Eastern Daylight Time)
+      - Fri Jun 28 2019 09:47:35 GMT-0400 (Eastern Daylight Time)
+      - Sat Jun 29 2019 09:11:41 GMT-0400 (Eastern Daylight Time)
+  - name: last_seen
+    sql: last_seen
+    type: date
+    unique_count: 15000
+    sample_values:
+      - Sat Oct 05 2019 21:34:40 GMT-0400 (Eastern Daylight Time)
+      - Sat Oct 12 2019 10:42:27 GMT-0400 (Eastern Daylight Time)
+      - Thu Nov 14 2019 16:49:45 GMT-0500 (Eastern Standard Time)
+      - Wed Dec 04 2019 16:55:05 GMT-0500 (Eastern Standard Time)
+      - Sat Dec 21 2019 15:11:20 GMT-0500 (Eastern Standard Time)
+      - Thu Dec 26 2019 03:21:19 GMT-0500 (Eastern Standard Time)
+      - Fri Jan 17 2020 05:30:34 GMT-0500 (Eastern Standard Time)
+      - Fri Jan 24 2020 19:45:13 GMT-0500 (Eastern Standard Time)
+  - name: created_at
+    sql: created_at
+    type: date
+    unique_count: 15000
+    sample_values:
+      - Sun Jun 09 2019 13:02:48 GMT-0400 (Eastern Daylight Time)
+      - Mon Jun 10 2019 01:17:38 GMT-0400 (Eastern Daylight Time)
+      - Sat Jun 15 2019 03:52:41 GMT-0400 (Eastern Daylight Time)
+      - Sun Jun 16 2019 19:00:27 GMT-0400 (Eastern Daylight Time)
+      - Sat Jun 22 2019 00:11:50 GMT-0400 (Eastern Daylight Time)
+      - Sat Jun 22 2019 14:19:40 GMT-0400 (Eastern Daylight Time)
+      - Sun Jun 23 2019 08:47:52 GMT-0400 (Eastern Daylight Time)
+      - Sun Jun 23 2019 12:22:43 GMT-0400 (Eastern Daylight Time)
+  - name: first_seen_year
+    sql: EXTRACT(YEAR FROM first_seen)
+    type: number
+    description: Year extracted from first_seen
+    virtual: true
+  - name: first_seen_month
+    sql: TO_CHAR(first_seen, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from first_seen
+    virtual: true
+  - name: last_seen_year
+    sql: EXTRACT(YEAR FROM last_seen)
+    type: number
+    description: Year extracted from last_seen
+    virtual: true
+  - name: last_seen_month
+    sql: TO_CHAR(last_seen, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from last_seen
+    virtual: true
+  - name: created_at_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year extracted from created_at
+    virtual: true
+  - name: created_at_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month extracted from created_at
+    virtual: true
+measures:
+  - name: asset_count
+    sql: id
+    type: count_distinct
+joins:
+  - target_entity: Organizations
+    relationship: many_to_one
+    join_columns:
+      from: organization_id
+      to: id
+    description: Each asset belongs to one organization
+use_cases:
+  - Use for segmentation analysis by asset_type, os, os_version, environment
+  - Use for time-series analysis using first_seen, last_seen, created_at
+  - Join with organizations for cross-entity analysis
+  - >-
+    Avoid for row-level
+    agents/asset_group_memberships/asset_tags/scan_results/scan_results_denormalized/vulnerability_instances queries —
+    use those entities directly
+query_patterns:
+  - description: Assets by asset_type
+    sql: |-
+      SELECT asset_type, COUNT(*) as count
+      FROM assets
+      GROUP BY asset_type
+      ORDER BY count DESC
+  - description: Assets by os
+    sql: |-
+      SELECT os, COUNT(*) as count
+      FROM assets
+      GROUP BY os
+      ORDER BY count DESC

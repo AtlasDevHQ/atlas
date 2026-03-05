@@ -1,0 +1,67 @@
+metrics:
+  - id: scan_results_denormalized_count
+    label: Total ScanResultsDenormalized
+    description: Count of distinct scan_results_denormalized records.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) as count
+      FROM scan_results_denormalized
+    aggregation: count_distinct
+  - id: total_cvss_score
+    label: Total cvss score
+    description: Sum of cvss_score across all scan_results_denormalized.
+    type: atomic
+    source:
+      entity: ScanResultsDenormalized
+      measure: total_cvss_score
+    sql: |-
+      SELECT SUM(cvss_score) as total_cvss_score
+      FROM scan_results_denormalized
+    aggregation: sum
+    objective: maximize
+  - id: avg_cvss_score
+    label: Average cvss score
+    description: Average cvss_score per scan_results_denormalized.
+    type: atomic
+    sql: |-
+      SELECT AVG(cvss_score) as avg_cvss_score
+      FROM scan_results_denormalized
+    aggregation: avg
+  - id: cvss_score_by_scan_type
+    label: cvss score by scan_type
+    description: cvss_score broken down by scan_type.
+    type: atomic
+    sql: |-
+      SELECT scan_type, SUM(cvss_score) as total_cvss_score, AVG(cvss_score) as avg_cvss_score, COUNT(*) as count
+      FROM scan_results_denormalized
+      GROUP BY scan_type
+      ORDER BY total_cvss_score DESC
+  - id: total_risk_level
+    label: Total risk level
+    description: Sum of risk_level across all scan_results_denormalized.
+    type: atomic
+    source:
+      entity: ScanResultsDenormalized
+      measure: total_risk_level
+    sql: |-
+      SELECT SUM(risk_level) as total_risk_level
+      FROM scan_results_denormalized
+    aggregation: sum
+    objective: maximize
+  - id: avg_risk_level
+    label: Average risk level
+    description: Average risk_level per scan_results_denormalized.
+    type: atomic
+    sql: |-
+      SELECT AVG(risk_level) as avg_risk_level
+      FROM scan_results_denormalized
+    aggregation: avg
+  - id: risk_level_by_scan_type
+    label: risk level by scan_type
+    description: risk_level broken down by scan_type.
+    type: atomic
+    sql: |-
+      SELECT scan_type, SUM(risk_level) as total_risk_level, AVG(risk_level) as avg_risk_level, COUNT(*) as count
+      FROM scan_results_denormalized
+      GROUP BY scan_type
+      ORDER BY total_risk_level DESC

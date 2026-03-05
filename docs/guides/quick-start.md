@@ -5,42 +5,21 @@ Get Atlas running locally in under 5 minutes.
 ## Prerequisites
 
 - [Bun](https://bun.sh/) v1.3+
+- [Docker](https://docs.docker.com/get-docker/) — required for local PostgreSQL (matches production setup)
 - An LLM API key (Anthropic, OpenAI, or another [supported provider](../.env.example))
-- Docker is **optional** — only needed for local PostgreSQL. MySQL requires an external server.
 
-## Option A: `bun create @useatlas` (recommended)
-
-```bash
-bun create @useatlas my-app
-cd my-app
-bun run dev
-```
-
-The interactive setup asks for your deploy platform, database, LLM provider, and API key.
-
-Platforms:
-- `docker` (default) — Hono API + Docker + nsjail sandbox
-- `railway` — Hono API + Docker + sidecar sandbox (internal networking)
-- `render` — Hono API + Docker + sidecar sandbox (private service)
-- `vercel` — Next.js + embedded API (auto-detected sandbox)
-- `other` — Hono API + Docker + choose sandbox (nsjail, sidecar, E2B, Daytona, none)
-
-Pass `--platform vercel` to scaffold a Vercel-ready project.
-
-## Option B: Manual setup with PostgreSQL
+## Setup
 
 ```bash
 git clone <your-repo-url> atlas
 cd atlas
 bun install
-bun run db:up
+bun run db:up                        # Start Postgres + seed demo data
 ```
 
-This launches a `postgres:16-alpine` container via Docker Compose. It auto-seeds a simple demo dataset with:
-
-- **50 companies** (industry, revenue, valuation, employee count)
-- **~200 people** (department, seniority, title, start date)
-- **80 accounts** (plan, status, monthly value, contract dates)
+This launches a `postgres:16-alpine` container via Docker Compose with two databases:
+- `atlas` — Atlas internals (auth, audit, conversations)
+- `atlas_demo` — Demo analytics data (50 companies, ~200 people, 80 accounts)
 
 > For a larger, production-like dataset, use `bun run atlas -- init --demo cybersec` instead. This loads a 62-table cybersecurity SaaS database (~500K rows) with realistic tech debt patterns.
 
@@ -50,10 +29,9 @@ Configure your environment:
 cp .env.example .env
 ```
 
-Edit `.env`:
+Edit `.env` — set your LLM provider (the database URLs are pre-configured for local Docker):
 
 ```bash
-ATLAS_DATASOURCE_URL=postgresql://atlas:atlas@localhost:5432/atlas_demo
 ATLAS_PROVIDER=anthropic
 ANTHROPIC_API_KEY=sk-ant-...
 ```
@@ -62,12 +40,14 @@ Generate the semantic layer and start:
 
 ```bash
 bun run atlas -- init                # Profile DB and generate YAMLs
-bun run dev                          # http://atlas.localhost:1355
+bun run dev                          # http://localhost:3000
 ```
+
+> **New project scaffolding:** `bun create @useatlas my-app` provides interactive setup with template selection, DB config, provider setup, and optional semantic layer generation.
 
 ## Ask your first question
 
-Open [http://atlas.localhost:1355](http://atlas.localhost:1355) in your browser (the portless reverse proxy provides stable `.localhost` URLs). The chat UI shows suggested starter questions derived from the semantic layer. Try one of these:
+Open [http://localhost:3000](http://localhost:3000) in your browser. The chat UI shows suggested starter questions derived from the semantic layer. Try one of these:
 
 - "How many companies are there by industry?"
 - "What is the average revenue across all companies?"
@@ -106,7 +86,7 @@ See [Bring Your Own DB](bring-your-own-db.md) for production database setup incl
 
 | Command | Description |
 |---------|-------------|
-| `bun run dev` | Start dev server via portless (http://atlas.localhost:1355) |
+| `bun run dev` | Start API (:3001) + Next.js (:3000) dev servers |
 | `bun run build` | Production build |
 | `bun run start` | Start production server |
 | `bun run lint` | ESLint |

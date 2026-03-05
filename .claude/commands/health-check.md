@@ -480,19 +480,14 @@ Start with these directories:
 
 ## Part K: Dev Tooling — LOW
 
-### K1. Portless Integration
+### K1. Dev Server Scripts
 
-**Reference:** Root `package.json`, `.env.example`
+**Reference:** Root `package.json`
 
 | Check | What to Verify |
 |-------|----------------|
-| devDependency present | `portless` in root `package.json` devDependencies |
-| Dev scripts use portless | `dev` script starts proxy (`portless proxy start &&`) and wraps with `portless api.atlas` and `portless atlas` |
-| Backward compat | `dev:api` and `dev:web` do NOT use portless |
-| Production unaffected | `scripts/start.sh` has zero portless references |
-| CI unaffected | `.github/workflows/` has zero portless references |
-| `.env.example` documented | `ATLAS_API_URL=http://api.atlas.localhost:1355` documented |
-
-**Red flags:**
-- portless in production dependencies (must be devDependencies only)
-- portless referenced in Dockerfiles or CI workflows
+| `dev` script | Starts both API (:3001) and Web (:3000) concurrently |
+| `dev:api` | Standalone Hono API on :3001 |
+| `dev:web` | Standalone Next.js on :3000 |
+| Production unaffected | `scripts/start.sh` doesn't depend on dev tooling |
+| CI unaffected | `.github/workflows/` doesn't depend on dev tooling |

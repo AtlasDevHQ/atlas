@@ -70,11 +70,10 @@ When the internal architecture is solid (post-v1.0), Atlas will be published as 
 ```bash
 # Dev
 bun install              # Install dependencies
-bun run dev              # Start Hono API + Next.js via portless (http://api.atlas.localhost:1355, http://atlas.localhost:1355)
-bun run dev:api          # Standalone Hono API on :3001 (no portless)
-bun run dev:web          # Standalone Next.js on :3000 (no portless)
-bun run dev:www          # Landing page via portless (http://www.atlas.localhost:1355)
-bun run dev:proxy        # Start portless proxy daemon (also run inline by bun run dev)
+bun run dev              # Start Hono API (:3001) + Next.js (:3000)
+bun run dev:api          # Standalone Hono API on :3001
+bun run dev:web          # Standalone Next.js on :3000
+bun run dev:www          # Landing page on :3002
 bun run build            # Production build (Next.js)
 bun run start            # Start production (both API + web via scripts/start.sh)
 
@@ -117,17 +116,14 @@ bun run mcp                           # Start MCP server on stdio (same as atlas
 bun run dev:mcp                       # Start MCP server with hot reload
 ```
 
-**Quick start (Postgres):** `bun run db:up` → set `ATLAS_DATASOURCE_URL=postgresql://atlas:atlas@localhost:5432/atlas_demo` in `.env` → `bun run dev`
+**Quick start:** `bun install` → `bun run db:up` → `cp .env.example .env` (set your LLM provider key) → `bun run atlas -- init` → `bun run dev`. The `.env` comes pre-configured with Docker Postgres URLs.
 
-**Portless dev URLs:** `bun run dev` starts the portless reverse proxy (:1355) and wraps both services with stable named URLs. Set `ATLAS_API_URL=http://api.atlas.localhost:1355` in `.env` so Next.js rewrites route through portless. Individual scripts (`dev:api`, `dev:web`) bypass portless and use fixed ports for backward compat (leave `ATLAS_API_URL` unset or comment it out).
-
-| Script | URL | Ports |
-|--------|-----|-------|
-| `bun run dev` (web) | http://atlas.localhost:1355 | random (4000-4999) |
-| `bun run dev` (api) | http://api.atlas.localhost:1355 | random (4000-4999) |
-| `bun run dev:www` | http://www.atlas.localhost:1355 | random (4000-4999) |
-| `bun run dev:api` | http://localhost:3001 | fixed |
-| `bun run dev:web` | http://localhost:3000 | fixed |
+| Script | URL |
+|--------|-----|
+| `bun run dev` | http://localhost:3000 (web) + http://localhost:3001 (API) |
+| `bun run dev:web` | http://localhost:3000 |
+| `bun run dev:api` | http://localhost:3001 |
+| `bun run dev:www` | http://localhost:3002 |
 
 **New project:** `bun create atlas-agent my-app` — interactive scaffolding with template selection, DB config, provider setup, and optional semantic layer generation.
 
@@ -448,7 +444,7 @@ export default defineConfig({
 | `ATLAS_CORS_ORIGIN` | `*` | CORS allowed origin. **Must** set explicitly for cross-origin + managed auth (cookie-based) |
 | `NEXT_PUBLIC_ATLAS_API_URL` | — | Next.js frontend: cross-origin API URL. When unset, same-origin via Next.js rewrites |
 | `VITE_ATLAS_API_URL` | — | Vite-based frontend: cross-origin API URL (legacy, unused in current packages) |
-| `ATLAS_API_URL` | `http://localhost:3001` | Rewrite target for same-origin mode (only used when `NEXT_PUBLIC_ATLAS_API_URL` is unset). Set to `http://api.atlas.localhost:1355` when using portless |
+| `ATLAS_API_URL` | `http://localhost:3001` | Rewrite target for same-origin mode (only used when `NEXT_PUBLIC_ATLAS_API_URL` is unset) |
 | `ATLAS_ACTIONS_ENABLED` | — | Set to `true` to enable the action framework (approval-gated write operations) |
 | `ATLAS_SCHEDULER_ENABLED` | — | Set to `true` to enable scheduled task routes and execution |
 | `ATLAS_SCHEDULER_BACKEND` | `bun` | Execution backend: `bun` (in-process tick loop), `webhook` (external cron hits POST /:id/run), or `vercel` (Vercel Cron hits POST /tick) |

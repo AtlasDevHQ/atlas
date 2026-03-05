@@ -14,7 +14,7 @@ export interface AtlasAuthClient {
     email: (opts: { email: string; password: string; name: string }) => Promise<{ error?: { message?: string } | null }>;
   };
   signOut: () => Promise<unknown>;
-  useSession: () => { data?: { user?: { email?: string } } | null };
+  useSession: () => { data?: { user?: { email?: string } } | null; isPending?: boolean };
 }
 
 export interface AtlasUIConfig {

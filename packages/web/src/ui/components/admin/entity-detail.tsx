@@ -62,7 +62,7 @@ function normalizeList<T>(
   keyName: string,
 ): (T & Record<string, unknown>)[] {
   if (!data) return [];
-  if (Array.isArray(data)) return data;
+  if (Array.isArray(data)) return data as (T & Record<string, unknown>)[];
   return Object.entries(data).map(([key, value]) => ({ ...value, [keyName]: key }));
 }
 

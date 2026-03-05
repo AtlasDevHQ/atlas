@@ -23,7 +23,7 @@ import {
   SidebarMenuItem,
   SidebarMenuButton,
   SidebarFooter,
-  SidebarSeparator,
+  SidebarRail,
 } from "@/components/ui/sidebar";
 
 const navItems = [
@@ -45,20 +45,26 @@ export function AdminSidebar() {
   }
 
   return (
-    <Sidebar>
-      <SidebarHeader className="px-3 pt-4 pb-2">
-        <div className="flex items-center gap-2.5">
-          <svg viewBox="0 0 256 256" fill="none" className="size-6 shrink-0" aria-hidden="true">
-            <path d="M128 24 L232 208 L24 208 Z" stroke="#23CE9E" strokeWidth="14" fill="none" strokeLinejoin="round" />
-            <circle cx="128" cy="28" r="16" fill="#23CE9E" />
-          </svg>
-          <div>
-            <p className="text-sm font-semibold leading-none tracking-tight">Atlas</p>
-            <p className="text-xs text-muted-foreground">Admin Console</p>
-          </div>
-        </div>
+    <Sidebar collapsible="icon">
+      <SidebarHeader>
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton size="lg" asChild>
+              <Link href="/admin">
+                <div className="bg-sidebar-primary text-sidebar-primary-foreground flex aspect-square size-8 items-center justify-center rounded-lg">
+                  <svg viewBox="0 0 256 256" fill="none" className="size-4" aria-hidden="true">
+                    <path d="M128 24 L232 208 L24 208 Z" stroke="currentColor" strokeWidth="20" fill="none" strokeLinejoin="round" />
+                  </svg>
+                </div>
+                <div className="grid flex-1 text-left text-sm leading-tight">
+                  <span className="truncate font-semibold">Atlas</span>
+                  <span className="truncate text-xs">Admin Console</span>
+                </div>
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
       </SidebarHeader>
-      <SidebarSeparator />
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupLabel>Navigation</SidebarGroupLabel>
@@ -68,7 +74,7 @@ export function AdminSidebar() {
                 <SidebarMenuItem key={item.href}>
                   <SidebarMenuButton asChild isActive={isActive(item)} tooltip={item.label}>
                     <Link href={item.href}>
-                      <item.icon className="size-4" />
+                      <item.icon />
                       <span>{item.label}</span>
                     </Link>
                   </SidebarMenuButton>
@@ -79,18 +85,18 @@ export function AdminSidebar() {
         </SidebarGroup>
       </SidebarContent>
       <SidebarFooter>
-        <SidebarSeparator />
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton asChild tooltip="Back to Chat">
               <Link href="/">
-                <ArrowLeft className="size-4" />
+                <ArrowLeft />
                 <span>Back to Chat</span>
               </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>
+      <SidebarRail />
     </Sidebar>
   );
 }

@@ -37,7 +37,7 @@ export function AtlasChat() {
   const { apiUrl, isCrossOrigin, authClient } = useAtlasConfig();
   const dark = useDarkMode();
   const [input, setInput] = useState("");
-  const [authMode, setAuthMode] = useState<AuthMode>("none");
+  const [authMode, setAuthMode] = useState<AuthMode | null>(null);
   const [healthWarning, setHealthWarning] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -46,6 +46,7 @@ export function AtlasChat() {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const managedSession = authClient.useSession();
+  const authResolved = authMode !== null;
   const isManaged = authMode === "managed";
   const isSignedIn = isManaged && !!managedSession.data?.user;
 
@@ -93,6 +94,7 @@ export function AtlasChat() {
             return fetchHealth(attempt + 1);
           }
           setHealthWarning("Health check failed — check server logs. Try refreshing the page.");
+          setAuthMode("none");
           return;
         }
         const data = await res.json();
@@ -107,6 +109,7 @@ export function AtlasChat() {
           return fetchHealth(attempt + 1);
         }
         setHealthWarning("Unable to reach the API server. Try refreshing the page.");
+        setAuthMode("none");
       }
     }
     fetchHealth(1);
@@ -203,6 +206,16 @@ export function AtlasChat() {
     convos.setSelectedId(null);
     setInput("");
     setMobileMenuOpen(false);
+  }
+
+  // Wait for auth mode detection before rendering — prevents flash of chat UI
+  // when managed auth is active but session hasn't been checked yet.
+  if (!authResolved || (isManaged && managedSession.isPending)) {
+    return (
+      <DarkModeContext.Provider value={dark}>
+        <div className="flex h-dvh items-center justify-center bg-white dark:bg-zinc-950" />
+      </DarkModeContext.Provider>
+    );
   }
 
   return (

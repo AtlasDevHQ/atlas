@@ -269,5 +269,14 @@ export async function migrateInternalDB(): Promise<void> {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_task ON scheduled_task_runs(task_id);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_status ON scheduled_task_runs(status);`);
 
+  // Dev user password change tracking — added to Better Auth's user table.
+  // Runs after Better Auth migrations (which create the "user" table).
+  // Safe to run even if the column already exists (IF NOT EXISTS).
+  try {
+    await pool.query(`ALTER TABLE "user" ADD COLUMN IF NOT EXISTS password_change_required BOOLEAN NOT NULL DEFAULT false;`);
+  } catch {
+    // "user" table may not exist yet (non-managed mode) — ignore silently
+  }
+
   log.info("Internal DB migration complete (audit_log, conversations, messages, slack, action_log, scheduled_tasks)");
 }

@@ -56,6 +56,7 @@ const MANAGED_VARS = [
   "BETTER_AUTH_SECRET",
   "ATLAS_AUTH_JWKS_URL",
   "ATLAS_API_KEY",
+  "ATLAS_ADMIN_EMAIL",
 ] as const;
 
 const saved: Record<string, string | undefined> = {};
@@ -74,6 +75,7 @@ beforeEach(() => {
   delete process.env.BETTER_AUTH_SECRET;
   delete process.env.ATLAS_AUTH_JWKS_URL;
   delete process.env.ATLAS_API_KEY;
+  delete process.env.ATLAS_ADMIN_EMAIL;
 });
 
 afterEach(() => {
@@ -99,8 +101,8 @@ describe("migrateAuthTables", () => {
 
     await migrateAuthTables();
 
-    // migrateInternalDB: 3 audit_log + 4 conversations/messages + 2 starred column + 3 slack + 5 action_log + 2 source tracking = 19 queries
-    expect(queries.length).toBe(26);
+    // migrateInternalDB: 3 audit_log + 4 conversations/messages + 2 starred column + 3 slack + 5 action_log + 2 source tracking + 7 scheduled_tasks + 1 password_change_required = 27 queries
+    expect(queries.length).toBe(27);
     expect(queries[0]).toContain("CREATE TABLE IF NOT EXISTS audit_log");
   });
 
@@ -141,8 +143,8 @@ describe("migrateAuthTables", () => {
     await migrateAuthTables();
     await migrateAuthTables();
 
-    // Internal DB migration runs once (26 queries: audit_log + conversations/messages + starred column + slack + action_log + source tracking + scheduled_tasks/runs)
-    expect(queries.length).toBe(26);
+    // Internal DB migration runs once (27 queries: audit_log + conversations/messages + starred column + slack + action_log + source tracking + scheduled_tasks/runs + password_change_required)
+    expect(queries.length).toBe(27);
     // Better Auth migration runs once
     expect(getMigrationCount()).toBe(1);
   });

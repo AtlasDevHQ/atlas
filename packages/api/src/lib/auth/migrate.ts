@@ -64,6 +64,7 @@ export async function migrateAuthTables(): Promise<void> {
     await ctx.runMigrations();
     log.info("Better Auth migration complete");
     await bootstrapAdminUser();
+    await seedDevUser(auth);
   } catch (err) {
     log.error({ err }, "Better Auth migration failed — managed auth may not work");
     _migrationError = "Connected to the internal database but Better Auth migration failed. Managed auth may not work. Check database permissions (CREATE TABLE).";
@@ -101,6 +102,51 @@ async function bootstrapAdminUser(): Promise<void> {
     }
   } catch (err) {
     log.error({ err }, "Bootstrap admin promotion failed — admin console may be inaccessible");
+  }
+}
+
+/**
+ * Seed a default dev admin account when no users exist.
+ * Only runs when ATLAS_ADMIN_EMAIL is set — uses that email with a
+ * well-known password ("atlas-dev"). The databaseHook in server.ts
+ * promotes this user to admin on creation.
+ *
+ * Skips silently if any users already exist (idempotent).
+ */
+async function seedDevUser(auth: { api: Record<string, unknown> }): Promise<void> {
+  const adminEmail = process.env.ATLAS_ADMIN_EMAIL?.toLowerCase().trim();
+  if (!adminEmail) return;
+
+  try {
+    const userCount = await internalQuery<{ count: string }>(
+      `SELECT COUNT(*) as count FROM "user"`,
+    );
+    if (parseInt(String(userCount[0]?.count ?? "0"), 10) > 0) return;
+
+    // Use Better Auth's createUser API (from the admin plugin)
+    const createUser = auth.api.createUser as (opts: {
+      body: { email: string; password: string; name: string; role: string };
+    }) => Promise<unknown>;
+
+    await createUser({
+      body: {
+        email: adminEmail,
+        password: "atlas-dev",
+        name: "Atlas Admin",
+        role: "admin",
+      },
+    });
+
+    // Mark the seeded user as requiring a password change
+    await internalQuery(
+      `UPDATE "user" SET password_change_required = true WHERE LOWER(email) = $1`,
+      [adminEmail],
+    );
+
+    log.info({ email: adminEmail }, "Dev admin account seeded (password: atlas-dev)");
+  } catch (err) {
+    // User might already exist from a previous partial boot — not fatal
+    log.debug({ err }, "Dev user seed skipped or failed");
   }
 }
 

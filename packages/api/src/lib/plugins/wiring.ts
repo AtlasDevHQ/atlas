@@ -28,6 +28,8 @@ interface DatasourceShape {
     create(): Promise<{ query(sql: string, timeoutMs?: number): Promise<unknown>; close(): Promise<void> }> | { query(sql: string, timeoutMs?: number): Promise<unknown>; close(): Promise<void> };
     dbType: string;
     validate?(query: string): { valid: boolean; reason?: string };
+    parserDialect?: string;
+    forbiddenPatterns?: RegExp[];
   };
   entities?: unknown[] | (() => Promise<unknown[]> | unknown[]);
   dialect?: string;
@@ -106,12 +108,16 @@ export async function wireDatasourcePlugins(
     }
     try {
       const conn = await plugin.connection.create();
+      const meta = (plugin.connection.parserDialect || plugin.connection.forbiddenPatterns)
+        ? { parserDialect: plugin.connection.parserDialect, forbiddenPatterns: plugin.connection.forbiddenPatterns }
+        : undefined;
       await connRegistry.registerDirect(
         plugin.id,
         conn as Parameters<ConnectionRegistry["registerDirect"]>[1],
         plugin.connection.dbType as Parameters<ConnectionRegistry["registerDirect"]>[2],
         plugin.name ?? plugin.id,
         plugin.connection.validate,
+        meta,
       );
       wired.push(plugin.id);
       log.info({ pluginId: plugin.id, dbType: plugin.connection.dbType }, "Datasource plugin wired");

@@ -49,6 +49,8 @@ mock.module("@atlas/api/lib/db/connection", () => ({
     getDefault: () => mockDBConnection,
     getDBType: () => mockDetectDBType(),
     getValidator: () => undefined,
+    getParserDialect: () => undefined,
+    getForbiddenPatterns: () => [],
     list: () => ["default"],
   },
   detectDBType: mockDetectDBType,

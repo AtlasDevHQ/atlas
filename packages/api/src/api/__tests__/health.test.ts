@@ -53,6 +53,10 @@ mock.module("@atlas/api/lib/db/connection", () => ({
   ConnectionRegistry: class {},
 }));
 
+mock.module("@atlas/api/lib/providers", () => ({
+  getDefaultProvider: () => "anthropic",
+}));
+
 mock.module("@atlas/api/lib/semantic", () => ({
   getWhitelistedTables: () => new Set(["companies"]),
   _resetWhitelists: () => {},
@@ -207,7 +211,7 @@ describe("GET /api/health — sources section", () => {
     expect((sources.warehouse as Record<string, unknown>).status).toBe("unhealthy");
   });
 
-  it("promotes top-level status to 'degraded' when a source is degraded and no other errors", async () => {
+  it("promotes top-level status to 'degraded' when a non-default source is degraded and no other errors", async () => {
     const degraded: HealthCheckResult = {
       status: "degraded",
       latencyMs: 2000,
@@ -215,7 +219,7 @@ describe("GET /api/health — sources section", () => {
       checkedAt: new Date(),
     };
     connMetadata = [
-      { id: "default", dbType: "postgres", health: degraded },
+      { id: "warehouse", dbType: "postgres", health: degraded },
     ];
 
     const response = await app.fetch(healthRequest());

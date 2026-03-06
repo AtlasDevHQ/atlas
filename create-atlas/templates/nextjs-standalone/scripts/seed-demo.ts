@@ -68,7 +68,9 @@ try {
     await client.query(sql);
     await client.query("COMMIT");
   } catch (err) {
-    await client.query("ROLLBACK");
+    try { await client.query("ROLLBACK"); } catch (rollbackErr) {
+      console.warn("seed-demo: ROLLBACK failed —", rollbackErr instanceof Error ? rollbackErr.message : rollbackErr);
+    }
     throw err;
   }
 
@@ -79,6 +81,8 @@ try {
   process.exit(0);
 } catch (err) {
   console.error("seed-demo: failed —", err instanceof Error ? err.stack : err);
-  try { await client.end(); } catch {}
+  try { await client.end(); } catch (cleanupErr) {
+    console.warn("seed-demo: cleanup failed —", cleanupErr instanceof Error ? cleanupErr.message : cleanupErr);
+  }
   process.exit(1);
 }

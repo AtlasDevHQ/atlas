@@ -53,6 +53,10 @@ mock.module("@atlas/api/lib/db/connection", () => ({
   ConnectionRegistry: class {},
 }));
 
+mock.module("@atlas/api/lib/providers", () => ({
+  getDefaultProvider: () => "anthropic",
+}));
+
 mock.module("@atlas/api/lib/semantic", () => ({
   getWhitelistedTables: () => new Set(["companies"]),
   _resetWhitelists: () => {},

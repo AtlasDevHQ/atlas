@@ -2,7 +2,7 @@ import { describe, expect, test, afterEach } from "bun:test";
 
 // Import after mocks — getProviderType reads process.env at call time, so no
 // module-level mocking is needed.
-const { getProviderType } = await import("@atlas/api/lib/providers");
+const { getProviderType, getDefaultProvider } = await import("@atlas/api/lib/providers");
 
 // ---------------------------------------------------------------------------
 // Env snapshot — capture/restore only the vars this test touches
@@ -10,6 +10,7 @@ const { getProviderType } = await import("@atlas/api/lib/providers");
 
 const origProvider = process.env.ATLAS_PROVIDER;
 const origModel = process.env.ATLAS_MODEL;
+const origVercel = process.env.VERCEL;
 
 afterEach(() => {
   if (origProvider !== undefined) process.env.ATLAS_PROVIDER = origProvider;
@@ -17,6 +18,9 @@ afterEach(() => {
 
   if (origModel !== undefined) process.env.ATLAS_MODEL = origModel;
   else delete process.env.ATLAS_MODEL;
+
+  if (origVercel !== undefined) process.env.VERCEL = origVercel;
+  else delete process.env.VERCEL;
 });
 
 // ---------------------------------------------------------------------------
@@ -90,10 +94,37 @@ describe("getProviderType", () => {
     expect(getProviderType()).toBe("bedrock");
   });
 
+  // --- Vercel auto-detection ------------------------------------------------
+
+  test("defaults to 'gateway' when VERCEL env var is set and no ATLAS_PROVIDER", () => {
+    delete process.env.ATLAS_PROVIDER;
+    delete process.env.ATLAS_MODEL;
+    process.env.VERCEL = "1";
+    expect(getProviderType()).toBe("gateway");
+  });
+
+  test("explicit ATLAS_PROVIDER overrides Vercel default", () => {
+    process.env.ATLAS_PROVIDER = "anthropic";
+    process.env.VERCEL = "1";
+    expect(getProviderType()).toBe("anthropic");
+  });
+
   // --- Invalid provider ----------------------------------------------------
 
   test("throws for an invalid provider string", () => {
     process.env.ATLAS_PROVIDER = "typo-provider";
     expect(() => getProviderType()).toThrow(Error);
+  });
+});
+
+describe("getDefaultProvider", () => {
+  test("returns 'anthropic' when VERCEL is not set", () => {
+    delete process.env.VERCEL;
+    expect(getDefaultProvider()).toBe("anthropic");
+  });
+
+  test("returns 'gateway' when VERCEL is set", () => {
+    process.env.VERCEL = "1";
+    expect(getDefaultProvider()).toBe("gateway");
   });
 });

@@ -8,6 +8,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { detectDBType, resolveDatasourceUrl } from "./db/connection";
+import { getDefaultProvider } from "./providers";
 import { detectAuthMode, getAuthModeSource } from "./auth/detect";
 import { createLogger } from "./logger";
 
@@ -70,7 +71,14 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
   // 1. Analytics datasource — resolve from ATLAS_DATASOURCE_URL or Neon fallback
   const resolvedDatasourceUrl = resolveDatasourceUrl();
   if (!resolvedDatasourceUrl) {
-    if (process.env.DATABASE_URL) {
+    if (process.env.ATLAS_DEMO_DATA === "true") {
+      const msg =
+        "ATLAS_DEMO_DATA=true but neither DATABASE_URL_UNPOOLED nor DATABASE_URL is set. " +
+        "The Neon integration may not have provisioned a database. " +
+        "Check your Vercel project's storage integrations.";
+      log.error(msg);
+      errors.push({ code: "MISSING_DATASOURCE_URL", message: msg });
+    } else if (process.env.DATABASE_URL) {
       const msg =
         "DATABASE_URL is set but ATLAS_DATASOURCE_URL is not. " +
         "As of v0.5, the analytics datasource uses ATLAS_DATASOURCE_URL. " +
@@ -95,8 +103,7 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
   }
 
   // 2. API key for configured provider
-  const defaultProvider = process.env.VERCEL ? "gateway" : "anthropic";
-  const provider = process.env.ATLAS_PROVIDER ?? defaultProvider;
+  const provider = process.env.ATLAS_PROVIDER ?? getDefaultProvider();
   const requiredKey = PROVIDER_KEY_MAP[provider];
 
   if (requiredKey === undefined) {

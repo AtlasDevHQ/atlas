@@ -139,8 +139,8 @@ health.get("/", async (c) => {
       }
     }
 
-    const defaultProvider = process.env.VERCEL ? "gateway" : "anthropic";
-    const provider = process.env.ATLAS_PROVIDER ?? defaultProvider;
+    const { getDefaultProvider } = await import("@atlas/api/lib/providers");
+    const provider = process.env.ATLAS_PROVIDER ?? getDefaultProvider();
     const entityCount = getWhitelistedTables().size;
     const exploreBackend = getExploreBackendType();
     const authMode = detectAuthMode();
@@ -217,9 +217,10 @@ health.get("/", async (c) => {
           };
         }
 
-        // Promote overall status based on source health
-        const hasUnhealthy = connMeta.some((m) => m.health?.status === "unhealthy");
-        const hasDegraded = connMeta.some((m) => m.health?.status === "degraded");
+        // Promote overall status based on effective source health (includes live probe overrides)
+        const sourceStatuses = Object.values(sourcesSection).map((s) => s.status);
+        const hasUnhealthy = sourceStatuses.includes("unhealthy");
+        const hasDegraded = sourceStatuses.includes("degraded");
         if (hasUnhealthy && status !== "error") status = "error";
         else if (hasDegraded && status === "ok") status = "degraded";
       }

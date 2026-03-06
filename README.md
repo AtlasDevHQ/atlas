@@ -4,9 +4,19 @@ Deploy-anywhere text-to-SQL data analyst agent. Ask natural language questions, 
 
 Built with Hono, Vercel AI SDK, and bun. Supports Anthropic, OpenAI, Bedrock, Ollama, and Vercel AI Gateway. Works with PostgreSQL and MySQL.
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FAtlasDevHQ%2Fatlas-starter&project-name=atlas&repository-name=atlas&products=%5B%7B%22type%22%3A%22integration%22%2C%22integrationSlug%22%3A%22neon%22%2C%22productSlug%22%3A%22neon%22%2C%22protocol%22%3A%22storage%22%7D%5D&env=AI_GATEWAY_API_KEY,BETTER_AUTH_SECRET,ATLAS_DEMO_DATA&envDescription=AI_GATEWAY_API_KEY%3A%20Vercel%20AI%20Gateway%20key%20(vercel.com%2F~%2Fai%2Fapi-keys).%20BETTER_AUTH_SECRET%3A%20Random%20string%2C%2032%2B%20chars%20(openssl%20rand%20-base64%2032).%20ATLAS_DEMO_DATA%3A%20Set%20to%20%22true%22%20for%20demo%20data%20or%20leave%20empty.)
+## Deploy
 
-One click deploys Atlas on Vercel with a Neon Postgres database and AI Gateway. Set `ATLAS_DEMO_DATA=true` to include demo data, or leave it empty and connect your own database.
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FAtlasDevHQ%2Fatlas-starter-vercel&project-name=atlas&repository-name=atlas&products=%5B%7B%22type%22%3A%22integration%22%2C%22integrationSlug%22%3A%22neon%22%2C%22productSlug%22%3A%22neon%22%2C%22protocol%22%3A%22storage%22%7D%5D&env=AI_GATEWAY_API_KEY,BETTER_AUTH_SECRET,ATLAS_DEMO_DATA&envDescription=AI_GATEWAY_API_KEY%3A%20Vercel%20AI%20Gateway%20key%20(vercel.com%2F~%2Fai%2Fapi-keys).%20BETTER_AUTH_SECRET%3A%20Random%20string%2C%2032%2B%20chars%20(openssl%20rand%20-base64%2032).%20ATLAS_DEMO_DATA%3A%20Set%20to%20%22true%22%20for%20demo%20data%20or%20leave%20empty.)
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/template/from-repo?repo=AtlasDevHQ%2Fatlas-starter-railway)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/AtlasDevHQ/atlas-starter-render)
+
+**Docker:**
+
+```bash
+git clone https://github.com/AtlasDevHQ/atlas-starter-docker.git && cd atlas-starter-docker
+cp .env.example .env   # Set your API key + database URL
+docker compose up
+```
 
 ## Quick Start
 
@@ -69,10 +79,14 @@ atlas/
 
 ## Deployment
 
-See the example projects for deployment guides:
+| Platform | Starter | Guide |
+|----------|---------|-------|
+| Vercel | [atlas-starter-vercel](https://github.com/AtlasDevHQ/atlas-starter-vercel) | Next.js + embedded Hono API + Neon Postgres |
+| Railway | [atlas-starter-railway](https://github.com/AtlasDevHQ/atlas-starter-railway) | Docker + sidecar sandbox + Railway Postgres |
+| Render | [atlas-starter-render](https://github.com/AtlasDevHQ/atlas-starter-render) | Docker + sidecar sandbox + Render Postgres |
+| Docker | [atlas-starter-docker](https://github.com/AtlasDevHQ/atlas-starter-docker) | Docker Compose + optional nsjail isolation |
 
-- **[Docker](examples/docker/)** — Self-hosted Hono API server with optional nsjail isolation. Includes configs for Railway, Render, and Docker Compose.
-- **[Next.js Standalone](examples/nextjs-standalone/)** — Full stack: Next.js + embedded Hono API. Deploy on Vercel.
+See [Deploy options](docs/guides/deploy.md) for detailed instructions.
 
 ## Security
 

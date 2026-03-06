@@ -1,0 +1,162 @@
+# Sync atlas-starter from monorepo template
+#
+# Runs when source files that feed the starter change on main.
+# Generates a trimmed template, pushes to a sync branch on atlas-starter,
+# and opens/updates a PR.
+#
+# Requirements:
+# - STARTER_SYNC_TOKEN: a GitHub PAT (classic) or fine-grained token with
+#   `contents: write` and `pull_requests: write` on AtlasDevHQ/atlas-starter.
+#   Set as a repository secret in AtlasDevHQ/atlas.
+
+name: Sync Starter
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/api/src/**"
+      - "packages/web/src/ui/**"
+      - "packages/web/src/app/**"
+      - "packages/cli/bin/**"
+      - "packages/cli/data/**"
+      - "create-atlas/**"
+      - "examples/nextjs-standalone/**"
+      - "docs/guides/deploy.md"
+      - "scripts/sync-starter.sh"
+  workflow_dispatch: # Allow manual trigger
+
+permissions:
+  contents: read
+
+env:
+  BUN_VERSION: "1.3.10"
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate secrets
+        run: |
+          if [ -z "${{ secrets.STARTER_SYNC_TOKEN }}" ]; then
+            echo "ERROR: STARTER_SYNC_TOKEN secret is not set." >&2
+            echo "       Add a GitHub PAT with contents:write and pull_requests:write" >&2
+            echo "       on AtlasDevHQ/atlas-starter as a repository secret." >&2
+            exit 1
+          fi
+
+      - name: Checkout monorepo
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Generate starter output
+        run: bash scripts/sync-starter.sh /tmp/starter-sync
+
+      - name: Clone atlas-starter
+        run: |
+          git clone "https://x-access-token:${SYNC_TOKEN}@github.com/AtlasDevHQ/atlas-starter.git" /tmp/atlas-starter
+        env:
+          GIT_TERMINAL_PROMPT: "0"
+          SYNC_TOKEN: ${{ secrets.STARTER_SYNC_TOKEN }}
+
+      - name: Apply sync (preserve starter-specific files)
+        run: |
+          cd /tmp/atlas-starter
+
+          # Remove files that are regenerated from monorepo
+          rm -rf src/ bin/ data/ docs/
+          rm -f eslint.config.mjs next.config.ts postcss.config.mjs tsconfig.json
+
+          # Copy synced output
+          cp -r /tmp/starter-sync/src ./src
+          cp -r /tmp/starter-sync/bin ./bin
+          cp -r /tmp/starter-sync/data ./data
+          cp -r /tmp/starter-sync/docs ./docs
+          cp /tmp/starter-sync/eslint.config.mjs ./
+          cp /tmp/starter-sync/next.config.ts ./
+          cp /tmp/starter-sync/postcss.config.mjs ./
+          cp /tmp/starter-sync/tsconfig.json ./
+
+          # Update dependency versions in package.json from the template
+          # (preserves starter-specific name, scripts, and structure)
+          bun -e "
+            const tmpl = JSON.parse(require('fs').readFileSync('/tmp/starter-sync/package.json', 'utf8'));
+            const starter = JSON.parse(require('fs').readFileSync('package.json', 'utf8'));
+            // Sync dependency versions (only for deps that exist in both)
+            for (const section of ['dependencies', 'devDependencies', 'optionalDependencies']) {
+              if (!tmpl[section] || !starter[section]) continue;
+              for (const [pkg, ver] of Object.entries(tmpl[section])) {
+                if (starter[section][pkg]) starter[section][pkg] = ver;
+              }
+            }
+            require('fs').writeFileSync('package.json', JSON.stringify(starter, null, 2) + '\n');
+          "
+
+      - name: Check for changes
+        id: diff
+        working-directory: /tmp/atlas-starter
+        run: |
+          git add -A
+          if git diff --cached --quiet; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo ":: No changes detected — starter is up to date."
+          else
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo ":: Changes detected — will create/update PR."
+          fi
+
+      - name: Create PR on atlas-starter
+        if: steps.diff.outputs.has_changes == 'true'
+        working-directory: /tmp/atlas-starter
+        env:
+          GH_TOKEN: ${{ secrets.STARTER_SYNC_TOKEN }}
+        run: |
+          SYNC_BRANCH="sync/monorepo"
+          MONOREPO_SHA="${{ github.sha }}"
+          SHORT_SHA="${MONOREPO_SHA:0:7}"
+
+          git config user.name "atlas-bot"
+          git config user.email "bot@useatlas.dev"
+
+          # Create or reset the sync branch
+          git checkout -B "$SYNC_BRANCH"
+          git commit -m "sync: update from monorepo ($SHORT_SHA)"
+
+          # Force-push is intentional: this branch is a single-commit sync snapshot,
+          # not a collaborative branch. Each sync replaces the previous one.
+          git push -u origin "$SYNC_BRANCH" --force
+
+          # Create or update PR
+          EXISTING_PR=$(gh pr list --repo AtlasDevHQ/atlas-starter --head "$SYNC_BRANCH" --json number --jq '.[0].number // empty')
+
+          if [ -n "$EXISTING_PR" ]; then
+            echo ":: Updating existing PR #$EXISTING_PR"
+            gh pr comment "$EXISTING_PR" \
+              --repo AtlasDevHQ/atlas-starter \
+              --body "Updated from monorepo commit [\`$SHORT_SHA\`](https://github.com/AtlasDevHQ/atlas/commit/$MONOREPO_SHA)."
+          else
+            echo ":: Creating new PR"
+            gh pr create \
+              --repo AtlasDevHQ/atlas-starter \
+              --head "$SYNC_BRANCH" \
+              --base main \
+              --title "sync: update from monorepo" \
+              --body "$(cat <<EOF
+Automated sync from [AtlasDevHQ/atlas](https://github.com/AtlasDevHQ/atlas) monorepo.
+
+**Source commit:** [\`$SHORT_SHA\`](https://github.com/AtlasDevHQ/atlas/commit/$MONOREPO_SHA)
+
+Please review the diff carefully — automated transforms strip heavy DB adapters, scheduler, and admin UI from the monorepo source. Check for:
+- Orphaned imports or references to removed modules
+- Connection.ts correctness (only PostgreSQL + MySQL should remain)
+- No scheduler or Salesforce references leaked through
+EOF
+)"
+          fi

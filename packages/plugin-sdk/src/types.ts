@@ -300,6 +300,17 @@ export interface AtlasDatasourcePlugin<TConfig = undefined> extends AtlasPluginB
      * Queries rewritten by hooks are re-validated through this function before execution.
      */
     validate?(query: string): QueryValidationResult;
+    /**
+     * node-sql-parser dialect string (e.g. "PostgresQL", "MySQL", "Snowflake").
+     * Defaults to "PostgresQL" when not provided. Used by the core SQL validation
+     * pipeline to parse queries in the correct dialect.
+     */
+    parserDialect?: string;
+    /**
+     * Additional regex patterns to block beyond the base DML/DDL guard.
+     * Merged with core forbidden patterns during SQL validation.
+     */
+    forbiddenPatterns?: RegExp[];
   };
   /**
    * Optional entity definitions — plugin-provided semantic layer fragments.

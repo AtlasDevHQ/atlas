@@ -745,6 +745,143 @@ describe("datasource plugin entities and dialect", () => {
     expect(instance.connection.validate!("DESCRIBE Account")).toEqual({ valid: false, reason: "Must start with SELECT" });
   });
 
+  test("accepts parserDialect string", () => {
+    const plugin = definePlugin({
+      id: "snowflake-ds",
+      type: "datasource",
+      version: "1.0.0",
+      connection: {
+        create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
+        dbType: "snowflake" as const,
+        parserDialect: "Snowflake",
+      },
+    } satisfies AtlasDatasourcePlugin);
+
+    expect(plugin.connection.parserDialect).toBe("Snowflake");
+  });
+
+  test("accepts forbiddenPatterns array", () => {
+    const plugin = definePlugin({
+      id: "strict-ds",
+      type: "datasource",
+      version: "1.0.0",
+      connection: {
+        create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
+        dbType: "postgres",
+        forbiddenPatterns: [/\bCOPY\b/i, /\bEXPLAIN\b/i],
+      },
+    } satisfies AtlasDatasourcePlugin);
+
+    expect(plugin.connection.forbiddenPatterns).toHaveLength(2);
+  });
+
+  test("parserDialect and forbiddenPatterns are optional (backward compat)", () => {
+    const plugin: AtlasDatasourcePlugin = definePlugin({
+      id: "plain-ds2",
+      type: "datasource",
+      version: "1.0.0",
+      connection: {
+        create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
+        dbType: "postgres",
+      },
+    });
+
+    expect(plugin.connection.parserDialect).toBeUndefined();
+    expect(plugin.connection.forbiddenPatterns).toBeUndefined();
+  });
+
+  test("throws when parserDialect is empty string", () => {
+    expect(() => definePlugin({
+      id: "bad-dialect",
+      type: "datasource",
+      version: "1.0.0",
+      connection: {
+        create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
+        dbType: "postgres",
+        parserDialect: "",
+      },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)).toThrow('"parserDialect" must be a non-empty string');
+  });
+
+  test("throws when parserDialect is whitespace-only", () => {
+    expect(() => definePlugin({
+      id: "bad-dialect",
+      type: "datasource",
+      version: "1.0.0",
+      connection: {
+        create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
+        dbType: "postgres",
+        parserDialect: "   ",
+      },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)).toThrow('"parserDialect" must be a non-empty string');
+  });
+
+  test("throws when parserDialect is not a string", () => {
+    expect(() => definePlugin({
+      id: "bad-dialect",
+      type: "datasource",
+      version: "1.0.0",
+      connection: {
+        create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
+        dbType: "postgres",
+        parserDialect: 42,
+      },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)).toThrow('"parserDialect" must be a non-empty string');
+  });
+
+  test("throws when forbiddenPatterns is not an array", () => {
+    expect(() => definePlugin({
+      id: "bad-patterns",
+      type: "datasource",
+      version: "1.0.0",
+      connection: {
+        create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
+        dbType: "postgres",
+        forbiddenPatterns: "not-an-array",
+      },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)).toThrow('"forbiddenPatterns" must be an array of RegExp');
+  });
+
+  test("throws when forbiddenPatterns contains non-RegExp", () => {
+    expect(() => definePlugin({
+      id: "bad-patterns",
+      type: "datasource",
+      version: "1.0.0",
+      connection: {
+        create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
+        dbType: "postgres",
+        forbiddenPatterns: [/\bCOPY\b/i, "not-a-regex"],
+      },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)).toThrow('Each entry in "forbiddenPatterns" must be a RegExp');
+  });
+
+  test("createPlugin works with parserDialect and forbiddenPatterns", () => {
+    const sfPlugin = createPlugin({
+      configSchema: z.object({ account: z.string() }),
+      create: (config) => ({
+        id: "snowflake",
+        type: "datasource" as const,
+        version: "1.0.0",
+        config,
+        connection: {
+          create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
+          dbType: "snowflake" as const,
+          parserDialect: "Snowflake",
+          forbiddenPatterns: [/\bCOPY\s+INTO\b/i],
+        },
+      }),
+    });
+
+    const instance = sfPlugin({ account: "xy12345" });
+    expect(instance.connection.parserDialect).toBe("Snowflake");
+    expect(instance.connection.forbiddenPatterns).toHaveLength(1);
+  });
+
   test("entities and dialect are optional (backward compat)", () => {
     const plugin: AtlasDatasourcePlugin = definePlugin({
       id: "plain-ds",

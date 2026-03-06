@@ -53,6 +53,19 @@ function validatePluginShape(plugin: AtlasPlugin): void {
     if (ds.connection.validate !== undefined && typeof ds.connection.validate !== "function") {
       throw new Error('Datasource plugin connection "validate" must be a function');
     }
+    if (ds.connection.parserDialect !== undefined && (typeof ds.connection.parserDialect !== "string" || !ds.connection.parserDialect.trim())) {
+      throw new Error('Datasource plugin connection "parserDialect" must be a non-empty string');
+    }
+    if (ds.connection.forbiddenPatterns !== undefined) {
+      if (!Array.isArray(ds.connection.forbiddenPatterns)) {
+        throw new Error('Datasource plugin connection "forbiddenPatterns" must be an array of RegExp');
+      }
+      for (const p of ds.connection.forbiddenPatterns) {
+        if (!(p instanceof RegExp)) {
+          throw new Error('Each entry in "forbiddenPatterns" must be a RegExp');
+        }
+      }
+    }
     if (ds.dialect !== undefined && (typeof ds.dialect !== "string" || !ds.dialect.trim())) {
       throw new Error('Datasource plugin "dialect" must be a non-empty string');
     }

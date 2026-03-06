@@ -16,8 +16,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MONOREPO_ROOT="$SCRIPT_DIR/../.."
 CREATE_ATLAS="$SCRIPT_DIR/../index.ts"
 OUTPUT_DIR="${1:-$SCRIPT_DIR/../starters}"
+
+# Ensure Bun can resolve monorepo deps when CWD is a temp directory
+export NODE_PATH="${MONOREPO_ROOT}/node_modules"
 
 PLATFORMS=("vercel" "railway" "render" "docker")
 

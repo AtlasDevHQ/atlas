@@ -97,16 +97,23 @@ health.get("/", async (c) => {
     const { connections: connRegistry2, getDB, resolveDatasourceUrl } = await import("@atlas/api/lib/db/connection");
     const hasDatasource = !!resolveDatasourceUrl() || connRegistry2.list().includes("default");
     if (hasDatasource) {
-      try {
-        const start = performance.now();
-        await getDB().query("SELECT 1", 5000);
-        dsLatencyMs = Math.round(performance.now() - start);
-      } catch (err) {
-        log.error(
-          { err: err instanceof Error ? err : new Error(String(err)) },
-          "Health check datasource probe failed",
-        );
-        dsProbeError = "Datasource query failed";
+      // Plugin-managed connections (e.g. Salesforce) may not support SQL probes.
+      // Skip SELECT 1 for connections registered via registerDirect() with a custom validator.
+      const hasCustomValidator = connRegistry2.getValidator("default");
+      if (hasCustomValidator) {
+        dsLatencyMs = 0;
+      } else {
+        try {
+          const start = performance.now();
+          await getDB().query("SELECT 1", 5000);
+          dsLatencyMs = Math.round(performance.now() - start);
+        } catch (err) {
+          log.error(
+            { err: err instanceof Error ? err : new Error(String(err)) },
+            "Health check datasource probe failed",
+          );
+          dsProbeError = "Datasource query failed";
+        }
       }
     }
 

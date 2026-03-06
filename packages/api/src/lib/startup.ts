@@ -271,8 +271,14 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
         }
       }
     }
-    // Note: non-core database types (ClickHouse, Snowflake, DuckDB, Salesforce)
-    // are validated by their respective datasource plugins during initialize().
+    // Non-core database types are validated by their respective datasource plugins.
+    if (dbType && dbType !== "postgres" && dbType !== "mysql") {
+      log.info(
+        { dbType },
+        "Non-core datasource type '%s' — connectivity validation deferred to plugin initialize()",
+        dbType,
+      );
+    }
   }
 
   // 5. Internal database (DATABASE_URL) — optional, for auth/audit/settings

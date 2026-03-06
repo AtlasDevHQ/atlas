@@ -85,7 +85,14 @@ export function parserDatabase(dbType: DBType | string, connectionId?: string): 
     case "mysql": return "MySQL";
     default:
       // Unknown types (plugin-registered via `string & {}`) default to
-      // PostgreSQL mode as a safe fallback.
+      // PostgreSQL mode as a safe fallback. Log a warning so plugin authors
+      // know to register a parserDialect via ConnectionPluginMeta.
+      log.warn(
+        { dbType, connectionId },
+        "No parser dialect registered for dbType '%s' — falling back to PostgreSQL parser. " +
+        "Register a parserDialect via ConnectionPluginMeta to use the correct SQL grammar.",
+        dbType,
+      );
       return "PostgresQL";
   }
 }
@@ -109,7 +116,16 @@ function getExtraPatterns(dbType: DBType | string, connectionId?: string): RegEx
     case "postgres": return [];
     case "mysql": return MYSQL_FORBIDDEN_PATTERNS;
     default:
-      // Unknown types (plugin-registered) — no extra patterns from core
+      // Unknown types (plugin-registered) — no extra patterns from core.
+      // Warn so plugin authors know to register forbiddenPatterns.
+      if (dbType) {
+        log.warn(
+          { dbType, connectionId },
+          "No forbidden patterns registered for dbType '%s' — only base DML/DDL patterns apply. " +
+          "Register forbiddenPatterns via ConnectionPluginMeta for database-specific protection.",
+          dbType,
+        );
+      }
       return [];
   }
 }
@@ -122,13 +138,15 @@ export function validateSQL(sql: string, connectionId?: string): { valid: boolea
   if (connectionId) {
     try {
       dbType = connections.getDBType(connectionId);
-    } catch {
+    } catch (err) {
+      log.debug({ err, connectionId }, "getDBType failed for connectionId");
       return { valid: false, error: `Connection "${connectionId}" is not registered.` };
     }
   } else {
     try {
       dbType = detectDBType();
-    } catch {
+    } catch (err) {
+      log.debug({ err }, "detectDBType failed — no valid datasource configured");
       return { valid: false, error: "No valid datasource configured. Set ATLAS_DATASOURCE_URL to a PostgreSQL or MySQL connection string, or register a datasource plugin." };
     }
   }

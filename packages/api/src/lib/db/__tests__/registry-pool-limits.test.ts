@@ -26,25 +26,6 @@ mock.module("mysql2/promise", () => ({
   }),
 }));
 
-mock.module("@duckdb/node-api", () => ({
-  DuckDBInstance: {
-    async create() {
-      return {
-        async connect() {
-          return {
-            async runAndReadAll() {
-              return { columnNames: () => [], getRowObjects: () => [] };
-            },
-            async run() {},
-            async close() {},
-          };
-        },
-        async close() {},
-      };
-    },
-  },
-}));
-
 // Cache-busting import
 const connModPath = resolve(__dirname, "../connection.ts");
 const connMod = await import(`${connModPath}?t=${Date.now()}`);

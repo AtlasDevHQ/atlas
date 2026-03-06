@@ -27,18 +27,6 @@ const mockDetectDBType = () => {
   if (url.startsWith("mysql://") || url.startsWith("mysql2://")) {
     return "mysql";
   }
-  if (url.startsWith("clickhouse://")) {
-    return "clickhouse";
-  }
-  if (url.startsWith("snowflake://")) {
-    return "snowflake";
-  }
-  if (url.startsWith("duckdb://")) {
-    return "duckdb";
-  }
-  if (url.startsWith("salesforce://")) {
-    return "salesforce";
-  }
   throw new Error(`Unsupported database URL: "${url.slice(0, 40)}…".`);
 };
 

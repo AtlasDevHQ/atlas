@@ -10,7 +10,7 @@ import { resolve } from "path";
 
 const modulePath = resolve(__dirname, "../connection.ts");
 const mod = await import(`${modulePath}?t=${Date.now()}`);
-const detectDBType = mod.detectDBType as (url?: string) => "postgres" | "mysql" | "duckdb";
+const detectDBType = mod.detectDBType as (url?: string) => "postgres" | "mysql";
 const resolveDatasourceUrl = mod.resolveDatasourceUrl as () => string | undefined;
 
 // Env vars touched by tests — save/restore
@@ -125,6 +125,15 @@ describe("detectDBType", () => {
     expect(() => detectDBType("clickhouse://localhost:8123/default")).toThrow("now a plugin");
     expect(() => detectDBType("snowflake://user:pass@account/db")).toThrow("now a plugin");
     expect(() => detectDBType("salesforce://user:pass@login.salesforce.com")).toThrow("now a plugin");
+  });
+
+  it("suggests correct plugin name for TLS scheme variants", () => {
+    expect(() => detectDBType("clickhouses://localhost:8443/default")).toThrow("@atlas/plugin-clickhouse");
+  });
+
+  it("includes the detected scheme in the error message", () => {
+    expect(() => detectDBType("duckdb://:memory:")).toThrow("duckdb://");
+    expect(() => detectDBType("clickhouse://localhost")).toThrow("clickhouse://");
   });
 
   it("unrecognized URL throws an error", () => {

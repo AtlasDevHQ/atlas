@@ -1,18 +1,6 @@
-import { describe, expect, it, afterEach, mock } from "bun:test";
+import { describe, expect, it, afterEach } from "bun:test";
 import { tool } from "ai";
 import { z } from "zod";
-
-// Mock the Salesforce tool so the registry module can be imported
-// without needing jsforce or a real Salesforce connection.
-const mockSfTool = tool({
-  description: "Mock querySalesforce",
-  inputSchema: z.object({ soql: z.string() }),
-  execute: async ({ soql }) => soql,
-});
-
-mock.module("@atlas/api/lib/tools/salesforce", () => ({
-  querySalesforce: mockSfTool,
-}));
 
 const { ToolRegistry } = await import("@atlas/api/lib/tools/registry");
 

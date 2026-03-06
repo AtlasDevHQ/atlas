@@ -109,11 +109,14 @@ export function detectDBType(url?: string): DBType {
   if (connStr.startsWith("mysql://") || connStr.startsWith("mysql2://")) {
     return "mysql";
   }
-  const scheme = connStr.split("://")[0] || "(empty)";
+  const rawScheme = connStr.split("://")[0] || "(empty)";
+  // Normalize TLS variants (e.g. clickhouses → clickhouse) for the plugin hint
+  const baseScheme = rawScheme.replace(/s$/, "");
   throw new Error(
-    `Unsupported database URL scheme "${scheme}://". ` +
+    `Unsupported database URL scheme "${rawScheme}://". ` +
     `This adapter is now a plugin. Install the appropriate datasource plugin ` +
-    `(e.g. @atlas/plugin-${scheme}) and add it to the plugins array in atlas.config.ts. ` +
+    `(e.g. @atlas/plugin-${baseScheme}) and add it to the plugins array in atlas.config.ts. ` +
+    `Ensure the plugin is listed before any datasources that use it. ` +
     `Core adapters support postgresql:// and mysql:// only.`
   );
 }
@@ -300,7 +303,9 @@ export class ConnectionRegistry {
   private _totalPoolSlots(): number {
     let total = 0;
     for (const entry of this.entries.values()) {
-      total += entry.config?.maxConnections ?? 10;
+      // Direct-registered connections (plugins) don't have config and manage
+      // their own pooling — count as 1 slot instead of the default 10.
+      total += entry.config?.maxConnections ?? (entry.targetHost === "(direct)" ? 1 : 10);
     }
     return total;
   }

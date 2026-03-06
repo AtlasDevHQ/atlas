@@ -99,8 +99,8 @@ export function parserDatabase(dbType: DBType | string, connectionId?: string): 
     if (pluginDialect) return pluginDialect;
   }
 
-  // 2. Hardcoded switch for known types
-  switch (dbType) {
+  // 2. Hardcoded switch for known types (exhaustive for DBType union)
+  switch (dbType as DBType) {
     case "postgres": return "PostgresQL";
     case "mysql": return "MySQL";
     // node-sql-parser v5 has no ClickHouse dialect. PostgreSQL mode is the
@@ -114,10 +114,13 @@ export function parserDatabase(dbType: DBType | string, connectionId?: string): 
       throw new Error(
         "Salesforce uses SOQL, not SQL. Use the querySalesforce tool instead of executeSQL.",
       );
+    default: {
+      // For known DBType values, the compiler ensures exhaustiveness above.
+      // Unknown strings (plugin escape hatch via `string & {}`) fall through
+      // to PostgreSQL mode as a safe default.
+      return "PostgresQL";
+    }
   }
-
-  // 3. Unknown dbType (custom plugin) — default to PostgreSQL mode
-  return "PostgresQL";
 }
 
 /**
@@ -134,18 +137,19 @@ function getExtraPatterns(dbType: DBType | string, connectionId?: string): RegEx
     if (pluginPatterns.length > 0) return pluginPatterns;
   }
 
-  // 2. Hardcoded switch for known types
-  switch (dbType) {
+  // 2. Hardcoded switch for known types (exhaustive for DBType union)
+  switch (dbType as DBType) {
     case "postgres": return [];
     case "mysql": return MYSQL_FORBIDDEN_PATTERNS;
     case "clickhouse": return CLICKHOUSE_FORBIDDEN_PATTERNS;
     case "snowflake": return SNOWFLAKE_FORBIDDEN_PATTERNS;
     case "duckdb": return DUCKDB_FORBIDDEN_PATTERNS;
     case "salesforce": return []; // Salesforce is redirected before reaching here
+    default: {
+      // Unknown strings (plugin escape hatch) — no extra patterns
+      return [];
+    }
   }
-
-  // 3. Unknown dbType — no extra patterns
-  return [];
 }
 
 export function validateSQL(sql: string, connectionId?: string): { valid: boolean; error?: string } {
@@ -539,7 +543,7 @@ Rules:
       // Extract tables from the (possibly plugin-mutated) SQL
       let queriedTables: Set<string>;
       try {
-        const dialect = parserDatabase(dbType);
+        const dialect = parserDatabase(dbType, connId);
         const tableRefs = parser.tableList(normalizedMutated, { database: dialect });
         queriedTables = new Set(
           tableRefs

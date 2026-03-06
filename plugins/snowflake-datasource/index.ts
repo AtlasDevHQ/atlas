@@ -25,6 +25,7 @@ import {
   extractAccount,
   parseSnowflakeURL,
 } from "./connection";
+import { SNOWFLAKE_FORBIDDEN_PATTERNS } from "./validation";
 
 const SnowflakeConfigSchema = z.object({
   /** Snowflake connection URL (snowflake://user:pass@account/db/schema?warehouse=WH&role=ROLE). */
@@ -35,12 +36,16 @@ const SnowflakeConfigSchema = z.object({
       (u) => u.startsWith("snowflake://"),
       "URL must start with snowflake://",
     )
-    .refine(
-      (u) => {
-        try { parseSnowflakeURL(u); return true; } catch { return false; }
-      },
-      "URL must be a valid Snowflake connection URL (snowflake://user:pass@account/db/schema?warehouse=WH&role=ROLE)",
-    ),
+    .superRefine((u, ctx) => {
+      try {
+        parseSnowflakeURL(u);
+      } catch (err) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }),
   /** Maximum pool connections. Default 10. */
   maxConnections: z.number().int().positive().max(100).optional(),
 });
@@ -66,6 +71,8 @@ export function buildSnowflakePlugin(
       create: () =>
         createSnowflakeConnection({ url: config.url, maxConnections: config.maxConnections }),
       dbType: "snowflake",
+      parserDialect: "Snowflake",
+      forbiddenPatterns: SNOWFLAKE_FORBIDDEN_PATTERNS,
     },
 
     entities: [],
@@ -140,3 +147,4 @@ export const snowflakePlugin = createPlugin({
 });
 
 export { createSnowflakeConnection, parseSnowflakeURL, extractAccount } from "./connection";
+export { SNOWFLAKE_FORBIDDEN_PATTERNS } from "./validation";

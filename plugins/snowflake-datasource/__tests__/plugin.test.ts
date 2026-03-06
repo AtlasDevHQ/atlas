@@ -37,6 +37,7 @@ import {
   buildSnowflakePlugin,
   parseSnowflakeURL,
   extractAccount,
+  SNOWFLAKE_FORBIDDEN_PATTERNS,
 } from "../index";
 import { createSnowflakeConnection } from "../connection";
 
@@ -202,10 +203,10 @@ describe("config validation", () => {
     expect(() => snowflakePlugin({})).toThrow();
   });
 
-  test("rejects URL with missing username at config time", () => {
+  test("rejects URL with missing username with specific error", () => {
     expect(() =>
       snowflakePlugin({ url: "snowflake://:pass@acct/db" }),
-    ).toThrow(/valid Snowflake connection URL/);
+    ).toThrow(/missing username/);
   });
 
   test("rejects maxConnections of 0", () => {
@@ -276,6 +277,88 @@ describe("plugin shape", () => {
     expect(plugin.dialect).toContain("QUALIFY");
     expect(plugin.dialect).toContain("TRY_CAST()");
     expect(plugin.dialect).toContain("VARIANT");
+  });
+
+  test("connection.parserDialect is 'Snowflake'", () => {
+    const plugin = snowflakePlugin(validConfig);
+    expect(plugin.connection.parserDialect).toBe("Snowflake");
+  });
+
+  test("connection.forbiddenPatterns is SNOWFLAKE_FORBIDDEN_PATTERNS", () => {
+    const plugin = snowflakePlugin(validConfig);
+    expect(plugin.connection.forbiddenPatterns).toBe(SNOWFLAKE_FORBIDDEN_PATTERNS);
+    expect(plugin.connection.forbiddenPatterns!.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Forbidden patterns (validation.ts)
+// ---------------------------------------------------------------------------
+
+describe("SNOWFLAKE_FORBIDDEN_PATTERNS", () => {
+  const matches = (sql: string) =>
+    SNOWFLAKE_FORBIDDEN_PATTERNS.some((p) => p.test(sql));
+
+  test("blocks PUT/GET/LIST/REMOVE/RM at start of statement", () => {
+    expect(matches("PUT file:///tmp/data @stage")).toBe(true);
+    expect(matches("GET @stage file:///tmp/data")).toBe(true);
+    expect(matches("LIST @stage")).toBe(true);
+    expect(matches("REMOVE @stage/file.csv")).toBe(true);
+    expect(matches("RM @stage/file.csv")).toBe(true);
+  });
+
+  test("blocks case-insensitive variants", () => {
+    expect(matches("put file:///tmp @stage")).toBe(true);
+    expect(matches("get @stage file:///tmp")).toBe(true);
+    expect(matches("list @stage")).toBe(true);
+  });
+
+  test("blocks with leading whitespace", () => {
+    expect(matches("  PUT file:///tmp/data @stage")).toBe(true);
+    expect(matches("\n  GET @stage file:///tmp")).toBe(true);
+    expect(matches("\t SHOW TABLES")).toBe(true);
+    expect(matches("   MERGE INTO target USING source")).toBe(true);
+  });
+
+  test("allows PUT/GET/LIST as data values (not at start)", () => {
+    expect(matches("SELECT * FROM t WHERE name = 'Get Ready'")).toBe(false);
+    expect(matches("SELECT * FROM t WHERE status = 'Put on hold'")).toBe(false);
+    expect(matches("SELECT * FROM t WHERE type = 'List'")).toBe(false);
+  });
+
+  test("blocks MERGE at start of statement", () => {
+    expect(matches("MERGE INTO target USING source ON ...")).toBe(true);
+  });
+
+  test("blocks SHOW/DESCRIBE/DESC/EXPLAIN/USE at start of statement", () => {
+    expect(matches("SHOW TABLES")).toBe(true);
+    expect(matches("DESCRIBE TABLE foo")).toBe(true);
+    expect(matches("DESC TABLE foo")).toBe(true);
+    expect(matches("EXPLAIN SELECT 1")).toBe(true);
+    expect(matches("USE DATABASE mydb")).toBe(true);
+  });
+
+  test("does not false-positive on column names containing blocked words", () => {
+    expect(matches("SELECT description FROM products")).toBe(false);
+    expect(matches("SELECT showcase FROM events")).toBe(false);
+    expect(matches("SELECT useful FROM tips")).toBe(false);
+    expect(matches("SELECT explained FROM docs")).toBe(false);
+    expect(matches("SELECT merge_status FROM pull_requests")).toBe(false);
+  });
+
+  test("does not false-positive on blocked words in WHERE clause values", () => {
+    expect(matches("SELECT * FROM tickets WHERE title = 'Please explain the billing issue'")).toBe(false);
+    expect(matches("SELECT * FROM logs WHERE message LIKE '%describe%'")).toBe(false);
+    expect(matches("SELECT * FROM t WHERE action = 'merge'")).toBe(false);
+  });
+
+  test("allows ORDER BY DESC (not confused with DESCRIBE)", () => {
+    expect(matches("SELECT * FROM t ORDER BY created_at DESC")).toBe(false);
+  });
+
+  test("allows normal SELECT queries", () => {
+    expect(matches("SELECT count(*) FROM orders")).toBe(false);
+    expect(matches("SELECT * FROM users WHERE id = 1")).toBe(false);
   });
 });
 

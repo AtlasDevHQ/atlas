@@ -20,14 +20,14 @@
 
 import { z } from "zod";
 import { createPlugin } from "@useatlas/plugin-sdk";
-import type { AtlasDatasourcePlugin, PluginHealthResult, QueryValidationResult } from "@useatlas/plugin-sdk";
+import type { AtlasDatasourcePlugin, PluginHealthResult, PluginLogger, QueryValidationResult } from "@useatlas/plugin-sdk";
 import {
   createSalesforceConnection,
   parseSalesforceURL,
   extractHost,
 } from "./connection";
 import type { SalesforceConnection } from "./connection";
-import { validateSOQL, SOQL_FORBIDDEN_PATTERNS } from "./validation";
+import { validateSOQLStructure, SOQL_FORBIDDEN_PATTERNS } from "./validation";
 import { createQuerySalesforceTool } from "./tool";
 
 const SalesforceConfigSchema = z.object({
@@ -63,10 +63,12 @@ export function buildSalesforcePlugin(
 ): AtlasDatasourcePlugin<SalesforcePluginConfig> {
   const sfConfig = parseSalesforceURL(config.url);
   let cachedConn: SalesforceConnection | undefined;
+  let log: PluginLogger | undefined;
 
+  /** Cached singleton — jsforce session is stateful, so we reuse the connection. */
   function getOrCreateConnection(): SalesforceConnection {
     if (!cachedConn) {
-      cachedConn = createSalesforceConnection(sfConfig);
+      cachedConn = createSalesforceConnection(sfConfig, log);
     }
     return cachedConn;
   }
@@ -82,10 +84,10 @@ export function buildSalesforcePlugin(
       create: () => getOrCreateConnection(),
       dbType: "salesforce",
       validate(query: string): QueryValidationResult {
-        // Use an empty whitelist here — the actual whitelist is applied
-        // in the querySalesforce tool which has access to the semantic layer.
-        // This validator handles the structural checks (SELECT-only, no DML).
-        const result = validateSOQL(query, new Set(["*"]));
+        // Structural checks only (SELECT-only, no DML, no semicolons).
+        // Object whitelist is applied in the querySalesforce tool which
+        // has access to the semantic layer.
+        const result = validateSOQLStructure(query);
         return {
           valid: result.valid,
           reason: result.error,
@@ -110,22 +112,26 @@ export function buildSalesforcePlugin(
     ].join("\n"),
 
     async initialize(ctx) {
+      log = ctx.logger;
       ctx.logger.info(`Salesforce datasource plugin initialized (${extractHost(config.url)})`);
 
       // Register the querySalesforce tool
       const sfTool = createQuerySalesforceTool({
         getConnection: () => getOrCreateConnection(),
         getWhitelist: () => {
-          // Build whitelist from the semantic layer entities registered for this connection
           try {
             const tables = ctx.connections.list();
-            // Return a permissive set — the whitelist is populated by the semantic layer
             return new Set(tables);
-          } catch {
+          } catch (err) {
+            ctx.logger.warn(
+              { err: err instanceof Error ? err.message : String(err) },
+              "Failed to load Salesforce object whitelist — queries may be rejected",
+            );
             return new Set<string>();
           }
         },
         connectionId: "salesforce",
+        logger: ctx.logger,
       });
 
       ctx.tools.register({
@@ -145,9 +151,11 @@ export function buildSalesforcePlugin(
           latencyMs: Math.round(performance.now() - start),
         };
       } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log?.warn(`Health check failed: ${message}`);
         return {
           healthy: false,
-          message: err instanceof Error ? err.message : String(err),
+          message,
           latencyMs: Math.round(performance.now() - start),
         };
       }
@@ -155,7 +163,14 @@ export function buildSalesforcePlugin(
 
     async teardown(): Promise<void> {
       if (cachedConn) {
-        await cachedConn.close();
+        try {
+          await cachedConn.close();
+        } catch (err) {
+          log?.warn(
+            { err: err instanceof Error ? err.message : String(err) },
+            "Failed to close Salesforce connection during teardown",
+          );
+        }
         cachedConn = undefined;
       }
     },
@@ -179,5 +194,5 @@ export const salesforcePlugin = createPlugin({
 
 export { createSalesforceConnection, parseSalesforceURL, extractHost } from "./connection";
 export type { SalesforceConfig, SalesforceConnection, SObjectInfo, SObjectField, SObjectDescribe } from "./connection";
-export { validateSOQL, appendSOQLLimit, SOQL_FORBIDDEN_PATTERNS } from "./validation";
+export { validateSOQL, validateSOQLStructure, appendSOQLLimit, SOQL_FORBIDDEN_PATTERNS, SENSITIVE_PATTERNS } from "./validation";
 export { createQuerySalesforceTool } from "./tool";

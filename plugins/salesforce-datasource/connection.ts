@@ -6,7 +6,7 @@
  * eliminating the need for a parallel registry.
  */
 
-import type { PluginDBConnection, PluginQueryResult } from "@useatlas/plugin-sdk";
+import type { PluginDBConnection, PluginQueryResult, PluginLogger } from "@useatlas/plugin-sdk";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -94,7 +94,7 @@ export function parseSalesforceURL(url: string): SalesforceConfig {
 
 /**
  * Extract hostname from a Salesforce URL for safe logging (no credentials).
- * Returns "(unknown)" on parse failure.
+ * Returns "(unknown)" on parse failure — intentionally defensive for logging contexts.
  */
 export function extractHost(url: string): string {
   try {
@@ -112,10 +112,13 @@ export function extractHost(url: string): string {
 /**
  * Create a SalesforceConnection backed by jsforce.
  *
+ * @param config - Salesforce credentials and login URL.
+ * @param logger - Optional plugin logger for login/retry/close events.
  * @throws {Error} If jsforce is not installed (optional peer dependency).
  */
 export function createSalesforceConnection(
   config: SalesforceConfig,
+  logger?: PluginLogger,
 ): SalesforceConnection {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let jsforce: any;
@@ -144,8 +147,10 @@ export function createSalesforceConnection(
   const conn = new jsforce.Connection(connOpts) as any;
 
   let loginPromise: Promise<void> | null = null;
+  let closed = false;
 
   async function ensureLoggedIn(): Promise<void> {
+    if (closed) throw new Error("Salesforce connection is closed");
     if (loginPromise) return loginPromise;
     loginPromise = (async () => {
       const loginPassword = config.securityToken
@@ -153,8 +158,13 @@ export function createSalesforceConnection(
         : config.password;
       try {
         await conn.login(config.username, loginPassword);
+        logger?.info("Salesforce login successful");
       } catch (err) {
         loginPromise = null;
+        logger?.error(
+          { err: err instanceof Error ? err.message : String(err), loginUrl: config.loginUrl, username: config.username },
+          "Salesforce login failed",
+        );
         throw err;
       }
     })();
@@ -176,6 +186,7 @@ export function createSalesforceConnection(
       return await fn();
     } catch (err) {
       if (isSessionExpiredError(err)) {
+        logger?.warn("Salesforce session expired — re-authenticating and retrying");
         loginPromise = null;
         await ensureLoggedIn();
         return await fn();
@@ -270,12 +281,16 @@ export function createSalesforceConnection(
     },
 
     async close(): Promise<void> {
+      closed = true;
       if (loginPromise) {
         try {
           await loginPromise;
           await conn.logout();
-        } catch {
-          // Swallow logout errors — connection is being disposed
+        } catch (err) {
+          logger?.warn(
+            { err: err instanceof Error ? err.message : String(err) },
+            "Failed to logout from Salesforce",
+          );
         }
         loginPromise = null;
       }

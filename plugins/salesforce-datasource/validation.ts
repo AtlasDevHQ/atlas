@@ -18,6 +18,14 @@ export const SOQL_FORBIDDEN_PATTERNS: RegExp[] = [
 ];
 
 /**
+ * Sensitive error patterns — used to scrub error messages before returning
+ * them to the agent/user. Prevents leaking credentials, hostnames, and
+ * internal details. Mirrors @atlas/api/lib/security.ts SENSITIVE_PATTERNS.
+ */
+export const SENSITIVE_PATTERNS =
+  /password|secret|credential|connection.?string|SSL|certificate|INVALID_SESSION_ID|LOGIN_MUST_USE_SECURITY_TOKEN|INVALID_LOGIN|INVALID_CLIENT_ID|Authentication failed/i;
+
+/**
  * Strip single-quoted string literals from SOQL so regex guards don't match
  * keywords embedded in user values (e.g. `WHERE Name = 'delete this'`).
  */
@@ -71,10 +79,12 @@ function extractFromObjects(soql: string): string[] {
     objects.push(topMatch[1]);
   }
 
+  // Extract ALL FROM objects in the WHERE/HAVING region (after the top-level FROM).
+  // This catches both simple semi-joins and nested subqueries.
   const whereClause = soql.slice(topLevelFromIndex + (topMatch ? topMatch[0].length : 4));
-  const subqueryPattern = /\(\s*SELECT\b[^)]*\bFROM\s+(\w+)/gi;
+  const fromPattern = /\bFROM\s+(\w+)/gi;
   let subMatch;
-  while ((subMatch = subqueryPattern.exec(whereClause)) !== null) {
+  while ((subMatch = fromPattern.exec(whereClause)) !== null) {
     objects.push(subMatch[1]);
   }
 
@@ -123,7 +133,11 @@ export function validateSOQL(
     };
   }
 
-  // 3. Object whitelist
+  // 3. Object whitelist (skip when empty — structural-only mode)
+  if (allowedObjects.size === 0) {
+    return { valid: true };
+  }
+
   const objects = extractFromObjects(trimmed);
   if (objects.length === 0) {
     return { valid: false, error: "No FROM clause found in query" };
@@ -144,6 +158,15 @@ export function validateSOQL(
   }
 
   return { valid: true };
+}
+
+/**
+ * Structural-only SOQL validation — checks SELECT-only, no DML, no semicolons.
+ * Does NOT check the object whitelist. Used by `connection.validate()` where
+ * the whitelist is applied separately by the querySalesforce tool.
+ */
+export function validateSOQLStructure(soql: string): { valid: boolean; error?: string } {
+  return validateSOQL(soql, new Set());
 }
 
 /**

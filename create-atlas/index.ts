@@ -70,9 +70,287 @@ function templateForPlatform(platform: Platform): Template {
   return platform === "vercel" ? "nextjs-standalone" : "docker";
 }
 
-// Parse --platform flag
+function generateReadme(projectName: string, platform: Platform, dbChoice: string): string {
+  const deployBadge = (() => {
+    switch (platform) {
+      case "vercel":
+        return `[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2F<YOUR_ORG>%2F${projectName}&env=ATLAS_PROVIDER,ANTHROPIC_API_KEY,ATLAS_DATASOURCE_URL,DATABASE_URL&envDescription=Atlas%20environment%20variables&project-name=${projectName})`;
+      case "railway":
+        return `[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/template/atlas?referralCode=atlas)`;
+      case "render":
+        return `[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy)`;
+      case "docker":
+        return "";
+      case "other":
+        return "";
+    }
+  })();
+
+  const quickStart = (() => {
+    switch (platform) {
+      case "vercel":
+        return `## Quick Start
+
+1. **Install dependencies:**
+   \`\`\`bash
+   bun install
+   \`\`\`
+
+2. **Configure environment:** Edit \`.env\` with your API key and database URL.
+
+3. **Generate semantic layer:**
+   \`\`\`bash
+   bun run atlas -- init          # From your database
+   bun run atlas -- init --demo   # Or load demo data
+   \`\`\`
+
+4. **Run locally:**
+   \`\`\`bash
+   bun run dev
+   \`\`\`
+   Open [http://localhost:3000](http://localhost:3000).
+
+## Deploy to Vercel
+
+1. Push to GitHub:
+   \`\`\`bash
+   git init && git add -A && git commit -m "Initial commit"
+   gh repo create ${projectName} --public --source=. --push
+   \`\`\`
+
+2. Import in the [Vercel Dashboard](https://vercel.com/new) and set environment variables:
+   - \`ATLAS_PROVIDER\` — \`anthropic\` (or \`gateway\` for Vercel AI Gateway)
+   - \`ANTHROPIC_API_KEY\` — Your API key
+   - \`ATLAS_DATASOURCE_URL\` — Your analytics database (\`postgresql://...\`)
+   - \`DATABASE_URL\` — Atlas internal Postgres (auth, audit)
+
+3. Deploy. Vercel auto-detects \`@vercel/sandbox\` for secure explore isolation.`;
+
+      case "railway":
+        return `## Quick Start
+
+1. **Install dependencies:**
+   \`\`\`bash
+   bun install
+   \`\`\`
+
+2. **Configure environment:** Edit \`.env\` with your API key and database URL.
+
+3. **Generate semantic layer:**
+   \`\`\`bash
+   bun run atlas -- init          # From your database
+   bun run atlas -- init --demo   # Or load demo data
+   \`\`\`
+
+4. **Run locally:**
+   \`\`\`bash
+   bun run dev
+   \`\`\`
+   API at [http://localhost:3000](http://localhost:3000).
+
+## Deploy to Railway
+
+1. Push to GitHub:
+   \`\`\`bash
+   git init && git add -A && git commit -m "Initial commit"
+   gh repo create ${projectName} --public --source=. --push
+   \`\`\`
+
+2. Create a [Railway project](https://railway.app/) and add a **Postgres** plugin (auto-sets \`DATABASE_URL\`).
+
+3. Add two services from your GitHub repo:
+   - **API** — Root directory, uses \`railway.json\` + \`Dockerfile\`
+   - **Sidecar** — \`sidecar/\` directory, uses \`sidecar/Dockerfile\`
+
+4. Set environment variables on the API service:
+   \`\`\`
+   ATLAS_PROVIDER=anthropic
+   ANTHROPIC_API_KEY=sk-ant-...
+   ATLAS_DATASOURCE_URL=postgresql://...
+   ATLAS_SANDBOX_URL=http://sidecar.railway.internal:8080
+   SIDECAR_AUTH_TOKEN=<shared-secret>
+   \`\`\`
+   Set \`SIDECAR_AUTH_TOKEN\` on the sidecar service too.
+
+5. Deploy. Railway builds from the Dockerfile and runs health checks automatically.`;
+
+      case "render":
+        return `## Quick Start
+
+1. **Install dependencies:**
+   \`\`\`bash
+   bun install
+   \`\`\`
+
+2. **Configure environment:** Edit \`.env\` with your API key and database URL.
+
+3. **Generate semantic layer:**
+   \`\`\`bash
+   bun run atlas -- init          # From your database
+   bun run atlas -- init --demo   # Or load demo data
+   \`\`\`
+
+4. **Run locally:**
+   \`\`\`bash
+   bun run dev
+   \`\`\`
+   API at [http://localhost:3000](http://localhost:3000).
+
+## Deploy to Render
+
+1. Push to GitHub:
+   \`\`\`bash
+   git init && git add -A && git commit -m "Initial commit"
+   gh repo create ${projectName} --public --source=. --push
+   \`\`\`
+
+2. Go to [Render Dashboard](https://dashboard.render.com/) > **New > Blueprint**.
+
+3. Connect your repo. Render reads \`render.yaml\` and creates two services:
+   - **Web** — Main API (Dockerfile)
+   - **Sidecar** — Explore sandbox (sidecar/Dockerfile)
+
+4. Set the prompted environment variables:
+   - \`ATLAS_DATASOURCE_URL\` — Your analytics database
+   - \`ANTHROPIC_API_KEY\` — Your API key
+   - \`SIDECAR_AUTH_TOKEN\` — Shared secret (same on both services)
+
+5. After deploy, update \`ATLAS_SANDBOX_URL\` on the web service with the sidecar's private URL.`;
+
+      case "docker":
+        return `## Quick Start
+
+1. **Install dependencies:**
+   \`\`\`bash
+   bun install
+   \`\`\`
+
+2. **Configure environment:** Edit \`.env\` with your API key and database URL.
+
+3. **Generate semantic layer:**
+   \`\`\`bash
+   bun run atlas -- init          # From your database
+   bun run atlas -- init --demo   # Or load demo data
+   \`\`\`
+
+4. **Run locally:**
+   \`\`\`bash
+   bun run dev
+   \`\`\`
+   API at [http://localhost:3000](http://localhost:3000).
+
+## Deploy with Docker
+
+1. Build the image (includes nsjail for explore isolation):
+   \`\`\`bash
+   docker build -t ${projectName} .
+   \`\`\`
+
+2. Run:
+   \`\`\`bash
+   docker run -p 3000:3000 \\
+     -e ATLAS_PROVIDER=anthropic \\
+     -e ANTHROPIC_API_KEY=sk-ant-... \\
+     -e ATLAS_DATASOURCE_URL=postgresql://... \\
+     ${projectName}
+   \`\`\`
+
+3. To build without nsjail (smaller image, dev only):
+   \`\`\`bash
+   docker build --build-arg INSTALL_NSJAIL=false -t ${projectName} .
+   \`\`\``;
+
+      case "other":
+        return `## Quick Start
+
+1. **Install dependencies:**
+   \`\`\`bash
+   bun install
+   \`\`\`
+
+2. **Configure environment:** Edit \`.env\` with your API key and database URL.
+
+3. **Generate semantic layer:**
+   \`\`\`bash
+   bun run atlas -- init          # From your database
+   bun run atlas -- init --demo   # Or load demo data
+   \`\`\`
+
+4. **Run locally:**
+   \`\`\`bash
+   bun run dev
+   \`\`\`
+   API at [http://localhost:3000](http://localhost:3000).
+
+## Deploy
+
+Build and deploy the Docker image to your platform of choice. See \`docs/deploy.md\` for detailed guides.`;
+    }
+  })();
+
+  const dbNote = dbChoice === "mysql"
+    ? "This project is configured for **MySQL**."
+    : "This project is configured for **PostgreSQL**.";
+
+  return `# ${projectName}
+
+A text-to-SQL data analyst agent powered by [Atlas](https://useatlas.dev).
+
+${deployBadge}
+
+${dbNote} Ask natural-language questions, and the agent explores a semantic layer, writes validated SQL, and returns interpreted results.
+
+${quickStart}
+
+## Project Structure
+
+\`\`\`
+${projectName}/
+├── src/                # Application source (API + UI)
+├── bin/                # CLI tools (atlas init, enrich, eval)
+├── data/               # Demo datasets (SQL seed files)
+├── semantic/           # Semantic layer (YAML — entities, metrics, glossary)
+├── .env                # Environment configuration
+└── docs/deploy.md      # Full deployment guide
+\`\`\`
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| \`bun run dev\` | Start dev server |
+| \`bun run build\` | Production build |
+| \`bun run start\` | Start production server |
+| \`bun run atlas -- init\` | Generate semantic layer from database |
+| \`bun run atlas -- init --demo\` | Load simple demo dataset |
+| \`bun run atlas -- init --demo cybersec\` | Load cybersec demo (62 tables) |
+| \`bun run atlas -- diff\` | Compare DB schema vs semantic layer |
+| \`bun run atlas -- query "question"\` | Headless query (table output) |
+| \`bun run test\` | Run tests |
+
+## Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| \`ATLAS_PROVIDER\` | Yes | LLM provider (\`anthropic\`, \`openai\`, \`bedrock\`, \`ollama\`, \`gateway\`) |
+| Provider API key | Yes | e.g. \`ANTHROPIC_API_KEY=sk-ant-...\` |
+| \`ATLAS_DATASOURCE_URL\` | Yes | Analytics database connection string |
+| \`DATABASE_URL\` | No | Atlas internal Postgres (auth, audit). Auto-set on most platforms |
+| \`ATLAS_MODEL\` | No | Override the default LLM model |
+| \`ATLAS_ROW_LIMIT\` | No | Max rows per query (default: 1000) |
+
+See \`docs/deploy.md\` for the full variable reference.
+
+## Learn More
+
+- [Atlas Documentation](https://useatlas.dev)
+- [GitHub](https://github.com/AtlasDevHQ/atlas)
+`;
+}
+
+// Parse --platform / --preset flag (--preset is an alias)
 let platformFlag: Platform | undefined;
-const platformIdx = args.indexOf("--platform");
+const platformIdx = Math.max(args.indexOf("--platform"), args.indexOf("--preset"));
 if (platformIdx !== -1) {
   const val = args[platformIdx + 1];
   if (!val || val.startsWith("-")) {
@@ -93,6 +371,7 @@ if (args.includes("--help") || args.includes("-h")) {
 
   Options:
     --platform <name>  Deploy target (${VALID_PLATFORMS.join(", ")}) [default: docker]
+    --preset <name>    Alias for --platform
     --defaults, -y     Use all default values (non-interactive)
     --help, -h         Show this help message
 
@@ -106,19 +385,19 @@ if (args.includes("--help") || args.includes("-h")) {
   Examples:
     bun create @useatlas my-app
     bun create @useatlas my-app --platform vercel
-    bun create @useatlas my-app --platform railway
+    bun create @useatlas my-app --preset railway
     bun create @useatlas my-app --defaults
 `);
   process.exit(0);
 }
 
 // Reject unknown flags
-const knownFlags = new Set(["--defaults", "-y", "--help", "-h", "--platform"]);
+const knownFlags = new Set(["--defaults", "-y", "--help", "-h", "--platform", "--preset"]);
 const unknownFlags = args.filter((a, i) => {
   if (!a.startsWith("-")) return false;
   if (knownFlags.has(a)) return false;
-  // --platform's value argument
-  if (i > 0 && args[i - 1] === "--platform") return false;
+  // --platform/--preset value argument
+  if (i > 0 && (args[i - 1] === "--platform" || args[i - 1] === "--preset")) return false;
   return true;
 });
 if (unknownFlags.length > 0) {
@@ -566,6 +845,14 @@ async function main() {
       p.log.warn(`${file} may contain unreplaced template variables.`);
     }
     fs.writeFileSync(filePath, replaced);
+  }
+
+  // Write platform-specific README
+  try {
+    const readme = generateReadme(projectName, platform, dbChoice);
+    fs.writeFileSync(path.join(targetDir, "README.md"), readme);
+  } catch (err) {
+    p.log.warn(`Could not write README.md: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   s.stop("Project files copied.");

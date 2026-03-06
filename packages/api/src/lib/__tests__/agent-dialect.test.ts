@@ -111,4 +111,19 @@ describe("appendDialectHints", () => {
     expect(content).toContain("Only this text.");
     expect(content).not.toContain("should-not-appear");
   });
+
+  test.each([
+    ["clickhouse", "SQL Dialect: ClickHouse"],
+    ["snowflake", "SQL Dialect: Snowflake"],
+    ["duckdb", "SQL Dialect: DuckDB"],
+    ["salesforce", "Query Language: Salesforce SOQL"],
+  ])("non-core dbType %s without plugin hints omits hardcoded guide", (dbType, oldHeader) => {
+    mockEntries.length = 0;
+    mockEntries.push({ id: "default", dbType: dbType as "clickhouse" | "snowflake" | "duckdb" | "salesforce" });
+    mockDialectHints = [];
+
+    const result = buildSystemParam("openai");
+    const content = typeof result === "string" ? result : result.content;
+    expect(content).not.toContain(oldHeader);
+  });
 });

@@ -167,6 +167,22 @@ describe("config validation", () => {
     const plugin = duckdbPlugin({ path: "/data/analytics.duckdb", readOnly: false });
     expect(plugin.config?.readOnly).toBe(false);
   });
+
+  test("rejects empty path", () => {
+    expect(() => duckdbPlugin({ path: "" })).toThrow(/Path must not be empty/);
+  });
+
+  test("rejects whitespace-only path", () => {
+    expect(() => duckdbPlugin({ path: "   " })).toThrow(/Path must not be empty/);
+  });
+
+  test("url takes precedence when both url and path are provided", () => {
+    const plugin = duckdbPlugin({
+      url: "duckdb://from-url.duckdb",
+      path: "/from-path.duckdb",
+    });
+    expect(plugin.id).toBe("duckdb-datasource");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -220,8 +236,62 @@ describe("plugin shape", () => {
     const plugin = duckdbPlugin(validConfig);
     expect(plugin.dialect).toContain("DuckDB SQL dialect");
     expect(plugin.dialect).toContain("UNNEST");
-    expect(plugin.dialect).toContain("read_csv_auto");
-    expect(plugin.dialect).toContain("read_parquet");
+    expect(plugin.dialect).toContain("blocked for security");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Forbidden patterns behavioral tests
+// ---------------------------------------------------------------------------
+
+describe("DUCKDB_FORBIDDEN_PATTERNS", () => {
+  function matchesAny(sql: string): boolean {
+    return DUCKDB_FORBIDDEN_PATTERNS.some((p) => p.test(sql));
+  }
+
+  test("blocks PRAGMA statements", () => {
+    expect(matchesAny("PRAGMA database_list")).toBe(true);
+  });
+
+  test("blocks ATTACH/DETACH", () => {
+    expect(matchesAny("ATTACH '/tmp/evil.db' AS evil")).toBe(true);
+    expect(matchesAny("DETACH evil")).toBe(true);
+  });
+
+  test("blocks INSTALL", () => {
+    expect(matchesAny("INSTALL httpfs")).toBe(true);
+  });
+
+  test("blocks EXPORT/IMPORT", () => {
+    expect(matchesAny("EXPORT DATABASE '/tmp/dump'")).toBe(true);
+    expect(matchesAny("IMPORT DATABASE '/tmp/dump'")).toBe(true);
+  });
+
+  test("blocks CHECKPOINT", () => {
+    expect(matchesAny("CHECKPOINT")).toBe(true);
+  });
+
+  test("blocks DESCRIBE/EXPLAIN/SHOW", () => {
+    expect(matchesAny("DESCRIBE orders")).toBe(true);
+    expect(matchesAny("EXPLAIN SELECT 1")).toBe(true);
+    expect(matchesAny("SHOW TABLES")).toBe(true);
+  });
+
+  test("blocks file-reading functions", () => {
+    expect(matchesAny("SELECT * FROM read_csv_auto('/etc/passwd')")).toBe(true);
+    expect(matchesAny("SELECT * FROM read_parquet('data.parquet')")).toBe(true);
+    expect(matchesAny("SELECT * FROM read_json('data.json')")).toBe(true);
+    expect(matchesAny("SELECT * FROM parquet_scan('*.parquet')")).toBe(true);
+  });
+
+  test("blocks SET statements", () => {
+    expect(matchesAny("SET threads TO 4")).toBe(true);
+  });
+
+  test("allows legitimate SELECT queries", () => {
+    expect(matchesAny("SELECT count(*) FROM orders")).toBe(false);
+    expect(matchesAny("SELECT id, name FROM users WHERE active = true")).toBe(false);
+    expect(matchesAny("SELECT * FROM orders JOIN customers ON orders.cid = customers.id")).toBe(false);
   });
 });
 
@@ -346,6 +416,29 @@ describe("connection factory", () => {
     await conn.close(); // should not throw
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
+  });
+
+  test("url-based config without readOnly defaults to READ_ONLY for files", async () => {
+    const plugin = duckdbPlugin({ url: "duckdb://analytics.duckdb" });
+    const conn = await plugin.connection.create();
+    await conn.query("SELECT 1");
+    expect(mockCreate).toHaveBeenCalledWith("analytics.duckdb", {
+      access_mode: "READ_ONLY",
+    });
+  });
+
+  test("url-based in-memory config without readOnly skips READ_ONLY", async () => {
+    const plugin = duckdbPlugin({ url: "duckdb://" });
+    const conn = await plugin.connection.create();
+    await conn.query("SELECT 1");
+    expect(mockCreate).toHaveBeenCalledWith(":memory:", {});
+  });
+
+  test("path-based in-memory config without readOnly skips READ_ONLY", async () => {
+    const plugin = duckdbPlugin({ path: ":memory:" });
+    const conn = await plugin.connection.create();
+    await conn.query("SELECT 1");
+    expect(mockCreate).toHaveBeenCalledWith(":memory:", {});
   });
 
   test("path-based config creates connection with correct path", async () => {

@@ -35,7 +35,7 @@ const DuckDBConfigSchema = z.object({
     )
     .optional(),
   /** Direct path to a .duckdb file, or ":memory:" for in-memory. */
-  path: z.string().optional(),
+  path: z.string().trim().min(1, "Path must not be empty").optional(),
   /** Open in read-only mode. Defaults to true for file databases. */
   readOnly: z.boolean().optional(),
 }).refine(
@@ -53,9 +53,10 @@ export type DuckDBPluginConfig = z.infer<typeof DuckDBConfigSchema>;
 export function buildDuckDBPlugin(
   config: DuckDBPluginConfig,
 ): AtlasDatasourcePlugin<DuckDBPluginConfig> {
-  const dbConfig = config.url
-    ? { ...parseDuckDBUrl(config.url), readOnly: config.readOnly }
-    : { path: config.path!, readOnly: config.readOnly };
+  const parsed = config.url
+    ? parseDuckDBUrl(config.url)
+    : { path: config.path!, readOnly: config.path !== ":memory:" };
+  const dbConfig = { ...parsed, readOnly: config.readOnly ?? parsed.readOnly };
 
   return {
     id: "duckdb-datasource",
@@ -78,7 +79,7 @@ export function buildDuckDBPlugin(
       "- DuckDB syntax is similar to PostgreSQL with additional features.",
       "- Use UNNEST() to expand arrays into rows.",
       "- LIST and STRUCT types are natively supported.",
-      "- Use read_csv_auto() and read_parquet() to query files directly.",
+      "- File-reading functions (read_csv_auto, read_parquet, etc.) are blocked for security.",
       "- Use DATE_TRUNC() and DATE_PART() for date operations.",
       "- Use STRING_AGG() for string aggregation.",
       "- Supports window functions, CTEs, and lateral joins.",

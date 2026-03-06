@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "test": "bun test __tests__/duckdb.test.ts"
+    "test": "bun test __tests__/duckdb.test.ts && bun test __tests__/url-parser.test.ts"
   },
   "dependencies": {
     "@useatlas/plugin-sdk": "workspace:*"

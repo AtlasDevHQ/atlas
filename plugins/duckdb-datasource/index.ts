@@ -21,6 +21,7 @@ import { z } from "zod";
 import { createPlugin } from "@useatlas/plugin-sdk";
 import type { AtlasDatasourcePlugin, PluginDBConnection, PluginHealthResult } from "@useatlas/plugin-sdk";
 import { createDuckDBConnection, parseDuckDBUrl } from "./connection";
+import { DUCKDB_FORBIDDEN_PATTERNS } from "./validation";
 
 const DuckDBConfigSchema = z.object({
   /** DuckDB connection URL (duckdb://). */
@@ -31,10 +32,16 @@ const DuckDBConfigSchema = z.object({
     .refine(
       (u) => u.startsWith("duckdb://"),
       "URL must start with duckdb://",
-    ),
+    )
+    .optional(),
+  /** Direct path to a .duckdb file, or ":memory:" for in-memory. */
+  path: z.string().optional(),
   /** Open in read-only mode. Defaults to true for file databases. */
   readOnly: z.boolean().optional(),
-});
+}).refine(
+  (cfg) => cfg.url || cfg.path,
+  "Either url or path is required",
+);
 
 export type DuckDBPluginConfig = z.infer<typeof DuckDBConfigSchema>;
 
@@ -46,8 +53,9 @@ export type DuckDBPluginConfig = z.infer<typeof DuckDBConfigSchema>;
 export function buildDuckDBPlugin(
   config: DuckDBPluginConfig,
 ): AtlasDatasourcePlugin<DuckDBPluginConfig> {
-  const parsed = parseDuckDBUrl(config.url);
-  const dbConfig = { ...parsed, readOnly: config.readOnly ?? parsed.readOnly };
+  const dbConfig = config.url
+    ? { ...parseDuckDBUrl(config.url), readOnly: config.readOnly }
+    : { path: config.path!, readOnly: config.readOnly };
 
   return {
     id: "duckdb-datasource",
@@ -59,6 +67,8 @@ export function buildDuckDBPlugin(
     connection: {
       create: () => createDuckDBConnection(dbConfig),
       dbType: "duckdb",
+      parserDialect: "PostgresQL",
+      forbiddenPatterns: DUCKDB_FORBIDDEN_PATTERNS,
     },
 
     entities: [],
@@ -119,3 +129,4 @@ export const duckdbPlugin = createPlugin({
 });
 
 export { createDuckDBConnection, parseDuckDBUrl } from "./connection";
+export { DUCKDB_FORBIDDEN_PATTERNS } from "./validation";

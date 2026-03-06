@@ -124,9 +124,14 @@ mkdir -p "$TEMPLATES/docker/public"
 touch    "$TEMPLATES/docker/public/.gitkeep"
 
 # ── Step 6: Sync dependency versions into templates ───────────────
-echo ":: Syncing dependency versions to templates"
-cd "$MONOREPO"
-bun x syncpack fix
-bun x syncpack lint
+# Skip syncpack when SKIP_SYNCPACK=1 (used by CI drift check)
+if [[ "${SKIP_SYNCPACK:-}" != "1" ]]; then
+  echo ":: Syncing dependency versions to templates"
+  cd "$MONOREPO"
+  bun x syncpack fix
+  bun x syncpack lint
+else
+  echo ":: Skipping syncpack (SKIP_SYNCPACK=1)"
+fi
 
 echo ":: All templates prepared successfully."

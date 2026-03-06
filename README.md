@@ -129,6 +129,12 @@ See [`.env.example`](.env.example) for all options.
 - [Plugin Authoring](docs/guides/plugin-authoring-guide.md) -- Build custom plugins
 - [Security & Sandbox Architecture](docs/design/sandbox-architecture.md) -- Threat model, isolation tiers, platform capabilities
 
+## Acknowledgments
+
+Atlas was inspired by [Abhi Sivasailam](https://x.com/_abhisivasailam)'s work on Vercel's internal data agent **d0** and the open-source [vercel-labs/oss-data-analyst](https://github.com/vercel-labs/oss-data-analyst) template. The core insight — invest in a rich semantic layer on the filesystem, trust the model, and keep the tool surface minimal — came from that work. The four-bucket taxonomy (Stores of Data, Stores of Context, Systems of Interaction, Systems of Action) directly shaped Atlas's plugin architecture.
+
+Atlas is a ground-up rewrite that extends those ideas with a plugin SDK, multi-database support, sandboxed execution, auth, an admin console, scheduled tasks, and deploy-anywhere packaging.
+
 ## License
 
 MIT

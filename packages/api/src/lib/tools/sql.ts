@@ -46,12 +46,14 @@ const MYSQL_FORBIDDEN_PATTERNS = [
 ];
 
 // ClickHouse-specific patterns — admin/mutation commands unique to ClickHouse
+// Statement-level commands are anchored to start-of-string to avoid false
+// positives on data values (e.g. WHERE action = 'kill', FROM system.query_log).
 const CLICKHOUSE_FORBIDDEN_PATTERNS = [
-  /\b(SYSTEM)\b/i,
-  /\b(KILL)\b/i,
-  /\b(ATTACH|DETACH)\b/i,
-  /\b(RENAME)\b/i,
-  /\b(EXCHANGE)\b/i,
+  /^\s*(SYSTEM)\b/i,
+  /^\s*(KILL)\b/i,
+  /^\s*(ATTACH|DETACH)\b/i,
+  /^\s*(RENAME)\b/i,
+  /^\s*(EXCHANGE)\b/i,
   /\b(SHOW|DESCRIBE|EXPLAIN|USE)\b/i,
 ];
 
@@ -69,13 +71,14 @@ const SNOWFLAKE_FORBIDDEN_PATTERNS = [
 
 // DuckDB-specific patterns — block PRAGMA, ATTACH, DETACH, INSTALL,
 // EXPORT, IMPORT, CHECKPOINT, file-reading functions, and SET.
-// Note: LOAD is already blocked by base FORBIDDEN_PATTERNS.
+// Statement-level commands are anchored to start-of-string to avoid false
+// positives on data values. Note: LOAD is already blocked by base FORBIDDEN_PATTERNS.
 const DUCKDB_FORBIDDEN_PATTERNS = [
-  /\b(PRAGMA)\b/i,
-  /\b(ATTACH|DETACH)\b/i,
-  /\b(INSTALL)\b/i,
-  /\b(EXPORT|IMPORT)\b/i,
-  /\b(CHECKPOINT)\b/i,
+  /^\s*(PRAGMA)\b/i,
+  /^\s*(ATTACH|DETACH)\b/i,
+  /^\s*(INSTALL)\b/i,
+  /^\s*(EXPORT|IMPORT)\b/i,
+  /^\s*(CHECKPOINT)\b/i,
   /\b(DESCRIBE|EXPLAIN|SHOW)\b/i,
   // Block file-reading table functions that can access the host filesystem
   /\b(read_csv_auto|read_csv|read_parquet|read_json|read_json_auto|read_text)\b/i,

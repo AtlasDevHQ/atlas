@@ -1,19 +1,19 @@
 /**
  * ClickHouse-specific forbidden SQL patterns.
  *
- * Extracted from packages/api/src/lib/tools/sql.ts — admin/mutation
- * commands unique to ClickHouse that are not covered by the base
- * FORBIDDEN_PATTERNS in the core SQL validator.
+ * Statement-level admin commands (SYSTEM, KILL, ATTACH, DETACH, RENAME,
+ * EXCHANGE) are anchored to start-of-string to avoid false positives on
+ * data values (e.g. WHERE action = 'kill', FROM system.query_log).
  *
- * These patterns are registered via the plugin's `forbiddenPatterns`
- * field and applied as an additional regex guard during SQL validation.
+ * SHOW/DESCRIBE/EXPLAIN/USE use word-boundary matching since they are
+ * less likely to appear as data values and blocking them mid-query
+ * (e.g. subquery EXPLAIN) is intentional.
  */
-
 export const CLICKHOUSE_FORBIDDEN_PATTERNS: RegExp[] = [
-  /\b(SYSTEM)\b/i,
-  /\b(KILL)\b/i,
-  /\b(ATTACH|DETACH)\b/i,
-  /\b(RENAME)\b/i,
-  /\b(EXCHANGE)\b/i,
+  /^\s*(SYSTEM)\b/i,
+  /^\s*(KILL)\b/i,
+  /^\s*(ATTACH|DETACH)\b/i,
+  /^\s*(RENAME)\b/i,
+  /^\s*(EXCHANGE)\b/i,
   /\b(SHOW|DESCRIBE|EXPLAIN|USE)\b/i,
 ];

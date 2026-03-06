@@ -803,6 +803,55 @@ describe("validateSQL", () => {
     });
   });
 
+  // ----- ClickHouse false-positive prevention ------------------------------------
+
+  describe("ClickHouse false-positive prevention (anchored patterns)", () => {
+    beforeEach(() => {
+      process.env.ATLAS_DATASOURCE_URL = "clickhouse://test:test@localhost:8123/default";
+    });
+
+    it("allows data values containing 'kill' (no false positive after anchoring)", () => {
+      expectValid("SELECT * FROM companies WHERE action = 'kill'");
+    });
+
+    it("allows data values containing 'system' (no false positive after anchoring)", () => {
+      expectValid("SELECT * FROM companies WHERE name = 'system'");
+    });
+
+    it("allows data values containing 'attach' (no false positive after anchoring)", () => {
+      expectValid("SELECT * FROM companies WHERE status = 'attach'");
+    });
+
+    it("allows data values containing 'rename' (no false positive after anchoring)", () => {
+      expectValid("SELECT * FROM companies WHERE op = 'rename'");
+    });
+
+    it("allows data values containing 'exchange' (no false positive after anchoring)", () => {
+      expectValid("SELECT * FROM companies WHERE type = 'exchange'");
+    });
+
+    it("still blocks KILL with leading whitespace", () => {
+      expectInvalid("  KILL QUERY WHERE query_id = '123'", "forbidden");
+    });
+
+    it("still blocks SYSTEM with leading whitespace", () => {
+      expectInvalid("  SYSTEM FLUSH LOGS", "forbidden");
+    });
+
+    it("blocks KILL hidden after block comment", () => {
+      expectInvalid("/* bypass */ KILL QUERY WHERE query_id = '123'", "forbidden");
+    });
+
+    it("blocks SYSTEM hidden after line comment", () => {
+      expectInvalid("-- comment\nSYSTEM FLUSH LOGS", "forbidden");
+    });
+
+    it("does not strip comment-like sequences inside string literals", () => {
+      // '/* kill */' inside a string should not trigger the anchored KILL pattern
+      expectValid("SELECT * FROM companies WHERE note = '/* kill */ rename exchange'");
+    });
+  });
+
   // ----- ClickHouse parser mode -------------------------------------------------
 
   describe("ClickHouse parser mode", () => {
@@ -890,6 +939,191 @@ describe("validateSQL", () => {
     it("rejects OPTIMIZE in MySQL mode via regex guard (base pattern)", () => {
       process.env.ATLAS_DATASOURCE_URL = "mysql://test:test@localhost:3306/test";
       expectInvalid("OPTIMIZE TABLE companies", "forbidden");
+    });
+  });
+
+  // ----- DuckDB-specific validation -----------------------------------------------
+
+  describe("DuckDB-specific", () => {
+    beforeEach(() => {
+      process.env.ATLAS_DATASOURCE_URL = "duckdb://test.duckdb";
+    });
+
+    it("rejects PRAGMA statement", () => {
+      expectInvalid("PRAGMA table_info(companies)", "forbidden");
+    });
+
+    it("rejects ATTACH statement", () => {
+      expectInvalid("ATTACH DATABASE 'evil.db' AS evil", "forbidden");
+    });
+
+    it("rejects DETACH statement", () => {
+      expectInvalid("DETACH DATABASE evil", "forbidden");
+    });
+
+    it("rejects INSTALL statement", () => {
+      expectInvalid("INSTALL httpfs", "forbidden");
+    });
+
+    it("rejects EXPORT statement", () => {
+      expectInvalid("EXPORT DATABASE '/tmp'", "forbidden");
+    });
+
+    it("rejects IMPORT statement", () => {
+      expectInvalid("IMPORT DATABASE '/tmp'", "forbidden");
+    });
+
+    it("rejects CHECKPOINT statement", () => {
+      expectInvalid("CHECKPOINT", "forbidden");
+    });
+
+    it("rejects SET statement", () => {
+      expectInvalid("SET threads TO 4", "forbidden");
+    });
+
+    it("rejects DESCRIBE statement", () => {
+      expectInvalid("DESCRIBE companies", "forbidden");
+    });
+
+    it("rejects EXPLAIN statement", () => {
+      expectInvalid("EXPLAIN SELECT * FROM companies", "forbidden");
+    });
+
+    it("rejects SHOW statement", () => {
+      expectInvalid("SHOW TABLES", "forbidden");
+    });
+
+    it("rejects read_csv_auto function", () => {
+      expectInvalid("SELECT * FROM read_csv_auto('/etc/passwd')", "forbidden");
+    });
+
+    it("rejects read_parquet function", () => {
+      expectInvalid("SELECT * FROM read_parquet('/tmp/data.parquet')", "forbidden");
+    });
+
+    it("rejects parquet_scan function", () => {
+      expectInvalid("SELECT * FROM parquet_scan('/tmp/data.parquet')", "forbidden");
+    });
+
+    it("still rejects base forbidden patterns (INSERT, DROP)", () => {
+      expectInvalid("INSERT INTO companies (name) VALUES ('x')", "forbidden");
+      expectInvalid("DROP TABLE companies", "forbidden");
+    });
+
+    it("rejects mixed-case PRAGMA", () => {
+      expectInvalid("PrAgMa table_info(companies)", "forbidden");
+    });
+
+    it("rejects SET with leading whitespace", () => {
+      expectInvalid("  SET threads TO 4", "forbidden");
+    });
+  });
+
+  // ----- DuckDB false-positive prevention -----------------------------------------
+
+  describe("DuckDB false-positive prevention (anchored patterns)", () => {
+    beforeEach(() => {
+      process.env.ATLAS_DATASOURCE_URL = "duckdb://test.duckdb";
+    });
+
+    it("allows data values containing 'import' (no false positive after anchoring)", () => {
+      expectValid("SELECT * FROM companies WHERE type = 'import'");
+    });
+
+    it("allows data values containing 'export' (no false positive after anchoring)", () => {
+      expectValid("SELECT * FROM companies WHERE status = 'export'");
+    });
+
+    it("allows data values containing 'checkpoint' (no false positive after anchoring)", () => {
+      expectValid("SELECT * FROM companies WHERE action = 'checkpoint'");
+    });
+
+    it("allows data values containing 'attach' (no false positive after anchoring)", () => {
+      expectValid("SELECT * FROM companies WHERE op = 'attach'");
+    });
+
+    it("allows data values containing 'pragma' (no false positive after anchoring)", () => {
+      expectValid("SELECT * FROM companies WHERE name = 'pragma'");
+    });
+
+    it("blocks PRAGMA hidden after block comment", () => {
+      expectInvalid("/* bypass */ PRAGMA table_info(companies)", "forbidden");
+    });
+
+    it("blocks EXPORT hidden after line comment", () => {
+      expectInvalid("-- comment\nEXPORT DATABASE '/tmp'", "forbidden");
+    });
+  });
+
+  // ----- DuckDB parser mode -----------------------------------------------------
+
+  describe("DuckDB parser mode", () => {
+    beforeEach(() => {
+      process.env.ATLAS_DATASOURCE_URL = "duckdb://test.duckdb";
+    });
+
+    it("accepts a simple SELECT in DuckDB mode", () => {
+      expectValid("SELECT id, name FROM companies");
+    });
+
+    it("accepts SELECT with JOIN in DuckDB mode", () => {
+      expectValid(
+        "SELECT c.name, p.name FROM companies c JOIN people p ON c.id = p.company_id"
+      );
+    });
+
+    it("accepts CTEs in DuckDB mode", () => {
+      expectValid(
+        "WITH top AS (SELECT id, name FROM companies LIMIT 10) SELECT * FROM top"
+      );
+    });
+
+    it("accepts subqueries in DuckDB mode", () => {
+      expectValid(
+        "SELECT * FROM companies WHERE id IN (SELECT company_id FROM people)"
+      );
+    });
+
+    it("rejects non-whitelisted tables in DuckDB mode", () => {
+      expectInvalid(
+        "SELECT * FROM secret_data",
+        "not in the allowed list"
+      );
+    });
+
+    it("does not reject CTE names as non-whitelisted tables in DuckDB mode", () => {
+      expectValid(
+        "WITH my_temp AS (SELECT id FROM companies) SELECT * FROM my_temp"
+      );
+    });
+
+    it("accepts UNION of SELECTs in DuckDB mode", () => {
+      expectValid(
+        "SELECT name FROM companies UNION ALL SELECT name FROM people"
+      );
+    });
+  });
+
+  // ----- Cross-DB guard: DuckDB patterns don't fire in PostgreSQL mode ----------
+
+  describe("cross-database regex guard isolation (DuckDB)", () => {
+    it("does not reject PRAGMA in PostgreSQL mode via regex guard", () => {
+      process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
+      const result = validateSQL("PRAGMA table_info(companies)");
+      expect(result.valid).toBe(false);
+      expect(result.error).not.toContain("Forbidden SQL operation detected");
+    });
+
+    it("does not reject INSTALL in MySQL mode via regex guard", () => {
+      process.env.ATLAS_DATASOURCE_URL = "mysql://test:test@localhost:3306/test";
+      const result = validateSQL("INSTALL httpfs");
+      expect(result.valid).toBe(false);
+      expect(result.error).not.toContain("Forbidden SQL operation detected");
+    });
+
+    it("still blocks PRAGMA in DuckDB mode via regex guard", () => {
+      process.env.ATLAS_DATASOURCE_URL = "duckdb://test.duckdb";
+      expectInvalid("PRAGMA table_info(companies)", "forbidden");
     });
   });
 
@@ -997,6 +1231,39 @@ describe("validateSQL", () => {
 
     it("allows column named 'list' (no false positive after anchoring)", () => {
       expectValid("SELECT id FROM companies WHERE list = true");
+    });
+
+    it("blocks PUT hidden after block comment", () => {
+      expectInvalid("/* bypass */ PUT file:///tmp/data.csv @mystage", "forbidden");
+    });
+
+    it("blocks GET hidden after line comment", () => {
+      expectInvalid("-- comment\nGET @mystage file:///tmp/", "forbidden");
+    });
+  });
+
+  // ----- Pattern sync: plugin validation.ts matches sql.ts hardcoded arrays ------
+
+  describe("pattern sync between sql.ts and plugin validation.ts", () => {
+    it("ClickHouse plugin patterns match sql.ts hardcoded patterns", async () => {
+      const { CLICKHOUSE_FORBIDDEN_PATTERNS: sqlPatterns } = await import("@atlas/api/lib/tools/sql");
+      const { CLICKHOUSE_FORBIDDEN_PATTERNS: pluginPatterns } = await import("../../../../../../plugins/clickhouse-datasource/validation");
+      expect(sqlPatterns.map((r: RegExp) => r.source)).toEqual(pluginPatterns.map((r: RegExp) => r.source));
+      expect(sqlPatterns.map((r: RegExp) => r.flags)).toEqual(pluginPatterns.map((r: RegExp) => r.flags));
+    });
+
+    it("Snowflake plugin patterns match sql.ts hardcoded patterns", async () => {
+      const { SNOWFLAKE_FORBIDDEN_PATTERNS: sqlPatterns } = await import("@atlas/api/lib/tools/sql");
+      const { SNOWFLAKE_FORBIDDEN_PATTERNS: pluginPatterns } = await import("../../../../../../plugins/snowflake-datasource/validation");
+      expect(sqlPatterns.map((r: RegExp) => r.source)).toEqual(pluginPatterns.map((r: RegExp) => r.source));
+      expect(sqlPatterns.map((r: RegExp) => r.flags)).toEqual(pluginPatterns.map((r: RegExp) => r.flags));
+    });
+
+    it("DuckDB plugin patterns match sql.ts hardcoded patterns", async () => {
+      const { DUCKDB_FORBIDDEN_PATTERNS: sqlPatterns } = await import("@atlas/api/lib/tools/sql");
+      const { DUCKDB_FORBIDDEN_PATTERNS: pluginPatterns } = await import("../../../../../../plugins/duckdb-datasource/validation");
+      expect(sqlPatterns.map((r: RegExp) => r.source)).toEqual(pluginPatterns.map((r: RegExp) => r.source));
+      expect(sqlPatterns.map((r: RegExp) => r.flags)).toEqual(pluginPatterns.map((r: RegExp) => r.flags));
     });
   });
 

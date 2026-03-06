@@ -1,19 +1,17 @@
 /**
  * DuckDB-specific forbidden SQL patterns.
  *
- * Extracted from packages/api/src/lib/tools/sql.ts — these patterns block
- * DuckDB-specific statements and functions beyond the base DML/DDL guard.
+ * Statement-level commands (PRAGMA, ATTACH, DETACH, INSTALL, EXPORT, IMPORT,
+ * CHECKPOINT, SET) are anchored to start-of-string to avoid false positives
+ * on data values. File-reading functions use word-boundary matching since they
+ * appear as function calls mid-query. LOAD is already blocked by base patterns.
  */
-
-// DuckDB-specific patterns — block PRAGMA, ATTACH, DETACH, INSTALL,
-// EXPORT, IMPORT, CHECKPOINT, file-reading functions, and SET.
-// Note: LOAD is already blocked by base FORBIDDEN_PATTERNS.
-export const DUCKDB_FORBIDDEN_PATTERNS = [
-  /\b(PRAGMA)\b/i,
-  /\b(ATTACH|DETACH)\b/i,
-  /\b(INSTALL)\b/i,
-  /\b(EXPORT|IMPORT)\b/i,
-  /\b(CHECKPOINT)\b/i,
+export const DUCKDB_FORBIDDEN_PATTERNS: RegExp[] = [
+  /^\s*(PRAGMA)\b/i,
+  /^\s*(ATTACH|DETACH)\b/i,
+  /^\s*(INSTALL)\b/i,
+  /^\s*(EXPORT|IMPORT)\b/i,
+  /^\s*(CHECKPOINT)\b/i,
   /\b(DESCRIBE|EXPLAIN|SHOW)\b/i,
   // Block file-reading table functions that can access the host filesystem
   /\b(read_csv_auto|read_csv|read_parquet|read_json|read_json_auto|read_text)\b/i,

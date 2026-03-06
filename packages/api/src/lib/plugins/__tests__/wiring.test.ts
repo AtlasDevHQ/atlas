@@ -15,9 +15,9 @@ const minimalCtx: PluginContextLike = {
 
 function makeMockConnectionRegistry() {
   return {
-    registered: [] as { id: string; conn: unknown; dbType: string; description?: string; validate?: unknown }[],
-    async registerDirect(id: string, conn: unknown, dbType: string, description?: string, validate?: unknown) {
-      this.registered.push({ id, conn, dbType, description, validate });
+    registered: [] as { id: string; conn: unknown; dbType: string; description?: string; validate?: unknown; meta?: unknown }[],
+    registerDirect(id: string, conn: unknown, dbType: string, description?: string, validate?: unknown, meta?: unknown) {
+      this.registered.push({ id, conn, dbType, description, validate, meta });
     },
   };
 }
@@ -145,6 +145,47 @@ describe("wireDatasourcePlugins", () => {
 
     expect(connRegistry.registered).toHaveLength(1);
     expect(connRegistry.registered[0].validate).toBe(validator);
+  });
+
+  test("passes parserDialect and forbiddenPatterns through meta", async () => {
+    const patterns = [/^\s*(KILL)\b/i];
+    const plugin: PluginLike = {
+      id: "meta-ds",
+      type: "datasource",
+      version: "1.0.0",
+      connection: {
+        create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
+        dbType: "clickhouse",
+        parserDialect: "PostgresQL",
+        forbiddenPatterns: patterns,
+      },
+    };
+    registry.register(plugin);
+    await registry.initializeAll(minimalCtx);
+
+    await wireDatasourcePlugins(
+      registry,
+      connRegistry as unknown as import("@atlas/api/lib/db/connection").ConnectionRegistry,
+    );
+
+    expect(connRegistry.registered).toHaveLength(1);
+    expect(connRegistry.registered[0].meta).toEqual({
+      parserDialect: "PostgresQL",
+      forbiddenPatterns: patterns,
+    });
+  });
+
+  test("passes undefined meta when no parserDialect or forbiddenPatterns", async () => {
+    registry.register(makeDatasourcePlugin("plain-meta"));
+    await registry.initializeAll(minimalCtx);
+
+    await wireDatasourcePlugins(
+      registry,
+      connRegistry as unknown as import("@atlas/api/lib/db/connection").ConnectionRegistry,
+    );
+
+    expect(connRegistry.registered).toHaveLength(1);
+    expect(connRegistry.registered[0].meta).toBeUndefined();
   });
 
   test("passes undefined validate when not provided", async () => {

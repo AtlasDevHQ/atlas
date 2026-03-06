@@ -183,6 +183,23 @@ describe("plugin shape", () => {
     expect(plugin.connection.dbType).toBe("clickhouse");
   });
 
+  test("connection.parserDialect is 'PostgresQL'", () => {
+    const plugin = clickhousePlugin(validConfig);
+    const conn = plugin.connection as Record<string, unknown>;
+    expect(conn.parserDialect).toBe("PostgresQL");
+  });
+
+  test("connection.forbiddenPatterns is a non-empty RegExp array", () => {
+    const plugin = clickhousePlugin(validConfig);
+    const conn = plugin.connection as Record<string, unknown>;
+    const patterns = conn.forbiddenPatterns as RegExp[];
+    expect(Array.isArray(patterns)).toBe(true);
+    expect(patterns.length).toBeGreaterThan(0);
+    for (const p of patterns) {
+      expect(p).toBeInstanceOf(RegExp);
+    }
+  });
+
   test("entities is an empty array", () => {
     const plugin = clickhousePlugin(validConfig);
     expect(plugin.entities).toEqual([]);
@@ -265,12 +282,16 @@ describe("CLICKHOUSE_FORBIDDEN_PATTERNS", () => {
     expect(CLICKHOUSE_FORBIDDEN_PATTERNS.some((p) => p.test("SELECT arrayJoin(tags) FROM articles"))).toBe(false);
   });
 
-  // Known limitations: bare word-boundary patterns match exact keywords
-  // appearing as data values, aliases, or table references. See #29.
-  test("known limitation: exact keyword in alias or value is blocked (#29)", () => {
+  // Word-boundary patterns (SHOW/DESCRIBE/EXPLAIN/USE) still match mid-query
+  test("word-boundary patterns still match mid-query (SHOW/DESCRIBE/EXPLAIN/USE)", () => {
     expect(CLICKHOUSE_FORBIDDEN_PATTERNS.some((p) => p.test("SELECT 1 AS use"))).toBe(true);
-    expect(CLICKHOUSE_FORBIDDEN_PATTERNS.some((p) => p.test("SELECT query FROM system.query_log"))).toBe(true);
-    expect(CLICKHOUSE_FORBIDDEN_PATTERNS.some((p) => p.test("SELECT * FROM events WHERE action = 'kill'"))).toBe(true);
+  });
+
+  // Start-anchored patterns (SYSTEM/KILL/ATTACH/DETACH/RENAME/EXCHANGE) no longer
+  // false-positive on data values — this is the fix from #29.
+  test("anchored patterns avoid false positives on data values (#29)", () => {
+    expect(CLICKHOUSE_FORBIDDEN_PATTERNS.some((p) => p.test("SELECT query FROM system.query_log"))).toBe(false);
+    expect(CLICKHOUSE_FORBIDDEN_PATTERNS.some((p) => p.test("SELECT * FROM events WHERE action = 'kill'"))).toBe(false);
   });
 
   test("patterns are case-insensitive", () => {

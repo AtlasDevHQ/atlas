@@ -25,6 +25,7 @@ import {
   extractAccount,
   parseSnowflakeURL,
 } from "./connection";
+import { SNOWFLAKE_FORBIDDEN_PATTERNS } from "./validation";
 
 const SnowflakeConfigSchema = z.object({
   /** Snowflake connection URL (snowflake://user:pass@account/db/schema?warehouse=WH&role=ROLE). */
@@ -66,6 +67,8 @@ export function buildSnowflakePlugin(
       create: () =>
         createSnowflakeConnection({ url: config.url, maxConnections: config.maxConnections }),
       dbType: "snowflake",
+      parserDialect: "Snowflake",
+      forbiddenPatterns: SNOWFLAKE_FORBIDDEN_PATTERNS,
     },
 
     entities: [],
@@ -140,3 +143,4 @@ export const snowflakePlugin = createPlugin({
 });
 
 export { createSnowflakeConnection, parseSnowflakeURL, extractAccount } from "./connection";
+export { SNOWFLAKE_FORBIDDEN_PATTERNS } from "./validation";

@@ -31,6 +31,27 @@ const log = createLogger("sql");
 
 const parser = new Parser();
 
+/**
+ * Strip SQL comments for regex guard testing.
+ *
+ * Block comments (`/* ... *​/`) and line comments (`-- ...`) are removed
+ * so that anchored patterns like `^\s*(KILL)\b` cannot be bypassed with
+ * a leading comment (e.g. `/* bypass *​/ KILL QUERY ...`).
+ *
+ * Only used for regex testing — the original SQL is passed to the AST parser
+ * unchanged so that comment-aware parsing still works correctly.
+ */
+function stripSqlComments(sql: string): string {
+  // Single regex handles string literals, block comments, line comments,
+  // and MySQL-style # comments in one pass. String literals (single-quoted
+  // with '' escape) are preserved unchanged; comments are replaced with a space.
+  return sql
+    .replace(/'(?:[^']|'')*'|\/\*[\s\S]*?\*\/|--[^\n]*|#[^\n]*/g, (match) =>
+      match.startsWith("'") ? match : " ",
+    )
+    .trim();
+}
+
 const FORBIDDEN_PATTERNS = [
   /\b(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|TRUNCATE)\b/i,
   /\b(GRANT|REVOKE|EXEC|EXECUTE|CALL)\b/i,
@@ -48,7 +69,7 @@ const MYSQL_FORBIDDEN_PATTERNS = [
 // ClickHouse-specific patterns — admin/mutation commands unique to ClickHouse
 // Statement-level commands are anchored to start-of-string to avoid false
 // positives on data values (e.g. WHERE action = 'kill', FROM system.query_log).
-const CLICKHOUSE_FORBIDDEN_PATTERNS = [
+export const CLICKHOUSE_FORBIDDEN_PATTERNS = [
   /^\s*(SYSTEM)\b/i,
   /^\s*(KILL)\b/i,
   /^\s*(ATTACH|DETACH)\b/i,
@@ -63,7 +84,7 @@ const CLICKHOUSE_FORBIDDEN_PATTERNS = [
 // All patterns are anchored to start-of-statement (^\s*) to avoid false
 // positives on data values in WHERE clauses and string literals
 // (e.g. WHERE title = 'Please explain the billing issue').
-const SNOWFLAKE_FORBIDDEN_PATTERNS = [
+export const SNOWFLAKE_FORBIDDEN_PATTERNS = [
   /^\s*(PUT|GET|LIST|REMOVE|RM)\b/i,
   /^\s*(MERGE)\b/i,
   /^\s*(SHOW|DESCRIBE|DESC|EXPLAIN|USE)\b/i,
@@ -73,7 +94,7 @@ const SNOWFLAKE_FORBIDDEN_PATTERNS = [
 // EXPORT, IMPORT, CHECKPOINT, file-reading functions, and SET.
 // Statement-level commands are anchored to start-of-string to avoid false
 // positives on data values. Note: LOAD is already blocked by base FORBIDDEN_PATTERNS.
-const DUCKDB_FORBIDDEN_PATTERNS = [
+export const DUCKDB_FORBIDDEN_PATTERNS = [
   /^\s*(PRAGMA)\b/i,
   /^\s*(ATTACH|DETACH)\b/i,
   /^\s*(INSTALL)\b/i,
@@ -188,10 +209,14 @@ export function validateSQL(sql: string, connectionId?: string): { valid: boolea
   }
 
   // 1. Regex guard against mutation keywords
+  //
+  // Strip comments before testing so that leading block/line comments
+  // cannot bypass start-of-string anchored patterns (e.g. `/* x */ KILL ...`).
+  const forRegex = stripSqlComments(trimmed);
   const extraPatterns = getExtraPatterns(dbType, connectionId);
   const patterns = [...FORBIDDEN_PATTERNS, ...extraPatterns];
   for (const pattern of patterns) {
-    if (pattern.test(trimmed)) {
+    if (pattern.test(forRegex)) {
       return {
         valid: false,
         error: `Forbidden SQL operation detected: ${pattern.source}`,

@@ -265,6 +265,23 @@ describe("plugin shape", () => {
     expect(plugin.connection.dbType).toBe("snowflake");
   });
 
+  test("connection.parserDialect is 'Snowflake'", () => {
+    const plugin = snowflakePlugin(validConfig);
+    const conn = plugin.connection as Record<string, unknown>;
+    expect(conn.parserDialect).toBe("Snowflake");
+  });
+
+  test("connection.forbiddenPatterns is a non-empty RegExp array", () => {
+    const plugin = snowflakePlugin(validConfig);
+    const conn = plugin.connection as Record<string, unknown>;
+    const patterns = conn.forbiddenPatterns as RegExp[];
+    expect(Array.isArray(patterns)).toBe(true);
+    expect(patterns.length).toBeGreaterThan(0);
+    for (const p of patterns) {
+      expect(p).toBeInstanceOf(RegExp);
+    }
+  });
+
   test("entities is an empty array", () => {
     const plugin = snowflakePlugin(validConfig);
     expect(plugin.entities).toEqual([]);

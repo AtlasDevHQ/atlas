@@ -2,18 +2,6 @@ import { describe, expect, it, mock } from "bun:test";
 import { tool } from "ai";
 import { z } from "zod";
 
-// Mock the Salesforce tool so buildRegistry({ includeSalesforce: true }) works
-// without needing jsforce or a real Salesforce connection.
-const mockSfTool = tool({
-  description: "Mock querySalesforce",
-  inputSchema: z.object({ soql: z.string() }),
-  execute: async ({ soql }) => soql,
-});
-
-mock.module("@atlas/api/lib/tools/salesforce", () => ({
-  querySalesforce: mockSfTool,
-}));
-
 // Mock the action tools so buildRegistry({ includeActions: true }) works
 // without needing JIRA/email credentials or external services.
 const mockJiraTool = tool({
@@ -179,16 +167,10 @@ describe("defaultRegistry", () => {
 });
 
 describe("buildRegistry", () => {
-  it("without Salesforce returns 2 core tools", async () => {
+  it("returns 2 core tools by default", async () => {
     const registry = await buildRegistry();
     const names = Object.keys(registry.getAll()).sort();
     expect(names).toEqual(["executeSQL", "explore"]);
-  });
-
-  it("with includeSalesforce returns 3 tools including querySalesforce", async () => {
-    const registry = await buildRegistry({ includeSalesforce: true });
-    const names = Object.keys(registry.getAll()).sort();
-    expect(names).toEqual(["executeSQL", "explore", "querySalesforce"]);
   });
 
   it("with includeActions returns 4 tools including createJiraTicket and sendEmailReport", async () => {
@@ -198,18 +180,6 @@ describe("buildRegistry", () => {
       "createJiraTicket",
       "executeSQL",
       "explore",
-      "sendEmailReport",
-    ]);
-  });
-
-  it("with both includeSalesforce and includeActions returns 5 tools", async () => {
-    const registry = await buildRegistry({ includeSalesforce: true, includeActions: true });
-    const names = Object.keys(registry.getAll()).sort();
-    expect(names).toEqual([
-      "createJiraTicket",
-      "executeSQL",
-      "explore",
-      "querySalesforce",
       "sendEmailReport",
     ]);
   });

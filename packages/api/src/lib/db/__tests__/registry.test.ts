@@ -40,70 +40,8 @@ mock.module("mysql2/promise", () => ({
   }),
 }));
 
-// ClickHouse mock with spies to capture arguments
-let lastCreateClientOpts: Record<string, unknown> | null = null;
-let lastQueryOpts: Record<string, unknown> | null = null;
-let mockJsonResponse: { meta: { name: string }[]; data: Record<string, unknown>[] } = {
-  meta: [],
-  data: [],
-};
-
-mock.module("@clickhouse/client", () => ({
-  createClient: (opts: Record<string, unknown>) => {
-    lastCreateClientOpts = opts;
-    return {
-      async query(qOpts: Record<string, unknown>) {
-        lastQueryOpts = qOpts;
-        return {
-          async json() {
-            return mockJsonResponse;
-          },
-        };
-      },
-      async close() {},
-    };
-  },
-}));
-
-mock.module("@duckdb/node-api", () => ({
-  DuckDBInstance: {
-    async create() {
-      return {
-        async connect() {
-          return {
-            async runAndReadAll() {
-              return {
-                columnNames: () => [],
-                getRowObjects: () => [],
-              };
-            },
-            async run() {},
-            async close() {},
-          };
-        },
-        async close() {},
-      };
-    },
-  },
-}));
-
-mock.module("snowflake-sdk", () => ({
-  configure: () => {},
-  createPool: () => ({
-    use: async (fn: (conn: unknown) => Promise<unknown>) => {
-      const mockConn = {
-        execute: (opts: { sqlText: string; complete: (err: null, stmt: unknown, rows: unknown[]) => void }) => {
-          opts.complete(null, {
-            getColumns: () => [],
-          }, []);
-        },
-      };
-      return fn(mockConn);
-    },
-    drain: async () => {},
-    clear: async () => {},
-  }),
-}));
+// Note: ClickHouse, DuckDB, Snowflake adapter mocks removed — those
+// adapters are now plugins. See plugins/{clickhouse,duckdb,snowflake}-datasource/.
 
 // Cache-busting import to get a fresh module instance
 const connModPath = resolve(__dirname, "../connection.ts");
@@ -113,7 +51,6 @@ const ConnectionRegistry = connMod.ConnectionRegistry as typeof import("../conne
 const connections = connMod.connections as import("../connection").ConnectionRegistry;
 const getDB = connMod.getDB as typeof import("../connection").getDB;
 const detectDBType = connMod.detectDBType as typeof import("../connection").detectDBType;
-const rewriteClickHouseUrl = connMod.rewriteClickHouseUrl as typeof import("../connection").rewriteClickHouseUrl;
 
 // Import semantic module with cache-busting too
 const semModPath = resolve(__dirname, "../../semantic.ts");
@@ -129,9 +66,6 @@ describe("ConnectionRegistry", () => {
     connections._reset();
     delete process.env.ATLAS_DATASOURCE_URL;
     delete process.env.ATLAS_SCHEMA;
-    lastCreateClientOpts = null;
-    lastQueryOpts = null;
-    mockJsonResponse = { meta: [], data: [] };
   });
 
   afterEach(() => {
@@ -284,28 +218,10 @@ describe("ConnectionRegistry", () => {
       expect(connections.get("my")).toBeDefined();
     });
 
-    it("creates clickhouse connection for clickhouse:// URLs", () => {
-      connections.register("ch", {
-        url: "clickhouse://user:pass@localhost:8123/default",
-      });
-      const conn = connections.get("ch");
-      expect(conn).toBeDefined();
-      expect(conn.query).toBeFunction();
-      expect(conn.close).toBeFunction();
-    });
-
-    it("creates snowflake connection for snowflake:// URLs", () => {
-      connections.register("sf", {
-        url: "snowflake://user:pass@account123/mydb/myschema?warehouse=WH",
-      });
-      expect(connections.get("sf")).toBeDefined();
-    });
-
-    it("creates duckdb connection for duckdb:// URLs", () => {
-      connections.register("dk", {
-        url: "duckdb://:memory:",
-      });
-      expect(connections.get("dk")).toBeDefined();
+    it("throws for non-core adapter URLs with plugin migration hint", () => {
+      expect(() => connections.register("ch", { url: "clickhouse://user:pass@localhost:8123/default" })).toThrow("plugin");
+      expect(() => connections.register("sf", { url: "snowflake://user:pass@account123/mydb" })).toThrow("plugin");
+      expect(() => connections.register("dk", { url: "duckdb://:memory:" })).toThrow("plugin");
     });
 
     it("throws for unrecognized URL scheme", () => {
@@ -335,19 +251,10 @@ describe("ConnectionRegistry", () => {
       expect(connections.getDBType("my")).toBe("mysql");
     });
 
-    it("returns correct type for clickhouse connection", () => {
-      connections.register("ch", { url: "clickhouse://user:pass@localhost:8123/default" });
+    it("returns correct type for plugin-registered connection", async () => {
+      const conn = { async query() { return { columns: [], rows: [] }; }, async close() {} };
+      await connections.registerDirect("ch", conn, "clickhouse");
       expect(connections.getDBType("ch")).toBe("clickhouse");
-    });
-
-    it("returns correct type for snowflake connection", () => {
-      connections.register("sf", { url: "snowflake://user:pass@account123/mydb/myschema?warehouse=WH" });
-      expect(connections.getDBType("sf")).toBe("snowflake");
-    });
-
-    it("returns correct type for duckdb connection", () => {
-      connections.register("dk", { url: "duckdb://:memory:" });
-      expect(connections.getDBType("dk")).toBe("duckdb");
     });
 
     it("throws for unregistered connection ID", () => {
@@ -426,10 +333,6 @@ describe("ConnectionRegistry", () => {
   });
 
   describe("detectDBType", () => {
-    it("returns 'clickhouse' for clickhouse:// URLs", () => {
-      expect(detectDBType("clickhouse://user:pass@localhost:8123/default")).toBe("clickhouse");
-    });
-
     it("returns 'postgres' for postgresql:// URLs", () => {
       expect(detectDBType("postgresql://user:pass@localhost:5432/db")).toBe("postgres");
     });
@@ -438,112 +341,12 @@ describe("ConnectionRegistry", () => {
       expect(detectDBType("mysql://user:pass@localhost:3306/db")).toBe("mysql");
     });
 
-    it("returns 'duckdb' for duckdb:// URLs", () => {
-      expect(detectDBType("duckdb://:memory:")).toBe("duckdb");
+    it("throws for non-core URL schemes with plugin suggestion", () => {
+      expect(() => detectDBType("clickhouse://user:pass@localhost:8123/default")).toThrow("plugin");
     });
 
     it("throws for unsupported URL scheme", () => {
       expect(() => detectDBType("file:./test.db")).toThrow("Unsupported database URL");
-    });
-  });
-
-  describe("ClickHouse adapter", () => {
-    it("passes readonly: 1 and max_execution_time in query settings", async () => {
-      connections.register("ch", {
-        url: "clickhouse://user:pass@localhost:8123/default",
-      });
-      const conn = connections.get("ch");
-      await conn.query("SELECT 1", 30000);
-
-      expect(lastQueryOpts).toBeDefined();
-      const settings = (lastQueryOpts as Record<string, unknown>)
-        .clickhouse_settings as Record<string, unknown>;
-      expect(settings.readonly).toBe(1);
-      expect(settings.max_execution_time).toBe(Math.ceil(30000 / 1000));
-    });
-
-    it("computes max_execution_time correctly from timeout", async () => {
-      connections.register("ch", {
-        url: "clickhouse://user:pass@localhost:8123/default",
-      });
-      const conn = connections.get("ch");
-      // 7500ms → ceil(7.5) = 8 seconds
-      await conn.query("SELECT 1", 7500);
-
-      const settings = (lastQueryOpts as Record<string, unknown>)
-        .clickhouse_settings as Record<string, unknown>;
-      expect(settings.max_execution_time).toBe(8);
-    });
-
-    it("rewrites clickhouse:// URL to http:// for createClient", () => {
-      connections.register("ch", {
-        url: "clickhouse://user:pass@host:8123/db",
-      });
-
-      expect(lastCreateClientOpts).toBeDefined();
-      expect((lastCreateClientOpts as Record<string, unknown>).url).toBe(
-        "http://user:pass@host:8123/db"
-      );
-    });
-
-    it("rewrites clickhouses:// URL to https:// for createClient", () => {
-      connections.register("chs", {
-        url: "clickhouses://user:pass@host:8443/db",
-      });
-
-      expect(lastCreateClientOpts).toBeDefined();
-      expect((lastCreateClientOpts as Record<string, unknown>).url).toBe(
-        "https://user:pass@host:8443/db"
-      );
-    });
-
-    it("extracts columns and rows from ClickHouse JSON response", async () => {
-      mockJsonResponse = {
-        meta: [{ name: "id" }, { name: "name" }],
-        data: [{ id: 1, name: "test" }],
-      };
-
-      connections.register("ch", {
-        url: "clickhouse://user:pass@localhost:8123/default",
-      });
-      const conn = connections.get("ch");
-      const result = await conn.query("SELECT id, name FROM companies");
-
-      expect(result.columns).toEqual(["id", "name"]);
-      expect(result.rows).toEqual([{ id: 1, name: "test" }]);
-    });
-
-    it("describe() reports dbType as 'clickhouse' with description", () => {
-      connections.register("ch", {
-        url: "clickhouse://user:pass@localhost:8123/default",
-        description: "Analytics warehouse",
-      });
-
-      const meta = connections.describe();
-      const chMeta = meta.find((m) => m.id === "ch");
-      expect(chMeta).toBeDefined();
-      expect(chMeta!.dbType).toBe("clickhouse");
-      expect(chMeta!.description).toBe("Analytics warehouse");
-    });
-  });
-
-  describe("rewriteClickHouseUrl", () => {
-    it("rewrites clickhouse:// to http://", () => {
-      expect(rewriteClickHouseUrl("clickhouse://user:pass@host:8123/db")).toBe(
-        "http://user:pass@host:8123/db"
-      );
-    });
-
-    it("rewrites clickhouses:// to https://", () => {
-      expect(rewriteClickHouseUrl("clickhouses://user:pass@host:8443/db")).toBe(
-        "https://user:pass@host:8443/db"
-      );
-    });
-  });
-
-  describe("detectDBType — ClickHouse schemes", () => {
-    it("returns 'clickhouse' for clickhouses:// URLs", () => {
-      expect(detectDBType("clickhouses://user:pass@host:8443/db")).toBe("clickhouse");
     });
   });
 

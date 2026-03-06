@@ -94,29 +94,26 @@ health.get("/", async (c) => {
     // be configured via atlas.config.ts without ATLAS_DATASOURCE_URL).
     let dsLatencyMs: number | undefined;
     let dsProbeError: string | undefined;
-    const { connections: connRegistry2, detectDBType, getDB, resolveDatasourceUrl } = await import("@atlas/api/lib/db/connection");
+    const { connections: connRegistry2, getDB, resolveDatasourceUrl } = await import("@atlas/api/lib/db/connection");
     const hasDatasource = !!resolveDatasourceUrl() || connRegistry2.list().includes("default");
     if (hasDatasource) {
-      try {
-        const dbType = detectDBType();
-
-        if (dbType === "salesforce") {
-          const { getSalesforceSource, listSalesforceSources } = await import("@atlas/api/lib/db/salesforce");
-          const sourceId = listSalesforceSources()[0] ?? "default";
-          const start = performance.now();
-          await getSalesforceSource(sourceId).listObjects();
-          dsLatencyMs = Math.round(performance.now() - start);
-        } else {
+      // Plugin-managed connections (e.g. Salesforce) may not support SQL probes.
+      // Skip SELECT 1 for connections registered via registerDirect() with a custom validator.
+      const hasCustomValidator = connRegistry2.getValidator("default");
+      if (hasCustomValidator) {
+        dsLatencyMs = 0;
+      } else {
+        try {
           const start = performance.now();
           await getDB().query("SELECT 1", 5000);
           dsLatencyMs = Math.round(performance.now() - start);
+        } catch (err) {
+          log.error(
+            { err: err instanceof Error ? err : new Error(String(err)) },
+            "Health check datasource probe failed",
+          );
+          dsProbeError = "Datasource query failed";
         }
-      } catch (err) {
-        log.error(
-          { err: err instanceof Error ? err : new Error(String(err)) },
-          "Health check datasource probe failed",
-        );
-        dsProbeError = "Datasource query failed";
       }
     }
 

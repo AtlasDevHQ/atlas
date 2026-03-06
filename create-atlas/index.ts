@@ -71,25 +71,20 @@ function templateForPlatform(platform: Platform): Template {
 }
 
 function generateReadme(projectName: string, platform: Platform, dbChoice: string): string {
-  const deployBadge = (() => {
-    switch (platform) {
-      case "vercel":
-        return `[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2F<YOUR_ORG>%2F${projectName}&env=ATLAS_PROVIDER,ANTHROPIC_API_KEY,ATLAS_DATASOURCE_URL,DATABASE_URL&envDescription=Atlas%20environment%20variables&project-name=${projectName})`;
-      case "railway":
-        return `[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/template/atlas?referralCode=atlas)`;
-      case "render":
-        return `[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy)`;
-      case "docker":
-        return "";
-      case "other":
-        return "";
-    }
-  })();
+  const deployBadges: Record<Platform, string> = {
+    vercel: `[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?env=ATLAS_PROVIDER,ANTHROPIC_API_KEY,ATLAS_DATASOURCE_URL,DATABASE_URL&envDescription=Atlas%20environment%20variables&project-name=${projectName})`,
+    railway: `[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/template/atlas?referralCode=atlas)`,
+    render: `[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy)`,
+    docker: "",
+    other: "",
+  };
+  const deployBadge = deployBadges[platform];
 
-  const quickStart = (() => {
-    switch (platform) {
-      case "vercel":
-        return `## Quick Start
+  const localDesc = platform === "vercel"
+    ? "Open [http://localhost:3000](http://localhost:3000)."
+    : "API at [http://localhost:3000](http://localhost:3000).";
+
+  const localQuickStart = `## Quick Start
 
 1. **Install dependencies:**
    \`\`\`bash
@@ -108,9 +103,10 @@ function generateReadme(projectName: string, platform: Platform, dbChoice: strin
    \`\`\`bash
    bun run dev
    \`\`\`
-   Open [http://localhost:3000](http://localhost:3000).
+   ${localDesc}`;
 
-## Deploy to Vercel
+  const deploySections: Record<Platform, string> = {
+    vercel: `## Deploy to Vercel
 
 1. Push to GitHub:
    \`\`\`bash
@@ -124,31 +120,9 @@ function generateReadme(projectName: string, platform: Platform, dbChoice: strin
    - \`ATLAS_DATASOURCE_URL\` — Your analytics database (\`postgresql://...\`)
    - \`DATABASE_URL\` — Atlas internal Postgres (auth, audit)
 
-3. Deploy. Vercel auto-detects \`@vercel/sandbox\` for secure explore isolation.`;
+3. Deploy. Vercel auto-detects \`@vercel/sandbox\` for secure explore isolation.`,
 
-      case "railway":
-        return `## Quick Start
-
-1. **Install dependencies:**
-   \`\`\`bash
-   bun install
-   \`\`\`
-
-2. **Configure environment:** Edit \`.env\` with your API key and database URL.
-
-3. **Generate semantic layer:**
-   \`\`\`bash
-   bun run atlas -- init          # From your database
-   bun run atlas -- init --demo   # Or load demo data
-   \`\`\`
-
-4. **Run locally:**
-   \`\`\`bash
-   bun run dev
-   \`\`\`
-   API at [http://localhost:3000](http://localhost:3000).
-
-## Deploy to Railway
+    railway: `## Deploy to Railway
 
 1. Push to GitHub:
    \`\`\`bash
@@ -172,31 +146,9 @@ function generateReadme(projectName: string, platform: Platform, dbChoice: strin
    \`\`\`
    Set \`SIDECAR_AUTH_TOKEN\` on the sidecar service too.
 
-5. Deploy. Railway builds from the Dockerfile and runs health checks automatically.`;
+5. Deploy. Railway builds from the Dockerfile and runs health checks automatically.`,
 
-      case "render":
-        return `## Quick Start
-
-1. **Install dependencies:**
-   \`\`\`bash
-   bun install
-   \`\`\`
-
-2. **Configure environment:** Edit \`.env\` with your API key and database URL.
-
-3. **Generate semantic layer:**
-   \`\`\`bash
-   bun run atlas -- init          # From your database
-   bun run atlas -- init --demo   # Or load demo data
-   \`\`\`
-
-4. **Run locally:**
-   \`\`\`bash
-   bun run dev
-   \`\`\`
-   API at [http://localhost:3000](http://localhost:3000).
-
-## Deploy to Render
+    render: `## Deploy to Render
 
 1. Push to GitHub:
    \`\`\`bash
@@ -215,31 +167,9 @@ function generateReadme(projectName: string, platform: Platform, dbChoice: strin
    - \`ANTHROPIC_API_KEY\` — Your API key
    - \`SIDECAR_AUTH_TOKEN\` — Shared secret (same on both services)
 
-5. After deploy, update \`ATLAS_SANDBOX_URL\` on the web service with the sidecar's private URL.`;
+5. After deploy, update \`ATLAS_SANDBOX_URL\` on the web service with the sidecar's private URL.`,
 
-      case "docker":
-        return `## Quick Start
-
-1. **Install dependencies:**
-   \`\`\`bash
-   bun install
-   \`\`\`
-
-2. **Configure environment:** Edit \`.env\` with your API key and database URL.
-
-3. **Generate semantic layer:**
-   \`\`\`bash
-   bun run atlas -- init          # From your database
-   bun run atlas -- init --demo   # Or load demo data
-   \`\`\`
-
-4. **Run locally:**
-   \`\`\`bash
-   bun run dev
-   \`\`\`
-   API at [http://localhost:3000](http://localhost:3000).
-
-## Deploy with Docker
+    docker: `## Deploy with Docker
 
 1. Build the image (includes nsjail for explore isolation):
    \`\`\`bash
@@ -258,49 +188,28 @@ function generateReadme(projectName: string, platform: Platform, dbChoice: strin
 3. To build without nsjail (smaller image, dev only):
    \`\`\`bash
    docker build --build-arg INSTALL_NSJAIL=false -t ${projectName} .
-   \`\`\``;
+   \`\`\``,
 
-      case "other":
-        return `## Quick Start
+    other: `## Deploy
 
-1. **Install dependencies:**
-   \`\`\`bash
-   bun install
-   \`\`\`
-
-2. **Configure environment:** Edit \`.env\` with your API key and database URL.
-
-3. **Generate semantic layer:**
-   \`\`\`bash
-   bun run atlas -- init          # From your database
-   bun run atlas -- init --demo   # Or load demo data
-   \`\`\`
-
-4. **Run locally:**
-   \`\`\`bash
-   bun run dev
-   \`\`\`
-   API at [http://localhost:3000](http://localhost:3000).
-
-## Deploy
-
-Build and deploy the Docker image to your platform of choice. See \`docs/deploy.md\` for detailed guides.`;
-    }
-  })();
+Build and deploy the Docker image to your platform of choice. See \`docs/deploy.md\` for detailed guides.`,
+  };
 
   const dbNote = dbChoice === "mysql"
     ? "This project is configured for **MySQL**."
     : "This project is configured for **PostgreSQL**.";
 
+  const badgeLine = deployBadge ? `${deployBadge}\n\n` : "";
+
   return `# ${projectName}
 
 A text-to-SQL data analyst agent powered by [Atlas](https://useatlas.dev).
 
-${deployBadge}
+${badgeLine}${dbNote} Ask natural-language questions, and the agent explores a semantic layer, writes validated SQL, and returns interpreted results.
 
-${dbNote} Ask natural-language questions, and the agent explores a semantic layer, writes validated SQL, and returns interpreted results.
+${localQuickStart}
 
-${quickStart}
+${deploySections[platform]}
 
 ## Project Structure
 
@@ -350,7 +259,13 @@ See \`docs/deploy.md\` for the full variable reference.
 
 // Parse --platform / --preset flag (--preset is an alias)
 let platformFlag: Platform | undefined;
-const platformIdx = Math.max(args.indexOf("--platform"), args.indexOf("--preset"));
+const platformArgIdx = args.indexOf("--platform");
+const presetArgIdx = args.indexOf("--preset");
+if (platformArgIdx !== -1 && presetArgIdx !== -1) {
+  console.error("Cannot use both --platform and --preset. They are aliases — pick one.");
+  process.exit(1);
+}
+const platformIdx = Math.max(platformArgIdx, presetArgIdx);
 if (platformIdx !== -1) {
   const val = args[platformIdx + 1];
   if (!val || val.startsWith("-")) {

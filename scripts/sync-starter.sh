@@ -8,7 +8,7 @@ set -euo pipefail
 # Snowflake, DuckDB, Salesforce), scheduler, and admin UI.
 #
 # Usage: scripts/sync-starter.sh [output-dir]
-#   output-dir defaults to /tmp/atlas-starter-sync
+#   output-dir  defaults to /tmp/atlas-starter-sync
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$SCRIPT_DIR/.."
@@ -433,3 +433,4 @@ echo ":: Sync output ready at $OUTPUT"
 echo ":: Files that should be overlaid from atlas-starter (NOT generated):"
 echo "::   scripts/seed-demo.ts, scripts/migrate.ts, scripts/setup-demo.sh"
 echo "::   vercel.json, README.md, .env.example, .gitignore, semantic/"
+

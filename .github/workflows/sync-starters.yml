@@ -34,6 +34,9 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Install create-atlas dependencies
+        run: cd create-atlas && bun install --frozen-lockfile
+
       - name: Prepare templates
         run: SKIP_SYNCPACK=1 bash create-atlas/scripts/prepare-templates.sh
 

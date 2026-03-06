@@ -143,20 +143,19 @@ jobs:
               --body "Updated from monorepo commit [\`$SHORT_SHA\`](https://github.com/AtlasDevHQ/atlas/commit/$MONOREPO_SHA)."
           else
             echo ":: Creating new PR"
+            PR_BODY="Automated sync from [AtlasDevHQ/atlas](https://github.com/AtlasDevHQ/atlas) monorepo.
+
+          **Source commit:** [\`$SHORT_SHA\`](https://github.com/AtlasDevHQ/atlas/commit/$MONOREPO_SHA)
+
+          Please review the diff carefully — automated transforms strip heavy DB adapters, scheduler, and admin UI from the monorepo source. Check for:
+          - Orphaned imports or references to removed modules
+          - Connection.ts correctness (only PostgreSQL + MySQL should remain)
+          - No scheduler or Salesforce references leaked through"
+
             gh pr create \
               --repo AtlasDevHQ/atlas-starter \
               --head "$SYNC_BRANCH" \
               --base main \
               --title "sync: update from monorepo" \
-              --body "$(cat <<EOF
-Automated sync from [AtlasDevHQ/atlas](https://github.com/AtlasDevHQ/atlas) monorepo.
-
-**Source commit:** [\`$SHORT_SHA\`](https://github.com/AtlasDevHQ/atlas/commit/$MONOREPO_SHA)
-
-Please review the diff carefully — automated transforms strip heavy DB adapters, scheduler, and admin UI from the monorepo source. Check for:
-- Orphaned imports or references to removed modules
-- Connection.ts correctness (only PostgreSQL + MySQL should remain)
-- No scheduler or Salesforce references leaked through
-EOF
-)"
+              --body "$PR_BODY"
           fi

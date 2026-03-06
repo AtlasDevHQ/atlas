@@ -486,6 +486,14 @@ function createConnection(dbType: DBType, config: ConnectionConfig): DBConnectio
 
 // --- Connection Registry ---
 
+/** Optional plugin metadata for parser dialect and forbidden patterns. */
+export interface ConnectionPluginMeta {
+  /** node-sql-parser dialect string (e.g. "PostgresQL", "BigQuery"). */
+  parserDialect?: string;
+  /** Additional regex patterns to block beyond the base DML/DDL guard. */
+  forbiddenPatterns?: RegExp[];
+}
+
 interface RegistryEntry {
   conn: DBConnection;
   dbType: DBType;
@@ -498,6 +506,8 @@ interface RegistryEntry {
   firstFailureAt: number | null;
   /** Custom query validator (mirrors QueryValidationResult from plugin-sdk). */
   validate?: (query: string) => { valid: boolean; reason?: string };
+  /** Plugin-provided metadata for SQL validation. */
+  pluginMeta?: ConnectionPluginMeta;
 }
 
 /**
@@ -586,6 +596,7 @@ export class ConnectionRegistry {
     dbType: DBType,
     description?: string,
     validate?: (query: string) => { valid: boolean; reason?: string },
+    meta?: ConnectionPluginMeta,
   ): void {
     const existing = this.entries.get(id);
     this.entries.set(id, {
@@ -598,6 +609,7 @@ export class ConnectionRegistry {
       lastHealth: null,
       firstFailureAt: null,
       validate,
+      pluginMeta: meta,
     });
     if (existing) {
       existing.conn.close().catch((err) => {
@@ -631,6 +643,16 @@ export class ConnectionRegistry {
   /** Return the custom query validator for a connection, if one was registered. Callers must verify connection existence first. */
   getValidator(id: string): ((query: string) => { valid: boolean; reason?: string }) | undefined {
     return this.entries.get(id)?.validate;
+  }
+
+  /** Return the plugin-provided parser dialect for a connection, if any. */
+  getParserDialect(id: string): string | undefined {
+    return this.entries.get(id)?.pluginMeta?.parserDialect;
+  }
+
+  /** Return plugin-provided forbidden patterns for a connection. Empty array if none. */
+  getForbiddenPatterns(id: string): RegExp[] {
+    return this.entries.get(id)?.pluginMeta?.forbiddenPatterns ?? [];
   }
 
   getDefault(): DBConnection {

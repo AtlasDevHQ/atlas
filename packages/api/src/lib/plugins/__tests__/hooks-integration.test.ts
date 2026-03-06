@@ -35,6 +35,8 @@ mock.module("@atlas/api/lib/db/connection", () => ({
     getDBType: () => "postgres",
     getTargetHost: () => "localhost",
     getValidator: () => undefined,
+    getParserDialect: () => undefined,
+    getForbiddenPatterns: () => [],
     list: () => ["default"],
   },
   detectDBType: () => "postgres",

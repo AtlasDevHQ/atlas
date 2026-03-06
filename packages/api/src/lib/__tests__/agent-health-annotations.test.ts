@@ -32,6 +32,8 @@ mock.module("@atlas/api/lib/db/connection", () => ({
       return entry?.dbType ?? ("postgres" as const);
     },
     getValidator: () => undefined,
+    getParserDialect: () => undefined,
+    getForbiddenPatterns: () => [],
     list: () => mockEntries.map((e) => e.id),
     describe: () =>
       mockEntries.map((e) => ({

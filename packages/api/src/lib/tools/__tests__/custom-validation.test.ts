@@ -72,6 +72,8 @@ mock.module("@atlas/api/lib/db/connection", () => ({
     getTargetHost: () => "localhost",
     list: () => ["default", "salesforce-plugin"],
     getValidator: (id: string) => validatorMap.get(id),
+    getParserDialect: () => undefined,
+    getForbiddenPatterns: () => [],
   },
   detectDBType: () => "postgres",
 }));

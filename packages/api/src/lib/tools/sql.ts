@@ -87,11 +87,20 @@ const DUCKDB_FORBIDDEN_PATTERNS = [
 
 /**
  * Map DBType to node-sql-parser dialect string.
- * ClickHouse and DuckDB use PostgreSQL mode (closest match for SELECT syntax).
- * Snowflake uses "Snowflake" mode (alpha in node-sql-parser v5+).
+ *
+ * When a connectionId is provided, plugin-registered metadata is checked first.
+ * Falls back to the hardcoded switch for known types, and defaults to
+ * "PostgresQL" for unknown/custom dbType strings (plugin escape hatch).
  */
-export function parserDatabase(dbType: DBType): string {
-  switch (dbType) {
+export function parserDatabase(dbType: DBType | string, connectionId?: string): string {
+  // 1. Plugin metadata takes precedence
+  if (connectionId) {
+    const pluginDialect = connections.getParserDialect(connectionId);
+    if (pluginDialect) return pluginDialect;
+  }
+
+  // 2. Hardcoded switch for known types (exhaustive for DBType union)
+  switch (dbType as DBType) {
     case "postgres": return "PostgresQL";
     case "mysql": return "MySQL";
     // node-sql-parser v5 has no ClickHouse dialect. PostgreSQL mode is the
@@ -106,21 +115,40 @@ export function parserDatabase(dbType: DBType): string {
         "Salesforce uses SOQL, not SQL. Use the querySalesforce tool instead of executeSQL.",
       );
     default: {
-      const _exhaustive: never = dbType;
-      throw new Error(`Unknown database type: ${_exhaustive}`);
+      // For known DBType values, the compiler ensures exhaustiveness above.
+      // Unknown strings (plugin escape hatch via `string & {}`) fall through
+      // to PostgreSQL mode as a safe default.
+      return "PostgresQL";
     }
   }
 }
 
-function getExtraPatterns(dbType: DBType): RegExp[] {
-  switch (dbType) {
+/**
+ * Get extra forbidden patterns for a connection.
+ *
+ * When a connectionId is provided, plugin-registered patterns are checked first.
+ * Falls back to the hardcoded arrays for known types, and returns an empty
+ * array for unknown/custom dbType strings.
+ */
+function getExtraPatterns(dbType: DBType | string, connectionId?: string): RegExp[] {
+  // 1. Plugin metadata takes precedence
+  if (connectionId) {
+    const pluginPatterns = connections.getForbiddenPatterns(connectionId);
+    if (pluginPatterns.length > 0) return pluginPatterns;
+  }
+
+  // 2. Hardcoded switch for known types (exhaustive for DBType union)
+  switch (dbType as DBType) {
     case "postgres": return [];
     case "mysql": return MYSQL_FORBIDDEN_PATTERNS;
     case "clickhouse": return CLICKHOUSE_FORBIDDEN_PATTERNS;
     case "snowflake": return SNOWFLAKE_FORBIDDEN_PATTERNS;
     case "duckdb": return DUCKDB_FORBIDDEN_PATTERNS;
     case "salesforce": return []; // Salesforce is redirected before reaching here
-    default: { const _exhaustive: never = dbType; throw new Error(`Unknown database type: ${_exhaustive}`); }
+    default: {
+      // Unknown strings (plugin escape hatch) — no extra patterns
+      return [];
+    }
   }
 }
 
@@ -128,7 +156,7 @@ export function validateSQL(sql: string, connectionId?: string): { valid: boolea
   // Resolve DB type for this connection.
   // When an explicit connectionId is given but not found, return a validation
   // error instead of silently falling back — wrong parser mode is a security risk.
-  let dbType: DBType;
+  let dbType: DBType | string;
   if (connectionId) {
     try {
       dbType = connections.getDBType(connectionId);
@@ -158,7 +186,7 @@ export function validateSQL(sql: string, connectionId?: string): { valid: boolea
   }
 
   // 1. Regex guard against mutation keywords
-  const extraPatterns = getExtraPatterns(dbType);
+  const extraPatterns = getExtraPatterns(dbType, connectionId);
   const patterns = [...FORBIDDEN_PATTERNS, ...extraPatterns];
   for (const pattern of patterns) {
     if (pattern.test(trimmed)) {
@@ -177,7 +205,7 @@ export function validateSQL(sql: string, connectionId?: string): { valid: boolea
   // attempt. The agent can always reformulate into standard SQL that parses.
   const cteNames = new Set<string>();
   try {
-    const ast = parser.astify(trimmed, { database: parserDatabase(dbType) });
+    const ast = parser.astify(trimmed, { database: parserDatabase(dbType, connectionId) });
     const statements = Array.isArray(ast) ? ast : [ast];
 
     // Single-statement check — reject batched queries
@@ -218,7 +246,7 @@ export function validateSQL(sql: string, connectionId?: string): { valid: boolea
   // 3. Table whitelist check
   if (process.env.ATLAS_TABLE_WHITELIST !== "false") {
     try {
-      const tables = parser.tableList(trimmed, { database: parserDatabase(dbType) });
+      const tables = parser.tableList(trimmed, { database: parserDatabase(dbType, connectionId) });
       const allowed = getWhitelistedTables(connectionId);
 
       for (const ref of tables) {
@@ -515,7 +543,7 @@ Rules:
       // Extract tables from the (possibly plugin-mutated) SQL
       let queriedTables: Set<string>;
       try {
-        const dialect = parserDatabase(dbType);
+        const dialect = parserDatabase(dbType, connId);
         const tableRefs = parser.tableList(normalizedMutated, { database: dialect });
         queriedTables = new Set(
           tableRefs

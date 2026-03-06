@@ -1,0 +1,101 @@
+name: Sync Starters
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/api/src/**"
+      - "packages/web/src/ui/**"
+      - "create-atlas/**"
+      - "examples/**"
+      - "docs/guides/deploy.md"
+  workflow_dispatch:
+
+concurrency:
+  group: sync-starters
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  BUN_VERSION: "1.3.10"
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Prepare templates
+        run: SKIP_SYNCPACK=1 bash create-atlas/scripts/prepare-templates.sh
+
+      - name: Generate starters
+        run: bash create-atlas/scripts/generate-starters.sh /tmp/starters
+
+      - name: Sync starter repos
+        env:
+          GH_TOKEN: ${{ secrets.STARTER_SYNC_PAT }}
+        run: |
+          set -euo pipefail
+
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          PLATFORMS=("vercel" "railway" "render" "docker")
+          SHA="${{ github.sha }}"
+          SHORT_SHA="${SHA:0:7}"
+          FAILED=0
+
+          mkdir -p /tmp/repos
+
+          for platform in "${PLATFORMS[@]}"; do
+            repo="AtlasDevHQ/atlas-starter-${platform}"
+            starter_dir="/tmp/starters/atlas-starter-${platform}"
+            clone_dir="/tmp/repos/atlas-starter-${platform}"
+
+            echo "--- Syncing ${repo} ---"
+
+            # Clone the starter repo (mask the URL to avoid leaking the token)
+            if ! git clone "https://x-access-token:${GH_TOKEN}@github.com/${repo}.git" "$clone_dir" 2>/dev/null; then
+              echo "  WARN: Could not clone ${repo} — skipping (repo may not exist yet)"
+              continue
+            fi
+
+            # Remove all tracked files (keep .git)
+            cd "$clone_dir"
+            git rm -rf --quiet . 2>/dev/null || true
+            git clean -fdx --quiet 2>/dev/null || true
+
+            # Copy generated starter contents
+            cp -r "$starter_dir"/. "$clone_dir"/
+
+            # Check for changes
+            git add -A
+            if git diff --cached --quiet; then
+              echo "  No changes — skipping"
+            else
+              git commit -m "sync: update from atlas monorepo (${SHORT_SHA})" \
+                -m "Source: https://github.com/AtlasDevHQ/atlas/commit/${SHA}"
+              if git push origin main; then
+                echo "  Pushed updates"
+              else
+                echo "  ERROR: Failed to push to ${repo}"
+                FAILED=1
+              fi
+            fi
+
+            cd /tmp
+          done
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo "One or more starter repos failed to sync"
+            exit 1
+          fi

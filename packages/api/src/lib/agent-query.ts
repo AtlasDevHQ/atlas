@@ -30,9 +30,8 @@ export interface AgentQueryResult {
 /**
  * Run the Atlas agent on a single question and return structured results.
  *
- * Creates a UIMessage from the question, optionally loads Salesforce tools,
- * invokes the agent loop, and extracts SQL queries, data, and the final
- * answer from tool results.
+ * Creates a UIMessage from the question, invokes the agent loop, and
+ * extracts SQL queries, data, and the final answer from tool results.
  */
 export async function executeAgentQuery(
   question: string,
@@ -57,32 +56,15 @@ export async function executeAgentQuery(
       },
     ];
 
-    // Optionally include Salesforce tools and actions
+    // Optionally include action tools
     let toolRegistry;
     const includeActions = process.env.ATLAS_ACTIONS_ENABLED === "true";
-    let includeSalesforce = false;
-    try {
-      const { listSalesforceSources } = await import(
-        "@atlas/api/lib/db/salesforce"
-      );
-      includeSalesforce = listSalesforceSources().length > 0;
-    } catch (err: unknown) {
-      const code = (err as { code?: string })?.code;
-      const isModuleNotFound =
-        code === "MODULE_NOT_FOUND" || code === "ERR_MODULE_NOT_FOUND";
-      if (!isModuleNotFound) {
-        log.error(
-          { err: err instanceof Error ? err : new Error(String(err)) },
-          "Failed to initialize Salesforce tool registry — falling back to default tools",
-        );
-      }
-    }
-    if (includeSalesforce || includeActions) {
+    if (includeActions) {
       try {
         const { buildRegistry } = await import(
           "@atlas/api/lib/tools/registry"
         );
-        toolRegistry = await buildRegistry({ includeSalesforce, includeActions });
+        toolRegistry = await buildRegistry({ includeActions });
       } catch (err) {
         log.error(
           { err: err instanceof Error ? err : new Error(String(err)) },

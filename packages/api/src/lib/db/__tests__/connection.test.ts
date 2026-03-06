@@ -120,12 +120,11 @@ describe("detectDBType", () => {
     expect(() => detectDBType("")).toThrow("No database URL provided");
   });
 
-  it("detects duckdb:// as duckdb", () => {
-    expect(detectDBType("duckdb://:memory:")).toBe("duckdb");
-  });
-
-  it("detects duckdb://path as duckdb", () => {
-    expect(detectDBType("duckdb:///tmp/test.duckdb")).toBe("duckdb");
+  it("throws for non-core adapter URLs with plugin migration hint", () => {
+    expect(() => detectDBType("duckdb://:memory:")).toThrow("now a plugin");
+    expect(() => detectDBType("clickhouse://localhost:8123/default")).toThrow("now a plugin");
+    expect(() => detectDBType("snowflake://user:pass@account/db")).toThrow("now a plugin");
+    expect(() => detectDBType("salesforce://user:pass@login.salesforce.com")).toThrow("now a plugin");
   });
 
   it("unrecognized URL throws an error", () => {

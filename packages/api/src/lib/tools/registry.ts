@@ -136,15 +136,6 @@ Use the executeSQL tool to query the database:
 - Include appropriate filters, groupings, and ordering
 - If a query fails, read the error, fix the SQL, and retry (max 2 retries, never retry the same SQL)`;
 
-const QUERY_SALESFORCE_DESCRIPTION = `### 3b. Query Salesforce (SOQL)
-Use the querySalesforce tool to query Salesforce objects:
-- SOQL uses SELECT ... FROM ObjectName syntax (no schema.table)
-- Use relationship queries for related objects (e.g. SELECT Account.Name FROM Contact)
-- SOQL does NOT support JOINs — use parent-to-child or child-to-parent relationship queries
-- Date literals: TODAY, YESTERDAY, LAST_WEEK, THIS_MONTH, LAST_N_DAYS:30
-- Use exact field API names from the entity schemas — never guess
-- If a query fails, read the error, fix the SOQL, and retry (max 2 retries)`;
-
 // --- Default registry ---
 
 const defaultRegistry = new ToolRegistry();
@@ -164,15 +155,12 @@ defaultRegistry.register({
 defaultRegistry.freeze();
 
 /**
- * Build a dynamic ToolRegistry with optional Salesforce and action support.
+ * Build a dynamic ToolRegistry with optional action support.
  *
- * When `includeSalesforce` is true, the `querySalesforce` tool is added
- * alongside the core tools.
  * When `includeActions` is true, the action tools (createJiraTicket,
- * sendEmailReport) are added.
+ * sendEmailReport) are added alongside the core tools.
  */
 export async function buildRegistry(options?: {
-  includeSalesforce?: boolean;
   includeActions?: boolean;
 }): Promise<ToolRegistry> {
   const registry = new ToolRegistry();
@@ -188,16 +176,6 @@ export async function buildRegistry(options?: {
     description: EXECUTE_SQL_DESCRIPTION,
     tool: executeSQL,
   });
-
-  if (options?.includeSalesforce) {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { querySalesforce } = require("./salesforce");
-    registry.register({
-      name: "querySalesforce",
-      description: QUERY_SALESFORCE_DESCRIPTION,
-      tool: querySalesforce,
-    });
-  }
 
   if (options?.includeActions) {
     try {

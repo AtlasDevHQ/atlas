@@ -197,47 +197,6 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
           }
         }
       }
-    } else if (dbType === "clickhouse") {
-      // ClickHouse: connectivity test via SELECT 1
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let createClient: any = null;
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        ({ createClient } = require("@clickhouse/client"));
-      } catch {
-        errors.push({
-          code: "DB_UNREACHABLE",
-          message: "ClickHouse support requires the @clickhouse/client package. Install it with: bun add @clickhouse/client",
-        });
-      }
-
-      if (createClient) {
-        const { rewriteClickHouseUrl } = await import("./db/connection");
-        const httpUrl = rewriteClickHouseUrl(resolvedDatasourceUrl);
-        const client = createClient({ url: httpUrl });
-        try {
-          await client.query({ query: "SELECT 1", format: "JSON" });
-        } catch (err) {
-          const detail = err instanceof Error ? err.message : "";
-          log.error({ err: detail }, "ClickHouse connection check failed");
-
-          let message = "Cannot connect to ClickHouse. Check that the server is running and the connection string is correct.";
-
-          if (/ECONNREFUSED/i.test(detail)) {
-            message += " The connection was refused — is the ClickHouse server running?";
-          } else if (/Authentication/i.test(detail) || /AUTHENTICATION_FAILED/i.test(detail)) {
-            message += " Authentication failed — check your username and password.";
-          } else if (/timeout/i.test(detail)) {
-            message += " The connection timed out — check network/firewall settings.";
-          }
-
-          errors.push({ code: "DB_UNREACHABLE", message });
-        } finally {
-          await client.close().catch((err: unknown) => {
-            log.warn({ err: err instanceof Error ? err.message : String(err) }, "ClickHouse client cleanup warning");
-          });
-        }
-      }
     } else if (dbType === "postgres") {
       // PostgreSQL: existing URL validation + connection test + schema validation
       const atlasSchema = process.env.ATLAS_SCHEMA;
@@ -311,47 +270,9 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
           });
         }
       }
-    } else if (dbType === "salesforce") {
-      // Salesforce: test login + listObjects
-      try {
-        const { parseSalesforceURL, createSalesforceDataSource } = await import("./db/salesforce");
-        const config = parseSalesforceURL(resolvedDatasourceUrl);
-        const source = createSalesforceDataSource(config);
-        try {
-          await source.listObjects();
-        } finally {
-          await source.close().catch((err: unknown) => {
-            log.warn({ err: err instanceof Error ? err.message : String(err) }, "Salesforce cleanup warning");
-          });
-        }
-      } catch (err) {
-        const detail = err instanceof Error ? err.message : "";
-        log.error({ err: detail }, "Salesforce connection check failed");
-
-        let message = "Cannot connect to Salesforce. Check that your credentials and connection string are correct.";
-
-        if (/LOGIN_MUST_USE_SECURITY_TOKEN/i.test(detail)) {
-          message += " A security token is required — add ?token=YOUR_TOKEN to the connection URL.";
-        } else if (/INVALID_LOGIN/i.test(detail)) {
-          message += " Authentication failed — check your username and password.";
-        } else if (/timeout/i.test(detail)) {
-          message += " The connection timed out — check network/firewall settings.";
-        }
-
-        errors.push({ code: "DB_UNREACHABLE", message });
-      }
     }
-
-    // Snowflake: warn that SQL validation is the sole read-only enforcement layer
-    if (dbType === "snowflake") {
-      const msg =
-        "Snowflake connections rely solely on SQL validation for read-only enforcement (no session-level read-only mode). " +
-        "Configure the Snowflake role with SELECT-only privileges for defense-in-depth.";
-      if (!_startupWarnings.includes(msg)) {
-        _startupWarnings.push(msg);
-      }
-      log.warn(msg);
-    }
+    // Note: non-core database types (ClickHouse, Snowflake, DuckDB, Salesforce)
+    // are validated by their respective datasource plugins during initialize().
   }
 
   // 5. Internal database (DATABASE_URL) — optional, for auth/audit/settings

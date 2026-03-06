@@ -84,15 +84,11 @@ This database uses MySQL. Key differences from PostgreSQL:
 - \`LIMIT offset, count\` or \`LIMIT count OFFSET offset\` — both forms work
 - \`COALESCE\`, \`CASE\`, \`NULLIF\`, \`COUNT\`, \`SUM\`, \`AVG\`, \`MIN\`, \`MAX\` work identically`;
 
-// Display names for known DB types. No exhaustive check — new types added
-// by plugins fall through to the capitalize fallback intentionally.
+// Display names for core DB types. Plugin-registered types fall through
+// to the capitalize fallback intentionally.
 const DIALECT_DISPLAY_NAMES: Record<string, string> = {
   postgres: "PostgreSQL",
   mysql: "MySQL",
-  clickhouse: "ClickHouse",
-  snowflake: "Snowflake",
-  duckdb: "DuckDB",
-  salesforce: "Salesforce (SOQL)",
 };
 
 function dialectName(dbType: DBType): string {

@@ -34,9 +34,8 @@ const parser = new Parser();
 /**
  * Strip SQL comments for regex guard testing.
  *
- * Block comments (`/* ... *​/`) and line comments (`-- ...`) are removed
- * so that anchored patterns like `^\s*(KILL)\b` cannot be bypassed with
- * a leading comment (e.g. `/* bypass *​/ KILL QUERY ...`).
+ * Block comments and line comments are removed so that anchored patterns
+ * like `^\s*(KILL)\b` cannot be bypassed with a leading comment.
  *
  * Only used for regex testing — the original SQL is passed to the AST parser
  * unchanged so that comment-aware parsing still works correctly.
@@ -66,48 +65,6 @@ const MYSQL_FORBIDDEN_PATTERNS = [
   /\b(SHOW|DESCRIBE|EXPLAIN|USE)\b/i,
 ];
 
-// ClickHouse-specific patterns — admin/mutation commands unique to ClickHouse
-// Statement-level commands are anchored to start-of-string to avoid false
-// positives on data values (e.g. WHERE action = 'kill', FROM system.query_log).
-export const CLICKHOUSE_FORBIDDEN_PATTERNS = [
-  /^\s*(SYSTEM)\b/i,
-  /^\s*(KILL)\b/i,
-  /^\s*(ATTACH|DETACH)\b/i,
-  /^\s*(RENAME)\b/i,
-  /^\s*(EXCHANGE)\b/i,
-  /\b(SHOW|DESCRIBE|EXPLAIN|USE)\b/i,
-];
-
-// Snowflake-specific patterns — only applied when dbType === "snowflake"
-// Stage operations (PUT/GET/LIST/REMOVE/RM), MERGE, and metadata commands
-// are Snowflake DML/DDL not covered by the base patterns.
-// All patterns are anchored to start-of-statement (^\s*) to avoid false
-// positives on data values in WHERE clauses and string literals
-// (e.g. WHERE title = 'Please explain the billing issue').
-export const SNOWFLAKE_FORBIDDEN_PATTERNS = [
-  /^\s*(PUT|GET|LIST|REMOVE|RM)\b/i,
-  /^\s*(MERGE)\b/i,
-  /^\s*(SHOW|DESCRIBE|DESC|EXPLAIN|USE)\b/i,
-];
-
-// DuckDB-specific patterns — block PRAGMA, ATTACH, DETACH, INSTALL,
-// EXPORT, IMPORT, CHECKPOINT, file-reading functions, and SET.
-// Statement-level commands are anchored to start-of-string to avoid false
-// positives on data values. Note: LOAD is already blocked by base FORBIDDEN_PATTERNS.
-export const DUCKDB_FORBIDDEN_PATTERNS = [
-  /^\s*(PRAGMA)\b/i,
-  /^\s*(ATTACH|DETACH)\b/i,
-  /^\s*(INSTALL)\b/i,
-  /^\s*(EXPORT|IMPORT)\b/i,
-  /^\s*(CHECKPOINT)\b/i,
-  /\b(DESCRIBE|EXPLAIN|SHOW)\b/i,
-  // Block file-reading table functions that can access the host filesystem
-  /\b(read_csv_auto|read_csv|read_parquet|read_json|read_json_auto|read_text)\b/i,
-  /\b(parquet_scan|csv_scan|json_scan)\b/i,
-  // Block SET for configuration variables (DuckDB has no session-level read-only guard for :memory:)
-  /^\s*SET\b/i,
-];
-
 /**
  * Map DBType to node-sql-parser dialect string.
  *
@@ -122,27 +79,14 @@ export function parserDatabase(dbType: DBType | string, connectionId?: string): 
     if (pluginDialect) return pluginDialect;
   }
 
-  // 2. Hardcoded switch for known types (exhaustive for DBType union)
-  switch (dbType as DBType) {
+  // 2. Core types + fallback for plugin-registered types
+  switch (dbType) {
     case "postgres": return "PostgresQL";
     case "mysql": return "MySQL";
-    // node-sql-parser v5 has no ClickHouse dialect. PostgreSQL mode is the
-    // closest match for ClickHouse SELECT syntax (CTEs, JOINs, subqueries).
-    case "clickhouse": return "PostgresQL";
-    case "snowflake": return "Snowflake";
-    // DuckDB's SQL dialect is PostgreSQL-compatible. PostgreSQL mode handles
-    // CTEs, JOINs, subqueries, window functions, and standard SQL syntax.
-    case "duckdb": return "PostgresQL";
-    case "salesforce":
-      throw new Error(
-        "Salesforce uses SOQL, not SQL. Use the querySalesforce tool instead of executeSQL.",
-      );
-    default: {
-      // For known DBType values, the compiler ensures exhaustiveness above.
-      // Unknown strings (plugin escape hatch via `string & {}`) fall through
-      // to PostgreSQL mode as a safe default.
+    default:
+      // Unknown types (plugin-registered via `string & {}`) default to
+      // PostgreSQL mode as a safe fallback.
       return "PostgresQL";
-    }
   }
 }
 
@@ -160,18 +104,13 @@ function getExtraPatterns(dbType: DBType | string, connectionId?: string): RegEx
     if (pluginPatterns.length > 0) return pluginPatterns;
   }
 
-  // 2. Hardcoded switch for known types (exhaustive for DBType union)
-  switch (dbType as DBType) {
+  // 2. Core types + fallback for plugin-registered types
+  switch (dbType) {
     case "postgres": return [];
     case "mysql": return MYSQL_FORBIDDEN_PATTERNS;
-    case "clickhouse": return CLICKHOUSE_FORBIDDEN_PATTERNS;
-    case "snowflake": return SNOWFLAKE_FORBIDDEN_PATTERNS;
-    case "duckdb": return DUCKDB_FORBIDDEN_PATTERNS;
-    case "salesforce": return []; // Salesforce is redirected before reaching here
-    default: {
-      // Unknown strings (plugin escape hatch) — no extra patterns
+    default:
+      // Unknown types (plugin-registered) — no extra patterns from core
       return [];
-    }
   }
 }
 
@@ -190,16 +129,8 @@ export function validateSQL(sql: string, connectionId?: string): { valid: boolea
     try {
       dbType = detectDBType();
     } catch {
-      return { valid: false, error: "No valid datasource configured. Set ATLAS_DATASOURCE_URL to a PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, or Salesforce connection string." };
+      return { valid: false, error: "No valid datasource configured. Set ATLAS_DATASOURCE_URL to a PostgreSQL or MySQL connection string, or register a datasource plugin." };
     }
-  }
-
-  // Salesforce uses SOQL — redirect to the querySalesforce tool
-  if (dbType === "salesforce") {
-    return {
-      valid: false,
-      error: "This connection uses Salesforce (SOQL). Use the querySalesforce tool instead of executeSQL.",
-    };
   }
 
   // 0. Reject empty / whitespace-only input
@@ -259,14 +190,9 @@ export function validateSQL(sql: string, connectionId?: string): { valid: boolea
     }
   } catch (err) {
     const detail = err instanceof Error ? err.message : "";
-    const hint = dbType === "clickhouse"
-      ? " Note: ClickHouse-specific syntax (PREWHERE, LIMIT BY, arrayJoin) is not supported by the SQL validator. Use standard SQL equivalents."
-      : dbType === "duckdb"
-        ? " Note: DuckDB-specific syntax (QUALIFY, EXCLUDE, REPLACE, STRUCT literals) may not be supported by the SQL validator. Use standard SQL equivalents."
-        : "";
     return {
       valid: false,
-      error: `Query could not be parsed.${detail ? ` ${detail}.` : ""} Rewrite using standard SQL syntax.${hint}`,
+      error: `Query could not be parsed.${detail ? ` ${detail}.` : ""} Rewrite using standard SQL syntax.`,
     };
   }
 

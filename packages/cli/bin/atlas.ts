@@ -44,7 +44,22 @@ import * as path from "path";
 import * as yaml from "js-yaml";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
-import { detectDBType, type DBType } from "@atlas/api/lib/db/connection";
+import { type DBType } from "@atlas/api/lib/db/connection";
+
+/** CLI-local DB type detection — supports all URL schemes (core + plugin databases). */
+function detectDBType(url: string): DBType {
+  if (url.startsWith("postgresql://") || url.startsWith("postgres://")) return "postgres";
+  if (url.startsWith("mysql://") || url.startsWith("mysql2://")) return "mysql";
+  if (url.startsWith("clickhouse://") || url.startsWith("clickhouses://")) return "clickhouse";
+  if (url.startsWith("snowflake://")) return "snowflake";
+  if (url.startsWith("duckdb://")) return "duckdb";
+  if (url.startsWith("salesforce://")) return "salesforce";
+  const scheme = url.split("://")[0] || "(empty)";
+  throw new Error(
+    `Unsupported database URL scheme "${scheme}://". ` +
+    "Supported: postgresql://, mysql://, clickhouse://, snowflake://, duckdb://, salesforce://."
+  );
+}
 // Lazy-loaded to avoid requiring native bindings at type-check time
 async function loadDuckDB() {
   const { DuckDBInstance } = await import("@duckdb/node-api");
@@ -1051,7 +1066,7 @@ async function createSnowflakePool(connectionString: string, max = 1) {
   const snowflake = require("snowflake-sdk") as typeof import("snowflake-sdk");
   snowflake.configure({ logLevel: "ERROR" });
 
-  const { parseSnowflakeURL } = await import("@atlas/api/lib/db/connection");
+  const { parseSnowflakeURL } = await import("../../../plugins/snowflake-datasource/connection");
   const opts = parseSnowflakeURL(connectionString);
 
   const pool = snowflake.createPool(
@@ -1386,12 +1401,13 @@ function mapSalesforceFieldType(sfType: string): string {
 }
 
 export async function listSalesforceObjects(connectionString: string): Promise<DatabaseObject[]> {
-  const { parseSalesforceURL, createSalesforceDataSource } = await import("@atlas/api/lib/db/salesforce");
+  const { parseSalesforceURL, createSalesforceConnection } = await import("../../../plugins/salesforce-datasource/connection");
   const config = parseSalesforceURL(connectionString);
-  const source = createSalesforceDataSource(config);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const source: any = createSalesforceConnection(config);
   try {
     const objects = await source.listObjects();
-    return objects.map((obj) => ({
+    return objects.map((obj: { name: string }) => ({
       name: obj.name,
       type: "table" as const,
     }));
@@ -1405,9 +1421,10 @@ export async function profileSalesforce(
   filterTables?: string[],
   prefetchedObjects?: DatabaseObject[],
 ): Promise<TableProfile[]> {
-  const { parseSalesforceURL, createSalesforceDataSource } = await import("@atlas/api/lib/db/salesforce");
+  const { parseSalesforceURL, createSalesforceConnection } = await import("../../../plugins/salesforce-datasource/connection");
   const config = parseSalesforceURL(connectionString);
-  const source = createSalesforceDataSource(config);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const source: any = createSalesforceConnection(config);
 
   const profiles: TableProfile[] = [];
   const errors: { table: string; error: string }[] = [];
@@ -1418,7 +1435,7 @@ export async function profileSalesforce(
       allObjects = prefetchedObjects;
     } else {
       const objects = await source.listObjects();
-      allObjects = objects.map((obj) => ({
+      allObjects = objects.map((obj: { name: string }) => ({
         name: obj.name,
         type: "table" as const,
       }));
@@ -1452,7 +1469,8 @@ export async function profileSalesforce(
         const foreignKeys: ForeignKey[] = [];
         const primaryKeyColumns: string[] = [];
 
-        const columns: ColumnProfile[] = desc.fields.map((field) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const columns: ColumnProfile[] = desc.fields.map((field: any) => {
           const isPK = field.name === "Id";
           if (isPK) primaryKeyColumns.push(field.name);
 
@@ -1470,7 +1488,8 @@ export async function profileSalesforce(
 
           // For picklist fields, extract active values as sample_values
           const sampleValues = isEnumLike
-            ? field.picklistValues.filter((pv) => pv.active).map((pv) => pv.value)
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            ? field.picklistValues.filter((pv: any) => pv.active).map((pv: any) => pv.value)
             : [];
 
           return {
@@ -3905,9 +3924,10 @@ async function handleDiff(args: string[]): Promise<void> {
       }
     }
   } else if (dbType === "salesforce") {
-    const { parseSalesforceURL, createSalesforceDataSource } = await import("@atlas/api/lib/db/salesforce");
+    const { parseSalesforceURL, createSalesforceConnection } = await import("../../../plugins/salesforce-datasource/connection");
     const config = parseSalesforceURL(connStr);
-    const source = createSalesforceDataSource(config);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const source: any = createSalesforceConnection(config);
     try {
       const objects = await source.listObjects();
       console.log(`Connected: Salesforce (${objects.length} queryable objects)`);
@@ -3964,7 +3984,7 @@ async function handleDiff(args: string[]): Promise<void> {
         profiles = await profileSnowflake(connStr, filterTables);
         break;
       case "duckdb": {
-        const { parseDuckDBUrl } = await import("@atlas/api/lib/db/duckdb");
+        const { parseDuckDBUrl } = await import("../../../plugins/duckdb-datasource/connection");
         const duckConfig = parseDuckDBUrl(connStr);
         profiles = await profileDuckDB(duckConfig.path, filterTables);
         break;
@@ -3973,8 +3993,7 @@ async function handleDiff(args: string[]): Promise<void> {
         profiles = await profileSalesforce(connStr, filterTables);
         break;
       default: {
-        const _exhaustive: never = dbType;
-        throw new Error(`Unknown database type: ${_exhaustive}`);
+        throw new Error(`Unknown database type: ${dbType}`);
       }
     }
   } catch (err) {
@@ -4151,7 +4170,7 @@ async function profileDatasource(opts: ProfileDatasourceOpts): Promise<void> {
     }
   } else if (dbType === "duckdb") {
     try {
-      const { parseDuckDBUrl } = await import("@atlas/api/lib/db/duckdb");
+      const { parseDuckDBUrl } = await import("../../../plugins/duckdb-datasource/connection");
       const duckConfig = parseDuckDBUrl(connStr);
       const DuckDBInstance = await loadDuckDB();
       const testInstance = await DuckDBInstance.create(duckConfig.path, { access_mode: "READ_ONLY" });
@@ -4171,9 +4190,10 @@ async function profileDatasource(opts: ProfileDatasourceOpts): Promise<void> {
       process.exit(1);
     }
   } else if (dbType === "salesforce") {
-    const { parseSalesforceURL, createSalesforceDataSource } = await import("@atlas/api/lib/db/salesforce");
+    const { parseSalesforceURL, createSalesforceConnection } = await import("../../../plugins/salesforce-datasource/connection");
     const config = parseSalesforceURL(connStr);
-    const source = createSalesforceDataSource(config);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const source: any = createSalesforceConnection(config);
     try {
       const objects = await source.listObjects();
       console.log(`Connected: Salesforce (${objects.length} queryable objects)`);
@@ -4223,7 +4243,7 @@ async function profileDatasource(opts: ProfileDatasourceOpts): Promise<void> {
           allObjects = await listSnowflakeObjects(connStr);
           break;
         case "duckdb": {
-          const { parseDuckDBUrl } = await import("@atlas/api/lib/db/duckdb");
+          const { parseDuckDBUrl } = await import("../../../plugins/duckdb-datasource/connection");
           const duckConfig = parseDuckDBUrl(connStr);
           allObjects = await listDuckDBObjects(duckConfig.path);
           break;
@@ -4232,8 +4252,7 @@ async function profileDatasource(opts: ProfileDatasourceOpts): Promise<void> {
           allObjects = await listSalesforceObjects(connStr);
           break;
         default: {
-          const _exhaustive: never = dbType;
-          throw new Error(`Unknown database type: ${_exhaustive}`);
+          throw new Error(`Unknown database type: ${dbType}`);
         }
       }
     } catch (err) {
@@ -4293,7 +4312,7 @@ async function profileDatasource(opts: ProfileDatasourceOpts): Promise<void> {
       profiles = await profileSnowflake(connStr, selectedTables, prefetchedObjects);
       break;
     case "duckdb": {
-      const { parseDuckDBUrl } = await import("@atlas/api/lib/db/duckdb");
+      const { parseDuckDBUrl } = await import("../../../plugins/duckdb-datasource/connection");
       const duckConfig = parseDuckDBUrl(connStr);
       profiles = await profileDuckDB(duckConfig.path, selectedTables, prefetchedObjects);
       break;
@@ -4302,8 +4321,7 @@ async function profileDatasource(opts: ProfileDatasourceOpts): Promise<void> {
       profiles = await profileSalesforce(connStr, selectedTables, prefetchedObjects);
       break;
     default: {
-      const _exhaustive: never = dbType;
-      throw new Error(`Unknown database type: ${_exhaustive}`);
+      throw new Error(`Unknown database type: ${dbType}`);
     }
   }
 

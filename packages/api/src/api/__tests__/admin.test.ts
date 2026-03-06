@@ -163,8 +163,6 @@ mock.module("@atlas/api/lib/db/connection", () => ({
   },
   detectDBType: () => "postgres" as const,
   extractTargetHost: () => "localhost",
-  rewriteClickHouseUrl: (url: string) => url,
-  parseSnowflakeURL: () => ({}),
   ConnectionRegistry: class {},
 }));
 

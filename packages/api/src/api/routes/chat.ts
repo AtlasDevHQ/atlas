@@ -205,29 +205,13 @@ chat.post("/", async (c) => {
       }
 
       try {
-        // Build a dynamic registry when Salesforce sources or actions are present
+        // Build a dynamic registry when actions are enabled
         let toolRegistry;
         const includeActions = process.env.ATLAS_ACTIONS_ENABLED === "true";
-        let includeSalesforce = false;
-        try {
-          const { listSalesforceSources } = await import("@atlas/api/lib/db/salesforce");
-          includeSalesforce = listSalesforceSources().length > 0;
-        } catch (err) {
-          const isModuleNotFound =
-            err instanceof Error &&
-            (err.message.includes("Cannot find module") ||
-              err.message.includes("MODULE_NOT_FOUND"));
-          if (!isModuleNotFound) {
-            log.error(
-              { err: err instanceof Error ? err : new Error(String(err)) },
-              "Failed to initialize Salesforce tool registry — falling back to default tools",
-            );
-          }
-        }
-        if (includeSalesforce || includeActions) {
+        if (includeActions) {
           try {
             const { buildRegistry } = await import("@atlas/api/lib/tools/registry");
-            toolRegistry = await buildRegistry({ includeSalesforce, includeActions });
+            toolRegistry = await buildRegistry({ includeActions });
           } catch (err) {
             log.error(
               { err: err instanceof Error ? err : new Error(String(err)) },

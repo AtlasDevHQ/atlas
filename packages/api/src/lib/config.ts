@@ -48,9 +48,9 @@ const RateLimitConfigSchema = z.object({
 export type RateLimitConfig = z.infer<typeof RateLimitConfigSchema>;
 
 const DatasourceConfigSchema = z.object({
-  /** Database connection string (postgresql://, mysql://, clickhouse://, snowflake://, duckdb://, or salesforce://). */
+  /** Database connection string (postgresql:// or mysql:// for core; other schemes via plugins). */
   url: z.string().min(1, "Datasource URL must not be empty"),
-  /** PostgreSQL schema name (sets search_path). Ignored for MySQL, ClickHouse, Snowflake, DuckDB, and Salesforce. */
+  /** PostgreSQL schema name (sets search_path). Ignored for MySQL and plugin-managed connections. */
   schema: z.string().optional(),
   /** Human-readable description shown in the agent system prompt. */
   description: z.string().optional(),
@@ -575,44 +575,35 @@ export async function applyDatasources(
   }
 
   const connRegistry = registry ?? (await import("./db/connection")).connections;
-  const { detectDBType } = await import("./db/connection");
 
   connRegistry.setMaxTotalConnections(config.maxTotalConnections);
 
   for (const [id, ds] of Object.entries(config.datasources)) {
     try {
-      const dbType = detectDBType(ds.url);
-      if (dbType === "salesforce") {
-        log.info({ connectionId: id }, "Registering Salesforce datasource from config");
-        const { parseSalesforceURL, registerSalesforceSource } = await import("./db/salesforce");
-        const sfConfig = parseSalesforceURL(ds.url);
-        registerSalesforceSource(id, sfConfig);
-      } else {
-        log.info({ connectionId: id }, "Registering datasource from config");
-        connRegistry.register(id, {
-          url: ds.url,
-          schema: ds.schema,
-          description: ds.description,
-          maxConnections: ds.maxConnections,
-          idleTimeoutMs: ds.idleTimeoutMs,
-        });
+      log.info({ connectionId: id }, "Registering datasource from config");
+      connRegistry.register(id, {
+        url: ds.url,
+        schema: ds.schema,
+        description: ds.description,
+        maxConnections: ds.maxConnections,
+        idleTimeoutMs: ds.idleTimeoutMs,
+      });
 
-        // Fire initial health check — logs on failure but does not block startup.
-        // A degraded connection is still usable (the DB may recover).
-        connRegistry.healthCheck(id).then((result) => {
-          if (result.status !== "healthy") {
-            log.warn(
-              { connectionId: id, status: result.status, message: result.message },
-              "Datasource registered but initial health check failed — connection may be misconfigured",
-            );
-          }
-        }).catch((healthErr) => {
+      // Fire initial health check — logs on failure but does not block startup.
+      // A degraded connection is still usable (the DB may recover).
+      connRegistry.healthCheck(id).then((result) => {
+        if (result.status !== "healthy") {
           log.warn(
-            { err: healthErr instanceof Error ? healthErr.message : String(healthErr), connectionId: id },
-            "Initial health check failed after registration",
+            { connectionId: id, status: result.status, message: result.message },
+            "Datasource registered but initial health check failed — connection may be misconfigured",
           );
-        });
-      }
+        }
+      }).catch((healthErr) => {
+        log.warn(
+          { err: healthErr instanceof Error ? healthErr.message : String(healthErr), connectionId: id },
+          "Initial health check failed after registration",
+        );
+      });
 
       if (ds.rateLimit) {
         const { registerSourceRateLimit } = await import("./db/source-rate-limit");

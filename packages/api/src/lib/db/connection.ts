@@ -1,17 +1,15 @@
 /**
  * Database connection factory and registry.
  *
- * Supports PostgreSQL (via `pg` Pool), MySQL (via `mysql2/promise`),
- * ClickHouse (via `@clickhouse/client` HTTP transport),
- * Snowflake (via `snowflake-sdk` pool), DuckDB (via `@duckdb/node-api`
- * in-process engine), and Salesforce (via `jsforce`).
+ * Core adapters: PostgreSQL (via `pg` Pool) and MySQL (via `mysql2/promise`).
+ * Additional databases (ClickHouse, Snowflake, DuckDB, Salesforce) are
+ * supported via datasource plugins — see `plugins/` directory.
+ *
  * Database type is detected from the connection URL format:
  *   - `postgresql://` or `postgres://` → PostgreSQL
  *   - `mysql://` or `mysql2://` → MySQL
- *   - `clickhouse://` or `clickhouses://` → ClickHouse
- *   - `snowflake://` → Snowflake
- *   - `duckdb://` → DuckDB (in-process)
- *   - `salesforce://` → Salesforce (SOQL — uses separate DataSource API)
+ *
+ * Non-core URL schemes require a registered datasource plugin.
  *
  * Connections are managed via ConnectionRegistry. The default connection
  * auto-initializes from ATLAS_DATASOURCE_URL on first access.
@@ -19,7 +17,6 @@
 
 import { createLogger } from "@atlas/api/lib/logger";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
-import { createDuckDBConnection, parseDuckDBUrl } from "./duckdb";
 
 const log = createLogger("db");
 
@@ -51,7 +48,7 @@ export interface DBConnection {
   close(): Promise<void>;
 }
 
-export type DBType = "postgres" | "mysql" | "clickhouse" | "snowflake" | "duckdb" | "salesforce";
+export type DBType = "postgres" | "mysql" | (string & {});
 
 export type HealthStatus = "healthy" | "degraded" | "unhealthy";
 
@@ -83,7 +80,8 @@ export function extractTargetHost(url: string): string {
   try {
     // Normalize known schemes to http:// so URL parser can handle them
     const normalized = url
-      .replace(/^(postgresql|postgres|mysql|mysql2|clickhouse|clickhouses|snowflake|duckdb|salesforce):\/\//, "http://");
+      .replace(/^(postgresql|postgres|mysql|mysql2):\/\//, "http://")
+      .replace(/^[a-z][a-z0-9+.-]*:\/\//, "http://");
     const parsed = new URL(normalized);
     return parsed.hostname || "(unknown)";
   } catch {
@@ -92,49 +90,17 @@ export function extractTargetHost(url: string): string {
 }
 
 /**
- * Rewrite a `clickhouse://` or `clickhouses://` URL to `http://` or `https://`
- * for the @clickhouse/client HTTP transport.
- *
- * - `clickhouses://` → `https://` (TLS)
- * - `clickhouse://`  → `http://`  (plain)
- *
- * Warns if port 8443 (the conventional ClickHouse TLS port) is used with
- * the plain `clickhouse://` scheme, since TLS is likely intended.
- */
-export function rewriteClickHouseUrl(url: string): string {
-  if (url.startsWith("clickhouses://")) {
-    return url.replace(/^clickhouses:\/\//, "https://");
-  }
-  // Warn on probable TLS-port + plain-scheme mismatch
-  try {
-    const parsed = new URL(url.replace(/^clickhouse:\/\//, "http://"));
-    if (parsed.port === "8443") {
-      log.warn(
-        "clickhouse:// with port 8443 detected — did you mean clickhouses:// (TLS)? " +
-        "Port 8443 is the conventional ClickHouse TLS port."
-      );
-    }
-  } catch {
-    // URL parsing failure is handled downstream; skip warning
-  }
-  return url.replace(/^clickhouse:\/\//, "http://");
-}
-
-/**
  * Detect database type from a connection string or ATLAS_DATASOURCE_URL.
- * PostgreSQL URLs start with `postgresql://` or `postgres://`.
- * MySQL URLs start with `mysql://` or `mysql2://`.
- * ClickHouse URLs start with `clickhouse://` or `clickhouses://`.
- * Snowflake URLs start with `snowflake://`.
- * DuckDB URLs start with `duckdb://`.
- * Salesforce URLs start with `salesforce://`.
- * Throws if the URL does not match a supported database type.
+ *
+ * Core types: `postgresql://` or `postgres://` → "postgres", `mysql://` or
+ * `mysql2://` → "mysql". Unknown URL schemes throw with a migration hint
+ * suggesting the appropriate datasource plugin.
  */
 export function detectDBType(url?: string): DBType {
   const connStr = url ?? resolveDatasourceUrl() ?? "";
   if (!connStr) {
     throw new Error(
-      "No database URL provided. Set ATLAS_DATASOURCE_URL to a PostgreSQL (postgresql://...), MySQL (mysql://...), ClickHouse (clickhouse://... or clickhouses://...), Snowflake (snowflake://...), DuckDB (duckdb://...), or Salesforce (salesforce://...) connection string."
+      "No database URL provided. Set ATLAS_DATASOURCE_URL to a PostgreSQL (postgresql://...) or MySQL (mysql://...) connection string, or register a datasource plugin for other databases."
     );
   }
   if (connStr.startsWith("postgresql://") || connStr.startsWith("postgres://")) {
@@ -143,29 +109,19 @@ export function detectDBType(url?: string): DBType {
   if (connStr.startsWith("mysql://") || connStr.startsWith("mysql2://")) {
     return "mysql";
   }
-  if (connStr.startsWith("clickhouse://") || connStr.startsWith("clickhouses://")) {
-    return "clickhouse";
-  }
-  if (connStr.startsWith("snowflake://")) {
-    return "snowflake";
-  }
-  if (connStr.startsWith("duckdb://")) {
-    return "duckdb";
-  }
-  if (connStr.startsWith("salesforce://")) {
-    return "salesforce";
-  }
   const scheme = connStr.split("://")[0] || "(empty)";
   throw new Error(
     `Unsupported database URL scheme "${scheme}://". ` +
-    "ATLAS_DATASOURCE_URL must start with postgresql://, postgres://, mysql://, mysql2://, clickhouse://, clickhouses://, snowflake://, duckdb://, or salesforce://."
+    `This adapter is now a plugin. Install the appropriate datasource plugin ` +
+    `(e.g. @atlas/plugin-${scheme}) and add it to the plugins array in atlas.config.ts. ` +
+    `Core adapters support postgresql:// and mysql:// only.`
   );
 }
 
 export interface ConnectionConfig {
-  /** Database connection string (postgresql://, mysql://, clickhouse://, snowflake://, duckdb://, or salesforce://). */
+  /** Database connection string (postgresql:// or mysql:// for core; other schemes via plugins). */
   url: string;
-  /** PostgreSQL schema name (sets search_path). Ignored for MySQL, ClickHouse, Snowflake, and DuckDB. */
+  /** PostgreSQL schema name (sets search_path). Ignored for MySQL and plugin-managed connections. */
   schema?: string;
   /** Human-readable description shown in the agent system prompt. */
   description?: string;
@@ -285,202 +241,18 @@ function createMySQLDB(config: ConnectionConfig): DBConnection {
   };
 }
 
-function createClickHouseDB(config: ConnectionConfig): DBConnection {
-  let createClient: (opts: Record<string, unknown>) => unknown;
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    ({ createClient } = require("@clickhouse/client"));
-  } catch {
-    throw new Error(
-      "ClickHouse support requires the @clickhouse/client package. Install it with: bun add @clickhouse/client"
-    );
-  }
-
-  const httpUrl = rewriteClickHouseUrl(config.url);
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const client = (createClient as any)({ url: httpUrl });
-
-  return {
-    async query(sql: string, timeoutMs = 30000) {
-      let result;
-      try {
-        result = await client.query({
-          query: sql,
-          format: "JSON",
-          clickhouse_settings: {
-            max_execution_time: Math.ceil(timeoutMs / 1000),
-            readonly: 1,
-          },
-        });
-      } catch (err) {
-        throw new Error(`ClickHouse query failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
-      }
-      const json = await result.json();
-      if (!json.meta || !Array.isArray(json.meta)) {
-        throw new Error(
-          "ClickHouse query returned an unexpected response: missing or invalid 'meta' field. " +
-          "Ensure the query uses JSON format and returns a valid result set."
-        );
-      }
-      const columns = (json.meta as { name: string }[]).map((m: { name: string }) => m.name);
-      return { columns, rows: json.data as Record<string, unknown>[] };
-    },
-    async close() {
-      try {
-        await client.close();
-      } catch (err) {
-        log.warn(
-          { err: err instanceof Error ? err.message : String(err) },
-          "Failed to close ClickHouse client"
-        );
-      }
-    },
-  };
-}
-
-/**
- * Parse a Snowflake connection URL into SDK ConnectionOptions.
- * Format: snowflake://user:pass@account/database/schema?warehouse=WH&role=ROLE
- *
- * - `account` can be a plain account identifier (e.g. `xy12345`) or a
- *   fully-qualified account locator (e.g. `xy12345.us-east-1`).
- * - `/database` and `/database/schema` path segments are optional.
- * - Query parameters: `warehouse`, `role` (case-insensitive).
- */
-export function parseSnowflakeURL(url: string): {
-  account: string;
-  username: string;
-  password: string;
-  database?: string;
-  schema?: string;
-  warehouse?: string;
-  role?: string;
-} {
-  const parsed = new URL(url);
-  if (parsed.protocol !== "snowflake:") {
-    throw new Error(`Invalid Snowflake URL: expected snowflake:// scheme, got "${parsed.protocol}"`);
-  }
-
-  const account = parsed.hostname;
-  if (!account) {
-    throw new Error("Invalid Snowflake URL: missing account identifier in hostname.");
-  }
-
-  const username = decodeURIComponent(parsed.username);
-  const password = decodeURIComponent(parsed.password);
-  if (!username) {
-    throw new Error("Invalid Snowflake URL: missing username.");
-  }
-
-  // Path segments: /database or /database/schema
-  const pathSegments = parsed.pathname.split("/").filter(Boolean);
-  const database = pathSegments[0] || undefined;
-  const schema = pathSegments[1] || undefined;
-
-  const warehouse = parsed.searchParams.get("warehouse") ?? undefined;
-  const role = parsed.searchParams.get("role") ?? undefined;
-
-  return { account, username, password, database, schema, warehouse, role };
-}
-
-function createSnowflakeDB(config: ConnectionConfig): DBConnection {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const snowflake = require("snowflake-sdk") as typeof import("snowflake-sdk");
-
-  // Suppress noisy SDK logging
-  snowflake.configure({ logLevel: "ERROR" });
-
-  const opts = parseSnowflakeURL(config.url);
-
-  const pool = snowflake.createPool(
-    {
-      account: opts.account,
-      username: opts.username,
-      password: opts.password,
-      database: opts.database,
-      schema: opts.schema,
-      warehouse: opts.warehouse,
-      role: opts.role,
-      application: "Atlas",
-    },
-    { max: config.maxConnections ?? 10, min: 0 },
-  );
-
-  log.warn(
-    "Snowflake has no session-level read-only mode — Atlas enforces SELECT-only " +
-    "via SQL validation (regex + AST). For defense-in-depth, configure the " +
-    "Snowflake connection with a role granted SELECT privileges only " +
-    "(e.g. GRANT SELECT ON ALL TABLES IN SCHEMA <schema> TO ROLE atlas_readonly).",
-  );
-
-  return {
-    async query(sql: string, timeoutMs = 30000) {
-      const timeoutSec = Math.max(1, Math.floor(timeoutMs / 1000));
-      return pool.use(async (conn) => {
-        // Set session-level statement timeout (seconds)
-        await new Promise<void>((resolve, reject) => {
-          conn.execute({
-            sqlText: `ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = ${timeoutSec}`,
-            complete: (err) => (err ? reject(err) : resolve()),
-          });
-        });
-
-        // Tag all Atlas queries for audit trail in QUERY_HISTORY (best-effort —
-        // insufficient privileges or transient errors should not block the query)
-        try {
-          await new Promise<void>((resolve, reject) => {
-            conn.execute({
-              sqlText: `ALTER SESSION SET QUERY_TAG = 'atlas:readonly'`,
-              complete: (err) => (err ? reject(err) : resolve()),
-            });
-          });
-        } catch (tagErr) {
-          log.warn(`Failed to set QUERY_TAG on Snowflake session — query will proceed without audit tag: ${tagErr instanceof Error ? tagErr.message : String(tagErr)}`);
-        }
-
-        // Execute the actual query
-        return new Promise<QueryResult>((resolve, reject) => {
-          conn.execute({
-            sqlText: sql,
-            complete: (err, stmt, rows) => {
-              if (err) return reject(err);
-              const columns = (stmt?.getColumns() ?? []).map((c) => c.getName());
-              const resultRows = (rows ?? []) as Record<string, unknown>[];
-              resolve({ columns, rows: resultRows });
-            },
-          });
-        });
-      });
-    },
-    async close() {
-      await pool.drain();
-      await pool.clear();
-    },
-  };
-}
-
 function createConnection(dbType: DBType, config: ConnectionConfig): DBConnection {
   switch (dbType) {
     case "postgres":
       return createPostgresDB(config);
     case "mysql":
       return createMySQLDB(config);
-    case "clickhouse":
-      return createClickHouseDB(config);
-    case "snowflake":
-      return createSnowflakeDB(config);
-    case "duckdb":
-      return createDuckDBConnection(parseDuckDBUrl(config.url));
-    case "salesforce":
+    default:
       throw new Error(
-        "Salesforce uses SOQL, not SQL. Use the Salesforce DataSource API instead. " +
-        "See packages/api/src/lib/db/salesforce.ts for the Salesforce adapter."
+        `Unsupported database type "${dbType}". ` +
+        `This adapter is now a plugin. Install the appropriate datasource plugin ` +
+        `and add it to the plugins array in atlas.config.ts.`
       );
-    default: {
-      const _exhaustive: never = dbType;
-      throw new Error(`Unknown database type: ${_exhaustive}`);
-    }
   }
 }
 
@@ -528,13 +300,7 @@ export class ConnectionRegistry {
   private _totalPoolSlots(): number {
     let total = 0;
     for (const entry of this.entries.values()) {
-      // ClickHouse uses a stateless HTTP client and DuckDB is in-process —
-      // neither maintains a connection pool, so count them as 1 slot each.
-      if (entry.dbType === "clickhouse" || entry.dbType === "duckdb") {
-        total += 1;
-      } else {
-        total += entry.config?.maxConnections ?? 10;
-      }
+      total += entry.config?.maxConnections ?? 10;
     }
     return total;
   }
@@ -660,7 +426,7 @@ export class ConnectionRegistry {
       const url = resolveDatasourceUrl();
       if (!url) {
         throw new Error(
-          "No analytics datasource configured. Set ATLAS_DATASOURCE_URL to a PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, or Salesforce connection string."
+          "No analytics datasource configured. Set ATLAS_DATASOURCE_URL to a PostgreSQL or MySQL connection string, or register a datasource plugin."
         );
       }
       this.register("default", {

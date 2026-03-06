@@ -53,6 +53,17 @@ if [ "$PLATFORM" != "vercel" ]; then
   echo "  OK: public/ exists"
 fi
 
+# Check README.md was generated
+if [ ! -f "$TARGET_DIR/README.md" ]; then
+  echo "FAIL: README.md not found"
+  exit 1
+fi
+if ! grep -q "Atlas" "$TARGET_DIR/README.md"; then
+  echo "FAIL: README.md does not mention Atlas"
+  exit 1
+fi
+echo "  OK: README.md exists with Atlas content"
+
 # Check .env was written
 if [ ! -f "$TARGET_DIR/.env" ]; then
   echo "FAIL: .env not found"

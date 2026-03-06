@@ -84,84 +84,19 @@ This database uses MySQL. Key differences from PostgreSQL:
 - \`LIMIT offset, count\` or \`LIMIT count OFFSET offset\` — both forms work
 - \`COALESCE\`, \`CASE\`, \`NULLIF\`, \`COUNT\`, \`SUM\`, \`AVG\`, \`MIN\`, \`MAX\` work identically`;
 
-const CLICKHOUSE_DIALECT_GUIDE = `
-
-## SQL Dialect: ClickHouse
-This database uses ClickHouse. Key differences from PostgreSQL:
-- Use \`toYear(col)\` and \`toMonth(col)\` instead of \`EXTRACT(YEAR FROM col)\`
-- Use \`formatDateTime(col, '%Y-%m')\` instead of \`TO_CHAR(col, 'YYYY-MM')\`
-- Use \`toString(col)\` for explicit string casts — no \`::text\` casting
-- Use \`toInt32(col)\`, \`toFloat64(col)\` for numeric casts — no \`::integer\` casting
-- Use \`ifNull(col, default)\` or \`COALESCE(col, default)\` — both work
-- \`arrayJoin(arr)\` unnests array columns into rows
-- No \`UPDATE\` or \`DELETE\` — ClickHouse is append-only OLAP
-- No foreign keys — joins are supported but there are no referential integrity constraints
-- \`count()\` instead of \`COUNT(*)\` — both work but \`count()\` is idiomatic
-- Use single quotes for strings, double quotes or backticks for identifiers
-- \`argMax(col, ordering_col)\` / \`argMin\` for "latest value" queries
-- Date arithmetic: \`today()\`, \`yesterday()\`, \`now()\`, \`toStartOfMonth(col)\`, \`toStartOfWeek(col)\`
-- \`COALESCE\`, \`CASE\`, \`COUNT\`, \`SUM\`, \`AVG\`, \`MIN\`, \`MAX\` work identically
-- Note: Atlas SQL validation uses PostgreSQL-compatible parsing. Avoid ClickHouse-only syntax (PREWHERE, LIMIT BY, WITH TOTALS) — use standard SQL equivalents instead
-- \`EXPLAIN\`, \`SHOW\`, and \`DESCRIBE\` are not available — use the explore tool to read entity schema files instead`;
-
-const SOQL_DIALECT_GUIDE = `
-
-## Query Language: Salesforce SOQL
-This datasource uses Salesforce Object Query Language (SOQL). Key differences from SQL:
-- **No JOINs** — use relationship queries instead:
-  - Child-to-parent: \`SELECT Account.Name FROM Contact\`
-  - Parent-to-child: \`SELECT Name, (SELECT LastName FROM Contacts) FROM Account\`
-- **Object names** instead of table names (e.g. \`Account\`, \`Contact\`, \`Opportunity\`)
-- **Field API names** — always use the API name (e.g. \`FirstName\`), not the label
-- **No wildcards** — \`SELECT *\` is not supported; list fields explicitly
-- **Date literals**: \`TODAY\`, \`YESTERDAY\`, \`LAST_WEEK\`, \`THIS_MONTH\`, \`LAST_N_DAYS:30\`, \`NEXT_N_DAYS:7\`
-- **Date functions**: \`CALENDAR_YEAR(CloseDate)\`, \`CALENDAR_MONTH(CloseDate)\`, \`DAY_IN_MONTH(CloseDate)\`
-- **Aggregate functions**: \`COUNT()\`, \`COUNT(Id)\`, \`SUM(Amount)\`, \`AVG(Amount)\`, \`MIN(Amount)\`, \`MAX(Amount)\`
-- **GROUP BY** works similarly to SQL: \`SELECT StageName, COUNT(Id) FROM Opportunity GROUP BY StageName\`
-- **HAVING** clause is supported for filtering aggregates
-- **LIMIT** and \`OFFSET\` are supported
-- **No subqueries in FROM** — subqueries only in WHERE (semi-joins): \`WHERE AccountId IN (SELECT Id FROM Account WHERE ...)\`
-- **No UNION, INTERSECT, EXCEPT**
-- Use the \`querySalesforce\` tool (not \`executeSQL\`) for all Salesforce queries`;
-
-const SNOWFLAKE_DIALECT_GUIDE = `
-
-## SQL Dialect: Snowflake
-This database uses Snowflake. Key differences from PostgreSQL:
-- \`ILIKE\` works for case-insensitive matching (same as PostgreSQL)
-- \`::type\` casting works (e.g. \`col::VARCHAR\`), plus \`TRY_CAST(col AS type)\` for safe casting that returns NULL on failure
-- Identifiers are case-insensitive by default; double-quoted identifiers are case-sensitive
-- Use \`FLATTEN()\` / \`LATERAL FLATTEN(input => col)\` to unnest semi-structured (VARIANT/ARRAY/OBJECT) data
-- \`QUALIFY\` clause filters window function results directly (e.g. \`QUALIFY ROW_NUMBER() OVER (...) = 1\`)
-- \`DATE_TRUNC('month', col)\` syntax (same as PostgreSQL)
-- No \`LIMIT offset, count\` — use \`LIMIT count OFFSET offset\`
-- Use \`LISTAGG(col, ', ')\` instead of \`STRING_AGG(col, ', ')\` or \`ARRAY_AGG(col)\` for aggregation
-- \`COALESCE\`, \`CASE\`, \`NULLIF\`, \`COUNT\`, \`SUM\`, \`AVG\`, \`MIN\`, \`MAX\` work identically`;
-
-const DUCKDB_DIALECT_GUIDE = `
-
-## SQL Dialect: DuckDB
-This database uses DuckDB, an in-process analytical engine. DuckDB's SQL is PostgreSQL-compatible with extensions:
-- \`::type\` casting works (e.g. \`col::INTEGER\`, \`col::VARCHAR\`) — same as PostgreSQL
-- \`ILIKE\` works for case-insensitive matching (same as PostgreSQL)
-- \`EXTRACT(YEAR FROM col)\`, \`DATE_TRUNC('month', col)\`, \`TO_CHAR(col, 'YYYY-MM')\` — same as PostgreSQL
-- \`STRING_AGG(col, ', ')\` works (same as PostgreSQL)
-- \`PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY col)\` works for percentile calculations
-- \`LIST_AGG\`, \`ARRAY_AGG\`, \`LIST()\` for array aggregation
-- \`UNNEST(list_col)\` to expand list/array columns into rows
-- Note: Atlas SQL validation uses PostgreSQL-compatible parsing. Avoid DuckDB-only syntax (QUALIFY, EXCLUDE, REPLACE, STRUCT_PACK, COLUMNS(*), COLUMNS(regex), STRUCT literals with curly braces) — use standard SQL equivalents instead
-- \`COALESCE\`, \`CASE\`, \`NULLIF\`, \`COUNT\`, \`SUM\`, \`AVG\`, \`MIN\`, \`MAX\` work identically`;
+// Display names for known DB types. No exhaustive check — new types added
+// by plugins fall through to the capitalize fallback intentionally.
+const DIALECT_DISPLAY_NAMES: Record<string, string> = {
+  postgres: "PostgreSQL",
+  mysql: "MySQL",
+  clickhouse: "ClickHouse",
+  snowflake: "Snowflake",
+  duckdb: "DuckDB",
+  salesforce: "Salesforce (SOQL)",
+};
 
 function dialectName(dbType: DBType): string {
-  switch (dbType) {
-    case "postgres": return "PostgreSQL";
-    case "mysql": return "MySQL";
-    case "clickhouse": return "ClickHouse";
-    case "snowflake": return "Snowflake";
-    case "duckdb": return "DuckDB";
-    case "salesforce": return "Salesforce (SOQL)";
-    default: { const _: never = dbType; return _; }
-  }
+  return DIALECT_DISPLAY_NAMES[dbType] ?? dbType.charAt(0).toUpperCase() + dbType.slice(1);
 }
 
 function buildMultiSourceSection(
@@ -214,25 +149,6 @@ ${lines.join("\n")}
   return section;
 }
 
-/**
- * Collect Salesforce source metadata via dynamic import to avoid a hard
- * dependency on the salesforce module (it may not be installed).
- */
-function getSfSourceMeta(): ConnectionMetadata[] {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { describeSalesforceSources } = require("./db/salesforce") as {
-      describeSalesforceSources: () => ConnectionMetadata[];
-    };
-    return describeSalesforceSources();
-  } catch (err) {
-    // jsforce not installed — expected, don't log
-    if (err instanceof Error && err.message.includes("Cannot find module")) return [];
-    log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to describe Salesforce sources");
-    return [];
-  }
-}
-
 function appendDialectHints(prompt: string): string {
   const hints = getDialectHints();
   if (hints.length === 0) return prompt;
@@ -253,9 +169,7 @@ function buildSystemPrompt(registry: ToolRegistry): string {
   if (fragments.length > 0) {
     base += "\n\n" + fragments.join("\n\n");
   }
-  const connectionMeta = connections.describe();
-  const sfMeta = getSfSourceMeta();
-  const meta = [...connectionMeta, ...sfMeta];
+  const meta = connections.describe();
 
   // Single-connection: identical to pre-v0.7 behavior
   if (meta.length <= 1) {
@@ -268,26 +182,21 @@ function buildSystemPrompt(registry: ToolRegistry): string {
       log.debug({ err: err instanceof Error ? err.message : String(err) }, "Could not detect DB type — omitting dialect guide");
       return appendDialectHints(base);
     }
-    switch (dbType) {
-      case "postgres": return appendDialectHints(base);
-      case "mysql": return appendDialectHints(base + MYSQL_DIALECT_GUIDE);
-      case "clickhouse": return appendDialectHints(base + CLICKHOUSE_DIALECT_GUIDE);
-      case "snowflake": return appendDialectHints(base + SNOWFLAKE_DIALECT_GUIDE);
-      case "duckdb": return appendDialectHints(base + DUCKDB_DIALECT_GUIDE);
-      case "salesforce": return appendDialectHints(base + SOQL_DIALECT_GUIDE);
-      default: { const _exhaustive: never = dbType; throw new Error(`Unknown: ${_exhaustive}`); }
+    // Core adapters get their dialect guide inline; everything else is
+    // handled by plugin dialect hints via appendDialectHints().
+    if (dbType === "mysql") {
+      return appendDialectHints(base + MYSQL_DIALECT_GUIDE);
     }
+    return appendDialectHints(base);
   }
 
-  // Multi-connection: list sources + include all relevant dialect guides
+  // Multi-connection: list sources + include core dialect guides
   let prompt = base + "\n\n" + buildMultiSourceSection(meta);
 
   const dbTypes = new Set(meta.map((m) => m.dbType));
   if (dbTypes.has("mysql")) prompt += MYSQL_DIALECT_GUIDE;
-  if (dbTypes.has("clickhouse")) prompt += CLICKHOUSE_DIALECT_GUIDE;
-  if (dbTypes.has("snowflake")) prompt += SNOWFLAKE_DIALECT_GUIDE;
-  if (dbTypes.has("duckdb")) prompt += DUCKDB_DIALECT_GUIDE;
-  if (dbTypes.has("salesforce")) prompt += SOQL_DIALECT_GUIDE;
+  // Non-core dialects (clickhouse, snowflake, duckdb, salesforce, etc.)
+  // are provided by plugins via appendDialectHints().
 
   return appendDialectHints(prompt);
 }

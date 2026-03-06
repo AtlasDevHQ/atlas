@@ -25,6 +25,7 @@ import {
   createClickHouseConnection,
   extractHost,
 } from "./connection";
+import { CLICKHOUSE_FORBIDDEN_PATTERNS } from "./validation";
 
 const ClickHouseConfigSchema = z.object({
   /** ClickHouse connection URL (clickhouse:// or clickhouses://). */
@@ -62,6 +63,8 @@ export function buildClickHousePlugin(
         // Pool-based databases (Postgres, MySQL) should cache the connection.
         createClickHouseConnection({ url: config.url, database: config.database }),
       dbType: "clickhouse",
+      parserDialect: "PostgresQL", // closest match in node-sql-parser
+      forbiddenPatterns: CLICKHOUSE_FORBIDDEN_PATTERNS,
     },
 
     entities: [],
@@ -122,3 +125,4 @@ export const clickhousePlugin = createPlugin({
 });
 
 export { createClickHouseConnection, rewriteClickHouseUrl, extractHost } from "./connection";
+export { CLICKHOUSE_FORBIDDEN_PATTERNS } from "./validation";

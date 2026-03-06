@@ -49,7 +49,12 @@ mock.module("@atlas/api/lib/db/connection", () => ({
     describe: () => connMetadata,
   },
   detectDBType: () => "postgres" as const,
+  resolveDatasourceUrl: () => process.env.ATLAS_DATASOURCE_URL || null,
   ConnectionRegistry: class {},
+}));
+
+mock.module("@atlas/api/lib/providers", () => ({
+  getDefaultProvider: () => "anthropic",
 }));
 
 mock.module("@atlas/api/lib/semantic", () => ({
@@ -180,12 +185,13 @@ describe("GET /api/health — sources section", () => {
     expect(sources.default).toBeDefined();
     const defaultSource = sources.default as Record<string, unknown>;
     expect(defaultSource.status).toBe("healthy");
-    expect(defaultSource.latencyMs).toBe(5);
+    // Live probe latency overrides the registry's cached value for default connection
+    expect(typeof defaultSource.latencyMs).toBe("number");
     expect(defaultSource.dbType).toBe("postgres");
     expect(defaultSource.checkedAt).toBe("2026-01-15T12:00:00.000Z");
   });
 
-  it("promotes top-level status to 'error' when a source is unhealthy", async () => {
+  it("promotes top-level status to 'error' when a non-default source is unhealthy", async () => {
     const unhealthy: HealthCheckResult = {
       status: "unhealthy",
       latencyMs: 5000,
@@ -193,7 +199,7 @@ describe("GET /api/health — sources section", () => {
       checkedAt: new Date(),
     };
     connMetadata = [
-      { id: "default", dbType: "postgres", health: unhealthy },
+      { id: "warehouse", dbType: "postgres", health: unhealthy },
     ];
 
     const response = await app.fetch(healthRequest());
@@ -202,10 +208,10 @@ describe("GET /api/health — sources section", () => {
     const body = (await response.json()) as Record<string, unknown>;
     expect(body.status).toBe("error");
     const sources = body.sources as Record<string, unknown>;
-    expect((sources.default as Record<string, unknown>).status).toBe("unhealthy");
+    expect((sources.warehouse as Record<string, unknown>).status).toBe("unhealthy");
   });
 
-  it("promotes top-level status to 'degraded' when a source is degraded and no other errors", async () => {
+  it("promotes top-level status to 'degraded' when a non-default source is degraded and no other errors", async () => {
     const degraded: HealthCheckResult = {
       status: "degraded",
       latencyMs: 2000,
@@ -213,7 +219,7 @@ describe("GET /api/health — sources section", () => {
       checkedAt: new Date(),
     };
     connMetadata = [
-      { id: "default", dbType: "postgres", health: degraded },
+      { id: "warehouse", dbType: "postgres", health: degraded },
     ];
 
     const response = await app.fetch(healthRequest());
@@ -246,7 +252,21 @@ describe("GET /api/health — sources section", () => {
     expect((sources.warehouse as Record<string, unknown>).dbType).toBe("mysql");
   });
 
-  it("returns status 'unknown' when source has no health check result", async () => {
+  it("returns status 'unknown' when non-default source has no health check result", async () => {
+    connMetadata = [
+      { id: "warehouse", dbType: "mysql" },
+    ];
+
+    const response = await app.fetch(healthRequest());
+    const body = (await response.json()) as Record<string, unknown>;
+    const sources = body.sources as Record<string, unknown>;
+    const warehouseSource = sources.warehouse as Record<string, unknown>;
+
+    expect(warehouseSource.status).toBe("unknown");
+  });
+
+  it("uses live probe results for default source status", async () => {
+    // Even if registry reports no health, the live probe succeeds → healthy
     connMetadata = [
       { id: "default", dbType: "postgres" },
     ];
@@ -256,6 +276,6 @@ describe("GET /api/health — sources section", () => {
     const sources = body.sources as Record<string, unknown>;
     const defaultSource = sources.default as Record<string, unknown>;
 
-    expect(defaultSource.status).toBe("unknown");
+    expect(defaultSource.status).toBe("healthy");
   });
 });

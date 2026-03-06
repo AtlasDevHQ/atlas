@@ -13,6 +13,12 @@ mock.module("fs", () => ({
 
 mock.module("@atlas/api/lib/db/connection", () => ({
   detectDBType: () => "postgres",
+  resolveDatasourceUrl: () => process.env.ATLAS_DATASOURCE_URL || null,
+  rewriteClickHouseUrl: (url: string) => url,
+}));
+
+mock.module("@atlas/api/lib/providers", () => ({
+  getDefaultProvider: () => "anthropic",
 }));
 
 mock.module("@atlas/api/lib/tools/explore-nsjail", () => ({

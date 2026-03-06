@@ -34,6 +34,11 @@ const PROVIDER_DEFAULTS: Record<ConfigProvider, string> = {
   gateway: "anthropic/claude-opus-4.6",
 };
 
+/** Returns the default provider string based on runtime environment. */
+export function getDefaultProvider(): ConfigProvider {
+  return process.env.VERCEL ? "gateway" : "anthropic";
+}
+
 function isBedrockAnthropicModel(modelId: string): boolean {
   return modelId.includes("anthropic") || modelId.includes("claude");
 }
@@ -43,7 +48,7 @@ function isBedrockAnthropicModel(modelId: string): boolean {
  * Returns the validated config provider string and the resolved model ID.
  */
 function resolveProvider(): { provider: ConfigProvider; modelId: string } {
-  const raw = process.env.ATLAS_PROVIDER ?? "anthropic";
+  const raw = process.env.ATLAS_PROVIDER ?? getDefaultProvider();
   if (!VALID_PROVIDERS.has(raw as ConfigProvider)) {
     throw new Error(
       `Unknown provider "${raw}". Supported: ${[...VALID_PROVIDERS].join(", ")}`

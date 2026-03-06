@@ -1,5 +1,5 @@
 {
   "framework": "nextjs",
-  "buildCommand": "cp -r ../../packages/cli/data/demo-semantic semantic && next build",
+  "buildCommand": "cp -r ../../packages/cli/data/demo-semantic semantic && bun run scripts/seed-demo.ts && next build",
   "crons": [{ "path": "/api/v1/scheduled-tasks/tick", "schedule": "* * * * *" }]
 }

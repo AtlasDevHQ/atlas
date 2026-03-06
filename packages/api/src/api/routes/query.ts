@@ -150,7 +150,8 @@ query.post("/", async (c) => {
         );
       }
 
-      if (!process.env.ATLAS_DATASOURCE_URL) {
+      const { resolveDatasourceUrl: resolveUrl } = await import("@atlas/api/lib/db/connection");
+      if (!resolveUrl()) {
         return c.json(
           {
             error: "no_datasource",

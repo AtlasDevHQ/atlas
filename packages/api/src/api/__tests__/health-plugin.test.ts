@@ -49,7 +49,12 @@ mock.module("@atlas/api/lib/db/connection", () => ({
     describe: () => [],
   },
   detectDBType: () => "postgres" as const,
+  resolveDatasourceUrl: () => process.env.ATLAS_DATASOURCE_URL || null,
   ConnectionRegistry: class {},
+}));
+
+mock.module("@atlas/api/lib/providers", () => ({
+  getDefaultProvider: () => "anthropic",
 }));
 
 mock.module("@atlas/api/lib/semantic", () => ({

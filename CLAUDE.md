@@ -414,12 +414,13 @@ export default defineConfig({
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ATLAS_PROVIDER` | `anthropic` | LLM provider (anthropic/openai/bedrock/ollama/gateway) |
+| `ATLAS_PROVIDER` | `anthropic` (`gateway` on Vercel) | LLM provider (anthropic/openai/bedrock/ollama/gateway) |
 | `ATLAS_MODEL` | Provider default | Model ID override |
 | `ATLAS_LOG_LEVEL` | `info` | Pino log level (trace/debug/info/warn/error/fatal) |
 | `ATLAS_RUNTIME` | — | Runtime hint: `vercel` enables Vercel-specific sandbox and optimizations |
 | `DATABASE_URL` | — | Atlas internal Postgres (auth, audit, settings) |
-| `ATLAS_DATASOURCE_URL` | — | Analytics datasource — PostgreSQL or MySQL connection string |
+| `ATLAS_DATASOURCE_URL` | — | Analytics datasource — PostgreSQL or MySQL connection string. Falls back to `DATABASE_URL_UNPOOLED`/`DATABASE_URL` when `ATLAS_DEMO_DATA=true` |
+| `ATLAS_DEMO_DATA` | — | Set to `true` to use the internal DB (e.g. Neon) as both analytics datasource and internal DB. Seeds demo data at build time on Vercel |
 | `ATLAS_AUTH_MODE` | — | Explicit auth mode: `none`, `api-key`, `managed`, `byot`. When unset, auto-detected from env vars |
 | `ATLAS_ADMIN_EMAIL` | — | First managed-auth admin email. If set, this user gets `admin` role on signup and on migration. If unset, the first user to sign up gets admin automatically |
 | `ATLAS_API_KEY` | — | Simple API key auth — requires `Authorization: Bearer <key>` |

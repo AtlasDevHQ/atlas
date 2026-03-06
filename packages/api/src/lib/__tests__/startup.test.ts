@@ -15,6 +15,12 @@ mock.module("fs", () => ({
 // Mock db/connection — avoid real DB imports
 mock.module("@atlas/api/lib/db/connection", () => ({
   detectDBType: () => "postgres",
+  resolveDatasourceUrl: () => process.env.ATLAS_DATASOURCE_URL || null,
+  rewriteClickHouseUrl: (url: string) => url,
+}));
+
+mock.module("@atlas/api/lib/providers", () => ({
+  getDefaultProvider: () => "anthropic",
 }));
 
 // Mock explore-nsjail — controllable sandbox capability check

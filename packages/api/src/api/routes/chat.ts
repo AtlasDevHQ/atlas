@@ -118,7 +118,8 @@ chat.post("/", async (c) => {
       }
 
       // Datasource guard — diagnostics pass (it's a warning) but chat requires a datasource
-      if (!process.env.ATLAS_DATASOURCE_URL) {
+      const { resolveDatasourceUrl } = await import("@atlas/api/lib/db/connection");
+      if (!resolveDatasourceUrl()) {
         return c.json(
           {
             error: "no_datasource",

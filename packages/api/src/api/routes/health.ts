@@ -94,8 +94,8 @@ health.get("/", async (c) => {
     // be configured via atlas.config.ts without ATLAS_DATASOURCE_URL).
     let dsLatencyMs: number | undefined;
     let dsProbeError: string | undefined;
-    const { connections: connRegistry2, detectDBType, getDB } = await import("@atlas/api/lib/db/connection");
-    const hasDatasource = !!process.env.ATLAS_DATASOURCE_URL || connRegistry2.list().includes("default");
+    const { connections: connRegistry2, detectDBType, getDB, resolveDatasourceUrl } = await import("@atlas/api/lib/db/connection");
+    const hasDatasource = !!resolveDatasourceUrl() || connRegistry2.list().includes("default");
     if (hasDatasource) {
       try {
         const dbType = detectDBType();
@@ -139,7 +139,8 @@ health.get("/", async (c) => {
       }
     }
 
-    const provider = process.env.ATLAS_PROVIDER ?? "anthropic";
+    const { getDefaultProvider } = await import("@atlas/api/lib/providers");
+    const provider = process.env.ATLAS_PROVIDER ?? getDefaultProvider();
     const entityCount = getWhitelistedTables().size;
     const exploreBackend = getExploreBackendType();
     const authMode = detectAuthMode();
@@ -190,22 +191,36 @@ health.get("/", async (c) => {
         sourcesSection = {};
         for (const meta of connMeta) {
           const h = meta.health;
+          // For the default source, prefer the live probe results from above
+          // (the registry's cached health may be "unknown" if the connection was lazy-inited)
+          const isDefault = meta.id === "default";
+          const liveStatus = isDefault && hasDatasource
+            ? (dsProbeError ? "unhealthy" : dsLatencyMs !== undefined ? "healthy" : undefined)
+            : undefined;
+          const liveLatency = isDefault ? dsLatencyMs : undefined;
+          const liveMessage = isDefault ? dsProbeError : undefined;
+
+          const effectiveStatus = liveStatus ?? h?.status ?? "unknown";
+          const effectiveLatency = liveLatency ?? h?.latencyMs;
+          const effectiveMessage = liveMessage ?? h?.message;
+
           // Scrub health messages that might contain connection credentials or internal state
-          const safeMessage = h?.message && !SENSITIVE_PATTERNS.test(h.message)
-            ? h.message
-            : h?.message ? "Health check failed — check server logs for details." : undefined;
+          const safeMessage = effectiveMessage && !SENSITIVE_PATTERNS.test(effectiveMessage)
+            ? effectiveMessage
+            : effectiveMessage ? "Health check failed — check server logs for details." : undefined;
           sourcesSection[meta.id] = {
-            status: h?.status ?? "unknown",
-            ...(h?.latencyMs !== undefined ? { latencyMs: h.latencyMs } : {}),
+            status: effectiveStatus,
+            ...(effectiveLatency !== undefined ? { latencyMs: effectiveLatency } : {}),
             ...(safeMessage ? { message: safeMessage } : {}),
             ...(h?.checkedAt ? { checkedAt: h.checkedAt.toISOString() } : {}),
             dbType: meta.dbType,
           };
         }
 
-        // Promote overall status based on source health
-        const hasUnhealthy = connMeta.some((m) => m.health?.status === "unhealthy");
-        const hasDegraded = connMeta.some((m) => m.health?.status === "degraded");
+        // Promote overall status based on effective source health (includes live probe overrides)
+        const sourceStatuses = Object.values(sourcesSection).map((s) => s.status);
+        const hasUnhealthy = sourceStatuses.includes("unhealthy");
+        const hasDegraded = sourceStatuses.includes("degraded");
         if (hasUnhealthy && status !== "error") status = "error";
         else if (hasDegraded && status === "ok") status = "degraded";
       }

@@ -50,6 +50,27 @@ export type PluginDBType =
   | "duckdb"
   | (string & {});
 
+/**
+ * Known node-sql-parser dialect strings, plus an escape hatch for future dialects.
+ * Values are case-sensitive — use exactly as listed (e.g. "PostgresQL", not "postgresql").
+ */
+export type ParserDialect =
+  | "Athena"
+  | "BigQuery"
+  | "Db2"
+  | "FlinkSQL"
+  | "Hive"
+  | "MariaDb"
+  | "MySQL"
+  | "NoQL"
+  | "PostgresQL"
+  | "Redshift"
+  | "Snowflake"
+  | "SQLite"
+  | "TransactSQL"
+  | "Trino"
+  | (string & {});
+
 // ---------------------------------------------------------------------------
 // Plugin lifecycle
 // ---------------------------------------------------------------------------
@@ -300,6 +321,35 @@ export interface AtlasDatasourcePlugin<TConfig = undefined> extends AtlasPluginB
      * Queries rewritten by hooks are re-validated through this function before execution.
      */
     validate?(query: string): QueryValidationResult;
+    /**
+     * node-sql-parser dialect string for SQL validation. When not provided,
+     * the core pipeline auto-detects from `dbType`. Override this when `dbType`
+     * uses the `string & {}` escape hatch or when the auto-detected dialect is
+     * wrong for your database.
+     *
+     * Values are case-sensitive (e.g. `"PostgresQL"`, not `"postgresql"`).
+     * Use patterns with the `/i` flag for case-insensitive matching.
+     *
+     * Ignored when a custom `validate` function is provided (which replaces
+     * the entire SQL validation pipeline).
+     *
+     * **Note:** Wired into the core pipeline in #15. Until then, this field
+     * is validated at registration time but not yet consumed at query time.
+     */
+    parserDialect?: ParserDialect;
+    /**
+     * Additional regex patterns to block beyond the base DML/DDL guard.
+     * Each pattern is tested against the trimmed SQL string. Use `\b` word
+     * boundaries and the `/i` flag for case-insensitive matching, consistent
+     * with core forbidden patterns (see `FORBIDDEN_PATTERNS` in sql.ts).
+     *
+     * Ignored when a custom `validate` function is provided (which replaces
+     * the entire SQL validation pipeline).
+     *
+     * **Note:** Wired into the core pipeline in #15. Until then, this field
+     * is validated at registration time but not yet consumed at query time.
+     */
+    forbiddenPatterns?: RegExp[];
   };
   /**
    * Optional entity definitions — plugin-provided semantic layer fragments.

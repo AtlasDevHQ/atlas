@@ -21,6 +21,8 @@ import { z } from "zod";
 import { createPlugin } from "@useatlas/plugin-sdk";
 import type { AtlasDatasourcePlugin, PluginDBConnection, PluginHealthResult } from "@useatlas/plugin-sdk";
 import { createDuckDBConnection, parseDuckDBUrl } from "./connection";
+import type { PluginLogger } from "@useatlas/plugin-sdk";
+import { DUCKDB_FORBIDDEN_PATTERNS } from "./validation";
 
 const DuckDBConfigSchema = z.object({
   /** DuckDB connection URL (duckdb://). */
@@ -31,10 +33,16 @@ const DuckDBConfigSchema = z.object({
     .refine(
       (u) => u.startsWith("duckdb://"),
       "URL must start with duckdb://",
-    ),
+    )
+    .optional(),
+  /** Direct path to a .duckdb file, or ":memory:" for in-memory. */
+  path: z.string().trim().min(1, "Path must not be empty").optional(),
   /** Open in read-only mode. Defaults to true for file databases. */
   readOnly: z.boolean().optional(),
-});
+}).refine(
+  (cfg) => cfg.url || cfg.path,
+  "Either url or path is required",
+);
 
 export type DuckDBPluginConfig = z.infer<typeof DuckDBConfigSchema>;
 
@@ -46,8 +54,11 @@ export type DuckDBPluginConfig = z.infer<typeof DuckDBConfigSchema>;
 export function buildDuckDBPlugin(
   config: DuckDBPluginConfig,
 ): AtlasDatasourcePlugin<DuckDBPluginConfig> {
-  const parsed = parseDuckDBUrl(config.url);
+  const parsed = config.url
+    ? parseDuckDBUrl(config.url)
+    : { path: config.path!, readOnly: config.path !== ":memory:" };
   const dbConfig = { ...parsed, readOnly: config.readOnly ?? parsed.readOnly };
+  let log: PluginLogger | undefined;
 
   return {
     id: "duckdb-datasource",
@@ -59,6 +70,8 @@ export function buildDuckDBPlugin(
     connection: {
       create: () => createDuckDBConnection(dbConfig),
       dbType: "duckdb",
+      parserDialect: "PostgresQL",
+      forbiddenPatterns: DUCKDB_FORBIDDEN_PATTERNS,
     },
 
     entities: [],
@@ -68,7 +81,7 @@ export function buildDuckDBPlugin(
       "- DuckDB syntax is similar to PostgreSQL with additional features.",
       "- Use UNNEST() to expand arrays into rows.",
       "- LIST and STRUCT types are natively supported.",
-      "- Use read_csv_auto() and read_parquet() to query files directly.",
+      "- File-reading functions (read_csv_auto, read_parquet, etc.) are blocked for security.",
       "- Use DATE_TRUNC() and DATE_PART() for date operations.",
       "- Use STRING_AGG() for string aggregation.",
       "- Supports window functions, CTEs, and lateral joins.",
@@ -76,6 +89,7 @@ export function buildDuckDBPlugin(
     ].join("\n"),
 
     async initialize(ctx) {
+      log = ctx.logger;
       const label = dbConfig.path === ":memory:" ? "in-memory" : dbConfig.path;
       ctx.logger.info(`DuckDB datasource plugin initialized (${label})`);
     },
@@ -91,9 +105,11 @@ export function buildDuckDBPlugin(
           latencyMs: Math.round(performance.now() - start),
         };
       } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log?.warn(`Health check failed: ${message}`);
         return {
           healthy: false,
-          message: err instanceof Error ? err.message : String(err),
+          message,
           latencyMs: Math.round(performance.now() - start),
         };
       } finally {
@@ -119,3 +135,4 @@ export const duckdbPlugin = createPlugin({
 });
 
 export { createDuckDBConnection, parseDuckDBUrl } from "./connection";
+export { DUCKDB_FORBIDDEN_PATTERNS } from "./validation";

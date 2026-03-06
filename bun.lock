@@ -343,6 +343,24 @@
         "zod": "^4.3.6",
       },
     },
+    "plugins/salesforce-datasource": {
+      "name": "@atlas/plugin-salesforce-datasource",
+      "version": "0.1.0",
+      "dependencies": {
+        "@useatlas/plugin-sdk": "workspace:*",
+      },
+      "devDependencies": {
+        "ai": "^6.0.97",
+        "hono": "^4.12.3",
+        "zod": "^4.3.6",
+      },
+      "peerDependencies": {
+        "jsforce": ">=1.11.0",
+      },
+      "optionalPeers": [
+        "jsforce",
+      ],
+    },
     "plugins/sidecar-sandbox": {
       "name": "@atlas/plugin-sidecar-sandbox",
       "version": "0.1.0",
@@ -462,6 +480,8 @@
     "@atlas/plugin-mysql-datasource": ["@atlas/plugin-mysql-datasource@workspace:plugins/mysql-datasource"],
 
     "@atlas/plugin-nsjail-sandbox": ["@atlas/plugin-nsjail-sandbox@workspace:plugins/nsjail-sandbox"],
+
+    "@atlas/plugin-salesforce-datasource": ["@atlas/plugin-salesforce-datasource@workspace:plugins/salesforce-datasource"],
 
     "@atlas/plugin-sidecar-sandbox": ["@atlas/plugin-sidecar-sandbox@workspace:plugins/sidecar-sandbox"],
 

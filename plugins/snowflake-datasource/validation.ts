@@ -1,16 +1,18 @@
 /**
  * Snowflake-specific forbidden SQL patterns.
  *
- * Extracted from packages/api/src/lib/tools/sql.ts — these patterns block
- * Snowflake-specific statements that bypass the base DML/DDL regex guard.
+ * These patterns supplement the base `FORBIDDEN_PATTERNS` in
+ * `packages/api/src/lib/tools/sql.ts`, which already blocks common DML/DDL
+ * keywords (INSERT, UPDATE, DELETE, DROP, CREATE, ALTER, TRUNCATE, COPY,
+ * LOAD, GRANT, REVOKE, EXEC, EXECUTE, CALL, etc.). The patterns here cover
+ * Snowflake-specific statements not caught by the base set.
  *
- * PUT/GET/LIST/REMOVE/RM are anchored to start-of-string (not word-boundary)
- * because they are common words in data values (e.g. WHERE name = 'Get Ready').
- * MERGE/SHOW/DESCRIBE/EXPLAIN/USE use word-boundary since they rarely
- * appear as data values.
+ * All patterns are anchored to start-of-statement (`^\s*`) to avoid
+ * false-positives on data values in WHERE clauses and string literals
+ * (e.g. WHERE title = 'Please explain the billing issue').
  */
 export const SNOWFLAKE_FORBIDDEN_PATTERNS: RegExp[] = [
   /^\s*(PUT|GET|LIST|REMOVE|RM)\b/i,
-  /\b(MERGE)\b/i,
-  /\b(SHOW|DESCRIBE|EXPLAIN|USE)\b/i,
+  /^\s*(MERGE)\b/i,
+  /^\s*(SHOW|DESCRIBE|DESC|EXPLAIN|USE)\b/i,
 ];

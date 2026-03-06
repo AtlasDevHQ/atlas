@@ -56,16 +56,15 @@ const CLICKHOUSE_FORBIDDEN_PATTERNS = [
 ];
 
 // Snowflake-specific patterns — only applied when dbType === "snowflake"
-// Stage operations (PUT/GET/LIST/REMOVE/RM) and MERGE are Snowflake DML
-// not covered by the base patterns.
-// Stage ops are anchored to statement start (^\s*) to avoid false positives
-// on common words in data values (e.g., WHERE name = 'Get Ready').
-// MERGE/SHOW/DESCRIBE/EXPLAIN/USE use word-boundary since they rarely
-// appear as data values.
+// Stage operations (PUT/GET/LIST/REMOVE/RM), MERGE, and metadata commands
+// are Snowflake DML/DDL not covered by the base patterns.
+// All patterns are anchored to start-of-statement (^\s*) to avoid false
+// positives on data values in WHERE clauses and string literals
+// (e.g. WHERE title = 'Please explain the billing issue').
 const SNOWFLAKE_FORBIDDEN_PATTERNS = [
   /^\s*(PUT|GET|LIST|REMOVE|RM)\b/i,
-  /\b(MERGE)\b/i,
-  /\b(SHOW|DESCRIBE|EXPLAIN|USE)\b/i,
+  /^\s*(MERGE)\b/i,
+  /^\s*(SHOW|DESCRIBE|DESC|EXPLAIN|USE)\b/i,
 ];
 
 // DuckDB-specific patterns — block PRAGMA, ATTACH, DETACH, INSTALL,

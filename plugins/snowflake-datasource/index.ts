@@ -36,12 +36,16 @@ const SnowflakeConfigSchema = z.object({
       (u) => u.startsWith("snowflake://"),
       "URL must start with snowflake://",
     )
-    .refine(
-      (u) => {
-        try { parseSnowflakeURL(u); return true; } catch { return false; }
-      },
-      "URL must be a valid Snowflake connection URL (snowflake://user:pass@account/db/schema?warehouse=WH&role=ROLE)",
-    ),
+    .superRefine((u, ctx) => {
+      try {
+        parseSnowflakeURL(u);
+      } catch (err) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }),
   /** Maximum pool connections. Default 10. */
   maxConnections: z.number().int().positive().max(100).optional(),
 });

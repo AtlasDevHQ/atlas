@@ -21,6 +21,7 @@ import { z } from "zod";
 import { createPlugin } from "@useatlas/plugin-sdk";
 import type { AtlasDatasourcePlugin, PluginDBConnection, PluginHealthResult } from "@useatlas/plugin-sdk";
 import { createDuckDBConnection, parseDuckDBUrl } from "./connection";
+import type { PluginLogger } from "@useatlas/plugin-sdk";
 import { DUCKDB_FORBIDDEN_PATTERNS } from "./validation";
 
 const DuckDBConfigSchema = z.object({
@@ -57,6 +58,7 @@ export function buildDuckDBPlugin(
     ? parseDuckDBUrl(config.url)
     : { path: config.path!, readOnly: config.path !== ":memory:" };
   const dbConfig = { ...parsed, readOnly: config.readOnly ?? parsed.readOnly };
+  let log: PluginLogger | undefined;
 
   return {
     id: "duckdb-datasource",
@@ -87,6 +89,7 @@ export function buildDuckDBPlugin(
     ].join("\n"),
 
     async initialize(ctx) {
+      log = ctx.logger;
       const label = dbConfig.path === ":memory:" ? "in-memory" : dbConfig.path;
       ctx.logger.info(`DuckDB datasource plugin initialized (${label})`);
     },
@@ -102,9 +105,11 @@ export function buildDuckDBPlugin(
           latencyMs: Math.round(performance.now() - start),
         };
       } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log?.warn(`Health check failed: ${message}`);
         return {
           healthy: false,
-          message: err instanceof Error ? err.message : String(err),
+          message,
           latencyMs: Math.round(performance.now() - start),
         };
       } finally {

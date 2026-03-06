@@ -18,6 +18,9 @@ export const DUCKDB_FORBIDDEN_PATTERNS = [
   // Block file-reading table functions that can access the host filesystem
   /\b(read_csv_auto|read_csv|read_parquet|read_json|read_json_auto|read_text)\b/i,
   /\b(parquet_scan|csv_scan|json_scan)\b/i,
-  // Block SET for configuration variables (DuckDB has no session-level read-only guard for :memory:)
+  // Block SET for configuration variables (DuckDB has no session-level read-only guard for :memory:).
+  // Anchored to start-of-string (^\s*) to avoid false positives on column names
+  // like "dataset" or data values containing "SET". The AST parser (layer 2) provides
+  // secondary defense since SET is not a SELECT statement.
   /^\s*SET\b/i,
 ];

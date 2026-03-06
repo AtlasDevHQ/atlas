@@ -528,6 +528,28 @@ describe("healthCheck", () => {
     expect(result.healthy).toBe(false);
     expect(result.message).toContain("init failed");
   });
+
+  test("logs warning on health check failure after initialize", async () => {
+    const plugin = duckdbPlugin({ url: "duckdb://" });
+    const warnings: string[] = [];
+    const ctx = {
+      db: null,
+      connections: { get: () => { throw new Error("not implemented"); }, list: () => [] },
+      tools: { register: () => {} },
+      logger: {
+        info: () => {},
+        warn: (...args: unknown[]) => { warnings.push(String(args[0])); },
+        error: () => {},
+        debug: () => {},
+      },
+      config: {},
+    };
+    await plugin.initialize!(ctx);
+    mockCreate.mockImplementation(() => Promise.reject(new Error("disk full")));
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(false);
+    expect(warnings.some((w) => w.includes("disk full"))).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

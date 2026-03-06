@@ -544,6 +544,15 @@ The `create-atlas/` package provides `bun create atlas-agent my-app`:
 4. Runs `bun install` and optionally `atlas init --enrich`
 5. Prints next steps (`cd my-app && bun run dev`)
 
+## Template Sync
+
+`create-atlas/templates/nextjs-standalone/src/` is **gitignored** and regenerated at publish time by `create-atlas/scripts/prepare-templates.sh`. Never edit template `src/` files directly — edit the monorepo source and the prepare script will copy it.
+
+- `prepare-templates.sh` copies `packages/api/src/` and `packages/web/src/ui/` wholesale into templates. Template-specific overrides (`lib/api-url.ts`, `lib/auth/client.ts`) are saved and restored
+- CI runs `scripts/check-template-drift.sh` which regenerates templates and verifies 200+ files match the monorepo source
+- A few files are intentionally excluded from the drift check (listed in the script): template-specific Next.js overrides for same-origin embedded API
+- Set `SKIP_SYNCPACK=1` to skip the syncpack step when running `prepare-templates.sh` locally (CI does this automatically)
+
 ## Quick Reference
 
 Key files not obvious from the monorepo tree above. For standard paths, follow the package structure in the Architecture section.

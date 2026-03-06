@@ -43,6 +43,9 @@ jobs:
           if [ $ERRORS -gt 0 ]; then exit 1; fi
           echo "All Dockerfiles pin bun $EXPECTED"
 
+      - name: Check template drift
+        run: bash scripts/check-template-drift.sh
+
       - name: Build SDK packages
         run: bun run --filter '@useatlas/plugin-sdk' build && bun run --filter '@useatlas/sdk' build
 

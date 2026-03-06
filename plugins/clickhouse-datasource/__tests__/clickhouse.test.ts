@@ -251,6 +251,28 @@ describe("CLICKHOUSE_FORBIDDEN_PATTERNS", () => {
     expect(CLICKHOUSE_FORBIDDEN_PATTERNS.some((p) => p.test("SELECT count() FROM events"))).toBe(false);
   });
 
+  test("does not false-positive on column names containing forbidden substrings", () => {
+    // \b prevents matching inside compound identifiers
+    expect(CLICKHOUSE_FORBIDDEN_PATTERNS.some((p) => p.test("SELECT system_name FROM servers"))).toBe(false);
+    expect(CLICKHOUSE_FORBIDDEN_PATTERNS.some((p) => p.test("SELECT kill_count FROM game_stats"))).toBe(false);
+    expect(CLICKHOUSE_FORBIDDEN_PATTERNS.some((p) => p.test("SELECT description FROM tickets"))).toBe(false);
+    expect(CLICKHOUSE_FORBIDDEN_PATTERNS.some((p) => p.test("SELECT renamed_at FROM audit"))).toBe(false);
+  });
+
+  test("does not block ClickHouse-idiomatic functions", () => {
+    expect(CLICKHOUSE_FORBIDDEN_PATTERNS.some((p) => p.test("SELECT countIf(status = 'active') FROM users"))).toBe(false);
+    expect(CLICKHOUSE_FORBIDDEN_PATTERNS.some((p) => p.test("SELECT toStartOfMonth(created_at) FROM events"))).toBe(false);
+    expect(CLICKHOUSE_FORBIDDEN_PATTERNS.some((p) => p.test("SELECT arrayJoin(tags) FROM articles"))).toBe(false);
+  });
+
+  // Known limitations: bare word-boundary patterns match exact keywords
+  // appearing as data values, aliases, or table references. See #29.
+  test("known limitation: exact keyword in alias or value is blocked (#29)", () => {
+    expect(CLICKHOUSE_FORBIDDEN_PATTERNS.some((p) => p.test("SELECT 1 AS use"))).toBe(true);
+    expect(CLICKHOUSE_FORBIDDEN_PATTERNS.some((p) => p.test("SELECT query FROM system.query_log"))).toBe(true);
+    expect(CLICKHOUSE_FORBIDDEN_PATTERNS.some((p) => p.test("SELECT * FROM events WHERE action = 'kill'"))).toBe(true);
+  });
+
   test("patterns are case-insensitive", () => {
     expect(CLICKHOUSE_FORBIDDEN_PATTERNS.some((p) => p.test("system flush logs"))).toBe(true);
     expect(CLICKHOUSE_FORBIDDEN_PATTERNS.some((p) => p.test("Show Tables"))).toBe(true);

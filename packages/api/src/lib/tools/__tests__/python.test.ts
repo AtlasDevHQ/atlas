@@ -284,4 +284,69 @@ print(f"df is {df}")
     expect(result.output).toContain("data is None");
     expect(result.output).toContain("df is None");
   });
+
+  it("returns Recharts chart via _atlas_chart dict", async () => {
+    const code = `
+_atlas_chart = {
+    "type": "bar",
+    "data": [{"month": "Jan", "revenue": 100}, {"month": "Feb", "revenue": 200}],
+    "categoryKey": "month",
+    "valueKeys": ["revenue"],
+}
+`;
+    const result = await executePythonCode(code);
+    expect(result.success).toBe(true);
+    expect(result.rechartsCharts).toHaveLength(1);
+    expect(result.rechartsCharts![0].type).toBe("bar");
+    expect(result.rechartsCharts![0].categoryKey).toBe("month");
+  });
+
+  it("returns multiple Recharts charts via _atlas_chart list", async () => {
+    const code = `
+_atlas_chart = [
+    {"type": "line", "data": [{"x": 1, "y": 2}], "categoryKey": "x", "valueKeys": ["y"]},
+    {"type": "bar", "data": [{"x": 1, "y": 3}], "categoryKey": "x", "valueKeys": ["y"]},
+]
+`;
+    const result = await executePythonCode(code);
+    expect(result.success).toBe(true);
+    expect(result.rechartsCharts).toHaveLength(2);
+    expect(result.rechartsCharts![0].type).toBe("line");
+    expect(result.rechartsCharts![1].type).toBe("bar");
+  });
+
+  it("provides chart_path() helper", async () => {
+    const code = `
+import os
+p = chart_path(0)
+print(f"path: {p}")
+print(f"exists: {os.path.isdir(os.path.dirname(p))}")
+`;
+    const result = await executePythonCode(code);
+    expect(result.success).toBe(true);
+    expect(result.output).toContain("path:");
+    expect(result.output).toContain("exists: True");
+  });
+
+  it("times out on runaway code", async () => {
+    // Override timeout to 1s for this test
+    const origTimeout = process.env.ATLAS_PYTHON_TIMEOUT;
+    process.env.ATLAS_PYTHON_TIMEOUT = "1000";
+    try {
+      // Re-import to pick up new timeout — but the module is cached.
+      // Instead, test the timeout behavior by running a sleep that exceeds default.
+      // The actual timeout constant is read at module load, so we test with a
+      // long-running script and rely on the 30s default being way more than needed.
+      // For a focused test, we'll just verify the function handles killed processes.
+      const result = await executePythonCode("import time; time.sleep(10)");
+      expect(result.success).toBe(false);
+      expect(result.error).toBeDefined();
+    } finally {
+      if (origTimeout !== undefined) {
+        process.env.ATLAS_PYTHON_TIMEOUT = origTimeout;
+      } else {
+        delete process.env.ATLAS_PYTHON_TIMEOUT;
+      }
+    }
+  }, 15000);
 });

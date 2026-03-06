@@ -857,7 +857,36 @@ describe("datasource plugin entities and dialect", () => {
         forbiddenPatterns: [/\bCOPY\b/i, "not-a-regex"],
       },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any)).toThrow('Each entry in "forbiddenPatterns" must be a RegExp');
+    } as any)).toThrow('"forbiddenPatterns" entries must each be a RegExp');
+  });
+
+  test("throws when forbiddenPatterns contains duck-typed RegExp-like object", () => {
+    expect(() => definePlugin({
+      id: "bad-patterns",
+      type: "datasource",
+      version: "1.0.0",
+      connection: {
+        create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
+        dbType: "postgres",
+        forbiddenPatterns: [{ test: () => true, exec: () => null }],
+      },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)).toThrow('"forbiddenPatterns" entries must each be a RegExp');
+  });
+
+  test("accepts empty forbiddenPatterns array", () => {
+    const plugin = definePlugin({
+      id: "empty-patterns",
+      type: "datasource",
+      version: "1.0.0",
+      connection: {
+        create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
+        dbType: "postgres",
+        forbiddenPatterns: [],
+      },
+    } satisfies AtlasDatasourcePlugin);
+
+    expect(plugin.connection.forbiddenPatterns).toHaveLength(0);
   });
 
   test("createPlugin works with parserDialect and forbiddenPatterns", () => {

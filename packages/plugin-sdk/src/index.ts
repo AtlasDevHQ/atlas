@@ -7,6 +7,7 @@ export type {
   PluginDBConnection,
   QueryValidationResult,
   PluginDBType,
+  ParserDialect,
   PluginType,
   PluginStatus,
   PluginHealthResult,

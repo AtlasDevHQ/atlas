@@ -62,7 +62,7 @@ function validatePluginShape(plugin: AtlasPlugin): void {
       }
       for (const p of ds.connection.forbiddenPatterns) {
         if (!(p instanceof RegExp)) {
-          throw new Error('Each entry in "forbiddenPatterns" must be a RegExp');
+          throw new Error('Datasource plugin connection "forbiddenPatterns" entries must each be a RegExp');
         }
       }
     }

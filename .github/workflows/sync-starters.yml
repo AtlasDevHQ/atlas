@@ -8,7 +8,12 @@ on:
       - "packages/web/src/ui/**"
       - "create-atlas/**"
       - "examples/**"
+      - "docs/guides/deploy.md"
   workflow_dispatch:
+
+concurrency:
+  group: sync-starters
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -54,10 +59,11 @@ jobs:
             echo "--- Syncing ${repo} ---"
 
             # Clone the starter repo
-            if ! git clone "https://x-access-token:${GH_TOKEN}@github.com/${repo}.git" "$clone_dir" 2>/dev/null; then
-              echo "  WARN: Could not clone ${repo} — skipping (repo may not exist yet)"
+            clone_output="$(git clone "https://x-access-token:${GH_TOKEN}@github.com/${repo}.git" "$clone_dir" 2>&1)" || {
+              echo "  WARN: Could not clone ${repo} — skipping"
+              echo "  $clone_output"
               continue
-            fi
+            }
 
             # Remove all tracked files (keep .git)
             cd "$clone_dir"
@@ -72,12 +78,8 @@ jobs:
             if git diff --cached --quiet; then
               echo "  No changes — skipping"
             else
-              git commit -m "$(cat <<EOF
-          sync: update from atlas monorepo (${SHORT_SHA})
-
-          Source: https://github.com/AtlasDevHQ/atlas/commit/${SHA}
-          EOF
-              )"
+              git commit -m "sync: update from atlas monorepo (${SHORT_SHA})" \
+                -m "Source: https://github.com/AtlasDevHQ/atlas/commit/${SHA}"
               git push origin main
               echo "  Pushed updates"
             fi

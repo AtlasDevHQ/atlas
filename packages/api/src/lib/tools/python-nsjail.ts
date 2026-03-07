@@ -12,7 +12,7 @@
 
 import type { PythonBackend, PythonResult } from "./python";
 import { randomUUID } from "crypto";
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from "fs";
+import { mkdirSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
 import { createLogger } from "@atlas/api/lib/logger";
 
@@ -290,9 +290,15 @@ export function createPythonNsjailBackend(nsjailPath: string): PythonBackend {
 
       try {
         // Prepare tmpfs files
-        mkdirSync(chartDir, { recursive: true });
-        writeFileSync(codeFile, code);
-        writeFileSync(wrapperFile, PYTHON_WRAPPER);
+        try {
+          mkdirSync(chartDir, { recursive: true });
+          writeFileSync(codeFile, code);
+          writeFileSync(wrapperFile, PYTHON_WRAPPER);
+        } catch (err) {
+          const detail = err instanceof Error ? err.message : String(err);
+          log.error({ err: detail, tmpDir, execId }, "Failed to prepare Python execution files");
+          return { success: false, error: `Infrastructure error preparing Python sandbox: ${detail}` };
+        }
 
         const args = buildPythonNsjailArgs(nsjailPath, tmpDir, codeFile, wrapperFile, chartDir, resultMarker);
         const env = buildJailEnv(resultMarker);
@@ -318,7 +324,11 @@ export function createPythonNsjailBackend(nsjailPath: string): PythonBackend {
           proc.stdin.end();
         } catch (err) {
           const detail = err instanceof Error ? err.message : String(err);
-          log.warn({ err: detail, execId }, "stdin write error (python may have exited early)");
+          log.warn({ err: detail, execId }, "stdin write error during Python execution");
+          if (data) {
+            proc.kill();
+            return { success: false, error: `Failed to inject data into Python sandbox: ${detail}` };
+          }
         }
 
         const [stdout, stderr] = await Promise.all([
@@ -337,7 +347,7 @@ export function createPythonNsjailBackend(nsjailPath: string): PythonBackend {
           try {
             return JSON.parse(resultLine.slice(resultMarker.length)) as PythonResult;
           } catch {
-            log.warn({ execId }, "failed to parse Python result JSON");
+            log.warn({ execId, resultLine: resultLine.slice(0, 500) }, "failed to parse Python result JSON");
             return {
               success: false,
               error: `Python produced unparseable output. stderr: ${stderr.trim().slice(0, 500)}`,
@@ -346,12 +356,26 @@ export function createPythonNsjailBackend(nsjailPath: string): PythonBackend {
         }
 
         // No structured result — process errored before the wrapper could emit one
+        if (stdout.length >= MAX_OUTPUT) {
+          return {
+            success: false,
+            error: "Python output exceeded 1 MB limit — the result was likely truncated. " +
+              "Reduce print() output or use _atlas_table for large results.",
+          };
+        }
+
         if (exitCode > 128) {
           const signal = exitCode - 128;
-          log.warn({ execId, signal }, "Python process killed by signal");
+          const signalNames: Record<number, string> = { 6: "SIGABRT", 9: "SIGKILL", 11: "SIGSEGV", 15: "SIGTERM" };
+          const name = signalNames[signal] ?? `signal ${signal}`;
+          log.warn({ execId, signal, name }, "Python process killed by signal");
           if (signal === 9) {
             return { success: false, error: "Python execution killed (likely exceeded time or memory limit)" };
           }
+          return {
+            success: false,
+            error: `Python process terminated by ${name}${stderr.trim() ? `: ${stderr.trim().slice(0, 500)}` : ""}`,
+          };
         }
 
         return {

@@ -118,7 +118,7 @@ json.dump({"imports": imports, "calls": calls}, sys.stdout)
     });
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
-    log.error({ err: detail }, "python3 not available for AST validation — guard skipped, sidecar will enforce");
+    log.warn({ err: detail }, "python3 not available for AST validation — guard skipped, sandbox backend will enforce");
     // If python3 isn't available locally, skip the guard.
     // The sidecar is the security boundary, not this check.
     return { safe: true };
@@ -148,6 +148,7 @@ json.dump({"imports": imports, "calls": calls}, sys.stdout)
   try {
     result = JSON.parse(stdout);
   } catch {
+    log.warn({ stdout: stdout.slice(0, 500) }, "Python AST checker produced unparseable output");
     return { safe: false, reason: "Code analysis produced invalid output" };
   }
 
@@ -218,8 +219,9 @@ export interface PythonBackend {
  * Priority:
  * 1. Sidecar (ATLAS_SANDBOX_URL) — HTTP-isolated container
  * 2. Vercel (ATLAS_RUNTIME=vercel) — not yet supported
- * 3. nsjail (on PATH or ATLAS_NSJAIL_PATH) — Linux namespace sandbox
- * 4. No backend — error
+ * 3. nsjail explicit (ATLAS_SANDBOX=nsjail) — hard-fail if unavailable
+ * 4. nsjail auto-detect (on PATH or ATLAS_NSJAIL_PATH) — graceful fallback
+ * 5. No backend — error
  */
 async function getPythonBackend(): Promise<PythonBackend | { error: string }> {
   // 1. Sidecar
@@ -236,7 +238,25 @@ async function getPythonBackend(): Promise<PythonBackend | { error: string }> {
     return { error: "Python execution is not yet available on Vercel. Use a sidecar or nsjail-based deployment." };
   }
 
-  // 3. nsjail
+  // 3. nsjail explicit (ATLAS_SANDBOX=nsjail) — hard-fail
+  if (process.env.ATLAS_SANDBOX === "nsjail") {
+    try {
+      const { findNsjailBinary } = await import("./explore-nsjail");
+      const nsjailPath = findNsjailBinary();
+      if (nsjailPath) {
+        const { createPythonNsjailBackend } = await import("./python-nsjail");
+        return createPythonNsjailBackend(nsjailPath);
+      }
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      log.error({ err: detail }, "nsjail explicitly requested but Python nsjail backend failed to load");
+    }
+    return {
+      error: "ATLAS_SANDBOX=nsjail but nsjail binary not found. Python execution unavailable.",
+    };
+  }
+
+  // 4. nsjail auto-detect
   try {
     const { findNsjailBinary } = await import("./explore-nsjail");
     const nsjailPath = findNsjailBinary();
@@ -244,11 +264,20 @@ async function getPythonBackend(): Promise<PythonBackend | { error: string }> {
       const { createPythonNsjailBackend } = await import("./python-nsjail");
       return createPythonNsjailBackend(nsjailPath);
     }
-  } catch {
-    // explore-nsjail not loadable — skip
+  } catch (err) {
+    if (
+      err instanceof Error &&
+      "code" in err &&
+      (err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND"
+    ) {
+      log.debug("explore-nsjail module not available, skipping nsjail Python backend");
+    } else {
+      const detail = err instanceof Error ? err.message : String(err);
+      log.error({ err: detail }, "Unexpected error initializing nsjail Python backend");
+    }
   }
 
-  // 4. No backend
+  // 5. No backend
   return {
     error: "Python execution requires a sandbox (ATLAS_SANDBOX_URL or nsjail). See deployment docs.",
   };

@@ -38,7 +38,7 @@ Run these in parallel:
 
 6. Full project board:
    ```
-   gh project item-list 1 --owner AtlasDevHQ --format json --limit 100 | jq -r '.items[] | "\(.status)\t#\(.content.number // "draft")\t\(.title)"' | sort
+   gh project item-list 2 --owner AtlasDevHQ --format json --limit 100 | jq -r '.items[] | "\(.status)\t#\(.content.number // "draft")\t\(.title)"' | sort
    ```
 
 7. `.claude/research/ROADMAP.md` — Read the current milestone sections (if it exists)
@@ -59,8 +59,8 @@ For each category, build a list of actions needed:
 - Issues that are CLOSED but board shows "Todo" or "In Progress" → move to "Done"
 - Duplicate items (same title, issue + PR both on board) → remove the PR entry, keep the issue
 - Board item IDs:
-  - Project: `PVT_kwDOD8aze84BQhKC`
-  - Status field: `PVTSSF_lADOD8aze84BQhKCzg-nP_w`
+  - Project: `PVT_kwDOD8aze84BRASF`
+  - Status field: `PVTSSF_lADOD8aze84BRASFzg-9gBo`
   - Backlog: `f75ad846`, Ready: `61e4505c`, In Progress: `47fc9ee4`, In Review: `df73e18b`, Done: `98236657`
 
 ### 2c. Issue hygiene
@@ -83,16 +83,16 @@ For ROADMAP changes: use Edit tool to update checkboxes and add new items.
 For board changes:
 ```bash
 # Get item ID
-ITEM_ID=$(gh project item-list 1 --owner AtlasDevHQ --format json --limit 100 | jq -r '.items[] | select(.content.number == N) | .id')
+ITEM_ID=$(gh project item-list 2 --owner AtlasDevHQ --format json --limit 100 | jq -r '.items[] | select(.content.number == N) | .id')
 
 # Move to status
-gh project item-edit --project-id PVT_kwDOD8aze84BQhKC --id "$ITEM_ID" --field-id PVTSSF_lADOD8aze84BQhKCzg-nP_w --single-select-option-id <STATUS_ID>
+gh project item-edit --project-id PVT_kwDOD8aze84BRASF --id "$ITEM_ID" --field-id PVTSSF_lADOD8aze84BRASFzg-9gBo --single-select-option-id <STATUS_ID>
 
 # Remove duplicate
-gh project item-delete 1 --owner AtlasDevHQ --id "$ITEM_ID"
+gh project item-delete 2 --owner AtlasDevHQ --id "$ITEM_ID"
 
 # Add issue to board
-gh project item-add 1 --owner AtlasDevHQ --url <issue_url>
+gh project item-add 2 --owner AtlasDevHQ --url <issue_url>
 ```
 
 For issue updates:

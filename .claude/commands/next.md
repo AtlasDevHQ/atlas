@@ -3,22 +3,21 @@ You are helping decide what to work on next in Atlas.
 **Step 1: Read current state**
 
 Run these in parallel:
-- `gh issue list -R AtlasDevHQ/atlas --state open --limit 30` — all open issues with labels
-- `gh project item-list 1 --owner AtlasDevHQ --format json` — project board status (Backlog/Ready/In Progress/In Review/Done)
+- `gh issue list -R AtlasDevHQ/atlas --state open --limit 30` — all open issues
+- `gh project item-list 2 --owner AtlasDevHQ --format json` — project board status
 - `git log --oneline -15` — what shipped recently
-- Check `.claude/research/ROADMAP.md` if it exists — high-level milestone summary (but GitHub Issues are the source of truth for task details)
 
 **Step 2: Assess priorities**
 
-Issues are labeled by milestone (`v0.5`, `v0.6`, etc.) and type (`bug`, `security`, `dx`, etc.).
+Work from the open issues. If there are open issues on the board, suggest them — don't skip past them to theorize about future directions. The board IS the plan.
 
 Priority order:
-1. **Bugs and security** — `bug`, `security` labels. Fix before building new things
-2. **Current milestone leftovers** — lowest versioned milestone with open issues
-3. **DX / infrastructure** — `dx`, `infrastructure` labels. Unblocks future work
-4. **Next milestone** — only if current milestone is clean
+1. **Bugs and security** — fix before building new things
+2. **In Progress / Ready items** — finish what's started
+3. **Backlog items** — pick the highest-leverage ones to clear
+4. **Only if the board is truly empty** (zero open issues) — ask the user what direction they want to go. Don't invent work.
 
-Read the top 2-3 issues in detail: `gh issue view <N> -R AtlasDevHQ/atlas`
+Read the top 2-3 candidate issues in detail: `gh issue view <N> -R AtlasDevHQ/atlas`
 
 **Step 3: Suggest 2-3 issues to work on**
 
@@ -34,6 +33,7 @@ For each suggestion:
 - Prefer small, shippable increments over large refactors
 - Bias toward things that improve the core experience
 - Don't suggest more than one large effort at a time
+- If a parent issue's sub-issues are all done, suggest closing it
 
 **Step 4: Output session prompts**
 
@@ -57,13 +57,13 @@ IMPORTANT — Testing:
 IMPORTANT — Update the project board as you work:
 
 1. Find the item ID for issue #N:
-   gh project item-list 1 --owner AtlasDevHQ --format json | jq '.items[] | select(.content.number == N) | .id'
+   gh project item-list 2 --owner AtlasDevHQ --format json | jq '.items[] | select(.content.number == N) | .id'
 
 2. Move to "In Progress" when starting:
-   gh project item-edit --project-id PVT_kwDOD8aze84BQhKC --id <ITEM_ID> --field-id PVTSSF_lADOD8aze84BQhKCzg-nP_w --single-select-option-id 47fc9ee4
+   gh project item-edit --project-id PVT_kwDOD8aze84BRASF --id <ITEM_ID> --field-id PVTSSF_lADOD8aze84BRASFzg-9gBo --single-select-option-id 47fc9ee4
 
 3. When done, create a PR linked to #N (use "Closes #N" in the PR body), then move to "Done":
-   gh project item-edit --project-id PVT_kwDOD8aze84BQhKC --id <ITEM_ID> --field-id PVTSSF_lADOD8aze84BQhKCzg-nP_w --single-select-option-id 98236657
+   gh project item-edit --project-id PVT_kwDOD8aze84BRASF --id <ITEM_ID> --field-id PVTSSF_lADOD8aze84BRASFzg-9gBo --single-select-option-id 98236657
 ]
 ```
 
@@ -76,6 +76,6 @@ IMPORTANT — Update the project board as you work:
 
 **Issue/board hygiene:**
 - Always use `-R AtlasDevHQ/atlas` with all `gh` commands (no default repo set)
-- GitHub Project #1 (`PVT_kwDOD8aze84BQhKC`) under AtlasDevHQ org is the project board — issues track status there
-- When creating new issues, add them to the board: `gh project item-add 1 --owner AtlasDevHQ --url <issue_url>`
-- Label new issues with the appropriate milestone (`v0.5`, `v0.6`, etc.) and type (`bug`, `security`, `dx`, etc.)
+- GitHub Project #2 (`PVT_kwDOD8aze84BRASF`) under AtlasDevHQ org is the project board
+- When creating new issues, add them to the board: `gh project item-add 2 --owner AtlasDevHQ --url <issue_url>`
+- If a parent issue has all sub-issues closed and the core work is done, suggest closing it or note what remains

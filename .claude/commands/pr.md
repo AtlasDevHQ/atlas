@@ -56,12 +56,12 @@ If already on a feature branch, stay on it.
 
 1. Find the item ID for the linked issue:
    ```
-   gh project item-list 1 --owner AtlasDevHQ --format json | jq '.items[] | select(.content.number == N) | .id'
+   gh project item-list 2 --owner AtlasDevHQ --format json | jq '.items[] | select(.content.number == N) | .id'
    ```
 
 2. Move to "In Progress" (NOT "Done" — the PR still needs review):
    ```
-   gh project item-edit --project-id PVT_kwDOD8aze84BQhKC --id <ITEM_ID> --field-id PVTSSF_lADOD8aze84BQhKCzg-nP_w --single-select-option-id 47fc9ee4
+   gh project item-edit --project-id PVT_kwDOD8aze84BRASF --id <ITEM_ID> --field-id PVTSSF_lADOD8aze84BRASFzg-9gBo --single-select-option-id 47fc9ee4
    ```
 
 **Step 7: Confirm**

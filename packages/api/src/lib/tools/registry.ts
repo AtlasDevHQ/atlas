@@ -187,6 +187,20 @@ export async function buildRegistry(options?: {
   });
 
   if (process.env.ATLAS_PYTHON_ENABLED === "true") {
+    if (!process.env.ATLAS_SANDBOX_URL) {
+      const { createLogger } = await import("@atlas/api/lib/logger");
+      const pyLog = createLogger("registry");
+      pyLog.error(
+        "ATLAS_PYTHON_ENABLED=true but ATLAS_SANDBOX_URL is not set. " +
+          "Python execution requires a sandbox sidecar for isolation.",
+      );
+      throw new Error(
+        "ATLAS_PYTHON_ENABLED=true requires ATLAS_SANDBOX_URL to be set. " +
+          "The Python tool runs in the sandbox sidecar for security isolation. " +
+          "See deployment docs for sidecar setup.",
+      );
+    }
+
     try {
       const { executePython } = await import("./python");
       registry.register({
@@ -201,6 +215,7 @@ export async function buildRegistry(options?: {
         { err: err instanceof Error ? err : new Error(String(err)) },
         "Failed to load Python tool — executePython will be unavailable",
       );
+      throw err;
     }
   }
 

@@ -1,7 +1,7 @@
 /**
  * Types for the sidecar HTTP contract.
  * Used by both the sidecar server (packages/sandbox-sidecar) and
- * the sidecar client (packages/api/src/lib/tools/explore-sidecar.ts).
+ * the sidecar clients (explore-sidecar.ts, python-sidecar.ts).
  */
 
 export interface SidecarExecRequest {
@@ -14,3 +14,14 @@ export interface SidecarExecResponse {
   stderr: string;
   exitCode: number;
 }
+
+// --- Python execution ---
+
+export interface SidecarPythonRequest {
+  code: string;
+  data?: { columns: string[]; rows: unknown[][] };
+  timeout?: number;
+}
+
+/** Wire-format alias — canonical type lives in python.ts. */
+export type { PythonResult as SidecarPythonResponse } from "@atlas/api/lib/tools/python";

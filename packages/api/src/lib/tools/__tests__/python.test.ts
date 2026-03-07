@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, mock } from "bun:test";
+import { describe, expect, it, mock, afterEach } from "bun:test";
 
 // Mock logger and tracing to avoid side effects
 mock.module("@atlas/api/lib/logger", () => ({
@@ -14,7 +14,7 @@ mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async (_name: string, _attrs: unknown, fn: () => Promise<unknown>) => fn(),
 }));
 
-const { validatePythonCode, executePythonCode } = await import(
+const { validatePythonCode } = await import(
   "@atlas/api/lib/tools/python"
 );
 
@@ -95,6 +95,43 @@ describe("validatePythonCode", () => {
       expect(result.safe).toBe(false);
       if (!result.safe) expect(result.reason).toContain("os");
     });
+
+    // Network modules (added per PR review #5)
+    it("rejects import http", async () => {
+      const result = await validatePythonCode("import http");
+      expect(result.safe).toBe(false);
+      if (!result.safe) expect(result.reason).toContain("http");
+    });
+
+    it("rejects import urllib", async () => {
+      const result = await validatePythonCode("import urllib");
+      expect(result.safe).toBe(false);
+      if (!result.safe) expect(result.reason).toContain("urllib");
+    });
+
+    it("rejects import requests", async () => {
+      const result = await validatePythonCode("import requests");
+      expect(result.safe).toBe(false);
+      if (!result.safe) expect(result.reason).toContain("requests");
+    });
+
+    it("rejects import pickle", async () => {
+      const result = await validatePythonCode("import pickle");
+      expect(result.safe).toBe(false);
+      if (!result.safe) expect(result.reason).toContain("pickle");
+    });
+
+    it("rejects import tempfile", async () => {
+      const result = await validatePythonCode("import tempfile");
+      expect(result.safe).toBe(false);
+      if (!result.safe) expect(result.reason).toContain("tempfile");
+    });
+
+    it("rejects import pathlib", async () => {
+      const result = await validatePythonCode("import pathlib");
+      expect(result.safe).toBe(false);
+      if (!result.safe) expect(result.reason).toContain("pathlib");
+    });
   });
 
   describe("blocked builtins", () => {
@@ -132,6 +169,25 @@ describe("validatePythonCode", () => {
       const result = await validatePythonCode("breakpoint()");
       expect(result.safe).toBe(false);
       if (!result.safe) expect(result.reason).toContain("breakpoint");
+    });
+
+    // Guard bypass mitigations (PR review #1)
+    it("rejects getattr()", async () => {
+      const result = await validatePythonCode('getattr(__builtins__, "exec")("print(1)")');
+      expect(result.safe).toBe(false);
+      if (!result.safe) expect(result.reason).toContain("getattr");
+    });
+
+    it("rejects globals()", async () => {
+      const result = await validatePythonCode('globals()["__builtins__"]');
+      expect(result.safe).toBe(false);
+      if (!result.safe) expect(result.reason).toContain("globals");
+    });
+
+    it("rejects vars()", async () => {
+      const result = await validatePythonCode("vars()");
+      expect(result.safe).toBe(false);
+      if (!result.safe) expect(result.reason).toContain("vars");
     });
   });
 
@@ -215,138 +271,61 @@ z = x + y
 });
 
 // ---------------------------------------------------------------------------
-// Execution tests (real Python — requires python3)
+// Sidecar routing tests
 // ---------------------------------------------------------------------------
 
-describe("executePythonCode", () => {
-  it("executes simple print", async () => {
-    const result = await executePythonCode('print("hello world")');
-    expect(result.success).toBe(true);
-    expect(result.output).toContain("hello world");
-  });
+describe("executePython tool", () => {
+  const savedEnv: Record<string, string | undefined> = {};
 
-  it("captures runtime errors", async () => {
-    const result = await executePythonCode("1 / 0");
-    expect(result.success).toBe(false);
-    expect(result.error).toContain("ZeroDivisionError");
-  });
+  function saveAndSetEnv(key: string, value: string | undefined) {
+    if (!(key in savedEnv)) {
+      savedEnv[key] = process.env[key];
+    }
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
 
-  it("receives data payload", async () => {
-    const code = `
-if data:
-    print(f"columns: {data['columns']}")
-    print(f"rows: {len(data['rows'])}")
-`;
-    const result = await executePythonCode(code, {
-      columns: ["id", "name"],
-      rows: [[1, "Alice"], [2, "Bob"]],
-    });
-    expect(result.success).toBe(true);
-    expect(result.output).toContain("columns: ['id', 'name']");
-    expect(result.output).toContain("rows: 2");
-  });
-
-  it("returns table result via _atlas_table", async () => {
-    const code = `
-_atlas_table = {"columns": ["x", "y"], "rows": [[1, 2], [3, 4]]}
-`;
-    const result = await executePythonCode(code);
-    expect(result.success).toBe(true);
-    expect(result.table).toEqual({
-      columns: ["x", "y"],
-      rows: [[1, 2], [3, 4]],
-    });
-  });
-
-  it("handles empty code output", async () => {
-    const result = await executePythonCode("x = 1 + 1");
-    expect(result.success).toBe(true);
-  });
-
-  it("handles multi-line output", async () => {
-    const code = `
-for i in range(3):
-    print(f"line {i}")
-`;
-    const result = await executePythonCode(code);
-    expect(result.success).toBe(true);
-    expect(result.output).toContain("line 0");
-    expect(result.output).toContain("line 2");
-  });
-
-  it("runs without data when none provided", async () => {
-    const code = `
-print(f"data is {data}")
-print(f"df is {df}")
-`;
-    const result = await executePythonCode(code);
-    expect(result.success).toBe(true);
-    expect(result.output).toContain("data is None");
-    expect(result.output).toContain("df is None");
-  });
-
-  it("returns Recharts chart via _atlas_chart dict", async () => {
-    const code = `
-_atlas_chart = {
-    "type": "bar",
-    "data": [{"month": "Jan", "revenue": 100}, {"month": "Feb", "revenue": 200}],
-    "categoryKey": "month",
-    "valueKeys": ["revenue"],
-}
-`;
-    const result = await executePythonCode(code);
-    expect(result.success).toBe(true);
-    expect(result.rechartsCharts).toHaveLength(1);
-    expect(result.rechartsCharts![0].type).toBe("bar");
-    expect(result.rechartsCharts![0].categoryKey).toBe("month");
-  });
-
-  it("returns multiple Recharts charts via _atlas_chart list", async () => {
-    const code = `
-_atlas_chart = [
-    {"type": "line", "data": [{"x": 1, "y": 2}], "categoryKey": "x", "valueKeys": ["y"]},
-    {"type": "bar", "data": [{"x": 1, "y": 3}], "categoryKey": "x", "valueKeys": ["y"]},
-]
-`;
-    const result = await executePythonCode(code);
-    expect(result.success).toBe(true);
-    expect(result.rechartsCharts).toHaveLength(2);
-    expect(result.rechartsCharts![0].type).toBe("line");
-    expect(result.rechartsCharts![1].type).toBe("bar");
-  });
-
-  it("provides chart_path() helper", async () => {
-    const code = `
-import os
-p = chart_path(0)
-print(f"path: {p}")
-print(f"exists: {os.path.isdir(os.path.dirname(p))}")
-`;
-    const result = await executePythonCode(code);
-    expect(result.success).toBe(true);
-    expect(result.output).toContain("path:");
-    expect(result.output).toContain("exists: True");
-  });
-
-  it("times out on runaway code", async () => {
-    // Override timeout to 1s for this test
-    const origTimeout = process.env.ATLAS_PYTHON_TIMEOUT;
-    process.env.ATLAS_PYTHON_TIMEOUT = "1000";
-    try {
-      // Re-import to pick up new timeout — but the module is cached.
-      // Instead, test the timeout behavior by running a sleep that exceeds default.
-      // The actual timeout constant is read at module load, so we test with a
-      // long-running script and rely on the 30s default being way more than needed.
-      // For a focused test, we'll just verify the function handles killed processes.
-      const result = await executePythonCode("import time; time.sleep(10)");
-      expect(result.success).toBe(false);
-      expect(result.error).toBeDefined();
-    } finally {
-      if (origTimeout !== undefined) {
-        process.env.ATLAS_PYTHON_TIMEOUT = origTimeout;
+  afterEach(() => {
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value === undefined) {
+        delete process.env[key];
       } else {
-        delete process.env.ATLAS_PYTHON_TIMEOUT;
+        process.env[key] = value;
       }
     }
-  }, 15000);
+    for (const key of Object.keys(savedEnv)) {
+      delete savedEnv[key];
+    }
+  });
+
+  it("rejects execution when ATLAS_SANDBOX_URL is not set", async () => {
+    saveAndSetEnv("ATLAS_SANDBOX_URL", undefined);
+
+    const { executePython } = await import("@atlas/api/lib/tools/python");
+    const execute = executePython.execute!;
+    const result = await execute(
+      { code: 'print("hello")', explanation: "test", data: undefined },
+      {} as never,
+    ) as { success: boolean; error?: string };
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("ATLAS_SANDBOX_URL");
+  });
+
+  it("rejects code that fails import guard before hitting sidecar", async () => {
+    saveAndSetEnv("ATLAS_SANDBOX_URL", "http://localhost:9999");
+
+    const { executePython } = await import("@atlas/api/lib/tools/python");
+    const execute = executePython.execute!;
+    const result = await execute(
+      { code: "import subprocess", explanation: "test", data: undefined },
+      {} as never,
+    ) as { success: boolean; error?: string };
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("subprocess");
+  });
 });
+
+// Registry gating (ATLAS_PYTHON_ENABLED + ATLAS_SANDBOX_URL) is tested in registry.test.ts

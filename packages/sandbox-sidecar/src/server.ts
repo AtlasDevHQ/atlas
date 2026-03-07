@@ -7,13 +7,19 @@
  * command with cwd set to SEMANTIC_DIR, and cleans up.
  *
  * Endpoints:
- *   GET  /health — { status: "ok" }
- *   POST /exec   — { command, timeout? } → { stdout, stderr, exitCode }
+ *   GET  /health        — { status: "ok" }
+ *   POST /exec          — { command, timeout? } → { stdout, stderr, exitCode }
+ *   POST /exec-python   — { code, data?, timeout? } → PythonResult
  */
 
-import type { SidecarExecRequest, SidecarExecResponse } from "@atlas/api/lib/sidecar-types";
+import type {
+  SidecarExecRequest,
+  SidecarExecResponse,
+  SidecarPythonRequest,
+  SidecarPythonResponse,
+} from "@atlas/api/lib/sidecar-types";
 import { randomUUID } from "crypto";
-import { readdirSync } from "fs";
+import { readdirSync, writeFileSync } from "fs";
 import { mkdir, rm } from "fs/promises";
 import { join } from "path";
 
@@ -27,6 +33,10 @@ const AUTH_TOKEN = process.env.SIDECAR_AUTH_TOKEN;
 
 let activeExecs = 0;
 const MAX_CONCURRENT = 10;
+
+// --- Python defaults ---
+const PYTHON_DEFAULT_TIMEOUT_MS = 30_000;
+const PYTHON_MAX_TIMEOUT_MS = 120_000;
 
 /** Read up to `max` bytes from a ReadableStream. */
 async function readLimited(stream: ReadableStream, max: number): Promise<string> {
@@ -50,14 +60,26 @@ async function readLimited(stream: ReadableStream, max: number): Promise<string>
   return new TextDecoder().decode(Buffer.concat(chunks));
 }
 
-async function handleExec(req: Request): Promise<Response> {
-  // Optional auth check — if SIDECAR_AUTH_TOKEN is set, require it
-  if (AUTH_TOKEN) {
-    const authHeader = req.headers.get("Authorization");
-    if (authHeader !== `Bearer ${AUTH_TOKEN}`) {
-      return Response.json({ error: "Unauthorized" }, { status: 401 });
-    }
+/** Shared auth check. Returns a 401 Response if auth fails, null if OK. */
+function checkAuth(req: Request): Response | null {
+  if (!AUTH_TOKEN) return null;
+  const authHeader = req.headers.get("Authorization");
+  if (authHeader !== `Bearer ${AUTH_TOKEN}`) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
+  return null;
+}
+
+/** Clamp a timeout value to [min, max]. */
+function clampTimeout(value: number | undefined, defaultMs: number, maxMs: number): number {
+  return Math.min(Math.max(value ?? defaultMs, 1000), maxMs);
+}
+
+// --- Shell exec handler ---
+
+async function handleExec(req: Request): Promise<Response> {
+  const authErr = checkAuth(req);
+  if (authErr) return authErr;
 
   // Concurrency control
   if (activeExecs >= MAX_CONCURRENT) {
@@ -75,11 +97,7 @@ async function handleExec(req: Request): Promise<Response> {
     return Response.json({ error: "Missing or invalid 'command' field" }, { status: 400 });
   }
 
-  // Clamp timeout: minimum 1s (prevent abuse), maximum 60s (prevent resource exhaustion)
-  const timeout = Math.min(
-    Math.max(body.timeout ?? DEFAULT_TIMEOUT_MS, 1000),
-    MAX_TIMEOUT_MS,
-  );
+  const timeout = clampTimeout(body.timeout, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
 
   // Per-request isolation: unique temp directory
   const execId = randomUUID();
@@ -92,10 +110,6 @@ async function handleExec(req: Request): Promise<Response> {
   try {
     await mkdir(tmpDir, { recursive: true });
 
-    // Security: The sidecar does NOT validate commands. Isolation comes from
-    // the container boundary — no secrets mounted, minimal PATH, cwd fixed
-    // to the semantic directory. The calling API is responsible for scoping
-    // commands to safe operations (explore tool restrictions).
     const proc = Bun.spawn(["bash", "-c", body.command], {
       cwd: SEMANTIC_DIR,
       env: {
@@ -138,17 +152,305 @@ async function handleExec(req: Request): Promise<Response> {
     );
   } finally {
     activeExecs--;
-    // Cleanup temp directory — fire and forget
     rm(tmpDir, { recursive: true, force: true }).catch((err) => {
       console.warn(`[sandbox-sidecar] Failed to clean up ${tmpDir}: ${err instanceof Error ? err.message : String(err)}`);
     });
   }
 }
 
+// --- Python exec handler ---
+
+/**
+ * Python wrapper script injected into the sidecar.
+ *
+ * Security:
+ * - AST-based import guard runs before exec (sidecar-side enforcement)
+ * - User code runs in an isolated namespace (cannot see/modify wrapper vars)
+ * - Per-execution randomized result marker prevents stdout spoofing
+ *
+ * Handles data injection (JSON on stdin → DataFrame/dict), stdout capture,
+ * chart collection (PNG files + Recharts dicts), and structured output.
+ */
+const PYTHON_WRAPPER = `
+import sys, json, io, base64, glob, os, ast
+
+_marker = os.environ["ATLAS_RESULT_MARKER"]
+_chart_dir = os.environ.get("ATLAS_CHART_DIR", "/tmp")
+
+# --- Import guard (sidecar-side enforcement) ---
+_BLOCKED_MODULES = {
+    "subprocess", "os", "socket", "shutil", "sys", "ctypes", "importlib",
+    "code", "signal", "multiprocessing", "threading", "pty", "fcntl",
+    "termios", "resource", "posixpath",
+    "http", "urllib", "requests", "httpx", "aiohttp", "webbrowser",
+    "pickle", "tempfile", "pathlib",
+}
+_BLOCKED_BUILTINS = {
+    "compile", "exec", "eval", "__import__", "open", "breakpoint",
+    "getattr", "globals", "locals", "vars", "dir", "delattr", "setattr",
+}
+
+_user_code = open(sys.argv[1]).read()
+try:
+    _tree = ast.parse(_user_code)
+except SyntaxError as e:
+    print(_marker + json.dumps({"success": False, "error": f"SyntaxError: {e.msg} (line {e.lineno})"}))
+    sys.exit(0)
+
+_blocked = None
+for _node in ast.walk(_tree):
+    if _blocked:
+        break
+    if isinstance(_node, ast.Import):
+        for _alias in _node.names:
+            _mod = _alias.name.split('.')[0]
+            if _mod in _BLOCKED_MODULES:
+                _blocked = f'Blocked import: "{_mod}" is not allowed'
+                break
+    elif isinstance(_node, ast.ImportFrom):
+        if _node.module:
+            _mod = _node.module.split('.')[0]
+            if _mod in _BLOCKED_MODULES:
+                _blocked = f'Blocked import: "{_mod}" is not allowed'
+    elif isinstance(_node, ast.Call):
+        _name = None
+        if isinstance(_node.func, ast.Name):
+            _name = _node.func.id
+        elif isinstance(_node.func, ast.Attribute):
+            _name = _node.func.attr
+        if _name and _name in _BLOCKED_BUILTINS:
+            _blocked = f'Blocked builtin: "{_name}()" is not allowed'
+
+if _blocked:
+    print(_marker + json.dumps({"success": False, "error": _blocked}))
+    sys.exit(0)
+
+# --- Data injection ---
+_stdin_data = sys.stdin.read()
+_atlas_data = None
+if _stdin_data.strip():
+    _atlas_data = json.loads(_stdin_data)
+
+data = None
+df = None
+if _atlas_data:
+    try:
+        import pandas as pd
+        df = pd.DataFrame(_atlas_data["rows"], columns=_atlas_data["columns"])
+        data = df
+    except ImportError:
+        data = _atlas_data
+
+# Configure matplotlib for headless rendering
+try:
+    import matplotlib
+    matplotlib.use('Agg')
+except ImportError:
+    pass
+
+def chart_path(n=0):
+    return os.path.join(_chart_dir, f"chart_{n}.png")
+
+# --- Execute user code in isolated namespace ---
+_old_stdout = sys.stdout
+sys.stdout = _captured = io.StringIO()
+
+_user_ns = {"chart_path": chart_path, "data": data, "df": df}
+_atlas_error = None
+try:
+    exec(_user_code, _user_ns)
+except Exception as e:
+    _atlas_error = f"{type(e).__name__}: {e}"
+
+_output = _captured.getvalue()
+sys.stdout = _old_stdout
+
+# --- Collect results ---
+_charts = []
+for f in sorted(glob.glob(os.path.join(_chart_dir, "chart_*.png"))):
+    with open(f, "rb") as fh:
+        _charts.append({"base64": base64.b64encode(fh.read()).decode(), "mimeType": "image/png"})
+
+_result = {"success": _atlas_error is None}
+if _output.strip():
+    _result["output"] = _output.strip()
+if _atlas_error:
+    _result["error"] = _atlas_error
+
+if "_atlas_table" in _user_ns:
+    _result["table"] = _user_ns["_atlas_table"]
+
+if "_atlas_chart" in _user_ns:
+    _ac = _user_ns["_atlas_chart"]
+    if isinstance(_ac, dict):
+        _result["rechartsCharts"] = [_ac]
+    elif isinstance(_ac, list):
+        _result["rechartsCharts"] = _ac
+
+if _charts:
+    _result["charts"] = _charts
+
+print(_marker + json.dumps(_result), file=_old_stdout)
+`;
+
+async function handleExecPython(req: Request): Promise<Response> {
+  const authErr = checkAuth(req);
+  if (authErr) return authErr;
+
+  if (activeExecs >= MAX_CONCURRENT) {
+    return Response.json({ error: "Too many concurrent executions" }, { status: 429 });
+  }
+
+  let body: SidecarPythonRequest;
+  try {
+    body = (await req.json()) as SidecarPythonRequest;
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  if (!body.code || typeof body.code !== "string") {
+    return Response.json({ error: "Missing or invalid 'code' field" }, { status: 400 });
+  }
+
+  const timeout = clampTimeout(body.timeout, PYTHON_DEFAULT_TIMEOUT_MS, PYTHON_MAX_TIMEOUT_MS);
+
+  const execId = randomUUID();
+  const resultMarker = `__ATLAS_RESULT_${execId}__`;
+  const tmpDir = join("/tmp", `pyexec-${execId}`);
+  const codeFile = join(tmpDir, "user_code.py");
+  const wrapperFile = join(tmpDir, "wrapper.py");
+  const chartDir = join(tmpDir, "charts");
+
+  console.log(`[sandbox-sidecar] python=${execId} codeLen=${body.code.length} timeout=${timeout}`);
+
+  const startTime = Date.now();
+  activeExecs++;
+  try {
+    await mkdir(chartDir, { recursive: true });
+    writeFileSync(codeFile, body.code);
+    writeFileSync(wrapperFile, PYTHON_WRAPPER);
+
+    const stdinPayload = body.data ? JSON.stringify(body.data) : "";
+
+    const proc = Bun.spawn(["python3", wrapperFile, codeFile], {
+      cwd: tmpDir,
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        PATH: "/bin:/usr/bin:/usr/local/bin",
+        HOME: tmpDir,
+        LANG: "C.UTF-8",
+        TMPDIR: tmpDir,
+        MPLBACKEND: "Agg",
+        ATLAS_CHART_DIR: chartDir,
+        ATLAS_RESULT_MARKER: resultMarker,
+      },
+    });
+
+    // SIGKILL — not catchable by Python
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      proc.kill(9);
+    }, timeout);
+
+    try {
+      proc.stdin.write(stdinPayload);
+      proc.stdin.end();
+    } catch (err) {
+      // EPIPE: python3 died before consuming stdin — will be caught by exit code
+      const detail = err instanceof Error ? err.message : String(err);
+      console.warn(`[sandbox-sidecar] python=${execId} stdin write error: ${detail}`);
+    }
+
+    let stdout: string;
+    let stderr: string;
+    let exitCode: number;
+    try {
+      [stdout, stderr] = await Promise.all([
+        readLimited(proc.stdout, MAX_OUTPUT_BYTES),
+        readLimited(proc.stderr, MAX_OUTPUT_BYTES),
+      ]);
+      exitCode = await proc.exited;
+    } finally {
+      clearTimeout(timer);
+    }
+
+    const duration = Date.now() - startTime;
+
+    if (timedOut) {
+      console.log(`[sandbox-sidecar] python=${execId} timed out after ${timeout}ms`);
+      const result: SidecarPythonResponse = {
+        success: false,
+        error: `Python execution timed out after ${timeout}ms`,
+      };
+      return Response.json(result);
+    }
+
+    // Extract structured result from the last marker line
+    const lines = stdout.split("\n");
+    const resultLine = lines.findLast((l) => l.startsWith(resultMarker));
+
+    if (resultLine) {
+      try {
+        const parsed = JSON.parse(resultLine.slice(resultMarker.length)) as SidecarPythonResponse;
+        console.log(`[sandbox-sidecar] python=${execId} success=${parsed.success} exitCode=${exitCode} duration=${duration}ms`);
+        return Response.json(parsed);
+      } catch {
+        console.warn(`[sandbox-sidecar] python=${execId} failed to parse result JSON, exitCode=${exitCode}`);
+        const result: SidecarPythonResponse = {
+          success: false,
+          error: `Python produced unparseable output. stderr: ${stderr.trim().slice(0, 500)}`,
+        };
+        return Response.json(result);
+      }
+    }
+
+    // No structured result — process errored before the wrapper could emit one
+    console.log(`[sandbox-sidecar] python=${execId} no result line, exitCode=${exitCode} stderr=${stderr.slice(0, 200)} duration=${duration}ms`);
+    const result: SidecarPythonResponse = {
+      success: false,
+      error: stderr.trim() || `Python execution failed (exit code ${exitCode})`,
+    };
+    return Response.json(result);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error(`[sandbox-sidecar] python=${execId} error=${detail}`);
+    const result: SidecarPythonResponse = {
+      success: false,
+      error: `Execution failed: ${detail}`,
+    };
+    return Response.json(result, { status: 500 });
+  } finally {
+    activeExecs--;
+    rm(tmpDir, { recursive: true, force: true }).catch((err) => {
+      console.warn(`[sandbox-sidecar] Failed to clean up ${tmpDir}: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
+}
+
+// --- Health endpoint ---
+
 function handleHealth(): Response {
   try {
     const entries = readdirSync(SEMANTIC_DIR);
-    return Response.json({ status: "ok", semanticDir: SEMANTIC_DIR, fileCount: entries.length });
+
+    // Check python3 availability
+    let pythonAvailable = false;
+    try {
+      const proc = Bun.spawnSync(["python3", "--version"]);
+      pythonAvailable = proc.exitCode === 0;
+    } catch {
+      // python3 not found
+    }
+
+    return Response.json({
+      status: "ok",
+      semanticDir: SEMANTIC_DIR,
+      fileCount: entries.length,
+      pythonAvailable,
+    });
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     return Response.json(
@@ -157,6 +459,8 @@ function handleHealth(): Response {
     );
   }
 }
+
+// --- Server ---
 
 Bun.serve({
   port: PORT,
@@ -169,6 +473,10 @@ Bun.serve({
 
     if (url.pathname === "/exec" && req.method === "POST") {
       return handleExec(req);
+    }
+
+    if (url.pathname === "/exec-python" && req.method === "POST") {
+      return handleExecPython(req);
     }
 
     return Response.json({ error: "Not found" }, { status: 404 });

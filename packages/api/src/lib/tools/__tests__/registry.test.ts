@@ -167,6 +167,43 @@ describe("defaultRegistry", () => {
 });
 
 describe("buildRegistry", () => {
+  it("throws when ATLAS_PYTHON_ENABLED=true but ATLAS_SANDBOX_URL is not set", async () => {
+    const saved = {
+      enabled: process.env.ATLAS_PYTHON_ENABLED,
+      url: process.env.ATLAS_SANDBOX_URL,
+    };
+    try {
+      process.env.ATLAS_PYTHON_ENABLED = "true";
+      delete process.env.ATLAS_SANDBOX_URL;
+      await expect(buildRegistry()).rejects.toThrow("ATLAS_SANDBOX_URL");
+    } finally {
+      if (saved.enabled !== undefined) process.env.ATLAS_PYTHON_ENABLED = saved.enabled;
+      else delete process.env.ATLAS_PYTHON_ENABLED;
+      if (saved.url !== undefined) process.env.ATLAS_SANDBOX_URL = saved.url;
+      else delete process.env.ATLAS_SANDBOX_URL;
+    }
+  });
+
+  it("includes executePython when ATLAS_PYTHON_ENABLED and ATLAS_SANDBOX_URL are set", async () => {
+    const saved = {
+      enabled: process.env.ATLAS_PYTHON_ENABLED,
+      url: process.env.ATLAS_SANDBOX_URL,
+    };
+    try {
+      process.env.ATLAS_PYTHON_ENABLED = "true";
+      process.env.ATLAS_SANDBOX_URL = "http://localhost:8080";
+      const registry = await buildRegistry();
+      const names = Object.keys(registry.getAll()).sort();
+      expect(names).toEqual(["executePython", "executeSQL", "explore"]);
+      expect(registry.describe()).toContain("### 4. Analyze Data with Python");
+    } finally {
+      if (saved.enabled !== undefined) process.env.ATLAS_PYTHON_ENABLED = saved.enabled;
+      else delete process.env.ATLAS_PYTHON_ENABLED;
+      if (saved.url !== undefined) process.env.ATLAS_SANDBOX_URL = saved.url;
+      else delete process.env.ATLAS_SANDBOX_URL;
+    }
+  });
+
   it("returns 2 core tools by default", async () => {
     const registry = await buildRegistry();
     const names = Object.keys(registry.getAll()).sort();

@@ -1,13 +1,24 @@
 FROM oven/bun:1.3.10-debian AS base
 
-# Install only the tools needed for explore mode
+# Install tools needed for explore mode + Python for executePython
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     coreutils \
     grep \
     findutils \
     tree \
+    python3 \
+    python3-pip \
     && rm -rf /var/lib/apt/lists/*
+
+# Install data science libraries (user code may use these)
+RUN pip3 install --no-cache-dir --break-system-packages \
+    pandas \
+    numpy \
+    matplotlib \
+    scipy \
+    scikit-learn \
+    statsmodels
 
 # Use existing nobody user (65534) — don't create a new one, the base image has it
 # Fall back to creating if not present (shouldn't happen with debian-based images)
@@ -23,8 +34,6 @@ COPY packages/sandbox-sidecar/src/ ./src/
 # For custom datasets, rebuild with a volume mount or replace semantic/ in CI.
 COPY packages/cli/data/demo-semantic/ /semantic/
 RUN chmod -R a-w /semantic/
-
-# Keep this image minimal — adding packages or env vars weakens the isolation model
 
 # No secrets, no database drivers, no node_modules beyond bun runtime
 EXPOSE 8080

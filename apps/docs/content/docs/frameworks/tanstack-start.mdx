@@ -1,0 +1,123 @@
+---
+title: TanStack Start
+description: Integrate Atlas into a TanStack Start app using plain fetch or TanStack Query.
+---
+
+Integrate Atlas into a TanStack Start app using plain `fetch` or TanStack Query.
+
+TanStack Start is a full-stack React framework. Unlike the other BYOF guides, this one does **not** use `@ai-sdk/react` -- it shows how to consume the Atlas API directly, which works with any HTTP client.
+
+> **Prerequisites:** A running Atlas API server. See [Bring Your Own Frontend](/docs/frameworks/overview) for architecture and common setup.
+
+---
+
+## 1. Install dependencies
+
+For the synchronous approach:
+
+```bash
+bun add @tanstack/react-query
+```
+
+No AI SDK packages are required. If you prefer the `useChat` hook, you can install `@ai-sdk/react` and follow the [React Vite guide](/docs/frameworks/react-vite) -- it works the same in TanStack Start.
+
+## 2. Configure the API URL
+
+### Option A: Same-origin proxy (recommended)
+
+TanStack Start uses Vinxi (Vite-based). Configure the proxy in `app.config.ts`:
+
+```typescript
+// app.config.ts
+import { defineConfig } from "@tanstack/react-start/config";
+
+export default defineConfig({
+  vite: {
+    server: {
+      proxy: {
+        "/api": {
+          target: "http://localhost:3001",
+          changeOrigin: true,
+        },
+      },
+    },
+  },
+});
+```
+
+### Option B: Cross-origin
+
+```bash
+# .env
+VITE_ATLAS_API_URL=http://localhost:3001
+```
+
+```bash
+# Atlas API .env
+ATLAS_CORS_ORIGIN=http://localhost:3000
+```
+
+## 3. Synchronous queries with TanStack Query
+
+The simplest integration uses the JSON query endpoint (`POST /api/v1/query`). No streaming protocol to parse.
+
+```typescript
+// src/lib/atlas.ts
+const API_URL = import.meta.env.VITE_ATLAS_API_URL ?? "";
+
+export interface AtlasQueryResult {
+  answer: string;
+  sql: string[];
+  data: Array<{ columns: string[]; rows: Record<string, unknown>[] }>;
+  steps: number;
+  usage: { totalTokens: number };
+}
+
+export async function queryAtlas(
+  question: string,
+  opts?: { apiKey?: string; signal?: AbortSignal }
+): Promise<AtlasQueryResult> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (opts?.apiKey) headers["Authorization"] = `Bearer ${opts.apiKey}`;
+
+  const res = await fetch(`${API_URL}/api/v1/query`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ question }),
+    signal: opts?.signal,
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.message ?? `Atlas query failed: ${res.status}`);
+  }
+
+  return res.json();
+}
+```
+
+### Query hook
+
+```typescript
+// src/hooks/use-atlas-query.ts
+import { useMutation } from "@tanstack/react-query";
+import { queryAtlas, type AtlasQueryResult } from "../lib/atlas";
+
+export function useAtlasQuery(apiKey?: string) {
+  return useMutation<AtlasQueryResult, Error, string>({
+    mutationFn: (question) => queryAtlas(question, { apiKey }),
+  });
+}
+```
+
+## 4. Which approach to choose
+
+| Approach | Streaming | Tool cards | Complexity |
+|----------|-----------|------------|------------|
+| TanStack Query + `/api/v1/query` | No | Table from `data` field | Simplest |
+| Plain `fetch` stream | Text only | Manual parsing | Medium |
+| `@ai-sdk/react` `useChat` | Full | Built-in message parts | Full featured |
+
+For most TanStack Start apps, start with the TanStack Query approach. Add `@ai-sdk/react` later if you need real-time streaming with tool call visualization.

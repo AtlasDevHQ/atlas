@@ -1,0 +1,341 @@
+---
+title: Plugin Authoring Guide
+description: Step-by-step guide to building Atlas plugins for datasources, context, interactions, actions, and sandboxes.
+---
+
+Step-by-step guide to building an Atlas plugin. We'll build a complete datasource plugin, then cover how the other four types differ.
+
+## Prerequisites
+
+- `@useatlas/plugin-sdk` -- type definitions and helpers
+- `zod` -- config schema validation
+- `bun` -- runtime and test runner
+- An Atlas project with `atlas.config.ts`
+
+## 1. Scaffold
+
+Use the CLI to generate a plugin skeleton:
+
+```bash
+bun run atlas -- plugin create my-datasource --type datasource
+```
+
+This creates `plugins/my-datasource/` with:
+
+```
+plugins/my-datasource/
+├── src/
+│   ├── index.ts         # Plugin entry point
+│   └── index.test.ts    # Test scaffold
+├── package.json
+└── tsconfig.json
+```
+
+Or create the files manually -- the CLI is a convenience, not a requirement.
+
+## 2. Config Schema
+
+Define what your plugin accepts using Zod:
+
+```typescript
+// src/config.ts
+import { z } from "zod";
+
+export const ConfigSchema = z.object({
+  url: z
+    .string()
+    .min(1, "URL must not be empty")
+    .refine(
+      (u) => u.startsWith("postgresql://") || u.startsWith("postgres://"),
+      "URL must start with postgresql:// or postgres://",
+    ),
+  poolSize: z.number().int().positive().max(500).optional(),
+});
+
+export type PluginConfig = z.infer<typeof ConfigSchema>;
+```
+
+The schema is validated at factory call time -- before the server starts. Invalid config fails fast.
+
+## 3. Connection Factory
+
+Implement `PluginDBConnection` -- the interface Atlas uses to query your database:
+
+```typescript
+// src/connection.ts
+import type { PluginDBConnection, PluginQueryResult } from "@useatlas/plugin-sdk";
+import type { PluginConfig } from "./config";
+
+export function createConnection(config: PluginConfig): PluginDBConnection {
+  let Pool: typeof import("pg").Pool;
+  try {
+    ({ Pool } = require("pg"));
+  } catch (err) {
+    const isNotFound =
+      err instanceof Error &&
+      "code" in err &&
+      (err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND";
+    if (isNotFound) {
+      throw new Error("This plugin requires the pg package. Install it with: bun add pg");
+    }
+    throw err;
+  }
+
+  const pool = new Pool({
+    connectionString: config.url,
+    max: config.poolSize ?? 10,
+  });
+
+  return {
+    async query(sql: string, timeoutMs?: number): Promise<PluginQueryResult> {
+      const client = await pool.connect();
+      try {
+        if (timeoutMs) {
+          await client.query(`SET statement_timeout = ${timeoutMs}`);
+        }
+        const result = await client.query(sql);
+        return {
+          columns: result.fields.map((f) => f.name),
+          rows: result.rows,
+        };
+      } finally {
+        client.release();
+      }
+    },
+
+    async close(): Promise<void> {
+      await pool.end();
+    },
+  };
+}
+```
+
+Key points:
+- `query()` returns `{ columns: string[], rows: Record<string, unknown>[] }`
+- `close()` cleans up resources
+- Lazy-load the driver with `require()` + `MODULE_NOT_FOUND` handling so it can be an optional peer dependency
+
+## 4. Plugin Object
+
+Wire everything together with `createPlugin()`:
+
+```typescript
+// src/index.ts
+import { createPlugin } from "@useatlas/plugin-sdk";
+import type { AtlasDatasourcePlugin, PluginHealthResult } from "@useatlas/plugin-sdk";
+import { ConfigSchema, type PluginConfig } from "./config";
+import { createConnection } from "./connection";
+
+export function buildPlugin(config: PluginConfig): AtlasDatasourcePlugin<PluginConfig> {
+  let cachedConnection: ReturnType<typeof createConnection> | undefined;
+
+  return {
+    id: "my-datasource",
+    type: "datasource" as const,
+    version: "1.0.0",
+    name: "My DataSource",
+    config,
+
+    connection: {
+      create: () => {
+        if (!cachedConnection) {
+          cachedConnection = createConnection(config);
+        }
+        return cachedConnection;
+      },
+      dbType: "postgres",
+    },
+
+    entities: [],
+
+    dialect: "This datasource uses PostgreSQL. Use DATE_TRUNC() for date truncation.",
+
+    async initialize(ctx) {
+      ctx.logger.info("My datasource plugin initialized");
+    },
+
+    async healthCheck(): Promise<PluginHealthResult> {
+      const start = performance.now();
+      try {
+        const conn = createConnection(config);
+        await conn.query("SELECT 1", 5000);
+        await conn.close();
+        return { healthy: true, latencyMs: Math.round(performance.now() - start) };
+      } catch (err) {
+        return {
+          healthy: false,
+          message: err instanceof Error ? err.message : String(err),
+          latencyMs: Math.round(performance.now() - start),
+        };
+      }
+    },
+  };
+}
+
+export const myPlugin = createPlugin({
+  configSchema: ConfigSchema,
+  create: buildPlugin,
+});
+```
+
+## 5. Register
+
+Add to `atlas.config.ts`:
+
+```typescript
+import { defineConfig } from "@atlas/api/lib/config";
+import { myPlugin } from "./plugins/my-datasource/src/index";
+
+export default defineConfig({
+  plugins: [
+    myPlugin({ url: process.env.MY_DB_URL! }),
+  ],
+});
+```
+
+## 6. Test
+
+```bash
+bun test plugins/my-datasource/src/index.test.ts
+```
+
+Test config validation, plugin shape, connection factory, and health checks. See the ClickHouse plugin tests for the canonical pattern.
+
+## 7. Publish
+
+For npm packages:
+
+```json
+{
+  "name": "atlas-plugin-my-datasource",
+  "dependencies": {
+    "@useatlas/plugin-sdk": "workspace:*"
+  },
+  "peerDependencies": {
+    "pg": ">=8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "pg": { "optional": true }
+  }
+}
+```
+
+Convention: `@useatlas/plugin-sdk` as a direct dependency, database driver as an optional peer dependency.
+
+## Other Plugin Types
+
+### Context Plugin
+
+Context plugins load knowledge into the agent. Implement `contextProvider.load()`:
+
+```typescript
+export default definePlugin({
+  id: "my-context",
+  type: "context",
+  version: "1.0.0",
+  contextProvider: {
+    async load() { return "## Extra Context\n\nDomain-specific info..."; },
+    async refresh() { /* clear cache */ },
+  },
+});
+```
+
+### Interaction Plugin
+
+Interaction plugins add communication surfaces. They may mount Hono routes (Slack, webhooks) or manage non-HTTP transports (MCP stdio):
+
+```typescript
+export default definePlugin({
+  id: "my-webhook",
+  type: "interaction",
+  version: "1.0.0",
+  routes(app) {
+    app.post("/webhooks/my-service", async (c) => {
+      return c.json({ ok: true });
+    });
+  },
+});
+```
+
+### Action Plugin
+
+Action plugins give the agent side-effects with approval controls:
+
+```typescript
+import { z } from "zod";
+import { tool } from "ai";
+
+const myAction: PluginAction = {
+  name: "createTicket",
+  description: "Create a support ticket",
+  tool: tool({
+    description: "Create a support ticket",
+    parameters: z.object({ title: z.string(), body: z.string() }),
+    execute: async ({ title, body }) => { /* ... */ },
+  }),
+  actionType: "ticket:create",
+  reversible: true,
+  defaultApproval: "manual",
+  requiredCredentials: ["apiKey"],
+};
+```
+
+### Sandbox Plugin
+
+Sandbox plugins provide isolation backends for the explore tool:
+
+```typescript
+sandbox: {
+  create(semanticRoot: string): PluginExploreBackend {
+    return {
+      async exec(command: string) {
+        // Execute command in isolation, return { stdout, stderr, exitCode }
+      },
+      async close() { /* cleanup */ },
+    };
+  },
+  priority: 60,
+},
+security: {
+  networkIsolation: true,
+  filesystemIsolation: true,
+  unprivilegedExecution: true,
+  description: "My isolation mechanism...",
+},
+```
+
+## Common Patterns
+
+### Health Checks
+
+Always return `{ healthy, message?, latencyMs? }`, never throw:
+
+```typescript
+async healthCheck(): Promise<PluginHealthResult> {
+  try {
+    const start = performance.now();
+    await ping();
+    return { healthy: true, latencyMs: Math.round(performance.now() - start) };
+  } catch (err) {
+    return { healthy: false, message: err instanceof Error ? err.message : String(err) };
+  }
+}
+```
+
+### Error Handling
+
+- **Throw from `initialize()`** to block server startup (fatal misconfiguration)
+- **Return unhealthy from `healthCheck()`** for runtime degradation (transient errors)
+- **Never throw from `healthCheck()` or `teardown()`**
+
+### Config-Driven Credentials
+
+Pass credentials via plugin config, not environment variables:
+
+```typescript
+// Good
+myPlugin({ apiKey: process.env.MY_API_KEY! })
+
+// Bad -- hidden dependency on env var name
+// inside plugin: process.env.MY_API_KEY
+```

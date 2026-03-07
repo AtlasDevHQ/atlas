@@ -1,0 +1,233 @@
+---
+title: React (Vite)
+description: Integrate Atlas into a plain React app using @ai-sdk/react.
+---
+
+Integrate Atlas into a plain React app (Vite, no Next.js) using `@ai-sdk/react`.
+
+> **Prerequisites:** A running Atlas API server. See [Bring Your Own Frontend](/docs/frameworks/overview) for architecture and common setup.
+
+---
+
+## 1. Install dependencies
+
+```bash
+bun add @ai-sdk/react ai
+```
+
+## 2. Configure the API URL
+
+### Option A: Same-origin proxy (recommended)
+
+Configure Vite's dev server to proxy `/api` to the Atlas API:
+
+```typescript
+// vite.config.ts
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+
+export default defineConfig({
+  plugins: [react()],
+  server: {
+    proxy: {
+      "/api": {
+        target: "http://localhost:3001",
+        changeOrigin: true,
+      },
+    },
+  },
+});
+```
+
+### Option B: Cross-origin
+
+Point directly at the Atlas API:
+
+```bash
+# .env
+VITE_ATLAS_API_URL=http://localhost:3001
+```
+
+Set CORS on the Atlas API side:
+
+```bash
+# Atlas API .env
+ATLAS_CORS_ORIGIN=http://localhost:5173
+```
+
+## 3. Chat hook
+
+Create a thin wrapper around `@ai-sdk/react`'s `useChat`:
+
+```typescript
+// src/hooks/use-atlas-chat.ts
+import { useChat } from "@ai-sdk/react";
+import { DefaultChatTransport } from "ai";
+import { useState, useMemo } from "react";
+
+const API_URL = import.meta.env.VITE_ATLAS_API_URL ?? "";
+
+export function useAtlasChat() {
+  const [apiKey, setApiKey] = useState(() => {
+    try {
+      return sessionStorage.getItem("atlas-api-key") ?? "";
+    } catch {
+      return "";
+    }
+  });
+
+  const transport = useMemo(() => {
+    const headers: Record<string, string> = {};
+    if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+
+    return new DefaultChatTransport({
+      api: `${API_URL}/api/chat`,
+      headers,
+    });
+  }, [apiKey]);
+
+  const [input, setInput] = useState("");
+  const { messages, sendMessage, status, error } = useChat({ transport });
+
+  function saveApiKey(key: string) {
+    setApiKey(key);
+    try {
+      sessionStorage.setItem("atlas-api-key", key);
+    } catch {
+      // sessionStorage unavailable
+    }
+  }
+
+  return {
+    messages,
+    sendMessage,
+    status,
+    error,
+    input,
+    setInput,
+    apiKey,
+    saveApiKey,
+    isLoading: status === "streaming" || status === "submitted",
+  };
+}
+```
+
+## 4. Chat component
+
+```tsx
+// src/App.tsx
+import { useAtlasChat } from "./hooks/use-atlas-chat";
+import { ToolPart } from "./components/ToolPart";
+
+export default function App() {
+  const { messages, input, setInput, sendMessage, isLoading, apiKey, saveApiKey } =
+    useAtlasChat();
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!input.trim()) return;
+    const text = input;
+    setInput("");
+    sendMessage({ text });
+  }
+
+  return (
+    <div className="mx-auto max-w-3xl p-4">
+      <h1 className="mb-4 text-xl font-bold">Atlas</h1>
+
+      {/* API key input (only needed for api-key auth mode) */}
+      <div className="mb-4">
+        <input
+          type="password"
+          placeholder="API key (if required)"
+          value={apiKey}
+          onChange={(e) => saveApiKey(e.target.value)}
+          className="w-full rounded border px-3 py-2 text-sm"
+        />
+      </div>
+
+      {/* Messages */}
+      <div className="space-y-4">
+        {messages.map((m) => {
+          if (m.role === "user") {
+            return (
+              <div key={m.id} className="flex justify-end">
+                <div className="rounded-lg bg-blue-600 px-4 py-2 text-white">
+                  {m.parts?.map((part, i) =>
+                    part.type === "text" ? <p key={i}>{part.text}</p> : null
+                  )}
+                </div>
+              </div>
+            );
+          }
+          return (
+            <div key={m.id} className="space-y-2">
+              {m.parts?.map((part, i) => {
+                if (part.type === "text" && part.text.trim()) {
+                  return (
+                    <div
+                      key={i}
+                      className="rounded-lg bg-zinc-100 px-4 py-2 text-sm dark:bg-zinc-800"
+                    >
+                      {part.text}
+                    </div>
+                  );
+                }
+                if (part.type.startsWith("tool-")) {
+                  return <ToolPart key={i} part={part} />;
+                }
+                return null;
+              })}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Input */}
+      <form onSubmit={handleSubmit} className="mt-4 flex gap-2">
+        <input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="Ask a question about your data..."
+          className="flex-1 rounded border px-4 py-2 text-sm dark:bg-zinc-900"
+          disabled={isLoading}
+        />
+        <button
+          type="submit"
+          disabled={isLoading || !input.trim()}
+          className="rounded bg-blue-600 px-4 py-2 text-sm text-white disabled:opacity-40"
+        >
+          Ask
+        </button>
+      </form>
+    </div>
+  );
+}
+```
+
+## 5. Synchronous queries (alternative)
+
+For non-streaming use cases, call the JSON endpoint directly:
+
+```typescript
+// src/lib/atlas-query.ts
+const API_URL = import.meta.env.VITE_ATLAS_API_URL ?? "";
+
+export async function queryAtlas(question: string, apiKey?: string) {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+
+  const res = await fetch(`${API_URL}/api/v1/query`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ question }),
+  });
+
+  if (!res.ok) throw new Error(`Atlas query failed: ${res.status}`);
+  return res.json();
+}
+```
+
+See [Bring Your Own Frontend](/docs/frameworks/overview) for what `@atlas/web` adds on top of `@ai-sdk/react` (conversation sidebar, chart detection, managed auth, etc.).

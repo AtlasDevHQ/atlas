@@ -1,0 +1,22 @@
+{
+  "title": "Docs",
+  "pages": [
+    "---Getting Started---",
+    "getting-started/quick-start",
+    "getting-started/connect-your-data",
+    "getting-started/demo-datasets",
+    "---Deployment---",
+    "deployment/deploy",
+    "deployment/railway-template",
+    "---Frameworks---",
+    "frameworks/overview",
+    "frameworks/react-vite",
+    "frameworks/nuxt",
+    "frameworks/sveltekit",
+    "frameworks/tanstack-start",
+    "---Plugins---",
+    "plugins/authoring-guide",
+    "---Architecture---",
+    "architecture/sandbox"
+  ]
+}

@@ -1,0 +1,280 @@
+---
+title: Demo Datasets
+description: Pre-built demo datasets for evaluation and development.
+---
+
+Atlas ships with three demo datasets for evaluation and development.
+
+## Quick Comparison
+
+| | Simple | Cybersec | E-commerce |
+|---|---|---|---|
+| Tables | 3 | 62 | 52 |
+| Rows | ~330 | ~500K | ~480K |
+| Database | Postgres | Postgres only | Postgres only |
+| Tech debt patterns | None | 4 patterns | 4 patterns |
+| Best for | Quick start, tutorials | Realistic evaluation, profiler testing | Universally understood domain, production-scale evaluation |
+
+**Use Simple** when you want a fast setup.
+**Use Cybersec** when you want to see how Atlas handles a real-world B2B SaaS database with messy data.
+**Use E-commerce** when you want a universally understood domain (orders, products, customers) at production scale.
+
+---
+
+## Simple Demo (default)
+
+Three clean tables: companies (50), people (~200), accounts (80). No tech debt, no ambiguity.
+
+```bash
+bun run db:up
+bun run atlas -- init --demo
+```
+
+---
+
+## Cybersec Demo: Sentinel Security
+
+A 62-table B2B cybersecurity SaaS company database. ~500K rows spanning 2019-2025. Covers vulnerability management, threat detection, compliance, billing, and reporting.
+
+### Loading
+
+Requires PostgreSQL (uses `GENERATE_SERIES` for data generation).
+
+```bash
+# Start local Postgres
+bun run db:up
+
+# Load cybersec demo and generate semantic layer
+bun run atlas -- init --demo cybersec
+
+# Start Atlas
+bun run dev
+```
+
+To reset and reload from scratch:
+
+```bash
+bun run db:reset
+bun run atlas -- init --demo cybersec
+```
+
+### Suggested Questions
+
+Try these in the Atlas chat UI to exercise different patterns:
+
+**Basic aggregation:**
+- "How many vulnerabilities by severity?"
+- "What's the total invoice amount by organization?"
+- "How many scans ran in the last 30 days?"
+
+**Joins:**
+- "Which organizations have the most critical scan results?"
+- "Show me the top 10 users by number of alerts acknowledged"
+- "Which compliance frameworks have the most failing controls?"
+
+**Time series:**
+- "What's the trend in critical vulnerabilities over the past 6 months?"
+- "Show me monthly invoice totals"
+
+**Aggregation + filtering:**
+- "What's the average time to remediate by severity level?"
+- "Alert noise ratio: what percentage of alerts become incidents?"
+
+**Tech debt discovery (exercises profiler warnings):**
+- "Break down organizations by industry" (surfaces enum inconsistency via profiler note)
+- "Show me scan results for assets that no longer exist" (orphan rows)
+- "What tables exist that look abandoned?" (agent reads profiler_notes)
+- "Compare scan_results_denormalized with scan_results" (denormalized flag)
+
+### Tech Debt Patterns
+
+The cybersec dataset was designed to include four real-world tech debt patterns that the profiler detects automatically:
+
+#### 1. Missing FK Constraints
+
+Eight `*_id` columns reference other tables but lack `FOREIGN KEY` constraints. The profiler infers these from naming conventions and marks them with `inferred: true` in the generated YAML.
+
+| Column | Should reference |
+|--------|----------------|
+| `scan_results.asset_id` | `assets.id` |
+| `scan_results.vulnerability_id` | `vulnerabilities.id` |
+| `scan_results.scan_id` | `scans.id` |
+| `agent_heartbeats.agent_id` | `agents.id` |
+| `alerts.incident_id` | `incidents.id` |
+| `api_requests.user_id` | `users.id` |
+| `invoice_line_items.subscription_id` | `subscriptions.id` |
+| `vulnerability_instances.scan_result_id` | `scan_results.id` |
+
+#### 2. Abandoned Tables
+
+Six tables match legacy/temp naming patterns and have no inbound foreign keys:
+
+- `old_scan_results_v2` -- abandoned schema migration
+- `temp_asset_import_2024` -- one-time CSV import artifact
+- `feature_flags_legacy` -- replaced by LaunchDarkly
+- `notifications_backup` -- migration backup
+- `user_sessions_archive` -- old session system
+- `legacy_risk_scores` -- old risk scoring algorithm
+
+The profiler flags these with `possibly_abandoned` and prepends a warning in `use_cases`.
+
+#### 3. Inconsistent Enums
+
+Some text columns have case-inconsistent values:
+
+- `organizations.industry`: 'Technology', 'tech', 'Tech', 'TECHNOLOGY'
+- `compliance_findings.status`: 'pass', 'Pass', 'PASS'
+
+The profiler detects these and adds `LOWER()` guidance in the glossary.
+
+#### 4. Denormalized Tables
+
+Four reporting/cache tables duplicate data from other tables:
+
+- `scan_results_denormalized` -- pre-joined scan results
+- `daily_scan_stats` -- daily rollup
+- `monthly_vulnerability_summary` -- monthly aggregates
+- `executive_dashboard_cache` -- pre-computed dashboard data
+
+The profiler flags these with `possibly_denormalized`.
+
+### Schema Overview
+
+**Table groups:**
+- Core Business (7 tables): organizations, users, teams, roles
+- Billing (6 tables): plans, subscriptions, invoices
+- Asset Management (6 tables): assets, agents, agent_heartbeats
+- Vulnerability Management (7 tables): vulnerabilities, scans, scan_results
+- Threat & Incident (6 tables): incidents, alerts
+- Threat Intelligence (3 tables): threat_feeds, IOCs, threat_actors
+- Compliance (4 tables): frameworks, controls, assessments, findings
+- Product Usage (5 tables): API keys, requests, feature usage, login events
+- Reporting (5 tables): denormalized/rollup tables
+- Reports & Dashboards (4 tables): saved reports, dashboards
+- Integration & Audit (3 tables): integrations, audit_log
+- Legacy (6 tables): abandoned tables
+
+---
+
+## E-commerce Demo: NovaMart
+
+A 52-table DTC (direct-to-consumer) home goods brand database. ~480K rows spanning 2020-2025. NovaMart was founded during the pandemic, started with bedding, expanded to kitchen/bath/outdoor, and launched a small marketplace in 2022.
+
+### Loading
+
+Requires PostgreSQL (uses `GENERATE_SERIES` for data generation).
+
+```bash
+# Start local Postgres
+bun run db:up
+
+# Load e-commerce demo and generate semantic layer
+bun run atlas -- init --demo ecommerce
+
+# Start Atlas
+bun run dev
+```
+
+To reset and reload from scratch:
+
+```bash
+bun run db:reset
+bun run atlas -- init --demo ecommerce
+```
+
+### Suggested Questions
+
+Try these in the Atlas chat UI to exercise different patterns:
+
+**Sales & revenue:**
+- "What's the monthly revenue trend since launch?"
+- "Top 10 products by total revenue"
+- "Average order value by customer segment"
+- "Revenue breakdown: own products vs marketplace"
+
+**Customer analytics:**
+- "How many customers are in each loyalty tier?"
+- "What's the customer retention rate by cohort?"
+- "Breakdown of new vs returning customers per month"
+- "Average customer lifetime value by acquisition source"
+
+**Operations:**
+- "Average delivery time by carrier"
+- "Return rate by product category"
+- "Top reasons for returns"
+- "Shipping cost per order over time"
+
+**Marketing:**
+- "Which UTM sources drive the most revenue?"
+- "Email campaign conversion rates"
+- "Promo code usage rate by campaign"
+
+**Tech debt discovery (exercises profiler warnings):**
+- "Why are there two price fields on products?" (schema evolution)
+- "Break down customers by acquisition source" (surfaces enum inconsistency)
+- "What tables look abandoned?" (agent reads profiler_notes)
+- "Compare orders_denormalized with orders" (denormalized flag)
+
+### Tech Debt Patterns
+
+The e-commerce dataset includes the same four real-world tech debt patterns as the cybersec demo:
+
+#### 1. Missing FK Constraints
+
+Nineteen `*_id` columns reference other tables but lack `FOREIGN KEY` constraints.
+
+Additionally, ~1.5% of payments reference nonexistent orders (orphaned from deleted test orders).
+
+#### 2. Abandoned Tables
+
+Four tables match legacy/temp naming patterns and have no inbound foreign keys:
+
+- `old_orders_v1` -- pre-migration 2020 order data with different column names
+- `temp_product_import_2023` -- one-time CSV import artifact
+- `legacy_analytics_events` -- old event tracking, replaced in 2024
+- `payment_methods_backup` -- backup from Stripe-to-Adyen migration
+
+#### 3. Inconsistent Enums
+
+Several text columns have case-inconsistent values:
+
+- `customers.acquisition_source`: 'Google', 'google', 'GOOGLE', 'Organic', 'organic'
+- `loyalty_accounts.tier`: 'Gold', 'gold', 'GOLD', 'Silver', 'silver'
+- `returns.reason`: 'Defective', 'defective', 'DEFECTIVE', 'Wrong Item', 'wrong_item'
+
+#### 4. Denormalized Tables
+
+Five reporting/cache tables duplicate data from other tables:
+
+- `orders_denormalized` -- pre-joined orders + customer + product info
+- `daily_sales_summary` -- daily rollup
+- `monthly_revenue_summary` -- monthly aggregates
+- `product_performance_cache` -- pre-computed product metrics
+- `customer_ltv_cache` -- lifetime value estimates
+
+### Schema Evolution Artifacts
+
+The dataset includes ten schema evolution instances where old and new columns coexist:
+
+| Table | Old column | New column | Issue |
+|-------|-----------|------------|-------|
+| `products` | `price` (dollars) | `price_cents` (cents) | ~40% NULL price_cents |
+| `customers` | `phone` | `mobile_phone` | ~15% NULL mobile_phone (all post-2022 customers have it) |
+| `shipments` | `carrier` (text) | `carrier_id` (integer) | ~60% NULL carrier_id |
+| `orders` | `shipping_cost` | -- | dollars pre-2023-06, cents after |
+| `product_reviews` | `rating` (int) | `rating_decimal` (numeric) | ~70% NULL rating_decimal |
+
+### Schema Overview
+
+**Table groups:**
+- Core Commerce (6 tables): customers, addresses, segments, loyalty
+- Product Catalog (7 tables): products, variants, images, tags, inventory
+- Marketplace (4 tables): sellers, applications, payouts, performance
+- Orders & Transactions (7 tables): orders, items, events, payments, refunds, gift cards
+- Shipping & Fulfillment (5 tables): shipments, carriers, returns
+- Marketing & Promotions (5 tables): promotions, email campaigns, UTM tracking
+- Reviews (3 tables): product reviews, responses, helpfulness
+- Reporting (5 tables): denormalized/rollup/cache tables
+- Site Analytics (3 tables): page views, cart events, search queries
+- Internal / Ops (3 tables): admin users, audit log, settings
+- Legacy (4 tables): abandoned tables

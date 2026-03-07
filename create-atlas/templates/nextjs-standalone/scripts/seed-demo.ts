@@ -25,8 +25,14 @@ if (!url) {
   process.exit(1);
 }
 
+// Normalize sslmode: pg v8 treats 'require' as 'verify-full' but warns about it.
+const connString = url.replace(
+  /([?&])sslmode=require(?=&|$)/,
+  "$1sslmode=verify-full",
+);
+
 const client = new pg.Client({
-  connectionString: url,
+  connectionString: connString,
   connectionTimeoutMillis: 10_000,
 });
 

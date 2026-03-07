@@ -150,8 +150,18 @@ function createPostgresDB(config: ConnectionConfig): DBConnection {
     );
   }
 
+  // Normalize sslmode: pg v8 treats 'require' as 'verify-full' but warns about it.
+  // Explicitly rewrite to 'verify-full' to suppress the deprecation warning.
+  let connString = config.url;
+  if (connString) {
+    connString = connString.replace(
+      /([?&])sslmode=require(?=&|$)/,
+      "$1sslmode=verify-full",
+    );
+  }
+
   const pool = new Pool({
-    connectionString: config.url,
+    connectionString: connString,
     max: config.maxConnections ?? 10,
     idleTimeoutMillis: config.idleTimeoutMs ?? 30000,
   });

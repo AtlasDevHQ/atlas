@@ -34,8 +34,13 @@ export function getInternalDB(): InternalPool {
     }
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { Pool } = require("pg");
+    // Normalize sslmode: pg v8 treats 'require' as 'verify-full' but warns.
+    const connString = process.env.DATABASE_URL!.replace(
+      /([?&])sslmode=require(?=&|$)/,
+      "$1sslmode=verify-full",
+    );
     _pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
+      connectionString: connString,
       max: 5,
       idleTimeoutMillis: 30000,
     }) as InternalPool;

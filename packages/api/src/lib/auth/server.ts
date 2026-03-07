@@ -71,12 +71,23 @@ export function getAuthInstance(): AuthInstance {
     } catch { /* ignore malformed URL */ }
   }
 
+  // Resolve base URL: explicit env var > Vercel auto-detect > undefined (Better Auth auto-detect).
+  // On Vercel, VERCEL_PROJECT_PRODUCTION_URL or VERCEL_URL are always set.
+  // Without a baseURL, Better Auth logs a noisy warning on every cold start.
+  const baseURL =
+    process.env.BETTER_AUTH_URL ||
+    (process.env.VERCEL_PROJECT_PRODUCTION_URL
+      ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+      : process.env.VERCEL_URL
+        ? `https://${process.env.VERCEL_URL}`
+        : undefined);
+
   const instance = betterAuth({
     // getInternalDB() returns a pg.Pool typed as InternalPool.
     // Cast needed because Better Auth expects its own pool/adapter type.
     database: getInternalDB() as unknown as Parameters<typeof betterAuth>[0]["database"],
     secret,
-    baseURL: process.env.BETTER_AUTH_URL,
+    baseURL,
     emailAndPassword: {
       enabled: true,
       requireEmailVerification: false,

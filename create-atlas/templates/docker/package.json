@@ -53,6 +53,7 @@
     "@vercel/sandbox": "^1"
   },
   "devDependencies": {
+    "@clack/prompts": "^0.10.0",
     "@eslint/js": "^10.0.1",
     "@next/eslint-plugin-next": "^16.1.6",
     "@tailwindcss/postcss": "^4.2.1",
@@ -66,6 +67,7 @@
     "eslint": "^10.0.2",
     "tailwindcss": "^4.2.1",
     "shadcn": "^3.8.5",
+    "picocolors": "^1.1.0",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.56.1"
   }

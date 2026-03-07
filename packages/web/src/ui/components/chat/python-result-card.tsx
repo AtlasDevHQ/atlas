@@ -101,7 +101,7 @@ function PythonResultCardInner({ part }: { part: unknown }) {
         <pre className="border-t border-red-200 px-3 py-2 text-xs whitespace-pre-wrap text-red-600 dark:border-red-900/50 dark:text-red-300">
           {String(result.error ?? "Unknown error")}
         </pre>
-        {result.output && (
+        {!!result.output && (
           <pre className="border-t border-red-200 px-3 py-2 text-xs whitespace-pre-wrap text-red-500 dark:border-red-900/50 dark:text-red-400">
             {String(result.output)}
           </pre>

@@ -41,7 +41,16 @@ Run these in parallel:
    gh project item-list 2 --owner AtlasDevHQ --format json --limit 100 | jq -r '.items[] | "\(.status)\t#\(.content.number // "draft")\t\(.title)"' | sort
    ```
 
-7. `.claude/research/ROADMAP.md` — Read the current milestone sections (if it exists)
+7. CI status (last 5 runs on main):
+   ```
+   gh run list -R AtlasDevHQ/atlas --branch main --limit 5 --json status,conclusion,name,createdAt,databaseId
+   ```
+   If any CI runs are failing, get the failure details:
+   ```
+   gh run view <run_id> -R AtlasDevHQ/atlas --log-failed 2>&1 | tail -30
+   ```
+
+8. `.claude/research/ROADMAP.md` — Read the current milestone sections (if it exists)
 
 ---
 
@@ -68,7 +77,12 @@ For each category, build a list of actions needed:
 - Issues missing labels → add appropriate labels (check existing label set first)
 - Parent issues with shipped sub-issues → add status comment listing what shipped and what remains
 
-### 2d. Untracked work
+### 2d. CI health
+- If CI is failing on main, this is **urgent** — diagnose the failure and fix it before other tidy work
+- Check if failures are from recently merged PRs (regressions) or pre-existing
+- Common causes: type errors in new code, missing test mocks, dependency drift
+
+### 2e. Untracked work
 - Merged PRs or commits that don't reference any issue → assess whether a new issue should be created or if it's too minor (bug fixes, typos = skip)
 - New issues needed for significant untracked features or infrastructure changes → create with appropriate labels and add to project board
 

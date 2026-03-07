@@ -8,9 +8,28 @@ Perform a comprehensive codebase audit against CLAUDE.md guidelines and establis
 
 ## Part A: Gate Checks (Must Pass)
 
-### A0. Lint, Type Check, Tests & Dependency Sync
+### A0. GitHub Actions CI Status
 
-Run all four CI gates. If any fail, stop and report — the codebase is broken.
+Check whether CI is passing on main before running local checks:
+
+```bash
+gh run list -R AtlasDevHQ/atlas --branch main --limit 5 --json status,conclusion,name,createdAt,databaseId
+```
+
+If CI is **failing on main**, get failure details:
+```bash
+gh run view <run_id> -R AtlasDevHQ/atlas --log-failed 2>&1 | tail -30
+```
+
+| Check | What to Look For |
+|-------|------------------|
+| Latest CI on main | Must be `success`. If failing, report as **CRITICAL** — main is broken |
+| Failure pattern | Is it a new regression or a pre-existing issue? Check when it started failing |
+| Sync Starters | Separate workflow — should also be green |
+
+### A1. Lint, Type Check, Tests & Dependency Sync
+
+Run all four CI gates locally. If any fail, stop and report — the codebase is broken.
 
 ```bash
 bun run lint           # ESLint (flat config) — 0 warnings

@@ -1,0 +1,129 @@
+---
+title: Nuxt (Vue)
+description: Integrate Atlas into a Nuxt 3 app using @ai-sdk/vue.
+---
+
+Integrate Atlas into a Nuxt 3 app using `@ai-sdk/vue`.
+
+> **Prerequisites:** A running Atlas API server. See [Bring Your Own Frontend](/docs/frameworks/overview) for architecture and common setup.
+
+---
+
+## 1. Install dependencies
+
+```bash
+bun add @ai-sdk/vue ai
+```
+
+## 2. Configure the API URL
+
+### Option A: Same-origin proxy (recommended)
+
+Add a Nitro route rule in `nuxt.config.ts` to proxy `/api/**` to the Atlas API:
+
+```typescript
+// nuxt.config.ts
+export default defineNuxtConfig({
+  nitro: {
+    routeRules: {
+      "/api/**": {
+        proxy: "http://localhost:3001/api/**",
+      },
+    },
+  },
+  runtimeConfig: {
+    public: {
+      atlasApiUrl: "", // empty = same-origin
+    },
+  },
+});
+```
+
+### Option B: Cross-origin
+
+```typescript
+// nuxt.config.ts
+export default defineNuxtConfig({
+  runtimeConfig: {
+    public: {
+      atlasApiUrl: "http://localhost:3001",
+    },
+  },
+});
+```
+
+```bash
+# Atlas API .env
+ATLAS_CORS_ORIGIN=http://localhost:3000
+```
+
+## 3. Chat composable
+
+Create a composable that wraps `@ai-sdk/vue`'s `useChat`:
+
+```typescript
+// composables/useAtlasChat.ts
+import { useChat } from "@ai-sdk/vue";
+import { DefaultChatTransport } from "ai";
+
+export function useAtlasChat() {
+  const config = useRuntimeConfig();
+  const apiUrl = config.public.atlasApiUrl || "";
+  const apiKey = useState<string>("atlas-api-key", () => "");
+  const input = ref("");
+
+  const transport = computed(() => {
+    const headers: Record<string, string> = {};
+    if (apiKey.value) {
+      headers["Authorization"] = `Bearer ${apiKey.value}`;
+    }
+    return new DefaultChatTransport({
+      api: `${apiUrl}/api/chat`,
+      headers,
+    });
+  });
+
+  const { messages, sendMessage, status, error } = useChat({ transport });
+
+  function handleSend() {
+    if (!input.value.trim()) return;
+    const text = input.value;
+    input.value = "";
+    sendMessage({ text });
+  }
+
+  return {
+    messages,
+    status,
+    error,
+    input,
+    apiKey,
+    apiUrl,
+    handleSend,
+  };
+}
+```
+
+## 4. Synchronous queries (alternative)
+
+If you don't need streaming, use the JSON query endpoint instead:
+
+```typescript
+// composables/useAtlasQuery.ts
+export async function queryAtlas(question: string) {
+  const config = useRuntimeConfig();
+  const apiUrl = config.public.atlasApiUrl || "";
+
+  const res = await $fetch(`${apiUrl}/api/v1/query`, {
+    method: "POST",
+    body: { question },
+    headers: {
+      "Content-Type": "application/json",
+    },
+  });
+
+  return res;
+}
+```
+
+See [Bring Your Own Frontend](/docs/frameworks/overview) for the full architecture and what `@atlas/web` adds on top.

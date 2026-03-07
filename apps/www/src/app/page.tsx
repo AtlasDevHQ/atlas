@@ -26,6 +26,12 @@ export default function Home() {
         </div>
         <div className="flex items-center gap-6">
           <a
+            href="https://docs.useatlas.dev"
+            className="text-sm text-zinc-500 transition-colors hover:text-zinc-300"
+          >
+            Docs
+          </a>
+          <a
             href="https://github.com/AtlasDevHQ/atlas"
             className="text-sm text-zinc-500 transition-colors hover:text-zinc-300"
           >

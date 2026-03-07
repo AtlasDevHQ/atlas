@@ -1,0 +1,153 @@
+---
+title: Sandbox Architecture
+description: Platform-agnostic code execution sandboxing design for Atlas.
+---
+
+> Design doc for platform-agnostic code execution sandboxing in Atlas.
+
+## Problem
+
+Atlas needs isolated code execution for two purposes:
+
+1. **Explore tool** -- run shell commands (`ls`, `cat`, `grep`) against the semantic layer YAML files. Read-only, no network, no secrets needed.
+
+2. **Python execution tool** -- run agent-generated Python to analyze data retrieved via SQL. Needs a runtime (Python + pandas/numpy/matplotlib), must not have direct access to secrets.
+
+The explore tool works on Vercel (Firecracker VM) and on Linux with nsjail. It fails on **Railway** because the platform runs shared-kernel containers that block `clone()` with namespace flags -- no `CAP_SYS_ADMIN`, no unprivileged user namespaces. This is a fundamental platform limitation, not a configuration issue.
+
+## Threat Model: Who Needs What
+
+Not every deployment needs the same level of sandbox isolation. The right tier depends on your trust model:
+
+### Self-hosted / single-tenant
+
+The agent and all its users are employees operating within the same trust boundary. In this model:
+
+- **Prompt injection is the main risk** -- a crafted value in the database could influence the agent's behavior. But the agent's tools are already scoped: `executeSQL` is SELECT-only, and `explore` only reads YAML files.
+- **nsjail or the sidecar is plenty** -- you're defending against accidental damage, not hostile tenants.
+- **just-bash is acceptable** -- if you run Atlas behind VPN with API key auth.
+
+### Multi-tenant SaaS / public-facing
+
+Now you have real trust boundaries. User A should not be able to influence User B's queries or data. In this model:
+
+- **Sandbox isolation is critical** -- generated code must run in its own security context.
+- **Firecracker (Vercel Sandbox, E2B) is the right answer** -- hardware-level VM isolation, ephemeral per execution.
+
+## Security Model
+
+### Four Actors
+
+| Actor | Atlas equivalent | Trust level |
+|-------|-----------------|-------------|
+| Agent harness | Hono API + `streamText` loop | Trusted (deployed via SDLC) |
+| Agent secrets | `ATLAS_DATASOURCE_URL`, API keys, `DATABASE_URL` | Must never enter sandbox |
+| Generated code | `explore` commands, `executePython` code | Untrusted (prompt-injectable) |
+| Filesystem / environment | Host OS, `semantic/` directory | Protected from generated code |
+
+### Architecture
+
+```
++--------------------------------------------------+
+|  Agent Harness (Hono API server)                  |
+|  +----------+  +-----------+  +----------------+ |
+|  | explore  |  |executeSQL |  |executePython   | |
+|  | (sandbox)|  | (in-proc) |  | (sandbox)      | |
+|  +----+-----+  +-----------+  +-------+--------+ |
+|       |                               |           |
+|       | no network                    | no network|
+|       | no secrets                    | no secrets|
+|       | read-only fs                  | data via  |
+|       |                               | stdin only|
+|                                                   |
+|  Secrets: ATLAS_DATASOURCE_URL,                   |
+|  API keys, DATABASE_URL                           |
+|  (never enter any sandbox)                        |
++---------------------------------------------------+
+```
+
+## Sandbox Tier System
+
+### Built-in Backends
+
+```
+Tier 1: Vercel Sandbox     -- Firecracker VM, deny-all network
+Tier 2: nsjail             -- Linux namespaces, no network, read-only mount
+Tier 3: Sidecar service    -- HTTP-isolated container with no secrets (Railway)
+Tier 4: just-bash          -- OverlayFS (in-memory writes), path-traversal protection
+```
+
+### Sandbox Plugins
+
+Two additional sandbox backends are available as plugins:
+
+| Plugin | Priority | Isolation | Install |
+|--------|----------|-----------|---------|
+| **E2B** | 90 | Firecracker microVM (managed) | `bun add e2b` |
+| **Daytona** | 85 | Cloud-hosted ephemeral sandbox | `bun add @daytonaio/sdk` |
+
+```typescript
+// atlas.config.ts
+import { defineConfig } from "@atlas/api/lib/config";
+import { e2bSandboxPlugin } from "@atlas/plugin-e2b-sandbox";
+
+export default defineConfig({
+  plugins: [
+    e2bSandboxPlugin({ apiKey: process.env.E2B_API_KEY! }),
+  ],
+});
+```
+
+### What Each Tier Supports
+
+| Capability | Vercel Sandbox | E2B / Daytona | nsjail | Sidecar | just-bash |
+|-----------|---------------|--------------|--------|---------|-----------|
+| `explore` (shell) | Yes | Yes | Yes | Yes | Yes |
+| `executePython` | Yes | Yes | Yes | Yes | Yes |
+| VM-level isolation | Yes | Yes | No | No | No |
+| Kernel namespace isolation | N/A | N/A | Yes | No | No |
+| No secrets in sandbox | Yes | Yes | Yes | Yes | No |
+| No network | Yes | Yes | Yes | Yes | No |
+
+## Platform Capabilities
+
+| Platform | nsjail | Sidecar | Best tier |
+|----------|--------|---------|-----------|
+| **Vercel** | N/A | N/A | Tier 1 (Vercel Sandbox) |
+| **Railway** | No | Yes | Tier 3 (Sidecar) |
+| **Self-hosted Docker** | With capabilities | Optional | Tier 2 (nsjail) |
+| **Self-hosted VM** | Yes | Optional | Tier 2 (nsjail) |
+
+## Sidecar Service Design
+
+Since no kernel-level sandbox works on Railway, isolation comes from **process/network separation** -- a separate service with its own filesystem and no access to the main service's secrets.
+
+```
++----------------------------------+     +-----------------------------+
+|  Main Service (Hono API)         |     |  Sandbox Sidecar            |
+|                                  |     |                             |
+|  ENV:                            |     |  ENV:                       |
+|    ATLAS_DATASOURCE_URL=...      |     |    SIDECAR_AUTH_TOKEN=...   |
+|    ANTHROPIC_API_KEY=...         |     |    (no DB creds, no API     |
+|    DATABASE_URL=...              |     |     keys, no secrets)       |
+|                                  |     |                             |
+|  Agent loop calls:               |     |  FILES:                     |
+|    POST http://sidecar:8080/exec |---->|    /semantic/**/*.yml       |
+|                                  |     |                             |
+|  Receives:                       |     |  ENDPOINTS:                 |
+|    { stdout, stderr, exitCode }  |<----|    GET  /health             |
+|                                  |     |    POST /exec               |
++----------------------------------+     +-----------------------------+
+        Railway private network
+```
+
+## Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_SANDBOX` | auto-detect | Force sandbox backend: `nsjail` |
+| `ATLAS_SANDBOX_URL` | -- | Sidecar service URL (enables sidecar backend) |
+| `SIDECAR_AUTH_TOKEN` | -- | Shared secret for sidecar auth |
+| `ATLAS_NSJAIL_PATH` | -- | Explicit path to nsjail binary |
+| `ATLAS_NSJAIL_TIME_LIMIT` | `10` | nsjail per-command time limit in seconds |
+| `ATLAS_NSJAIL_MEMORY_LIMIT` | `256` | nsjail per-command memory limit in MB |

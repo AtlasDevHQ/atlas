@@ -1,0 +1,449 @@
+---
+title: Connect Your Data
+description: Connect Atlas to PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, or Salesforce.
+---
+
+Connect Atlas to your existing data sources. Atlas supports PostgreSQL, MySQL, ClickHouse, Snowflake, CSV/Parquet files (via DuckDB), and Salesforce (SOQL). This guide covers setup, semantic layer generation, and safety configuration for each.
+
+## Prerequisites
+
+- Atlas installed locally (`bun install`) for semantic layer generation
+- Network access from your Atlas deployment to your data source
+- For databases: a read-only user (recommended for defense-in-depth)
+
+---
+
+## PostgreSQL
+
+**Supported versions:** 12+
+
+### 1. Create a read-only user
+
+Atlas only runs `SELECT` queries -- enforced by a multi-layer SQL validation pipeline. For defense in depth, connect with a read-only Postgres user:
+
+```sql
+-- Create a read-only user
+CREATE USER atlas_reader WITH PASSWORD 'your-strong-password';
+
+-- Grant connect and usage
+GRANT CONNECT ON DATABASE your_db TO atlas_reader;
+GRANT USAGE ON SCHEMA public TO atlas_reader;
+
+-- Grant SELECT on all existing tables
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO atlas_reader;
+
+-- Auto-grant SELECT on future tables
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT SELECT ON TABLES TO atlas_reader;
+```
+
+### 2. Build the connection string
+
+```
+ATLAS_DATASOURCE_URL=postgresql://atlas_reader:your-strong-password@your-host:5432/your_db
+```
+
+#### SSL configuration
+
+Most managed Postgres providers (AWS RDS, Supabase, Neon, Railway) require SSL. Append `?sslmode=require` to your connection string:
+
+```
+ATLAS_DATASOURCE_URL=postgresql://atlas_reader:password@host:5432/db?sslmode=require
+```
+
+For self-signed certificates, use `?sslmode=no-verify` -- not recommended for production.
+
+Atlas uses the `pg` driver. SSL options are parsed directly from the connection string.
+
+#### Non-public schemas
+
+To query a schema other than `public`, set `ATLAS_SCHEMA`:
+
+```bash
+ATLAS_SCHEMA=analytics
+```
+
+Atlas validates the schema name at startup (must be a valid SQL identifier) and checks that it exists via `pg_namespace`. The `search_path` is set once per physical connection.
+
+---
+
+## MySQL
+
+**Supported versions:** 8.0+
+
+### 1. Create a read-only user
+
+```sql
+CREATE USER 'atlas_reader'@'%' IDENTIFIED BY 'your-strong-password';
+GRANT SELECT ON your_db.* TO 'atlas_reader'@'%';
+FLUSH PRIVILEGES;
+```
+
+Atlas also enforces `SET SESSION TRANSACTION READ ONLY` on every connection as a defense-in-depth measure.
+
+### 2. Build the connection string
+
+```
+ATLAS_DATASOURCE_URL=mysql://atlas_reader:your-strong-password@your-host:3306/your_db
+```
+
+#### SSL configuration
+
+For SSL, use `?ssl=true` or configure SSL via the connection string options supported by `mysql2`. For self-signed certificates: `?ssl={"rejectUnauthorized":false}` -- not recommended for production.
+
+---
+
+## ClickHouse
+
+### 1. Create a read-only user
+
+```sql
+CREATE USER atlas_reader IDENTIFIED BY 'your-strong-password';
+GRANT SELECT ON your_db.* TO atlas_reader;
+```
+
+Atlas enforces `readonly: 1` on every query via ClickHouse settings, preventing any mutations even if the user has broader privileges.
+
+### 2. Build the connection string
+
+Atlas uses the `@clickhouse/client` HTTP transport. The connection URL scheme controls TLS:
+
+- `clickhouse://` -- plain HTTP
+- `clickhouses://` -- HTTPS (TLS)
+
+```
+ATLAS_DATASOURCE_URL=clickhouse://atlas_reader:your-strong-password@your-host:8443/your_db?protocol=https
+```
+
+Or using the `clickhouses://` shorthand for TLS:
+
+```
+ATLAS_DATASOURCE_URL=clickhouses://atlas_reader:your-strong-password@your-host:8443/your_db
+```
+
+> **Note:** If you use `clickhouse://` with port 8443 (the conventional TLS port), Atlas will warn that you likely intended `clickhouses://`.
+
+### 3. Install the driver
+
+```bash
+bun add @clickhouse/client
+```
+
+---
+
+## Snowflake
+
+### 1. Create a read-only role
+
+Snowflake has no session-level read-only mode. Atlas enforces SELECT-only via SQL validation (regex + AST), but for defense-in-depth, use a role with only SELECT privileges:
+
+```sql
+CREATE ROLE atlas_readonly;
+GRANT USAGE ON WAREHOUSE your_warehouse TO ROLE atlas_readonly;
+GRANT USAGE ON DATABASE your_db TO ROLE atlas_readonly;
+GRANT USAGE ON SCHEMA your_db.your_schema TO ROLE atlas_readonly;
+GRANT SELECT ON ALL TABLES IN SCHEMA your_db.your_schema TO ROLE atlas_readonly;
+GRANT SELECT ON FUTURE TABLES IN SCHEMA your_db.your_schema TO ROLE atlas_readonly;
+
+CREATE USER atlas_reader PASSWORD = 'your-strong-password' DEFAULT_ROLE = atlas_readonly;
+GRANT ROLE atlas_readonly TO USER atlas_reader;
+```
+
+### 2. Build the connection string
+
+```
+ATLAS_DATASOURCE_URL=snowflake://atlas_reader:your-strong-password@your-account/your_db/your_schema?warehouse=YOUR_WH&role=atlas_readonly
+```
+
+URL format: `snowflake://user:pass@account/database/schema?warehouse=WH&role=ROLE`
+
+- `account` -- plain identifier (e.g. `xy12345`) or fully-qualified locator (e.g. `xy12345.us-east-1`)
+- `/database` and `/database/schema` path segments are optional
+- Query parameters: `warehouse`, `role` (case-insensitive)
+
+Atlas sets `STATEMENT_TIMEOUT_IN_SECONDS` per session and tags all queries with `QUERY_TAG = 'atlas:readonly'` for audit trail in `QUERY_HISTORY`.
+
+### 3. Install the driver
+
+```bash
+bun add snowflake-sdk
+```
+
+---
+
+## CSV / Parquet (DuckDB)
+
+For flat files, Atlas uses DuckDB as an in-process analytical engine. No external database server required.
+
+### 1. Ingest files with the CLI
+
+```bash
+# CSV files
+bun run atlas -- init --csv path/to/files/
+
+# Parquet files
+bun run atlas -- init --parquet path/to/files/
+```
+
+This creates an in-memory DuckDB instance, loads the files, profiles them, and generates the semantic layer.
+
+### 2. Connection string (optional)
+
+For persistent DuckDB databases or manual configuration:
+
+```
+ATLAS_DATASOURCE_URL=duckdb:///path/to/file.duckdb
+```
+
+URL formats:
+- `duckdb://` or `duckdb://:memory:` -- in-memory database
+- `duckdb:///absolute/path.duckdb` -- absolute path to a persistent database file
+- `duckdb://relative/path.duckdb` -- relative path
+
+DuckDB opens existing files in `READ_ONLY` mode by default at runtime.
+
+No additional driver installation is needed -- `@duckdb/node-api` is bundled.
+
+---
+
+## Salesforce (SOQL)
+
+Salesforce uses SOQL, not SQL. It has a separate adapter and query tool (`querySalesforce`) rather than sharing the standard `executeSQL` pipeline.
+
+### 1. Build the connection URL
+
+```
+ATLAS_DATASOURCE_URL=salesforce://user:pass@login.salesforce.com?token=SECURITY_TOKEN
+```
+
+URL format: `salesforce://username:password@hostname?token=TOKEN&clientId=ID&clientSecret=SECRET`
+
+- `hostname` -- defaults to `login.salesforce.com` (use `test.salesforce.com` for sandboxes)
+- `token` -- Salesforce security token (appended to password for authentication)
+- `clientId` / `clientSecret` -- optional, for OAuth connected app authentication
+
+### 2. Install the driver
+
+```bash
+bun add jsforce
+```
+
+### 3. Key differences from SQL sources
+
+- Salesforce uses **SOQL** syntax, not SQL (e.g. `SELECT Name FROM Account` -- no `*`, no JOINs, relationship queries use dot notation)
+- The agent uses a separate `querySalesforce` tool instead of `executeSQL`
+- Object discovery uses `describe()` and `listObjects()` API calls rather than system catalogs
+- Session management is automatic -- Atlas handles login, session expiry, and re-authentication
+
+---
+
+## Generate the semantic layer
+
+After configuring your connection, run `atlas init` to profile your data source and generate the YAML files the agent reads before writing queries.
+
+### Profile all tables
+
+```bash
+ATLAS_DATASOURCE_URL="your-connection-string" \
+  bun run atlas -- init
+```
+
+This queries system catalogs and generates:
+
+- `semantic/entities/*.yml` -- One file per table or view with columns, types, sample values, joins, measures, virtual dimensions, and query patterns (views get a simplified profile -- no PK/FK/measures/query_patterns)
+- `semantic/catalog.yml` -- Entry point listing all entities with `use_for` guidance and `common_questions`
+- `semantic/glossary.yml` -- Auto-detected ambiguous terms, FK relationships, and enum definitions
+- `semantic/metrics/*.yml` -- Per-table metric definitions (count, sum, avg, breakdowns)
+
+### Profile specific tables
+
+If your database has many tables and you only need a subset:
+
+```bash
+bun run atlas -- init --tables users,orders,products,line_items
+```
+
+### Add LLM enrichment
+
+The `--enrich` flag uses your configured LLM provider to add richer descriptions, business context, and additional query patterns:
+
+```bash
+ATLAS_PROVIDER=anthropic ANTHROPIC_API_KEY=sk-ant-... \
+  bun run atlas -- init --enrich
+```
+
+Enrichment is auto-enabled when `ATLAS_PROVIDER` and its API key are both set. Skip it explicitly with `--no-enrich`.
+
+Enrichment adds:
+- Rich 2-3 sentence business descriptions for each entity
+- Concrete analytical use cases
+- Additional query patterns with valid SQL
+- Improved glossary definitions and disambiguation guidance
+- Missing metric fields (`unit`, `aggregation`, `objective`) and derived metrics
+
+### Review and refine
+
+The generated YAMLs are a starting point. Review them and:
+
+- Fix descriptions that the profiler could not infer
+- Add business context only you know
+- Remove tables or columns that should not be queryable
+- Adjust `sample_values` for sensitive columns
+
+The agent reads these files before writing SQL. Better YAMLs produce better queries.
+
+---
+
+## Multi-source configuration
+
+To query multiple data sources from a single Atlas deployment, create an `atlas.config.ts` in your project root:
+
+```typescript
+import { defineConfig } from "@atlas/api/lib/config";
+
+export default defineConfig({
+  datasources: {
+    default: { url: process.env.ATLAS_DATASOURCE_URL! },
+    warehouse: {
+      url: "snowflake://user:pass@account/db/schema?warehouse=WH",
+      description: "Snowflake data warehouse",
+    },
+    clickhouse: {
+      url: "clickhouses://user:pass@host:8443/analytics",
+      description: "ClickHouse analytics cluster",
+    },
+    files: {
+      url: "duckdb:///data/reports.duckdb",
+      description: "Local Parquet/CSV reports",
+    },
+  },
+  tools: ["explore", "executeSQL"],
+  auth: "auto",
+  semanticLayer: "./semantic",
+});
+```
+
+When `atlas.config.ts` is present, it takes precedence over `ATLAS_DATASOURCE_URL` for datasource configuration. Each datasource can have its own `schema`, `description`, `maxConnections`, `idleTimeoutMs`, and `rateLimit` settings.
+
+The agent's `executeSQL` tool accepts an optional `connectionId` parameter to target a specific datasource. The `"default"` datasource is used when no ID is specified.
+
+---
+
+## Safety knobs
+
+Atlas enforces several safety limits. Tune them via environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_TABLE_WHITELIST` | `true` | Only allow queries against tables defined in `semantic/entities/*.yml`. Prevents access to tables not in the semantic layer |
+| `ATLAS_ROW_LIMIT` | `1000` | Maximum rows returned per query. Appended as `LIMIT` to every query |
+| `ATLAS_QUERY_TIMEOUT` | `30000` | Per-query timeout in milliseconds. Set via `SET statement_timeout` (PostgreSQL), `MAX_EXECUTION_TIME` (MySQL), `max_execution_time` (ClickHouse), or `STATEMENT_TIMEOUT_IN_SECONDS` (Snowflake) |
+
+> **Note:** Non-SELECT SQL (INSERT, UPDATE, DELETE, DROP, etc.) is always rejected by the validation pipeline. There is no toggle to disable this.
+
+### SQL validation pipeline
+
+Every query goes through six layers of validation before execution:
+
+1. **Empty check** -- Reject empty or whitespace-only queries
+2. **Regex mutation guard** -- Quick reject of DML/DDL keywords (INSERT, UPDATE, DELETE, DROP, etc.)
+3. **AST parse** -- `node-sql-parser` in PostgreSQL/MySQL mode (auto-detected) verifies a single SELECT statement. Unparseable queries are rejected
+4. **Table whitelist** -- All referenced tables must exist in `semantic/entities/*.yml`. CTE names are excluded from the check
+5. **Auto LIMIT** -- `LIMIT` appended to every query (configurable via `ATLAS_ROW_LIMIT`)
+6. **Statement timeout** -- Applied before each query (configurable via `ATLAS_QUERY_TIMEOUT`)
+
+### Read-only enforcement by data source
+
+| Data source | Read-only mechanism |
+|-------------|---------------------|
+| PostgreSQL | SQL validation (regex + AST) |
+| MySQL | SQL validation + `SET SESSION TRANSACTION READ ONLY` |
+| ClickHouse | SQL validation + `readonly: 1` per-query setting |
+| Snowflake | SQL validation (no session-level read-only; use a SELECT-only role) |
+| DuckDB | SQL validation + `access_mode: 'READ_ONLY'` on database open |
+| Salesforce | SOQL is inherently read-only |
+
+### Recommended production settings
+
+For a production database with sensitive data:
+
+```bash
+# .env
+ATLAS_TABLE_WHITELIST=true
+ATLAS_ROW_LIMIT=500
+ATLAS_QUERY_TIMEOUT=15000
+```
+
+Lower the row limit to reduce load on your database. Reduce the query timeout to kill runaway queries faster.
+
+---
+
+## Verify the setup
+
+Start the dev server and check the health endpoint:
+
+```bash
+bun run dev
+curl http://localhost:3000/api/health
+```
+
+The health response includes:
+
+```json
+{
+  "status": "ok",
+  "checks": {
+    "datasource": { "status": "ok", "latencyMs": 12 },
+    "provider": { "status": "ok", "provider": "anthropic", "model": "(default)" },
+    "semanticLayer": { "status": "ok", "entityCount": 5 },
+    "auth": { "mode": "none", "enabled": false },
+    "internalDb": { "status": "not_configured" }
+  }
+}
+```
+
+If `datasource.status` is `"error"`, check your `ATLAS_DATASOURCE_URL`, network access, and user permissions.
+
+---
+
+## Troubleshooting
+
+**"Cannot connect to database"** during `atlas init`
+- Verify the connection string: `psql "$ATLAS_DATASOURCE_URL"` should connect (PostgreSQL) or use the appropriate client for your data source
+- Check that the host is reachable from your machine
+- For SSL issues, try appending `?sslmode=require` (PostgreSQL) or `?ssl=true` (MySQL)
+
+**"No tables were successfully profiled"**
+- Ensure the user has `SELECT` and `USAGE` privileges on the target schema
+- Check that tables exist in the expected schema (Atlas profiles `public` by default for PostgreSQL)
+- Use `--tables` to target specific tables if the schema has many objects
+
+**Health check shows `MISSING_SEMANTIC_LAYER`**
+- Run `bun run atlas -- init` to generate the `semantic/` directory
+- For quick demos: `bun run atlas -- init --demo` (simple) or `bun run atlas -- init --demo cybersec` (62-table SaaS)
+- If deploying via Docker, generate the semantic layer locally first -- it gets baked into the image at build time
+
+**Queries timing out**
+- Increase `ATLAS_QUERY_TIMEOUT` for complex queries
+- Lower `ATLAS_ROW_LIMIT` to reduce result set sizes
+- Add indexes to your database for commonly queried columns
+
+**ClickHouse: "missing or invalid 'meta' field"**
+- Ensure the query returns a valid result set (not a command like `SHOW TABLES`)
+- Check that the connection URL points to the correct database
+
+**Snowflake: session or authentication errors**
+- Verify the account identifier format (e.g. `xy12345` or `xy12345.us-east-1`)
+- Check that the warehouse is running and the role has `USAGE` on it
+- Ensure the security token is correct if using username/password auth
+
+**Salesforce: "INVALID_SESSION_ID"**
+- Atlas auto-retries on session expiry, but persistent failures indicate credential issues
+- Verify your security token (reset it from Salesforce Setup if needed)
+- Check that the user has API access enabled in their Salesforce profile
+
+**Driver not found**
+- ClickHouse: `bun add @clickhouse/client`
+- Snowflake: `bun add snowflake-sdk`
+- Salesforce: `bun add jsforce`
+- PostgreSQL (`pg`), MySQL (`mysql2`), and DuckDB (`@duckdb/node-api`) are bundled with Atlas

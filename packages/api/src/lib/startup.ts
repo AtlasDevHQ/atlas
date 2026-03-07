@@ -8,6 +8,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { detectDBType, resolveDatasourceUrl } from "./db/connection";
+import { maskConnectionUrl } from "./security";
 import { getDefaultProvider } from "./providers";
 import { detectAuthMode, getAuthModeSource } from "./auth/detect";
 import { createLogger } from "./logger";
@@ -19,7 +20,8 @@ export type DiagnosticCode =
   | "MISSING_SEMANTIC_LAYER" | "INVALID_SCHEMA" | "INTERNAL_DB_UNREACHABLE"
   | "WEAK_AUTH_SECRET" | "INVALID_JWKS_URL" | "MISSING_AUTH_ISSUER"
   | "MISSING_AUTH_PREREQ"
-  | "ACTIONS_REQUIRE_AUTH" | "ACTIONS_MISSING_CREDENTIALS";
+  | "ACTIONS_REQUIRE_AUTH" | "ACTIONS_MISSING_CREDENTIALS"
+  | "INVALID_CONFIG";
 
 export interface DiagnosticError {
   code: DiagnosticCode;
@@ -32,6 +34,12 @@ const PROVIDER_KEY_MAP: Record<string, string> = {
   bedrock: "AWS_ACCESS_KEY_ID",
   ollama: "", // Ollama runs locally, no API key required
   gateway: "AI_GATEWAY_API_KEY",
+};
+
+const PROVIDER_SIGNUP_URL: Record<string, string> = {
+  anthropic: "https://console.anthropic.com/settings/keys",
+  openai: "https://platform.openai.com/api-keys",
+  gateway: "https://vercel.com/~/ai/api-keys",
 };
 
 let _cached: DiagnosticError[] | null = null;
@@ -110,9 +118,10 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
     // Unknown provider — providers.ts will throw a descriptive error at model init,
     // so we don't duplicate that check here.
   } else if (requiredKey && !process.env[requiredKey]) {
-    let message = `${requiredKey} is not set. Atlas needs an API key for the ${provider} provider.`;
-    if (provider === "gateway") {
-      message += " Create one at https://vercel.com/~/ai/api-keys";
+    let message = `${requiredKey} is not set. Atlas needs an API key for the "${provider}" provider. Set it in your .env file.`;
+    const signupUrl = PROVIDER_SIGNUP_URL[provider];
+    if (signupUrl) {
+      message += ` Get one at ${signupUrl}`;
     }
     errors.push({ code: "MISSING_API_KEY", message });
   }
@@ -176,7 +185,7 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
           const detail = err instanceof Error ? err.message : "";
           log.error({ err: detail }, "MySQL connection check failed");
 
-          let message = "Cannot connect to the database. Check that the server is running and the connection string is correct.";
+          let message = `Cannot connect to ${maskConnectionUrl(resolvedDatasourceUrl)}. Check the connection string and ensure the database is running.`;
 
           if (/ECONNREFUSED/i.test(detail)) {
             message += " The connection was refused — is the MySQL server running?";
@@ -253,7 +262,7 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
           const detail = err instanceof Error ? err.message : "";
           log.error({ err: detail }, "DB connection check failed");
 
-          let message = "Cannot connect to the database. Check that the server is running and the connection string is correct.";
+          let message = `Cannot connect to ${maskConnectionUrl(resolvedDatasourceUrl)}. Check the connection string and ensure the database is running.`;
 
           if (/ECONNREFUSED/i.test(detail)) {
             message += " The connection was refused — is the database server running?";
@@ -303,7 +312,7 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
         const detail = err instanceof Error ? err.message : "";
         log.error({ err: detail }, "Internal DB connection check failed");
 
-        let message = "Cannot connect to the internal database (DATABASE_URL). Check that the server is running and the connection string is correct.";
+        let message = `Cannot connect to the internal database at ${maskConnectionUrl(process.env.DATABASE_URL!)}. Check the connection string and ensure the database is running.`;
         if (/ECONNREFUSED/i.test(detail)) {
           message += " The connection was refused — is the database server running?";
         } else if (/timeout/i.test(detail)) {
@@ -332,6 +341,18 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
   const migrationErr = getMigrationError();
   if (migrationErr) {
     errors.push({ code: "INTERNAL_DB_UNREACHABLE", message: migrationErr });
+  }
+
+  // 5.5. Config file validation (atlas.config.ts)
+  try {
+    const configMod = await import("@atlas/api/lib/config");
+    if (typeof configMod.loadConfig === "function" && !configMod.getConfig()) {
+      await configMod.loadConfig();
+    }
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    log.error({ err: detail }, "Config validation failed");
+    errors.push({ code: "INVALID_CONFIG", message: detail });
   }
 
   // 6. Auth mode diagnostics
@@ -381,7 +402,8 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
       errors.push({
         code: "WEAK_AUTH_SECRET",
         message:
-          "BETTER_AUTH_SECRET is shorter than 32 characters. Use a cryptographically random string of at least 32 characters.",
+          `BETTER_AUTH_SECRET must be at least 32 characters (currently ${secret.length}). ` +
+          "Generate one with: openssl rand -base64 32",
       });
     }
     if (!process.env.BETTER_AUTH_URL) {

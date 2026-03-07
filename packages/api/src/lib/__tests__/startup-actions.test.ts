@@ -55,6 +55,10 @@ let mockConfig: Record<string, unknown> | null = null;
 
 mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => mockConfig,
+  loadConfig: async () => {
+    mockConfig = { source: "env" };
+    return mockConfig;
+  },
 }));
 
 const { validateEnvironment, getStartupWarnings, resetStartupCache } =

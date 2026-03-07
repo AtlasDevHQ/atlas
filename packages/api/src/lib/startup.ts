@@ -345,12 +345,13 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
 
   // 5.5. Config file validation (atlas.config.ts)
   try {
-    const { getConfig, loadConfig } = await import("@atlas/api/lib/config");
-    if (!getConfig()) {
-      await loadConfig();
+    const configMod = await import("@atlas/api/lib/config");
+    if (typeof configMod.loadConfig === "function" && !configMod.getConfig()) {
+      await configMod.loadConfig();
     }
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
+    log.error({ err: detail }, "Config validation failed");
     errors.push({ code: "INVALID_CONFIG", message: detail });
   }
 

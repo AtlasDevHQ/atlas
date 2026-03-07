@@ -14,12 +14,19 @@ export const SENSITIVE_PATTERNS =
  * Mask credentials in a database connection URL.
  * Returns "<invalid-url>" for unparseable URLs to avoid leaking raw strings.
  */
+const SENSITIVE_PARAMS = /^(password|secret|token|key|credential|auth)$/i;
+
 export function maskConnectionUrl(url: string): string {
   try {
     const parsed = new URL(url);
     if (parsed.username || parsed.password) {
       parsed.username = "***";
       parsed.password = "";
+    }
+    for (const key of [...parsed.searchParams.keys()]) {
+      if (SENSITIVE_PARAMS.test(key)) {
+        parsed.searchParams.set(key, "***");
+      }
     }
     return parsed.toString();
   } catch {

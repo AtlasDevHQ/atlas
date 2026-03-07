@@ -340,10 +340,17 @@ describe("maskConnectionUrl", () => {
     expect(maskConnectionUrl("not-a-url")).toBe("<invalid-url>");
   });
 
-  it("preserves query parameters", () => {
+  it("preserves non-sensitive query parameters", () => {
     const result = maskConnectionUrl("postgresql://user:pass@host:5432/db?sslmode=require");
     expect(result).toContain("sslmode=require");
     expect(result).not.toContain("pass");
+  });
+
+  it("masks sensitive query parameters", () => {
+    const result = maskConnectionUrl("postgresql://user:pass@host:5432/db?password=secret&sslmode=require");
+    expect(result).not.toContain("secret");
+    expect(result).toContain("password=***");
+    expect(result).toContain("sslmode=require");
   });
 });
 

@@ -358,7 +358,7 @@ export async function runAgent({
       maxOutputTokens: 4096,
       stopWhen: stepCountIs(25),
       // totalMs: 180s for self-hosted (full agent loop budget).
-      // On Vercel, maxDuration caps the serverless function at 60s.
+      // On Vercel, maxDuration caps the serverless function at 300s (Pro plan).
       timeout: { totalMs: 180_000, stepMs: 30_000, chunkMs: 5_000 },
 
       onError: ({ error }) => {

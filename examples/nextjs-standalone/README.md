@@ -16,7 +16,7 @@ The API and frontend run in the same Next.js process. No separate API server, no
 
 - **Vercel Sandbox** — The explore tool runs in a Firecracker microVM (`@vercel/sandbox`) with `networkPolicy: "deny-all"`. Auto-detected on Vercel via the `VERCEL` env var
 - **AI Gateway** — Use `ATLAS_PROVIDER=gateway` with a single `AI_GATEWAY_API_KEY` to route through [Vercel's AI Gateway](https://vercel.com/docs/ai-gateway). Supports Claude, GPT, and other major providers with built-in observability
-- **maxDuration** — The catch-all route sets `maxDuration = 60`. Increase based on your [Vercel plan](https://vercel.com/docs/functions/configuring-functions/duration) for complex multi-step queries
+- **maxDuration** — The catch-all route sets `maxDuration = 300` (5 min, Pro plan limit). Hobby plan caps at 60s — adjust if needed
 - **serverExternalPackages** — `pg`, `mysql2`, `just-bash`, `pino`, `pino-pretty` are excluded from bundling (native bindings / worker threads)
 
 ## Quick Start (monorepo)

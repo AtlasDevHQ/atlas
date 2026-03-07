@@ -12,6 +12,10 @@ Public semver releases will start fresh when the API stabilizes — see
 
 ### Added
 
+- `atlas doctor` CLI command — validate environment, connectivity, and configuration ([#68](https://github.com/AtlasDevHQ/atlas/pull/68))
+- Actionable first-run error messages with provider signup URLs and masked connection strings ([#69](https://github.com/AtlasDevHQ/atlas/pull/69))
+- CHANGELOG.md, CONTRIBUTING.md, and GitHub issue/PR templates ([#67](https://github.com/AtlasDevHQ/atlas/pull/67))
+
 - `executePython` tool with import guard and just-bash backend ([#46](https://github.com/AtlasDevHQ/atlas/pull/46))
 - Wire executePython results into chat UI ([#48](https://github.com/AtlasDevHQ/atlas/pull/48))
 - Python prompt tuning for agent system prompt ([#49](https://github.com/AtlasDevHQ/atlas/pull/49))

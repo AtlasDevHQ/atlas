@@ -151,8 +151,23 @@ function appendDialectHints(prompt: string): string {
   return prompt + "\n\n## Additional SQL Dialect Notes\n\n" + hints.map((h) => h.dialect).join("\n\n");
 }
 
+const PYTHON_GUIDANCE = `
+## SQL vs Python
+
+**Use SQL for:** filtering, aggregation, joins, window functions, GROUP BY, HAVING — anything the database handles natively.
+**Use Python for:** statistical analysis (correlations, regressions, hypothesis tests), complex reshaping (pivots, multi-index), time series decomposition, clustering, and advanced visualizations (heatmaps, scatter matrices, violin plots).
+
+**Anti-patterns to avoid:** SELECT * then aggregate in pandas, re-implementing GROUP BY or window functions in Python, using Python for simple counts/sums.
+
+**Chart guidance:** prefer \`_atlas_chart\` (interactive Recharts) for bar/line/pie charts. Use \`chart_path()\` only for advanced matplotlib visualizations that Recharts cannot render.`;
+
 function buildSystemPrompt(registry: ToolRegistry): string {
   let base = SYSTEM_PROMPT_PREFIX + "\n\n" + registry.describe() + "\n\n" + SYSTEM_PROMPT_SUFFIX;
+
+  // Add Python guidance only when the tool is available
+  if (registry.get("executePython")) {
+    base += "\n" + PYTHON_GUIDANCE;
+  }
 
   // Append the pre-indexed semantic layer summary
   const semanticIndex = getSemanticIndex();

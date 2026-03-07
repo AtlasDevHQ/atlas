@@ -138,8 +138,7 @@ describe("E2E: Scaffold — Docker template", () => {
   });
 
   it("removes platform-irrelevant files", () => {
-    // Docker platform should not have render.yaml or railway.json or sidecar/
-    expect(fs.existsSync(path.join(targetDir, "render.yaml"))).toBe(false);
+    // Docker platform should not have railway.json or sidecar/
     expect(fs.existsSync(path.join(targetDir, "railway.json"))).toBe(false);
     expect(fs.existsSync(path.join(targetDir, "sidecar"))).toBe(false);
     expect(fs.existsSync(path.join(targetDir, "vercel.json"))).toBe(false);
@@ -297,45 +296,7 @@ describe("E2E: Scaffold — Railway platform", () => {
     expect(envContent).toContain("SIDECAR_AUTH_TOKEN=");
   });
 
-  it("does not have render.yaml or vercel.json", () => {
-    expect(fs.existsSync(path.join(targetDir, "render.yaml"))).toBe(false);
+  it("does not have vercel.json", () => {
     expect(fs.existsSync(path.join(targetDir, "vercel.json"))).toBe(false);
-  });
-});
-
-describe("E2E: Scaffold — Render platform", () => {
-  const projectName = "e2e-scaffold-render";
-  let tmpDir: string;
-  let targetDir: string;
-
-  beforeAll(() => {
-    tmpDir = makeTempDir();
-    targetDir = path.join(tmpDir, projectName);
-    scaffold(tmpDir, projectName, "render");
-  });
-
-  afterAll(() => {
-    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it("has render.yaml", () => {
-    expect(fs.existsSync(path.join(targetDir, "render.yaml"))).toBe(true);
-  });
-
-  it("has sidecar/ directory", () => {
-    expect(fs.existsSync(path.join(targetDir, "sidecar"))).toBe(true);
-    expect(fs.existsSync(path.join(targetDir, "sidecar", "Dockerfile"))).toBe(true);
-  });
-
-  it("has .env with sidecar config", () => {
-    const envPath = path.join(targetDir, ".env");
-    expect(fs.existsSync(envPath)).toBe(true);
-
-    const envContent = fs.readFileSync(envPath, "utf-8");
-    expect(envContent).toContain("SIDECAR_AUTH_TOKEN=");
-  });
-
-  it("does not have railway.json", () => {
-    expect(fs.existsSync(path.join(targetDir, "railway.json"))).toBe(false);
   });
 });

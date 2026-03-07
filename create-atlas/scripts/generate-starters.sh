@@ -4,13 +4,13 @@
 # Usage:
 #   bash scripts/generate-starters.sh [output-dir]
 #
-# Generates 4 standalone projects (vercel, railway, render, docker) using
+# Generates 3 standalone projects (vercel, railway, docker) using
 # create-atlas with --defaults. Output goes to <output-dir>/<platform>/
 # (default: ./starters/).
 #
 # Each generated project is a deployable Atlas starter with:
 #   - Platform-specific README with deploy buttons
-#   - Correct config files (vercel.json, railway.json, render.yaml, Dockerfile)
+#   - Correct config files (vercel.json, railway.json, Dockerfile)
 #   - .env.example (renamed from .env — no secrets in repos)
 
 set -euo pipefail
@@ -19,7 +19,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CREATE_ATLAS="$SCRIPT_DIR/../index.ts"
 OUTPUT_DIR="${1:-$SCRIPT_DIR/../starters}"
 
-PLATFORMS=("vercel" "railway" "render" "docker")
+PLATFORMS=("vercel" "railway" "docker")
 
 mkdir -p "$OUTPUT_DIR"
 

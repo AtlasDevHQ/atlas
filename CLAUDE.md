@@ -18,7 +18,7 @@ Guidance for Claude Code when working in this repository.
 - [ ] **Path traversal protection** — Each explore backend enforces read-only access scoped to the `semantic/` directory (nsjail: bind-mount, sidecar: container filesystem, just-bash: OverlayFs, Vercel: VM filesystem)
 - [ ] **No secrets in responses** — Never expose connection strings, API keys, or stack traces to the user or agent
 - [ ] **Readonly DB connections** — PostgreSQL uses read-only queries enforced by validation; MySQL uses a read-only session variable; ClickHouse uses `readonly: 1` per-query setting
-- [ ] **Explore tool isolation** — Five-tier priority: Vercel sandbox (Firecracker VM) > nsjail explicit (`ATLAS_SANDBOX=nsjail`, hard-fail) > sidecar (`ATLAS_SANDBOX_URL`, HTTP-isolated container) > nsjail auto-detect (binary on PATH) > just-bash (dev fallback). When `ATLAS_SANDBOX_URL` is set, sidecar is the intended backend — nsjail auto-detection is skipped entirely (no noisy namespace warnings on Railway/Render). nsjail runs with no network, read-only `semantic/` mount, no host secrets, as nobody:65534
+- [ ] **Explore tool isolation** — Five-tier priority: Vercel sandbox (Firecracker VM) > nsjail explicit (`ATLAS_SANDBOX=nsjail`, hard-fail) > sidecar (`ATLAS_SANDBOX_URL`, HTTP-isolated container) > nsjail auto-detect (binary on PATH) > just-bash (dev fallback). When `ATLAS_SANDBOX_URL` is set, sidecar is the intended backend — nsjail auto-detection is skipped entirely (no noisy namespace warnings on Railway). nsjail runs with no network, read-only `semantic/` mount, no host secrets, as nobody:65534
 
 ### Code Style
 - [ ] **bun only** — Package manager and runtime. Never npm, yarn, or node
@@ -200,7 +200,7 @@ atlas/
 │   │       ├── tools.ts         # Bridge: AI SDK tools → MCP tools
 │   │       └── resources.ts     # Semantic layer as MCP resources
 │   │
-│   ├── sandbox-sidecar/         # @atlas/sandbox-sidecar — Isolated explore sidecar (Railway/Render)
+│   ├── sandbox-sidecar/         # @atlas/sandbox-sidecar — Isolated explore sidecar (Railway)
 │   │   ├── package.json
 │   │   ├── Dockerfile           # Minimal: bun + bash/coreutils + semantic/ files
 │   │   └── src/server.ts        # Bun.serve: POST /exec, GET /health
@@ -229,7 +229,6 @@ atlas/
 │   │   ├── Dockerfile           # Multi-stage: build API + nsjail
 │   │   ├── docker-compose.yml   # Dev: Postgres + API
 │   │   ├── railway.json         # Railway deploy config
-│   │   ├── render.yaml          # Render deploy config
 │   │   └── scripts/start.sh     # Single-process: Hono API
 │   └── nextjs-standalone/       # Pure Next.js + embedded Hono API (Vercel)
 │       ├── vercel.json          # Vercel framework + build config
@@ -497,9 +496,9 @@ docker run -p 3001:3001 \
   atlas
 ```
 
-### Railway / Render
+### Railway
 
-The Docker example includes platform configs (`railway.json`, `render.yaml`). See the example README for platform-specific instructions.
+The Docker example includes a `railway.json` platform config. See the example README for platform-specific instructions.
 
 ### Required production env vars
 
@@ -510,7 +509,7 @@ The Docker example includes platform configs (`railway.json`, `render.yaml`). Se
 | `DATABASE_URL` | `postgresql://user:pass@host:5432/atlas` |
 | `ATLAS_DATASOURCE_URL` | `postgresql://user:pass@host:5432/dbname` |
 
-`PORT` is set automatically by most platforms. `DATABASE_URL` is auto-set by most platforms (Railway, Render, etc.). All other vars have safe defaults.
+`PORT` is set automatically by most platforms. `DATABASE_URL` is auto-set by most platforms (Railway, etc.). All other vars have safe defaults.
 
 ## Semantic Layer Generation
 
@@ -538,7 +537,7 @@ When `--enrich` is passed (or auto-enabled when `ATLAS_PROVIDER` + API key are s
 ### `create-atlas-agent` — Project Scaffolding
 
 The `create-atlas/` package provides `bun create atlas-agent my-app`:
-1. Interactive prompts for project name, platform (vercel, railway, render, docker, other), database choice, provider, API key, model. Pass `--defaults` or `-y` to skip all prompts. Pass `--platform <name>` to select a deploy target directly
+1. Interactive prompts for project name, platform (vercel, railway, docker, other), database choice, provider, API key, model. Pass `--defaults` or `-y` to skip all prompts. Pass `--platform <name>` to select a deploy target directly
 2. Copies template files from the bundled template directory (includes src/, bin/, data/)
 3. Writes `.env` with collected configuration
 4. Runs `bun install` and optionally `atlas init --enrich`

@@ -6,7 +6,7 @@
  * - sandbox plugin: pluggable explore backend via the Plugin SDK (priority-sorted)
  * - @vercel/sandbox: ephemeral microVM with networkPolicy "deny-all" (Vercel)
  * - nsjail: Linux namespace sandbox (self-hosted Docker)
- * - sidecar: HTTP-isolated container with no secrets (Railway/Render)
+ * - sidecar: HTTP-isolated container with no secrets (Railway)
  * - just-bash: OverlayFs ensures read-only access; writes stay in memory (dev, or production fallback)
  *
  * Runtime selection priority: sandbox plugin > Vercel sandbox > nsjail (explicit) > sidecar > nsjail (auto-detect) > just-bash.
@@ -156,7 +156,7 @@ export function getExploreBackendType(): ExploreBackendType {
   if (useVercelSandbox()) return "vercel-sandbox";
   // Explicit nsjail (ATLAS_SANDBOX=nsjail) — hard-fail if unavailable
   if (process.env.ATLAS_SANDBOX === "nsjail" && !_nsjailFailed) return "nsjail";
-  // Sidecar takes priority over nsjail auto-detection (Railway/Render set ATLAS_SANDBOX_URL)
+  // Sidecar takes priority over nsjail auto-detection (Railway sets ATLAS_SANDBOX_URL)
   if (useSidecar() && !_sidecarFailed) return "sidecar";
   // nsjail auto-detect (binary on PATH)
   if (!_nsjailFailed && useNsjail()) return "nsjail";
@@ -247,7 +247,7 @@ function getExploreBackend(): Promise<ExploreBackend> {
       }
 
       // Priority 3: Sidecar service (HTTP-isolated microservice)
-      // When ATLAS_SANDBOX_URL is set, sidecar is the intended backend (Railway/Render).
+      // When ATLAS_SANDBOX_URL is set, sidecar is the intended backend (Railway).
       // Skips nsjail auto-detection entirely — no noisy namespace warnings.
       if (useSidecar()) {
         const { createSidecarBackend } = await import("./explore-sidecar");

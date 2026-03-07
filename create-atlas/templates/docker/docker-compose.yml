@@ -19,7 +19,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # Sandbox sidecar — isolated explore tool for production (Railway, Render, Docker).
+  # Sandbox sidecar — isolated explore tool for production (Railway, Docker).
   # Uncomment to test sidecar locally. Set ATLAS_SANDBOX_URL=http://localhost:8080 in .env.
   # sidecar:
   #   build:

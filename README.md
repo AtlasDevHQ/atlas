@@ -8,7 +8,6 @@ Built with Hono, Vercel AI SDK, and bun. Supports Anthropic, OpenAI, Bedrock, Ol
 
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FAtlasDevHQ%2Fatlas-starter-vercel&project-name=atlas&repository-name=atlas&products=%5B%7B%22type%22%3A%22integration%22%2C%22integrationSlug%22%3A%22neon%22%2C%22productSlug%22%3A%22neon%22%2C%22protocol%22%3A%22storage%22%7D%5D&env=AI_GATEWAY_API_KEY,BETTER_AUTH_SECRET&envDescription=AI_GATEWAY_API_KEY%3A%20Vercel%20AI%20Gateway%20key%20(vercel.com%2F~%2Fai%2Fapi-keys).%20BETTER_AUTH_SECRET%3A%20Random%20string%2C%2032%2B%20chars%20(openssl%20rand%20-base64%2032).)
 [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/_XHuNP?referralCode=N5vD3S)
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/AtlasDevHQ/atlas-starter-render)
 
 **Docker:**
 
@@ -83,7 +82,6 @@ atlas/
 |----------|---------|-------|
 | Vercel | [atlas-starter-vercel](https://github.com/AtlasDevHQ/atlas-starter-vercel) | Next.js + embedded Hono API + Neon Postgres |
 | Railway | [atlas-starter-railway](https://github.com/AtlasDevHQ/atlas-starter-railway) | Docker + sidecar sandbox + Railway Postgres |
-| Render | [atlas-starter-render](https://github.com/AtlasDevHQ/atlas-starter-render) | Docker + sidecar sandbox + Render Postgres |
 | Docker | [atlas-starter-docker](https://github.com/AtlasDevHQ/atlas-starter-docker) | Docker Compose + optional nsjail isolation |
 
 See [Deploy options](docs/guides/deploy.md) for detailed instructions.
@@ -98,7 +96,7 @@ The explore tool (filesystem access to semantic YAML files) runs in a sandbox th
 |----------|---------|-----------|
 | Vercel | Firecracker microVM | Hardware-level (strongest) |
 | Self-hosted Docker | nsjail (Linux namespaces) | Kernel-level |
-| Railway, Render | Sidecar service | Process-level |
+| Railway | Sidecar service | Process-level |
 | Local dev | just-bash + OverlayFS | Path-traversal protection |
 
 **If you're deploying Atlas for your own team** on a private network, any tier is fine — you're protecting against prompt injection edge cases, not hostile tenants. **If you're running multi-tenant**, use Vercel or nsjail-capable platforms for real isolation.
@@ -123,7 +121,7 @@ See [`.env.example`](.env.example) for all options.
 ## Documentation
 
 - [Quick Start](docs/guides/quick-start.md) -- Local dev from zero to asking questions
-- [Deploy options](docs/guides/deploy.md) -- Docker, Render, Railway, and more
+- [Deploy options](docs/guides/deploy.md) -- Docker, Railway, Vercel, and more
 - [Bring Your Own DB](docs/guides/bring-your-own-db.md) -- Connect to an existing database safely
 - [Bring Your Own Frontend](docs/guides/byof/overview.md) -- Nuxt, SvelteKit, React/Vite, TanStack Start
 - [Plugin Authoring](docs/guides/plugin-authoring-guide.md) -- Build custom plugins

@@ -7,6 +7,7 @@ import { isActionToolResult } from "../../lib/action-types";
 import { ExploreCard } from "./explore-card";
 import { SQLResultCard } from "./sql-result-card";
 import { ActionApprovalCard } from "../actions/action-approval-card";
+import { PythonResultCard } from "./python-result-card";
 
 export const ToolPart = memo(function ToolPart({ part }: { part: unknown }) {
   let name: string;
@@ -26,6 +27,8 @@ export const ToolPart = memo(function ToolPart({ part }: { part: unknown }) {
       return <ExploreCard part={part} />;
     case "executeSQL":
       return <SQLResultCard part={part} />;
+    case "executePython":
+      return <PythonResultCard part={part} />;
     default: {
       const result = getToolResult(part);
       if (isActionToolResult(result)) {

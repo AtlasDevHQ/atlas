@@ -218,7 +218,7 @@ export interface PythonBackend {
  *
  * Priority:
  * 1. Sidecar (ATLAS_SANDBOX_URL) — HTTP-isolated container
- * 2. Vercel (ATLAS_RUNTIME=vercel) — not yet supported
+ * 2. Vercel (ATLAS_RUNTIME=vercel) — Python 3.13 in Firecracker microVM
  * 3. nsjail explicit (ATLAS_SANDBOX=nsjail) — hard-fail if unavailable
  * 4. nsjail auto-detect (on PATH or ATLAS_NSJAIL_PATH) — graceful fallback
  * 5. No backend — error
@@ -233,9 +233,16 @@ async function getPythonBackend(): Promise<PythonBackend | { error: string }> {
     };
   }
 
-  // 2. Vercel — not supported yet
+  // 2. Vercel sandbox (Python 3.13 runtime)
   if (process.env.ATLAS_RUNTIME === "vercel" || process.env.VERCEL) {
-    return { error: "Python execution is not yet available on Vercel. Use a sidecar or nsjail-based deployment." };
+    try {
+      const { createPythonSandboxBackend } = await import("./python-sandbox");
+      return createPythonSandboxBackend();
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      log.error({ err: detail }, "Vercel Python sandbox backend failed to load");
+      return { error: `Vercel Python sandbox unavailable: ${detail}` };
+    }
   }
 
   // 3. nsjail explicit (ATLAS_SANDBOX=nsjail) — hard-fail

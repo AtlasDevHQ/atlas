@@ -13,6 +13,15 @@ import {
   MOCK_CONVERSATIONS,
   MOCK_CONVERSATION_DETAIL,
   MOCK_ADMIN_OVERVIEW,
+  MOCK_ADMIN_CONNECTIONS,
+  MOCK_CONNECTION_HEALTH,
+  MOCK_AUDIT_LOG,
+  MOCK_AUDIT_STATS,
+  MOCK_PLUGINS,
+  MOCK_SEMANTIC_ENTITIES,
+  MOCK_SCHEDULED_TASK,
+  MOCK_SCHEDULED_TASKS,
+  MOCK_SCHEDULED_TASK_RUNS,
   type MockServer,
 } from "./mock-server";
 
@@ -29,7 +38,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
-  server.stop();
+  server?.stop();
 });
 
 /** Create a client with the valid test API key. */
@@ -141,7 +150,7 @@ describe("conversations", () => {
     const result = await client().conversations.list({ limit: 1 });
 
     expect(result.conversations).toHaveLength(1);
-    expect(result.total).toBe(2); // total is unaffected by limit
+    expect(result.total).toBe(2);
   });
 
   test("list() respects offset param", async () => {
@@ -167,8 +176,7 @@ describe("conversations", () => {
       expect.unreachable("should have thrown");
     } catch (err) {
       expect(err).toBeInstanceOf(AtlasError);
-      const e = err as AtlasError;
-      expect(e.status).toBe(404);
+      expect((err as AtlasError).status).toBe(404);
     }
   });
 
@@ -183,9 +191,89 @@ describe("conversations", () => {
       expect.unreachable("should have thrown");
     } catch (err) {
       expect(err).toBeInstanceOf(AtlasError);
-      const e = err as AtlasError;
-      expect(e.status).toBe(404);
+      expect((err as AtlasError).status).toBe(404);
     }
+  });
+
+  test("star(id) succeeds", async () => {
+    // star() returns void — no error means success
+    await client().conversations.star("conv-1");
+  });
+
+  test("unstar(id) succeeds", async () => {
+    await client().conversations.unstar("conv-1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// scheduledTasks
+// ---------------------------------------------------------------------------
+
+describe("scheduledTasks", () => {
+  test("list() returns paginated list", async () => {
+    const result = await client().scheduledTasks.list();
+
+    expect(result.total).toBe(MOCK_SCHEDULED_TASKS.total);
+    expect(result.tasks).toHaveLength(1);
+    expect(result.tasks[0].id).toBe("task-1");
+  });
+
+  test("get(id) returns task with recent runs", async () => {
+    const result = await client().scheduledTasks.get("task-1");
+
+    expect(result.id).toBe(MOCK_SCHEDULED_TASK.id);
+    expect(result.name).toBe(MOCK_SCHEDULED_TASK.name);
+    expect(result.recentRuns).toHaveLength(1);
+    expect(result.recentRuns[0].status).toBe("success");
+  });
+
+  test("get(id) with unknown id → 404 AtlasError", async () => {
+    try {
+      await client().scheduledTasks.get("nonexistent");
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(AtlasError);
+      expect((err as AtlasError).status).toBe(404);
+    }
+  });
+
+  test("create() returns new task", async () => {
+    const result = await client().scheduledTasks.create({
+      name: "Daily digest",
+      question: "Show errors from today",
+      cronExpression: "0 8 * * *",
+    });
+
+    expect(result.name).toBe("Daily digest");
+    expect(result.question).toBe("Show errors from today");
+    expect(result.cronExpression).toBe("0 8 * * *");
+  });
+
+  test("update() returns modified task", async () => {
+    const result = await client().scheduledTasks.update("task-1", {
+      name: "Updated report",
+      enabled: false,
+    });
+
+    expect(result.name).toBe("Updated report");
+    expect(result.enabled).toBe(false);
+  });
+
+  test("delete(id) returns success", async () => {
+    const result = await client().scheduledTasks.delete("task-1");
+    expect(result).toBe(true);
+  });
+
+  test("trigger(id) succeeds", async () => {
+    await client().scheduledTasks.trigger("task-1");
+  });
+
+  test("listRuns(id) returns runs", async () => {
+    const result = await client().scheduledTasks.listRuns("task-1");
+
+    expect(result.runs).toHaveLength(1);
+    expect(result.runs[0].id).toBe(MOCK_SCHEDULED_TASK_RUNS.runs[0].id);
+    expect(result.runs[0].status).toBe("success");
   });
 });
 
@@ -205,6 +293,74 @@ describe("admin", () => {
     expect(result.pluginHealth).toHaveLength(1);
     expect(result.pluginHealth[0].status).toBe("healthy");
   });
+
+  test("connections() returns list", async () => {
+    const result = await client().admin.connections();
+    expect(result.connections).toHaveLength(1);
+    expect(result.connections[0].id).toBe("default");
+  });
+
+  test("testConnection(id) returns health check", async () => {
+    const result = await client().admin.testConnection("default");
+    expect(result.status).toBe(MOCK_CONNECTION_HEALTH.status);
+    expect(result.latencyMs).toBe(MOCK_CONNECTION_HEALTH.latencyMs);
+  });
+
+  test("audit() returns log entries", async () => {
+    const result = await client().admin.audit();
+    expect(result.rows).toHaveLength(1);
+    expect(result.total).toBe(MOCK_AUDIT_LOG.total);
+    expect(result.rows[0].sql).toBe("SELECT count(*) FROM users");
+  });
+
+  test("auditStats() returns aggregate stats", async () => {
+    const result = await client().admin.auditStats();
+    expect(result.totalQueries).toBe(MOCK_AUDIT_STATS.totalQueries);
+    expect(result.errorRate).toBe(MOCK_AUDIT_STATS.errorRate);
+  });
+
+  test("plugins() returns list", async () => {
+    const result = await client().admin.plugins();
+    expect(result.plugins).toHaveLength(1);
+    expect(result.plugins[0].id).toBe("datasource-pg");
+  });
+
+  test("pluginHealth(id) returns health", async () => {
+    const result = await client().admin.pluginHealth("datasource-pg");
+    expect(result.healthy).toBe(true);
+  });
+
+  test("semantic.entities() returns list", async () => {
+    const result = await client().admin.semantic.entities();
+    expect(result.entities).toHaveLength(1);
+    expect(result.entities[0].table).toBe("users");
+  });
+
+  test("semantic.entity(name) returns detail", async () => {
+    const result = await client().admin.semantic.entity("users");
+    expect(result.entity).toBeTruthy();
+  });
+
+  test("semantic.metrics() returns list", async () => {
+    const result = await client().admin.semantic.metrics();
+    expect(result.metrics).toHaveLength(1);
+  });
+
+  test("semantic.glossary() returns terms", async () => {
+    const result = await client().admin.semantic.glossary();
+    expect(result.glossary).toHaveLength(1);
+  });
+
+  test("semantic.catalog() returns catalog", async () => {
+    const result = await client().admin.semantic.catalog();
+    expect(result.catalog).toBeTruthy();
+  });
+
+  test("semantic.stats() returns aggregate stats", async () => {
+    const result = await client().admin.semantic.stats();
+    expect(result.totalEntities).toBe(15);
+    expect(result.coverageGaps.noDescription).toBe(2);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -213,13 +369,11 @@ describe("admin", () => {
 
 describe("auth modes", () => {
   test("apiKey sends Authorization: Bearer <key>", async () => {
-    // If auth works, the query succeeds — mock server validates the header
     const result = await client().query("test");
     expect(result.answer).toBe(MOCK_QUERY_RESPONSE.answer);
   });
 
   test("bearerToken sends same Authorization header format", async () => {
-    // Create a client with bearerToken set to the valid key
     const c = createAtlasClient({ baseUrl, bearerToken: VALID_API_KEY });
     const result = await c.query("test");
     expect(result.answer).toBe(MOCK_QUERY_RESPONSE.answer);
@@ -234,7 +388,15 @@ describe("auth modes", () => {
       () => bad.conversations.list(),
       () => bad.conversations.get("conv-1"),
       () => bad.conversations.delete("conv-1"),
+      () => bad.conversations.star("conv-1"),
+      () => bad.conversations.unstar("conv-1"),
+      () => bad.scheduledTasks.list(),
+      () => bad.scheduledTasks.get("task-1"),
+      () => bad.scheduledTasks.delete("task-1"),
       () => bad.admin.overview(),
+      () => bad.admin.connections(),
+      () => bad.admin.audit(),
+      () => bad.admin.plugins(),
     ];
 
     for (const fn of endpoints) {
@@ -269,7 +431,6 @@ describe("error handling", () => {
   });
 
   test("network error → AtlasError with code network_error", async () => {
-    // Point to a port that's not listening
     const c = createAtlasClient({ baseUrl: "http://localhost:1", apiKey: VALID_API_KEY });
     try {
       await c.query("test");

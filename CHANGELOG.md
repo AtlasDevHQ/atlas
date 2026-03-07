@@ -15,6 +15,9 @@ Public semver releases will start fresh when the API stabilizes — see
 - `atlas doctor` CLI command — validate environment, connectivity, and configuration ([#68](https://github.com/AtlasDevHQ/atlas/pull/68))
 - Actionable first-run error messages with provider signup URLs and masked connection strings ([#69](https://github.com/AtlasDevHQ/atlas/pull/69))
 - CHANGELOG.md, CONTRIBUTING.md, and GitHub issue/PR templates ([#67](https://github.com/AtlasDevHQ/atlas/pull/67))
+- Docs site scaffolded with Fumadocs — 13 MDX pages, Orama search, Railway deploy config ([#72](https://github.com/AtlasDevHQ/atlas/pull/72))
+- `atlas validate` CLI command — offline config and semantic layer YAML validation ([#71](https://github.com/AtlasDevHQ/atlas/pull/71))
+- SDK integration tests — 41 tests against mock Hono server covering full `@useatlas/sdk` API surface ([#70](https://github.com/AtlasDevHQ/atlas/pull/70))
 
 - `executePython` tool with import guard and just-bash backend ([#46](https://github.com/AtlasDevHQ/atlas/pull/46))
 - Wire executePython results into chat UI ([#48](https://github.com/AtlasDevHQ/atlas/pull/48))

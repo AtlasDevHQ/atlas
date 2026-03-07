@@ -7,7 +7,7 @@ Built with Hono, Vercel AI SDK, and bun. Supports Anthropic, OpenAI, Bedrock, Ol
 ## Deploy
 
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FAtlasDevHQ%2Fatlas-starter-vercel&project-name=atlas&repository-name=atlas&products=%5B%7B%22type%22%3A%22integration%22%2C%22integrationSlug%22%3A%22neon%22%2C%22productSlug%22%3A%22neon%22%2C%22protocol%22%3A%22storage%22%7D%5D&env=AI_GATEWAY_API_KEY,BETTER_AUTH_SECRET&envDescription=AI_GATEWAY_API_KEY%3A%20Vercel%20AI%20Gateway%20key%20(vercel.com%2F~%2Fai%2Fapi-keys).%20BETTER_AUTH_SECRET%3A%20Random%20string%2C%2032%2B%20chars%20(openssl%20rand%20-base64%2032).)
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/template/from-repo?repo=AtlasDevHQ%2Fatlas-starter-railway)
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/template/from-repo?repo=AtlasDevHQ%2Fatlas-starter-railway&referralCode=N5vD3S)
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/AtlasDevHQ/atlas-starter-render)
 
 **Docker:**

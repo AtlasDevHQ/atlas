@@ -73,7 +73,7 @@ function templateForPlatform(platform: Platform): Template {
 function generateReadme(projectName: string, platform: Platform, dbChoice: string): string {
   const deployBadges: Record<Platform, string> = {
     vercel: `[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?env=AI_GATEWAY_API_KEY,BETTER_AUTH_SECRET&envDescription=AI_GATEWAY_API_KEY%3A%20Vercel%20AI%20Gateway%20key%20(vercel.com%2F~%2Fai%2Fapi-keys).%20BETTER_AUTH_SECRET%3A%20Random%20string%2C%2032%2B%20chars%20(openssl%20rand%20-base64%2032).&project-name=${projectName})`,
-    railway: `[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/template/from-repo?repo=AtlasDevHQ%2Fatlas-starter-railway)`,
+    railway: `[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/template/from-repo?repo=AtlasDevHQ%2Fatlas-starter-railway&referralCode=N5vD3S)`,
     render: `[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/AtlasDevHQ/atlas-starter-render)`,
     docker: "",
     other: "",

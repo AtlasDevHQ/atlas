@@ -9,12 +9,11 @@ RUN useradd -r -s /bin/false -u 65534 -g 65534 sandbox
 
 WORKDIR /app
 
-# Copy sidecar source (context is project root)
-COPY sidecar/server.ts ./server.ts
+# Copy sidecar source (root directory = sidecar/)
+COPY server.ts ./server.ts
 
-# Semantic layer from project root
-COPY semantic/ /semantic/
-RUN chmod -R a-w /semantic/
+# Create semantic directory — populated at runtime or via volume mount
+RUN mkdir -p /semantic && chmod a+r /semantic
 
 # Keep this image minimal — adding packages or env vars weakens the isolation model
 

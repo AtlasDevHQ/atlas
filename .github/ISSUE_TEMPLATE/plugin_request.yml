@@ -1,0 +1,40 @@
+name: Plugin Request
+description: Request a new Atlas plugin
+labels: ["area: plugins"]
+body:
+  - type: dropdown
+    id: plugin-type
+    attributes:
+      label: Plugin Type
+      options:
+        - Datasource (database or API connector)
+        - Context (semantic layer enrichment, knowledge sources)
+        - Interaction (new surface — Slack, Teams, etc.)
+        - Action (write operation — JIRA, email, etc.)
+        - Sandbox (code execution backend)
+    validations:
+      required: true
+
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use Case
+      description: What would this plugin enable? How would you use it?
+    validations:
+      required: true
+
+  - type: textarea
+    id: details
+    attributes:
+      label: Implementation Details
+      description: Any technical details, API references, or prior art.
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: Any other context or references.
+    validations:
+      required: false

@@ -59,9 +59,9 @@ is_excluded() {
 mono_path() {
   local rel="$1"
   case "$rel" in
-    ui/*|app/*)     echo "$WEB_SRC/$rel" ;;
-    lib/utils.ts)   echo "$WEB_SRC/$rel" ;;
-    *)              echo "$API_SRC/$rel" ;;
+    ui/*|app/*|components/*|hooks/*)  echo "$WEB_SRC/$rel" ;;
+    lib/utils.ts)                     echo "$WEB_SRC/$rel" ;;
+    *)                                echo "$API_SRC/$rel" ;;
   esac
 }
 

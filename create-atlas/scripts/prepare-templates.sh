@@ -67,6 +67,16 @@ for tpl in docker nextjs-standalone; do
   cp -r "$WEB_SRC/ui" "$TEMPLATES/$tpl/src/ui"
   # Remove test files — not needed in scaffolded projects
   find "$TEMPLATES/$tpl/src/ui" -name '__tests__' -type d -exec rm -rf {} + || true
+
+  # Copy shadcn primitives (src/components/ui/) — used by src/ui/ components
+  echo ":: Syncing shadcn components → $tpl"
+  rm -rf "$TEMPLATES/$tpl/src/components"
+  cp -r "$WEB_SRC/components" "$TEMPLATES/$tpl/src/components"
+
+  # Copy hooks (src/hooks/) — used by shadcn sidebar component
+  echo ":: Syncing hooks → $tpl"
+  rm -rf "$TEMPLATES/$tpl/src/hooks"
+  cp -r "$WEB_SRC/hooks" "$TEMPLATES/$tpl/src/hooks"
 done
 
 # Docker template gets web helpers directly from packages/web

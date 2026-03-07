@@ -7,6 +7,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import * as yaml from "js-yaml";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 
@@ -178,19 +179,19 @@ export async function checkDatabaseConnectivity(): Promise<CheckResult> {
       }
     }
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
+    const errMsg = err instanceof Error ? err.message : String(err);
     let fix = "Check that the database server is running and the connection string is correct";
-    if (/ECONNREFUSED/i.test(detail)) {
+    if (/ECONNREFUSED/i.test(errMsg)) {
       fix = "Database connection refused — is the server running?";
-    } else if (/timeout/i.test(detail)) {
+    } else if (/timeout/i.test(errMsg)) {
       fix = "Connection timed out — check network/firewall settings";
-    } else if (/authentication|password|access denied/i.test(detail)) {
+    } else if (/authentication|password|access denied/i.test(errMsg)) {
       fix = "Authentication failed — check username and password in your connection string";
     }
     return {
       status: "fail",
       name: "Database connectivity",
-      detail: "Connection failed",
+      detail: `Connection failed: ${errMsg}`,
       fix,
     };
   }
@@ -253,32 +254,35 @@ export function checkSemanticLayer(): CheckResult {
   let metricCount = 0;
   const parseErrors: string[] = [];
 
+  // Helper to validate a single entity file
+  const validateEntityFile = (filePath: string, displayName: string) => {
+    try {
+      const content = fs.readFileSync(filePath, "utf-8");
+      const doc = yaml.load(content);
+      if (doc && typeof doc === "object" && "table" in doc) {
+        entityCount++;
+      } else {
+        parseErrors.push(`${displayName}: missing 'table' field`);
+      }
+    } catch (err) {
+      parseErrors.push(`${displayName}: ${err instanceof Error ? err.message : "parse error"}`);
+    }
+  };
+
   // Count and validate entities
   if (fs.existsSync(entitiesDir)) {
     const entityFiles = fs.readdirSync(entitiesDir).filter((f) => f.endsWith(".yml"));
     for (const file of entityFiles) {
-      try {
-        const content = fs.readFileSync(path.join(entitiesDir, file), "utf-8");
-        // Lazy-load js-yaml only when needed
-        const yaml = require("js-yaml");
-        const doc = yaml.load(content);
-        if (doc && typeof doc === "object" && "table" in doc) {
-          entityCount++;
-        } else {
-          parseErrors.push(`${file}: missing 'table' field`);
-        }
-      } catch (err) {
-        parseErrors.push(`${file}: ${err instanceof Error ? err.message : "parse error"}`);
-      }
+      validateEntityFile(path.join(entitiesDir, file), file);
     }
   }
 
-  // Count metrics (also check per-source subdirectories)
+  // Count metrics
   if (fs.existsSync(metricsDir)) {
     metricCount = fs.readdirSync(metricsDir).filter((f) => f.endsWith(".yml")).length;
   }
 
-  // Also check per-source subdirectories for entities
+  // Also check per-source subdirectories for entities and metrics
   try {
     const entries = fs.readdirSync(semanticDir, { withFileTypes: true });
     for (const entry of entries) {
@@ -286,7 +290,9 @@ export function checkSemanticLayer(): CheckResult {
         const subEntities = path.join(semanticDir, entry.name, "entities");
         if (fs.existsSync(subEntities)) {
           const subFiles = fs.readdirSync(subEntities).filter((f) => f.endsWith(".yml"));
-          entityCount += subFiles.length;
+          for (const file of subFiles) {
+            validateEntityFile(path.join(subEntities, file), `${entry.name}/${file}`);
+          }
         }
         const subMetrics = path.join(semanticDir, entry.name, "metrics");
         if (fs.existsSync(subMetrics)) {
@@ -294,8 +300,8 @@ export function checkSemanticLayer(): CheckResult {
         }
       }
     }
-  } catch {
-    // Ignore errors reading subdirectories
+  } catch (err) {
+    parseErrors.push(`Error scanning subdirectories: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   if (entityCount === 0) {
@@ -308,11 +314,13 @@ export function checkSemanticLayer(): CheckResult {
   }
 
   if (parseErrors.length > 0) {
+    const shown = parseErrors.slice(0, 3);
+    const extra = parseErrors.length > 3 ? ` (and ${parseErrors.length - 3} more)` : "";
     return {
       status: "warn",
       name: "Semantic layer",
       detail: `${entityCount} entities, ${metricCount} metrics (${parseErrors.length} parse error${parseErrors.length > 1 ? "s" : ""})`,
-      fix: `Fix: ${parseErrors[0]}`,
+      fix: shown.join("; ") + extra,
     };
   }
 
@@ -424,17 +432,19 @@ export async function checkInternalDb(): Promise<CheckResult> {
       await pool.end().catch(() => {});
     }
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
+    const errMsg = err instanceof Error ? err.message : String(err);
     let fix = "Check that the database server is running and DATABASE_URL is correct";
-    if (/ECONNREFUSED/i.test(detail)) {
+    if (/ECONNREFUSED/i.test(errMsg)) {
       fix = "Database connection refused — is the server running?";
-    } else if (/authentication|password/i.test(detail)) {
+    } else if (/timeout/i.test(errMsg)) {
+      fix = "Connection timed out — check network/firewall settings";
+    } else if (/authentication|password|access denied/i.test(errMsg)) {
       fix = "Authentication failed — check username and password in DATABASE_URL";
     }
     return {
       status: "fail",
       name: "Internal DB",
-      detail: "Connection failed",
+      detail: `Connection failed: ${errMsg}`,
       fix,
     };
   }
@@ -474,9 +484,14 @@ function statusIcon(status: CheckStatus): string {
 }
 
 export function renderResults(results: CheckResult[]): void {
-  const maxNameLen = Math.max(...results.map((r) => r.name.length));
-
   p.intro(pc.bold("Atlas Doctor"));
+
+  if (results.length === 0) {
+    console.log("  No checks were run.\n");
+    return;
+  }
+
+  const maxNameLen = Math.max(...results.map((r) => r.name.length));
 
   for (const result of results) {
     const icon = statusIcon(result.status);
@@ -494,16 +509,38 @@ export function renderResults(results: CheckResult[]): void {
 // Main entry point
 // ---------------------------------------------------------------------------
 
-export async function runDoctor(): Promise<number> {
-  const results: CheckResult[] = [];
+/** Wrap a check so unexpected throws become fail results instead of crashing. */
+async function safeRun(
+  fn: () => CheckResult | Promise<CheckResult>,
+  fallbackName: string,
+): Promise<CheckResult> {
+  try {
+    return await fn();
+  } catch (err) {
+    return {
+      status: "fail",
+      name: fallbackName,
+      detail: `Unexpected error: ${err instanceof Error ? err.message : String(err)}`,
+      fix: "This check crashed unexpectedly — please report this as a bug",
+    };
+  }
+}
 
-  // Run all checks independently
-  results.push(checkDatasourceUrl());
-  results.push(await checkDatabaseConnectivity());
-  results.push(checkProvider());
-  results.push(checkSemanticLayer());
-  results.push(checkSandbox());
-  results.push(await checkInternalDb());
+export async function runDoctor(): Promise<number> {
+  // Run async checks concurrently (no async waterfalls)
+  const [dbConnectivity, internalDb] = await Promise.all([
+    safeRun(() => checkDatabaseConnectivity(), "Database connectivity"),
+    safeRun(() => checkInternalDb(), "Internal DB"),
+  ]);
+
+  const results: CheckResult[] = [
+    await safeRun(() => checkDatasourceUrl(), "ATLAS_DATASOURCE_URL"),
+    dbConnectivity,
+    await safeRun(() => checkProvider(), "LLM provider"),
+    await safeRun(() => checkSemanticLayer(), "Semantic layer"),
+    await safeRun(() => checkSandbox(), "Sandbox"),
+    internalDb,
+  ];
 
   renderResults(results);
 

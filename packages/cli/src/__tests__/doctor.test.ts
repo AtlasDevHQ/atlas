@@ -1,18 +1,54 @@
 import { describe, expect, test, beforeEach, afterEach, mock } from "bun:test";
+import * as os from "os";
+import * as fs from "fs";
+import * as path from "path";
 
 // Mock pg before importing doctor — mock.module is process-global
+// CLAUDE.md: mock ALL named exports
 mock.module("pg", () => ({
   Pool: MockPool,
+  Client: class {},
+  Query: class {},
+  defaults: {},
+  types: {},
+  escapeIdentifier: (s: string) => `"${s}"`,
+  escapeLiteral: (s: string) => `'${s}'`,
 }));
 
 mock.module("mysql2/promise", () => ({
   createPool: mockMysqlCreatePool,
+  createConnection: async () => ({}),
+  createPoolCluster: () => ({}),
+  escape: (s: string) => `'${s}'`,
+  escapeId: (s: string) => `\`${s}\``,
+  format: (s: string) => s,
+  raw: (s: string) => ({ toSqlString: () => s }),
+  Types: {},
+  Charsets: {},
+  CharsetToEncoding: {},
+  clearParserCache: () => {},
+  setMaxParserCache: () => {},
 }));
 
-// We also need to mock @clack/prompts and picocolors so they don't interfere
 mock.module("@clack/prompts", () => ({
   intro: () => {},
-  log: { info: () => {}, warn: () => {}, error: () => {} },
+  outro: () => {},
+  cancel: () => {},
+  confirm: async () => false,
+  text: async () => "",
+  select: async () => "",
+  selectKey: async () => "",
+  multiselect: async () => [],
+  group: async () => ({}),
+  groupMultiselect: async () => [],
+  note: () => {},
+  spinner: () => ({ start: () => {}, stop: () => {} }),
+  stream: { info: () => {} },
+  tasks: async () => {},
+  password: async () => "",
+  isCancel: () => false,
+  log: { info: () => {}, warn: () => {}, error: () => {}, step: () => {}, success: () => {}, message: () => {} },
+  updateSettings: () => {},
 }));
 
 mock.module("picocolors", () => ({
@@ -22,6 +58,26 @@ mock.module("picocolors", () => ({
     yellow: (s: string) => s,
     bold: (s: string) => s,
     dim: (s: string) => s,
+    blue: (s: string) => s,
+    cyan: (s: string) => s,
+    white: (s: string) => s,
+    gray: (s: string) => s,
+    magenta: (s: string) => s,
+    underline: (s: string) => s,
+    italic: (s: string) => s,
+    strikethrough: (s: string) => s,
+    inverse: (s: string) => s,
+    hidden: (s: string) => s,
+    reset: (s: string) => s,
+    bgRed: (s: string) => s,
+    bgGreen: (s: string) => s,
+    bgYellow: (s: string) => s,
+    bgBlue: (s: string) => s,
+    bgMagenta: (s: string) => s,
+    bgCyan: (s: string) => s,
+    bgWhite: (s: string) => s,
+    isColorSupported: false,
+    createColors: () => ({}),
   },
 }));
 
@@ -33,6 +89,9 @@ import {
   checkSandbox,
   checkInternalDb,
   maskConnectionString,
+  renderResults,
+  runDoctor,
+  type CheckResult,
 } from "../doctor";
 
 // ---------------------------------------------------------------------------
@@ -74,10 +133,11 @@ function mockMysqlCreatePool() {
 }
 
 // ---------------------------------------------------------------------------
-// Env helpers
+// Env + temp dir helpers
 // ---------------------------------------------------------------------------
 
 let savedEnv: Record<string, string | undefined>;
+let tmpDir: string | null = null;
 
 beforeEach(() => {
   savedEnv = { ...process.env };
@@ -101,7 +161,42 @@ afterEach(() => {
       process.env[key] = value;
     }
   }
+
+  // Cleanup temp dir
+  if (tmpDir) {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    tmpDir = null;
+  }
 });
+
+/** Create a temp directory with a semantic layer structure. */
+function createTmpSemantic(entities: Record<string, string> = {}, metrics: string[] = []): string {
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "atlas-doctor-test-"));
+  const entDir = path.join(tmpDir, "semantic", "entities");
+  const metDir = path.join(tmpDir, "semantic", "metrics");
+  fs.mkdirSync(entDir, { recursive: true });
+  fs.mkdirSync(metDir, { recursive: true });
+
+  for (const [name, content] of Object.entries(entities)) {
+    fs.writeFileSync(path.join(entDir, name), content);
+  }
+  for (const name of metrics) {
+    fs.writeFileSync(path.join(metDir, name), "metric: stub\n");
+  }
+
+  return tmpDir;
+}
+
+/** Run a function with a temporary cwd (uses actual chdir for path.resolve). */
+async function withCwd<T>(dir: string, fn: () => T | Promise<T>): Promise<T> {
+  const orig = process.cwd();
+  process.chdir(dir);
+  try {
+    return await fn();
+  } finally {
+    process.chdir(orig);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // maskConnectionString
@@ -154,6 +249,26 @@ describe("checkDatasourceUrl", () => {
     expect(result.detail).toContain("ATLAS_DEMO_DATA");
   });
 
+  test("DATABASE_URL_UNPOOLED takes precedence over DATABASE_URL in demo mode", () => {
+    delete process.env.ATLAS_DATASOURCE_URL;
+    process.env.ATLAS_DEMO_DATA = "true";
+    process.env.DATABASE_URL_UNPOOLED = "postgresql://u:p@direct-host:5432/db";
+    process.env.DATABASE_URL = "postgresql://u:p@pooled-host:5432/db";
+    const result = checkDatasourceUrl();
+    expect(result.status).toBe("pass");
+    expect(result.detail).toContain("direct-host");
+    expect(result.detail).not.toContain("pooled-host");
+  });
+
+  test("fail when ATLAS_DEMO_DATA=true but no fallback URL", () => {
+    delete process.env.ATLAS_DATASOURCE_URL;
+    delete process.env.DATABASE_URL;
+    delete process.env.DATABASE_URL_UNPOOLED;
+    process.env.ATLAS_DEMO_DATA = "true";
+    const result = checkDatasourceUrl();
+    expect(result.status).toBe("fail");
+  });
+
   test("fail when no URL configured", () => {
     delete process.env.ATLAS_DATASOURCE_URL;
     delete process.env.ATLAS_DEMO_DATA;
@@ -176,13 +291,23 @@ describe("checkDatabaseConnectivity", () => {
     expect(result.detail).toContain("PostgreSQL 16.1");
   });
 
-  test("fail when postgres connection fails", async () => {
+  test("fail when postgres connection fails with ECONNREFUSED", async () => {
     process.env.ATLAS_DATASOURCE_URL = "postgresql://user:pass@localhost:5432/db";
     mockPoolConnectShouldFail = true;
     mockPoolConnectError = new Error("ECONNREFUSED");
     const result = await checkDatabaseConnectivity();
     expect(result.status).toBe("fail");
+    expect(result.detail).toContain("ECONNREFUSED");
     expect(result.fix).toContain("running");
+  });
+
+  test("fail with timeout error shows network fix", async () => {
+    process.env.ATLAS_DATASOURCE_URL = "postgresql://user:pass@localhost:5432/db";
+    mockPoolConnectShouldFail = true;
+    mockPoolConnectError = new Error("Connection timeout expired");
+    const result = await checkDatabaseConnectivity();
+    expect(result.status).toBe("fail");
+    expect(result.fix).toContain("network/firewall");
   });
 
   test("fail when no URL configured", async () => {
@@ -207,12 +332,13 @@ describe("checkDatabaseConnectivity", () => {
     expect(result.detail).toContain("MySQL 8.0.35");
   });
 
-  test("fail when mysql connection fails", async () => {
+  test("fail when mysql connection fails with auth error", async () => {
     process.env.ATLAS_DATASOURCE_URL = "mysql://user:pass@localhost:3306/db";
     mockMysqlConnectShouldFail = true;
     mockMysqlConnectError = new Error("Access denied for user");
     const result = await checkDatabaseConnectivity();
     expect(result.status).toBe("fail");
+    expect(result.detail).toContain("Access denied");
     expect(result.fix).toContain("Authentication");
   });
 });
@@ -271,6 +397,15 @@ describe("checkProvider", () => {
     expect(result.status).toBe("pass");
     expect(result.detail).toContain("anthropic");
   });
+
+  test("defaults to gateway on Vercel", () => {
+    delete process.env.ATLAS_PROVIDER;
+    process.env.VERCEL = "1";
+    process.env.AI_GATEWAY_API_KEY = "test-key";
+    const result = checkProvider();
+    expect(result.status).toBe("pass");
+    expect(result.detail).toContain("gateway");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -278,28 +413,59 @@ describe("checkProvider", () => {
 // ---------------------------------------------------------------------------
 
 describe("checkSemanticLayer", () => {
-  test("fail when semantic/ does not exist", () => {
-    // Use a temp cwd that doesn't have semantic/
-    const origCwd = process.cwd;
-    process.cwd = () => "/tmp/nonexistent-atlas-test";
-    try {
-      const result = checkSemanticLayer();
-      expect(result.status).toBe("fail");
-      expect(result.fix).toContain("atlas -- init");
-    } finally {
-      process.cwd = origCwd;
-    }
+  test("fail when semantic/ does not exist", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "atlas-empty-"));
+    tmpDir = dir;
+    const result = await withCwd(dir, () => checkSemanticLayer());
+    expect(result.status).toBe("fail");
+    expect(result.fix).toContain("atlas -- init");
   });
 
-  test("pass when entity files exist", () => {
-    // This test uses the actual project's semantic/ dir
-    const result = checkSemanticLayer();
-    // The project has a semantic layer, so this should pass
-    if (result.status === "pass") {
-      expect(result.detail).toMatch(/\d+ entities/);
-    }
-    // If it fails, it's because there's no semantic dir in cwd — that's OK for CI
-    expect(["pass", "fail"]).toContain(result.status);
+  test("fail when entities dir exists but is empty", async () => {
+    const dir = createTmpSemantic({}, []);
+    const result = await withCwd(dir, () => checkSemanticLayer());
+    expect(result.status).toBe("fail");
+    expect(result.detail).toContain("No entity files");
+  });
+
+  test("pass with valid entity files", async () => {
+    const dir = createTmpSemantic(
+      {
+        "users.yml": "table: users\ndescription: User accounts\n",
+        "orders.yml": "table: orders\ndescription: Customer orders\n",
+      },
+      ["users.yml"],
+    );
+    const result = await withCwd(dir, () => checkSemanticLayer());
+    expect(result.status).toBe("pass");
+    expect(result.detail).toBe("2 entities, 1 metrics");
+  });
+
+  test("warn with parse errors and shows multiple errors", async () => {
+    const dir = createTmpSemantic({
+      "valid.yml": "table: valid\n",
+      "bad1.yml": "not_a_table: true\n",
+      "bad2.yml": ": invalid yaml [",
+    });
+    const result = await withCwd(dir, () => checkSemanticLayer());
+    expect(result.status).toBe("warn");
+    expect(result.detail).toContain("1 entities");
+    expect(result.detail).toContain("parse error");
+    expect(result.fix).toContain("bad1.yml");
+  });
+
+  test("validates per-source subdirectory entities", async () => {
+    const dir = createTmpSemantic({ "main.yml": "table: main\n" });
+    // Add a per-source subdirectory with entities
+    const subEntDir = path.join(dir, "semantic", "warehouse", "entities");
+    fs.mkdirSync(subEntDir, { recursive: true });
+    fs.writeFileSync(path.join(subEntDir, "products.yml"), "table: products\n");
+    fs.writeFileSync(path.join(subEntDir, "bad.yml"), "no_table: true\n");
+
+    const result = await withCwd(dir, () => checkSemanticLayer());
+    expect(result.status).toBe("warn");
+    expect(result.detail).toContain("2 entities");
+    expect(result.fix).toContain("warehouse/bad.yml");
   });
 });
 
@@ -325,13 +491,25 @@ describe("checkSandbox", () => {
     expect(result.detail).toContain("Sidecar");
   });
 
+  test("pass when nsjail explicitly requested and ATLAS_NSJAIL_PATH is valid", () => {
+    delete process.env.ATLAS_RUNTIME;
+    delete process.env.VERCEL;
+    delete process.env.ATLAS_SANDBOX_URL;
+    process.env.ATLAS_SANDBOX = "nsjail";
+    // Point to any existing executable as a stand-in
+    process.env.ATLAS_NSJAIL_PATH = "/bin/sh";
+    const result = checkSandbox();
+    expect(result.status).toBe("pass");
+    expect(result.detail).toContain("nsjail");
+    expect(result.detail).toContain("/bin/sh");
+  });
+
   test("fail when nsjail explicitly requested but not found", () => {
     delete process.env.ATLAS_RUNTIME;
     delete process.env.VERCEL;
     delete process.env.ATLAS_SANDBOX_URL;
     process.env.ATLAS_SANDBOX = "nsjail";
     delete process.env.ATLAS_NSJAIL_PATH;
-    // Override PATH so nsjail can't be found
     const origPath = process.env.PATH;
     process.env.PATH = "/tmp/empty-path";
     try {
@@ -392,12 +570,125 @@ describe("checkInternalDb", () => {
     expect(result.detail).toContain("no Atlas tables");
   });
 
-  test("fail when connection fails", async () => {
+  test("fail when connection fails with ECONNREFUSED", async () => {
     process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
     mockPoolConnectShouldFail = true;
     mockPoolConnectError = new Error("ECONNREFUSED");
     const result = await checkInternalDb();
     expect(result.status).toBe("fail");
+    expect(result.detail).toContain("ECONNREFUSED");
     expect(result.fix).toContain("running");
+  });
+
+  test("fail with timeout error shows network fix", async () => {
+    process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+    mockPoolConnectShouldFail = true;
+    mockPoolConnectError = new Error("Connection timeout");
+    const result = await checkInternalDb();
+    expect(result.status).toBe("fail");
+    expect(result.fix).toContain("network/firewall");
+  });
+
+  test("fail with auth error shows auth fix", async () => {
+    process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+    mockPoolConnectShouldFail = true;
+    mockPoolConnectError = new Error("password authentication failed for user");
+    const result = await checkInternalDb();
+    expect(result.status).toBe("fail");
+    expect(result.fix).toContain("Authentication");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// renderResults
+// ---------------------------------------------------------------------------
+
+describe("renderResults", () => {
+  test("renders without crashing on typical results", () => {
+    const results: CheckResult[] = [
+      { status: "pass", name: "Check A", detail: "OK" },
+      { status: "fail", name: "Check B", detail: "Failed", fix: "Do X" },
+      { status: "warn", name: "Check C", detail: "Maybe", fix: "Consider Y" },
+    ];
+    expect(() => renderResults(results)).not.toThrow();
+  });
+
+  test("handles empty results array without crashing", () => {
+    expect(() => renderResults([])).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runDoctor (exit code logic)
+// ---------------------------------------------------------------------------
+
+describe("runDoctor", () => {
+  test("returns 0 when all checks pass", async () => {
+    process.env.ATLAS_DATASOURCE_URL = "postgresql://user:pass@localhost:5432/db";
+    process.env.ATLAS_PROVIDER = "ollama";
+    process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+    process.env.ATLAS_RUNTIME = "vercel";
+
+    // Mock successful DB connections
+    mockPoolQueryResult = { rows: [{ version: "PostgreSQL 16.1" }] };
+
+    // Need semantic layer
+    const dir = createTmpSemantic({ "t.yml": "table: t\n" });
+    const exitCode = await withCwd(dir, () => runDoctor());
+    expect(exitCode).toBe(0);
+  });
+
+  test("returns 1 when a critical check fails", async () => {
+    // No datasource URL = critical failure
+    delete process.env.ATLAS_DATASOURCE_URL;
+    delete process.env.ATLAS_DEMO_DATA;
+    process.env.ATLAS_PROVIDER = "ollama";
+
+    const dir = createTmpSemantic({ "t.yml": "table: t\n" });
+    const exitCode = await withCwd(dir, () => runDoctor());
+    expect(exitCode).toBe(1);
+  });
+
+  test("returns 0 when only optional checks fail (Sandbox, Internal DB)", async () => {
+    process.env.ATLAS_DATASOURCE_URL = "clickhouse://localhost:8123/db";
+    process.env.ATLAS_PROVIDER = "ollama";
+    delete process.env.DATABASE_URL;
+    delete process.env.ATLAS_SANDBOX;
+    delete process.env.ATLAS_SANDBOX_URL;
+    delete process.env.ATLAS_RUNTIME;
+    delete process.env.VERCEL;
+    delete process.env.ATLAS_NSJAIL_PATH;
+    const origPath = process.env.PATH;
+    process.env.PATH = "/tmp/empty-path";
+
+    const dir = createTmpSemantic({ "t.yml": "table: t\n" });
+    try {
+      const exitCode = await withCwd(dir, () => runDoctor());
+      // Sandbox = warn, Internal DB = warn — both optional, exit 0
+      expect(exitCode).toBe(0);
+    } finally {
+      process.env.PATH = origPath;
+    }
+  });
+
+  test("returns 0 when checks only warn", async () => {
+    process.env.ATLAS_DATASOURCE_URL = "clickhouse://localhost:8123/db";
+    process.env.ATLAS_PROVIDER = "ollama";
+    delete process.env.DATABASE_URL;
+    delete process.env.ATLAS_RUNTIME;
+    delete process.env.VERCEL;
+    delete process.env.ATLAS_SANDBOX;
+    delete process.env.ATLAS_SANDBOX_URL;
+    delete process.env.ATLAS_NSJAIL_PATH;
+    const origPath = process.env.PATH;
+    process.env.PATH = "/tmp/empty-path";
+
+    const dir = createTmpSemantic({ "t.yml": "table: t\n" });
+    try {
+      const exitCode = await withCwd(dir, () => runDoctor());
+      expect(exitCode).toBe(0);
+    } finally {
+      process.env.PATH = origPath;
+    }
   });
 });

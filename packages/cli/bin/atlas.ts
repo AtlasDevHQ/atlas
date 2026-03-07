@@ -4600,6 +4600,12 @@ async function main() {
     process.exit(exitCode);
   }
 
+  if (command === "validate") {
+    const { runValidate } = await import("../src/validate");
+    const exitCode = await runValidate();
+    process.exit(exitCode);
+  }
+
   if (command === "diff") {
     return handleDiff(args);
   }
@@ -4674,12 +4680,13 @@ async function main() {
 
   if (command !== "init") {
     console.log(
-      "Usage: bun run atlas -- <init|diff|query|doctor|eval|smoke|migrate|plugin|benchmark|mcp> [options]\n\n" +
+      "Usage: bun run atlas -- <init|diff|query|doctor|validate|eval|smoke|migrate|plugin|benchmark|mcp> [options]\n\n" +
       "Commands:\n" +
       "  init       Profile DB and generate semantic layer\n" +
       "  diff       Compare DB schema against existing semantic layer\n" +
       "  query      Ask a question via the Atlas API\n" +
       "  doctor     Validate environment, connectivity, and configuration\n" +
+      "  validate   Check config and semantic layer YAML files (offline)\n" +
       "  eval       Run eval pipeline against demo schemas\n" +
       "  smoke      Run E2E smoke tests against a running Atlas deployment\n" +
       "  migrate    Generate/apply plugin schema migrations\n" +

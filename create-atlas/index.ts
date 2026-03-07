@@ -58,7 +58,7 @@ const useDefaults = args.includes("--defaults") || args.includes("-y");
 const positionalArgs = args.filter((a) => !a.startsWith("-"));
 
 // Platform → template mapping
-const VALID_PLATFORMS = ["vercel", "railway", "render", "docker", "other"] as const;
+const VALID_PLATFORMS = ["vercel", "railway", "docker", "other"] as const;
 type Platform = (typeof VALID_PLATFORMS)[number];
 
 const VALID_SANDBOX_CHOICES = ["nsjail", "sidecar", "e2b", "daytona", "none"] as const;
@@ -74,7 +74,6 @@ function generateReadme(projectName: string, platform: Platform, dbChoice: strin
   const deployBadges: Record<Platform, string> = {
     vercel: `[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?env=AI_GATEWAY_API_KEY,BETTER_AUTH_SECRET&envDescription=AI_GATEWAY_API_KEY%3A%20Vercel%20AI%20Gateway%20key%20(vercel.com%2F~%2Fai%2Fapi-keys).%20BETTER_AUTH_SECRET%3A%20Random%20string%2C%2032%2B%20chars%20(openssl%20rand%20-base64%2032).&project-name=${projectName})`,
     railway: `[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/_XHuNP?referralCode=N5vD3S)`,
-    render: `[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/AtlasDevHQ/atlas-starter-render)`,
     docker: "",
     other: "",
   };
@@ -147,27 +146,6 @@ function generateReadme(projectName: string, platform: Platform, dbChoice: strin
    Set \`SIDECAR_AUTH_TOKEN\` on the sidecar service too.
 
 5. Deploy. Railway builds from the Dockerfile and runs health checks automatically.`,
-
-    render: `## Deploy to Render
-
-1. Push to GitHub:
-   \`\`\`bash
-   git init && git add -A && git commit -m "Initial commit"
-   gh repo create ${projectName} --public --source=. --push
-   \`\`\`
-
-2. Go to [Render Dashboard](https://dashboard.render.com/) > **New > Blueprint**.
-
-3. Connect your repo. Render reads \`render.yaml\` and creates two services:
-   - **Web** — Main API (Dockerfile)
-   - **Sidecar** — Explore sandbox (sidecar/Dockerfile)
-
-4. Set the prompted environment variables:
-   - \`ATLAS_DATASOURCE_URL\` — Your analytics database
-   - \`ANTHROPIC_API_KEY\` — Your API key
-   - \`SIDECAR_AUTH_TOKEN\` — Shared secret (same on both services)
-
-5. After deploy, update \`ATLAS_SANDBOX_URL\` on the web service with the sidecar's private URL.`,
 
     docker: `## Deploy with Docker
 
@@ -293,7 +271,6 @@ if (args.includes("--help") || args.includes("-h")) {
   Platforms:
     vercel     Next.js + embedded API — auto-detects Vercel sandbox
     railway    Hono API + Docker — sidecar sandbox (internal networking)
-    render     Hono API + Docker — sidecar sandbox (private service)
     docker     Hono API + Docker — nsjail sandbox (built into image)
     other      Hono API + Docker — choose sandbox: nsjail, sidecar, E2B, Daytona, or none
 
@@ -415,7 +392,6 @@ async function main() {
       options: [
         { value: "docker", label: "Docker", hint: "nsjail sandbox built into image (default)" },
         { value: "railway", label: "Railway", hint: "Sidecar sandbox via internal networking" },
-        { value: "render", label: "Render", hint: "Sidecar sandbox via private service" },
         { value: "vercel", label: "Vercel", hint: "Next.js + embedded API — auto-detected sandbox" },
         { value: "other", label: "Other", hint: "Choose your sandbox backend" },
       ],
@@ -733,13 +709,10 @@ async function main() {
 
   // Remove platform-irrelevant files from the docker template
   if (template === "docker") {
-    const needsSidecar = platform === "railway" || platform === "render" ||
+    const needsSidecar = platform === "railway" ||
       (platform === "other" && sandboxChoice === "sidecar");
     if (!needsSidecar) {
       fs.rmSync(path.join(targetDir, "sidecar"), { recursive: true, force: true });
-    }
-    if (platform !== "render") {
-      fs.rmSync(path.join(targetDir, "render.yaml"), { force: true });
     }
     if (platform !== "railway") {
       fs.rmSync(path.join(targetDir, "railway.json"), { force: true });
@@ -750,7 +723,6 @@ async function main() {
 
   // Replace %PROJECT_NAME% in templated files (only files that exist in the template)
   const filesToReplace = ["package.json"];
-  if (platform === "render") filesToReplace.push("render.yaml");
   for (const file of filesToReplace) {
     const filePath = path.join(targetDir, file);
     if (!fs.existsSync(filePath)) continue; // not all templates have every file
@@ -817,14 +789,6 @@ async function main() {
       envContent += `\n# Explore Sandbox (sidecar)\n`;
       envContent += `# Deploy the sidecar/ directory as a second Railway service.\n`;
       envContent += `ATLAS_SANDBOX_URL=http://sidecar.railway.internal:8080\n`;
-      envContent += `SIDECAR_AUTH_TOKEN=${sidecarToken}\n`;
-      break;
-    }
-    case "render": {
-      const sidecarToken = crypto.randomUUID();
-      envContent += `\n# Explore Sandbox (sidecar)\n`;
-      envContent += `# Deploy sidecar/ as a Render private service, then update the URL below.\n`;
-      envContent += `# ATLAS_SANDBOX_URL=http://<sidecar-private-url>:8080  # Update after deploying sidecar\n`;
       envContent += `SIDECAR_AUTH_TOKEN=${sidecarToken}\n`;
       break;
     }
@@ -991,12 +955,6 @@ export default defineConfig({
       noteBody += "\n\n" + pc.dim(
         "Deploy: create 2 Railway services (main + sidecar/).\n" +
         "Set SIDECAR_AUTH_TOKEN on both. Internal networking is pre-configured."
-      );
-      break;
-    case "render":
-      noteBody += "\n\n" + pc.dim(
-        "Deploy: push to GitHub → New > Blueprint.\n" +
-        "Set SIDECAR_AUTH_TOKEN on both services. Update ATLAS_SANDBOX_URL with the sidecar private URL."
       );
       break;
     case "docker":

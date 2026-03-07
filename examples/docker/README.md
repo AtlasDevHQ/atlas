@@ -65,10 +65,6 @@ docker compose -f examples/docker/docker-compose.yml up
 
 See [docs/guides/railway-template.md](../../docs/guides/railway-template.md) for full template configuration details.
 
-### Render
-
-Point a new Blueprint at this repo. Render picks up `examples/docker/render.yaml`.
-
 ## Environment Variables
 
 See [`.env.example`](../../.env.example) for all options. Key variables:

@@ -4,7 +4,7 @@ Atlas provides two example deployment topologies plus a static landing page. Dep
 
 | Example | What's included | Use when |
 |---------|----------------|----------|
-| [`examples/docker/`](../examples/docker/) | Hono API + Docker + optional nsjail | Self-hosted deployment (Railway, Render, Docker Compose) |
+| [`examples/docker/`](../examples/docker/) | Hono API + Docker + optional nsjail | Self-hosted deployment (Railway, Docker Compose) |
 | [`examples/nextjs-standalone/`](../examples/nextjs-standalone/) | Next.js + embedded Hono API | You want to deploy to Vercel with zero infrastructure |
 | [`apps/www/`](../apps/www/) | Static landing page (Next.js export + Bun server) | Marketing site at useatlas.dev |
 
@@ -134,7 +134,7 @@ Atlas runs agent-generated commands (filesystem exploration, future code executi
 |------|---------|-----------|-----------------|
 | 1 | Vercel Sandbox | Vercel | Firecracker microVM (hardware-level). No network, ephemeral filesystem |
 | 2 | nsjail | Self-hosted Docker/VM | Linux namespaces. No network, read-only mount, separate PID/user space |
-| 3 | Sidecar service | Railway, Render (planned) | Separate container with no secrets. Process-level isolation via private networking |
+| 3 | Sidecar service | Railway | Separate container with no secrets. Process-level isolation via private networking |
 | 4 | just-bash | Everywhere (fallback) | In-memory OverlayFS + path-traversal protection. No process isolation |
 
 ### What's right for you?
@@ -257,43 +257,6 @@ The `examples/docker/railway.json` config sets:
 ### Verify
 
 Railway exposes a public URL. Check health at `https://<your-app>.up.railway.app/api/health`.
-
----
-
-## Render
-
-Atlas includes a `render.yaml` Blueprint in `examples/docker/`.
-
-### Steps
-
-1. Go to the [Render Dashboard](https://dashboard.render.com/) and click **New > Blueprint**
-2. Connect your GitHub repo -- Render reads `examples/docker/render.yaml`
-3. Set the prompted environment variables:
-   - `ATLAS_DATASOURCE_URL` -- your analytics database connection string
-   - `ANTHROPIC_API_KEY` -- your API key
-4. Deploy
-
-### Using Render Postgres
-
-1. Create a Render Postgres instance from the dashboard
-2. Copy the **Internal Connection String**
-3. Set it as `DATABASE_URL` (Atlas internal) and create a separate database for `ATLAS_DATASOURCE_URL` (analytics)
-
-### Configuration
-
-The `examples/docker/render.yaml` configures:
-
-- Docker-based deployment using the example's Dockerfile
-- Health check at `/api/health`
-- Starter plan
-- `ATLAS_PROVIDER` defaults to `anthropic`
-- `autoDeploy` is disabled -- trigger deploys manually from the Render dashboard, or set `autoDeploy: true` in `render.yaml` to deploy on every push
-
-### Verify
-
-```bash
-curl https://<your-app>.onrender.com/api/health
-```
 
 ---
 

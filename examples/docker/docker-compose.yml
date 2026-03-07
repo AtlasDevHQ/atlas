@@ -37,7 +37,7 @@ services:
       postgres:
         condition: service_healthy
 
-  # --- Optional: sandbox sidecar for Railway/Render (no kernel namespaces) ---
+  # --- Optional: sandbox sidecar for Railway (no kernel namespaces) ---
   # Uncomment to run the explore tool in an isolated sidecar container.
   # The sidecar has no secrets — only semantic/ files and bash/coreutils.
   #

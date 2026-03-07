@@ -2,7 +2,7 @@
 
 Deploy a text-to-SQL data analyst agent on your database in minutes. Ask natural language questions, get validated SQL and interpreted results.
 
-**What you get:** A self-contained project with a chat UI, multi-layer SQL validation, auto-generated semantic layer from your schema, and deploy configs for Docker, Railway, Render, and Vercel.
+**What you get:** A self-contained project with a chat UI, multi-layer SQL validation, auto-generated semantic layer from your schema, and deploy configs for Docker, Railway, and Vercel.
 
 ## Quick start
 
@@ -27,7 +27,7 @@ Running `bun create @useatlas my-app` walks you through each option:
 | Prompt | Options | Default |
 |--------|---------|---------|
 | **Project name** | Any valid directory name | `my-atlas-app` |
-| **Platform** | Docker, Railway, Render, Vercel, Other | Docker |
+| **Platform** | Docker, Railway, Vercel, Other | Docker |
 | **Sandbox** | nsjail, Sidecar, E2B, Daytona, None (only for "Other" platform) | nsjail |
 | **Database** | PostgreSQL, MySQL | PostgreSQL |
 | **Connection string** | Your database URL | `postgresql://atlas:atlas@localhost:5432/atlas` |
@@ -56,7 +56,7 @@ bun create @useatlas my-app --platform vercel
 bun create @useatlas my-app --platform railway
 ```
 
-Available platforms: `vercel`, `railway`, `render`, `docker`, `other`
+Available platforms: `vercel`, `railway`, `docker`, `other`
 
 ## Demo datasets
 
@@ -108,20 +108,6 @@ cd my-app
 3. Add a Postgres plugin (Railway auto-injects `DATABASE_URL`)
 4. Set env vars on the main service: `ATLAS_PROVIDER`, provider API key, `ATLAS_DATASOURCE_URL`
 5. Set `SIDECAR_AUTH_TOKEN` on **both** services (pre-generated in `.env`)
-
-### Render
-
-Uses a sidecar as a Render private service. A `render.yaml` Blueprint is included.
-
-```bash
-bun create @useatlas my-app --platform render
-cd my-app
-```
-
-1. Push to GitHub
-2. In the Render dashboard: **New > Blueprint**, select your repo
-3. Set the prompted env vars: `ATLAS_DATASOURCE_URL`, provider API key
-4. After deploy, update `ATLAS_SANDBOX_URL` with the sidecar's private URL
 
 ### Vercel
 
@@ -218,7 +204,7 @@ bun run lint             # Lint with ESLint
 
 **Docker build fails with nsjail errors** -- nsjail requires Linux. On macOS, build with `docker build --platform linux/amd64 -t my-app .` or skip nsjail: add `--build-arg INSTALL_NSJAIL=false`.
 
-**"Connection refused" on Railway/Render** -- Ensure `ATLAS_DATASOURCE_URL` uses an external hostname, not `localhost`. For the sidecar, verify both services share the same `SIDECAR_AUTH_TOKEN`.
+**"Connection refused" on Railway** -- Ensure `ATLAS_DATASOURCE_URL` uses an external hostname, not `localhost`. For the sidecar, verify both services share the same `SIDECAR_AUTH_TOKEN`.
 
 ## Links
 

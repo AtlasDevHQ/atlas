@@ -163,7 +163,7 @@ export default function Home() {
               ),
               title: "Deploy Anywhere",
               description:
-                "Docker, Railway, Render, or Vercel. Ship a full-stack app or a headless API. One command to scaffold: bun create atlas-agent.",
+                "Docker, Railway, or Vercel. Ship a full-stack app or a headless API. One command to scaffold: bun create atlas-agent.",
             },
           ].map((feature, i) => (
             <div key={i} className="bg-zinc-950 p-8 md:p-10">

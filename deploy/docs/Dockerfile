@@ -4,7 +4,8 @@ FROM oven/bun:1.3 AS base
 FROM base AS deps
 WORKDIR /app
 COPY apps/docs/package.json ./
-RUN bun install --frozen-lockfile || bun install
+COPY bun.lock* ./
+RUN bun install --frozen-lockfile
 
 # --- Build ---
 FROM base AS builder
@@ -21,7 +22,6 @@ ENV NEXT_TELEMETRY_DISABLED=1
 
 RUN adduser --system --uid 1001 nextjs
 
-COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:bun /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:bun /app/.next/static ./.next/static
 
@@ -31,6 +31,6 @@ ENV PORT=3003
 ENV HOSTNAME="0.0.0.0"
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -qO- http://localhost:3003/ || exit 1
+  CMD wget -qO- http://localhost:3003/docs || exit 1
 
 CMD ["bun", "server.js"]

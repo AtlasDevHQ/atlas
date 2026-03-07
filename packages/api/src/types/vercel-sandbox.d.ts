@@ -39,6 +39,12 @@ declare module "@vercel/sandbox" {
     stderr(): Promise<string>;
   }
 
+  /** Network policy update — replaces the current firewall configuration. */
+  type NetworkPolicyUpdate =
+    | "deny-all"
+    | "allow-all"
+    | { allow?: string[] | Record<string, unknown>; subnets?: { allow?: string[]; deny?: string[] } };
+
   class Sandbox {
     static create(opts?: SandboxCreateOptions): Promise<Sandbox>;
     mkDir(path: string): Promise<void>;
@@ -49,6 +55,7 @@ declare module "@vercel/sandbox" {
       args?: string[],
       opts?: { signal?: AbortSignal }
     ): Promise<CommandFinished>;
+    updateNetworkPolicy(policy: NetworkPolicyUpdate): Promise<void>;
     stop(): Promise<Sandbox>;
   }
 }

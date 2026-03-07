@@ -31,15 +31,14 @@ Open http://localhost:3000 — health check at http://localhost:3000/api/health.
 
 ## Deploy to Vercel
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FAtlasDevHQ%2Fatlas-starter&project-name=atlas&repository-name=atlas&products=%5B%7B%22type%22%3A%22integration%22%2C%22integrationSlug%22%3A%22neon%22%2C%22productSlug%22%3A%22neon%22%2C%22protocol%22%3A%22storage%22%7D%5D&env=AI_GATEWAY_API_KEY,BETTER_AUTH_SECRET,ATLAS_DEMO_DATA&envDescription=AI_GATEWAY_API_KEY%3A%20Vercel%20AI%20Gateway%20key%20(vercel.com%2F~%2Fai%2Fapi-keys).%20BETTER_AUTH_SECRET%3A%20Random%20string%2C%2032%2B%20chars%20(openssl%20rand%20-base64%2032).%20ATLAS_DEMO_DATA%3A%20Set%20to%20%22true%22%20for%20demo%20data%20or%20leave%20empty.)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FAtlasDevHQ%2Fatlas-starter-vercel&project-name=atlas&repository-name=atlas&products=%5B%7B%22type%22%3A%22integration%22%2C%22integrationSlug%22%3A%22neon%22%2C%22productSlug%22%3A%22neon%22%2C%22protocol%22%3A%22storage%22%7D%5D&env=AI_GATEWAY_API_KEY,BETTER_AUTH_SECRET&envDescription=AI_GATEWAY_API_KEY%3A%20Vercel%20AI%20Gateway%20key%20(vercel.com%2F~%2Fai%2Fapi-keys).%20BETTER_AUTH_SECRET%3A%20Random%20string%2C%2032%2B%20chars%20(openssl%20rand%20-base64%2032).)
 
-The deploy button provisions a Neon Postgres database and configures AI Gateway automatically. You'll be asked for:
+The deploy button provisions a Neon Postgres database, seeds demo data, and configures AI Gateway automatically. You'll be asked for:
 
 - **`AI_GATEWAY_API_KEY`** — Your Vercel AI Gateway key ([create one here](https://vercel.com/~/ai/api-keys))
 - **`BETTER_AUTH_SECRET`** — Random string, 32+ chars (run `openssl rand -base64 32`)
-- **`ATLAS_DEMO_DATA`** — Set to `true` to seed demo data into the Neon DB, or leave empty to connect your own database
 
-When `ATLAS_DEMO_DATA=true`, the build step seeds demo data (companies, people, accounts) into the Neon database and uses it as both the internal DB and analytics datasource. The demo semantic layer is copied at build time.
+Demo data (companies, people, accounts) is seeded into the Neon database at build time, along with a pre-built semantic layer — no configuration needed.
 
 See [docs/guides/deploy.md](../../docs/guides/deploy.md#vercel) for full instructions.
 

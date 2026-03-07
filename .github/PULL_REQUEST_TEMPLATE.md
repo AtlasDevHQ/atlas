@@ -15,5 +15,6 @@
 - [ ] Types pass (`bun run type`)
 - [ ] Tests pass (`bun run test`)
 - [ ] Lint passes (`bun run lint`)
+- [ ] Deps consistent (`bun run deps:lint`) — if dependencies changed
 - [ ] Labels added (type + area)
 - [ ] CHANGELOG.md updated (if user-facing change)

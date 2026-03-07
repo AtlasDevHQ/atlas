@@ -5,7 +5,7 @@ you need to get started.
 
 ## Prerequisites
 
-- **[bun](https://bun.sh/)** >= 1.1 — package manager and runtime
+- **[bun](https://bun.sh/)** >= 1.3.10 — package manager and runtime
 - **[Docker](https://www.docker.com/)** — for the local Postgres database
 
 ## Dev Setup
@@ -36,7 +36,7 @@ atlas/
 │   └── sandbox-sidecar/  # Isolated explore sidecar (Railway)
 ├── apps/
 │   └── www/              # Landing page (useatlas.dev)
-├── plugins/              # Atlas plugins (datasource, interaction, action, sandbox)
+├── plugins/              # Atlas plugins (datasource, context, interaction, action, sandbox)
 ├── examples/             # Deploy templates (Docker, Next.js standalone)
 ├── semantic/             # Semantic layer (YAML entity/metric files)
 ├── docs/                 # Guides (docs/guides/) and design ADRs (docs/design/)
@@ -65,6 +65,11 @@ internal paths. See [CLAUDE.md](./CLAUDE.md) for the full architecture reference
   awaits, not sequential `await a(); await b();`
 - **Dynamic imports** — use `next/dynamic` for Monaco, Recharts, syntax
   highlighters, and other large client-only libraries
+- **Flat ESLint config** — use `eslint.config.mjs`, not `.eslintrc`
+- **Frontend is a pure HTTP client** — `@atlas/web` imports `@atlas/api` for
+  types only; all data flows over HTTP
+- **Server external packages** — native/worker-thread packages (`pg`, `mysql2`,
+  etc.) must be listed in `serverExternalPackages` in `next.config.ts`
 
 ## Testing
 
@@ -127,8 +132,8 @@ See [CLAUDE.md § Adding to the Semantic Layer](./CLAUDE.md) for the YAML format
 
 ## Plugin Development
 
-Atlas supports four plugin types: **datasource**, **interaction**, **action**,
-and **sandbox**. Plugins are factory functions returning typed objects using
+Atlas supports five plugin types: **datasource**, **context**, **interaction**,
+**action**, and **sandbox**. Plugins are factory functions returning typed objects using
 `definePlugin()` from `@useatlas/plugin-sdk`.
 
 Reference implementations live in `plugins/`. For authoring guidance, see

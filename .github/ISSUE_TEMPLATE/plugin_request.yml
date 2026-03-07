@@ -1,6 +1,6 @@
 name: Plugin Request
 description: Request a new Atlas plugin
-labels: ["plugin"]
+labels: ["area: plugins"]
 body:
   - type: dropdown
     id: plugin-type
@@ -8,6 +8,7 @@ body:
       label: Plugin Type
       options:
         - Datasource (database or API connector)
+        - Context (semantic layer enrichment, knowledge sources)
         - Interaction (new surface — Slack, Teams, etc.)
         - Action (write operation — JIRA, email, etc.)
         - Sandbox (code execution backend)

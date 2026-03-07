@@ -537,11 +537,17 @@ describe("checkCrossReferences", () => {
     expect(errors[0].detail).toContain("nonexistent");
   });
 
-  test("warn on unused entities", () => {
+  test("warn on unused entities not referenced by joins or metrics", () => {
     const entities = [
       {
         file: "entities/users.yml",
         table: "users",
+        dimensions: { id: { type: "integer" } },
+        joins: { orders: { description: "user orders" } },
+      },
+      {
+        file: "entities/orders.yml",
+        table: "orders",
         dimensions: { id: { type: "integer" } },
       },
       {
@@ -550,12 +556,47 @@ describe("checkCrossReferences", () => {
         dimensions: { id: { type: "integer" } },
       },
     ];
-    // users is self-referenced (all entities are), orphan has no refs from joins/metrics
     const results = checkCrossReferences(entities, []);
     const warnings = results.filter((r) => r.status === "warn");
-    // Both are technically unreferenced by joins/metrics — but they self-reference via referencedTables
-    // Actually both are in referencedTables since the loop adds each entity.table to referencedTables
+    // "users" is referenced as a join source (but not a target → not in referencedTables)
+    // "orders" is referenced by users' join → referenced
+    // "orphan" has no inbound references → should warn
+    expect(warnings.length).toBe(2); // users + orphan
+    expect(warnings.some((w) => w.detail.includes('"orphan"'))).toBe(true);
+    expect(warnings.some((w) => w.detail.includes('"users"'))).toBe(true);
+  });
+
+  test("no unused entity warning when entity is referenced by a metric", () => {
+    const entities = [
+      {
+        file: "entities/users.yml",
+        table: "users",
+        dimensions: { id: { type: "integer" } },
+      },
+    ];
+    const metrics = [{ file: "metrics/user_count.yml", table: "users" }];
+    const results = checkCrossReferences(entities, metrics);
+    const warnings = results.filter((r) => r.status === "warn");
     expect(warnings.length).toBe(0);
+  });
+
+  test("resolves join target from target_table field", () => {
+    const entities = [
+      {
+        file: "entities/orders.yml",
+        table: "orders",
+        dimensions: { id: { type: "integer" } },
+        joins: { user_ref: { target_table: "users", description: "order user" } },
+      },
+      {
+        file: "entities/users.yml",
+        table: "users",
+        dimensions: { id: { type: "integer" } },
+      },
+    ];
+    const results = checkCrossReferences(entities, []);
+    const errors = results.filter((r) => r.status === "fail");
+    expect(errors.length).toBe(0);
   });
 
   test("handles metric with tables array", () => {

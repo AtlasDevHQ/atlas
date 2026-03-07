@@ -69,13 +69,17 @@ function escapeRegex(s: string): string {
 
 /**
  * Collect all *.yml files from a directory. Returns empty array if dir doesn't exist.
+ * Returns an error string if the directory exists but cannot be read.
  */
-function listYmlFiles(dir: string): string[] {
-  if (!fs.existsSync(dir)) return [];
+function listYmlFiles(dir: string): { files: string[]; error?: string } {
+  if (!fs.existsSync(dir)) return { files: [] };
   try {
-    return fs.readdirSync(dir).filter((f) => f.endsWith(".yml"));
-  } catch {
-    return [];
+    return { files: fs.readdirSync(dir).filter((f) => f.endsWith(".yml")) };
+  } catch (err) {
+    return {
+      files: [],
+      error: `Cannot read directory: ${err instanceof Error ? err.message : String(err)}`,
+    };
   }
 }
 
@@ -92,7 +96,7 @@ function discoverSources(semanticRoot: string): Array<{ source: string; entities
   try {
     const entries = fs.readdirSync(semanticRoot, { withFileTypes: true });
     for (const entry of entries) {
-      if (!entry.isDirectory() || reserved.has(entry.name)) continue;
+      if (!entry.isDirectory() || reserved.has(entry.name) || entry.name.startsWith(".")) continue;
       sources.push({
         source: entry.name,
         entitiesDir: path.join(semanticRoot, entry.name, "entities"),
@@ -183,7 +187,15 @@ export function checkEntities(semanticRoot: string = getSemanticDir()): {
   let errorCount = 0;
 
   for (const { dir, prefix } of dirs) {
-    const files = listYmlFiles(dir);
+    const { files, error: dirError } = listYmlFiles(dir);
+    if (dirError) {
+      results.push({
+        status: "fail",
+        label: `${prefix}entities/`,
+        detail: dirError,
+      });
+      errorCount++;
+    }
     totalFiles += files.length;
 
     for (const file of files) {
@@ -347,8 +359,18 @@ export function checkGlossary(semanticRoot: string = getSemanticDir()): Validate
     };
   }
 
+  let content: string;
   try {
-    const content = fs.readFileSync(glossaryPath, "utf-8");
+    content = fs.readFileSync(glossaryPath, "utf-8");
+  } catch (err) {
+    return {
+      status: "fail",
+      label: "semantic/glossary.yml",
+      detail: `Cannot read: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  try {
     const doc = yaml.load(content);
     if (!doc || typeof doc !== "object") {
       return {
@@ -386,8 +408,18 @@ export function checkCatalog(semanticRoot: string = getSemanticDir()): ValidateR
     };
   }
 
+  let content: string;
   try {
-    const content = fs.readFileSync(catalogPath, "utf-8");
+    content = fs.readFileSync(catalogPath, "utf-8");
+  } catch (err) {
+    return {
+      status: "fail",
+      label: "semantic/catalog.yml",
+      detail: `Cannot read: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  try {
     const doc = yaml.load(content);
     if (!doc || typeof doc !== "object") {
       return {
@@ -434,51 +466,37 @@ export function checkMetrics(semanticRoot: string = getSemanticDir()): {
   let errorCount = 0;
 
   for (const { dir, prefix } of dirs) {
-    const files = listYmlFiles(dir);
+    const { files, error: dirError } = listYmlFiles(dir);
+    if (dirError) {
+      results.push({
+        status: "fail",
+        label: `${prefix}metrics/`,
+        detail: dirError,
+      });
+      errorCount++;
+    }
     totalFiles += files.length;
 
     for (const file of files) {
       const filePath = path.join(dir, file);
       const displayName = `${prefix}metrics/${file}`;
 
+      let content: string;
       try {
-        const content = fs.readFileSync(filePath, "utf-8");
-        const doc = yaml.load(content);
-        if (!doc || typeof doc !== "object") {
-          results.push({
-            status: "fail",
-            label: displayName,
-            detail: "YAML parsed but is not an object",
-          });
-          errorCount++;
-          continue;
-        }
+        content = fs.readFileSync(filePath, "utf-8");
+      } catch (err) {
+        results.push({
+          status: "fail",
+          label: displayName,
+          detail: `Cannot read: ${err instanceof Error ? err.message : String(err)}`,
+        });
+        errorCount++;
+        continue;
+      }
 
-        const obj = doc as Record<string, unknown>;
-        const metricInfo: MetricInfo = { file: displayName };
-
-        // Extract table references from metric
-        if (typeof obj.table === "string") {
-          metricInfo.table = obj.table;
-        }
-        if (Array.isArray(obj.tables)) {
-          metricInfo.tables = obj.tables.filter((t): t is string => typeof t === "string");
-        }
-        // Also check inside metrics array entries
-        if (Array.isArray(obj.metrics)) {
-          const tablesFromEntries: string[] = [];
-          for (const m of obj.metrics) {
-            if (m && typeof m === "object") {
-              const entry = m as Record<string, unknown>;
-              if (typeof entry.table === "string") tablesFromEntries.push(entry.table);
-            }
-          }
-          if (tablesFromEntries.length > 0) {
-            metricInfo.tables = [...(metricInfo.tables ?? []), ...tablesFromEntries];
-          }
-        }
-
-        metrics.push(metricInfo);
+      let doc: unknown;
+      try {
+        doc = yaml.load(content);
       } catch (err) {
         const yamlErr = err as yaml.YAMLException;
         const line = yamlErr.mark?.line != null ? yamlErr.mark.line + 1 : undefined;
@@ -488,7 +506,44 @@ export function checkMetrics(semanticRoot: string = getSemanticDir()): {
           detail: `Invalid YAML: ${yamlErr.reason || yamlErr.message}`,
         });
         errorCount++;
+        continue;
       }
+
+      if (!doc || typeof doc !== "object") {
+        results.push({
+          status: "fail",
+          label: displayName,
+          detail: "YAML parsed but is not an object",
+        });
+        errorCount++;
+        continue;
+      }
+
+      const obj = doc as Record<string, unknown>;
+      const metricInfo: MetricInfo = { file: displayName };
+
+      // Extract table references from metric
+      if (typeof obj.table === "string") {
+        metricInfo.table = obj.table;
+      }
+      if (Array.isArray(obj.tables)) {
+        metricInfo.tables = obj.tables.filter((t): t is string => typeof t === "string");
+      }
+      // Also check inside metrics array entries
+      if (Array.isArray(obj.metrics)) {
+        const tablesFromEntries: string[] = [];
+        for (const m of obj.metrics) {
+          if (m && typeof m === "object") {
+            const entry = m as Record<string, unknown>;
+            if (typeof entry.table === "string") tablesFromEntries.push(entry.table);
+          }
+        }
+        if (tablesFromEntries.length > 0) {
+          metricInfo.tables = [...(metricInfo.tables ?? []), ...tablesFromEntries];
+        }
+      }
+
+      metrics.push(metricInfo);
     }
   }
 
@@ -525,10 +580,9 @@ export function checkCrossReferences(
     }
   }
 
-  // Check join targets
+  // Check join targets — only add join TARGETS and metric refs, not entities themselves
   const referencedTables = new Set<string>();
   for (const entity of entities) {
-    referencedTables.add(entity.table.toLowerCase());
     if (!entity.joins) continue;
 
     for (const [joinKey, joinVal] of Object.entries(entity.joins)) {
@@ -598,7 +652,6 @@ export function checkCrossReferences(
     const parts = entity.table.split(".");
     const unqualified = parts[parts.length - 1].toLowerCase();
 
-    // An entity references itself, so check if anything ELSE references it
     const isReferenced = referencedTables.has(tableLower) || referencedTables.has(unqualified);
     if (!isReferenced) {
       results.push({
@@ -653,27 +706,74 @@ export function renderValidateResults(results: ValidateResult[]): void {
 // Main entry point
 // ---------------------------------------------------------------------------
 
+/** Wrap a check so unexpected throws become fail results instead of crashing. */
+function safeRunSingle(
+  fn: () => ValidateResult,
+  fallbackLabel: string,
+): ValidateResult {
+  try {
+    return fn();
+  } catch (err) {
+    return {
+      status: "fail",
+      label: fallbackLabel,
+      detail: `Unexpected error: ${err instanceof Error ? err.message : String(err)}`,
+      fix: "This check crashed unexpectedly — please report this as a bug",
+    };
+  }
+}
+
+function safeRunMulti<T>(
+  fn: () => T,
+  fallbackLabel: string,
+  fallback: (err: Error) => T,
+): T {
+  try {
+    return fn();
+  } catch (err) {
+    return fallback(err instanceof Error ? err : new Error(String(err)));
+  }
+}
+
 export async function runValidate(): Promise<number> {
   const results: ValidateResult[] = [];
 
   // 1. Config file
-  results.push(checkConfig());
+  results.push(safeRunSingle(() => checkConfig(), "atlas.config.ts"));
 
   // 2. Entity YAMLs
-  const { results: entityResults, entities } = checkEntities();
+  const { results: entityResults, entities } = safeRunMulti(
+    () => checkEntities(),
+    "semantic/entities/",
+    (err) => ({
+      results: [{ status: "fail" as const, label: "semantic/entities/", detail: `Unexpected error: ${err.message}`, fix: "Please report this as a bug" }],
+      entities: [],
+    }),
+  );
   results.push(...entityResults);
 
   // 3. Glossary and Catalog
-  results.push(checkGlossary());
-  results.push(checkCatalog());
+  results.push(safeRunSingle(() => checkGlossary(), "semantic/glossary.yml"));
+  results.push(safeRunSingle(() => checkCatalog(), "semantic/catalog.yml"));
 
   // 4. Metrics
-  const { results: metricResults, metrics } = checkMetrics();
+  const { results: metricResults, metrics } = safeRunMulti(
+    () => checkMetrics(),
+    "semantic/metrics/",
+    (err) => ({
+      results: [{ status: "fail" as const, label: "semantic/metrics/", detail: `Unexpected error: ${err.message}`, fix: "Please report this as a bug" }],
+      metrics: [],
+    }),
+  );
   results.push(...metricResults);
 
   // 5. Cross-references (only if we have entities)
   if (entities.length > 0) {
-    const crossRefResults = checkCrossReferences(entities, metrics);
+    const crossRefResults = safeRunMulti(
+      () => checkCrossReferences(entities, metrics),
+      "cross-references",
+      (err) => [{ status: "fail" as const, label: "cross-references", detail: `Unexpected error: ${err.message}`, fix: "Please report this as a bug" }],
+    );
     results.push(...crossRefResults);
   }
 

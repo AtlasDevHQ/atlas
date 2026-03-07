@@ -28,6 +28,7 @@
  *   bun run atlas -- diff --tables t1,t2         # Diff only specific tables/views
  *   bun run atlas -- diff --schema analytics     # Diff a non-public PostgreSQL schema
  *   bun run atlas -- diff --source warehouse     # Diff from semantic/warehouse/ subdirectory
+ *   bun run atlas -- doctor                      # Validate environment and connectivity
  *
  * When run in a TTY without --tables or --demo, an interactive multiselect picker
  * lets you choose which tables and views to profile. --demo skips the picker since
@@ -4593,6 +4594,12 @@ async function main() {
     return handleSmoke(args);
   }
 
+  if (command === "doctor") {
+    const { runDoctor } = await import("../src/doctor");
+    const exitCode = await runDoctor();
+    process.exit(exitCode);
+  }
+
   if (command === "diff") {
     return handleDiff(args);
   }
@@ -4667,11 +4674,12 @@ async function main() {
 
   if (command !== "init") {
     console.log(
-      "Usage: bun run atlas -- <init|diff|query|eval|smoke|migrate|plugin|benchmark|mcp> [options]\n\n" +
+      "Usage: bun run atlas -- <init|diff|query|doctor|eval|smoke|migrate|plugin|benchmark|mcp> [options]\n\n" +
       "Commands:\n" +
       "  init       Profile DB and generate semantic layer\n" +
       "  diff       Compare DB schema against existing semantic layer\n" +
       "  query      Ask a question via the Atlas API\n" +
+      "  doctor     Validate environment, connectivity, and configuration\n" +
       "  eval       Run eval pipeline against demo schemas\n" +
       "  smoke      Run E2E smoke tests against a running Atlas deployment\n" +
       "  migrate    Generate/apply plugin schema migrations\n" +

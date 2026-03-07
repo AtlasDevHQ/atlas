@@ -136,6 +136,15 @@ Use the executeSQL tool to query the database:
 - Include appropriate filters, groupings, and ordering
 - If a query fails, read the error, fix the SQL, and retry (max 2 retries, never retry the same SQL)`;
 
+const EXECUTE_PYTHON_DESCRIPTION = `### 4. Analyze Data with Python
+Use the executePython tool for analysis that SQL alone cannot handle:
+- Statistical analysis (correlations, regressions, distributions)
+- Data transformations (pivoting, reshaping, time series resampling)
+- Visualizations (charts saved to /tmp/chart_0.png, /tmp/chart_1.png, etc.)
+- Pass SQL results as the data parameter to avoid re-querying
+- Available libraries: pandas, numpy, matplotlib (if installed)
+- Do NOT use executePython for simple queries — use executeSQL instead`;
+
 // --- Default registry ---
 
 const defaultRegistry = new ToolRegistry();
@@ -155,10 +164,10 @@ defaultRegistry.register({
 defaultRegistry.freeze();
 
 /**
- * Build a dynamic ToolRegistry with optional action support.
+ * Build a dynamic ToolRegistry with optional action and Python support.
  *
- * When `includeActions` is true, the action tools (createJiraTicket,
- * sendEmailReport) are added alongside the core tools.
+ * Python tool is included when `ATLAS_PYTHON_ENABLED=true`.
+ * Action tools are included when `includeActions` is true.
  */
 export async function buildRegistry(options?: {
   includeActions?: boolean;
@@ -176,6 +185,39 @@ export async function buildRegistry(options?: {
     description: EXECUTE_SQL_DESCRIPTION,
     tool: executeSQL,
   });
+
+  if (process.env.ATLAS_PYTHON_ENABLED === "true") {
+    if (!process.env.ATLAS_SANDBOX_URL) {
+      const { createLogger } = await import("@atlas/api/lib/logger");
+      const pyLog = createLogger("registry");
+      pyLog.error(
+        "ATLAS_PYTHON_ENABLED=true but ATLAS_SANDBOX_URL is not set. " +
+          "Python execution requires a sandbox sidecar for isolation.",
+      );
+      throw new Error(
+        "ATLAS_PYTHON_ENABLED=true requires ATLAS_SANDBOX_URL to be set. " +
+          "The Python tool runs in the sandbox sidecar for security isolation. " +
+          "See deployment docs for sidecar setup.",
+      );
+    }
+
+    try {
+      const { executePython } = await import("./python");
+      registry.register({
+        name: "executePython",
+        description: EXECUTE_PYTHON_DESCRIPTION,
+        tool: executePython,
+      });
+    } catch (err) {
+      const { createLogger } = await import("@atlas/api/lib/logger");
+      const pyLog = createLogger("registry");
+      pyLog.error(
+        { err: err instanceof Error ? err : new Error(String(err)) },
+        "Failed to load Python tool — executePython will be unavailable",
+      );
+      throw err;
+    }
+  }
 
   if (options?.includeActions) {
     try {

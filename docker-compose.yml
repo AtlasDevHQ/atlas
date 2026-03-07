@@ -1,10 +1,11 @@
-# Local dev: Postgres with two databases.
+# Local dev: Postgres + sandbox sidecar.
 #   atlas       — Atlas internal DB (auth, audit, settings)
 #   atlas_demo  — Demo analytics datasource (disposable, re-seedable)
 #
 # .env should have:
 #   DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas
 #   ATLAS_DATASOURCE_URL=postgresql://atlas:atlas@localhost:5432/atlas_demo
+#   ATLAS_SANDBOX_URL=http://localhost:8080  (for Python execution)
 
 services:
   postgres:
@@ -24,6 +25,24 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
+  sandbox:
+    build:
+      context: .
+      dockerfile: packages/sandbox-sidecar/Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./semantic:/semantic:ro
+    environment:
+      SEMANTIC_DIR: /semantic
+      # No SIDECAR_AUTH_TOKEN in local dev — the sandbox is only reachable on localhost.
+      # Production deploys should set SIDECAR_AUTH_TOKEN on both the API and sandbox services.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
 volumes:
   pgdata:

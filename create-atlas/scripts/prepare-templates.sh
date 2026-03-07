@@ -129,7 +129,18 @@ mkdir -p "$TEMPLATES/nextjs-standalone/src/app/api/[...route]"
 cp "$NEXTJS_EXAMPLE/src/app/api/[...route]/route.ts" \
    "$TEMPLATES/nextjs-standalone/src/app/api/[...route]/route.ts"
 
-# ── Step 5: Ensure docker public dir exists ───────────────────────────
+# ── Step 5: Copy demo semantic layer into ALL templates ──────────────
+# Ships the pre-built demo semantic layer so 1-click deploys (Vercel
+# deploy button, etc.) work out of the box with ATLAS_DEMO_DATA=true.
+# Users with their own database will overwrite these by running `atlas init`.
+DEMO_SEMANTIC="$MONOREPO/packages/cli/data/demo-semantic"
+for tpl in docker nextjs-standalone; do
+  echo ":: Syncing demo semantic layer → $tpl"
+  rm -rf "$TEMPLATES/$tpl/semantic"
+  cp -r "$DEMO_SEMANTIC" "$TEMPLATES/$tpl/semantic"
+done
+
+# ── Step 5b: Ensure docker public dir exists ──────────────────────────
 mkdir -p "$TEMPLATES/docker/public"
 touch    "$TEMPLATES/docker/public/.gitkeep"
 

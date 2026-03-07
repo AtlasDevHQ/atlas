@@ -1,14 +1,15 @@
 /**
  * Python execution tool for data analysis and visualization.
  *
- * Runs Python code in an isolated sandbox — either a sidecar container
- * (ATLAS_SANDBOX_URL) or nsjail (Linux namespace sandbox). Backend
- * selection mirrors the explore tool's priority chain.
+ * Runs Python code in an isolated sandbox — a sidecar container
+ * (ATLAS_SANDBOX_URL), Vercel Sandbox (Firecracker microVM), or nsjail
+ * (Linux namespace sandbox). Backend selection mirrors the explore tool's
+ * priority chain.
  *
  * Security model:
  * - AST-based import guard runs first as defense-in-depth (catches obvious mistakes)
  * - The sandbox backend is the actual security boundary (no secrets, no network)
- * - Requires either a sidecar or nsjail — refuses to run without isolation
+ * - Requires either a sidecar, Vercel sandbox, or nsjail — refuses to run without isolation
  */
 
 import { tool } from "ai";
@@ -204,7 +205,7 @@ export type PythonResult =
 // --- Backend interface ---
 
 /**
- * Python execution backend. Implementations handle isolation (sidecar, nsjail).
+ * Python execution backend. Implementations handle isolation (sidecar, Vercel sandbox, nsjail).
  * Each backend receives validated code + optional data and returns a structured result.
  */
 export interface PythonBackend {
@@ -235,14 +236,15 @@ async function getPythonBackend(): Promise<PythonBackend | { error: string }> {
 
   // 2. Vercel sandbox (Python 3.13 runtime)
   if (process.env.ATLAS_RUNTIME === "vercel" || process.env.VERCEL) {
+    let createPythonSandboxBackend;
     try {
-      const { createPythonSandboxBackend } = await import("./python-sandbox");
-      return createPythonSandboxBackend();
+      ({ createPythonSandboxBackend } = await import("./python-sandbox"));
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
-      log.error({ err: detail }, "Vercel Python sandbox backend failed to load");
+      log.error({ err: detail }, "Vercel Python sandbox module not available");
       return { error: `Vercel Python sandbox unavailable: ${detail}` };
     }
+    return createPythonSandboxBackend();
   }
 
   // 3. nsjail explicit (ATLAS_SANDBOX=nsjail) — hard-fail

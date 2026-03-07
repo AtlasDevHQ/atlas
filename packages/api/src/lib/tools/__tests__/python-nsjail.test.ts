@@ -431,6 +431,23 @@ describe("backend selection in python.ts", () => {
     saveAndSetEnv("ATLAS_RUNTIME", "vercel");
     saveAndSetEnv("ATLAS_NSJAIL_PATH", undefined);
 
+    // The AST import guard calls python3 — make it return valid output
+    const savedSpawn = Bun.spawn;
+    Bun.spawn = ((...args: unknown[]) => {
+      const cmd = args[0] as string[];
+      if (cmd[0] === "python3") {
+        return {
+          stdin: { write: () => {}, end: () => {} },
+          stdout: makeStream('{"imports":[],"calls":[]}'),
+          stderr: makeStream(""),
+          exited: Promise.resolve(0),
+          kill: () => {},
+        };
+      }
+      spawnCalls.push({ args: [args[0]], options: args[1] });
+      return spawnResult;
+    }) as unknown as typeof Bun.spawn;
+
     const { executePython } = await import("@atlas/api/lib/tools/python");
     const result = await executePython.execute!(
       { code: 'print("hello")', explanation: "test", data: undefined },
@@ -440,7 +457,9 @@ describe("backend selection in python.ts", () => {
     // On Vercel, the backend tries to import @vercel/sandbox.
     // In the test env it's not installed, so we get a sandbox-related error.
     expect(result.success).toBe(false);
-    expect(result.error).toBeDefined();
+    expect(result.error).toContain("sandbox");
+
+    Bun.spawn = savedSpawn;
   });
 
   it("returns hard-fail error when ATLAS_SANDBOX=nsjail but nsjail unavailable", async () => {

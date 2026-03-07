@@ -2,13 +2,16 @@
  * Vercel Sandbox backend for the Python execution tool.
  *
  * Uses @vercel/sandbox with runtime: "python3.13" to run Python code
- * in an ephemeral Firecracker microVM. Mirrors the pattern in
- * explore-sandbox.ts but adapted for Python execution:
- * - Creates a Python 3.13 sandbox with deny-all network policy
- * - Installs data science packages (pandas, numpy, matplotlib, etc.)
+ * in an ephemeral Firecracker microVM. Adapted from the explore-sandbox.ts
+ * pattern but with a different lifecycle (lazy creation, package installation):
+ * - Creates a Python 3.13 sandbox (initially allow-all for pip install)
+ * - Installs data science packages, then locks down to deny-all
  * - Writes wrapper + user code to the sandbox filesystem
- * - Injects data via a JSON file (stdin not supported by runCommand)
+ * - Injects data via a JSON file (runCommand does not support stdin piping)
  * - Collects charts and structured output via result marker
+ * - Unlike explore-sandbox.ts, the sandbox is created lazily and reused
+ *   across calls (no explicit close/stop lifecycle — invalidation stops
+ *   the old sandbox and creates a fresh one on next call)
  *
  * Only loaded when ATLAS_RUNTIME=vercel or running on the Vercel platform.
  */
@@ -23,6 +26,9 @@ const log = createLogger("python-sandbox");
 /** Default Python execution timeout in ms. */
 const DEFAULT_TIMEOUT_MS = 30_000;
 
+/** Maximum bytes to read from stdout/stderr (1 MB). */
+const MAX_OUTPUT = 1024 * 1024;
+
 /** Packages to install in the sandbox. */
 const DATA_SCIENCE_PACKAGES = [
   "pandas",
@@ -34,10 +40,13 @@ const DATA_SCIENCE_PACKAGES = [
 ];
 
 /**
- * Python wrapper script — same logic as sidecar/nsjail PYTHON_WRAPPER.
+ * Python wrapper script — adapted from the nsjail PYTHON_WRAPPER.
  *
- * Reads user code from argv[1], data from a JSON file (argv[2] if present),
- * runs in an isolated namespace, collects charts + structured output.
+ * Key difference: data is injected via a JSON file (argv[2]) instead of
+ * stdin, since Vercel Sandbox's runCommand does not support stdin piping.
+ *
+ * Reads user code from argv[1], executes in a restricted Python namespace,
+ * collects charts + structured output via result marker.
  */
 const PYTHON_WRAPPER = `
 import sys, json, io, base64, glob, os, ast
@@ -125,7 +134,7 @@ os.makedirs(_chart_dir, exist_ok=True)
 def chart_path(n=0):
     return os.path.join(_chart_dir, f"chart_{n}.png")
 
-# --- Execute user code in isolated namespace ---
+# --- Execute user code ---
 _old_stdout = sys.stdout
 sys.stdout = _captured = io.StringIO()
 
@@ -198,8 +207,8 @@ const SANDBOX_BASE = "/vercel/sandbox";
  * Create a Python sandbox backend using @vercel/sandbox.
  *
  * The sandbox is created lazily on first exec() call and reused for
- * subsequent calls. If the sandbox errors, it is torn down and a fresh
- * one is created on the next call.
+ * subsequent calls. If the sandbox errors, the cached promise is discarded
+ * (and the old sandbox stopped) so a fresh one is created on the next call.
  */
 export function createPythonSandboxBackend(): PythonBackend {
   let sandboxPromise: Promise<SandboxInstance> | null = null;
@@ -224,9 +233,10 @@ export function createPythonSandboxBackend(): PythonBackend {
 
     let sandbox: InstanceType<typeof Sandbox>;
     try {
+      // Start with allow-all so pip can reach pypi.org during setup
       sandbox = await Sandbox.create({
         runtime: "python3.13",
-        networkPolicy: "deny-all",
+        networkPolicy: "allow-all",
       });
     } catch (err) {
       const detail = sandboxErrorDetail(err);
@@ -237,7 +247,7 @@ export function createPythonSandboxBackend(): PythonBackend {
       );
     }
 
-    // Install data science packages
+    // Install data science packages (requires network access)
     let packagesInstalled = false;
     try {
       const result = await sandbox.runCommand({
@@ -260,16 +270,32 @@ export function createPythonSandboxBackend(): PythonBackend {
       log.warn({ err: detail }, "pip install failed — continuing without data science packages");
     }
 
+    // Lock down network before running any user code
+    try {
+      await sandbox.updateNetworkPolicy("deny-all");
+    } catch (err) {
+      const detail = sandboxErrorDetail(err);
+      log.error({ err: detail }, "Failed to set deny-all network policy");
+      try { await sandbox.stop(); } catch { /* best-effort cleanup */ }
+      throw new Error(
+        `Failed to lock down sandbox network: ${safeError(detail)}.`,
+        { cause: err },
+      );
+    }
+
     return { sandbox, packagesInstalled };
   }
 
   function invalidate() {
+    const old = sandboxPromise;
     sandboxPromise = null;
+    if (old) {
+      old.then(instance => instance.sandbox.stop()).catch(() => {});
+    }
   }
 
   return {
     exec: async (code, data): Promise<PythonResult> => {
-      // Lazy-init the sandbox
       if (!sandboxPromise) {
         sandboxPromise = getSandbox();
       }
@@ -331,7 +357,7 @@ export function createPythonSandboxBackend(): PythonBackend {
           pythonArgs.push(`${SANDBOX_BASE}/${dataPath}`);
         }
 
-        // Execute
+        // Execute with timeout enforcement
         const timeout = parseInt(
           process.env.ATLAS_PYTHON_TIMEOUT ?? String(DEFAULT_TIMEOUT_MS),
           10,
@@ -339,7 +365,7 @@ export function createPythonSandboxBackend(): PythonBackend {
 
         let result;
         try {
-          result = await sandbox.runCommand({
+          const commandPromise = sandbox.runCommand({
             cmd: "python3",
             args: pythonArgs,
             cwd: `${SANDBOX_BASE}/${execDir}`,
@@ -351,20 +377,46 @@ export function createPythonSandboxBackend(): PythonBackend {
               LANG: "C.UTF-8",
             },
           });
+          const timeoutPromise = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error(`Python execution timed out after ${timeout}ms`)), timeout),
+          );
+          result = await Promise.race([commandPromise, timeoutPromise]);
         } catch (err) {
-          const detail = sandboxErrorDetail(err);
-          log.error({ err: detail, execId }, "Sandbox runCommand failed for Python");
+          const detail = err instanceof Error ? err.message : String(err);
+          if (detail.includes("timed out")) {
+            log.warn({ execId, timeout }, "Python sandbox execution timed out");
+            return { success: false, error: detail };
+          }
+          const fullDetail = sandboxErrorDetail(err);
+          log.error({ err: fullDetail, execId }, "Sandbox runCommand failed for Python");
           invalidate();
           return {
             success: false,
-            error: `Sandbox infrastructure error: ${safeError(detail)}. Will retry with a fresh sandbox.`,
+            error: `Sandbox infrastructure error: ${safeError(fullDetail)}. Will retry with a fresh sandbox.`,
           };
         }
 
-        const [stdout, stderr] = await Promise.all([
-          result.stdout(),
-          result.stderr(),
-        ]);
+        let stdout: string;
+        let stderr: string;
+        try {
+          [stdout, stderr] = await Promise.all([
+            result.stdout(),
+            result.stderr(),
+          ]);
+        } catch (err) {
+          const detail = sandboxErrorDetail(err);
+          log.error({ err: detail, execId }, "Failed to read stdout/stderr from sandbox");
+          invalidate();
+          return { success: false, error: `Failed to read execution output: ${safeError(detail)}` };
+        }
+
+        // Output size guard (matches nsjail's 1 MB limit)
+        if (stdout.length > MAX_OUTPUT) {
+          return {
+            success: false,
+            error: "Python output exceeded 1 MB limit — reduce print() output or use _atlas_table for large results.",
+          };
+        }
 
         log.debug(
           { execId, exitCode: result.exitCode, stdoutLen: stdout.length },
@@ -378,14 +430,15 @@ export function createPythonSandboxBackend(): PythonBackend {
         if (resultLine) {
           try {
             return JSON.parse(resultLine.slice(resultMarker.length)) as PythonResult;
-          } catch {
+          } catch (parseErr) {
             log.warn(
-              { execId, resultLine: resultLine.slice(0, 500) },
+              { execId, resultLine: resultLine.slice(0, 500), parseError: String(parseErr) },
               "failed to parse Python result JSON",
             );
+            const userOutput = stdout.split(resultMarker)[0].trim();
             return {
               success: false,
-              error: `Python produced unparseable output. stderr: ${stderr.trim().slice(0, 500)}`,
+              error: `Python produced unparseable output.${userOutput ? ` Output: ${userOutput.slice(0, 500)}` : ""} stderr: ${stderr.trim().slice(0, 500)}`,
             };
           }
         }

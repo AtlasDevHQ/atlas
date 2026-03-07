@@ -18,10 +18,10 @@ mock.module("@atlas/api/lib/tracing", () => ({
 }));
 
 mock.module("@atlas/api/lib/security", () => ({
-  SENSITIVE_PATTERNS: /NEVER_MATCH/,
+  SENSITIVE_PATTERNS: /postgresql:\/\/|mysql:\/\/|sk-ant-/,
 }));
 
-// --- @vercel/sandbox mock ---
+// --- @vercel/sandbox mock infrastructure ---
 
 type RunCommandParams = {
   cmd: string;
@@ -31,103 +31,103 @@ type RunCommandParams = {
   sudo?: boolean;
 };
 
+interface MockSandboxOverrides {
+  createError?: string;
+  pipExitCode?: number;
+  pipStderr?: string;
+  pipThrows?: string;
+  updateNetworkPolicyThrows?: string;
+  mkDirThrows?: string;
+  writeFilesThrows?: string;
+  runCommandThrows?: string;
+  runCommandResult?: {
+    exitCode: number;
+    stdout: string;
+    stderr: string;
+  };
+  /** If true, dynamically inject the result marker into stdout */
+  injectMarker?: boolean;
+  /** Custom stdout builder given the marker */
+  stdoutForMarker?: (marker: string) => string;
+}
+
 let mockCreateCalls: unknown[] = [];
 let mockRunCommandCalls: RunCommandParams[] = [];
 let mockWriteFilesCalls: { path: string; content: Buffer }[][] = [];
 let mockMkDirCalls: string[] = [];
 let mockStopCalls = 0;
+let mockUpdateNetworkPolicyCalls: unknown[] = [];
 
-let mockRunCommandResult: {
-  exitCode: number;
-  stdout: () => Promise<string>;
-  stderr: () => Promise<string>;
-};
-
-let mockPipResult: {
-  exitCode: number;
-  stdout: () => Promise<string>;
-  stderr: () => Promise<string>;
-};
-
-let mockCreateShouldFail = false;
-let mockCreateError = "Sandbox creation failed";
-let mockImportShouldFail = false;
-let mockRunCommandShouldFail = false;
-let mockRunCommandError = "runCommand failed";
-let mockWriteFilesShouldFail = false;
-let mockMkDirShouldFail = false;
-
-function resetMocks() {
+function setupSandboxMock(overrides: MockSandboxOverrides = {}) {
   mockCreateCalls = [];
   mockRunCommandCalls = [];
   mockWriteFilesCalls = [];
   mockMkDirCalls = [];
   mockStopCalls = 0;
-  mockCreateShouldFail = false;
-  mockCreateError = "Sandbox creation failed";
-  mockImportShouldFail = false;
-  mockRunCommandShouldFail = false;
-  mockRunCommandError = "runCommand failed";
-  mockWriteFilesShouldFail = false;
-  mockMkDirShouldFail = false;
+  mockUpdateNetworkPolicyCalls = [];
 
-  // Default: successful result with no output
-  mockRunCommandResult = {
-    exitCode: 0,
-    stdout: async () => "",
-    stderr: async () => "",
-  };
+  mock.module("@vercel/sandbox", () => ({
+    Sandbox: {
+      create: async (opts: unknown) => {
+        mockCreateCalls.push(opts);
+        if (overrides.createError) throw new Error(overrides.createError);
+        return {
+          runCommand: async (params: RunCommandParams) => {
+            if (params.cmd === "pip") {
+              if (overrides.pipThrows) throw new Error(overrides.pipThrows);
+              return {
+                exitCode: overrides.pipExitCode ?? 0,
+                stdout: async () => "",
+                stderr: async () => overrides.pipStderr ?? "",
+              };
+            }
+            mockRunCommandCalls.push(params);
+            if (overrides.runCommandThrows) throw new Error(overrides.runCommandThrows);
 
-  mockPipResult = {
-    exitCode: 0,
-    stdout: async () => "",
-    stderr: async () => "",
-  };
+            const marker = params.env?.ATLAS_RESULT_MARKER ?? "";
+            if (overrides.stdoutForMarker) {
+              return {
+                exitCode: overrides.runCommandResult?.exitCode ?? 0,
+                stdout: async () => overrides.stdoutForMarker!(marker),
+                stderr: async () => overrides.runCommandResult?.stderr ?? "",
+              };
+            }
+            if (overrides.injectMarker !== false && !overrides.runCommandResult) {
+              return {
+                exitCode: 0,
+                stdout: async () => `${marker}{"success":true}\n`,
+                stderr: async () => "",
+              };
+            }
+            return {
+              exitCode: overrides.runCommandResult?.exitCode ?? 0,
+              stdout: async () => overrides.runCommandResult?.stdout ?? "",
+              stderr: async () => overrides.runCommandResult?.stderr ?? "",
+            };
+          },
+          writeFiles: async (files: { path: string; content: Buffer }[]) => {
+            mockWriteFilesCalls.push(files);
+            if (overrides.writeFilesThrows) throw new Error(overrides.writeFilesThrows);
+          },
+          mkDir: async (dir: string) => {
+            mockMkDirCalls.push(dir);
+            if (overrides.mkDirThrows) throw new Error(overrides.mkDirThrows);
+          },
+          updateNetworkPolicy: async (policy: unknown) => {
+            mockUpdateNetworkPolicyCalls.push(policy);
+            if (overrides.updateNetworkPolicyThrows) throw new Error(overrides.updateNetworkPolicyThrows);
+          },
+          stop: async () => { mockStopCalls++; },
+        };
+      },
+    },
+  }));
 }
 
-resetMocks();
-
-mock.module("@vercel/sandbox", () => ({
-  Sandbox: {
-    create: async (opts: unknown) => {
-      mockCreateCalls.push(opts);
-      if (mockCreateShouldFail) throw new Error(mockCreateError);
-      return {
-        runCommand: async (params: RunCommandParams) => {
-          // pip install calls
-          if (params.cmd === "pip") {
-            return mockPipResult;
-          }
-          mockRunCommandCalls.push(params);
-          if (mockRunCommandShouldFail) throw new Error(mockRunCommandError);
-          // Inject result marker into stdout if env has it
-          const marker = params.env?.ATLAS_RESULT_MARKER;
-          if (marker && mockRunCommandResult.exitCode === 0) {
-            const originalStdout = await mockRunCommandResult.stdout();
-            // If stdout already contains the marker, use it as-is
-            if (originalStdout.includes(marker)) {
-              return mockRunCommandResult;
-            }
-          }
-          return mockRunCommandResult;
-        },
-        writeFiles: async (files: { path: string; content: Buffer }[]) => {
-          mockWriteFilesCalls.push(files);
-          if (mockWriteFilesShouldFail) throw new Error("writeFiles failed");
-        },
-        mkDir: async (dir: string) => {
-          mockMkDirCalls.push(dir);
-          if (mockMkDirShouldFail) throw new Error("mkDir failed");
-        },
-        stop: async () => {
-          mockStopCalls++;
-        },
-      };
-    },
-  },
-}));
-
-const { createPythonSandboxBackend } = await import("@atlas/api/lib/tools/python-sandbox");
+async function freshBackend() {
+  const mod = await import("@atlas/api/lib/tools/python-sandbox");
+  return mod.createPythonSandboxBackend();
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -137,65 +137,29 @@ describe("createPythonSandboxBackend", () => {
   const originalEnv = { ...process.env };
 
   beforeEach(() => {
-    resetMocks();
+    setupSandboxMock();
   });
 
   afterEach(() => {
     process.env = { ...originalEnv };
   });
 
-  it("creates a sandbox with python3.13 runtime and deny-all network", async () => {
-    // Set up a result marker-aware response
-    mockRunCommandResult = {
-      exitCode: 0,
-      stdout: async () => "",
-      stderr: async () => "",
-    };
+  it("creates sandbox with python3.13 runtime, installs packages, then locks to deny-all", async () => {
+    setupSandboxMock({
+      stdoutForMarker: (m) => `${m}{"success":true,"output":"hello"}\n`,
+    });
 
-    // Override to capture the marker dynamically
-    const backend = createPythonSandboxBackend();
+    const backend = await freshBackend();
+    const result = await backend.exec('print("hello")');
 
-    // We need to intercept the actual call to get the marker
-    const originalModule = await import("@vercel/sandbox");
-    const origCreate = originalModule.Sandbox.create;
-
-    let capturedMarker = "";
-    mock.module("@vercel/sandbox", () => ({
-      Sandbox: {
-        create: async (opts: unknown) => {
-          mockCreateCalls.push(opts);
-          return {
-            runCommand: async (params: RunCommandParams) => {
-              if (params.cmd === "pip") return mockPipResult;
-              mockRunCommandCalls.push(params);
-              capturedMarker = params.env?.ATLAS_RESULT_MARKER ?? "";
-              return {
-                exitCode: 0,
-                stdout: async () => `${capturedMarker}{"success":true,"output":"hello"}\n`,
-                stderr: async () => "",
-              };
-            },
-            writeFiles: async (files: { path: string; content: Buffer }[]) => {
-              mockWriteFilesCalls.push(files);
-            },
-            mkDir: async (dir: string) => {
-              mockMkDirCalls.push(dir);
-            },
-            stop: async () => { mockStopCalls++; },
-          };
-        },
-      },
-    }));
-
-    // Re-import to pick up new mock
-    const { createPythonSandboxBackend: freshBackend } = await import("@atlas/api/lib/tools/python-sandbox");
-    const backend2 = freshBackend();
-    const result = await backend2.exec('print("hello")');
-
-    expect(mockCreateCalls.length).toBeGreaterThanOrEqual(1);
+    // Sandbox created with allow-all (for pip)
+    expect(mockCreateCalls.length).toBe(1);
     const createOpts = mockCreateCalls[0] as { runtime: string; networkPolicy: string };
     expect(createOpts.runtime).toBe("python3.13");
-    expect(createOpts.networkPolicy).toBe("deny-all");
+    expect(createOpts.networkPolicy).toBe("allow-all");
+
+    // Network locked down to deny-all after pip install
+    expect(mockUpdateNetworkPolicyCalls).toEqual(["deny-all"]);
 
     expect(result.success).toBe(true);
     if (result.success) {
@@ -204,39 +168,12 @@ describe("createPythonSandboxBackend", () => {
   });
 
   it("writes wrapper, user code, and data files to sandbox", async () => {
-    let capturedMarker = "";
-    mock.module("@vercel/sandbox", () => ({
-      Sandbox: {
-        create: async (opts: unknown) => {
-          mockCreateCalls.push(opts);
-          return {
-            runCommand: async (params: RunCommandParams) => {
-              if (params.cmd === "pip") return mockPipResult;
-              mockRunCommandCalls.push(params);
-              capturedMarker = params.env?.ATLAS_RESULT_MARKER ?? "";
-              return {
-                exitCode: 0,
-                stdout: async () => `${capturedMarker}{"success":true}\n`,
-                stderr: async () => "",
-              };
-            },
-            writeFiles: async (files: { path: string; content: Buffer }[]) => {
-              mockWriteFilesCalls.push(files);
-            },
-            mkDir: async (dir: string) => { mockMkDirCalls.push(dir); },
-            stop: async () => { mockStopCalls++; },
-          };
-        },
-      },
-    }));
-
-    const { createPythonSandboxBackend: freshBackend } = await import("@atlas/api/lib/tools/python-sandbox");
-    const backend = freshBackend();
+    setupSandboxMock();
+    const backend = await freshBackend();
 
     const data = { columns: ["a", "b"], rows: [[1, 2], [3, 4]] };
     await backend.exec("print(df.head())", data);
 
-    // Should have written 3 files: wrapper, code, data
     expect(mockWriteFilesCalls.length).toBe(1);
     const files = mockWriteFilesCalls[0];
     expect(files.length).toBe(3);
@@ -246,7 +183,6 @@ describe("createPythonSandboxBackend", () => {
     expect(paths.some((p) => p.includes("user_code.py"))).toBe(true);
     expect(paths.some((p) => p.includes("data.json"))).toBe(true);
 
-    // Verify data content
     const dataFile = files.find((f) => f.path.includes("data.json"))!;
     const parsed = JSON.parse(dataFile.content.toString());
     expect(parsed.columns).toEqual(["a", "b"]);
@@ -254,72 +190,19 @@ describe("createPythonSandboxBackend", () => {
   });
 
   it("omits data file when no data provided", async () => {
-    let capturedMarker = "";
-    mock.module("@vercel/sandbox", () => ({
-      Sandbox: {
-        create: async (opts: unknown) => {
-          mockCreateCalls.push(opts);
-          return {
-            runCommand: async (params: RunCommandParams) => {
-              if (params.cmd === "pip") return mockPipResult;
-              mockRunCommandCalls.push(params);
-              capturedMarker = params.env?.ATLAS_RESULT_MARKER ?? "";
-              return {
-                exitCode: 0,
-                stdout: async () => `${capturedMarker}{"success":true}\n`,
-                stderr: async () => "",
-              };
-            },
-            writeFiles: async (files: { path: string; content: Buffer }[]) => {
-              mockWriteFilesCalls.push(files);
-            },
-            mkDir: async (dir: string) => { mockMkDirCalls.push(dir); },
-            stop: async () => { mockStopCalls++; },
-          };
-        },
-      },
-    }));
-
-    const { createPythonSandboxBackend: freshBackend } = await import("@atlas/api/lib/tools/python-sandbox");
-    const backend = freshBackend();
+    setupSandboxMock();
+    const backend = await freshBackend();
     await backend.exec("print(1)");
 
-    // Should have written 2 files: wrapper, code (no data)
     expect(mockWriteFilesCalls.length).toBe(1);
     const files = mockWriteFilesCalls[0];
     expect(files.length).toBe(2);
     expect(files.some((f) => f.path.includes("data.json"))).toBe(false);
   });
 
-  it("passes correct env vars to runCommand", async () => {
-    let capturedMarker = "";
-    mock.module("@vercel/sandbox", () => ({
-      Sandbox: {
-        create: async (opts: unknown) => {
-          mockCreateCalls.push(opts);
-          return {
-            runCommand: async (params: RunCommandParams) => {
-              if (params.cmd === "pip") return mockPipResult;
-              mockRunCommandCalls.push(params);
-              capturedMarker = params.env?.ATLAS_RESULT_MARKER ?? "";
-              return {
-                exitCode: 0,
-                stdout: async () => `${capturedMarker}{"success":true}\n`,
-                stderr: async () => "",
-              };
-            },
-            writeFiles: async (files: { path: string; content: Buffer }[]) => {
-              mockWriteFilesCalls.push(files);
-            },
-            mkDir: async (dir: string) => { mockMkDirCalls.push(dir); },
-            stop: async () => { mockStopCalls++; },
-          };
-        },
-      },
-    }));
-
-    const { createPythonSandboxBackend: freshBackend } = await import("@atlas/api/lib/tools/python-sandbox");
-    const backend = freshBackend();
+  it("passes correct env vars to runCommand with no secrets", async () => {
+    setupSandboxMock();
+    const backend = await freshBackend();
     await backend.exec("print(1)");
 
     expect(mockRunCommandCalls.length).toBe(1);
@@ -336,17 +219,41 @@ describe("createPythonSandboxBackend", () => {
     expect(params.env).not.toHaveProperty("DATABASE_URL");
   });
 
-  it("returns error when sandbox creation fails", async () => {
-    mock.module("@vercel/sandbox", () => ({
-      Sandbox: {
-        create: async () => {
-          throw new Error("quota exceeded");
-        },
-      },
-    }));
+  it("reuses sandbox across multiple exec calls", async () => {
+    setupSandboxMock();
+    const backend = await freshBackend();
 
-    const { createPythonSandboxBackend: freshBackend } = await import("@atlas/api/lib/tools/python-sandbox");
-    const backend = freshBackend();
+    await backend.exec("print(1)");
+    await backend.exec("print(2)");
+
+    // Sandbox.create called only once
+    expect(mockCreateCalls.length).toBe(1);
+    // But runCommand called twice
+    expect(mockRunCommandCalls.length).toBe(2);
+  });
+
+  it("invalidation stops old sandbox and creates fresh one on next call", async () => {
+    // First call uses a sandbox that errors on runCommand
+    setupSandboxMock({ runCommandThrows: "VM crashed" });
+    const backend = await freshBackend();
+
+    const result1 = await backend.exec("print(1)");
+    expect(result1.success).toBe(false);
+
+    // Invalidation should have stopped the old sandbox
+    // Give the async stop a tick to complete
+    await new Promise((r) => setTimeout(r, 10));
+    expect(mockStopCalls).toBeGreaterThanOrEqual(1);
+
+    // Next call should create a fresh sandbox
+    setupSandboxMock(); // Reset to working sandbox
+    const result2 = await backend.exec("print(2)");
+    expect(mockCreateCalls.length).toBe(1); // New sandbox created
+  });
+
+  it("returns error when sandbox creation fails", async () => {
+    setupSandboxMock({ createError: "quota exceeded" });
+    const backend = await freshBackend();
     const result = await backend.exec("print(1)");
 
     expect(result.success).toBe(false);
@@ -355,25 +262,20 @@ describe("createPythonSandboxBackend", () => {
     }
   });
 
-  it("returns error when writeFiles fails", async () => {
-    mock.module("@vercel/sandbox", () => ({
-      Sandbox: {
-        create: async () => ({
-          runCommand: async (params: RunCommandParams) => {
-            if (params.cmd === "pip") return mockPipResult;
-            return mockRunCommandResult;
-          },
-          writeFiles: async () => {
-            throw new Error("disk full");
-          },
-          mkDir: async () => {},
-          stop: async () => {},
-        }),
-      },
-    }));
+  it("returns error when mkDir fails and invalidates sandbox", async () => {
+    setupSandboxMock({ mkDirThrows: "permission denied" });
+    const backend = await freshBackend();
+    const result = await backend.exec("print(1)");
 
-    const { createPythonSandboxBackend: freshBackend } = await import("@atlas/api/lib/tools/python-sandbox");
-    const backend = freshBackend();
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toContain("permission denied");
+    }
+  });
+
+  it("returns error when writeFiles fails", async () => {
+    setupSandboxMock({ writeFilesThrows: "disk full" });
+    const backend = await freshBackend();
     const result = await backend.exec("print(1)");
 
     expect(result.success).toBe(false);
@@ -383,22 +285,8 @@ describe("createPythonSandboxBackend", () => {
   });
 
   it("returns error when runCommand fails", async () => {
-    mock.module("@vercel/sandbox", () => ({
-      Sandbox: {
-        create: async () => ({
-          runCommand: async (params: RunCommandParams) => {
-            if (params.cmd === "pip") return mockPipResult;
-            throw new Error("VM crashed");
-          },
-          writeFiles: async () => {},
-          mkDir: async () => {},
-          stop: async () => {},
-        }),
-      },
-    }));
-
-    const { createPythonSandboxBackend: freshBackend } = await import("@atlas/api/lib/tools/python-sandbox");
-    const backend = freshBackend();
+    setupSandboxMock({ runCommandThrows: "VM crashed" });
+    const backend = await freshBackend();
     const result = await backend.exec("print(1)");
 
     expect(result.success).toBe(false);
@@ -407,27 +295,25 @@ describe("createPythonSandboxBackend", () => {
     }
   });
 
-  it("handles SIGKILL exit code", async () => {
-    mock.module("@vercel/sandbox", () => ({
-      Sandbox: {
-        create: async () => ({
-          runCommand: async (params: RunCommandParams) => {
-            if (params.cmd === "pip") return mockPipResult;
-            return {
-              exitCode: 137,
-              stdout: async () => "",
-              stderr: async () => "",
-            };
-          },
-          writeFiles: async () => {},
-          mkDir: async () => {},
-          stop: async () => {},
-        }),
-      },
-    }));
+  it("returns error when updateNetworkPolicy fails and stops sandbox", async () => {
+    setupSandboxMock({ updateNetworkPolicyThrows: "policy update failed" });
+    const backend = await freshBackend();
+    const result = await backend.exec("print(1)");
 
-    const { createPythonSandboxBackend: freshBackend } = await import("@atlas/api/lib/tools/python-sandbox");
-    const backend = freshBackend();
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toContain("lock down sandbox network");
+    }
+    // Should have stopped the sandbox on failure
+    expect(mockStopCalls).toBeGreaterThanOrEqual(1);
+  });
+
+  it("handles SIGKILL exit code", async () => {
+    setupSandboxMock({
+      injectMarker: false,
+      runCommandResult: { exitCode: 137, stdout: "", stderr: "" },
+    });
+    const backend = await freshBackend();
     const result = await backend.exec("while True: pass");
 
     expect(result.success).toBe(false);
@@ -437,26 +323,11 @@ describe("createPythonSandboxBackend", () => {
   });
 
   it("handles SIGSEGV exit code with stderr", async () => {
-    mock.module("@vercel/sandbox", () => ({
-      Sandbox: {
-        create: async () => ({
-          runCommand: async (params: RunCommandParams) => {
-            if (params.cmd === "pip") return mockPipResult;
-            return {
-              exitCode: 139,
-              stdout: async () => "",
-              stderr: async () => "Segfault in numpy",
-            };
-          },
-          writeFiles: async () => {},
-          mkDir: async () => {},
-          stop: async () => {},
-        }),
-      },
-    }));
-
-    const { createPythonSandboxBackend: freshBackend } = await import("@atlas/api/lib/tools/python-sandbox");
-    const backend = freshBackend();
+    setupSandboxMock({
+      injectMarker: false,
+      runCommandResult: { exitCode: 139, stdout: "", stderr: "Segfault in numpy" },
+    });
+    const backend = await freshBackend();
     const result = await backend.exec("bad code");
 
     expect(result.success).toBe(false);
@@ -467,31 +338,60 @@ describe("createPythonSandboxBackend", () => {
   });
 
   it("returns stderr as error when no result marker and non-zero exit", async () => {
-    mock.module("@vercel/sandbox", () => ({
-      Sandbox: {
-        create: async () => ({
-          runCommand: async (params: RunCommandParams) => {
-            if (params.cmd === "pip") return mockPipResult;
-            return {
-              exitCode: 1,
-              stdout: async () => "some output",
-              stderr: async () => "NameError: name 'foo' is not defined",
-            };
-          },
-          writeFiles: async () => {},
-          mkDir: async () => {},
-          stop: async () => {},
-        }),
-      },
-    }));
-
-    const { createPythonSandboxBackend: freshBackend } = await import("@atlas/api/lib/tools/python-sandbox");
-    const backend = freshBackend();
+    setupSandboxMock({
+      injectMarker: false,
+      runCommandResult: { exitCode: 1, stdout: "some output", stderr: "NameError: name 'foo' is not defined" },
+    });
+    const backend = await freshBackend();
     const result = await backend.exec("print(foo)");
 
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.error).toContain("NameError");
     }
+  });
+
+  it("rejects output exceeding 1 MB", async () => {
+    const bigOutput = "x".repeat(1024 * 1024 + 1);
+    setupSandboxMock({
+      injectMarker: false,
+      runCommandResult: { exitCode: 0, stdout: bigOutput, stderr: "" },
+    });
+    const backend = await freshBackend();
+    const result = await backend.exec("print('a' * 10000000)");
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toContain("exceeded 1 MB");
+    }
+  });
+
+  it("scrubs sensitive data from error messages", async () => {
+    setupSandboxMock({ mkDirThrows: "Error connecting to postgresql://user:pass@host/db" });
+    const backend = await freshBackend();
+    const result = await backend.exec("print(1)");
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).not.toContain("postgresql://");
+      expect(result.error).toContain("details in server logs");
+    }
+  });
+
+  it("continues without packages when pip install fails", async () => {
+    setupSandboxMock({ pipExitCode: 1, pipStderr: "network error" });
+    const backend = await freshBackend();
+    const result = await backend.exec("print(1)");
+
+    // Should still succeed — pip failure is non-fatal
+    expect(result.success).toBe(true);
+  });
+
+  it("continues without packages when pip install throws", async () => {
+    setupSandboxMock({ pipThrows: "command not found" });
+    const backend = await freshBackend();
+    const result = await backend.exec("print(1)");
+
+    expect(result.success).toBe(true);
   });
 });

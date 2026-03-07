@@ -103,8 +103,6 @@ describe("ConnectionRegistry plugin metadata", () => {
 // --- parserDatabase with plugin metadata ---
 
 describe("parserDatabase with plugin metadata", () => {
-  let registry: ConnectionRegistry;
-
   // We need to import parserDatabase which uses the global `connections` singleton.
   // To test with our own registry, we'll use validateSQL indirectly via the
   // parserDatabase export. But parserDatabase uses the global connections import.

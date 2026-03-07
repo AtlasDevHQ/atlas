@@ -32,6 +32,7 @@ COPY plugins/nsjail-sandbox/package.json plugins/nsjail-sandbox/package.json
 COPY plugins/sidecar-sandbox/package.json plugins/sidecar-sandbox/package.json
 COPY plugins/slack-interaction/package.json plugins/slack-interaction/package.json
 COPY plugins/snowflake-datasource/package.json plugins/snowflake-datasource/package.json
+COPY plugins/salesforce-datasource/package.json plugins/salesforce-datasource/package.json
 COPY plugins/vercel-sandbox/package.json plugins/vercel-sandbox/package.json
 RUN bun ci --ignore-scripts
 

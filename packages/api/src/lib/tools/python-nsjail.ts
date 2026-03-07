@@ -200,7 +200,7 @@ export function buildPythonNsjailArgs(
   codeFile: string,
   wrapperFile: string,
   chartDir: string,
-  resultMarker: string,
+  _resultMarker: string,
 ): string[] {
   const timeLimit = parsePositiveInt("ATLAS_NSJAIL_TIME_LIMIT", DEFAULT_TIME_LIMIT, "time limit");
   const memoryLimit = parsePositiveInt("ATLAS_NSJAIL_MEMORY_LIMIT", DEFAULT_MEMORY_LIMIT, "memory limit");

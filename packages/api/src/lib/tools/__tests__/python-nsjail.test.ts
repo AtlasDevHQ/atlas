@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach, spyOn, mock } from "bun:test";
+import { describe, expect, it, beforeEach, afterEach, mock } from "bun:test";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -495,10 +495,10 @@ describe("backend selection in python.ts", () => {
     // Instead, test that when ATLAS_SANDBOX=nsjail AND a backend IS available,
     // it uses it (doesn't skip to "no backend" error).
     const { executePython } = await import("@atlas/api/lib/tools/python");
-    const result = await executePython.execute!(
+    await executePython.execute!(
       { code: 'print("hello")', explanation: "test", data: undefined },
       {} as never,
-    ) as { success: boolean; error?: string };
+    );
 
     // With mocked fs (accessSync always succeeds), nsjail appears available.
     // The exec proceeds to the nsjail backend (which uses our mocked Bun.spawn).

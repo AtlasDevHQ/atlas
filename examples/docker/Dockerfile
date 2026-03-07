@@ -9,6 +9,7 @@ COPY packages/cli/package.json packages/cli/package.json
 COPY packages/mcp/package.json packages/mcp/package.json
 COPY packages/sandbox-sidecar/package.json packages/sandbox-sidecar/package.json
 COPY packages/plugin-sdk/package.json packages/plugin-sdk/package.json
+COPY packages/sdk/package.json packages/sdk/package.json
 COPY apps/www/package.json apps/www/package.json
 COPY examples/nextjs-standalone/package.json examples/nextjs-standalone/package.json
 # Plugins are workspace members — their package.json files must be
@@ -26,6 +27,7 @@ COPY plugins/nsjail-sandbox/package.json plugins/nsjail-sandbox/package.json
 COPY plugins/sidecar-sandbox/package.json plugins/sidecar-sandbox/package.json
 COPY plugins/slack-interaction/package.json plugins/slack-interaction/package.json
 COPY plugins/snowflake-datasource/package.json plugins/snowflake-datasource/package.json
+COPY plugins/salesforce-datasource/package.json plugins/salesforce-datasource/package.json
 COPY plugins/vercel-sandbox/package.json plugins/vercel-sandbox/package.json
 RUN bun ci --ignore-scripts
 

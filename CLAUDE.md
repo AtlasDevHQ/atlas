@@ -309,7 +309,7 @@ Error boundary catches provider/DB errors → structured JSON response
 4. **Auto LIMIT** — Appended to every query (default 1000)
 5. **Statement timeout** — Configurable per-query deadline
 
-~115 unit tests cover the validation pipeline — see `packages/api/src/lib/tools/__tests__/sql.test.ts`.
+~103 unit tests cover the validation pipeline — see `packages/api/src/lib/tools/__tests__/sql.test.ts`.
 
 ### Database Layer
 

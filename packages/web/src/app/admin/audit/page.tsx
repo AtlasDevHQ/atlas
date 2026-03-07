@@ -52,8 +52,6 @@ interface Filters {
 
 const LIMIT = 50;
 
-const emptyFilters: Filters = { user: "", from: "", to: "", errorOnly: false };
-
 export default function AuditPage() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";

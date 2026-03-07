@@ -1,4 +1,4 @@
-import { describe, expect, it, mock, afterEach, beforeEach } from "bun:test";
+import { describe, expect, it, mock, afterEach } from "bun:test";
 
 // Mock logger to avoid side effects
 mock.module("@atlas/api/lib/logger", () => ({

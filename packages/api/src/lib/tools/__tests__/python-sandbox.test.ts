@@ -247,7 +247,7 @@ describe("createPythonSandboxBackend", () => {
 
     // Next call should create a fresh sandbox
     setupSandboxMock(); // Reset to working sandbox
-    const result2 = await backend.exec("print(2)");
+    await backend.exec("print(2)");
     expect(mockCreateCalls.length).toBe(1); // New sandbox created
   });
 

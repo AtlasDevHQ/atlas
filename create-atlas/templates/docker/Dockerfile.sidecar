@@ -1,0 +1,28 @@
+FROM oven/bun:1.3.10-debian AS base
+
+# Install only the tools needed for explore mode
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash coreutils grep findutils tree \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd -r -s /bin/false -u 65534 -g 65534 sandbox
+
+WORKDIR /app
+
+# Copy sidecar source
+COPY sidecar/server.ts ./server.ts
+
+# Semantic layer from project root
+COPY semantic/ /semantic/
+RUN chmod -R a-w /semantic/
+
+# Keep this image minimal — adding packages or env vars weakens the isolation model
+
+# No secrets, no database drivers, no node_modules beyond bun runtime
+EXPOSE 8080
+ENV PORT=8080
+ENV SEMANTIC_DIR=/semantic
+
+USER sandbox
+
+CMD ["bun", "run", "server.ts"]

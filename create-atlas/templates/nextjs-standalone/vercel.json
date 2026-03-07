@@ -1,5 +1,5 @@
 {
   "framework": "nextjs",
-  "buildCommand": "bun run scripts/seed-demo.ts && next build",
+  "buildCommand": "bun run scripts/seed-demo.ts && bun run scripts/migrate-auth.ts && next build",
   "crons": [{ "path": "/api/v1/scheduled-tasks/tick", "schedule": "* * * * *" }]
 }

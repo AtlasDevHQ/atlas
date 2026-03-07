@@ -138,12 +138,19 @@ Use the executeSQL tool to query the database:
 
 const EXECUTE_PYTHON_DESCRIPTION = `### 4. Analyze Data with Python
 Use the executePython tool for analysis that SQL alone cannot handle:
-- Statistical analysis (correlations, regressions, distributions)
-- Data transformations (pivoting, reshaping, time series resampling)
-- Visualizations (charts saved to /tmp/chart_0.png, /tmp/chart_1.png, etc.)
-- Pass SQL results as the data parameter to avoid re-querying
-- Available libraries: pandas, numpy, matplotlib (if installed)
-- Do NOT use executePython for simple queries — use executeSQL instead`;
+- Statistical analysis (correlations, regressions, hypothesis tests)
+- Data transformations (pivoting, reshaping, time series decomposition)
+- Visualizations and advanced charts
+
+**Always run executeSQL first**, then pass results to executePython via the \`data\` parameter.
+
+**Output modes:**
+- \`_atlas_table\` — structured table results (columns + rows)
+- \`_atlas_chart\` — interactive Recharts chart (preferred for bar/line/pie)
+- \`chart_path(n)\` — matplotlib PNG (use for heatmaps, scatter matrices, violin plots)
+- \`print()\` — narrative text output
+
+Do NOT use executePython for simple aggregations, GROUP BY, or filtering — executeSQL handles those.`;
 
 // --- Default registry ---
 

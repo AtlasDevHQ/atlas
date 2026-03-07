@@ -5,7 +5,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     bash coreutils grep findutils tree \
     && rm -rf /var/lib/apt/lists/*
 
-RUN useradd -r -s /bin/false -u 65534 -g 65534 sandbox
+RUN useradd -r -s /bin/false sandbox || true
 
 WORKDIR /app
 

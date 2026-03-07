@@ -1,14 +1,14 @@
 /**
  * Python execution tool for data analysis and visualization.
  *
- * Runs Python code in the sandbox sidecar — an isolated Docker container
- * with no secrets, no host access, and a minimal environment. The sidecar
- * handles data serialization, chart collection, and structured output.
+ * Runs Python code in an isolated sandbox — either a sidecar container
+ * (ATLAS_SANDBOX_URL) or nsjail (Linux namespace sandbox). Backend
+ * selection mirrors the explore tool's priority chain.
  *
  * Security model:
  * - AST-based import guard runs first as defense-in-depth (catches obvious mistakes)
- * - The sidecar container is the actual security boundary (no secrets, no network to host)
- * - Requires ATLAS_SANDBOX_URL — refuses to run without a sidecar
+ * - The sandbox backend is the actual security boundary (no secrets, no network)
+ * - Requires either a sidecar or nsjail — refuses to run without isolation
  */
 
 import { tool } from "ai";
@@ -200,6 +200,60 @@ export type PythonResult =
       output?: string;
     };
 
+// --- Backend interface ---
+
+/**
+ * Python execution backend. Implementations handle isolation (sidecar, nsjail).
+ * Each backend receives validated code + optional data and returns a structured result.
+ */
+export interface PythonBackend {
+  exec(code: string, data?: { columns: string[]; rows: unknown[][] }): Promise<PythonResult>;
+}
+
+// --- Backend selection ---
+
+/**
+ * Resolve the Python execution backend.
+ *
+ * Priority:
+ * 1. Sidecar (ATLAS_SANDBOX_URL) — HTTP-isolated container
+ * 2. Vercel (ATLAS_RUNTIME=vercel) — not yet supported
+ * 3. nsjail (on PATH or ATLAS_NSJAIL_PATH) — Linux namespace sandbox
+ * 4. No backend — error
+ */
+async function getPythonBackend(): Promise<PythonBackend | { error: string }> {
+  // 1. Sidecar
+  const sidecarUrl = process.env.ATLAS_SANDBOX_URL;
+  if (sidecarUrl) {
+    const { executePythonViaSidecar } = await import("./python-sidecar");
+    return {
+      exec: (code, data) => executePythonViaSidecar(sidecarUrl, code, data),
+    };
+  }
+
+  // 2. Vercel — not supported yet
+  if (process.env.ATLAS_RUNTIME === "vercel" || process.env.VERCEL) {
+    return { error: "Python execution is not yet available on Vercel. Use a sidecar or nsjail-based deployment." };
+  }
+
+  // 3. nsjail
+  try {
+    const { findNsjailBinary } = await import("./explore-nsjail");
+    const nsjailPath = findNsjailBinary();
+    if (nsjailPath) {
+      const { createPythonNsjailBackend } = await import("./python-nsjail");
+      return createPythonNsjailBackend(nsjailPath);
+    }
+  } catch {
+    // explore-nsjail not loadable — skip
+  }
+
+  // 4. No backend
+  return {
+    error: "Python execution requires a sandbox (ATLAS_SANDBOX_URL or nsjail). See deployment docs.",
+  };
+}
+
 // --- Tool definition ---
 
 export const executePython = tool({
@@ -232,31 +286,27 @@ Blocked: subprocess, os, socket, shutil, sys, ctypes, importlib, exec(), eval(),
   }),
 
   execute: async ({ code, explanation, data }) => {
-    // 0. Require sidecar
-    const sidecarUrl = process.env.ATLAS_SANDBOX_URL;
-    if (!sidecarUrl) {
-      log.error("ATLAS_SANDBOX_URL is required for Python execution");
-      return {
-        success: false,
-        error: "Python execution requires a sandbox sidecar (ATLAS_SANDBOX_URL). See deployment docs.",
-      };
+    // 0. Resolve backend
+    const backend = await getPythonBackend();
+    if ("error" in backend) {
+      log.error(backend.error);
+      return { success: false, error: backend.error };
     }
 
-    // 1. Validate imports (defense-in-depth — sidecar is the real boundary)
+    // 1. Validate imports (defense-in-depth — sandbox is the real boundary)
     const validation = await validatePythonCode(code);
     if (!validation.safe) {
       log.warn({ reason: validation.reason }, "Python code rejected by import guard");
       return { success: false, error: validation.reason };
     }
 
-    // 2. Execute via sidecar
+    // 2. Execute via selected backend
     const start = performance.now();
     try {
-      const { executePythonViaSidecar } = await import("./python-sidecar");
       const result = await withSpan(
         "atlas.python.execute",
         { "code.length": code.length },
-        () => executePythonViaSidecar(sidecarUrl, code, data),
+        () => backend.exec(code, data),
       );
       const durationMs = Math.round(performance.now() - start);
 

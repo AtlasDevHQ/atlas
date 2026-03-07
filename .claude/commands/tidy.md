@@ -60,22 +60,30 @@ For each category, build a list of actions needed:
 
 ### 2a. ROADMAP checkboxes
 - Compare merged PRs and closed issues against ROADMAP `- [ ]` items
-- Any shipped work still showing `- [ ]` → change to `- [x]` and add "— Shipped" to section header if all items done
-- Any new shipped work not listed in ROADMAP → add as new line items under the appropriate milestone section
+- Any shipped work still showing `- [ ]` -> change to `- [x]` and add issue/PR refs
+- Any new shipped work not listed in ROADMAP -> add as new line items under the appropriate milestone section
 
 ### 2b. Project board status
-- Items marked "Done" on board but issue still OPEN with open sub-issues → move to "In Progress"
-- Issues that are CLOSED but board shows "Todo" or "In Progress" → move to "Done"
-- Duplicate items (same title, issue + PR both on board) → remove the PR entry, keep the issue
+- Items marked "Done" on board but issue still OPEN with open sub-issues -> move to "In Progress"
+- Issues that are CLOSED but board shows "Todo" or "In Progress" -> move to "Done"
+- Duplicate items (same title, issue + PR both on board) -> remove the PR entry, keep the issue
 - Board item IDs:
   - Project: `PVT_kwDOD8aze84BRASF`
   - Status field: `PVTSSF_lADOD8aze84BRASFzg-9gBo`
   - Backlog: `f75ad846`, Ready: `61e4505c`, In Progress: `47fc9ee4`, In Review: `df73e18b`, Done: `98236657`
 
 ### 2c. Issue hygiene
-- Open issues whose work is fully shipped (all items done, PR merged) → close with comment
-- Issues missing labels → add appropriate labels (check existing label set first)
-- Parent issues with shipped sub-issues → add status comment listing what shipped and what remains
+- Open issues whose work is fully shipped (all items done, PR merged) -> close with comment
+- **Issues missing labels** -> every issue needs a type label AND area label(s):
+  - Type (exactly one): `bug`, `feature`, `refactor`, `chore`, `docs`
+  - Area (one or more): `area: api`, `area: web`, `area: cli`, `area: plugins`, `area: sandbox`, `area: deploy`, `area: ci`, `area: sdk`, `area: mcp`, `area: starter`
+- **Issues missing milestone** -> assign to the appropriate milestone:
+  - 0.1.0 — Documentation & DX
+  - 0.2.0 — Plugin Ecosystem
+  - 0.3.0 — Admin & Operations
+  - 0.4.0 — UI & Collaboration
+  - 0.5.0 — Enterprise
+- Parent issues with shipped sub-issues -> add status comment listing what shipped and what remains
 
 ### 2d. CI health
 - If CI is failing on main, this is **urgent** — diagnose the failure and fix it before other tidy work
@@ -83,8 +91,8 @@ For each category, build a list of actions needed:
 - Common causes: type errors in new code, missing test mocks, dependency drift
 
 ### 2e. Untracked work
-- Merged PRs or commits that don't reference any issue → assess whether a new issue should be created or if it's too minor (bug fixes, typos = skip)
-- New issues needed for significant untracked features or infrastructure changes → create with appropriate labels and add to project board
+- Merged PRs or commits that don't reference any issue -> assess whether a new issue should be created or if it's too minor (bug fixes, typos = skip)
+- New issues needed for significant untracked features or infrastructure changes -> create with appropriate labels, milestone, and add to project board
 
 ---
 
@@ -112,13 +120,34 @@ gh project item-add 2 --owner AtlasDevHQ --url <issue_url>
 For issue updates:
 ```bash
 # Add labels
-gh issue edit N -R AtlasDevHQ/atlas --add-label "label1,label2"
+gh issue edit N -R AtlasDevHQ/atlas --add-label "feature,area: api"
+
+# Set milestone
+gh issue edit N -R AtlasDevHQ/atlas --milestone "0.1.0 — Documentation & DX"
 
 # Add comment
 gh issue comment N -R AtlasDevHQ/atlas --body "status update..."
 
 # Close
 gh issue close N -R AtlasDevHQ/atlas --comment "Shipped in PR #X"
+```
+
+For new issues:
+```bash
+# Always include: title, labels (type + area), milestone, body
+gh issue create -R AtlasDevHQ/atlas \
+  --title "..." \
+  --label "feature,area: api" \
+  --milestone "0.1.0 — Documentation & DX" \
+  --body "..."
+
+# Then add to board
+gh project item-add 2 --owner AtlasDevHQ --url <issue_url>
+
+# Then set priority and size on board
+ITEM_ID=$(gh project item-list 2 --owner AtlasDevHQ --format json --limit 100 | jq -r '.items[] | select(.content.number == N) | .id')
+gh project item-edit --project-id PVT_kwDOD8aze84BRASF --id "$ITEM_ID" --field-id PVTSSF_lADOD8aze84BRASFzg-9gDc --single-select-option-id <PRIORITY_ID>
+gh project item-edit --project-id PVT_kwDOD8aze84BRASF --id "$ITEM_ID" --field-id PVTSSF_lADOD8aze84BRASFzg-9gDg --single-select-option-id <SIZE_ID>
 ```
 
 ---
@@ -133,10 +162,11 @@ If `.claude/research/ROADMAP.md` was changed:
 Output a summary:
 - ROADMAP items checked off (count)
 - ROADMAP items added (count)
-- Board items moved (list: #N from X → Y)
+- Board items moved (list: #N from X -> Y)
 - Board items removed (duplicates)
-- Issues updated (labels, comments, closed)
+- Issues updated (labels, milestones, comments, closed)
 - New issues created
+- Label/milestone gaps fixed
 - Anything that looks off but wasn't auto-fixable
 
 ---
@@ -148,3 +178,5 @@ Output a summary:
 - Don't duplicate existing issues — search before creating
 - Keep ROADMAP style consistent with existing sections (use `[x]`, link PRs/issues, match formatting)
 - When adding status comments to parent issues, use bold headers and bullet lists
+- Every issue must have: type label, area label(s), milestone
+- Every board item should have: status, priority, size

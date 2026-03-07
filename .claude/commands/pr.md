@@ -11,7 +11,7 @@ Run these in parallel:
 
 **Step 2: Identify the linked issue**
 
-Parse the branch name for an issue number (e.g., `fix/ui-error-messages` → look for related issue).
+Parse the branch name for an issue number (e.g., `feat/docs-site` -> look for related issue).
 
 If unclear, check recent commits for issue references (`#N`, `Closes #N`).
 
@@ -19,7 +19,7 @@ If still unclear, ask which issue this work is for.
 
 **Step 3: Create branch if needed**
 
-If still on `main`, create a branch. Use the convention `fix/`, `feat/`, or `chore/` prefix with a short descriptive slug.
+If still on `main`, create a branch. Use the convention `fix/`, `feat/`, `chore/`, or `docs/` prefix with a short descriptive slug.
 
 If already on a feature branch, stay on it.
 
@@ -52,16 +52,21 @@ If already on a feature branch, stay on it.
    )"
    ```
 
-**Step 6: Move issue to "In Progress" on the project board**
+3. Add labels to the PR matching the linked issue's labels:
+   ```
+   gh pr edit <PR_NUMBER> -R AtlasDevHQ/atlas --add-label "feature,area: cli"
+   ```
+
+**Step 6: Move issue to "In Review" on the project board**
 
 1. Find the item ID for the linked issue:
    ```
    gh project item-list 2 --owner AtlasDevHQ --format json | jq '.items[] | select(.content.number == N) | .id'
    ```
 
-2. Move to "In Progress" (NOT "Done" — the PR still needs review):
+2. Move to "In Review" (NOT "Done" — the PR still needs review/merge):
    ```
-   gh project item-edit --project-id PVT_kwDOD8aze84BRASF --id <ITEM_ID> --field-id PVTSSF_lADOD8aze84BRASFzg-9gBo --single-select-option-id 47fc9ee4
+   gh project item-edit --project-id PVT_kwDOD8aze84BRASF --id <ITEM_ID> --field-id PVTSSF_lADOD8aze84BRASFzg-9gBo --single-select-option-id df73e18b
    ```
 
 **Step 7: Confirm**
@@ -69,7 +74,8 @@ If already on a feature branch, stay on it.
 Output a summary:
 - PR URL
 - Issue linked
-- Board status: "In Progress" (will move to "Done" when PR merges)
+- Milestone the issue belongs to
+- Board status: "In Review" (will move to "Done" when PR merges and issue auto-closes)
 - Any follow-up items noticed during review
 
 **Rules:**

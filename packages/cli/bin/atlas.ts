@@ -4594,6 +4594,12 @@ async function main() {
     return handleSmoke(args);
   }
 
+  if (command === "completions") {
+    const { handleCompletions } = await import("../src/completions");
+    handleCompletions(args);
+    return;
+  }
+
   if (command === "doctor") {
     const { runDoctor } = await import("../src/doctor");
     const exitCode = await runDoctor();
@@ -4680,19 +4686,20 @@ async function main() {
 
   if (command !== "init") {
     console.log(
-      "Usage: bun run atlas -- <init|diff|query|doctor|validate|eval|smoke|migrate|plugin|benchmark|mcp> [options]\n\n" +
+      "Usage: bun run atlas -- <init|diff|query|doctor|validate|eval|smoke|migrate|plugin|benchmark|mcp|completions> [options]\n\n" +
       "Commands:\n" +
-      "  init       Profile DB and generate semantic layer\n" +
-      "  diff       Compare DB schema against existing semantic layer\n" +
-      "  query      Ask a question via the Atlas API\n" +
-      "  doctor     Validate environment, connectivity, and configuration\n" +
-      "  validate   Check config and semantic layer YAML files (offline)\n" +
-      "  eval       Run eval pipeline against demo schemas\n" +
-      "  smoke      Run E2E smoke tests against a running Atlas deployment\n" +
-      "  migrate    Generate/apply plugin schema migrations\n" +
-      "  plugin     Manage plugins (list, create, add)\n" +
-      "  benchmark  Run BIRD benchmark for text-to-SQL accuracy\n" +
-      "  mcp        Start MCP server (stdio default, --transport sse --port N for SSE)\n\n" +
+      "  init          Profile DB and generate semantic layer\n" +
+      "  diff          Compare DB schema against existing semantic layer\n" +
+      "  query         Ask a question via the Atlas API\n" +
+      "  doctor        Validate environment, connectivity, and configuration\n" +
+      "  validate      Check config and semantic layer YAML files (offline)\n" +
+      "  eval          Run eval pipeline against demo schemas\n" +
+      "  smoke         Run E2E smoke tests against a running Atlas deployment\n" +
+      "  migrate       Generate/apply plugin schema migrations\n" +
+      "  plugin        Manage plugins (list, create, add)\n" +
+      "  benchmark     Run BIRD benchmark for text-to-SQL accuracy\n" +
+      "  mcp           Start MCP server (stdio default, --transport sse --port N for SSE)\n" +
+      "  completions   Output shell completion script (bash, zsh, fish)\n\n" +
       "Options (init):\n" +
       "  --tables t1,t2         Only specific tables/views\n" +
       "  --schema <name>        PostgreSQL schema (default: public)\n" +

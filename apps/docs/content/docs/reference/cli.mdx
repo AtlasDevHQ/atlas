@@ -85,7 +85,7 @@ bun run atlas -- diff [options]
 | Flag | Description |
 |------|-------------|
 | `--tables <t1,t2>` | Diff only specific tables/views |
-| `--schema <name>` | PostgreSQL schema (default: `public`) |
+| `--schema <name>` | PostgreSQL schema. Falls back to `ATLAS_SCHEMA` env var, then `public` |
 | `--source <name>` | Read from `semantic/{name}/` subdirectory |
 
 **Examples:**
@@ -103,7 +103,7 @@ bun run atlas -- diff || echo "Schema drift detected!"
 
 ## query
 
-Ask a natural language question and get an answer. Requires a running Atlas API server.
+Ask a natural language question and get an answer. Calls `POST /api/v1/query` on a running Atlas API server — only `bun run dev:api` is needed (the full Next.js stack is not required).
 
 ```bash
 bun run atlas -- query "your question" [options]
@@ -195,8 +195,13 @@ bun run atlas -- mcp [options]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--transport <stdio\|sse>` | `stdio` | Transport type. Use `stdio` for local MCP clients (Claude Desktop, Cursor). Use `sse` for remote or containerized MCP servers |
+| `--transport <stdio\|sse>` | `stdio` | Transport type |
 | `--port <n>` | `8080` | Port for SSE transport (only used with `--transport sse`) |
+
+**When to use each transport:**
+
+- **`stdio`** (default) — For local MCP clients that launch the server as a subprocess (Claude Desktop, Cursor, Windsurf). The client manages the process lifecycle. This is the most common setup.
+- **`sse`** — For remote or containerized MCP servers where the client connects over HTTP. Use this when the MCP server runs in a Docker container, on a remote host, or when multiple clients need to share one server instance. Clients connect via `http://host:port/mcp`.
 
 **Examples:**
 
@@ -262,6 +267,13 @@ bun run atlas -- smoke [options]
 | `--timeout <ms>` | `30000` | Per-check timeout |
 | `--verbose` | — | Show full response bodies on failure |
 | `--json` | — | Machine-readable JSON output |
+
+**Environment:** Flags can also be set via environment variables. `--target` falls back to `ATLAS_API_URL`, and `--api-key` falls back to `ATLAS_API_KEY`. Explicit flags take precedence.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_API_URL` | `http://localhost:3001` | API base URL (overridden by `--target`) |
+| `ATLAS_API_KEY` | — | Bearer auth token (overridden by `--api-key`) |
 
 ## plugin
 

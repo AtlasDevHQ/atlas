@@ -1,6 +1,6 @@
 ---
 title: Quick Start
-description: Get Atlas running locally in under 5 minutes.
+description: Get Atlas running locally in minutes.
 ---
 
 ## Prerequisites
@@ -20,9 +20,9 @@ bun run db:up                        # Start Postgres + seed demo data
 
 This launches a `postgres:16-alpine` container via Docker Compose with two databases:
 - `atlas` -- Atlas internals (auth, audit, conversations)
-- `atlas_demo` -- Demo analytics data (50 companies, ~200 people, 80 accounts)
+- `atlas_demo` -- Demo analytics data (50 companies, ~200 people, 80 accounts), seeded automatically on first start
 
-> For a larger, production-like dataset, use `bun run atlas -- init --demo cybersec` instead. This loads a 62-table cybersecurity SaaS database (~500K rows) with realistic tech debt patterns. See [Demo Datasets](/docs/getting-started/demo-datasets) for all available demos.
+> **Note:** `db:up` already seeds the simple demo data -- you do not need `--demo` when using it. For a larger, production-like dataset, use `bun run atlas -- init --demo cybersec` or `bun run atlas -- init --demo ecommerce` instead. See [Demo Datasets](/docs/getting-started/demo-datasets) for all available demos.
 
 Configure your environment:
 
@@ -64,7 +64,7 @@ To connect Atlas to your own database instead of the demo:
 
 1. Set `ATLAS_DATASOURCE_URL` in `.env`:
    - PostgreSQL: `postgresql://user:pass@host:5432/dbname`
-   - MySQL: `mysql://user:pass@host:3306/dbname`
+   - MySQL: `mysql://user:pass@host:3306/dbname` (also accepts `mysql2://`)
 2. Generate a semantic layer from your schema:
 
 ```bash

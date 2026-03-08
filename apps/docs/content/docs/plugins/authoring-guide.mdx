@@ -129,7 +129,7 @@ Key points:
 
 ## 4. Plugin Object
 
-Wire everything together with `createPlugin()`:
+Wire everything together with `createPlugin()`, which validates config via a Zod schema and returns a factory function. (For plugins that don't need runtime configuration, use `definePlugin()` instead -- see [`createPlugin` vs `definePlugin`](#createplugin-vs-defineplugin) below.)
 
 ```typescript
 // src/index.ts
@@ -466,6 +466,18 @@ security: {
 },
 ```
 
+The `priority` field determines selection order when multiple backends are available. Higher values are tried first. Built-in priority scale:
+
+| Backend | Priority | Notes |
+|---------|----------|-------|
+| Vercel sandbox | 100 | Firecracker microVM (Vercel deployments only) |
+| nsjail | 75 | Linux namespace sandbox (explicit via `ATLAS_SANDBOX=nsjail`) |
+| **Plugin default** | **60** | `SANDBOX_DEFAULT_PRIORITY` from `@useatlas/plugin-sdk` |
+| Sidecar | 50 | HTTP-isolated container (set via `ATLAS_SANDBOX_URL`) |
+| just-bash | 0 | OverlayFs read-only fallback (dev only) |
+
+Plugin sandbox backends default to priority 60 (between nsjail and sidecar). Set a higher value to take precedence over built-in backends, or a lower value to act as a fallback.
+
 ## `createPlugin` vs `definePlugin`
 
 The SDK exports two helpers for authoring plugins. Choose based on whether your plugin accepts runtime configuration.
@@ -509,6 +521,37 @@ export default definePlugin({
 import myContext from "./plugins/my-context";
 plugins: [myContext]
 ```
+
+## Type Inference with `$InferServerPlugin`
+
+The SDK exports a `$InferServerPlugin` utility type (following Better Auth's `$Infer` pattern) that lets client code extract plugin types without importing server modules. It works with both `createPlugin()` factory functions and `definePlugin()` direct objects:
+
+```typescript
+import type { $InferServerPlugin } from "@useatlas/plugin-sdk";
+import type { clickhousePlugin } from "@atlas/plugin-clickhouse-datasource";
+
+type CH = $InferServerPlugin<typeof clickhousePlugin>;
+// CH["Config"] → { url: string; database?: string }
+// CH["Type"]   → "datasource"
+// CH["Id"]     → string
+// CH["DbType"] → "clickhouse"
+```
+
+Available inference keys: `Config`, `Type`, `Id`, `Name`, `Version`, `DbType` (datasource only), `Actions` (action only), `Security` (sandbox only).
+
+## Plugin Status Lifecycle
+
+Plugins transition through a defined set of statuses during their lifetime:
+
+| Status | Description |
+|--------|-------------|
+| `registered` | Plugin object has been validated and added to the registry |
+| `initializing` | `initialize()` is currently running |
+| `healthy` | Plugin is initialized and operating normally |
+| `unhealthy` | Plugin is initialized but `healthCheck()` returned `{ healthy: false }` |
+| `teardown` | `teardown()` has been called during graceful shutdown |
+
+The host manages these transitions automatically. Plugin authors do not need to set status directly -- implement `initialize()`, `healthCheck()`, and `teardown()` and the host handles the rest.
 
 ## Hooks
 
@@ -612,6 +655,10 @@ connection: {
 ```
 
 These are ignored when a custom `validate` function is provided.
+
+<Callout type="warn">
+`parserDialect` and `forbiddenPatterns` are validated at plugin registration time but **not yet consumed at query time**. Wiring these into the core SQL validation pipeline is tracked in [#15](https://github.com/AtlasDevHQ/atlas/issues/15). Until that lands, use a custom `validate` function if you need to enforce dialect-specific validation rules at runtime.
+</Callout>
 
 ## Plugin Lifecycle
 

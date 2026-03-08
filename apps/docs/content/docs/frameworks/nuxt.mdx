@@ -9,8 +9,8 @@ Integrate Atlas into a Nuxt 3 app using `@ai-sdk/vue`.
 
 > **Prerequisites:** A running Atlas API server. See [Bring Your Own Frontend](/docs/frameworks/overview) for architecture and common setup.
 
-<Callout type="warn" title="AI SDK v6 compatibility">
-  The transport-based API (`DefaultChatTransport`, `sendMessage`) shown below is specific to `@ai-sdk/react` and may not be available in `@ai-sdk/vue`. If `useChat` from `@ai-sdk/vue` does not support the `transport` option in your version, use the [sync query endpoint](/docs/frameworks/overview#streaming-vs-synchronous) (`POST /api/v1/query`) instead -- it works with any HTTP client and returns a structured JSON response. The [`@useatlas/sdk`](https://www.npmjs.com/package/@useatlas/sdk) package provides a typed client for this endpoint.
+<Callout type="info" title="AI SDK v6 — Vue adapter">
+  As of AI SDK v6, `@ai-sdk/vue` (v3+) supports the transport-based API (`DefaultChatTransport`, `sendMessage`) shown below. Make sure you install `@ai-sdk/vue@^3.0.0` and `ai@^6.0.0`. If you prefer not to use streaming, the [sync query endpoint](/docs/frameworks/overview#streaming-vs-synchronous) (`POST /api/v1/query`) works with any HTTP client. The [`@useatlas/sdk`](https://www.npmjs.com/package/@useatlas/sdk) package provides a typed client for that endpoint.
 </Callout>
 
 ---
@@ -75,7 +75,9 @@ import { DefaultChatTransport } from "ai";
 export function useAtlasChat() {
   const config = useRuntimeConfig();
   const apiUrl = config.public.atlasApiUrl || "";
+  const isCrossOrigin = !!apiUrl;
   const apiKey = useState<string>("atlas-api-key", () => "");
+  const conversationId = useState<string | null>("atlas-conv-id", () => null);
   const input = ref("");
 
   const transport = computed(() => {
@@ -86,16 +88,38 @@ export function useAtlasChat() {
     return new DefaultChatTransport({
       api: `${apiUrl}/api/chat`,
       headers,
+      credentials: isCrossOrigin ? "include" : undefined,
+      // Pass conversationId to continue an existing conversation
+      body: () =>
+        conversationId.value
+          ? { conversationId: conversationId.value }
+          : {},
+      // Capture x-conversation-id from the response header
+      fetch: (async (fetchInput: RequestInfo | URL, init?: RequestInit) => {
+        const response = await globalThis.fetch(fetchInput, init);
+        const convId = response.headers.get("x-conversation-id");
+        if (convId && convId !== conversationId.value) {
+          conversationId.value = convId;
+        }
+        return response;
+      }) as typeof fetch,
     });
   });
 
-  const { messages, sendMessage, status, error } = useChat({ transport });
+  const { messages, sendMessage, status, error } = useChat({
+    transport: transport.value,
+  });
 
   function handleSend() {
     if (!input.value.trim()) return;
     const text = input.value;
     input.value = "";
     sendMessage({ text });
+  }
+
+  function newChat() {
+    conversationId.value = null;
+    // Clear messages by reloading — or manage via setMessages if available
   }
 
   return {
@@ -105,22 +129,177 @@ export function useAtlasChat() {
     input,
     apiKey,
     apiUrl,
+    conversationId,
     handleSend,
+    newChat,
   };
 }
 ```
 
-## 4. Rendering tool calls
+## 4. Chat page
 
-See the [React/Vite guide](/docs/frameworks/react-vite#rendering-tool-calls) for a complete `ToolPart` implementation. The data shapes are identical -- adapt the JSX to Vue template syntax. The key shapes:
+Here is a minimal Vue page that uses the composable:
+
+```vue
+<!-- pages/index.vue -->
+<script setup lang="ts">
+import { isToolUIPart } from "ai";
+
+const { messages, input, status, handleSend, error } = useAtlasChat();
+
+const isLoading = computed(
+  () => status.value === "streaming" || status.value === "submitted"
+);
+</script>
+
+<template>
+  <div class="mx-auto max-w-3xl p-4">
+    <h1 class="mb-4 text-xl font-bold">Atlas</h1>
+
+    <div class="space-y-4">
+      <div v-for="m in messages.value" :key="m.id">
+        <!-- User message -->
+        <div v-if="m.role === 'user'" class="flex justify-end">
+          <div class="rounded-lg bg-blue-600 px-4 py-2 text-white">
+            <template v-for="(part, i) in m.parts" :key="i">
+              <p v-if="part.type === 'text'">{{ part.text }}</p>
+            </template>
+          </div>
+        </div>
+
+        <!-- Assistant message -->
+        <div v-else class="space-y-2">
+          <template v-for="(part, i) in m.parts" :key="i">
+            <div
+              v-if="part.type === 'text' && part.text.trim()"
+              class="rounded-lg bg-zinc-100 px-4 py-2 text-sm"
+            >
+              {{ part.text }}
+            </div>
+            <AtlasToolPart v-else-if="isToolUIPart(part)" :part="part" />
+          </template>
+        </div>
+      </div>
+    </div>
+
+    <form @submit.prevent="handleSend" class="mt-4 flex gap-2">
+      <input
+        v-model="input"
+        placeholder="Ask a question about your data..."
+        class="flex-1 rounded border px-4 py-2 text-sm"
+        :disabled="isLoading"
+      />
+      <button
+        type="submit"
+        :disabled="isLoading || !input.trim()"
+        class="rounded bg-blue-600 px-4 py-2 text-sm text-white disabled:opacity-40"
+      >
+        Ask
+      </button>
+    </form>
+  </div>
+</template>
+```
+
+## 5. Rendering tool calls
+
+In AI SDK v6, tool parts use per-tool type names (`"tool-explore"`, `"tool-executeSQL"`) or `"dynamic-tool"` for dynamic tools. Use `isToolUIPart(part)` from `"ai"` to detect tool parts and access `state`, `input`, `output` directly on the part object.
+
+Here is a basic Vue component for rendering tool calls:
+
+```vue
+<!-- components/AtlasToolPart.vue -->
+<script setup lang="ts">
+import { computed } from "vue";
+import { getToolName } from "ai";
+
+const props = defineProps<{ part: unknown }>();
+
+const toolName = computed(() => {
+  try {
+    return getToolName(props.part as Parameters<typeof getToolName>[0]);
+  } catch {
+    return "unknown";
+  }
+});
+
+const p = computed(() => props.part as Record<string, unknown>);
+const state = computed(() => (p.value.state as string) ?? "");
+const input = computed(() => (p.value.input as Record<string, unknown>) ?? {});
+const output = computed(() => p.value.output);
+const done = computed(() => state.value === "output-available");
+
+// SQL result helpers
+const sqlResult = computed(() => output.value as Record<string, unknown> | null);
+const columns = computed(() => (sqlResult.value?.columns as string[]) ?? []);
+const rows = computed(() => (sqlResult.value?.rows as Record<string, unknown>[]) ?? []);
+</script>
+
+<template>
+  <!-- Loading state -->
+  <div
+    v-if="!done"
+    class="my-2 animate-pulse rounded-lg border px-3 py-2 text-xs text-zinc-500"
+  >
+    {{ toolName === "executeSQL" ? "Executing query..." : "Running command..." }}
+  </div>
+
+  <!-- SQL result -->
+  <div
+    v-else-if="toolName === 'executeSQL' && sqlResult"
+    class="my-2 overflow-hidden rounded-lg border bg-zinc-50"
+  >
+    <div class="flex items-center gap-2 px-3 py-2 text-xs">
+      <span class="rounded bg-blue-100 px-1.5 py-0.5 font-medium text-blue-700">SQL</span>
+      <span class="flex-1 truncate text-zinc-500">{{ input.explanation ?? "Query result" }}</span>
+      <span class="text-zinc-500">{{ rows.length }} row{{ rows.length !== 1 ? "s" : "" }}</span>
+    </div>
+    <div v-if="columns.length && rows.length" class="overflow-x-auto border-t">
+      <table class="w-full text-left text-xs">
+        <thead>
+          <tr class="border-b bg-zinc-100">
+            <th v-for="col in columns" :key="col" class="px-3 py-1.5 font-medium">{{ col }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="(row, i) in rows" :key="i" class="border-b">
+            <td v-for="col in columns" :key="col" class="px-3 py-1.5 text-zinc-600">
+              {{ row[col] == null ? "\u2014" : row[col] }}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Explore result -->
+  <div
+    v-else-if="toolName === 'explore'"
+    class="my-2 rounded-lg border bg-zinc-50 px-3 py-2"
+  >
+    <div class="text-xs font-mono text-zinc-500">
+      <span class="text-green-500">$</span> {{ input.command }}
+    </div>
+    <pre class="mt-1 max-h-40 overflow-auto whitespace-pre-wrap text-xs text-zinc-500">{{ output }}</pre>
+  </div>
+
+  <!-- Unknown tool -->
+  <div v-else class="my-2 rounded-lg border px-3 py-2 text-xs text-zinc-500">
+    Tool: {{ toolName }}
+  </div>
+</template>
+```
+
+The key data shapes:
 
 - **`executeSQL` output** -- `{ success, columns, rows, row_count, truncated }` on success, or `{ success: false, error }` on failure.
 - **`explore` output** -- a plain string (stdout of the command).
-- **`state`** -- check for `"output-available"` to know when the result is ready.
+- **`state`** -- check for `"output-available"` to know when the result is ready. Other states: `"input-streaming"`, `"input-available"`, `"output-error"`, `"output-denied"`.
+- **Tool detection** -- use `isToolUIPart(part)` from `"ai"` (not `part.type === "tool-invocation"`).
 
-See the [Data Stream Protocol](/docs/frameworks/overview#data-stream-protocol) section for the full part structure and a concrete example.
+See the [Data Stream Protocol](/docs/frameworks/overview#tool-call-parts-ai-sdk-v6) section for the full part structure and a concrete example.
 
-## 5. Synchronous queries (alternative)
+## 6. Synchronous queries (alternative)
 
 If you don't need streaming, use the JSON query endpoint instead:
 

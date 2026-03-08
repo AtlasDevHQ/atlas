@@ -57,7 +57,7 @@ Atlas supports multiple auth modes. Your frontend only needs to handle the one y
 | Auth mode | Header | Notes |
 |-----------|--------|-------|
 | `none` | (nothing) | No auth required |
-| `api-key` | `Authorization: Bearer <key>` | Static API key from `ATLAS_API_KEY` |
+| `simple-key` | `Authorization: Bearer <key>` | Static API key from `ATLAS_API_KEY`. Note: the health endpoint returns `simple-key` as the mode name (not `api-key`) |
 | `managed` | Cookie-based (Better Auth) | Set `credentials: "include"` on fetch |
 | `byot` | `Authorization: Bearer <jwt>` | JWT from your identity provider |
 
@@ -72,7 +72,7 @@ If you prefer not to use an adapter (e.g., TanStack Start), you can consume the 
 Atlas streams tool calls as structured parts. The key tool names are:
 
 - **`explore`** -- filesystem exploration of the semantic layer. Args: `{ command: string }`. Result: string output.
-- **`executeSQL`** -- SQL query execution. Args: `{ sql: string, explanation: string, connectionId?: string }`. Result: `{ success: boolean, columns: string[], rows: Record<string, unknown>[], truncated?: boolean }`.
+- **`executeSQL`** -- SQL query execution. Args: `{ sql: string, explanation: string, connectionId?: string }`. Result: see [executeSQL result shape](#executesql-result-shape) below.
 
 Each framework guide shows how to detect and render these tool parts.
 
@@ -92,23 +92,34 @@ Conversation support requires `DATABASE_URL` to be configured on the API.
 
 The `POST /api/chat` endpoint returns a [Vercel AI SDK Data Stream](https://sdk.vercel.ai/docs/ai-sdk-ui/stream-protocol#data-stream-protocol). The stream contains text chunks and structured tool call parts. The AI SDK adapters (`useChat` in `@ai-sdk/react`, `@ai-sdk/vue`, `@ai-sdk/svelte`) parse the stream automatically and expose tool calls as message parts.
 
-### Tool call parts
+### Tool call parts (AI SDK v6)
 
-Each tool invocation appears as a message part with these fields:
+In AI SDK v6, tool invocations appear as message parts with **per-tool type names** rather than a single `"tool-invocation"` type. Each registered tool gets a `type` of `"tool-{toolName}"` (e.g., `"tool-explore"`, `"tool-executeSQL"`). Unregistered/dynamic tools use `type: "dynamic-tool"` with a `toolName` field.
 
 ```typescript
-// Tool call part (while the tool is running or after it completes)
+// Static tool part (for tools registered in the tool set)
 {
-  type: "tool-invocation",    // always "tool-invocation"
-  toolInvocationId: string,   // unique ID for this invocation
-  toolName: string,           // "explore" | "executeSQL"
-  state: string,              // "partial-call" | "call" | "output-available"
-  input: { ... },             // tool arguments (shape depends on toolName)
-  output: unknown             // tool result (only present when state is "output-available")
+  type: "tool-explore",         // "tool-{toolName}" — e.g., "tool-explore", "tool-executeSQL"
+  toolCallId: string,           // unique ID for this invocation
+  state: string,                // "input-streaming" | "input-available" | "output-available" | "output-error" | "output-denied"
+  input: { ... },               // tool arguments (shape depends on toolName)
+  output: unknown               // tool result (only present when state is "output-available")
+}
+
+// Dynamic tool part (for tools not in the static tool set)
+{
+  type: "dynamic-tool",
+  toolName: string,             // "explore" | "executeSQL"
+  toolCallId: string,
+  state: string,                // same states as above
+  input: { ... },
+  output: unknown
 }
 ```
 
-The `state` field progresses through the lifecycle: `"partial-call"` (arguments streaming in), `"call"` (arguments complete, execution started), `"output-available"` (result ready). You typically only need to render `"call"` (show a loading state) and `"output-available"` (show the result).
+Use the `isToolUIPart(part)` helper from `"ai"` to detect both static and dynamic tool parts, and `getToolName(part)` to extract the tool name regardless of which variant it is.
+
+The `state` field progresses through the lifecycle: `"input-streaming"` (arguments streaming in), `"input-available"` (arguments complete, execution started), `"output-available"` (result ready), `"output-error"` (execution failed), or `"output-denied"` (tool call was denied). You typically only need to render `"input-available"` (show a loading state) and `"output-available"` (show the result).
 
 ### executeSQL result shape
 
@@ -150,16 +161,16 @@ A single assistant message might contain these parts, in order:
 [
   { "type": "text", "text": "Let me look at the schema first." },
   {
-    "type": "tool-invocation",
-    "toolName": "explore",
+    "type": "tool-explore",
+    "toolCallId": "call_abc123",
     "state": "output-available",
     "input": { "command": "cat entities/companies.yml" },
     "output": "table: companies\ndescription: ..."
   },
   { "type": "text", "text": "Now I'll query the data." },
   {
-    "type": "tool-invocation",
-    "toolName": "executeSQL",
+    "type": "tool-executeSQL",
+    "toolCallId": "call_def456",
     "state": "output-available",
     "input": { "sql": "SELECT name, revenue FROM companies LIMIT 5", "explanation": "Top companies" },
     "output": {
@@ -177,6 +188,8 @@ A single assistant message might contain these parts, in order:
   { "type": "text", "text": "Acme leads with $50k in revenue." }
 ]
 ```
+
+> **Note:** If your tools are registered as dynamic tools (not in a static tool set), the parts will have `type: "dynamic-tool"` with a separate `toolName` field instead. Use `isToolUIPart()` and `getToolName()` from `"ai"` to handle both cases.
 
 ### Streaming vs. synchronous
 
@@ -219,7 +232,7 @@ To build a working Atlas frontend, you only need:
 
 1. **A chat loop** -- `POST /api/chat` with `{ messages }`, parse the Data Stream response (or use `useChat` from an AI SDK adapter)
 2. **Text rendering** -- display `type: "text"` parts from assistant messages
-3. **Tool result rendering** -- detect `type: "tool-invocation"` parts and render SQL results as a table
+3. **Tool result rendering** -- detect tool parts using `isToolUIPart(part)` from `"ai"` and render SQL results as a table
 
 Everything else -- conversation persistence, chart auto-detection, managed auth UI, markdown rendering -- is optional. The `@atlas/web` package provides all of these, but none are required. If you just want a chatbot that queries your database, the three items above are sufficient.
 

@@ -72,8 +72,9 @@ Now you have real trust boundaries. User A should not be able to influence User 
 
 ```
 Priority 1: Vercel Sandbox     -- Firecracker VM, deny-all network
-Priority 2: nsjail             -- Linux namespaces, no network, read-only mount
+Priority 2: nsjail (explicit)  -- ATLAS_SANDBOX=nsjail, hard-fail if unavailable
 Priority 3: Sidecar service    -- HTTP-isolated container with no secrets (Railway)
+Priority 4: nsjail (auto)      -- nsjail found on PATH, graceful fallback on failure
 Priority 5: just-bash          -- JS-level OverlayFs (in-memory writes), path-traversal protection
 ```
 
@@ -85,6 +86,8 @@ Two additional sandbox backends are available as plugins:
 |--------|----------|-----------|---------|
 | **E2B** | 90 | Firecracker microVM (managed) | `bun add e2b` |
 | **Daytona** | 85 | Cloud-hosted ephemeral sandbox | `bun add @daytonaio/sdk` |
+
+Plugin backends are always tried before any built-in backend (they sit at the top of the priority chain). The `priority` field only determines ordering among multiple plugins -- higher values are tried first. Plugins default to priority 60 (`SANDBOX_DEFAULT_PRIORITY`) if not specified. If all plugins fail to create a backend, the built-in chain (Vercel > nsjail > sidecar > just-bash) takes over.
 
 ```typescript
 // atlas.config.ts
@@ -109,7 +112,7 @@ export default defineConfig({
 | No secrets in sandbox | Yes | Yes | Yes | Yes | No |
 | No network | Yes | Yes | Yes | Yes | No |
 
-**Note on just-bash:** The just-bash backend shares the same process as the API server. It uses the `just-bash` package's `OverlayFs` class -- a JavaScript-level virtual filesystem overlay that intercepts writes in memory -- not Linux kernel OverlayFS. While secrets are not passed to sandbox commands, a sophisticated attack could theoretically access parent process memory. For multi-tenant deployments, use a higher-priority backend. Python execution is not supported under just-bash; `executePython` requires a sandbox backend (sidecar, Vercel sandbox, or nsjail) and returns an error without one.
+**Note on just-bash:** The just-bash backend uses the [`just-bash`](https://www.npmjs.com/package/just-bash) npm package and shares the same process as the API server. It uses `just-bash`'s `OverlayFs` class -- a JavaScript-level virtual filesystem overlay that intercepts writes in memory -- not Linux kernel OverlayFS. Because it runs in-process, host secrets (environment variables like `ATLAS_DATASOURCE_URL` and API keys) are accessible in the same memory space. The table above marks secret isolation as "No" for this reason. For multi-tenant deployments, use a higher-priority backend. Python execution is not supported under just-bash; `executePython` requires a sandbox backend (sidecar, Vercel sandbox, or nsjail) and returns an error without one.
 
 ## Platform Capabilities
 
@@ -134,14 +137,17 @@ Since no kernel-level sandbox works on Railway, isolation comes from **process/n
 |    DATABASE_URL=...              |     |     keys, no secrets)       |
 |                                  |     |                             |
 |  Agent loop calls:               |     |  FILES:                     |
-|    POST http://sidecar:8080/exec |---->|    /semantic/**/*.yml       |
-|                                  |     |                             |
-|  Receives:                       |     |  ENDPOINTS:                 |
-|    { stdout, stderr, exitCode }  |<----|    GET  /health             |
-|                                  |     |    POST /exec               |
+|    POST sidecar:8080/exec        |---->|    /semantic/**/*.yml       |
+|    POST sidecar:8080/exec-python |---->|                             |
+|                                  |     |  ENDPOINTS:                 |
+|  Receives:                       |     |    GET  /health             |
+|    { stdout, stderr, exitCode }  |<----|    POST /exec               |
+|    or PythonResult               |<----|    POST /exec-python        |
 +----------------------------------+     +-----------------------------+
         Railway private network
 ```
+
+The sidecar enforces a **concurrency limit of 10** (`MAX_CONCURRENT = 10`) across both `/exec` and `/exec-python` endpoints. Requests beyond this limit receive HTTP 429.
 
 ## Backend Selection Priority
 
@@ -164,13 +170,7 @@ Key behaviors:
 
 The health endpoint (`GET /api/health`) reports which backend is active in the `explore.backend` field.
 
-> **`executePython` uses a different priority order.** The Python tool's backend selection differs from explore in three ways:
->
-> 1. **Sidecar is priority 1** (not priority 3). When `ATLAS_SANDBOX_URL` is set, the Python tool uses the sidecar immediately -- it does not check for Vercel sandbox first.
-> 2. **Plugin sandbox backends are not checked.** The Python tool only uses built-in backends (sidecar, Vercel sandbox, nsjail).
-> 3. **just-bash is not a fallback.** If no sandbox backend is available, `executePython` returns an error rather than running Python in the host process.
->
-> Python priority: sidecar > Vercel sandbox > nsjail (explicit) > nsjail (auto-detect) > error.
+> **`executePython` uses a different priority order.** See [Python Execution](#python-execution-executepython) for the full priority chain. Key difference: sidecar is priority 1, plugin backends are skipped, and just-bash is not a fallback.
 
 ## Configuration
 
@@ -197,4 +197,28 @@ In addition to the configurable time and memory limits above, nsjail enforces th
 
 ### Sidecar Timeouts
 
-The sidecar backend enforces a **10-second command timeout** (`DEFAULT_TIMEOUT_MS = 10_000`). The HTTP fetch uses a total abort signal of **15 seconds** (10s command timeout + 5s HTTP overhead) to account for network latency and response serialization. Commands that exceed the timeout return exit code 124 (matching GNU `timeout(1)` convention).
+The sidecar backend enforces a **10-second command timeout** (`DEFAULT_TIMEOUT_MS = 10_000`) for shell commands. The HTTP fetch uses a total abort signal of **15 seconds** (10s command timeout + 5s HTTP overhead) to account for network latency and response serialization. Shell commands that exceed the timeout return exit code 124 (matching GNU `timeout(1)` convention).
+
+Python execution via the sidecar uses a longer default timeout of **30 seconds** (`PYTHON_DEFAULT_TIMEOUT_MS = 30_000`) with a maximum of **120 seconds**. The HTTP abort signal adds 10 seconds of overhead on top of the execution timeout.
+
+## Python Execution (`executePython`)
+
+The `executePython` tool runs agent-generated Python code for data analysis and visualization. It uses a different backend selection priority than the explore tool:
+
+```
+Priority 1: Sidecar (ATLAS_SANDBOX_URL)      -- POST /exec-python
+Priority 2: Vercel Sandbox                    -- Python 3.13 Firecracker microVM
+Priority 3: nsjail (explicit, ATLAS_SANDBOX=nsjail) -- hard-fail if unavailable
+Priority 4: nsjail (auto-detect, on PATH)     -- graceful fallback
+Priority 5: No backend — error                -- just-bash is NOT a fallback
+```
+
+Key differences from the explore tool's priority chain:
+
+- **Sidecar is priority 1** (not priority 3). When `ATLAS_SANDBOX_URL` is set, Python uses the sidecar immediately without checking for Vercel sandbox first.
+- **Plugin sandbox backends are not checked.** Python only uses built-in backends.
+- **just-bash is not a fallback.** If no sandbox backend is available, `executePython` returns an error rather than running Python in the host process.
+
+Python execution has two layers of defense: an AST-based import guard (defense-in-depth, runs before execution) and the sandbox backend itself (the actual security boundary). The import guard blocks dangerous modules (`subprocess`, `os`, `socket`, etc.) and builtins (`exec`, `eval`, `open`, `__import__`, etc.). If `python3` is not available locally for AST validation, the guard is skipped -- the sandbox enforces isolation regardless.
+
+Data from a previous SQL query is injected into the sandbox as a pandas DataFrame (`df`) or raw dict (`data`). Results are returned as structured output: tables (`_atlas_table`), interactive Recharts charts (`_atlas_chart`), or PNG files (matplotlib via `chart_path()`).

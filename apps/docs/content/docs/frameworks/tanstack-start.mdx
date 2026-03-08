@@ -71,11 +71,20 @@ export interface AtlasQueryResult {
   data: Array<{ columns: string[]; rows: Record<string, unknown>[] }>;
   steps: number;
   usage: { totalTokens: number };
+  conversationId?: string;
+  pendingActions?: Array<{
+    id: string;
+    type: string;
+    target: string;
+    summary: string;
+    approveUrl: string;
+    denyUrl: string;
+  }>;
 }
 
 export async function queryAtlas(
   question: string,
-  opts?: { apiKey?: string; signal?: AbortSignal }
+  opts?: { apiKey?: string; signal?: AbortSignal; conversationId?: string }
 ): Promise<AtlasQueryResult> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -85,7 +94,10 @@ export async function queryAtlas(
   const res = await fetch(`${API_URL}/api/v1/query`, {
     method: "POST",
     headers,
-    body: JSON.stringify({ question }),
+    body: JSON.stringify({
+      question,
+      ...(opts?.conversationId && { conversationId: opts.conversationId }),
+    }),
     signal: opts?.signal,
   });
 
@@ -97,6 +109,23 @@ export async function queryAtlas(
   return res.json();
 }
 ```
+
+> **Tip:** For a fully typed client with error handling, conversation management, and more, use the [`@useatlas/sdk`](https://www.npmjs.com/package/@useatlas/sdk) package instead of hand-rolling fetch calls:
+>
+> ```typescript
+> import { createAtlasClient } from "@useatlas/sdk";
+>
+> const atlas = createAtlasClient({
+>   baseUrl: API_URL || window.location.origin,
+>   apiKey: "your-api-key",
+> });
+>
+> const result = await atlas.query("How many users signed up last week?");
+> console.log(result.answer);       // narrative answer
+> console.log(result.sql);          // SQL queries executed
+> console.log(result.data);         // { columns, rows }[]
+> console.log(result.conversationId); // for follow-up queries
+> ```
 
 ### Query hook
 
@@ -120,7 +149,7 @@ If you use the `@ai-sdk/react` `useChat` approach, see the [React/Vite guide](/d
 - **`explore` output** -- a plain string (stdout of the command).
 - **`state`** -- check for `"output-available"` to know when the result is ready.
 
-For the TanStack Query approach, the sync endpoint returns data in the `data` array directly -- no tool part parsing needed. See the [Data Stream Protocol](/docs/frameworks/overview#data-stream-protocol) section for details on both response formats.
+For the TanStack Query approach, the sync endpoint returns data in the `data` array directly -- no tool part parsing needed. See the [Data Stream Protocol](/docs/frameworks/overview#tool-call-parts-ai-sdk-v6) section for details on both response formats.
 
 ## 5. Which approach to choose
 

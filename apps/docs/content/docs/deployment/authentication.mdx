@@ -105,6 +105,16 @@ On first deployment:
 - If `ATLAS_ADMIN_EMAIL` is not set, the first user to sign up gets `admin` automatically
 - Subsequent signups get the `analyst` role
 
+### Dev admin seeding
+
+When `ATLAS_ADMIN_EMAIL` is set and no users exist in the database, Atlas automatically creates a dev admin account on startup:
+
+- **Email**: the value of `ATLAS_ADMIN_EMAIL`
+- **Password**: `atlas-dev`
+- **Role**: `admin`
+
+The account is flagged with `password_change_required` -- the user must change this password after first login. This is intended for initial setup only. If any users already exist, seeding is skipped (idempotent).
+
 ### How sessions work
 
 1. User signs in via `POST /api/auth/sign-in/email`
@@ -113,6 +123,8 @@ On first deployment:
 4. Sessions last 7 days. The session expiry is extended when a request arrives at least 24 hours after the last session update
 
 Users can log out via `POST /api/auth/sign-out` (clears the session cookie). Sessions are also revoked when the session expires (7 days) or if the user is deleted by an admin.
+
+> **Cookie cache:** Better Auth is configured with a 5-minute cookie cache (`cookieCache.maxAge = 300s`). This means role changes or session revocations may take up to 5 minutes to take effect. The cache improves performance by avoiding a database lookup on every request, but be aware of this delay when revoking access or changing user roles.
 
 ### Cross-origin deployment
 
@@ -125,6 +137,8 @@ BETTER_AUTH_URL=https://api.example.com
 ```
 
 `ATLAS_CORS_ORIGIN` controls the HTTP `Access-Control-Allow-Origin` header (which origins can make API requests). `BETTER_AUTH_TRUSTED_ORIGINS` controls CSRF protection (which origins can submit auth forms). In most cross-origin setups, set both to the same value.
+
+> **Cross-subdomain cookies:** When `ATLAS_CORS_ORIGIN` and `BETTER_AUTH_URL` are on different subdomains (e.g. `app.example.com` and `api.example.com`), the session cookie domain is automatically derived to the parent domain (`.example.com`). This allows cookies set by the API to be sent from the frontend subdomain. No manual cookie configuration is needed.
 
 ### Frontend integration
 
@@ -254,6 +268,8 @@ ATLAS_TRUST_PROXY=true          # Required behind reverse proxy to get real IPs
 ```
 
 When rate limited, the API returns HTTP 429 with a `Retry-After` header.
+
+> **Proxy deployments:** Without `ATLAS_TRUST_PROXY=true`, the `X-Forwarded-For` and `X-Real-IP` headers are ignored. Behind a reverse proxy (Railway, Vercel, nginx, etc.), all requests will appear to come from the proxy's IP, causing all users to share a single rate-limit bucket. Always set `ATLAS_TRUST_PROXY=true` when deploying behind a proxy.
 
 > Rate limits apply to API requests, not agent steps. One chat request can trigger up to 25 internal agent steps.
 

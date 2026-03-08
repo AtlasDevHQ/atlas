@@ -4702,7 +4702,7 @@ async function main() {
       "  --parquet f1.parquet[,...] Load Parquet files via DuckDB\n" +
       "  --enrich               Profile + LLM enrichment (needs API key)\n" +
       "  --no-enrich            Explicitly skip LLM enrichment\n" +
-      "  --demo [simple|cybersec]  Load demo dataset then profile\n\n" +
+      "  --demo [simple|cybersec|ecommerce]  Load demo dataset then profile\n\n" +
       "Options (diff):\n" +
       "  --tables t1,t2         Only diff specific tables/views\n" +
       "  --schema <name>        PostgreSQL schema (default: public)\n" +

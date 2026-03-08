@@ -48,7 +48,7 @@ Each provider requires its own API key:
 | `ATLAS_ROW_LIMIT` | `1000` | Max rows returned per query |
 | `ATLAS_QUERY_TIMEOUT` | `30000` | Query timeout in milliseconds |
 | `ATLAS_TABLE_WHITELIST` | `true` | Only allow queries against tables defined in the semantic layer |
-| `ATLAS_SCHEMA` | `public` | PostgreSQL schema for profiling and runtime queries |
+| `ATLAS_SCHEMA` | `public` | PostgreSQL schema name. Used by the CLI for profiling (`init`, `diff`) and by the API at runtime to set the connection `search_path` |
 
 See [SQL Validation Pipeline](/docs/security/sql-validation) for how these are enforced.
 
@@ -178,6 +178,19 @@ See [Sandbox Architecture](/docs/architecture/sandbox#backend-selection-priority
 | `SLACK_BOT_TOKEN` | — | Single-workspace mode (skip OAuth) |
 | `SLACK_CLIENT_ID` | — | Multi-workspace OAuth app client ID |
 | `SLACK_CLIENT_SECRET` | — | Multi-workspace OAuth app client secret |
+
+## Python Tool
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_PYTHON_ENABLED` | — | Set `true` to enable the `executePython` agent tool. Requires `ATLAS_SANDBOX_URL` to be set (Python runs in the sandbox sidecar for isolation) |
+| `ATLAS_PYTHON_TIMEOUT` | `30000` | Python execution timeout in milliseconds |
+
+## Runtime
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `3001` | HTTP port for the standalone Hono API server. Most platforms (Railway, Render, Fly) set this automatically |
 
 ## Logging & Observability
 

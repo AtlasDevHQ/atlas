@@ -227,29 +227,32 @@ export default function App() {
 }
 ```
 
+> **Markdown rendering:** Atlas assistant responses contain Markdown (headers, bold, lists, code blocks, etc.). The example above renders text parts as plain text for simplicity. For production, install `react-markdown` (`bun add react-markdown`) and render text parts with `<ReactMarkdown>{part.text}</ReactMarkdown>` instead.
+
 ## 5. Rendering tool calls
 
-The chat component above references a `ToolPart` component. Here is a complete implementation that handles both `executeSQL` and `explore` results:
+The chat component above references a `ToolPart` component. Here is a complete implementation that handles both `executeSQL` and `explore` results.
+
+In AI SDK v6, tool parts use per-tool type names (`"tool-explore"`, `"tool-executeSQL"`) or `"dynamic-tool"` for dynamic tools. Use `getToolName(part)` from `"ai"` to extract the tool name regardless of variant, and access `input`/`output`/`state` directly on the part object:
 
 ```tsx
 // src/components/ToolPart.tsx
 import { useState } from "react";
+import { getToolName } from "ai";
 
-interface ToolPartProps {
-  part: {
-    type: string;
-    toolName?: string;
-    state?: string;
-    input?: Record<string, unknown>;
-    output?: unknown;
-  };
-}
+export function ToolPart({ part }: { part: unknown }) {
+  // Use AI SDK v6 helper to extract the tool name from any tool part variant
+  let toolName: string;
+  try {
+    toolName = getToolName(part as Parameters<typeof getToolName>[0]);
+  } catch {
+    return <div className="my-2 text-xs text-zinc-500">Tool result (unknown type)</div>;
+  }
 
-export function ToolPart({ part }: ToolPartProps) {
-  const toolName = part.toolName ?? "";
-  const state = part.state ?? "";
-  const input = part.input ?? {};
-  const output = part.output;
+  const p = part as Record<string, unknown>;
+  const state = (p.state as string) ?? "";
+  const input = (p.input as Record<string, unknown>) ?? {};
+  const output = p.output;
   const done = state === "output-available";
 
   // Loading state
@@ -410,9 +413,11 @@ The key data shapes to know:
 
 - **`executeSQL` output** -- `{ success, columns, rows, row_count, truncated }` on success, or `{ success: false, error }` on failure. `columns` is `string[]`, `rows` is `Record<string, unknown>[]`.
 - **`explore` output** -- a plain string containing the command's stdout, or a string starting with `"Error"` on failure.
-- **`state`** -- check for `"output-available"` to know when the result is ready. Before that, show a loading indicator.
+- **`state`** -- check for `"output-available"` to know when the result is ready. Other states: `"input-streaming"` (arguments streaming), `"input-available"` (executing), `"output-error"` (execution failed), `"output-denied"` (tool call denied). Show a loading indicator for any state that isn't `"output-available"` or `"output-error"`.
+- **Tool detection** -- use `isToolUIPart(part)` from `"ai"` to check if a part is a tool call. Use `getToolName(part)` to extract the tool name. Do **not** check `part.type === "tool-invocation"` -- that was AI SDK v4/v5. In v6, the type is `"tool-{toolName}"` or `"dynamic-tool"`.
+- **Markdown** -- assistant text parts contain Markdown. For production use, render them with a Markdown library like `react-markdown`.
 
-See the [Data Stream Protocol](/docs/frameworks/overview#data-stream-protocol) section in the overview for the full part structure.
+See the [Data Stream Protocol](/docs/frameworks/overview#tool-call-parts-ai-sdk-v6) section in the overview for the full part structure.
 
 ## 6. Conversation management
 

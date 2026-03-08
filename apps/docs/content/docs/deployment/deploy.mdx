@@ -115,11 +115,13 @@ BETTER_AUTH_SECRET=...           # openssl rand -base64 32
 
 ### Deploy with Docker
 
+From the `examples/docker/` directory:
+
 ```bash
 docker compose up
 ```
 
-Or build and run manually:
+Or build and run manually from the project root:
 
 ```bash
 docker build -f Dockerfile -t atlas .
@@ -153,14 +155,14 @@ Verify at `http://localhost:3001/api/health`.
 **What you get with one-click:** A full-stack Next.js app with the Hono API embedded via a catch-all route. Neon Postgres is provisioned automatically. The explore tool uses Vercel Sandbox (Firecracker microVM) for hardware-level isolation.
 
 - `ATLAS_PROVIDER=gateway` routes through [Vercel's AI Gateway](https://vercel.com/docs/ai-gateway) with usage tracking in the Vercel dashboard
-- The catch-all route sets `maxDuration = 60` — increase based on your [Vercel plan](https://vercel.com/docs/functions/configuring-functions/duration)
-- `@vercel/sandbox` is auto-detected via the `VERCEL` env var
+- The catch-all route sets `maxDuration = 300` (5 minutes, requires Pro plan) — adjust based on your [Vercel plan](https://vercel.com/docs/functions/configuring-functions/duration)
+- `@vercel/sandbox` is auto-detected when `ATLAS_RUNTIME=vercel` is set or the `VERCEL` env var is present (set automatically on Vercel deployments)
 
 ### Docker
 
 **What you get:** A Docker Compose stack with the Hono API + Postgres. Optional nsjail isolation for the explore tool.
 
-- Images are based on `oven/bun:1.3.10`
+- Images are based on [`oven/bun`](https://hub.docker.com/r/oven/bun) (see the [Dockerfile](https://github.com/AtlasDevHQ/atlas/blob/main/examples/docker/Dockerfile) for the pinned version)
 - The semantic layer (`semantic/`) is baked into the image at build time — rebuild if you update YAMLs
 - Build without nsjail for a smaller image: `docker build --build-arg INSTALL_NSJAIL=false -f Dockerfile -t atlas .`
 
@@ -210,14 +212,16 @@ See [Authentication](/docs/deployment/authentication) for detailed configuration
 
 ## Security & Isolation
 
-Atlas auto-detects the best available sandbox for the explore tool:
+Atlas auto-detects the best available sandbox for the explore tool, using a six-tier priority:
 
-| Platform | Sandbox | Isolation |
-|----------|---------|-----------|
-| Vercel | Firecracker microVM | Hardware-level (strongest) |
-| Self-hosted Docker | nsjail (Linux namespaces) | Kernel-level |
-| Railway | Sidecar service | Process-level |
-| Local dev | just-bash + OverlayFS | Path-traversal protection |
+| Priority | Platform | Sandbox | Isolation |
+|----------|----------|---------|-----------|
+| 0 | Any (via Plugin SDK) | Sandbox plugin | Plugin-defined |
+| 1 | Vercel | Firecracker microVM | Hardware-level (strongest) |
+| 2 | Self-hosted Docker | nsjail explicit (`ATLAS_SANDBOX=nsjail`) | Kernel-level |
+| 3 | Railway | Sidecar service (`ATLAS_SANDBOX_URL`) | Container-level |
+| 4 | Self-hosted | nsjail auto-detect (binary on PATH) | Kernel-level |
+| 5 | Local dev | just-bash + OverlayFS | Path-traversal protection |
 
 **Deploying for your own team?** Any tier is fine — you're protecting against prompt injection edge cases, not hostile tenants. **Multi-tenant?** Use Vercel or nsjail for real process isolation.
 
@@ -231,4 +235,4 @@ All deployments expose a health endpoint:
 GET /api/health
 ```
 
-Returns `{"status":"ok"}`, `{"status":"degraded"}`, or `{"status":"error"}` with sub-checks for datasource, provider, semantic layer, auth, and internal DB. Returns HTTP 200 for `ok`/`degraded`, HTTP 503 for `error`. Always public (no auth required).
+Returns `{"status":"ok"}`, `{"status":"degraded"}`, or `{"status":"error"}` with sub-checks for datasource, provider, semantic layer, internal DB, explore (sandbox backend), auth, and slack. Returns HTTP 200 for `ok`/`degraded`, HTTP 503 for `error`. Always public (no auth required).

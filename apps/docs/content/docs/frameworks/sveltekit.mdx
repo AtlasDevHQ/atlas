@@ -9,8 +9,8 @@ Integrate Atlas into a SvelteKit app using `@ai-sdk/svelte`.
 
 > **Prerequisites:** A running Atlas API server. See [Bring Your Own Frontend](/docs/frameworks/overview) for architecture and common setup.
 
-<Callout type="warn" title="AI SDK v6 compatibility">
-  The transport-based API (`DefaultChatTransport`, `sendMessage`) shown below is specific to `@ai-sdk/react` and may not be available in `@ai-sdk/svelte`. If `useChat` from `@ai-sdk/svelte` does not support the `transport` option in your version, use the [sync query endpoint](/docs/frameworks/overview#streaming-vs-synchronous) (`POST /api/v1/query`) instead -- it works with any HTTP client and returns a structured JSON response. The [`@useatlas/sdk`](https://www.npmjs.com/package/@useatlas/sdk) package provides a typed client for this endpoint.
+<Callout type="info" title="AI SDK v6 — Svelte adapter">
+  As of AI SDK v6, `@ai-sdk/svelte` (v4+) supports the transport-based API (`DefaultChatTransport`, `sendMessage`) shown below. Make sure you install `@ai-sdk/svelte@^4.0.0` and `ai@^6.0.0`. If you prefer not to use streaming, the [sync query endpoint](/docs/frameworks/overview#streaming-vs-synchronous) (`POST /api/v1/query`) works with any HTTP client. The [`@useatlas/sdk`](https://www.npmjs.com/package/@useatlas/sdk) package provides a typed client for that endpoint.
 </Callout>
 
 ---
@@ -65,11 +65,15 @@ Create a reusable chat module using `@ai-sdk/svelte`'s `useChat`:
 // src/lib/atlas-chat.ts
 import { useChat } from "@ai-sdk/svelte";
 import { DefaultChatTransport } from "ai";
+import { writable, get } from "svelte/store";
 import { env } from "$env/dynamic/public";
 
 const apiUrl = env.PUBLIC_ATLAS_API_URL ?? "";
+const isCrossOrigin = !!apiUrl;
 
 export function createAtlasChat(apiKey: () => string) {
+  const conversationId = writable<string | null>(null);
+
   const transport = new DefaultChatTransport({
     api: `${apiUrl}/api/chat`,
     get headers() {
@@ -78,25 +82,200 @@ export function createAtlasChat(apiKey: () => string) {
       if (key) h["Authorization"] = `Bearer ${key}`;
       return h;
     },
+    credentials: isCrossOrigin ? "include" : undefined,
+    // Pass conversationId to continue an existing conversation
+    body: () => {
+      const convId = get(conversationId);
+      return convId ? { conversationId: convId } : {};
+    },
+    // Capture x-conversation-id from the response header
+    fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const response = await globalThis.fetch(input, init);
+      const convId = response.headers.get("x-conversation-id");
+      if (convId && convId !== get(conversationId)) {
+        conversationId.set(convId);
+      }
+      return response;
+    }) as typeof fetch,
   });
 
   const { messages, sendMessage, status, error } = useChat({ transport });
 
-  return { messages, sendMessage, status, error };
+  return { messages, sendMessage, status, error, conversationId };
 }
 ```
 
-## 4. Rendering tool calls
+## 4. Chat page
 
-See the [React/Vite guide](/docs/frameworks/react-vite#rendering-tool-calls) for a complete `ToolPart` implementation. The data shapes are identical -- adapt the JSX to Svelte component syntax. The key shapes:
+Here is a minimal Svelte component that uses the chat store:
+
+```svelte
+<!-- src/routes/+page.svelte -->
+<script lang="ts">
+  import { isToolUIPart } from "ai";
+  import { createAtlasChat } from "$lib/atlas-chat";
+  import ToolPart from "$lib/components/ToolPart.svelte";
+
+  let apiKey = $state("");
+  const { messages, sendMessage, status, conversationId } = createAtlasChat(
+    () => apiKey
+  );
+  let input = $state("");
+
+  const isLoading = $derived(
+    $status === "streaming" || $status === "submitted"
+  );
+
+  function handleSubmit() {
+    if (!input.trim()) return;
+    const text = input;
+    input = "";
+    sendMessage({ text });
+  }
+</script>
+
+<div class="mx-auto max-w-3xl p-4">
+  <h1 class="mb-4 text-xl font-bold">Atlas</h1>
+
+  <div class="space-y-4">
+    {#each $messages as m (m.id)}
+      {#if m.role === "user"}
+        <div class="flex justify-end">
+          <div class="rounded-lg bg-blue-600 px-4 py-2 text-white">
+            {#each m.parts ?? [] as part, i}
+              {#if part.type === "text"}
+                <p>{part.text}</p>
+              {/if}
+            {/each}
+          </div>
+        </div>
+      {:else}
+        <div class="space-y-2">
+          {#each m.parts ?? [] as part, i}
+            {#if part.type === "text" && part.text.trim()}
+              <div class="rounded-lg bg-zinc-100 px-4 py-2 text-sm">
+                {part.text}
+              </div>
+            {:else if isToolUIPart(part)}
+              <ToolPart {part} />
+            {/if}
+          {/each}
+        </div>
+      {/if}
+    {/each}
+  </div>
+
+  <form on:submit|preventDefault={handleSubmit} class="mt-4 flex gap-2">
+    <input
+      bind:value={input}
+      placeholder="Ask a question about your data..."
+      class="flex-1 rounded border px-4 py-2 text-sm"
+      disabled={isLoading}
+    />
+    <button
+      type="submit"
+      disabled={isLoading || !input.trim()}
+      class="rounded bg-blue-600 px-4 py-2 text-sm text-white disabled:opacity-40"
+    >
+      Ask
+    </button>
+  </form>
+</div>
+```
+
+## 5. Rendering tool calls
+
+In AI SDK v6, tool parts use per-tool type names (`"tool-explore"`, `"tool-executeSQL"`) or `"dynamic-tool"` for dynamic tools. Use `isToolUIPart(part)` from `"ai"` to detect tool parts and `getToolName(part)` to extract the name.
+
+Here is a basic Svelte component for rendering tool calls:
+
+```svelte
+<!-- src/lib/components/ToolPart.svelte -->
+<script lang="ts">
+  import { getToolName } from "ai";
+
+  const { part } = $props<{ part: unknown }>();
+
+  let toolName = $derived.by(() => {
+    try {
+      return getToolName(part as Parameters<typeof getToolName>[0]);
+    } catch {
+      return "unknown";
+    }
+  });
+
+  const p = $derived(part as Record<string, unknown>);
+  const state = $derived((p.state as string) ?? "");
+  const input = $derived((p.input as Record<string, unknown>) ?? {});
+  const output = $derived(p.output);
+  const done = $derived(state === "output-available");
+
+  // SQL helpers
+  const sqlResult = $derived(output as Record<string, unknown> | null);
+  const columns = $derived((sqlResult?.columns as string[]) ?? []);
+  const rows = $derived((sqlResult?.rows as Record<string, unknown>[]) ?? []);
+</script>
+
+{#if !done}
+  <div class="my-2 animate-pulse rounded-lg border px-3 py-2 text-xs text-zinc-500">
+    {toolName === "executeSQL" ? "Executing query..." : "Running command..."}
+  </div>
+{:else if toolName === "executeSQL" && sqlResult}
+  <div class="my-2 overflow-hidden rounded-lg border bg-zinc-50">
+    <div class="flex items-center gap-2 px-3 py-2 text-xs">
+      <span class="rounded bg-blue-100 px-1.5 py-0.5 font-medium text-blue-700">SQL</span>
+      <span class="flex-1 truncate text-zinc-500">{input.explanation ?? "Query result"}</span>
+      <span class="text-zinc-500">{rows.length} row{rows.length !== 1 ? "s" : ""}</span>
+    </div>
+    {#if columns.length && rows.length}
+      <div class="overflow-x-auto border-t">
+        <table class="w-full text-left text-xs">
+          <thead>
+            <tr class="border-b bg-zinc-100">
+              {#each columns as col}
+                <th class="px-3 py-1.5 font-medium">{col}</th>
+              {/each}
+            </tr>
+          </thead>
+          <tbody>
+            {#each rows as row, i}
+              <tr class="border-b">
+                {#each columns as col}
+                  <td class="px-3 py-1.5 text-zinc-600">
+                    {row[col] == null ? "\u2014" : row[col]}
+                  </td>
+                {/each}
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+  </div>
+{:else if toolName === "explore"}
+  <div class="my-2 rounded-lg border bg-zinc-50 px-3 py-2">
+    <div class="text-xs font-mono text-zinc-500">
+      <span class="text-green-500">$</span> {input.command}
+    </div>
+    <pre class="mt-1 max-h-40 overflow-auto whitespace-pre-wrap text-xs text-zinc-500">{output}</pre>
+  </div>
+{:else}
+  <div class="my-2 rounded-lg border px-3 py-2 text-xs text-zinc-500">
+    Tool: {toolName}
+  </div>
+{/if}
+```
+
+The key data shapes:
 
 - **`executeSQL` output** -- `{ success, columns, rows, row_count, truncated }` on success, or `{ success: false, error }` on failure.
 - **`explore` output** -- a plain string (stdout of the command).
-- **`state`** -- check for `"output-available"` to know when the result is ready.
+- **`state`** -- check for `"output-available"` to know when the result is ready. Other states: `"input-streaming"`, `"input-available"`, `"output-error"`, `"output-denied"`.
+- **Tool detection** -- use `isToolUIPart(part)` from `"ai"` (not `part.type === "tool-invocation"`).
 
-See the [Data Stream Protocol](/docs/frameworks/overview#data-stream-protocol) section for the full part structure and a concrete example.
+See the [Data Stream Protocol](/docs/frameworks/overview#tool-call-parts-ai-sdk-v6) section for the full part structure and a concrete example.
 
-## 5. Synchronous queries (alternative)
+## 6. Synchronous queries (alternative)
 
 If streaming is not needed, use the JSON query endpoint:
 

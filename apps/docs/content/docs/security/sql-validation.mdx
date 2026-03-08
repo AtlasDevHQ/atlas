@@ -1,6 +1,6 @@
 ---
 title: SQL Validation Pipeline
-description: How Atlas enforces read-only SQL execution through a 7-layer defense-in-depth pipeline.
+description: How Atlas enforces read-only SQL execution through a multi-layer defense-in-depth pipeline.
 ---
 
 Every SQL query the agent writes passes through a multi-layer validation pipeline before it reaches your database. No query can bypass validation — if any layer rejects, the query is blocked.
@@ -13,13 +13,14 @@ Every SQL query the agent writes passes through a multi-layer validation pipelin
 | 1 | Regex mutation guard | Quick reject of obvious DML/DDL keywords |
 | 2 | AST parse | Full SQL parse — verify single SELECT statement |
 | 3 | Table whitelist | Only allow tables defined in the semantic layer |
+| — | Per-source rate limiting | Atomic concurrency + QPM check before execution |
 | 4 | RLS injection | Inject WHERE clauses based on user claims (when enabled) |
 | 5 | Auto LIMIT | Append row limit to every query |
 | 6 | Statement timeout | Per-query execution deadline |
 
-Layers 0–3 run in `validateSQL()` before execution. Layers 4–6 are applied during execution.
+Layers 0–3 run in `validateSQL()` before execution. Between validation and execution, `acquireSourceSlot(connId)` checks per-source concurrency and queries-per-minute limits. If the source is at capacity, the query is rejected with a rate-limit error (and an optional `retryAfterMs` hint) before any database work begins. Per-source limits are configurable via `rateLimit` in `atlas.config.ts` datasource entries. Layers 4–6 are applied during execution.
 
-The validation pipeline is identical across all supported databases. The only difference is the AST parser mode: `node-sql-parser` uses `PostgresQL` mode for PostgreSQL connections and `MySQL` mode for MySQL connections. Other database types (e.g. ClickHouse, Snowflake, DuckDB) fall back to the PostgreSQL parser with a warning. Plugins can register a custom `parserDialect` via `ConnectionPluginMeta` to override the parser mode for any connection.
+The validation pipeline is identical across all supported databases. The only difference is the AST parser mode: `node-sql-parser` uses `PostgresQL` mode for PostgreSQL connections and `MySQL` mode for MySQL connections. Plugin-registered database types (any `dbType` beyond the two built-in ones) fall back to the PostgreSQL parser with a warning. Plugins can register a custom `parserDialect` via `ConnectionPluginMeta` to override the parser mode for any connection.
 
 ## Layer 0: Empty check
 
@@ -96,7 +97,7 @@ WITH active AS (SELECT * FROM users WHERE active = true)
 SELECT * FROM active
 ```
 
-CTE names (`WITH x AS (...)`) are extracted during parsing and excluded from the table whitelist check in layer 3.
+CTE names (`WITH x AS (...)`) are collected during parsing for use in the table whitelist check (layer 3).
 
 ## Layer 3: Table whitelist
 
@@ -117,13 +118,15 @@ SELECT * FROM internal.secrets
 
 **Schema-qualified queries:** If a query uses `schema.table` syntax (e.g. `analytics.orders`), the qualified name must be in the whitelist. Unqualified names cannot bypass schema restrictions.
 
-**CTE exclusion:** CTE names defined in `WITH` clauses are automatically excluded from the whitelist check — they're temporary result sets, not real tables.
+**CTE exclusion:** CTE names collected in layer 2 are excluded from the whitelist check — they are temporary result sets defined by the query, not real tables.
 
 **Disabling:** Set `ATLAS_TABLE_WHITELIST=false` to disable (not recommended for production).
 
 ## Layer 4: RLS injection
 
-When [Row-Level Security](/docs/reference/environment-variables#row-level-security) is enabled, WHERE clauses are injected based on the authenticated user's claims. RLS injection occurs after all validation layers (0--3) pass and after all plugin hooks have run. This ordering ensures plugins cannot strip RLS conditions.
+When Row-Level Security is enabled, WHERE clauses are injected based on the authenticated user's claims. RLS injection occurs after all validation layers (0--3) pass and after all plugin hooks have run. This ordering ensures plugins cannot strip RLS conditions.
+
+RLS can be configured via [environment variables](/docs/reference/environment-variables#row-level-security) (single-policy shorthand) or declaratively in `atlas.config.ts` with the `rls` key (supports multiple policies targeting different tables and claims).
 
 ```sql
 -- Original query

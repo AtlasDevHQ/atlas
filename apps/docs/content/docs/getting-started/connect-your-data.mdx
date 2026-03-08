@@ -1,11 +1,11 @@
 ---
 title: Connect Your Data
-description: Connect Atlas to PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, or Salesforce.
+description: Connect Atlas to PostgreSQL, MySQL, and plugin-based sources (ClickHouse, Snowflake, DuckDB, Salesforce).
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Connect Atlas to your existing data sources. Atlas supports PostgreSQL, MySQL, ClickHouse, Snowflake, CSV/Parquet files (via DuckDB), and Salesforce (SOQL). This guide covers setup, semantic layer generation, and safety configuration for each.
+Connect Atlas to your existing data sources. Atlas has built-in support for PostgreSQL and MySQL. Additional datasources -- ClickHouse, Snowflake, CSV/Parquet files (via DuckDB), and Salesforce (SOQL) -- are available via plugins in the `plugins/` directory. This guide covers setup, semantic layer generation, and safety configuration for each.
 
 ## Prerequisites
 
@@ -53,7 +53,7 @@ Most managed Postgres providers (AWS RDS, Supabase, Neon, Railway) require SSL. 
 ATLAS_DATASOURCE_URL=postgresql://atlas_reader:password@host:5432/db?sslmode=require
 ```
 
-For self-signed certificates, use `?sslmode=no-verify` -- not recommended for production.
+For self-signed certificates, use `?sslmode=no-verify` to skip certificate verification -- not recommended for production. This is a `pg` driver extension (not a standard PostgreSQL sslmode). Note: the `pg` driver (v8+) treats `sslmode=require` as `verify-full`; Atlas normalizes this automatically.
 
 Atlas uses the `pg` driver. SSL options are parsed directly from the connection string.
 
@@ -88,6 +88,8 @@ Atlas also enforces `SET SESSION TRANSACTION READ ONLY` on every connection as a
 ```
 ATLAS_DATASOURCE_URL=mysql://atlas_reader:your-strong-password@your-host:3306/your_db
 ```
+
+Both `mysql://` and `mysql2://` prefixes are accepted.
 
 #### SSL configuration
 
@@ -132,7 +134,7 @@ ATLAS_DATASOURCE_URL=clickhouses://atlas_reader:your-strong-password@your-host:8
 ### 3. Install the driver
 
 <Callout type="info">
-If you're working in the Atlas monorepo, the driver is already bundled in `@atlas/api`. These install commands are only needed for standalone or scaffolded projects (e.g. those created with `bun create atlas-agent`).
+If you're working in the Atlas monorepo, the driver is bundled with the plugin package. These install commands are only needed for standalone or scaffolded projects (e.g. those created with `bun create atlas-agent`).
 </Callout>
 
 ```bash
@@ -176,7 +178,7 @@ Atlas sets `STATEMENT_TIMEOUT_IN_SECONDS` per session and tags all queries with 
 ### 3. Install the driver
 
 <Callout type="info">
-If you're working in the Atlas monorepo, the driver is already bundled in `@atlas/api`. These install commands are only needed for standalone or scaffolded projects (e.g. those created with `bun create atlas-agent`).
+If you're working in the Atlas monorepo, the driver is bundled with the plugin package. These install commands are only needed for standalone or scaffolded projects (e.g. those created with `bun create atlas-agent`).
 </Callout>
 
 ```bash
@@ -192,11 +194,11 @@ For flat files, Atlas uses DuckDB as an in-process analytical engine. No externa
 ### 1. Ingest files with the CLI
 
 ```bash
-# CSV files
-bun run atlas -- init --csv path/to/files/
+# CSV files (comma-separated paths)
+bun run atlas -- init --csv file1.csv,file2.csv
 
-# Parquet files
-bun run atlas -- init --parquet path/to/files/
+# Parquet files (comma-separated paths)
+bun run atlas -- init --parquet file1.parquet,file2.parquet
 ```
 
 This creates an in-memory DuckDB instance, loads the files, profiles them, and generates the semantic layer.
@@ -216,7 +218,7 @@ URL formats:
 
 DuckDB opens existing files in `READ_ONLY` mode by default at runtime.
 
-No additional driver installation is needed -- `@duckdb/node-api` is bundled.
+No additional driver installation is needed -- `@duckdb/node-api` is bundled with the DuckDB datasource plugin.
 
 ---
 
@@ -243,7 +245,7 @@ URL format: `salesforce://username:password@hostname?token=TOKEN&clientId=ID&cli
 ### 2. Install the driver
 
 <Callout type="info">
-If you're working in the Atlas monorepo, the driver is already bundled in `@atlas/api`. These install commands are only needed for standalone or scaffolded projects (e.g. those created with `bun create atlas-agent`).
+If you're working in the Atlas monorepo, the driver is bundled with the plugin package. These install commands are only needed for standalone or scaffolded projects (e.g. those created with `bun create atlas-agent`).
 </Callout>
 
 ```bash
@@ -367,15 +369,7 @@ Atlas enforces several safety limits. Tune them via environment variables:
 
 ### SQL validation pipeline
 
-Every query goes through seven layers of validation before execution (see [SQL Validation Pipeline](/docs/security/sql-validation) for full details):
-
-0. **Empty check** -- Reject empty or whitespace-only queries
-1. **Regex mutation guard** -- Quick reject of DML/DDL keywords (INSERT, UPDATE, DELETE, DROP, etc.)
-2. **AST parse** -- `node-sql-parser` in PostgreSQL/MySQL mode (auto-detected) verifies a single SELECT statement. Unparseable queries are rejected
-3. **Table whitelist** -- All referenced tables must exist in `semantic/entities/*.yml`. CTE names are excluded from the check
-4. **RLS injection** -- When [Row-Level Security](/docs/reference/environment-variables#row-level-security) is enabled, WHERE clauses are injected based on the authenticated user's claims. Applied after validation and plugin hooks so plugins cannot strip RLS conditions
-5. **Auto LIMIT** -- `LIMIT` appended to every query (configurable via `ATLAS_ROW_LIMIT`)
-6. **Statement timeout** -- Applied before each query (configurable via `ATLAS_QUERY_TIMEOUT`)
+Every query passes through a 7-layer validation pipeline (regex guard, AST parse, table whitelist, RLS injection, auto-LIMIT, statement timeout) before execution. See [SQL Validation Pipeline](/docs/security/sql-validation) for the full breakdown.
 
 ### Read-only enforcement by data source
 
@@ -452,7 +446,7 @@ If `datasource.status` is `"error"`, check your `ATLAS_DATASOURCE_URL`, network 
 
 **Health check shows `MISSING_SEMANTIC_LAYER`**
 - Run `bun run atlas -- init` to generate the `semantic/` directory
-- For quick demos: `bun run atlas -- init --demo` (simple) or `bun run atlas -- init --demo cybersec` (62-table SaaS)
+- For quick demos: `bun run atlas -- init --demo` (simple), `bun run atlas -- init --demo cybersec` (62-table SaaS), or `bun run atlas -- init --demo ecommerce` (52-table DTC)
 - If deploying via Docker, generate the semantic layer locally first -- it gets baked into the image at build time
 
 **Queries timing out**
@@ -478,4 +472,4 @@ If `datasource.status` is `"error"`, check your `ATLAS_DATASOURCE_URL`, network 
 - ClickHouse: `bun add @clickhouse/client`
 - Snowflake: `bun add snowflake-sdk`
 - Salesforce: `bun add jsforce`
-- PostgreSQL (`pg`), MySQL (`mysql2`), and DuckDB (`@duckdb/node-api`) are bundled with Atlas
+- PostgreSQL (`pg`) and MySQL (`mysql2`) are bundled with `@atlas/api`. DuckDB (`@duckdb/node-api`) is bundled with the DuckDB datasource plugin

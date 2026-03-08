@@ -25,8 +25,14 @@ Atlas ships with three demo datasets for evaluation and development.
 
 Three clean tables: companies (50), people (~200), accounts (80). No tech debt, no ambiguity.
 
+> **Note:** Bare `--demo` (with no argument) defaults to `simple`. If you already ran `bun run db:up`, the simple demo data is already seeded -- just run `bun run atlas -- init` (without `--demo`) to profile it. The `--demo` flag is for when you have not run `db:up` or want to explicitly re-seed.
+
 ```bash
+# Option A: Using db:up (already seeds simple demo)
 bun run db:up
+bun run atlas -- init
+
+# Option B: Explicit seed (without db:up, or to re-seed)
 bun run atlas -- init --demo
 ```
 
@@ -54,10 +60,10 @@ A 62-table B2B cybersecurity SaaS company database. ~500K rows spanning 2019-202
 
 ### Loading
 
-Requires PostgreSQL (uses `GENERATE_SERIES` for data generation).
+Requires PostgreSQL (uses `GENERATE_SERIES` for data generation). Note that `bun run db:up` only seeds the simple demo -- the `--demo cybersec` flag seeds the cybersec dataset on top.
 
 ```bash
-# Start local Postgres
+# Start local Postgres (if not already running)
 bun run db:up
 
 # Load cybersec demo and generate semantic layer
@@ -178,10 +184,10 @@ A 52-table DTC (direct-to-consumer) home goods brand database. ~480K rows spanni
 
 ### Loading
 
-Requires PostgreSQL (uses `GENERATE_SERIES` for data generation).
+Requires PostgreSQL (uses `GENERATE_SERIES` for data generation). Note that `bun run db:up` only seeds the simple demo -- the `--demo ecommerce` flag seeds the ecommerce dataset on top.
 
 ```bash
-# Start local Postgres
+# Start local Postgres (if not already running)
 bun run db:up
 
 # Load e-commerce demo and generate semantic layer

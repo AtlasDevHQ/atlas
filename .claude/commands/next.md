@@ -39,6 +39,9 @@ For each suggestion:
 - Don't suggest more than one large effort at a time
 - If a parent issue's sub-issues are all done, suggest closing it
 
+**Docs check:**
+After reviewing recent commits, check if docs are stale — especially after renames, config changes, or new features. Grep for old names/paths in `apps/docs/`, `docs/`, plugin READMEs, and ROADMAP.md. Include doc fixes in your suggestions or fix them directly if trivial (< 5 lines).
+
 **File issues for incidental findings:**
 During assessment, if you notice bugs, tech debt, stale references, or pre-existing errors that aren't tracked, file GH issues for them immediately — don't just mention them in chat. Use the standard format:
 ```
@@ -76,6 +79,15 @@ IMPORTANT — Incidental findings:
 - Use: `gh issue create -R AtlasDevHQ/atlas --title "fix: <description>" --body "<details>" --label "bug,area: <area>" --milestone "0.x.0 — <name>"`
 - Add to the project board: `gh project item-add 2 --owner AtlasDevHQ --url <issue_url>`
 - Keep your current work focused — the issue ensures the finding isn't lost
+
+IMPORTANT — Docs impact:
+- When your change affects user-facing behavior, configuration, APIs, or plugin interfaces, update the relevant docs:
+  - Docs site pages: `apps/docs/content/docs/` (MDX files)
+  - Design docs: `docs/design/` and `docs/guides/`
+  - ROADMAP: `.claude/research/ROADMAP.md` — mark completed items with `[x]` and add PR numbers
+  - READMEs: plugin READMEs in `plugins/*/README.md`, SDK README in `packages/plugin-sdk/README.md`
+- Include docs updates in the same PR as the code change — don't leave them for a follow-up
+- If a code change has large docs impact (new feature page, restructured sections), note it in the PR description
 
 IMPORTANT — Update the project board as you work:
 

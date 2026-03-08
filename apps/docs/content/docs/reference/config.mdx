@@ -109,13 +109,13 @@ The default tools are `explore` (read semantic layer files) and `executeSQL` (ru
 Register plugins with optional per-plugin configuration:
 
 ```typescript
-import clickhouse from "@useatlas/clickhouse";
-import snowflake from "@useatlas/snowflake";
+import { clickhousePlugin } from "@useatlas/clickhouse";
+import { snowflakePlugin } from "@useatlas/snowflake";
 
 export default defineConfig({
   plugins: [
-    clickhouse({ connectionId: "analytics" }),
-    snowflake({ connectionId: "warehouse" }),
+    clickhousePlugin({ connectionId: "analytics" }),
+    snowflakePlugin({ connectionId: "warehouse" }),
   ],
 });
 ```

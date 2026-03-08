@@ -1,4 +1,4 @@
-# @atlas/plugin-salesforce-datasource
+# @useatlas/salesforce
 
 Salesforce datasource plugin for Atlas. Wraps Salesforce SOQL access via [jsforce](https://jsforce.github.io/), providing read-only querying of Salesforce objects through a dedicated `querySalesforce` tool.
 
@@ -17,7 +17,7 @@ Unlike SQL-based datasource plugins, this plugin uses SOQL (Salesforce Object Qu
 
 ```typescript
 import { defineConfig } from "@atlas/api/lib/config";
-import { salesforcePlugin } from "@atlas/plugin-salesforce-datasource";
+import { salesforcePlugin } from "@useatlas/salesforce";
 
 export default defineConfig({
   plugins: [

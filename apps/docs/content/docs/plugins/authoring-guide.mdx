@@ -730,15 +730,15 @@ async initialize(ctx) {
 
 The Atlas monorepo includes 15 reference plugin implementations in the `plugins/` directory. These serve as working examples for every plugin type:
 
-**Datasource:** `clickhouse-datasource`, `duckdb-datasource`, `mysql-datasource`, `salesforce-datasource`, `snowflake-datasource`
+**Datasource:** `clickhouse`, `duckdb`, `mysql`, `salesforce`, `snowflake`
 
 **Context:** `yaml-context`
 
-**Interaction:** `mcp-interaction`, `slack-interaction`
+**Interaction:** `mcp`, `slack`
 
-**Action:** `email-action`, `jira-action`
+**Action:** `email`, `jira`
 
-**Sandbox:** `daytona-sandbox`, `e2b-sandbox`, `nsjail-sandbox`, `sidecar-sandbox`, `vercel-sandbox`
+**Sandbox:** `daytona`, `e2b`, `nsjail`, `sidecar`, `vercel-sandbox`
 
 Browse the source at [`plugins/`](https://github.com/AtlasDevHQ/atlas/tree/main/plugins) for patterns on connection factories, config schemas, health checks, and testing.
 

@@ -13,8 +13,8 @@ Atlas can execute Python code in a sandboxed environment for data analysis, stat
 ATLAS_PYTHON_ENABLED=true
 ```
 
-<Callout type="warn">
-Python execution requires an isolated sandbox backend. Atlas refuses to run Python without one -- it will not fall back to direct execution. See [Sandbox Architecture](/docs/architecture/sandbox) for backend details.
+<Callout type="error">
+Python execution requires a sandbox backend. Set `ATLAS_SANDBOX_URL` (sidecar) or use nsjail/Vercel sandbox. Unlike the explore tool, there is no `just-bash` fallback — Python will not work without a sandbox.
 </Callout>
 
 ---

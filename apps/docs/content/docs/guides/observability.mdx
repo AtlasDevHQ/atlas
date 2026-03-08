@@ -1,0 +1,149 @@
+---
+title: Observability
+description: Monitor Atlas with OpenTelemetry tracing and structured logging.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas includes built-in support for OpenTelemetry distributed tracing and structured JSON logging via Pino. Both are zero-overhead when disabled.
+
+## OpenTelemetry Tracing
+
+Atlas uses the `@opentelemetry/api` package to create spans around key operations. When the OpenTelemetry SDK is not initialized, the API returns no-op tracers with zero runtime overhead.
+
+### Enabling Tracing
+
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` to your collector's OTLP HTTP endpoint:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+```
+
+Atlas initializes the OpenTelemetry Node.js SDK on startup, registering a trace exporter that sends spans to `{OTEL_EXPORTER_OTLP_ENDPOINT}/v1/traces`. The service is identified as `atlas` with the version from `package.json`.
+
+When the environment variable is absent, no SDK is initialized and all trace calls are no-ops.
+
+### What Gets Traced
+
+Atlas wraps the following operations in OpenTelemetry spans via the `withSpan` helper:
+
+| Span Name | Attributes | Description |
+|-----------|------------|-------------|
+| `atlas.sql.execute` | `db.system`, `db.statement` (truncated), `db.connection_id` | SQL query execution against the analytics datasource |
+| `atlas.explore.execute` | `explore.command`, `explore.backend` | Semantic layer file exploration (ls, cat, grep, find) |
+| `atlas.python.execute` | `python.backend` | Python code execution in sandbox |
+
+Each span records success/failure status and captures exceptions on error, making it straightforward to trace agent step failures back to specific tool calls.
+
+### Collector Setup
+
+Any OpenTelemetry-compatible collector works. Here are common setups:
+
+#### Jaeger
+
+```bash
+# Run Jaeger with OTLP ingestion
+docker run -d --name jaeger \
+  -p 16686:16686 \
+  -p 4318:4318 \
+  jaegertracing/jaeger:latest
+
+# Point Atlas at it
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+```
+
+Open `http://localhost:16686` to view traces. Search for service `atlas`.
+
+#### Grafana Tempo
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo:4318
+```
+
+Query traces in Grafana's Explore view using the Tempo data source.
+
+#### Datadog
+
+Use the Datadog Agent's OTLP ingestion:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://datadog-agent:4318
+```
+
+See the [Datadog OTLP documentation](https://docs.datadoghq.com/opentelemetry/otlp_ingest_in_the_agent/) for agent configuration.
+
+#### Generic OTLP Collector
+
+Any service that accepts OTLP over HTTP (Honeycomb, Axiom, Signoz, etc.) works by setting the endpoint:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=https://api.honeycomb.io
+OTEL_EXPORTER_OTLP_HEADERS="x-honeycomb-team=your-api-key"
+```
+
+<Callout>
+Atlas uses `@opentelemetry/exporter-trace-otlp-http` for trace export. Standard OpenTelemetry environment variables like `OTEL_EXPORTER_OTLP_HEADERS` and `OTEL_RESOURCE_ATTRIBUTES` are respected by the underlying SDK.
+</Callout>
+
+### Graceful Shutdown
+
+The SDK registers a `SIGTERM` handler to flush pending spans before the process exits. This ensures traces from the final requests are not lost during container restarts or deployments.
+
+---
+
+## Structured Logging
+
+Atlas uses [Pino](https://getpino.io/) for structured JSON logging. Every log line includes a timestamp, level, component name, and request context (when available).
+
+### Log Levels
+
+Control verbosity with `ATLAS_LOG_LEVEL`:
+
+```bash
+ATLAS_LOG_LEVEL=debug  # trace | debug | info | warn | error | fatal
+```
+
+The default level is `info`. In development (`NODE_ENV !== "production"`), logs are formatted with `pino-pretty` for human readability. In production, logs are emitted as single-line JSON for machine parsing.
+
+### Log Structure
+
+Each log entry includes:
+
+| Field | Description |
+|-------|-------------|
+| `level` | Numeric Pino level (10=trace, 20=debug, 30=info, 40=warn, 50=error, 60=fatal) |
+| `time` | Unix timestamp in milliseconds |
+| `msg` | Human-readable message |
+| `component` | Module that emitted the log (e.g., `agent`, `sql`, `explore`, `auth`) |
+| `requestId` | UUID for the current request (when inside a request context) |
+| `userId` | Authenticated user ID (when inside a request context) |
+
+### Example Output
+
+Production (JSON):
+
+```json
+{"level":30,"time":1706000000000,"component":"sql","requestId":"abc-123","msg":"Query executed","durationMs":45,"rowCount":100}
+```
+
+Development (pretty-printed):
+
+```
+[10:30:00.000] INFO (sql): Query executed
+    requestId: "abc-123"
+    durationMs: 45
+    rowCount: 100
+```
+
+### Component Loggers
+
+Atlas creates child loggers per component using `createLogger("component-name")`. Key components:
+
+- `agent` -- Agent loop lifecycle and step transitions
+- `sql` -- SQL validation, execution, and audit
+- `explore` -- Semantic layer file access
+- `auth` -- Authentication and authorization decisions
+- `admin-routes` -- Admin API operations
+- `scheduler` -- Scheduled task execution
+- `conversations` -- Conversation persistence
+- `actions` -- Action approval and execution

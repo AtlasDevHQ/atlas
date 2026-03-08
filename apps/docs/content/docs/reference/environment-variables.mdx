@@ -120,6 +120,7 @@ ATLAS_RLS_CLAIMS='{"tenant_id": "acme-corp"}'
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `ATLAS_PUBLIC_URL` | — | Public base URL for constructing action approval URLs. When not set, derived from request headers. Set explicitly in production for reliable approve/deny links in `/api/v1/query` responses |
 | `ATLAS_CORS_ORIGIN` | `*` | CORS allowed origin. Must set explicitly for cross-origin + managed auth (cookie-based) |
 | `NEXT_PUBLIC_ATLAS_API_URL` | — | Next.js frontend: cross-origin API URL. When unset, same-origin via Next.js rewrites |
 | `ATLAS_API_URL` | `http://localhost:3001` | Rewrite target for same-origin mode (only used when `NEXT_PUBLIC_ATLAS_API_URL` is unset) |
@@ -143,8 +144,12 @@ See [Sandbox Architecture](/docs/architecture/sandbox#backend-selection-priority
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ATLAS_ACTIONS_ENABLED` | — | Set `true` to enable the action framework (approval-gated write operations) |
+| `ATLAS_ACTION_APPROVAL` | `manual` | Default approval mode for actions: `auto`, `manual`, or `admin-only` |
+| `ATLAS_ACTION_TIMEOUT` | `30000` | Per-action execution timeout in milliseconds |
+| `ATLAS_ACTION_MAX_PER_CONVERSATION` | `10` | Maximum number of actions allowed per conversation |
+| `ATLAS_EMAIL_ALLOWED_DOMAINS` | — | Comma-separated list of allowed email recipient domains for the email action plugin. When unset, all domains are allowed |
 
-Action defaults (approval mode, timeout, max per conversation) are configured via `atlas.config.ts` under `actions.defaults`, not environment variables. See the [declarative config guide](/docs/deployment/configuration) for details.
+These env vars can also be set via `atlas.config.ts` under `actions.defaults`. See the [declarative config guide](/docs/reference/config) for details.
 
 ## Scheduler
 
@@ -198,3 +203,4 @@ Action defaults (approval mode, timeout, max per conversation) are configured vi
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ATLAS_LOG_LEVEL` | `info` | Pino log level: `trace`, `debug`, `info`, `warn`, `error`, `fatal` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OpenTelemetry collector endpoint. When set, Atlas emits trace spans for agent steps via `@opentelemetry/api` |

@@ -59,9 +59,9 @@ Any client that supports the stdio transport can use Atlas. The server reads JSO
 For remote or containerized setups, use the SSE (Server-Sent Events) transport:
 
 ```bash
-bun packages/mcp/bin/serve.ts --transport sse
-bun packages/mcp/bin/serve.ts --transport sse --port 9090
-bun packages/mcp/bin/serve.ts --transport sse --cors-origin "https://example.com"
+bun ./packages/mcp/bin/serve.ts --transport sse
+bun ./packages/mcp/bin/serve.ts --transport sse --port 9090
+bun ./packages/mcp/bin/serve.ts --transport sse --cors-origin "https://example.com"
 ```
 
 | Flag | Default | Description |

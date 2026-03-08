@@ -1,0 +1,99 @@
+---
+title: Context Plugins
+description: Inject additional context into the Atlas agent's system prompt.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Context plugins provide additional knowledge to the agent's system prompt. The YAML Context plugin is the reference implementation -- it reads the semantic layer and builds a structured overview.
+
+## YAML Context
+
+The YAML context plugin reads your semantic layer directory (entities, glossary, metrics) and builds a structured Markdown overview that is injected into the agent's system prompt. This gives the agent an at-a-glance understanding of the available tables, business terminology, and predefined metrics before it starts exploring or writing SQL.
+
+### Prerequisites
+
+- `@atlas/plugin-yaml-context` -- the plugin package (workspace dependency)
+- `js-yaml` -- YAML parser (peer dependency)
+- A populated `semantic/` directory with entity YAML files
+
+### Configuration
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `semanticDir` | `string` | `"./semantic"` | Path to the semantic layer directory. Resolved relative to the working directory. |
+
+### Usage
+
+```typescript
+import { defineConfig } from "@atlas/api/lib/config";
+import { contextYamlPlugin } from "@atlas/plugin-yaml-context";
+
+export default defineConfig({
+  plugins: [
+    contextYamlPlugin({ semanticDir: "./semantic" }),
+  ],
+});
+```
+
+With the default directory:
+
+```typescript
+export default defineConfig({
+  plugins: [
+    contextYamlPlugin(),
+  ],
+});
+```
+
+### How it works
+
+On the first call to `load()`, the plugin reads three sources from the semantic directory and builds a single Markdown string:
+
+1. **Entities** (`semantic/entities/*.yml`) -- Each entity file is parsed to extract the table name, description, and dimension count. The output is a bulleted list under an "Available Tables" heading.
+
+2. **Glossary** (`semantic/glossary.yml`) -- Terms are extracted with their status (e.g., `ambiguous`) and definitions. Ambiguous terms are flagged so the agent knows to ask clarifying questions.
+
+3. **Metrics** (`semantic/metrics/*.yml`) -- Metric names, descriptions, and parent entities are listed under a "Metrics" heading.
+
+The result is a structured Markdown document like:
+
+```markdown
+## Semantic Layer Context
+
+### Available Tables
+
+- **companies** (8 dimensions) — Company profiles and firmographic data
+- **people** (12 dimensions) — Individual contacts linked to companies
+- **accounts** (6 dimensions) — Financial accounts and billing records
+
+### Glossary
+
+- **ARR** *(ambiguous)*: Could refer to Annual Recurring Revenue or Annualized Run Rate
+- **churn**: Percentage of customers who cancel within a billing period
+
+### Metrics
+
+- **total_companies** (companies) — Count of all company records
+- **avg_deal_size** (accounts) — Average account value
+```
+
+### Caching and refresh
+
+The context string is cached after the first `load()` call. Subsequent calls return the cached result without re-reading the filesystem. This is important for performance since `load()` is called on every agent invocation.
+
+To invalidate the cache, call `refresh()`. This clears the cached string so the next `load()` re-reads all YAML files from disk. The refresh mechanism is used when the semantic layer is reloaded (e.g., after running `atlas init`) or via the admin UI.
+
+### Health checks
+
+The plugin validates three conditions during health checks:
+
+1. The semantic directory exists
+2. The `entities/` subdirectory exists within it
+3. At least one `.yml` file is present in the entities directory
+
+If any condition fails, the plugin reports as unhealthy with a descriptive message. On success, it reports the number of entity files found.
+
+<Callout type="info">
+This plugin uses `definePlugin()` instead of `createPlugin()` because the config is a simple optional object that does not need Zod schema validation. The `contextYamlPlugin()` factory function wraps `buildContextYamlPlugin()` directly.
+</Callout>

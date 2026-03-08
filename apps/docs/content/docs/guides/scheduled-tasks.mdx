@@ -221,4 +221,8 @@ See the [SDK](/docs/reference/sdk) for typed client methods.
 | `RESEND_API_KEY` | — | Required for email delivery |
 | `ATLAS_EMAIL_FROM` | `Atlas <noreply@useatlas.dev>` | Email from address |
 
+<Callout type="info">
+The scheduled tasks default email address (`noreply@useatlas.dev`) differs from the actions framework default (`atlas@notifications.useatlas.dev`). Set `ATLAS_EMAIL_FROM` to use a consistent address across both.
+</Callout>
+
 See [Environment Variables](/docs/reference/environment-variables) for the full reference.

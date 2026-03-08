@@ -70,7 +70,7 @@ export default defineConfig({
 | `description` | string | No | Human-readable label |
 | `maxConnections` | number | No | Connection pool size |
 | `idleTimeoutMs` | number | No | Idle connection timeout |
-| `rateLimit` | number | No | Per-datasource rate limit |
+| `rateLimit` | object | No | Per-datasource rate limit: `{ queriesPerMinute: number, concurrency: number }` (defaults: 60 qpm, 5 concurrent) |
 
 The `"default"` datasource is used when the agent's `executeSQL` tool is called without a `connectionId`. Each datasource can have its own semantic layer directory at `semantic/{sourceId}/entities/`.
 
@@ -126,34 +126,40 @@ See [Plugin Authoring Guide](/docs/plugins/authoring-guide) for building custom 
 
 ## RLS (Row-Level Security)
 
-Define RLS policies that inject WHERE clauses on every query based on user JWT claims.
+Define RLS policies that inject WHERE clauses on every query based on user JWT claims. Each policy specifies which tables it applies to, which column to filter on, and which JWT claim provides the value.
 
 ### Single Policy
 
 ```typescript
 export default defineConfig({
   rls: {
-    column: "tenant_id",
-    claim: "org_id",
+    enabled: true,
+    policies: [
+      { tables: ["orders", "customers"], column: "tenant_id", claim: "org_id" },
+    ],
   },
 });
 ```
 
-This injects `WHERE tenant_id = '<user's org_id claim>'` on every query.
+This injects `WHERE tenant_id = '<user's org_id claim>'` on every query against the `orders` or `customers` tables.
 
 ### Per-Table Policies
 
 ```typescript
 export default defineConfig({
   rls: {
-    column: "tenant_id",
-    claim: "org_id",
-    table: "orders", // Only apply to the orders table
+    enabled: true,
+    policies: [
+      { tables: ["orders"], column: "tenant_id", claim: "org_id" },
+      { tables: ["support_tickets"], column: "account_id", claim: "account" },
+    ],
   },
 });
 ```
 
-Equivalent env vars: `ATLAS_RLS_ENABLED=true`, `ATLAS_RLS_COLUMN=tenant_id`, `ATLAS_RLS_CLAIM=org_id`.
+Use `["*"]` in the `tables` array to apply a policy to all tables.
+
+Equivalent env vars (for a single global policy only): `ATLAS_RLS_ENABLED=true`, `ATLAS_RLS_COLUMN=tenant_id`, `ATLAS_RLS_CLAIM=org_id`. For per-table policies, use the config file.
 
 ---
 
@@ -230,8 +236,10 @@ export default defineConfig({
   semanticLayer: "./semantic",
 
   rls: {
-    column: "tenant_id",
-    claim: "org_id",
+    enabled: true,
+    policies: [
+      { tables: ["orders", "customers"], column: "tenant_id", claim: "org_id" },
+    ],
   },
 
   actions: {

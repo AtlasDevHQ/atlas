@@ -22,7 +22,16 @@ export default async function Page(props: {
   const MDX = page.data.body;
 
   return (
-    <DocsPage toc={page.data.toc}>
+    <DocsPage
+      toc={page.data.toc}
+      lastUpdate={page.data.lastModified}
+      editOnGithub={{
+        owner: "AtlasDevHQ",
+        repo: "atlas",
+        sha: "main",
+        path: `apps/docs/content/docs/${page.path}`,
+      }}
+    >
       <DocsTitle>{page.data.title}</DocsTitle>
       <DocsDescription>{page.data.description}</DocsDescription>
       <div className="flex items-center gap-2 border-b pb-4">

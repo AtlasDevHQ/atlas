@@ -36,6 +36,6 @@ Never commit credentials to version control. Use environment variables (`process
 | Transport | HTTP | In-process | TCP pool | SDK pool | REST API |
 | Query language | ClickHouse SQL | DuckDB SQL | MySQL SQL | Snowflake SQL | SOQL |
 | Parser dialect | PostgreSQL (closest) | PostgreSQL (closest) | MySQL | Snowflake | Custom (regex) |
-| Read-only enforcement | `readonly: 1` per query | `READ_ONLY` access mode | `READ ONLY` session | SQL validation only | SELECT-only validation |
+| Read-only enforcement | `readonly: 1` per query | `READ_ONLY` access mode (file-based only) | `READ ONLY` session | SQL validation only | SELECT-only validation |
 | Agent tool | `executeSQL` | `executeSQL` | `executeSQL` | `executeSQL` | `querySalesforce` |
 | Connection caching | No (stateless HTTP) | Yes (in-process) | Yes (pool) | Yes (pool) | Yes (session) |

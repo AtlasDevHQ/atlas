@@ -3,8 +3,6 @@ title: Sidecar
 description: HTTP-isolated container sandbox running alongside the Atlas API.
 ---
 
-import { Callout } from "fumadocs-ui/components/callout";
-
 HTTP-isolated container running alongside the main Atlas API. The sidecar is a separate Docker container (`packages/sandbox-sidecar/`) containing only bash, coreutils, and the semantic layer files. Commands are sent over HTTP and executed inside the container. No host filesystem or secrets are accessible.
 
 ## Installation

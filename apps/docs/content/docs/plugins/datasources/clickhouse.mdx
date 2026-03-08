@@ -3,8 +3,6 @@ title: ClickHouse
 description: Connect Atlas to a ClickHouse analytics database via HTTP transport.
 ---
 
-import { Callout } from "fumadocs-ui/components/callout";
-
 Connects to a ClickHouse instance via the HTTP transport provided by `@clickhouse/client`. The HTTP transport is stateless -- a new client is created per call, so no connection pooling is needed. Every query is executed with `readonly: 1` at the ClickHouse settings level, providing database-enforced read-only access.
 
 ## Installation

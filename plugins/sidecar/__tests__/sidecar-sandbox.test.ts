@@ -19,7 +19,7 @@ describe("config validation", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = sidecarSandboxPlugin({ url: VALID_URL } as any);
     expect(plugin.id).toBe("sidecar-sandbox");
-    expect(plugin.type).toBe("sandbox");
+    expect(plugin.types).toEqual(["sandbox"]);
     expect(plugin.config?.url).toBe(VALID_URL);
   });
 
@@ -65,7 +65,7 @@ describe("plugin shape", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = sidecarSandboxPlugin({ url: VALID_URL } as any);
     expect(plugin.id).toBe("sidecar-sandbox");
-    expect(plugin.type).toBe("sandbox");
+    expect(plugin.types).toEqual(["sandbox"]);
     expect(plugin.version).toBe("0.1.0");
     expect(plugin.name).toBe("Sidecar Sandbox");
   });

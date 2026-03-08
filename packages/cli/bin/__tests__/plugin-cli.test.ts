@@ -19,7 +19,7 @@ describe("pluginTemplate", () => {
     const result = pluginTemplate("my-source", "datasource");
     expect(result).toContain('import { definePlugin } from "@useatlas/plugin-sdk"');
     expect(result).toContain('id: "my-source"');
-    expect(result).toContain('type: "datasource"');
+    expect(result).toContain('types: ["datasource"]');
     expect(result).toContain("satisfies AtlasDatasourcePlugin");
     expect(result).toContain("connection:");
     expect(result).toContain("dbType:");
@@ -28,7 +28,7 @@ describe("pluginTemplate", () => {
   test("generates context template with contextProvider", () => {
     const result = pluginTemplate("my-ctx", "context");
     expect(result).toContain('id: "my-ctx"');
-    expect(result).toContain('type: "context"');
+    expect(result).toContain('types: ["context"]');
     expect(result).toContain("contextProvider:");
     expect(result).toContain("satisfies AtlasContextPlugin");
   });
@@ -36,7 +36,7 @@ describe("pluginTemplate", () => {
   test("generates interaction template with routes", () => {
     const result = pluginTemplate("my-interaction", "interaction");
     expect(result).toContain('id: "my-interaction"');
-    expect(result).toContain('type: "interaction"');
+    expect(result).toContain('types: ["interaction"]');
     expect(result).toContain("routes(app:");
     expect(result).toContain("satisfies AtlasInteractionPlugin");
   });
@@ -44,7 +44,7 @@ describe("pluginTemplate", () => {
   test("generates action template with actions array", () => {
     const result = pluginTemplate("my-action", "action");
     expect(result).toContain('id: "my-action"');
-    expect(result).toContain('type: "action"');
+    expect(result).toContain('types: ["action"]');
     expect(result).toContain("actions:");
     expect(result).toContain("satisfies AtlasActionPlugin");
     expect(result).toContain('import { tool } from "ai"');
@@ -60,7 +60,7 @@ describe("pluginTestTemplate", () => {
   test("generates test with correct plugin id assertion", () => {
     const result = pluginTestTemplate("test-plugin", "datasource");
     expect(result).toContain('expect(plugin.id).toBe("test-plugin")');
-    expect(result).toContain('expect(plugin.type).toBe("datasource")');
+    expect(result).toContain('expect(plugin.types).toContain("datasource")');
     expect(result).toContain("healthCheck");
   });
 });
@@ -125,7 +125,7 @@ describe("handlePluginCreate", () => {
     expect(fs.existsSync(path.join(pluginDir, "tsconfig.json"))).toBe(true);
 
     const indexContent = fs.readFileSync(path.join(pluginDir, "src", "index.ts"), "utf-8");
-    expect(indexContent).toContain('type: "datasource"');
+    expect(indexContent).toContain('types: ["datasource"]');
     expect(indexContent).toContain('id: "test-ds"');
 
     const pkgJson = JSON.parse(fs.readFileSync(path.join(pluginDir, "package.json"), "utf-8"));
@@ -139,7 +139,7 @@ describe("handlePluginCreate", () => {
     expect(fs.existsSync(path.join(pluginDir, "src", "index.ts"))).toBe(true);
 
     const indexContent = fs.readFileSync(path.join(pluginDir, "src", "index.ts"), "utf-8");
-    expect(indexContent).toContain('type: "action"');
+    expect(indexContent).toContain('types: ["action"]');
     expect(indexContent).toContain("actions:");
   });
 
@@ -148,7 +148,7 @@ describe("handlePluginCreate", () => {
 
     const pluginDir = path.join(tmpDir, "plugins", "my-ctx");
     const indexContent = fs.readFileSync(path.join(pluginDir, "src", "index.ts"), "utf-8");
-    expect(indexContent).toContain('type: "context"');
+    expect(indexContent).toContain('types: ["context"]');
     expect(indexContent).toContain("contextProvider:");
   });
 
@@ -157,7 +157,7 @@ describe("handlePluginCreate", () => {
 
     const pluginDir = path.join(tmpDir, "plugins", "my-web");
     const indexContent = fs.readFileSync(path.join(pluginDir, "src", "index.ts"), "utf-8");
-    expect(indexContent).toContain('type: "interaction"');
+    expect(indexContent).toContain('types: ["interaction"]');
     expect(indexContent).toContain("routes(app:");
   });
 

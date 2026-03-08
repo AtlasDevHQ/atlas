@@ -131,7 +131,7 @@ describe("plugin shape", () => {
   test("contextYamlPlugin() produces a valid AtlasContextPlugin", () => {
     const plugin = contextYamlPlugin({ semanticDir });
     expect(plugin.id).toBe("context-yaml");
-    expect(plugin.type).toBe("context");
+    expect(plugin.types).toEqual(["context"]);
     expect(plugin.version).toBe("0.1.0");
     expect(plugin.name).toBe("YAML Semantic Layer Context");
   });
@@ -168,9 +168,7 @@ describe("plugin shape", () => {
     const plugin = contextYamlPlugin({ semanticDir });
     expect(typeof plugin.id).toBe("string");
     expect(plugin.id.trim().length).toBeGreaterThan(0);
-    expect(["datasource", "context", "interaction", "action"]).toContain(
-      plugin.type,
-    );
+    expect(plugin.types.every((t: string) => ["datasource", "context", "interaction", "action", "sandbox"].includes(t))).toBe(true);
     expect(typeof plugin.version).toBe("string");
     expect(plugin.version.trim().length).toBeGreaterThan(0);
   });

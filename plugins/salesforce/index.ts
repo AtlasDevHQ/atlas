@@ -75,7 +75,7 @@ export function buildSalesforcePlugin(
 
   return {
     id: "salesforce-datasource",
-    type: "datasource" as const,
+    types: ["datasource"] as const,
     version: "0.1.0",
     name: "Salesforce DataSource",
     config,

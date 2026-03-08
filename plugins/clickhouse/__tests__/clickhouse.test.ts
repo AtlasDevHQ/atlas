@@ -113,7 +113,7 @@ describe("config validation", () => {
       url: "clickhouse://localhost:8123/default",
     });
     expect(plugin.id).toBe("clickhouse-datasource");
-    expect(plugin.type).toBe("datasource");
+    expect(plugin.types).toEqual(["datasource"]);
     expect(plugin.config?.url).toBe("clickhouse://localhost:8123/default");
   });
 
@@ -162,7 +162,7 @@ describe("plugin shape", () => {
   test("createPlugin factory returns a valid plugin", () => {
     const plugin = clickhousePlugin(validConfig);
     expect(plugin.id).toBe("clickhouse-datasource");
-    expect(plugin.type).toBe("datasource");
+    expect(plugin.types).toEqual(["datasource"]);
     expect(plugin.version).toBe("0.1.0");
     expect(plugin.name).toBe("ClickHouse DataSource");
   });

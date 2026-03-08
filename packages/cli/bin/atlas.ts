@@ -3265,7 +3265,7 @@ import type { AtlasDatasourcePlugin, PluginDBConnection } from "@useatlas/plugin
 
 export default definePlugin({
   id: "${id}",
-  type: "datasource",
+  types: ["datasource"],
   version: "0.1.0",
   name: "${pascalName}",
 
@@ -3294,7 +3294,7 @@ import type { AtlasContextPlugin } from "@useatlas/plugin-sdk";
 
 export default definePlugin({
   id: "${id}",
-  type: "context",
+  types: ["context"],
   version: "0.1.0",
   name: "${pascalName}",
 
@@ -3325,7 +3325,7 @@ import type { Hono } from "hono";
 
 export default definePlugin({
   id: "${id}",
-  type: "interaction",
+  types: ["interaction"],
   version: "0.1.0",
   name: "${pascalName}",
 
@@ -3352,7 +3352,7 @@ import { z } from "zod";
 
 export default definePlugin({
   id: "${id}",
-  type: "action",
+  types: ["action"],
   version: "0.1.0",
   name: "${pascalName}",
 
@@ -3393,7 +3393,7 @@ import type { AtlasSandboxPlugin, PluginExploreBackend, PluginExecResult } from 
 
 export default definePlugin({
   id: "${id}",
-  type: "sandbox",
+  types: ["sandbox"],
   version: "0.1.0",
   name: "${pascalName}",
 
@@ -3433,7 +3433,7 @@ import plugin from "./index";
 describe("${name} plugin", () => {
   test("has correct id and type", () => {
     expect(plugin.id).toBe("${name}");
-    expect(plugin.type).toBe("${pluginType}");
+    expect(plugin.types).toContain("${pluginType}");
   });
 
   test("has a version string", () => {

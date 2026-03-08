@@ -17,7 +17,7 @@ import { useAdminFetch, useInProgressSet, friendlyError } from "@/ui/hooks/use-a
 
 interface PluginDescription {
   id: string;
-  type: "datasource" | "context" | "interaction" | "action" | "sandbox";
+  types: ("datasource" | "context" | "interaction" | "action" | "sandbox")[];
   version: string;
   name: string;
   status: "registered" | "initializing" | "healthy" | "unhealthy" | "teardown";
@@ -107,7 +107,7 @@ export default function PluginsPage() {
                   <CardTitle className="flex items-center gap-2 text-sm">
                     {plugin.name}
                     <Badge variant="outline" className="text-[10px]">
-                      {plugin.type}
+                      {plugin.types.join(", ")}
                     </Badge>
                   </CardTitle>
                 </CardHeader>

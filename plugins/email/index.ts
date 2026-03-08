@@ -78,7 +78,7 @@ export const emailPlugin = createPlugin<EmailPluginConfig, AtlasActionPlugin<Ema
 
     return {
       id: "email-action",
-      type: "action" as const,
+      types: ["action"] as const,
       version: "1.0.0",
       name: "Email Action",
       config,

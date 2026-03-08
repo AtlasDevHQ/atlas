@@ -174,7 +174,7 @@ describe("config validation", () => {
       url: "snowflake://user:pass@xy12345/db/public?warehouse=WH",
     });
     expect(plugin.id).toBe("snowflake-datasource");
-    expect(plugin.type).toBe("datasource");
+    expect(plugin.types).toEqual(["datasource"]);
     expect(plugin.config?.url).toBe("snowflake://user:pass@xy12345/db/public?warehouse=WH");
   });
 
@@ -244,7 +244,7 @@ describe("plugin shape", () => {
   test("createPlugin factory returns a valid plugin", () => {
     const plugin = snowflakePlugin(validConfig);
     expect(plugin.id).toBe("snowflake-datasource");
-    expect(plugin.type).toBe("datasource");
+    expect(plugin.types).toEqual(["datasource"]);
     expect(plugin.version).toBe("0.1.0");
     expect(plugin.name).toBe("Snowflake DataSource");
   });

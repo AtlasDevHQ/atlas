@@ -25,7 +25,7 @@ describe("definePlugin", () => {
   test("returns input unchanged for datasource plugin", () => {
     const plugin: AtlasDatasourcePlugin = {
       id: "test-ds",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -38,7 +38,7 @@ describe("definePlugin", () => {
   test("returns input unchanged for context plugin", () => {
     const plugin: AtlasContextPlugin = {
       id: "test-ctx",
-      type: "context",
+      types: ["context"],
       version: "1.0.0",
       contextProvider: {
         load: async () => "extra context",
@@ -50,7 +50,7 @@ describe("definePlugin", () => {
   test("returns input unchanged for interaction plugin", () => {
     const plugin: AtlasInteractionPlugin = {
       id: "test-int",
-      type: "interaction",
+      types: ["interaction"],
       version: "1.0.0",
       routes: () => {},
     };
@@ -60,7 +60,7 @@ describe("definePlugin", () => {
   test("returns input unchanged for action plugin", () => {
     const plugin: AtlasActionPlugin = {
       id: "test-action",
-      type: "action",
+      types: ["action"],
       version: "1.0.0",
       actions: [
         {
@@ -80,7 +80,7 @@ describe("definePlugin", () => {
   test("returns input unchanged for sandbox plugin", () => {
     const plugin: AtlasSandboxPlugin = {
       id: "test-sandbox",
-      type: "sandbox",
+      types: ["sandbox"],
       version: "1.0.0",
       sandbox: {
         create: () => ({
@@ -96,7 +96,7 @@ describe("definePlugin", () => {
 describe("type guards", () => {
   const datasource: AtlasDatasourcePlugin = {
     id: "ds",
-    type: "datasource",
+    types: ["datasource"],
     version: "1.0.0",
     connection: {
       create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -106,28 +106,28 @@ describe("type guards", () => {
 
   const context: AtlasContextPlugin = {
     id: "ctx",
-    type: "context",
+    types: ["context"],
     version: "1.0.0",
     contextProvider: { load: async () => "" },
   };
 
   const interaction: AtlasInteractionPlugin = {
     id: "int",
-    type: "interaction",
+    types: ["interaction"],
     version: "1.0.0",
     routes: () => {},
   };
 
   const action: AtlasActionPlugin = {
     id: "act",
-    type: "action",
+    types: ["action"],
     version: "1.0.0",
     actions: [],
   };
 
   const sandbox: AtlasSandboxPlugin = {
     id: "sb",
-    type: "sandbox",
+    types: ["sandbox"],
     version: "1.0.0",
     sandbox: {
       create: () => ({
@@ -181,7 +181,7 @@ describe("plugin with hooks and schema", () => {
   test("definePlugin accepts hooks with matcher pattern", () => {
     const plugin = definePlugin({
       id: "hooked",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -212,7 +212,7 @@ describe("plugin with hooks and schema", () => {
   test("definePlugin accepts schema definitions", () => {
     const plugin = definePlugin({
       id: "with-schema",
-      type: "action",
+      types: ["action"],
       version: "1.0.0",
       actions: [],
       schema: {
@@ -234,7 +234,7 @@ describe("plugin with hooks and schema", () => {
     const myPlugin = (options: { prefix: string }) =>
       definePlugin({
         id: `${options.prefix}-plugin`,
-        type: "context",
+        types: ["context"],
         version: "1.0.0",
         contextProvider: {
           load: async () => `context for ${options.prefix}`,
@@ -249,7 +249,7 @@ describe("plugin with hooks and schema", () => {
     // Verify the type signature allows ctx parameter
     const plugin = definePlugin({
       id: "ctx-test",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -271,7 +271,7 @@ describe("mutable hook return types", () => {
   test("beforeQuery handler can return QueryHookMutation", () => {
     const plugin = definePlugin({
       id: "rls",
-      type: "context",
+      types: ["context"],
       version: "1.0.0",
       contextProvider: { load: async () => "" },
       hooks: {
@@ -287,7 +287,7 @@ describe("mutable hook return types", () => {
   test("beforeQuery handler can return void (observation-only)", () => {
     const plugin = definePlugin({
       id: "observer",
-      type: "context",
+      types: ["context"],
       version: "1.0.0",
       contextProvider: { load: async () => "" },
       hooks: {
@@ -303,7 +303,7 @@ describe("mutable hook return types", () => {
   test("beforeExplore handler can return ExploreHookMutation", () => {
     const plugin = definePlugin({
       id: "explore-filter",
-      type: "context",
+      types: ["context"],
       version: "1.0.0",
       contextProvider: { load: async () => "" },
       hooks: {
@@ -319,7 +319,7 @@ describe("mutable hook return types", () => {
   test("beforeQuery handler with matcher and mutation", () => {
     const plugin = definePlugin({
       id: "conditional-rls",
-      type: "context",
+      types: ["context"],
       version: "1.0.0",
       contextProvider: { load: async () => "" },
       hooks: {
@@ -338,7 +338,7 @@ describe("definePlugin validation", () => {
   test("throws on empty id", () => {
     expect(() => definePlugin({
       id: "",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: { create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }), dbType: "postgres" },
     } as AtlasDatasourcePlugin)).toThrow("id must not be empty");
@@ -347,7 +347,7 @@ describe("definePlugin validation", () => {
   test("throws on empty version", () => {
     expect(() => definePlugin({
       id: "test",
-      type: "datasource",
+      types: ["datasource"],
       version: "",
       connection: { create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }), dbType: "postgres" },
     } as AtlasDatasourcePlugin)).toThrow("version must not be empty");
@@ -356,7 +356,7 @@ describe("definePlugin validation", () => {
   test("throws when datasource plugin missing connection", () => {
     expect(() => definePlugin({
       id: "test",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)).toThrow('must have a "connection"');
@@ -365,7 +365,7 @@ describe("definePlugin validation", () => {
   test("throws when action plugin missing actions array", () => {
     expect(() => definePlugin({
       id: "test",
-      type: "action",
+      types: ["action"],
       version: "1.0.0",
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)).toThrow('must have an "actions" array');
@@ -374,7 +374,7 @@ describe("definePlugin validation", () => {
   test("accepts interaction plugin without routes (optional)", () => {
     const plugin = definePlugin({
       id: "test-no-routes",
-      type: "interaction",
+      types: ["interaction"],
       version: "1.0.0",
     } as AtlasInteractionPlugin);
     expect(plugin.id).toBe("test-no-routes");
@@ -383,7 +383,7 @@ describe("definePlugin validation", () => {
   test("throws when interaction plugin routes is not a function", () => {
     expect(() => definePlugin({
       id: "test",
-      type: "interaction",
+      types: ["interaction"],
       version: "1.0.0",
       routes: "not-a-function",
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -393,7 +393,7 @@ describe("definePlugin validation", () => {
   test("throws when context plugin missing contextProvider", () => {
     expect(() => definePlugin({
       id: "test",
-      type: "context",
+      types: ["context"],
       version: "1.0.0",
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)).toThrow('must have a "contextProvider"');
@@ -413,7 +413,7 @@ describe("createPlugin", () => {
       }),
       create: (config) => ({
         id: "bigquery",
-        type: "datasource" as const,
+        types: ["datasource"] as const,
         version: "1.0.0",
         config,
         connection: {
@@ -426,7 +426,7 @@ describe("createPlugin", () => {
     const instance = myPlugin({ projectId: "my-proj", dataset: "analytics" });
     expect(instance.id).toBe("bigquery");
     expect(instance.config).toEqual({ projectId: "my-proj", dataset: "analytics" });
-    expect(instance.type).toBe("datasource");
+    expect(instance.types).toEqual(["datasource"]);
   });
 
   test("throws when config is invalid according to schema", () => {
@@ -437,7 +437,7 @@ describe("createPlugin", () => {
       }),
       create: (config) => ({
         id: "bigquery",
-        type: "datasource" as const,
+        types: ["datasource"] as const,
         version: "1.0.0",
         config,
         connection: {
@@ -457,7 +457,7 @@ describe("createPlugin", () => {
       configSchema: z.object({ key: z.string() }),
       create: (config) => ({
         id: "",  // empty id should fail
-        type: "context" as const,
+        types: ["context"] as const,
         version: "1.0.0",
         config,
         contextProvider: { load: async () => "" },
@@ -472,7 +472,7 @@ describe("createPlugin", () => {
       configSchema: z.object({ prefix: z.string().default("prod") }),
       create: (config) => ({
         id: "env-context",
-        type: "context" as const,
+        types: ["context"] as const,
         version: "2.0.0",
         config,
         contextProvider: {
@@ -491,7 +491,7 @@ describe("createPlugin", () => {
       configSchema: z.object({ apiKey: z.string() }),
       create: (config) => ({
         id: "api-plugin",
-        type: "action" as const,
+        types: ["action"] as const,
         version: "1.0.0",
         config,
         actions: [],
@@ -510,7 +510,7 @@ describe("createPlugin", () => {
       }),
       create: (config) => ({
         id: "db-plugin",
-        type: "datasource" as const,
+        types: ["datasource"] as const,
         version: "1.0.0",
         config,
         connection: {
@@ -540,7 +540,7 @@ describe("createPlugin", () => {
       configSchema: customSchema,
       create: (config) => ({
         id: "custom-validator",
-        type: "context" as const,
+        types: ["context"] as const,
         version: "1.0.0",
         config,
         contextProvider: { load: async () => config.endpoint },
@@ -560,7 +560,7 @@ describe("createPlugin", () => {
       configSchema: z.object({ path: z.string(), secret: z.string() }),
       create: (config) => ({
         id: "webhook",
-        type: "interaction" as const,
+        types: ["interaction"] as const,
         version: "1.0.0",
         config,
         routes: () => {},
@@ -593,7 +593,7 @@ describe("definePlugin with config field", () => {
   test("accepts plugins with a config field", () => {
     const plugin = definePlugin({
       id: "with-config",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       config: { projectId: "x", dataset: "y" },
       connection: {
@@ -608,7 +608,7 @@ describe("definePlugin with config field", () => {
   test("plugins without config still work (backward compat)", () => {
     const plugin = definePlugin({
       id: "no-config",
-      type: "context",
+      types: ["context"],
       version: "1.0.0",
       contextProvider: { load: async () => "data" },
     } satisfies AtlasContextPlugin);
@@ -627,7 +627,7 @@ describe("datasource plugin entities and dialect", () => {
   test("accepts static entities array", () => {
     const plugin = definePlugin({
       id: "bq-ds",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -644,7 +644,7 @@ describe("datasource plugin entities and dialect", () => {
   test("accepts entity factory function", () => {
     const plugin = definePlugin({
       id: "bq-ds",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -661,7 +661,7 @@ describe("datasource plugin entities and dialect", () => {
   test("accepts dialect string", () => {
     const plugin = definePlugin({
       id: "bq-ds",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -676,7 +676,7 @@ describe("datasource plugin entities and dialect", () => {
   test("accepts connection.validate function", () => {
     const plugin = definePlugin({
       id: "soql-ds",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -698,7 +698,7 @@ describe("datasource plugin entities and dialect", () => {
   test("connection.validate is optional (backward compat)", () => {
     const plugin: AtlasDatasourcePlugin = definePlugin({
       id: "plain-ds",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -712,7 +712,7 @@ describe("datasource plugin entities and dialect", () => {
   test("throws when connection.validate is not a function", () => {
     expect(() => definePlugin({
       id: "bad-validate",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -728,7 +728,7 @@ describe("datasource plugin entities and dialect", () => {
       configSchema: z.object({ instanceUrl: z.string() }),
       create: (config) => ({
         id: "sf",
-        type: "datasource" as const,
+        types: ["datasource"] as const,
         version: "1.0.0",
         config,
         connection: {
@@ -748,7 +748,7 @@ describe("datasource plugin entities and dialect", () => {
   test("accepts parserDialect string", () => {
     const plugin = definePlugin({
       id: "snowflake-ds",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -763,7 +763,7 @@ describe("datasource plugin entities and dialect", () => {
   test("accepts forbiddenPatterns array", () => {
     const plugin = definePlugin({
       id: "strict-ds",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -778,7 +778,7 @@ describe("datasource plugin entities and dialect", () => {
   test("parserDialect and forbiddenPatterns are optional (backward compat)", () => {
     const plugin: AtlasDatasourcePlugin = definePlugin({
       id: "plain-ds2",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -793,7 +793,7 @@ describe("datasource plugin entities and dialect", () => {
   test("throws when parserDialect is empty string", () => {
     expect(() => definePlugin({
       id: "bad-dialect",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -807,7 +807,7 @@ describe("datasource plugin entities and dialect", () => {
   test("throws when parserDialect is whitespace-only", () => {
     expect(() => definePlugin({
       id: "bad-dialect",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -821,7 +821,7 @@ describe("datasource plugin entities and dialect", () => {
   test("throws when parserDialect is not a string", () => {
     expect(() => definePlugin({
       id: "bad-dialect",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -835,7 +835,7 @@ describe("datasource plugin entities and dialect", () => {
   test("throws when forbiddenPatterns is not an array", () => {
     expect(() => definePlugin({
       id: "bad-patterns",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -849,7 +849,7 @@ describe("datasource plugin entities and dialect", () => {
   test("throws when forbiddenPatterns contains non-RegExp", () => {
     expect(() => definePlugin({
       id: "bad-patterns",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -863,7 +863,7 @@ describe("datasource plugin entities and dialect", () => {
   test("throws when forbiddenPatterns contains duck-typed RegExp-like object", () => {
     expect(() => definePlugin({
       id: "bad-patterns",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -877,7 +877,7 @@ describe("datasource plugin entities and dialect", () => {
   test("accepts empty forbiddenPatterns array", () => {
     const plugin = definePlugin({
       id: "empty-patterns",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -894,7 +894,7 @@ describe("datasource plugin entities and dialect", () => {
       configSchema: z.object({ account: z.string() }),
       create: (config) => ({
         id: "snowflake",
-        type: "datasource" as const,
+        types: ["datasource"] as const,
         version: "1.0.0",
         config,
         connection: {
@@ -914,7 +914,7 @@ describe("datasource plugin entities and dialect", () => {
   test("entities and dialect are optional (backward compat)", () => {
     const plugin: AtlasDatasourcePlugin = definePlugin({
       id: "plain-ds",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -929,7 +929,7 @@ describe("datasource plugin entities and dialect", () => {
   test("throws when entities is not array or function", () => {
     expect(() => definePlugin({
       id: "bad-entities",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -942,7 +942,7 @@ describe("datasource plugin entities and dialect", () => {
   test("throws when dialect is empty string", () => {
     expect(() => definePlugin({
       id: "bad-dialect",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -955,7 +955,7 @@ describe("datasource plugin entities and dialect", () => {
   test("throws when dialect is whitespace-only", () => {
     expect(() => definePlugin({
       id: "bad-dialect",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -968,7 +968,7 @@ describe("datasource plugin entities and dialect", () => {
   test("throws when entity element is missing name", () => {
     expect(() => definePlugin({
       id: "bad-entity",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -981,7 +981,7 @@ describe("datasource plugin entities and dialect", () => {
   test("throws when entity element is missing yaml", () => {
     expect(() => definePlugin({
       id: "bad-entity",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -994,7 +994,7 @@ describe("datasource plugin entities and dialect", () => {
   test("throws when entity element has non-string name", () => {
     expect(() => definePlugin({
       id: "bad-entity",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -1007,7 +1007,7 @@ describe("datasource plugin entities and dialect", () => {
   test("throws when entity element has non-string yaml", () => {
     expect(() => definePlugin({
       id: "bad-entity",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -1020,7 +1020,7 @@ describe("datasource plugin entities and dialect", () => {
   test("throws when entity element is null", () => {
     expect(() => definePlugin({
       id: "bad-entity",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -1035,7 +1035,7 @@ describe("datasource plugin entities and dialect", () => {
       configSchema: z.object({ projectId: z.string() }),
       create: (config) => ({
         id: "bq",
-        type: "datasource" as const,
+        types: ["datasource"] as const,
         version: "1.0.0",
         config,
         connection: {
@@ -1061,7 +1061,7 @@ describe("sandbox plugin", () => {
   test("definePlugin accepts sandbox plugin with priority", () => {
     const plugin = definePlugin({
       id: "my-sandbox",
-      type: "sandbox" as const,
+      types: ["sandbox"] as const,
       version: "1.0.0",
       sandbox: {
         create: () => ({
@@ -1077,7 +1077,7 @@ describe("sandbox plugin", () => {
   test("definePlugin accepts sandbox plugin without priority (optional)", () => {
     const plugin = definePlugin({
       id: "no-priority",
-      type: "sandbox",
+      types: ["sandbox"],
       version: "1.0.0",
       sandbox: {
         create: () => ({
@@ -1092,7 +1092,7 @@ describe("sandbox plugin", () => {
   test("definePlugin accepts sandbox plugin with security metadata", () => {
     const plugin = definePlugin({
       id: "secure-sandbox",
-      type: "sandbox",
+      types: ["sandbox"],
       version: "1.0.0",
       sandbox: {
         create: () => ({
@@ -1115,7 +1115,7 @@ describe("sandbox plugin", () => {
   test("definePlugin accepts sandbox plugin with close method", () => {
     const plugin = definePlugin({
       id: "closeable-sandbox",
-      type: "sandbox",
+      types: ["sandbox"],
       version: "1.0.0",
       sandbox: {
         create: () => ({
@@ -1131,7 +1131,7 @@ describe("sandbox plugin", () => {
   test("definePlugin accepts sandbox plugin with async create", () => {
     const plugin = definePlugin({
       id: "async-sandbox",
-      type: "sandbox",
+      types: ["sandbox"],
       version: "1.0.0",
       sandbox: {
         create: async (_root: string) => ({
@@ -1148,7 +1148,7 @@ describe("sandbox plugin validation", () => {
   test("throws when sandbox plugin missing sandbox property", () => {
     expect(() => definePlugin({
       id: "test",
-      type: "sandbox",
+      types: ["sandbox"],
       version: "1.0.0",
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)).toThrow('must have a "sandbox"');
@@ -1157,7 +1157,7 @@ describe("sandbox plugin validation", () => {
   test("throws when sandbox.create is not a function", () => {
     expect(() => definePlugin({
       id: "test",
-      type: "sandbox",
+      types: ["sandbox"],
       version: "1.0.0",
       sandbox: { create: "not-a-function" },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1167,7 +1167,7 @@ describe("sandbox plugin validation", () => {
   test("throws when priority is not a number", () => {
     expect(() => definePlugin({
       id: "test",
-      type: "sandbox",
+      types: ["sandbox"],
       version: "1.0.0",
       sandbox: {
         create: () => ({ exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }) }),
@@ -1180,7 +1180,7 @@ describe("sandbox plugin validation", () => {
   test("throws when priority is NaN", () => {
     expect(() => definePlugin({
       id: "test",
-      type: "sandbox",
+      types: ["sandbox"],
       version: "1.0.0",
       sandbox: {
         create: () => ({ exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }) }),
@@ -1197,7 +1197,7 @@ describe("createPlugin with sandbox type", () => {
       configSchema: z.object({ timeout: z.number().default(10) }),
       create: (config) => ({
         id: "custom-sandbox",
-        type: "sandbox" as const,
+        types: ["sandbox"] as const,
         version: "1.0.0",
         config,
         sandbox: {
@@ -1211,7 +1211,7 @@ describe("createPlugin with sandbox type", () => {
 
     const instance = mySandbox({ timeout: 30 });
     expect(instance.id).toBe("custom-sandbox");
-    expect(instance.type).toBe("sandbox");
+    expect(instance.types).toEqual(["sandbox"]);
     expect(instance.config).toEqual({ timeout: 30 });
     expect(instance.sandbox.priority).toBe(65);
   });
@@ -1221,7 +1221,7 @@ describe("createPlugin with sandbox type", () => {
       configSchema: z.object({ timeout: z.number().default(10) }),
       create: (config) => ({
         id: "defaulted-sandbox",
-        type: "sandbox" as const,
+        types: ["sandbox"] as const,
         version: "1.0.0",
         config,
         sandbox: {

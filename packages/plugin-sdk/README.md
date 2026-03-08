@@ -12,7 +12,7 @@ export const myPlugin = createPlugin({
   configSchema: z.object({ url: z.string() }),
   create: (config) => ({
     id: "my-datasource",
-    type: "datasource" as const,
+    types: ["datasource"] as const,
     version: "1.0.0",
     config,
     connection: {
@@ -152,7 +152,7 @@ export const myPlugin = createPlugin({
   configSchema,
   create: (config) => ({
     id: "my-datasource",
-    type: "datasource" as const,
+    types: ["datasource"] as const,
     version: "1.0.0",
     config,
     connection: { create: () => connect(config.url), dbType: "postgres" },
@@ -169,7 +169,7 @@ import { definePlugin } from "@useatlas/plugin-sdk";
 
 export default definePlugin({
   id: "my-context",
-  type: "context",
+  types: ["context"],
   version: "1.0.0",
   contextProvider: { async load() { return "Extra context..."; } },
 });

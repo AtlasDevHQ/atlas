@@ -80,7 +80,7 @@ export const MOCK_ADMIN_OVERVIEW = {
   pluginHealth: [
     {
       id: "datasource-pg",
-      type: "datasource" as const,
+      types: ["datasource"] as const,
       version: "1.0.0",
       name: "PostgreSQL",
       status: "healthy" as const,
@@ -134,7 +134,7 @@ export const MOCK_PLUGINS = {
   plugins: [
     {
       id: "datasource-pg",
-      type: "datasource" as const,
+      types: ["datasource"] as const,
       version: "1.0.0",
       name: "PostgreSQL",
       status: "healthy" as const,

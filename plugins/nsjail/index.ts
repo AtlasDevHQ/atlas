@@ -208,7 +208,7 @@ export function buildNsjailSandboxPlugin(
 ): AtlasSandboxPlugin<NsjailSandboxConfig> {
   return {
     id: "nsjail-sandbox",
-    type: "sandbox" as const,
+    types: ["sandbox"] as const,
     version: "0.1.0",
     name: "nsjail Sandbox",
     config,

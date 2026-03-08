@@ -60,7 +60,7 @@ describe("emailPlugin — shape validation", () => {
   test("createPlugin() produces a valid AtlasActionPlugin", () => {
     const plugin = emailPlugin(VALID_CONFIG);
     expect(plugin.id).toBe("email-action");
-    expect(plugin.type).toBe("action");
+    expect(plugin.types).toEqual(["action"]);
     expect(plugin.version).toBe("1.0.0");
     expect(plugin.name).toBe("Email Action");
     expect(Array.isArray(plugin.actions)).toBe(true);
@@ -678,8 +678,8 @@ describe("emailPlugin — config registration", () => {
 
     expect(typeof plugin.id).toBe("string");
     expect(plugin.id.trim().length).toBeGreaterThan(0);
-    expect(typeof plugin.type).toBe("string");
-    expect(["datasource", "context", "interaction", "action"]).toContain(plugin.type);
+    expect(Array.isArray(plugin.types)).toBe(true);
+    expect(plugin.types.every((t: string) => ["datasource", "context", "interaction", "action", "sandbox"].includes(t))).toBe(true);
     expect(typeof plugin.version).toBe("string");
     expect(plugin.version.trim().length).toBeGreaterThan(0);
   });

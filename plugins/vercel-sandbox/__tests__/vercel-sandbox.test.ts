@@ -46,7 +46,7 @@ describe("config validation", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = vercelSandboxPlugin({} as any);
     expect(plugin.id).toBe("vercel-sandbox");
-    expect(plugin.type).toBe("sandbox");
+    expect(plugin.types).toEqual(["sandbox"]);
   });
 
   test("rejects accessToken without teamId", () => {
@@ -75,7 +75,7 @@ describe("plugin shape", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = vercelSandboxPlugin({} as any);
     expect(plugin.id).toBe("vercel-sandbox");
-    expect(plugin.type).toBe("sandbox");
+    expect(plugin.types).toEqual(["sandbox"]);
     expect(plugin.version).toBe("0.1.0");
     expect(plugin.name).toBe("Vercel Sandbox");
   });

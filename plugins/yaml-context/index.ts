@@ -231,7 +231,7 @@ export function buildContextYamlPlugin(
 
   return definePlugin({
     id: "context-yaml",
-    type: "context" as const,
+    types: ["context"] as const,
     version: "0.1.0",
     name: "YAML Semantic Layer Context",
     config,

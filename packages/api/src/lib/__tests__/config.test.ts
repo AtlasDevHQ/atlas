@@ -887,13 +887,13 @@ describe("plugin validation", () => {
       plugins: [
         {
           id: "my-plugin",
-          type: "datasource",
+          types: ["datasource"],
           version: "1.0.0",
           connection: { create: () => ({}), dbType: "postgres" },
         },
         {
           id: "ctx-plugin",
-          type: "context",
+          types: ["context"],
           version: "2.0.0",
           contextProvider: { load: async () => "" },
         },
@@ -911,7 +911,7 @@ describe("plugin validation", () => {
     expect(() =>
       validateAndResolve({
         plugins: [
-          { type: "datasource", version: "1.0.0" },
+          { types: ["datasource"], version: "1.0.0" },
         ],
       }),
     ).toThrow('missing "id"');
@@ -921,37 +921,47 @@ describe("plugin validation", () => {
     expect(() =>
       validateAndResolve({
         plugins: [
-          { id: "  ", type: "datasource", version: "1.0.0" },
+          { id: "  ", types: ["datasource"], version: "1.0.0" },
         ],
       }),
     ).toThrow('empty "id"');
   });
 
-  it("throws when plugin is missing type", () => {
+  it("throws when plugin is missing types", () => {
     expect(() =>
       validateAndResolve({
         plugins: [
           { id: "my-plugin", version: "1.0.0" },
         ],
       }),
-    ).toThrow('missing "type"');
+    ).toThrow('missing "types"');
   });
 
-  it("throws when plugin has invalid type", () => {
+  it("throws when plugin has invalid type in types array", () => {
     expect(() =>
       validateAndResolve({
         plugins: [
-          { id: "my-plugin", type: "invalid", version: "1.0.0" },
+          { id: "my-plugin", types: ["invalid"], version: "1.0.0" },
         ],
       }),
     ).toThrow('invalid type "invalid"');
+  });
+
+  it("throws when plugin has empty types array", () => {
+    expect(() =>
+      validateAndResolve({
+        plugins: [
+          { id: "my-plugin", types: [], version: "1.0.0" },
+        ],
+      }),
+    ).toThrow('empty "types" array');
   });
 
   it("throws when plugin is missing version", () => {
     expect(() =>
       validateAndResolve({
         plugins: [
-          { id: "my-plugin", type: "datasource" },
+          { id: "my-plugin", types: ["datasource"] },
         ],
       }),
     ).toThrow('missing "version"');
@@ -961,7 +971,7 @@ describe("plugin validation", () => {
     expect(() =>
       validateAndResolve({
         plugins: [
-          { id: "my-plugin", type: "datasource", version: "" },
+          { id: "my-plugin", types: ["datasource"], version: "" },
         ],
       }),
     ).toThrow('empty "version"');
@@ -995,8 +1005,8 @@ describe("plugin validation", () => {
     expect(() =>
       validateAndResolve({
         plugins: [
-          { id: "my-plugin", type: "datasource", version: "1.0.0" },
-          { id: "my-plugin", type: "context", version: "2.0.0" },
+          { id: "my-plugin", types: ["datasource"], version: "1.0.0" },
+          { id: "my-plugin", types: ["context"], version: "2.0.0" },
         ],
       }),
     ).toThrow('duplicate id "my-plugin"');
@@ -1006,7 +1016,7 @@ describe("plugin validation", () => {
     try {
       validateAndResolve({
         plugins: [
-          { id: "  ", type: "datasource", version: "1.0.0" },
+          { id: "  ", types: ["datasource"], version: "1.0.0" },
         ],
       });
       expect.unreachable("should have thrown");
@@ -1021,8 +1031,8 @@ describe("plugin validation", () => {
     try {
       validateAndResolve({
         plugins: [
-          { id: "good", type: "datasource", version: "1.0.0" },
-          { id: "bad-plugin", type: "invalid", version: "1.0.0" },
+          { id: "good", types: ["datasource"], version: "1.0.0" },
+          { id: "bad-plugin", types: ["invalid"], version: "1.0.0" },
         ],
       });
       expect.unreachable("should have thrown");
@@ -1035,15 +1045,15 @@ describe("plugin validation", () => {
     try {
       validateAndResolve({
         plugins: [
-          { type: "datasource", version: "1.0.0" },  // missing id
-          { id: "p2", version: "1.0.0" },             // missing type
+          { types: ["datasource"], version: "1.0.0" },  // missing id
+          { id: "p2", version: "1.0.0" },             // missing types
         ],
       });
       expect.unreachable("should have thrown");
     } catch (err) {
       const msg = (err as Error).message;
       expect(msg).toContain('missing "id"');
-      expect(msg).toContain('missing "type"');
+      expect(msg).toContain('missing "types"');
     }
   });
 
@@ -1051,7 +1061,7 @@ describe("plugin validation", () => {
     // Simulate what createPlugin returns — a plain object with id, type, version, config
     const factoryPlugin = {
       id: "bigquery",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       config: { projectId: "my-proj", dataset: "analytics" },
       connection: { create: () => ({}), dbType: "bigquery" },
@@ -1066,7 +1076,7 @@ describe("plugin validation", () => {
       plugins: [
         {
           id: "e2b-sandbox",
-          type: "sandbox",
+          types: ["sandbox"],
           version: "0.1.0",
           sandbox: { create: () => ({}) },
         },
@@ -1079,7 +1089,7 @@ describe("plugin validation", () => {
     expect(() =>
       validateAndResolve({
         plugins: [
-          { id: "bad", type: "compute", version: "1.0.0" },
+          { id: "bad", types: ["compute"], version: "1.0.0" },
         ],
       }),
     ).toThrow('invalid type "compute"');
@@ -1088,7 +1098,7 @@ describe("plugin validation", () => {
   it("includes all valid types in the invalid-type error message", () => {
     try {
       validateAndResolve({
-        plugins: [{ id: "bad", type: "bogus", version: "1.0.0" }],
+        plugins: [{ id: "bad", types: ["bogus"], version: "1.0.0" }],
       });
       expect.unreachable("should have thrown");
     } catch (err) {

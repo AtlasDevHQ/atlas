@@ -446,11 +446,17 @@ function validatePlugins(plugins: unknown[]): void {
       }
     }
 
-    // type
-    if (!("type" in obj) || typeof obj.type !== "string") {
-      errors.push(`${label} is missing "type" (string)`);
-    } else if (!VALID_PLUGIN_TYPES.has(obj.type)) {
-      errors.push(`${label} has invalid type "${obj.type}" — must be one of: ${[...VALID_PLUGIN_TYPES].join(", ")}`);
+    // types
+    if (!("types" in obj) || !Array.isArray(obj.types)) {
+      errors.push(`${label} is missing "types" (array of plugin types)`);
+    } else if (obj.types.length === 0) {
+      errors.push(`${label} has an empty "types" array — must contain at least one plugin type`);
+    } else {
+      for (const t of obj.types) {
+        if (typeof t !== "string" || !VALID_PLUGIN_TYPES.has(t)) {
+          errors.push(`${label} has invalid type "${t}" in "types" — must be one of: ${[...VALID_PLUGIN_TYPES].join(", ")}`);
+        }
+      }
     }
 
     // version

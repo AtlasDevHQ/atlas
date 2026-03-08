@@ -62,7 +62,7 @@ export function buildDuckDBPlugin(
 
   return {
     id: "duckdb-datasource",
-    type: "datasource" as const,
+    types: ["datasource"] as const,
     version: "0.1.0",
     name: "DuckDB DataSource",
     config,

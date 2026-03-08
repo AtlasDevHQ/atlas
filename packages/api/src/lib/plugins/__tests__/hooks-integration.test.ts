@@ -96,7 +96,7 @@ function makeHookPlugin(
 ): PluginLike {
   return {
     id,
-    type: "context" as PluginLike["type"],
+    types: ["context"] as PluginLike["types"],
     version: "1.0.0",
     hooks,
   };

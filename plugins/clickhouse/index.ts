@@ -54,7 +54,7 @@ export function buildClickHousePlugin(
 
   return {
     id: "clickhouse-datasource",
-    type: "datasource" as const,
+    types: ["datasource"] as const,
     version: "0.1.0",
     name: "ClickHouse DataSource",
     config,

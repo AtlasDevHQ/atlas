@@ -341,7 +341,7 @@ export function buildVercelSandboxPlugin(
 ): AtlasSandboxPlugin<VercelSandboxConfig> {
   return {
     id: "vercel-sandbox",
-    type: "sandbox" as const,
+    types: ["sandbox"] as const,
     version: "0.1.0",
     name: "Vercel Sandbox",
     config,

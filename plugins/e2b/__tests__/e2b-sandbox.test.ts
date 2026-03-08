@@ -49,7 +49,7 @@ describe("config validation", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = e2bSandboxPlugin({ apiKey: "test-key" } as any);
     expect(plugin.id).toBe("e2b-sandbox");
-    expect(plugin.type).toBe("sandbox");
+    expect(plugin.types).toEqual(["sandbox"]);
     expect(plugin.config?.timeoutSec).toBe(30);
   });
 
@@ -90,7 +90,7 @@ describe("plugin shape", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = e2bSandboxPlugin({ apiKey: "k" } as any);
     expect(plugin.id).toBe("e2b-sandbox");
-    expect(plugin.type).toBe("sandbox");
+    expect(plugin.types).toEqual(["sandbox"]);
     expect(plugin.version).toBe("0.1.0");
     expect(plugin.name).toBe("E2B Sandbox");
   });

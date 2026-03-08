@@ -250,13 +250,13 @@ The scheduler uses an in-process lock to prevent overlapping ticks. If you see d
 
 - Verify `ATLAS_ACTIONS_ENABLED=true`
 - Actions require authentication (any mode except `none`)
-- Actions require an internal database (`DATABASE_URL`) for the action log
+- Without `DATABASE_URL`, actions use in-memory storage (action log is lost on restart). Set `DATABASE_URL` for persistent tracking
 - Check that the action plugin is loaded (built-in actions like `email:send` and `jira:create` register automatically)
 
 ### Approval Stuck in "Pending"
 
 - The user approving must have the required role: `analyst` for `manual` mode, `admin` for `admin-only` mode
-- In `admin-only` mode, the requesting user cannot approve their own action (separation of duties)
+- In `admin-only` mode, the requesting user cannot approve or deny their own action (separation of duties)
 - Check that the action hasn't expired or been superseded
 
 ### Execution Failed

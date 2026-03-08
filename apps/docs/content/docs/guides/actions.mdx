@@ -192,7 +192,7 @@ Action plugins follow the same pattern as built-in actions. See [Plugin Authorin
 
 ## Troubleshooting
 
-**Actions not appearing** -- Verify `ATLAS_ACTIONS_ENABLED=true`, authentication is configured, and `DATABASE_URL` is set.
+**Actions not appearing** -- Verify `ATLAS_ACTIONS_ENABLED=true` and authentication is configured (any mode except `none`). Without `DATABASE_URL`, actions still work but use in-memory storage.
 
 **Approval stuck** -- Check that the approving user has the required role. In `admin-only` mode, the requester cannot self-approve.
 

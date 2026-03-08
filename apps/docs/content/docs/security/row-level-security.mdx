@@ -108,7 +108,7 @@ RLS requires an authentication mode that provides user claims:
 | Auth Mode | Claims Available | RLS Compatible |
 |-----------|-----------------|----------------|
 | `none` | No | No -- queries blocked |
-| `api-key` | No (unless `ATLAS_AUTH_ROLE_CLAIM` provides claims) | Typically no |
+| `api-key` | Only via `ATLAS_RLS_CLAIMS` (static JSON) | Yes, with static claims |
 | `managed` | Yes (Better Auth session) | Yes |
 | `byot` | Yes (JWT claims) | Yes -- primary use case |
 
@@ -221,6 +221,6 @@ If RLS is working but queries return empty results, the claim value may not matc
 ATLAS_LOG_LEVEL=debug
 ```
 
-Debug logs show the resolved claim values and injected conditions.
+Look for `"RLS conditions injected into SQL"` log messages to see the exact WHERE clauses applied to each query.
 
 See [Troubleshooting](/docs/guides/troubleshooting#row-level-security) for more diagnostic steps.

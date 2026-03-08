@@ -13,6 +13,12 @@ import { Accordion, Accordions } from "fumadocs-ui/components/accordion";
 import { LLMCopyButton } from "@/components/llm-copy-button";
 import { getGithubLastEdit } from "fumadocs-core/content/github";
 
+/**
+ * Fetch the last commit date for a docs page via the GitHub API.
+ * Returns undefined in development (to avoid rate limits) and on any
+ * API failure (graceful degradation — the UI simply hides the date).
+ * Results are cached for 24 hours (86400s) via Next.js fetch cache.
+ */
 async function getLastUpdate(path: string): Promise<Date | undefined> {
   if (process.env.NODE_ENV === "development") return undefined;
 
@@ -21,14 +27,20 @@ async function getLastUpdate(path: string): Promise<Date | undefined> {
       owner: "AtlasDevHQ",
       repo: "atlas",
       sha: "main",
-      path: `apps/docs/content/docs/${path}.mdx`,
+      // page.path already includes the .mdx extension (e.g., "guides/slack.mdx")
+      path: `apps/docs/content/docs/${path}`,
+      // getGithubLastEdit sets this as the raw Authorization header value
       token: process.env.GITHUB_TOKEN
         ? `Bearer ${process.env.GITHUB_TOKEN}`
         : undefined,
       options: { next: { revalidate: 86400 } },
     });
     return time ?? undefined;
-  } catch {
+  } catch (error) {
+    console.warn(
+      `[docs] Failed to fetch last edit time for "${path}":`,
+      error instanceof Error ? error.message : error,
+    );
     return undefined;
   }
 }

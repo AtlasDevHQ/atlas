@@ -7,7 +7,8 @@ export async function GET(
   { params }: { params: Promise<{ slug: string[] }> },
 ) {
   const { slug } = await params;
-  // Remove trailing "image.png" segment
+  // OG image URLs end with /image.png (e.g., /docs-og/guides/slack/image.png).
+  // Strip that trailing segment to recover the page slug for content lookup.
   const pageSlug = slug.slice(0, -1);
   const page = source.getPage(pageSlug);
   if (!page) notFound();

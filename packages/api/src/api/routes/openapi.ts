@@ -92,7 +92,7 @@ function buildSpec(): Record<string, unknown> {
     openapi: "3.1.0",
     info: {
       title: "Atlas API",
-      version: "1.0.0",
+      version: "0.1.0",
       description:
         "Text-to-SQL data analyst agent. Ask natural-language questions about your data and receive structured answers.",
     },
@@ -158,6 +158,10 @@ function buildSpec(): Record<string, unknown> {
             "403": errorResponse("Forbidden — insufficient permissions"),
             "404": errorResponse(
               "Conversation not found (invalid conversationId)",
+            ),
+            "422": errorResponse(
+              "Validation error (invalid request body)",
+              ValidationErrorSchema,
             ),
             "429": errorResponse(
               "Rate limit exceeded",
@@ -322,7 +326,7 @@ function buildSpec(): Record<string, unknown> {
         patch: {
           operationId: "starConversation",
           summary: "Star or unstar a conversation",
-          description: "Toggles the starred status of a conversation.",
+          description: "Sets the starred status of a conversation.",
           tags: ["Conversations"],
           security: [{ bearerAuth: [] }, {}],
           parameters: [
@@ -421,7 +425,7 @@ function buildSpec(): Record<string, unknown> {
               required: false,
               schema: {
                 type: "string",
-                enum: ["pending", "approved", "denied", "executed", "failed"],
+                enum: ["pending", "approved", "denied", "executed", "failed", "timed_out", "auto_approved"],
                 default: "pending",
               },
             },
@@ -450,7 +454,7 @@ function buildSpec(): Record<string, unknown> {
                             action_type: { type: "string" },
                             target: { type: "string" },
                             summary: { type: "string" },
-                            status: { type: "string", enum: ["pending", "approved", "denied", "executed", "failed"] },
+                            status: { type: "string", enum: ["pending", "approved", "denied", "executed", "failed", "timed_out", "auto_approved"] },
                             requested_by: { type: "string" },
                             created_at: { type: "string", format: "date-time" },
                           },
@@ -1142,7 +1146,7 @@ function buildSpec(): Record<string, unknown> {
         get: {
           operationId: "adminGetCatalog",
           summary: "Get catalog",
-          description: "Returns the parsed catalog.yml. Returns { catalog: null } if no catalog exists. Requires admin role.",
+          description: "Returns the parsed catalog.yml. Returns an object with a null catalog field if no catalog exists. Requires admin role.",
           tags: ["Admin"],
           security: [{ bearerAuth: [] }],
           responses: {
@@ -1151,6 +1155,73 @@ function buildSpec(): Record<string, unknown> {
               content: { "application/json": { schema: { type: "object" } } },
             },
             ...authErrors,
+          },
+        },
+      },
+
+      "/api/v1/admin/semantic/raw/{file}": {
+        get: {
+          operationId: "adminGetRawFile",
+          summary: "Get raw YAML file",
+          description:
+            "Serves a raw top-level YAML file from the semantic layer (e.g. catalog.yml, glossary.yml). " +
+            "Only .yml files matching the allowed pattern are served. Requires admin role.",
+          tags: ["Admin"],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            {
+              name: "file",
+              in: "path",
+              required: true,
+              schema: { type: "string", pattern: "^(catalog|glossary)\\.yml$" },
+              description: "Top-level YAML filename (e.g. 'catalog.yml').",
+            },
+          ],
+          responses: {
+            "200": {
+              description: "Raw YAML content",
+              content: { "text/plain": { schema: { type: "string" } } },
+            },
+            "400": errorResponse("Invalid file path"),
+            ...authErrors,
+            "404": errorResponse("File not found"),
+          },
+        },
+      },
+
+      "/api/v1/admin/semantic/raw/{dir}/{file}": {
+        get: {
+          operationId: "adminGetRawDirFile",
+          summary: "Get raw YAML file from subdirectory",
+          description:
+            "Serves a raw YAML file from a semantic layer subdirectory (e.g. entities/orders.yml, metrics/revenue.yml). " +
+            "Only .yml files in entities/ or metrics/ are allowed. Requires admin role.",
+          tags: ["Admin"],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            {
+              name: "dir",
+              in: "path",
+              required: true,
+              schema: { type: "string", enum: ["entities", "metrics"] },
+              description: "Subdirectory name.",
+            },
+            {
+              name: "file",
+              in: "path",
+              required: true,
+              schema: { type: "string", pattern: "^[a-zA-Z0-9_-]+\\.yml$" },
+              description: "YAML filename (e.g. 'orders.yml').",
+            },
+          ],
+          responses: {
+            "200": {
+              description: "Raw YAML content",
+              content: { "text/plain": { schema: { type: "string" } } },
+            },
+            "400": errorResponse("Invalid file path"),
+            ...authErrors,
+            "404": errorResponse("File not found"),
           },
         },
       },

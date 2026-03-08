@@ -11,8 +11,9 @@ import * as fs from "fs";
 import * as path from "path";
 import { Hono } from "hono";
 
-// Import only the openapi route — this pulls in Zod schemas but NOT database
-// drivers, auth middleware, or the agent. Safe to run in CI.
+// Import the openapi route — this transitively loads route modules and their
+// dependencies, but all database/auth modules use lazy initialization, so no
+// connections are opened at import time. Safe to run in CI.
 // @ts-expect-error — Bun resolves .ts imports at runtime
 const { openapi } = await import("../src/api/routes/openapi.ts");
 

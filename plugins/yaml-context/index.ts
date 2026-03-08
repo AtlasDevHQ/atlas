@@ -7,7 +7,7 @@
  * @example
  * ```typescript
  * import { defineConfig } from "@atlas/api/lib/config";
- * import { contextYamlPlugin } from "@atlas/plugin-yaml-context";
+ * import { contextYamlPlugin } from "@useatlas/yaml-context";
  *
  * export default defineConfig({
  *   plugins: [

@@ -13,7 +13,7 @@
  * Usage in atlas.config.ts:
  * ```typescript
  * import { defineConfig } from "@atlas/api/lib/config";
- * import { vercelSandboxPlugin } from "@atlas/plugin-vercel-sandbox";
+ * import { vercelSandboxPlugin } from "@useatlas/vercel-sandbox";
  *
  * // On Vercel (auto-detected OIDC):
  * export default defineConfig({

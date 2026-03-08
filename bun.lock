@@ -218,8 +218,8 @@
         "tw-animate-css": "^1.4.0",
       },
     },
-    "plugins/clickhouse-datasource": {
-      "name": "@atlas/plugin-clickhouse-datasource",
+    "plugins/clickhouse": {
+      "name": "@useatlas/clickhouse",
       "version": "0.1.0",
       "dependencies": {
         "@useatlas/plugin-sdk": "workspace:*",
@@ -236,8 +236,8 @@
         "@clickhouse/client",
       ],
     },
-    "plugins/daytona-sandbox": {
-      "name": "@atlas/plugin-daytona-sandbox",
+    "plugins/daytona": {
+      "name": "@useatlas/daytona",
       "version": "0.1.0",
       "dependencies": {
         "@useatlas/plugin-sdk": "workspace:*",
@@ -254,8 +254,8 @@
         "@daytonaio/sdk",
       ],
     },
-    "plugins/duckdb-datasource": {
-      "name": "@atlas/plugin-duckdb-datasource",
+    "plugins/duckdb": {
+      "name": "@useatlas/duckdb",
       "version": "0.1.0",
       "dependencies": {
         "@useatlas/plugin-sdk": "workspace:*",
@@ -272,8 +272,8 @@
         "@duckdb/node-api",
       ],
     },
-    "plugins/e2b-sandbox": {
-      "name": "@atlas/plugin-e2b-sandbox",
+    "plugins/e2b": {
+      "name": "@useatlas/e2b",
       "version": "0.1.0",
       "dependencies": {
         "@useatlas/plugin-sdk": "workspace:*",
@@ -290,8 +290,8 @@
         "e2b",
       ],
     },
-    "plugins/email-action": {
-      "name": "@atlas/plugin-email-action",
+    "plugins/email": {
+      "name": "@useatlas/email",
       "version": "0.1.0",
       "dependencies": {
         "@useatlas/plugin-sdk": "workspace:*",
@@ -305,8 +305,8 @@
         "zod": "^4.3.6",
       },
     },
-    "plugins/jira-action": {
-      "name": "@atlas/plugin-jira-action",
+    "plugins/jira": {
+      "name": "@useatlas/jira",
       "version": "0.1.0",
       "dependencies": {
         "@useatlas/plugin-sdk": "workspace:*",
@@ -320,8 +320,8 @@
         "zod": "^4.0.0",
       },
     },
-    "plugins/mcp-interaction": {
-      "name": "@atlas/plugin-mcp-interaction",
+    "plugins/mcp": {
+      "name": "@useatlas/mcp",
       "version": "0.1.0",
       "dependencies": {
         "@useatlas/plugin-sdk": "workspace:*",
@@ -338,8 +338,8 @@
         "zod": "^4.3.6",
       },
     },
-    "plugins/mysql-datasource": {
-      "name": "@atlas/plugin-mysql-datasource",
+    "plugins/mysql": {
+      "name": "@useatlas/mysql",
       "version": "0.1.0",
       "dependencies": {
         "@useatlas/plugin-sdk": "workspace:*",
@@ -356,8 +356,8 @@
         "mysql2",
       ],
     },
-    "plugins/nsjail-sandbox": {
-      "name": "@atlas/plugin-nsjail-sandbox",
+    "plugins/nsjail": {
+      "name": "@useatlas/nsjail",
       "version": "0.1.0",
       "dependencies": {
         "@useatlas/plugin-sdk": "workspace:*",
@@ -368,8 +368,8 @@
         "zod": "^4.3.6",
       },
     },
-    "plugins/salesforce-datasource": {
-      "name": "@atlas/plugin-salesforce-datasource",
+    "plugins/salesforce": {
+      "name": "@useatlas/salesforce",
       "version": "0.1.0",
       "dependencies": {
         "@useatlas/plugin-sdk": "workspace:*",
@@ -386,8 +386,8 @@
         "jsforce",
       ],
     },
-    "plugins/sidecar-sandbox": {
-      "name": "@atlas/plugin-sidecar-sandbox",
+    "plugins/sidecar": {
+      "name": "@useatlas/sidecar",
       "version": "0.1.0",
       "dependencies": {
         "@useatlas/plugin-sdk": "workspace:*",
@@ -398,8 +398,8 @@
         "zod": "^4.3.6",
       },
     },
-    "plugins/slack-interaction": {
-      "name": "@atlas/plugin-slack-interaction",
+    "plugins/slack": {
+      "name": "@useatlas/slack",
       "version": "0.1.0",
       "dependencies": {
         "@useatlas/plugin-sdk": "workspace:*",
@@ -413,8 +413,8 @@
         "zod": "^4.3.6",
       },
     },
-    "plugins/snowflake-datasource": {
-      "name": "@atlas/plugin-snowflake-datasource",
+    "plugins/snowflake": {
+      "name": "@useatlas/snowflake",
       "version": "0.1.0",
       "dependencies": {
         "@useatlas/plugin-sdk": "workspace:*",
@@ -432,7 +432,7 @@
       ],
     },
     "plugins/vercel-sandbox": {
-      "name": "@atlas/plugin-vercel-sandbox",
+      "name": "@useatlas/vercel-sandbox",
       "version": "0.1.0",
       "dependencies": {
         "@useatlas/plugin-sdk": "workspace:*",
@@ -450,7 +450,7 @@
       ],
     },
     "plugins/yaml-context": {
-      "name": "@atlas/plugin-yaml-context",
+      "name": "@useatlas/yaml-context",
       "version": "0.1.0",
       "dependencies": {
         "@useatlas/plugin-sdk": "workspace:*",
@@ -489,36 +489,6 @@
     "@atlas/mcp": ["@atlas/mcp@workspace:packages/mcp"],
 
     "@atlas/nextjs-standalone": ["@atlas/nextjs-standalone@workspace:examples/nextjs-standalone"],
-
-    "@atlas/plugin-clickhouse-datasource": ["@atlas/plugin-clickhouse-datasource@workspace:plugins/clickhouse-datasource"],
-
-    "@atlas/plugin-daytona-sandbox": ["@atlas/plugin-daytona-sandbox@workspace:plugins/daytona-sandbox"],
-
-    "@atlas/plugin-duckdb-datasource": ["@atlas/plugin-duckdb-datasource@workspace:plugins/duckdb-datasource"],
-
-    "@atlas/plugin-e2b-sandbox": ["@atlas/plugin-e2b-sandbox@workspace:plugins/e2b-sandbox"],
-
-    "@atlas/plugin-email-action": ["@atlas/plugin-email-action@workspace:plugins/email-action"],
-
-    "@atlas/plugin-jira-action": ["@atlas/plugin-jira-action@workspace:plugins/jira-action"],
-
-    "@atlas/plugin-mcp-interaction": ["@atlas/plugin-mcp-interaction@workspace:plugins/mcp-interaction"],
-
-    "@atlas/plugin-mysql-datasource": ["@atlas/plugin-mysql-datasource@workspace:plugins/mysql-datasource"],
-
-    "@atlas/plugin-nsjail-sandbox": ["@atlas/plugin-nsjail-sandbox@workspace:plugins/nsjail-sandbox"],
-
-    "@atlas/plugin-salesforce-datasource": ["@atlas/plugin-salesforce-datasource@workspace:plugins/salesforce-datasource"],
-
-    "@atlas/plugin-sidecar-sandbox": ["@atlas/plugin-sidecar-sandbox@workspace:plugins/sidecar-sandbox"],
-
-    "@atlas/plugin-slack-interaction": ["@atlas/plugin-slack-interaction@workspace:plugins/slack-interaction"],
-
-    "@atlas/plugin-snowflake-datasource": ["@atlas/plugin-snowflake-datasource@workspace:plugins/snowflake-datasource"],
-
-    "@atlas/plugin-vercel-sandbox": ["@atlas/plugin-vercel-sandbox@workspace:plugins/vercel-sandbox"],
-
-    "@atlas/plugin-yaml-context": ["@atlas/plugin-yaml-context@workspace:plugins/yaml-context"],
 
     "@atlas/sandbox-sidecar": ["@atlas/sandbox-sidecar@workspace:packages/sandbox-sidecar"],
 
@@ -1632,9 +1602,39 @@
 
     "@ungap/structured-clone": ["@ungap/structured-clone@1.3.0", "", {}, "sha512-WmoN8qaIAo7WTYWbAZuG8PYEhn5fkz7dZrqTBZ7dtt//lL2Gwms1IcnQ5yHqjDfX8Ft5j4YzDM23f87zBfDe9g=="],
 
+    "@useatlas/clickhouse": ["@useatlas/clickhouse@workspace:plugins/clickhouse"],
+
+    "@useatlas/daytona": ["@useatlas/daytona@workspace:plugins/daytona"],
+
+    "@useatlas/duckdb": ["@useatlas/duckdb@workspace:plugins/duckdb"],
+
+    "@useatlas/e2b": ["@useatlas/e2b@workspace:plugins/e2b"],
+
+    "@useatlas/email": ["@useatlas/email@workspace:plugins/email"],
+
+    "@useatlas/jira": ["@useatlas/jira@workspace:plugins/jira"],
+
+    "@useatlas/mcp": ["@useatlas/mcp@workspace:plugins/mcp"],
+
+    "@useatlas/mysql": ["@useatlas/mysql@workspace:plugins/mysql"],
+
+    "@useatlas/nsjail": ["@useatlas/nsjail@workspace:plugins/nsjail"],
+
     "@useatlas/plugin-sdk": ["@useatlas/plugin-sdk@workspace:packages/plugin-sdk"],
 
+    "@useatlas/salesforce": ["@useatlas/salesforce@workspace:plugins/salesforce"],
+
     "@useatlas/sdk": ["@useatlas/sdk@workspace:packages/sdk"],
+
+    "@useatlas/sidecar": ["@useatlas/sidecar@workspace:plugins/sidecar"],
+
+    "@useatlas/slack": ["@useatlas/slack@workspace:plugins/slack"],
+
+    "@useatlas/snowflake": ["@useatlas/snowflake@workspace:plugins/snowflake"],
+
+    "@useatlas/vercel-sandbox": ["@useatlas/vercel-sandbox@workspace:plugins/vercel-sandbox"],
+
+    "@useatlas/yaml-context": ["@useatlas/yaml-context@workspace:plugins/yaml-context"],
 
     "@vercel/oidc": ["@vercel/oidc@3.2.0", "", {}, "sha512-UycprH3T6n3jH0k44NHMa7pnFHGu/N05MjojYr+Mc6I7obkoLIJujSWwin1pCvdy/eOxrI/l3uDLQsmcrOb4ug=="],
 

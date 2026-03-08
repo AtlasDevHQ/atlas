@@ -112,13 +112,13 @@ Two additional sandbox backends are available as plugins (installed via `atlas.c
 
 | Plugin | Package | Priority | Isolation | Install |
 |--------|---------|----------|-----------|---------|
-| **E2B** | `plugins/e2b-sandbox/` | 90 | Firecracker microVM (managed) | `bun add e2b` |
-| **Daytona** | `plugins/daytona-sandbox/` | 85 | Cloud-hosted ephemeral sandbox | `bun add @daytonaio/sdk` |
+| **E2B** | `plugins/e2b/` | 90 | Firecracker microVM (managed) | `bun add e2b` |
+| **Daytona** | `plugins/daytona/` | 85 | Cloud-hosted ephemeral sandbox | `bun add @daytonaio/sdk` |
 
 ```typescript
 // atlas.config.ts
 import { defineConfig } from "@atlas/api/lib/config";
-import { e2bSandboxPlugin } from "@atlas/plugin-e2b-sandbox";
+import { e2bSandboxPlugin } from "@useatlas/e2b";
 
 export default defineConfig({
   plugins: [

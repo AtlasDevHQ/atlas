@@ -1,7 +1,7 @@
 {
-  "name": "@atlas/plugin-vercel-sandbox",
+  "name": "@useatlas/vercel-sandbox",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "scripts": {
     "test": "bun test __tests__/vercel-sandbox.test.ts"
   },

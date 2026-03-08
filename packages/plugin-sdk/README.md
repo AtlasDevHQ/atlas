@@ -49,7 +49,7 @@ Connect to a database. Provides a connection factory, SQL dialect hints, and opt
 | `entities` | `EntityProvider` | No | Semantic layer fragments merged into the table whitelist at boot |
 | `dialect` | `string` | No | SQL dialect guidance injected into the agent system prompt |
 
-**Reference:** [`clickhouse-datasource`](../../plugins/clickhouse-datasource/index.ts)
+**Reference:** [`clickhouse`](../../plugins/clickhouse/index.ts)
 
 ### Context (`AtlasContextPlugin`)
 
@@ -70,7 +70,7 @@ Add communication surfaces. Interaction plugins mount HTTP routes or manage non-
 |-------|------|----------|-------------|
 | `routes` | `(app: Hono) => void` | No | Mount Hono routes for webhooks, OAuth, etc. Optional for non-HTTP transports |
 
-**Reference:** [`slack-interaction`](../../plugins/slack-interaction/src/index.ts), [`mcp-interaction`](../../plugins/mcp-interaction/src/index.ts)
+**Reference:** [`slack`](../../plugins/slack/src/index.ts), [`mcp`](../../plugins/mcp/src/index.ts)
 
 ### Action (`AtlasActionPlugin`)
 
@@ -86,7 +86,7 @@ Enable agent side-effects. Action plugins provide AI SDK tools with approval con
 | `actions[].defaultApproval` | `ActionApprovalMode` | Yes | `auto`, `manual`, or `admin-only` |
 | `actions[].requiredCredentials` | `string[]` | Yes | Config fields needed at runtime |
 
-**Reference:** [`jira-action`](../../plugins/jira-action/index.ts), [`email-action`](../../plugins/email-action/index.ts)
+**Reference:** [`jira`](../../plugins/jira/index.ts), [`email`](../../plugins/email/index.ts)
 
 ### Sandbox (`AtlasSandboxPlugin`)
 
@@ -98,7 +98,7 @@ Provide code isolation for the explore tool. Sandbox plugins create backends tha
 | `sandbox.priority` | `number` | No | Higher = tried first. Built-in: Vercel=100, E2B=90, Daytona=85, nsjail=75, sidecar=50, just-bash=0. Plugin default: 60 |
 | `security` | `object` | No | Informational metadata about isolation guarantees |
 
-**Reference:** [`nsjail-sandbox`](../../plugins/nsjail-sandbox/index.ts), [`vercel-sandbox`](../../plugins/vercel-sandbox/index.ts)
+**Reference:** [`nsjail`](../../plugins/nsjail/index.ts), [`vercel-sandbox`](../../plugins/vercel-sandbox/index.ts)
 
 ## Base Fields
 
@@ -236,7 +236,7 @@ Extract plugin types on the client side without importing server code:
 
 ```typescript
 import type { $InferServerPlugin } from "@useatlas/plugin-sdk";
-import type { clickhousePlugin } from "@atlas/plugin-clickhouse-datasource";
+import type { clickhousePlugin } from "@useatlas/clickhouse";
 
 type CH = $InferServerPlugin<typeof clickhousePlugin>;
 // CH["Config"]   → { url: string; database?: string }
@@ -278,24 +278,24 @@ if (isDatasourcePlugin(plugin)) {
 
 ## Reference Implementations
 
-> **Note:** These are internal workspace packages (`@atlas/plugin-*`) within the monorepo, not published to npm. Use them as reference when authoring your own plugins.
+> **Note:** These are workspace packages (`@useatlas/*`) within the monorepo. Use them as reference when authoring your own plugins.
 
 | Plugin | Type | Package | Description |
 |--------|------|---------|-------------|
-| [clickhouse-datasource](../../plugins/clickhouse-datasource/) | Datasource | `@atlas/plugin-clickhouse-datasource` | ClickHouse HTTP transport adapter |
-| [mysql-datasource](../../plugins/mysql-datasource/) | Datasource | `@atlas/plugin-mysql-datasource` | MySQL pool-based adapter |
-| [snowflake-datasource](../../plugins/snowflake-datasource/) | Datasource | `@atlas/plugin-snowflake-datasource` | Snowflake callback-based adapter |
-| [duckdb-datasource](../../plugins/duckdb-datasource/) | Datasource | `@atlas/plugin-duckdb-datasource` | DuckDB in-process adapter |
-| [yaml-context](../../plugins/yaml-context/) | Context | `@atlas/plugin-yaml-context` | YAML semantic layer context provider |
-| [mcp-interaction](../../plugins/mcp-interaction/) | Interaction | `@atlas/plugin-mcp-interaction` | MCP server lifecycle (stdio + SSE) |
-| [slack-interaction](../../plugins/slack-interaction/) | Interaction | `@atlas/plugin-slack-interaction` | Slack bot (slash commands, threads, OAuth) |
-| [jira-action](../../plugins/jira-action/) | Action | `@atlas/plugin-jira-action` | Create JIRA tickets from analysis |
-| [email-action](../../plugins/email-action/) | Action | `@atlas/plugin-email-action` | Send email reports via Resend |
-| [nsjail-sandbox](../../plugins/nsjail-sandbox/) | Sandbox | `@atlas/plugin-nsjail-sandbox` | Linux namespace isolation via nsjail |
-| [sidecar-sandbox](../../plugins/sidecar-sandbox/) | Sandbox | `@atlas/plugin-sidecar-sandbox` | HTTP-isolated container sidecar |
-| [vercel-sandbox](../../plugins/vercel-sandbox/) | Sandbox | `@atlas/plugin-vercel-sandbox` | Firecracker microVM via @vercel/sandbox |
-| [daytona-sandbox](../../plugins/daytona-sandbox/) | Sandbox | `@atlas/plugin-daytona-sandbox` | Daytona managed cloud sandbox |
-| [e2b-sandbox](../../plugins/e2b-sandbox/) | Sandbox | `@atlas/plugin-e2b-sandbox` | E2B Firecracker microVM (managed) |
+| [clickhouse](../../plugins/clickhouse/) | Datasource | `@useatlas/clickhouse` | ClickHouse HTTP transport adapter |
+| [mysql](../../plugins/mysql/) | Datasource | `@useatlas/mysql` | MySQL pool-based adapter |
+| [snowflake](../../plugins/snowflake/) | Datasource | `@useatlas/snowflake` | Snowflake callback-based adapter |
+| [duckdb](../../plugins/duckdb/) | Datasource | `@useatlas/duckdb` | DuckDB in-process adapter |
+| [yaml-context](../../plugins/yaml-context/) | Context | `@useatlas/yaml-context` | YAML semantic layer context provider |
+| [mcp](../../plugins/mcp/) | Interaction | `@useatlas/mcp` | MCP server lifecycle (stdio + SSE) |
+| [slack](../../plugins/slack/) | Interaction | `@useatlas/slack` | Slack bot (slash commands, threads, OAuth) |
+| [jira](../../plugins/jira/) | Action | `@useatlas/jira` | Create JIRA tickets from analysis |
+| [email](../../plugins/email/) | Action | `@useatlas/email` | Send email reports via Resend |
+| [nsjail](../../plugins/nsjail/) | Sandbox | `@useatlas/nsjail` | Linux namespace isolation via nsjail |
+| [sidecar](../../plugins/sidecar/) | Sandbox | `@useatlas/sidecar` | HTTP-isolated container sidecar |
+| [vercel-sandbox](../../plugins/vercel-sandbox/) | Sandbox | `@useatlas/vercel-sandbox` | Firecracker microVM via @vercel/sandbox |
+| [daytona](../../plugins/daytona/) | Sandbox | `@useatlas/daytona` | Daytona managed cloud sandbox |
+| [e2b](../../plugins/e2b/) | Sandbox | `@useatlas/e2b` | E2B Firecracker microVM (managed) |
 
 ## Source
 

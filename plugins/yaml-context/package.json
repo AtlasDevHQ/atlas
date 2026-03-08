@@ -1,7 +1,7 @@
 {
-  "name": "@atlas/plugin-yaml-context",
+  "name": "@useatlas/yaml-context",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "scripts": {
     "test": "bun test __tests__/plugin.test.ts"
   },

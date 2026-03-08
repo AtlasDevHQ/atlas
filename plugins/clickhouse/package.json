@@ -1,0 +1,24 @@
+{
+  "name": "@useatlas/clickhouse",
+  "version": "0.1.0",
+  "private": false,
+  "scripts": {
+    "test": "bun test __tests__/clickhouse.test.ts"
+  },
+  "dependencies": {
+    "@useatlas/plugin-sdk": "workspace:*"
+  },
+  "peerDependencies": {
+    "@clickhouse/client": ">=1.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@clickhouse/client": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "ai": "^6.0.97",
+    "hono": "^4.12.3",
+    "zod": "^4.3.6"
+  }
+}

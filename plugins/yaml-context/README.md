@@ -1,4 +1,4 @@
-# @atlas/plugin-yaml-context
+# @useatlas/yaml-context
 
 Reference implementation of an `AtlasContextPlugin` for the Atlas Plugin SDK.
 
@@ -9,7 +9,7 @@ Reads entity definitions, glossary terms, and metrics from YAML files on disk (t
 ```typescript
 // atlas.config.ts
 import { defineConfig } from "@atlas/api/lib/config";
-import { contextYamlPlugin } from "@atlas/plugin-yaml-context";
+import { contextYamlPlugin } from "@useatlas/yaml-context";
 
 export default defineConfig({
   plugins: [

@@ -13,7 +13,7 @@ The YAML context plugin reads your semantic layer directory (entities, glossary,
 
 ### Prerequisites
 
-- `@atlas/plugin-yaml-context` -- the plugin package (workspace dependency)
+- `@useatlas/yaml-context` -- the plugin package (workspace dependency)
 - `js-yaml` -- YAML parser (peer dependency)
 - A populated `semantic/` directory with entity YAML files
 
@@ -27,7 +27,7 @@ The YAML context plugin reads your semantic layer directory (entities, glossary,
 
 ```typescript
 import { defineConfig } from "@atlas/api/lib/config";
-import { contextYamlPlugin } from "@atlas/plugin-yaml-context";
+import { contextYamlPlugin } from "@useatlas/yaml-context";
 
 export default defineConfig({
   plugins: [

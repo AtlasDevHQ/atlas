@@ -117,7 +117,10 @@ describe("ToolPart", () => {
       />,
       { wrapper: Wrapper },
     );
-    // ActionApprovalCard should render — it checks isActionToolResult
+    // ActionApprovalCard should render with summary and approve/deny buttons
     expect(container.textContent).not.toContain("Tool: createReport");
+    expect(container.textContent).toContain("Create monthly report");
+    expect(container.textContent).toContain("Approve");
+    expect(container.textContent).toContain("Deny");
   });
 });

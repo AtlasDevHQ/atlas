@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { render, screen } from "@testing-library/react";
+import { render } from "@testing-library/react";
 import { ErrorBanner } from "../components/chat/error-banner";
 
 function makeError(json: Record<string, unknown>): Error {
@@ -56,21 +56,21 @@ describe("ErrorBanner", () => {
     expect(container.textContent).toContain("No data source configured");
   });
 
-  test("renders provider errors", () => {
-    for (const code of [
-      "provider_model_not_found",
-      "provider_auth_error",
-      "provider_rate_limit",
-      "provider_timeout",
-      "provider_unreachable",
-      "provider_error",
-    ]) {
+  test("renders specific message for each provider error", () => {
+    const expectations: [string, string][] = [
+      ["provider_model_not_found", "model was not found"],
+      ["provider_auth_error", "could not authenticate"],
+      ["provider_rate_limit", "rate limiting"],
+      ["provider_timeout", "timed out"],
+      ["provider_unreachable", "Could not reach"],
+      ["provider_error", "returned an error"],
+    ];
+    for (const [code, expected] of expectations) {
       const err = makeError({ error: code });
       const { container } = render(
         <ErrorBanner error={err} authMode="none" />,
       );
-      // All provider errors should render something (not crash)
-      expect(container.textContent!.length).toBeGreaterThan(0);
+      expect(container.textContent).toContain(expected);
     }
   });
 

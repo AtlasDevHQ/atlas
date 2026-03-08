@@ -29,12 +29,14 @@ describe("DataTable", () => {
     expect(container.textContent).toContain("NYC");
   });
 
-  test("formats numeric values", () => {
+  test("formats numeric values with locale separators", () => {
     const { container } = render(
       <DataTable columns={["val"]} rows={[{ val: 1234567 }]} />,
     );
-    // formatCell adds locale separators — at minimum should contain the digits
-    expect(container.textContent).toContain("1");
+    const text = container.textContent!;
+    // formatCell uses toLocaleString() — verify formatted output contains separators
+    // (exact format varies by locale, but should match X,XXX,XXX or X.XXX.XXX pattern)
+    expect(text).toMatch(/1[,.\s]234[,.\s]567/);
   });
 
   test("renders em-dash for null values", () => {
@@ -83,18 +85,23 @@ describe("DataTable", () => {
     expect(cells[0].textContent).toBe("Gamma");
   });
 
-  test("third click resets sort", () => {
-    const { container } = render(<DataTable columns={columns} rows={rows} />);
+  test("third click resets sort to original order", () => {
+    // Use data where original order differs from both asc and desc
+    const unsortedRows = [
+      { name: "Beta", revenue: 300000, city: "LA" },
+      { name: "Acme", revenue: 500000, city: "NYC" },
+      { name: "Gamma", revenue: 200000, city: "SF" },
+    ];
+    const { container } = render(<DataTable columns={columns} rows={unsortedRows} />);
     const ths = container.querySelectorAll("th");
     const nameHeader = ths[0];
 
-    fireEvent.click(nameHeader); // asc
-    fireEvent.click(nameHeader); // desc
-    fireEvent.click(nameHeader); // reset
+    fireEvent.click(nameHeader); // asc: Acme, Beta, Gamma
+    fireEvent.click(nameHeader); // desc: Gamma, Beta, Acme
+    fireEvent.click(nameHeader); // reset: Beta, Acme, Gamma (original)
 
-    // After reset, original order: Acme first
     const firstCell = container.querySelector("tbody tr td");
-    expect(firstCell!.textContent).toBe("Acme");
+    expect(firstCell!.textContent).toBe("Beta");
   });
 
   test("renders with array rows (unknown[][])", () => {

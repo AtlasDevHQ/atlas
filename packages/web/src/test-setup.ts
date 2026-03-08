@@ -49,15 +49,26 @@ for (const key of DOM_GLOBALS) {
       const descriptor = Object.getOwnPropertyDescriptor(globalThis, key);
       if (descriptor && !descriptor.configurable) continue;
       (globalThis as Record<string, unknown>)[key] = val;
-    } catch {
-      // Skip non-writable
+    } catch (err) {
+      // The configurable check above handles expected non-configurable properties.
+      // If we still get here, something unexpected happened — log it.
+      console.warn(`[test-setup] Failed to assign global "${key}":`, err);
     }
   }
 }
 
 // Set window/self globals (avoid Object.assign which may trigger readonly errors)
-try { (globalThis as Record<string, unknown>).window = win; } catch { /* readonly */ }
-try { (globalThis as Record<string, unknown>).self = win; } catch { /* readonly */ }
+try { (globalThis as Record<string, unknown>).window = win; }
+catch (err) { console.warn("[test-setup] Failed to assign global 'window':", err); }
+try { (globalThis as Record<string, unknown>).self = win; }
+catch (err) { console.warn("[test-setup] Failed to assign global 'self':", err); }
 (globalThis as Record<string, unknown>).requestAnimationFrame = (cb: FrameRequestCallback) =>
   setTimeout(cb, 0) as unknown as number;
 (globalThis as Record<string, unknown>).cancelAnimationFrame = (id: number) => clearTimeout(id);
+
+// Sanity check — fail fast if critical DOM globals weren't assigned
+for (const key of ["document", "Element", "Node", "HTMLElement"] as const) {
+  if (!(key in globalThis)) {
+    throw new Error(`[test-setup] Critical DOM global "${key}" was not assigned. Tests cannot run.`);
+  }
+}

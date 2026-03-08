@@ -1,5 +1,5 @@
 import { describe, expect, test, mock, beforeEach } from "bun:test";
-import { render, fireEvent } from "@testing-library/react";
+import { render, fireEvent, waitFor } from "@testing-library/react";
 import { CopyButton } from "../components/chat/copy-button";
 
 describe("CopyButton", () => {
@@ -30,8 +30,9 @@ describe("CopyButton", () => {
     const button = container.querySelector("button")!;
     fireEvent.click(button);
 
-    await new Promise((r) => setTimeout(r, 10));
-    expect(writeTextMock).toHaveBeenCalledWith("SELECT 1");
+    await waitFor(() => {
+      expect(writeTextMock).toHaveBeenCalledWith("SELECT 1");
+    });
   });
 
   test("shows Copied! after successful copy", async () => {
@@ -39,8 +40,9 @@ describe("CopyButton", () => {
     const button = container.querySelector("button")!;
     fireEvent.click(button);
 
-    await new Promise((r) => setTimeout(r, 10));
-    expect(container.textContent).toBe("Copied!");
+    await waitFor(() => {
+      expect(container.textContent).toBe("Copied!");
+    });
   });
 
   test("shows Failed when clipboard write fails", async () => {
@@ -54,7 +56,8 @@ describe("CopyButton", () => {
     const button = container.querySelector("button")!;
     fireEvent.click(button);
 
-    await new Promise((r) => setTimeout(r, 10));
-    expect(container.textContent).toBe("Failed");
+    await waitFor(() => {
+      expect(container.textContent).toBe("Failed");
+    });
   });
 });

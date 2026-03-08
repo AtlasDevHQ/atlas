@@ -1,0 +1,15 @@
+{
+  "title": "API Reference",
+  "root": true,
+  "pages": [
+    "chat",
+    "query",
+    "conversations",
+    "health",
+    "actions",
+    "scheduled-tasks",
+    "auth",
+    "slack",
+    "admin"
+  ]
+}

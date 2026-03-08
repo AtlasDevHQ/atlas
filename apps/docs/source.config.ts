@@ -18,6 +18,8 @@ export default defineConfig({
         light: "github-light",
         dark: "github-dark",
       },
+      // Preserve Fumadocs' built-in code transformers (copy button, etc.)
+      // before adding custom ones
       transformers: [
         ...(rehypeCodeDefaultOptions.transformers ?? []),
         transformerMetaHighlight(),

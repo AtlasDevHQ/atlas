@@ -17,6 +17,7 @@ COPY packages/mcp/package.json packages/mcp/package.json
 COPY packages/sandbox-sidecar/package.json packages/sandbox-sidecar/package.json
 COPY packages/plugin-sdk/package.json packages/plugin-sdk/package.json
 COPY packages/sdk/package.json packages/sdk/package.json
+COPY apps/docs/package.json apps/docs/package.json
 COPY apps/www/package.json apps/www/package.json
 COPY examples/nextjs-standalone/package.json examples/nextjs-standalone/package.json
 COPY plugins/clickhouse-datasource/package.json plugins/clickhouse-datasource/package.json

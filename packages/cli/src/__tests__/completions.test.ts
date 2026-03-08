@@ -59,6 +59,12 @@ describe("completions", () => {
       expect(script).toContain("complete -F _atlas_completions atlas");
     });
 
+    test("has _init_completion fallback for systems without bash-completion", () => {
+      expect(script).toContain("type _init_completion");
+      expect(script).toContain("COMP_WORDS");
+      expect(script).toContain("COMP_CWORD");
+    });
+
     test("lists all command names", () => {
       for (const cmd of allCommands) {
         expect(script).toContain(cmd);
@@ -79,9 +85,9 @@ describe("completions", () => {
       expect(script).toContain("#compdef atlas");
     });
 
-    test("contains _atlas function", () => {
+    test("contains _atlas function and compdef registration", () => {
       expect(script).toContain("_atlas()");
-      expect(script).toContain('_atlas "$@"');
+      expect(script).toContain("compdef _atlas atlas");
     });
 
     test("lists commands with descriptions", () => {

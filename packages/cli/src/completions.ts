@@ -13,7 +13,7 @@
  *   # bash — add to ~/.bashrc:
  *   eval "$(atlas completions bash)"
  *
- *   # zsh — add to ~/.zshrc (before compinit):
+ *   # zsh — add to ~/.zshrc:
  *   eval "$(atlas completions zsh)"
  *
  *   # fish — run once:
@@ -127,7 +127,13 @@ export function generateBashCompletions(): string {
 
 _atlas_completions() {
   local cur prev words cword
-  _init_completion || return
+  if type _init_completion &>/dev/null; then
+    _init_completion || return
+  else
+    cur="\${COMP_WORDS[COMP_CWORD]}"
+    cword=$COMP_CWORD
+    words=("\${COMP_WORDS[@]}")
+  fi
 
   local commands="${COMMAND_NAMES.join(" ")}"
 
@@ -168,7 +174,7 @@ export function generateZshCompletions(): string {
 
   return `#compdef atlas
 # Atlas CLI zsh completions
-# Add to ~/.zshrc (before compinit):
+# Add to ~/.zshrc:
 #   eval "$(atlas completions zsh)"
 
 _atlas() {
@@ -193,7 +199,7 @@ ${commandCases.join("\n")}
   esac
 }
 
-_atlas "$@"
+compdef _atlas atlas
 `;
 }
 
@@ -252,7 +258,7 @@ export function handleCompletions(args: string[]): void {
         "Output a shell completion script.\n\n" +
         "Installation:\n" +
         '  bash:  eval "$(atlas completions bash)"     # Add to ~/.bashrc\n' +
-        '  zsh:   eval "$(atlas completions zsh)"      # Add to ~/.zshrc (before compinit)\n' +
+        '  zsh:   eval "$(atlas completions zsh)"      # Add to ~/.zshrc\n' +
         "  fish:  atlas completions fish > ~/.config/fish/completions/atlas.fish",
     );
     process.exit(1);

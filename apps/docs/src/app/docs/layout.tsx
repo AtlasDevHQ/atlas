@@ -12,6 +12,16 @@ export default function Layout({ children }: { children: ReactNode }) {
       }}
       links={[
         {
+          text: "Home",
+          url: "https://useatlas.dev",
+          external: true,
+        },
+        {
+          text: "App",
+          url: "https://app.useatlas.dev",
+          external: true,
+        },
+        {
           type: "icon" as const,
           text: "GitHub",
           url: "https://github.com/AtlasDevHQ/atlas",

@@ -1,0 +1,12 @@
+{
+  "title": "Plugins",
+  "pages": [
+    "overview",
+    "datasources",
+    "sandboxes",
+    "interactions",
+    "actions",
+    "context",
+    "authoring-guide"
+  ]
+}

@@ -44,7 +44,7 @@ salesforce://username:password@login.salesforce.com?token=SECURITY_TOKEN&clientI
 |-----------|-------------|
 | `username` | Salesforce username |
 | `password` | Salesforce password |
-| `hostname` | Login URL (default: `login.salesforce.com`, use `test.salesforce.com` for sandboxes) |
+| `hostname` | Login URL (required; use `login.salesforce.com` for production, `test.salesforce.com` for sandboxes) |
 | `token` | Security token (query param, optional) |
 | `clientId` | Connected App client ID (query param, optional) |
 | `clientSecret` | Connected App client secret (query param, optional) |

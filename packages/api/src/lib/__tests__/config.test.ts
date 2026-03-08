@@ -1084,4 +1084,20 @@ describe("plugin validation", () => {
       }),
     ).toThrow('invalid type "compute"');
   });
+
+  it("includes all valid types in the invalid-type error message", () => {
+    try {
+      validateAndResolve({
+        plugins: [{ id: "bad", type: "bogus", version: "1.0.0" }],
+      });
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      const msg = (err as Error).message;
+      expect(msg).toContain("datasource");
+      expect(msg).toContain("context");
+      expect(msg).toContain("interaction");
+      expect(msg).toContain("action");
+      expect(msg).toContain("sandbox");
+    }
+  });
 });

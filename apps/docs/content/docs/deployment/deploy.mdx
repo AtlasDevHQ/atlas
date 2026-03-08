@@ -1,153 +1,132 @@
 ---
-title: Deploy Guides
-description: Deploy Atlas with Docker, Railway, or Vercel.
+title: Deploy
+description: Deploy Atlas to Railway, Vercel, or Docker in one click.
 ---
 
-Atlas provides two example deployment topologies plus a static landing page. Deploy configs live in `examples/` and `apps/`, not at the repo root.
+import { Callout } from "fumadocs-ui/components/callout";
 
-| Example | What's included | Use when |
-|---------|----------------|----------|
-| `examples/docker/` | Hono API + Docker + optional nsjail | Self-hosted deployment (Railway, Docker Compose) |
-| `examples/nextjs-standalone/` | Next.js + embedded Hono API | You want to deploy to Vercel with zero infrastructure |
-| `apps/www/` | Static landing page (Next.js export + Bun server) | Marketing site at useatlas.dev |
+## One-Click Deploy
+
+The fastest way to get Atlas running in production.
+
+<div className="not-prose grid gap-4 sm:grid-cols-3 my-6">
+  <a
+    href="https://railway.com/deploy/_XHuNP?referralCode=N5vD3S"
+    className="flex flex-col items-center gap-3 rounded-lg border p-6 hover:bg-fd-accent transition-colors"
+  >
+    <img src="https://railway.com/button.svg" alt="Deploy on Railway" className="h-10" />
+    <span className="text-sm text-fd-muted-foreground text-center">Managed Postgres included. Only needs an API key.</span>
+  </a>
+  <a
+    href="https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FAtlasDevHQ%2Fatlas-starter-vercel&project-name=atlas&repository-name=atlas&products=%5B%7B%22type%22%3A%22integration%22%2C%22integrationSlug%22%3A%22neon%22%2C%22productSlug%22%3A%22neon%22%2C%22protocol%22%3A%22storage%22%7D%5D&env=AI_GATEWAY_API_KEY,BETTER_AUTH_SECRET&envDescription=AI_GATEWAY_API_KEY%3A%20Vercel%20AI%20Gateway%20key%20(vercel.com%2F~%2Fai%2Fapi-keys).%20BETTER_AUTH_SECRET%3A%20Random%20string%2C%2032%2B%20chars%20(openssl%20rand%20-base64%2032)."
+    className="flex flex-col items-center gap-3 rounded-lg border p-6 hover:bg-fd-accent transition-colors"
+  >
+    <img src="https://vercel.com/button" alt="Deploy with Vercel" className="h-10" />
+    <span className="text-sm text-fd-muted-foreground text-center">Neon Postgres + Firecracker sandbox. Serverless.</span>
+  </a>
+  <a
+    href="https://github.com/AtlasDevHQ/atlas-starter-docker"
+    className="flex flex-col items-center gap-3 rounded-lg border p-6 hover:bg-fd-accent transition-colors"
+  >
+    <span className="text-2xl">🐳</span>
+    <span className="font-medium">Docker</span>
+    <span className="text-sm text-fd-muted-foreground text-center">Docker Compose + optional nsjail isolation.</span>
+  </a>
+</div>
+
+Each button deploys from a **starter repo** — a standalone project with just Atlas, no monorepo. You get a working instance with demo data in under 5 minutes.
 
 ---
 
-## Quick Deploy: Railway
+## Railway
 
-Go from zero to production with managed Postgres included.
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/_XHuNP?referralCode=N5vD3S)
 
-1. **Scaffold your project:**
+**What you get:** A Hono API container + managed Postgres + sidecar sandbox. Demo data is pre-seeded — you only need to provide an Anthropic API key.
+
+### After deploying
+
+1. Railway prompts for your `ANTHROPIC_API_KEY` — paste it and deploy
+2. Wait for the build (~2 min). Railway provisions Postgres, seeds demo data, and starts Atlas
+3. Open `https://<your-app>.up.railway.app` and start asking questions
+
+### Connect your own database
+
+To query your own data instead of the demo:
+
+1. Set `ATLAS_DATASOURCE_URL` to your PostgreSQL or MySQL connection string in the Railway dashboard
+2. Generate a semantic layer locally and push it:
 
 ```bash
 bun create @useatlas my-app
 cd my-app
+ATLAS_DATASOURCE_URL="postgresql://..." bun run atlas -- init
+# Commit the generated semantic/ directory and push
 ```
 
-2. **Push to GitHub:**
+<Callout type="info">
+  `DATABASE_URL` is auto-set by Railway's Postgres plugin — it's Atlas's internal database for auth and audit. `ATLAS_DATASOURCE_URL` is the analytics database you want to query.
+</Callout>
 
-```bash
-git init && git add -A && git commit -m "Initial commit"
-gh repo create my-app --public --source=. --push
-```
+### Troubleshooting
 
-3. **Create a Railway project:** Go to the [Railway Dashboard](https://railway.app/) and click **New Project**.
-
-4. **Add a Postgres plugin:** Click **+ New** inside the project and add **Database > PostgreSQL**. Link it to your web service -- Railway injects `DATABASE_URL` automatically (this becomes Atlas's internal database).
-
-5. **Connect your repo:** Click **+ New > GitHub Repo** and select your repo. Railway detects `railway.json` in `examples/docker/` and builds from the Dockerfile.
-
-6. **Set environment variables** in the Railway service settings (`DATABASE_URL` is already set by the Postgres plugin):
-
-```
-ATLAS_PROVIDER=anthropic
-ANTHROPIC_API_KEY=sk-ant-...
-ATLAS_DATASOURCE_URL=postgresql://user:pass@your-analytics-host:5432/mydb
-```
-
-> `DATABASE_URL` (auto-set by Railway) is Atlas's internal Postgres. `ATLAS_DATASOURCE_URL` is the analytics database you want to query.
-
-7. **Seed your data.** Choose a demo dataset or generate a semantic layer from your own tables:
-
-```bash
-# Option A: Simple demo (3 tables, ~330 rows)
-psql "$ATLAS_DATASOURCE_URL" < data/demo.sql
-
-# Option B: Cybersec SaaS demo (62 tables, ~500K rows)
-psql "$ATLAS_DATASOURCE_URL" < data/cybersec.sql
-
-# Option C: Your own data
-ATLAS_DATASOURCE_URL="$ATLAS_DATASOURCE_URL" bun run atlas -- init
-```
-
-8. **Deploy.** Railway builds and starts the container automatically.
-
-9. **Verify:** `https://<your-app>.up.railway.app/api/health` -- should return `{"status":"ok"}`
+- **Health check fails after deploy** — Railway Postgres can take 10–30s to provision. The app retries connections automatically. Wait for the next health check cycle.
+- **Demo data not appearing** — Check deploy logs for `seed-demo:` messages. The seeding is idempotent and retries up to 5 times.
 
 ---
 
-## Required environment variables
+## Vercel
 
-Every deployment needs these:
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FAtlasDevHQ%2Fatlas-starter-vercel&project-name=atlas&repository-name=atlas&products=%5B%7B%22type%22%3A%22integration%22%2C%22integrationSlug%22%3A%22neon%22%2C%22productSlug%22%3A%22neon%22%2C%22protocol%22%3A%22storage%22%7D%5D&env=AI_GATEWAY_API_KEY,BETTER_AUTH_SECRET&envDescription=AI_GATEWAY_API_KEY%3A%20Vercel%20AI%20Gateway%20key%20(vercel.com%2F~%2Fai%2Fapi-keys).%20BETTER_AUTH_SECRET%3A%20Random%20string%2C%2032%2B%20chars%20(openssl%20rand%20-base64%2032).)
 
-| Variable | Example | Purpose |
-|----------|---------|---------|
-| `ATLAS_PROVIDER` | `anthropic` | LLM provider |
-| Provider API key | `ANTHROPIC_API_KEY=sk-ant-...` | Authentication for LLM |
-| `ATLAS_DATASOURCE_URL` | `postgresql://...` or `mysql://...` | Analytics database to query |
-| `DATABASE_URL` | `postgresql://atlas:atlas@host:5432/atlas` | Atlas internal Postgres (auth, audit) -- auto-set on most platforms |
+**What you get:** A full-stack Next.js app with the Hono API embedded via a catch-all route. Neon Postgres is provisioned automatically. The explore tool uses Vercel Sandbox (Firecracker microVM) for hardware-level isolation.
 
-Optional variables (safe defaults for most deployments):
+### After deploying
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ATLAS_MODEL` | Provider default | Override the LLM model |
-| `ATLAS_ROW_LIMIT` | `1000` | Max rows returned per query |
-| `ATLAS_QUERY_TIMEOUT` | `30000` | Query timeout in ms |
-| `PORT` | `3000` | Set automatically by most platforms |
+1. Vercel prompts for two variables:
+   - `AI_GATEWAY_API_KEY` — Get one at [vercel.com/~/ai/api-keys](https://vercel.com/~/ai/api-keys)
+   - `BETTER_AUTH_SECRET` — Generate with `openssl rand -base64 32`
+2. Click Deploy. Neon Postgres is auto-provisioned
+3. Open your deployment URL and start asking questions
 
-### Authentication (optional)
+### Connect your own database
 
-Auth is opt-in. Set one of these to enable:
+Set `ATLAS_DATASOURCE_URL` in your Vercel project settings and redeploy. Use Neon Postgres or any externally accessible PostgreSQL/MySQL.
 
-| Variable | Auth mode | Description |
-|----------|-----------|-------------|
-| `ATLAS_API_KEY` | Simple key | Single shared key, validated via `Authorization: Bearer <key>` |
-| `BETTER_AUTH_SECRET` | Managed | Full user management (email/password). Min 32 chars. Requires `DATABASE_URL` |
-| `ATLAS_AUTH_JWKS_URL` | BYOT | Stateless JWT verification against an external JWKS endpoint |
+### Using a direct provider instead of AI Gateway
 
-## Security & Isolation
-
-Atlas runs agent-generated commands (filesystem exploration, future code execution) in a sandboxed environment. The level of isolation depends on your deployment platform -- Atlas auto-detects the best available option and falls back gracefully.
-
-### Sandbox tiers
-
-| Tier | Backend | Platforms | Isolation level |
-|------|---------|-----------|-----------------|
-| 1 | Vercel Sandbox | Vercel | Firecracker microVM (hardware-level). No network, ephemeral filesystem |
-| 2 | nsjail | Self-hosted Docker/VM | Linux namespaces. No network, read-only mount, separate PID/user space |
-| 3 | Sidecar service | Railway | Separate container with no secrets. Process-level isolation via private networking |
-| 4 | just-bash | Everywhere (fallback) | In-memory OverlayFS + path-traversal protection. No process isolation |
-
-### What's right for you?
-
-**Self-hosted for your own team** -- You're deploying Atlas behind a VPN or with API key auth, and all users are employees. Any tier works. Even just-bash is reasonable -- the explore tool only reads YAML files, and all SQL is validated through 4 security layers (regex, AST parse, table whitelist, auto-LIMIT). You're defending against prompt injection edge cases, not hostile tenants.
-
-**Public-facing or multi-tenant** -- Users from different organizations query through the same Atlas instance. Use Tier 1 (Vercel) or Tier 2 (nsjail on self-hosted Docker/VM). These provide real process/VM isolation so one user's request can't affect another's.
-
-For the full sandbox architecture and threat model, see [Sandbox Architecture](/docs/architecture/sandbox).
-
-## Health check
-
-All deployments should verify with the health endpoint:
-
-```
-GET /api/health
+```bash
+ATLAS_PROVIDER=anthropic
+ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-Returns JSON with status `"ok"`, `"degraded"`, or `"error"` and sub-checks for datasource connectivity, provider configuration, semantic layer presence, auth mode, and internal DB status. Returns HTTP 200 when status is `"ok"` or `"degraded"`, and HTTP 503 when status is `"error"` (database unreachable). The health endpoint is always public (no auth required).
+Set these in your Vercel project settings instead of `AI_GATEWAY_API_KEY`.
 
 ---
 
 ## Docker
 
-### Self-hosted (Docker)
-
-The `examples/docker/Dockerfile` builds a single-process container with the Hono API server and optional nsjail isolation.
-
 ```bash
-docker build -f examples/docker/Dockerfile -t atlas .
-docker run -p 3001:3001 \
-  -e ATLAS_PROVIDER=anthropic \
-  -e ANTHROPIC_API_KEY=sk-ant-... \
-  -e ATLAS_DATASOURCE_URL=postgresql://user:pass@host:5432/dbname \
-  atlas
+git clone https://github.com/AtlasDevHQ/atlas-starter-docker.git && cd atlas-starter-docker
+cp .env.example .env   # Set your API key + database URL
+docker compose up
 ```
 
-To build without nsjail (smaller image, no process isolation):
+**What you get:** A Docker Compose stack with the Hono API + Postgres. Optional nsjail isolation for the explore tool.
+
+### Connect your own database
+
+Edit `.env` and set `ATLAS_DATASOURCE_URL` to your PostgreSQL or MySQL connection string. Then generate a semantic layer:
 
 ```bash
-docker build --build-arg INSTALL_NSJAIL=false -f examples/docker/Dockerfile -t atlas .
+ATLAS_DATASOURCE_URL="postgresql://..." bun run atlas -- init
+docker compose up --build
+```
+
+### Building without nsjail
+
+```bash
+docker build --build-arg INSTALL_NSJAIL=false -f Dockerfile -t atlas .
 ```
 
 ### Verify
@@ -156,77 +135,87 @@ docker build --build-arg INSTALL_NSJAIL=false -f examples/docker/Dockerfile -t a
 curl http://localhost:3001/api/health
 ```
 
-The Dockerfile includes a built-in `HEALTHCHECK` that polls `/api/health` every 30 seconds.
-
-### Notes
-
-- Images are based on `oven/bun:1.3`
-- The semantic layer (`semantic/`) must be generated before building -- run `atlas init` locally first. It gets baked into the image at build time; rebuild if you update YAMLs
-
 ---
 
-## Railway
+## CLI Scaffolding
 
-Railway auto-detects the `Dockerfile` via `railway.json` in the example directory.
-
-### Steps
-
-1. Create a new Railway project
-2. Add a **Postgres** plugin (or use an external database)
-3. Connect your GitHub repo -- Railway detects `examples/docker/railway.json` and builds from the Dockerfile
-4. Set environment variables in the Railway dashboard:
-
-```
-ATLAS_PROVIDER=anthropic
-ANTHROPIC_API_KEY=sk-ant-...
-ATLAS_DATASOURCE_URL=postgresql://user:pass@your-analytics-host:5432/mydb
-```
-
-> Railway auto-sets `DATABASE_URL` via the Postgres plugin (Atlas internal DB). You only need to add `ATLAS_DATASOURCE_URL` for the analytics database.
-
-5. Deploy -- Railway builds and starts the container automatically
-
-### Verify
-
-Railway exposes a public URL. Check health at `https://<your-app>.up.railway.app/api/health`.
-
----
-
-## Vercel
-
-Atlas provides a Next.js standalone example that embeds the Hono API via a catch-all route -- deploy to Vercel with zero infrastructure. The explore tool automatically uses Vercel Sandbox (Firecracker VM isolation) when running on Vercel.
-
-### Scaffold a new project
+If you prefer to scaffold a project locally and deploy yourself:
 
 ```bash
-bun create @useatlas my-app --platform vercel
+bun create @useatlas my-app
 cd my-app
 ```
 
-### Deploy from the monorepo
-
-1. Import your repo in the [Vercel Dashboard](https://vercel.com/new)
-2. Set **Root Directory** to `examples/nextjs-standalone`
-3. Set environment variables:
-
-```
-# Option A: Vercel AI Gateway (recommended)
-ATLAS_PROVIDER=gateway
-AI_GATEWAY_API_KEY=...
-
-# Option B: Direct provider
-ATLAS_PROVIDER=anthropic
-ANTHROPIC_API_KEY=sk-ant-...
-
-# Required for both options
-ATLAS_DATASOURCE_URL=postgresql://user:pass@host:5432/dbname
-DATABASE_URL=postgresql://user:pass@host:5432/atlas
-```
-
-4. Deploy -- `vercel.json` declares the Next.js framework for Vercel
-
-### Verify
+The interactive setup asks for your platform (Vercel, Railway, Docker), database, LLM provider, and API key. It generates a standalone project with the right config for your target platform.
 
 ```bash
-curl https://<your-app>.vercel.app/api/health
+# Generate semantic layer from your database
+bun run atlas -- init
+
+# Or with LLM enrichment for richer descriptions
+bun run atlas -- init --enrich
+
+# Or start with demo data
+bun run atlas -- init --demo
 ```
+
+---
+
+## Environment Variables
+
+Every deployment needs these:
+
+| Variable | Example | Purpose |
+|----------|---------|---------|
+| `ATLAS_PROVIDER` | `anthropic` | LLM provider (`anthropic`, `openai`, `bedrock`, `ollama`, `gateway`) |
+| Provider API key | `ANTHROPIC_API_KEY=sk-ant-...` | Authentication for the LLM |
+| `ATLAS_DATASOURCE_URL` | `postgresql://...` or `mysql://...` | Analytics database to query |
+| `DATABASE_URL` | `postgresql://atlas:atlas@host:5432/atlas` | Atlas internal Postgres for auth and audit (auto-set on Railway and Vercel) |
+
+Optional (safe defaults):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_MODEL` | Provider default | Override the LLM model |
+| `ATLAS_ROW_LIMIT` | `1000` | Max rows returned per query |
+| `ATLAS_QUERY_TIMEOUT` | `30000` | Query timeout in ms |
+| `PORT` | `3000` | Set automatically by most platforms |
+
+See [Environment Variables](/docs/reference/environment-variables) for the full list.
+
+## Authentication
+
+Auth is opt-in. Set one variable to enable:
+
+| Variable | Auth mode | Description |
+|----------|-----------|-------------|
+| `ATLAS_API_KEY` | Simple key | Single shared key via `Authorization: Bearer <key>` |
+| `BETTER_AUTH_SECRET` | Managed | Email/password login with sessions. Min 32 chars. Requires `DATABASE_URL` |
+| `ATLAS_AUTH_JWKS_URL` | BYOT | Stateless JWT verification against your identity provider |
+
+See [Authentication](/docs/deployment/authentication) for detailed configuration.
+
+## Security & Isolation
+
+Atlas auto-detects the best available sandbox for the explore tool:
+
+| Platform | Sandbox | Isolation |
+|----------|---------|-----------|
+| Vercel | Firecracker microVM | Hardware-level (strongest) |
+| Self-hosted Docker | nsjail (Linux namespaces) | Kernel-level |
+| Railway | Sidecar service | Process-level |
+| Local dev | just-bash + OverlayFS | Path-traversal protection |
+
+**Deploying for your own team?** Any tier is fine — you're protecting against prompt injection edge cases, not hostile tenants. **Multi-tenant?** Use Vercel or nsjail for real process isolation.
+
+See [Sandbox Architecture](/docs/architecture/sandbox) for the full threat model.
+
+## Health Check
+
+All deployments expose a health endpoint:
+
+```
+GET /api/health
+```
+
+Returns `{"status":"ok"}`, `{"status":"degraded"}`, or `{"status":"error"}` with sub-checks for datasource, provider, semantic layer, auth, and internal DB. Returns HTTP 200 for `ok`/`degraded`, HTTP 503 for `error`. Always public (no auth required).

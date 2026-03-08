@@ -108,9 +108,9 @@ On first deployment:
 ### How sessions work
 
 1. User signs in via `POST /api/auth/sign-in/email`
-2. Better Auth creates a session and sets a `session_token` cookie
+2. Better Auth creates a session and sets a `better-auth.session_token` cookie
 3. Subsequent requests include the cookie automatically (browser) or send `Authorization: Bearer <session-token>` (API clients)
-4. Sessions last 7 days. Active sessions refresh daily
+4. Sessions last 7 days. The session expiry is extended when a request arrives at least 24 hours after the last session update
 
 Users can log out via `POST /api/auth/sign-out` (clears the session cookie). Sessions are also revoked when the session expires (7 days) or if the user is deleted by an admin.
 
@@ -256,6 +256,8 @@ ATLAS_TRUST_PROXY=true          # Required behind reverse proxy to get real IPs
 When rate limited, the API returns HTTP 429 with a `Retry-After` header.
 
 > Rate limits apply to API requests, not agent steps. One chat request can trigger up to 25 internal agent steps.
+
+> Rate limit state is held in-memory. It resets when the process restarts and is not shared across horizontally scaled instances. For distributed rate limiting, use an external solution (e.g. a reverse proxy or API gateway).
 
 ## Audit Logging
 

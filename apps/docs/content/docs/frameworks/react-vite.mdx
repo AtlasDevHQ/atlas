@@ -63,9 +63,10 @@ Create a thin wrapper around `@ai-sdk/react`'s `useChat`:
 // src/hooks/use-atlas-chat.ts
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
-import { useState, useMemo } from "react";
+import { useState, useRef, useMemo } from "react";
 
 const API_URL = import.meta.env.VITE_ATLAS_API_URL ?? "";
+const isCrossOrigin = !!API_URL;
 
 export function useAtlasChat() {
   const [apiKey, setApiKey] = useState(() => {
@@ -76,6 +77,10 @@ export function useAtlasChat() {
     }
   });
 
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const conversationIdRef = useRef(conversationId);
+  conversationIdRef.current = conversationId;
+
   const transport = useMemo(() => {
     const headers: Record<string, string> = {};
     if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
@@ -83,6 +88,22 @@ export function useAtlasChat() {
     return new DefaultChatTransport({
       api: `${API_URL}/api/chat`,
       headers,
+      // Required for managed auth (cookie-based) when cross-origin
+      credentials: isCrossOrigin ? "include" : undefined,
+      // Pass conversationId to continue an existing conversation
+      body: () =>
+        conversationIdRef.current
+          ? { conversationId: conversationIdRef.current }
+          : {},
+      // Capture x-conversation-id from the response header
+      fetch: (async (input, init) => {
+        const response = await globalThis.fetch(input, init);
+        const convId = response.headers.get("x-conversation-id");
+        if (convId && convId !== conversationIdRef.current) {
+          setConversationId(convId);
+        }
+        return response;
+      }) as typeof fetch,
     });
   }, [apiKey]);
 
@@ -116,6 +137,7 @@ export function useAtlasChat() {
 
 ```tsx
 // src/App.tsx
+import { isToolUIPart } from "ai";
 import { useAtlasChat } from "./hooks/use-atlas-chat";
 import { ToolPart } from "./components/ToolPart";
 
@@ -173,7 +195,7 @@ export default function App() {
                     </div>
                   );
                 }
-                if (part.type.startsWith("tool-")) {
+                if (isToolUIPart(part)) {
                   return <ToolPart key={i} part={part} />;
                 }
                 return null;

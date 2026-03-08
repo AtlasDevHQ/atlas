@@ -19,7 +19,7 @@ Every SQL query the agent writes passes through a multi-layer validation pipelin
 
 Layers 0–3 run in `validateSQL()` before execution. Layers 4–6 are applied during execution.
 
-The validation pipeline is identical across all supported databases. The only difference is the AST parser mode: `node-sql-parser` uses `PostgresQL` mode for PostgreSQL connections and `MySQL` mode for MySQL connections. ClickHouse, Snowflake, and DuckDB connections use their respective parser modes when available.
+The validation pipeline is identical across all supported databases. The only difference is the AST parser mode: `node-sql-parser` uses `PostgresQL` mode for PostgreSQL connections and `MySQL` mode for MySQL connections. Other database types (e.g. ClickHouse, Snowflake, DuckDB) fall back to the PostgreSQL parser with a warning. Plugins can register a custom `parserDialect` via `ConnectionPluginMeta` to override the parser mode for any connection.
 
 ## Layer 0: Empty check
 
@@ -69,9 +69,11 @@ SELECT * FROM logs WHERE status = 'DELETE'
 
 The regex guard is intentionally broad — security over usability. Keywords inside string literals (like `WHERE status = 'DELETE'`) are blocked as a false positive. The agent can work around this by reformulating the query (e.g. using a subquery or different filter).
 
+Plugins can register additional forbidden patterns via `ConnectionPluginMeta.forbiddenPatterns` to add database-specific protection for connection types not covered by the built-in rules.
+
 ## Layer 2: AST parse
 
-The query is fully parsed into an abstract syntax tree using [node-sql-parser](https://github.com/taozhi8833998/node-sql-parser). The parser mode is auto-detected based on the connection type (PostgreSQL or MySQL).
+The query is fully parsed into an abstract syntax tree using [node-sql-parser](https://github.com/taozhi8833998/node-sql-parser). The parser mode is auto-detected based on the connection type (PostgreSQL or MySQL). If a plugin has registered a custom `parserDialect` via `ConnectionPluginMeta`, that dialect is used instead of the default mapping.
 
 **Enforced rules:**
 
@@ -164,7 +166,7 @@ Queries that exceed the timeout are terminated by the database and return an err
 
 When plugins are installed, two hook points extend the pipeline:
 
-- **`beforeQuery`** — Plugins can inspect or rewrite SQL before execution. If a plugin rewrites the query, it is **re-validated** through layers 1–3 to prevent plugins from introducing DML or bypassing the whitelist.
+- **`beforeQuery`** — Plugins can inspect or rewrite SQL before execution. If a plugin rewrites the query, it is **re-validated** through layers 0–3 to prevent plugins from introducing DML or bypassing the whitelist.
 - **`afterQuery`** — Plugins receive the query results for logging, transformation, or side effects.
 
 Custom validators (for non-SQL datasources like SOQL or GraphQL) replace the standard validation pipeline entirely. When a connection has a custom validator registered, `validateSQL` is not called — the custom validator is responsible for equivalent safety guarantees.

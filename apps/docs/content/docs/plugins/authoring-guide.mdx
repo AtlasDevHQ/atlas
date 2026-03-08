@@ -227,19 +227,20 @@ For npm packages:
 ```json
 {
   "name": "atlas-plugin-my-datasource",
-  "dependencies": {
-    "@useatlas/plugin-sdk": "workspace:*"
-  },
   "peerDependencies": {
+    "@useatlas/plugin-sdk": ">=0.0.1",
     "pg": ">=8.0.0"
   },
   "peerDependenciesMeta": {
     "pg": { "optional": true }
+  },
+  "devDependencies": {
+    "@useatlas/plugin-sdk": "^0.0.2"
   }
 }
 ```
 
-Convention: `@useatlas/plugin-sdk` as a direct dependency, database driver as an optional peer dependency.
+Convention: `@useatlas/plugin-sdk` goes in both `peerDependencies` (so consumers provide it) and `devDependencies` (so you can build and test locally). Database drivers go as optional peer dependencies.
 
 ## 8. Testing
 
@@ -464,6 +465,193 @@ security: {
   description: "My isolation mechanism...",
 },
 ```
+
+## `createPlugin` vs `definePlugin`
+
+The SDK exports two helpers for authoring plugins. Choose based on whether your plugin accepts runtime configuration.
+
+**`createPlugin()`** -- Use when the plugin accepts user-configurable options that should be validated at startup. It returns a factory function that validates config via a Zod schema before building the plugin object. This is the Better Auth-style `plugins: [myPlugin({ key: "value" })]` pattern.
+
+```typescript
+import { createPlugin } from "@useatlas/plugin-sdk";
+import { z } from "zod";
+
+export const myPlugin = createPlugin({
+  configSchema: z.object({ url: z.string().url() }),
+  create: (config) => ({
+    id: "my-plugin",
+    type: "datasource" as const,
+    version: "1.0.0",
+    config,
+    connection: { create: () => makeConnection(config.url), dbType: "postgres" },
+  }),
+});
+
+// Usage in atlas.config.ts:
+plugins: [myPlugin({ url: process.env.MY_URL! })]
+```
+
+**`definePlugin()`** -- Use when no user-configurable options exist. It validates the plugin shape at module load time and returns the plugin object directly.
+
+```typescript
+import { definePlugin } from "@useatlas/plugin-sdk";
+
+export default definePlugin({
+  id: "my-context",
+  type: "context",
+  version: "1.0.0",
+  contextProvider: {
+    async load() { return "Additional context for the agent"; },
+  },
+});
+
+// Usage in atlas.config.ts:
+import myContext from "./plugins/my-context";
+plugins: [myContext]
+```
+
+## Hooks
+
+Plugins can intercept agent lifecycle events and HTTP requests using hooks. Each hook entry has an optional `matcher` function (return `true` to run the handler; omit to always run) and a `handler` function.
+
+Define hooks on any plugin type via the `hooks` property:
+
+```typescript
+export default definePlugin({
+  id: "audit-logger",
+  type: "context",
+  version: "1.0.0",
+  contextProvider: { async load() { return ""; } },
+
+  hooks: {
+    beforeQuery: [{
+      matcher: (ctx) => ctx.sql.includes("sensitive_table"),
+      handler: (ctx) => {
+        console.log(`Query on sensitive table: ${ctx.sql}`);
+        // Return { sql } to rewrite, throw to reject, or return void to pass through
+      },
+    }],
+    afterQuery: [{
+      handler: (ctx) => {
+        console.log(`Query completed in ${ctx.durationMs}ms, ${ctx.result.rows.length} rows`);
+      },
+    }],
+  },
+});
+```
+
+### Hook Types
+
+| Hook | Context | Mutable | Description |
+|------|---------|---------|-------------|
+| `beforeQuery` | `{ sql, connectionId? }` | Yes -- return `{ sql }` to rewrite, throw to reject | Fires before each SQL query is executed |
+| `afterQuery` | `{ sql, connectionId?, result, durationMs }` | No | Fires after each SQL query with results |
+| `beforeExplore` | `{ command }` | Yes -- return `{ command }` to rewrite, throw to reject | Fires before each explore command |
+| `afterExplore` | `{ command, output }` | No | Fires after each explore command with output |
+| `onRequest` | `{ path, method, headers }` | No | HTTP-level: fires before routing a request |
+| `onResponse` | `{ path, method, status }` | No | HTTP-level: fires after sending a response |
+
+`beforeQuery` and `beforeExplore` are mutable hooks -- handlers can return a mutation object (`{ sql }` or `{ command }`) to rewrite the operation, or throw an error to reject it entirely. All other hooks are observation-only (void return).
+
+## Datasource Plugin Properties
+
+Beyond the basics shown in [step 4](#4-plugin-object), datasource plugins support several additional properties.
+
+### `entities`
+
+Provide semantic layer entity definitions programmatically. Entities are merged into the table whitelist at boot (in-memory only, no disk writes). Can be a static array or an async factory:
+
+```typescript
+connection: { create: () => myConn, dbType: "postgres" },
+entities: [
+  { name: "users", yaml: "table: users\ndimensions:\n  id:\n    type: number" },
+],
+// Or as an async factory:
+entities: async () => {
+  const tables = await discoverTables();
+  return tables.map(t => ({ name: t.name, yaml: generateYaml(t) }));
+},
+```
+
+### `dialect`
+
+A string injected into the agent's system prompt with SQL dialect guidance:
+
+```typescript
+dialect: "This datasource uses ClickHouse. Use toStartOfMonth() for date truncation, not DATE_TRUNC().",
+```
+
+### `connection.validate`
+
+Replace the standard SQL validation pipeline with a custom validator. Use for non-SQL query languages (SOQL, GraphQL, MQL):
+
+```typescript
+connection: {
+  create: () => myConn,
+  dbType: "salesforce",
+  validate: (query) => {
+    if (query.includes("DELETE")) return { valid: false, reason: "DELETE not allowed" };
+    return { valid: true };
+  },
+},
+```
+
+### `connection.parserDialect` and `connection.forbiddenPatterns`
+
+Customize the standard SQL validation pipeline without fully replacing it:
+
+```typescript
+connection: {
+  create: () => myConn,
+  dbType: "snowflake",
+  // Override auto-detected parser dialect (case-sensitive, e.g. "Snowflake" not "snowflake")
+  parserDialect: "Snowflake",
+  // Additional regex patterns to block beyond the base DML/DDL guard
+  forbiddenPatterns: [/\bCOPY\s+INTO\b/i, /\bPUT\b/i],
+},
+```
+
+These are ignored when a custom `validate` function is provided.
+
+## Plugin Lifecycle
+
+### `teardown()`
+
+Called during graceful shutdown in reverse registration order (LIFO). Use it to close connections, flush buffers, or clean up resources. Never throw from `teardown()`.
+
+```typescript
+async teardown() {
+  await this.pool.end();
+},
+```
+
+### `AtlasPluginContext`
+
+The `ctx` object passed to `initialize()` and hook handlers provides:
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `ctx.db` | `{ query(), execute() } \| null` | Internal Postgres (auth/audit DB). Null when `DATABASE_URL` is not set |
+| `ctx.connections` | `{ get(id), list() }` | Connection registry for analytics datasources |
+| `ctx.tools` | `{ register(tool) }` | Tool registry -- plugins can register additional agent tools |
+| `ctx.logger` | `PluginLogger` | Pino-compatible child logger scoped to the plugin ID |
+| `ctx.config` | `Record<string, unknown>` | Resolved Atlas configuration (cast if you know the shape) |
+
+## Reference Plugins
+
+The Atlas monorepo includes 15 reference plugin implementations in the `plugins/` directory. These serve as working examples for every plugin type:
+
+**Datasource:** `clickhouse-datasource`, `duckdb-datasource`, `mysql-datasource`, `salesforce-datasource`, `snowflake-datasource`
+
+**Context:** `yaml-context`
+
+**Interaction:** `mcp-interaction`, `slack-interaction`
+
+**Action:** `email-action`, `jira-action`
+
+**Sandbox:** `daytona-sandbox`, `e2b-sandbox`, `nsjail-sandbox`, `sidecar-sandbox`, `vercel-sandbox`
+
+Browse the source at [`plugins/`](https://github.com/AtlasDevHQ/atlas/tree/main/plugins) for patterns on connection factories, config schemas, health checks, and testing.
 
 ## Common Patterns
 

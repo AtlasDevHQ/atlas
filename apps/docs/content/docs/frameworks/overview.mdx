@@ -72,7 +72,7 @@ If you prefer not to use an adapter (e.g., TanStack Start), you can consume the 
 Atlas streams tool calls as structured parts. The key tool names are:
 
 - **`explore`** -- filesystem exploration of the semantic layer. Args: `{ command: string }`. Result: string output.
-- **`executeSQL`** -- SQL query execution. Args: `{ sql: string, explanation: string }`. Result: `{ success: boolean, columns: string[], rows: Record<string, unknown>[], truncated?: boolean }`.
+- **`executeSQL`** -- SQL query execution. Args: `{ sql: string, explanation: string, connectionId?: string }`. Result: `{ success: boolean, columns: string[], rows: Record<string, unknown>[], truncated?: boolean }`.
 
 Each framework guide shows how to detect and render these tool parts.
 
@@ -198,9 +198,20 @@ The sync endpoint runs the same agent loop but waits for completion and returns 
     rows: Record<string, unknown>[]
   }>,
   steps: number,           // agent steps taken
-  usage: { totalTokens: number }
+  usage: { totalTokens: number },
+  conversationId?: string, // conversation ID (when DATABASE_URL is configured)
+  pendingActions?: Array<{ // present when the action framework is enabled
+    id: string,
+    type: string,
+    target: string,
+    summary: string,
+    approveUrl: string,
+    denyUrl: string,
+  }>
 }
 ```
+
+> **Tip:** The [`@useatlas/sdk`](https://www.npmjs.com/package/@useatlas/sdk) package provides a typed TypeScript client for the sync query endpoint (and other Atlas APIs), so you don't need to manage `fetch` calls and response parsing manually.
 
 ## Minimal viable frontend
 

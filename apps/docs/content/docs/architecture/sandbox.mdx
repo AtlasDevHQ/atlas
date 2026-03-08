@@ -17,7 +17,7 @@ The explore tool works on Vercel (Firecracker VM) and on Linux with nsjail. It f
 
 ## Threat Model: Who Needs What
 
-Not every deployment needs the same level of sandbox isolation. The right tier depends on your trust model:
+Not every deployment needs the same level of sandbox isolation. The right backend depends on your trust model:
 
 ### Self-hosted / single-tenant
 
@@ -66,15 +66,15 @@ Now you have real trust boundaries. User A should not be able to influence User 
 +---------------------------------------------------+
 ```
 
-## Sandbox Tier System
+## Sandbox Backends
 
 ### Built-in Backends
 
 ```
-Tier 1: Vercel Sandbox     -- Firecracker VM, deny-all network
-Tier 2: nsjail             -- Linux namespaces, no network, read-only mount
-Tier 3: Sidecar service    -- HTTP-isolated container with no secrets (Railway)
-Tier 4: just-bash          -- OverlayFS (in-memory writes), path-traversal protection
+Priority 1: Vercel Sandbox     -- Firecracker VM, deny-all network
+Priority 2: nsjail             -- Linux namespaces, no network, read-only mount
+Priority 3: Sidecar service    -- HTTP-isolated container with no secrets (Railway)
+Priority 5: just-bash          -- JS-level OverlayFs (in-memory writes), path-traversal protection
 ```
 
 ### Sandbox Plugins
@@ -98,27 +98,27 @@ export default defineConfig({
 });
 ```
 
-### What Each Tier Supports
+### What Each Backend Supports
 
 | Capability | Vercel Sandbox | E2B / Daytona | nsjail | Sidecar | just-bash |
 |-----------|---------------|--------------|--------|---------|-----------|
 | `explore` (shell) | Yes | Yes | Yes | Yes | Yes |
-| `executePython` | Yes | Yes | Yes | Yes | Yes |
+| `executePython` | Yes | Yes | Yes | Yes | No |
 | VM-level isolation | Yes | Yes | No | No | No |
 | Kernel namespace isolation | N/A | N/A | Yes | No | No |
 | No secrets in sandbox | Yes | Yes | Yes | Yes | No |
 | No network | Yes | Yes | Yes | Yes | No |
 
-**Note on just-bash:** The just-bash backend shares the same process as the API server. While secrets are not passed to sandbox commands, a sophisticated attack could theoretically access parent process memory. For multi-tenant deployments, use a higher tier.
+**Note on just-bash:** The just-bash backend shares the same process as the API server. It uses the `just-bash` package's `OverlayFs` class -- a JavaScript-level virtual filesystem overlay that intercepts writes in memory -- not Linux kernel OverlayFS. While secrets are not passed to sandbox commands, a sophisticated attack could theoretically access parent process memory. For multi-tenant deployments, use a higher-priority backend. Python execution is not supported under just-bash; `executePython` requires a sandbox backend (sidecar, Vercel sandbox, or nsjail) and returns an error without one.
 
 ## Platform Capabilities
 
-| Platform | nsjail | Sidecar | Best tier |
+| Platform | nsjail | Sidecar | Best backend |
 |----------|--------|---------|-----------|
-| **Vercel** | N/A | N/A | Tier 1 (Vercel Sandbox) |
-| **Railway** | No | Yes | Tier 3 (Sidecar) |
-| **Self-hosted Docker** | With capabilities | Optional | Tier 2 (nsjail) |
-| **Self-hosted VM** | Yes | Optional | Tier 2 (nsjail) |
+| **Vercel** | N/A | N/A | Vercel Sandbox (priority 1) |
+| **Railway** | No | Yes | Sidecar (priority 3) |
+| **Self-hosted Docker** | With capabilities | Optional | nsjail (priority 2) |
+| **Self-hosted VM** | Yes | Optional | nsjail (priority 2) |
 
 ## Sidecar Service Design
 
@@ -154,16 +154,23 @@ At startup, the explore tool selects the highest-priority backend available. The
 | 2 | **nsjail (explicit)** | `ATLAS_SANDBOX=nsjail` is set. Hard-fails if the nsjail binary is not found — no fallback |
 | 3 | **Sidecar** | `ATLAS_SANDBOX_URL` is set. Skips nsjail auto-detection entirely |
 | 4 | **nsjail (auto-detect)** | nsjail binary found on `PATH` (no explicit config needed). Falls back gracefully on failure |
-| 5 | **just-bash** | Fallback. OverlayFS + path-traversal protection only |
+| 5 | **just-bash** | Fallback. JS-level `OverlayFs` + path-traversal protection only |
 
 Key behaviors:
 
-- **Sidecar skips nsjail auto-detection.** When `ATLAS_SANDBOX_URL` is set, the sidecar is the intended backend (e.g. Railway). nsjail auto-detection is skipped entirely to avoid noisy namespace warnings on platforms that block `clone()`.
 - **Explicit nsjail is strict.** Setting `ATLAS_SANDBOX=nsjail` means "nsjail or nothing" — if the binary is missing or initialization fails, the explore tool returns an error rather than falling back.
 - **Auto-detected nsjail is graceful.** If nsjail is found on `PATH` but fails to initialize (e.g. missing kernel capabilities), the backend falls back to just-bash with a warning.
 - **Plugin backends take top priority.** Sandbox plugins (E2B, Daytona, custom) are tried first and sorted by their `priority` field (highest wins). If all plugins fail, the built-in chain continues.
 
 The health endpoint (`GET /api/health`) reports which backend is active in the `explore.backend` field.
+
+> **`executePython` uses a different priority order.** The Python tool's backend selection differs from explore in three ways:
+>
+> 1. **Sidecar is priority 1** (not priority 3). When `ATLAS_SANDBOX_URL` is set, the Python tool uses the sidecar immediately -- it does not check for Vercel sandbox first.
+> 2. **Plugin sandbox backends are not checked.** The Python tool only uses built-in backends (sidecar, Vercel sandbox, nsjail).
+> 3. **just-bash is not a fallback.** If no sandbox backend is available, `executePython` returns an error rather than running Python in the host process.
+>
+> Python priority: sidecar > Vercel sandbox > nsjail (explicit) > nsjail (auto-detect) > error.
 
 ## Configuration
 
@@ -174,4 +181,20 @@ The health endpoint (`GET /api/health`) reports which backend is active in the `
 | `SIDECAR_AUTH_TOKEN` | -- | Shared secret for sidecar auth |
 | `ATLAS_NSJAIL_PATH` | -- | Explicit path to nsjail binary |
 | `ATLAS_NSJAIL_TIME_LIMIT` | `10` | nsjail per-command time limit in seconds |
-| `ATLAS_NSJAIL_MEMORY_LIMIT` | `256` | nsjail per-command memory limit in MB |
+| `ATLAS_NSJAIL_MEMORY_LIMIT` | `256` | nsjail per-command memory limit in MB (`rlimit_as`) |
+
+### nsjail Resource Limits
+
+In addition to the configurable time and memory limits above, nsjail enforces these hard-coded resource limits per command:
+
+| Limit | Value | Description |
+|-------|-------|-------------|
+| `rlimit_as` | `ATLAS_NSJAIL_MEMORY_LIMIT` (default 256 MB) | Virtual memory limit |
+| `rlimit_fsize` | 10 MB | Max file size a process can create |
+| `rlimit_nproc` | 5 | Max number of processes |
+| `rlimit_nofile` | 64 | Max open file descriptors |
+| Stdout/stderr cap | 1 MB (`MAX_OUTPUT`) | Output read from stdout and stderr is truncated at 1 MB |
+
+### Sidecar Timeouts
+
+The sidecar backend enforces a **10-second command timeout** (`DEFAULT_TIMEOUT_MS = 10_000`). The HTTP fetch uses a total abort signal of **15 seconds** (10s command timeout + 5s HTTP overhead) to account for network latency and response serialization. Commands that exceed the timeout return exit code 124 (matching GNU `timeout(1)` convention).

@@ -5,14 +5,14 @@ description: Get Atlas running locally in under 5 minutes.
 
 ## Prerequisites
 
-- [Bun](https://bun.sh/) v1.3+
+- [Bun](https://bun.sh/) v1.3.10+
 - [Docker](https://docs.docker.com/get-docker/) -- required for local PostgreSQL (matches production setup)
 - An LLM API key (Anthropic, OpenAI, or another supported provider)
 
 ## Setup
 
 ```bash
-git clone <your-repo-url> atlas
+git clone https://github.com/AtlasDevHQ/atlas.git
 cd atlas
 bun install
 bun run db:up                        # Start Postgres + seed demo data
@@ -43,6 +43,8 @@ Generate the semantic layer and start:
 bun run atlas -- init                # Profile DB and generate YAMLs
 bun run dev                          # http://localhost:3000
 ```
+
+> **Dev admin account:** When using managed auth with the local Docker setup, a dev admin account is seeded automatically: `admin@atlas.dev` / `atlas-dev`.
 
 > **New project scaffolding:** `bun create @useatlas my-app` provides interactive setup with template selection, DB config, provider setup, and optional semantic layer generation.
 

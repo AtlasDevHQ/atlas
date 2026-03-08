@@ -25,8 +25,8 @@ bun run atlas -- init [options]
 |------|-------------|
 | `--tables <t1,t2>` | Profile only specific tables/views (comma-separated) |
 | `--schema <name>` | PostgreSQL schema name (default: `public`) |
-| `--source <name>` | Write to `semantic/{name}/` subdirectory (per-source layout) |
-| `--connection <name>` | Profile a named datasource from `atlas.config.ts` |
+| `--source <name>` | Write to `semantic/{name}/` subdirectory (per-source layout). Mutually exclusive with `--connection` |
+| `--connection <name>` | Profile a named datasource from `atlas.config.ts`. Mutually exclusive with `--source` |
 | `--csv <file1.csv,...>` | Load CSV files via DuckDB (no DB server needed) |
 | `--parquet <f1.parquet,...>` | Load Parquet files via DuckDB |
 | `--enrich` | Add LLM-enriched descriptions and query patterns (requires API key) |
@@ -58,10 +58,12 @@ bun run atlas -- init --connection warehouse
 bun run atlas -- init --csv sales.csv,products.csv
 
 # Per-source layout (writes to semantic/warehouse/)
-bun run atlas -- init --source warehouse --connection warehouse
+bun run atlas -- init --source warehouse
 ```
 
 `--demo` without an argument loads the simple dataset (3 tables, ~330 rows). `--demo cybersec` loads the cybersec dataset (62 tables, ~500K rows). `--demo ecommerce` loads the e-commerce dataset (52 tables, ~480K rows).
+
+`--connection` and `--source` cannot be used together. `--connection` profiles a named datasource from `atlas.config.ts` and automatically determines the output directory, while `--source` is the legacy flag for manually specifying the per-source output directory.
 
 In TTY mode (interactive terminal), `init` presents a table picker. Pass `--tables` to skip the picker for scripted/CI usage.
 
@@ -234,7 +236,7 @@ bun run atlas -- eval [options]
 
 | Flag | Description |
 |------|-------------|
-| `--schema <name>` | Filter by schema |
+| `--schema <name>` | Filter by demo dataset name (e.g. `simple`, `cybersec`, `ecommerce`). This is the eval dataset name, not a PostgreSQL schema |
 | `--category <name>` | Filter by category |
 | `--difficulty <simple\|medium\|complex>` | Filter by difficulty |
 | `--id <case-id>` | Run a single case |

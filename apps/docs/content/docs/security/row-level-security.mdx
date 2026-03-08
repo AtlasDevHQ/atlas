@@ -1,0 +1,226 @@
+---
+title: Row-Level Security
+description: Isolate data per tenant using automatic WHERE clause injection based on user claims.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Row-Level Security (RLS) injects WHERE conditions into every SQL query based on the authenticated user's claims. This ensures tenants only see their own data -- without relying on the agent to add the right filters.
+
+<Callout type="warn">
+RLS is **fail-closed**. If the user's claims are missing or cannot be resolved, the query is blocked entirely. This is by design -- silent data leaks are worse than a blocked query.
+</Callout>
+
+## How It Works
+
+1. You define **policies** that map JWT claims to table columns
+2. When the agent generates a SQL query, Atlas resolves the claim value from the authenticated user
+3. Atlas injects `WHERE table.column = 'claim_value'` into the query AST (not string concatenation)
+4. The injection runs **after** plugin `beforeQuery` hooks -- plugins cannot strip RLS conditions
+5. Claim values are SQL-escaped (single quotes doubled) before injection
+
+The AST manipulation handles CTEs, subqueries, UNIONs, derived tables, and table aliases correctly. Custom validators (SOQL, GraphQL) bypass RLS and must enforce their own filtering.
+
+---
+
+## Quick Start (Environment Variables)
+
+The simplest setup uses three environment variables for a single-policy configuration:
+
+```bash
+ATLAS_RLS_ENABLED=true
+ATLAS_RLS_COLUMN=tenant_id        # Column to filter on
+ATLAS_RLS_CLAIM=org_id            # JWT claim to extract the value from
+```
+
+This creates a wildcard policy that applies to **all tables** -- equivalent to:
+
+```typescript
+rls: {
+  enabled: true,
+  policies: [{ tables: ["*"], column: "tenant_id", claim: "org_id" }],
+}
+```
+
+<Callout>
+Both `ATLAS_RLS_COLUMN` and `ATLAS_RLS_CLAIM` are required when `ATLAS_RLS_ENABLED=true`. Atlas will fail to start if either is missing.
+</Callout>
+
+---
+
+## Advanced Configuration (atlas.config.ts)
+
+For multi-policy setups, use the config file:
+
+```typescript
+import { defineConfig } from "@atlas/api/lib/config";
+
+export default defineConfig({
+  rls: {
+    enabled: true,
+    policies: [
+      // All tables: filter by tenant
+      { tables: ["*"], column: "tenant_id", claim: "org_id" },
+
+      // Specific tables: filter by region
+      { tables: ["orders", "shipments"], column: "region", claim: "app_metadata.region" },
+
+      // Schema-qualified table
+      { tables: ["analytics.events"], column: "workspace_id", claim: "workspace" },
+    ],
+  },
+});
+```
+
+### Policy Schema
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `tables` | `string[]` | Table names this policy applies to. Use `["*"]` for all tables |
+| `column` | `string` | Column name to filter on. Must be a valid SQL identifier |
+| `claim` | `string` | Claim path to extract the filter value from the user's JWT claims. Supports dot-delimited nested paths |
+
+**Validation rules:**
+- At least one policy is required when `enabled: true`
+- Column names must match `/^[a-zA-Z_][a-zA-Z0-9_]*$/`
+- Tables array must have at least one entry
+
+---
+
+## Claim Path Resolution
+
+Claim paths support dot-delimited access into nested JWT structures:
+
+| Claim Path | JWT Claims | Resolved Value |
+|------------|-----------|----------------|
+| `org_id` | `{ "org_id": "acme" }` | `acme` |
+| `app_metadata.tenant` | `{ "app_metadata": { "tenant": "acme" } }` | `acme` |
+| `custom.nested.id` | `{ "custom": { "nested": { "id": 42 } } }` | `42` |
+
+Non-string values are coerced to strings. If the path resolves to `undefined` or `null`, the query is blocked.
+
+---
+
+## Auth Mode Compatibility
+
+RLS requires an authentication mode that provides user claims:
+
+| Auth Mode | Claims Available | RLS Compatible |
+|-----------|-----------------|----------------|
+| `none` | No | No -- queries blocked |
+| `api-key` | No (unless `ATLAS_AUTH_ROLE_CLAIM` provides claims) | Typically no |
+| `managed` | Yes (Better Auth session) | Yes |
+| `byot` | Yes (JWT claims) | Yes -- primary use case |
+
+<Callout type="warn">
+If `ATLAS_AUTH_MODE=none` and RLS is enabled, **all queries will be blocked**. This is intentional -- RLS without authentication has no user context to resolve claims from.
+</Callout>
+
+---
+
+## Example: Multi-Tenant SaaS
+
+A typical setup where each user belongs to an organization:
+
+**JWT claims** (from your identity provider):
+
+```json
+{
+  "sub": "user_123",
+  "email": "alice@acme.com",
+  "org_id": "org_acme",
+  "role": "analyst"
+}
+```
+
+**Atlas config:**
+
+```typescript
+export default defineConfig({
+  auth: "byot",
+  rls: {
+    enabled: true,
+    policies: [
+      { tables: ["*"], column: "org_id", claim: "org_id" },
+    ],
+  },
+});
+```
+
+**What happens when Alice runs a query:**
+
+```sql
+-- Agent generates:
+SELECT department, COUNT(*) FROM employees GROUP BY department
+
+-- After RLS injection:
+SELECT department, COUNT(*) FROM employees WHERE employees.org_id = 'org_acme' GROUP BY department
+```
+
+The injection is transparent to the agent and the user. The agent sees the filtered results and builds its answer from there.
+
+---
+
+## How Injection Works
+
+RLS conditions are injected via AST manipulation (not string concatenation), which handles edge cases correctly:
+
+### Table Aliases
+
+```sql
+-- Before:
+SELECT e.name FROM employees e JOIN departments d ON e.dept_id = d.id
+
+-- After (policies: employees.org_id, departments.org_id):
+SELECT e.name FROM employees e JOIN departments d ON e.dept_id = d.id
+WHERE e.org_id = 'org_acme' AND d.org_id = 'org_acme'
+```
+
+### CTEs and Subqueries
+
+RLS conditions are injected into each SELECT that references a filtered table, including CTE definitions, derived tables in FROM clauses, and WHERE-clause subqueries.
+
+### UNIONs
+
+Each branch of a UNION gets its own RLS conditions independently.
+
+---
+
+## Security Model
+
+- **Fail-closed** -- missing user, missing claims, or unresolvable claim paths block the query
+- **Post-plugin** -- RLS injection runs after plugin `beforeQuery` hooks, so plugins cannot strip conditions
+- **SQL-escaped** -- claim values have single quotes doubled before injection
+- **AST-based** -- conditions are injected into the parsed AST and regenerated, preventing injection attacks
+- **Scoped to SELECT** -- only applies to queries that pass SQL validation (SELECT-only)
+
+---
+
+## Troubleshooting
+
+### "RLS is enabled but no authenticated user is available"
+
+Authentication is required. Check that your auth mode provides user context. See [Authentication](/docs/deployment/authentication).
+
+### "RLS policy requires claim X but it is missing"
+
+The JWT doesn't contain the expected claim. Verify:
+- The claim path is correct (check spelling, case sensitivity)
+- Your identity provider includes the claim in the JWT
+- For nested paths like `app_metadata.tenant`, ensure the full structure exists
+
+### "ATLAS_RLS_ENABLED=true requires both ATLAS_RLS_COLUMN and ATLAS_RLS_CLAIM"
+
+Both environment variables must be set when using env-var configuration. For multi-policy setups, use `atlas.config.ts` instead.
+
+### Queries return no data
+
+If RLS is working but queries return empty results, the claim value may not match any rows. Check:
+
+```bash
+ATLAS_LOG_LEVEL=debug
+```
+
+Debug logs show the resolved claim values and injected conditions.
+
+See [Troubleshooting](/docs/guides/troubleshooting#row-level-security) for more diagnostic steps.

@@ -292,3 +292,11 @@ Every SQL query is logged with user attribution, regardless of auth mode.
 Sensitive patterns (passwords, connection strings, credentials) are automatically scrubbed from both log destinations before writing.
 
 Set `ATLAS_LOG_LEVEL=debug` to see per-step agent actions in the logs.
+
+---
+
+## Related
+
+- [Row-Level Security](/docs/security/row-level-security) -- automatic data isolation per tenant using JWT claims
+- [Actions Framework](/docs/guides/actions) -- approval-gated write operations (requires auth)
+- [Troubleshooting](/docs/guides/troubleshooting#auth-issues) -- common auth errors and fixes

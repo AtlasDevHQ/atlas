@@ -226,3 +226,15 @@ The scheduled tasks default email address (`noreply@useatlas.dev`) differs from 
 </Callout>
 
 See [Environment Variables](/docs/reference/environment-variables) for the full reference.
+
+---
+
+## Troubleshooting
+
+**Tasks never trigger** -- Check `ATLAS_SCHEDULER_ENABLED=true` and that the backend matches your deployment (`bun`, `webhook`, or `vercel`). The tick interval defaults to 60 seconds.
+
+**Email delivery fails** -- Verify `RESEND_API_KEY` is set. Check debug logs for the Resend API response.
+
+**Duplicate runs** -- The scheduler uses an in-process lock. For multi-instance deployments, use the `webhook` backend with an external scheduler.
+
+See [Troubleshooting](/docs/guides/troubleshooting#scheduled-tasks) for more diagnostic steps.

@@ -222,6 +222,72 @@ Atlas caches JWKS keys but needs to reach the endpoint on startup. If your JWKS 
 
 ---
 
+## Scheduled Tasks
+
+### Tasks Never Trigger
+
+- Verify `ATLAS_SCHEDULER_ENABLED=true` is set
+- Check the scheduler backend matches your deployment: `bun` (in-process), `webhook` (external cron), or `vercel` (Vercel Cron)
+- For `bun` backend: the scheduler tick loop runs every `ATLAS_SCHEDULER_TICK_INTERVAL` seconds (default 60). Tasks are checked against this interval, not executed at exact cron times
+- For `webhook` backend: ensure your external cron is hitting `POST /api/v1/scheduled-tasks/:id/run` with the correct `ATLAS_SCHEDULER_SECRET`
+- For `vercel` backend: ensure `CRON_SECRET` is set and the `/tick` endpoint is configured in `vercel.json`
+
+### Delivery Failures
+
+- **Email**: Verify `RESEND_API_KEY` is set and valid. Check `ATLAS_EMAIL_FROM` format (default: `Atlas <noreply@useatlas.dev>`)
+- **Slack**: Ensure `SLACK_BOT_TOKEN` (or OAuth) is configured and the bot has `chat:write` scope for the target channel
+- **Webhook**: Check the endpoint URL is reachable. Webhook delivery includes a timeout -- check debug logs for the response status
+
+### "Lock contention" or Duplicate Runs
+
+The scheduler uses an in-process lock to prevent overlapping ticks. If you see duplicate executions, check that only one instance is running the scheduler. For multi-instance deployments, use the `webhook` backend with an external scheduler service.
+
+---
+
+## Action Framework
+
+### Actions Not Appearing
+
+- Verify `ATLAS_ACTIONS_ENABLED=true`
+- Actions require authentication (any mode except `none`)
+- Actions require an internal database (`DATABASE_URL`) for the action log
+- Check that the action plugin is loaded (built-in actions like `email:send` and `jira:create` register automatically)
+
+### Approval Stuck in "Pending"
+
+- The user approving must have the required role: `analyst` for `manual` mode, `admin` for `admin-only` mode
+- In `admin-only` mode, the requesting user cannot approve their own action (separation of duties)
+- Check that the action hasn't expired or been superseded
+
+### Execution Failed
+
+- Check credentials: `RESEND_API_KEY` for email, `JIRA_BASE_URL` + `JIRA_EMAIL` + `JIRA_API_TOKEN` for JIRA
+- For email: verify `ATLAS_EMAIL_ALLOWED_DOMAINS` if set (restricts recipient domains)
+- Check debug logs for the specific error from the external service
+
+---
+
+## Row-Level Security
+
+### All Queries Blocked
+
+- If `ATLAS_AUTH_MODE=none` with RLS enabled, all queries are blocked (no user context to resolve claims). This is by design -- see [Row-Level Security](/docs/security/row-level-security#auth-mode-compatibility)
+- Verify the auth mode provides claims (BYOT or managed auth)
+
+### "RLS policy requires claim X but it is missing"
+
+The JWT doesn't contain the expected claim path. Check:
+
+- Claim path spelling and case (claim resolution is case-sensitive)
+- For nested paths like `app_metadata.tenant`, verify the JWT contains the full nested structure
+- Use `ATLAS_LOG_LEVEL=debug` to see the resolved claims
+
+### Queries Return Empty Results
+
+RLS is working but the claim value doesn't match any rows. This usually means the claim value in the JWT doesn't match the values in the filtered column. Check debug logs for the injected WHERE conditions.
+
+---
+
 ## Debug Logging
 
 Enable debug logs to see detailed agent actions, SQL validation steps, and request traces:

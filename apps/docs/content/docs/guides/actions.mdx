@@ -187,3 +187,13 @@ See [Authentication](/docs/deployment/authentication#roles) for role configurati
 ## Building Custom Actions
 
 Action plugins follow the same pattern as built-in actions. See [Plugin Authoring Guide](/docs/plugins/authoring-guide) for the `action` plugin type, which registers custom tools with approval gates and credential validation.
+
+---
+
+## Troubleshooting
+
+**Actions not appearing** -- Verify `ATLAS_ACTIONS_ENABLED=true`, authentication is configured, and `DATABASE_URL` is set.
+
+**Approval stuck** -- Check that the approving user has the required role. In `admin-only` mode, the requester cannot self-approve.
+
+See [Troubleshooting](/docs/guides/troubleshooting#action-framework) for more diagnostic steps.

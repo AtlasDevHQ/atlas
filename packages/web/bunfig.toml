@@ -1,0 +1,5 @@
+[test]
+preload = ["./src/test-setup.ts"]
+
+[test.happy-dom]
+# Enable happy-dom for React component tests

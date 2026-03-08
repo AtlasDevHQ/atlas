@@ -33,6 +33,6 @@ describe("Admin ErrorBanner", () => {
   test("has destructive styling", () => {
     const { container } = render(<ErrorBanner message="Error" />);
     const div = container.firstElementChild as HTMLElement;
-    expect(div.className).toContain("border-destructive");
+    expect(div.className).toContain("border-destructive/50");
   });
 });

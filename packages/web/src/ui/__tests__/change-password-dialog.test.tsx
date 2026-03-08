@@ -27,6 +27,14 @@ function getForm() {
   return document.querySelector("form");
 }
 
+/** Fill new + confirm password fields and submit the form. */
+function fillAndSubmit(newPwd: string, confirmPwd?: string) {
+  const inputs = getInputs();
+  fireEvent.change(inputs[1], { target: { value: newPwd } });
+  fireEvent.change(inputs[2], { target: { value: confirmPwd ?? newPwd } });
+  fireEvent.submit(getForm()!);
+}
+
 const originalFetch = globalThis.fetch;
 
 describe("ChangePasswordDialog", () => {
@@ -62,12 +70,7 @@ describe("ChangePasswordDialog", () => {
 
   test("shows error when new password is too short", async () => {
     renderDialog(true);
-    const inputs = getInputs();
-    fireEvent.change(inputs[1], { target: { value: "short" } });
-    fireEvent.change(inputs[2], { target: { value: "short" } });
-
-    const form = getForm()!;
-    fireEvent.submit(form);
+    fillAndSubmit("short");
 
     await waitFor(() => {
       expect(document.body.textContent).toContain("at least 8 characters");
@@ -76,12 +79,7 @@ describe("ChangePasswordDialog", () => {
 
   test("shows error when passwords do not match", async () => {
     renderDialog(true);
-    const inputs = getInputs();
-    fireEvent.change(inputs[1], { target: { value: "newpassword1" } });
-    fireEvent.change(inputs[2], { target: { value: "newpassword2" } });
-
-    const form = getForm()!;
-    fireEvent.submit(form);
+    fillAndSubmit("newpassword1", "newpassword2");
 
     await waitFor(() => {
       expect(document.body.textContent).toContain("do not match");
@@ -90,39 +88,39 @@ describe("ChangePasswordDialog", () => {
 
   test("shows error when new password equals current password", async () => {
     renderDialog(true);
-    const inputs = getInputs();
     // Current password defaults to "atlas-dev"
-    fireEvent.change(inputs[1], { target: { value: "atlas-dev" } });
-    fireEvent.change(inputs[2], { target: { value: "atlas-dev" } });
-
-    const form = getForm()!;
-    fireEvent.submit(form);
+    fillAndSubmit("atlas-dev");
 
     await waitFor(() => {
       expect(document.body.textContent).toContain("must be different");
     });
   });
 
-  test("calls fetch and onComplete on successful submit", async () => {
+  test("calls fetch with correct payload and invokes onComplete", async () => {
     const onComplete = mock(() => {});
-    globalThis.fetch = mock(() =>
+    const fetchMock = mock(() =>
       Promise.resolve(new Response(JSON.stringify({}), { status: 200 })),
     ) as typeof fetch;
+    globalThis.fetch = fetchMock;
 
     renderDialog(true, onComplete);
-    const inputs = getInputs();
-    fireEvent.change(inputs[1], { target: { value: "newpassword123" } });
-    fireEvent.change(inputs[2], { target: { value: "newpassword123" } });
-
-    const form = getForm()!;
-    fireEvent.submit(form);
+    fillAndSubmit("newpassword123");
 
     await waitFor(() => {
       expect(onComplete).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    const [url, opts] = (fetchMock as ReturnType<typeof mock>).mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("/api/v1/admin/me/password");
+    expect(opts.method).toBe("POST");
+    expect(JSON.parse(opts.body as string)).toEqual({
+      currentPassword: "atlas-dev",
+      newPassword: "newpassword123",
     });
   });
 
-  test("shows error on API failure", async () => {
+  test("shows error on API failure with JSON body", async () => {
     globalThis.fetch = mock(() =>
       Promise.resolve(
         new Response(JSON.stringify({ message: "Wrong current password" }), { status: 400 }),
@@ -130,15 +128,36 @@ describe("ChangePasswordDialog", () => {
     ) as typeof fetch;
 
     renderDialog(true);
-    const inputs = getInputs();
-    fireEvent.change(inputs[1], { target: { value: "newpassword123" } });
-    fireEvent.change(inputs[2], { target: { value: "newpassword123" } });
-
-    const form = getForm()!;
-    fireEvent.submit(form);
+    fillAndSubmit("newpassword123");
 
     await waitFor(() => {
       expect(document.body.textContent).toContain("Wrong current password");
+    });
+  });
+
+  test("shows fallback error on API failure with non-JSON body", async () => {
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response("Internal Server Error", { status: 500 })),
+    ) as typeof fetch;
+
+    renderDialog(true);
+    fillAndSubmit("newpassword123");
+
+    await waitFor(() => {
+      expect(document.body.textContent).toContain("Failed (HTTP 500)");
+    });
+  });
+
+  test("shows error on network failure", async () => {
+    globalThis.fetch = mock(() =>
+      Promise.reject(new Error("Network error")),
+    ) as typeof fetch;
+
+    renderDialog(true);
+    fillAndSubmit("newpassword123");
+
+    await waitFor(() => {
+      expect(document.body.textContent).toContain("Network error");
     });
   });
 });

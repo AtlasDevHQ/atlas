@@ -11,6 +11,15 @@ function makeEntities(): EntitySummary[] {
   ];
 }
 
+/** Find the entity button whose text includes the given name. */
+function findEntityButton(container: HTMLElement, name: string): HTMLElement | null {
+  const buttons = container.querySelectorAll("button");
+  for (const btn of buttons) {
+    if (btn.textContent?.includes(name)) return btn as HTMLElement;
+  }
+  return null;
+}
+
 describe("EntityList", () => {
   test("renders all entities", () => {
     const onSelect = mock(() => {});
@@ -32,10 +41,17 @@ describe("EntityList", () => {
   });
 
   test("shows view badge for view entities", () => {
+    // Render only the view entity to avoid false positives from "Overview"
     const { container } = render(
-      <EntityList entities={makeEntities()} selectedName={null} onSelect={() => {}} />,
+      <EntityList
+        entities={[{ name: "revenue_view", description: "Revenue aggregates", type: "view", columnCount: 4 }]}
+        selectedName={null}
+        onSelect={() => {}}
+      />,
     );
-    expect(container.textContent).toContain("view");
+    const btn = findEntityButton(container, "revenue_view");
+    expect(btn).not.toBeNull();
+    expect(btn!.textContent).toContain("view");
   });
 
   test("shows non-default connection badge", () => {
@@ -45,21 +61,18 @@ describe("EntityList", () => {
     expect(container.textContent).toContain("warehouse");
   });
 
-  test("filters entities by search", () => {
+  test("filters entities by search — shows only matching results", () => {
     const { container } = render(
       <EntityList entities={makeEntities()} selectedName={null} onSelect={() => {}} />,
     );
     const input = container.querySelector("input")!;
     fireEvent.change(input, { target: { value: "revenue" } });
 
-    const buttons = container.querySelectorAll("button");
-    // Only revenue_view should match
-    let found = false;
-    for (const btn of buttons) {
-      if (btn.textContent?.includes("revenue_view")) found = true;
-      expect(btn.textContent).not.toContain("users");
-    }
-    expect(found).toBe(true);
+    // revenue_view should be present, others absent
+    expect(findEntityButton(container, "revenue_view")).not.toBeNull();
+    expect(findEntityButton(container, "users")).toBeNull();
+    expect(findEntityButton(container, "orders")).toBeNull();
+    expect(findEntityButton(container, "products")).toBeNull();
   });
 
   test("shows 'No matches' when search has no results", () => {
@@ -83,14 +96,9 @@ describe("EntityList", () => {
     const { container } = render(
       <EntityList entities={makeEntities()} selectedName={null} onSelect={onSelect} />,
     );
-    // Find the button that contains "users"
-    const buttons = container.querySelectorAll("button");
-    for (const btn of buttons) {
-      if (btn.textContent?.includes("users")) {
-        fireEvent.click(btn);
-        break;
-      }
-    }
+    const btn = findEntityButton(container, "users");
+    expect(btn).not.toBeNull();
+    fireEvent.click(btn!);
     expect(onSelect).toHaveBeenCalledWith("users");
   });
 
@@ -98,15 +106,9 @@ describe("EntityList", () => {
     const { container } = render(
       <EntityList entities={makeEntities()} selectedName="orders" onSelect={() => {}} />,
     );
-    const buttons = container.querySelectorAll("button");
-    let found = false;
-    for (const btn of buttons) {
-      if (btn.textContent?.includes("orders")) {
-        expect(btn.className).toContain("bg-accent");
-        found = true;
-      }
-    }
-    expect(found).toBe(true);
+    const btn = findEntityButton(container, "orders");
+    expect(btn).not.toBeNull();
+    expect(btn!.className).toContain("bg-accent");
   });
 
   test("searches by description", () => {
@@ -115,6 +117,6 @@ describe("EntityList", () => {
     );
     const input = container.querySelector("input")!;
     fireEvent.change(input, { target: { value: "catalog" } });
-    expect(container.textContent).toContain("products");
+    expect(findEntityButton(container, "products")).not.toBeNull();
   });
 });

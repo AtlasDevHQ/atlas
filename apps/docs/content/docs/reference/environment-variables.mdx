@@ -37,7 +37,7 @@ Each provider requires its own API key:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ATLAS_DATASOURCE_URL` | — | Analytics datasource connection string (PostgreSQL or MySQL). Falls back to `DATABASE_URL_UNPOOLED` / `DATABASE_URL` when `ATLAS_DEMO_DATA=true` |
+| `ATLAS_DATASOURCE_URL` | — | Analytics datasource connection string (PostgreSQL or MySQL). Falls back to `DATABASE_URL_UNPOOLED` / `DATABASE_URL` when `ATLAS_DEMO_DATA=true`. Optional when datasources are defined in `atlas.config.ts` |
 | `DATABASE_URL` | — | Atlas internal Postgres (auth, audit, conversations). Optional — Atlas works without it |
 | `ATLAS_DEMO_DATA` | — | Set `true` to use the internal DB as both analytics datasource and internal DB |
 

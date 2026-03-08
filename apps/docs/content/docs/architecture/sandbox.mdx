@@ -164,7 +164,8 @@ At startup, the explore tool selects the highest-priority backend available. The
 
 Key behaviors:
 
-- **Explicit nsjail is strict.** Setting `ATLAS_SANDBOX=nsjail` means "nsjail or nothing" — if the binary is missing or initialization fails, the explore tool returns an error rather than falling back.
+- **Explicit nsjail is strict.** Setting `ATLAS_SANDBOX=nsjail` means "nsjail or nothing" — if the binary is missing or initialization fails, the explore tool returns an error rather than falling back. Plugin-provided sandbox backends are skipped entirely when this flag is set.
+- **Sidecar skips nsjail auto-detection.** When `ATLAS_SANDBOX_URL` is set, nsjail auto-detection is completely skipped. This avoids noisy namespace warnings on platforms like Railway where `clone()` with namespace flags is blocked.
 - **Auto-detected nsjail is graceful.** If nsjail is found on `PATH` but fails to initialize (e.g. missing kernel capabilities), the backend falls back to just-bash with a warning.
 - **Plugin backends take top priority.** Sandbox plugins (E2B, Daytona, custom) are tried first and sorted by their `priority` field (highest wins). If all plugins fail, the built-in chain continues.
 

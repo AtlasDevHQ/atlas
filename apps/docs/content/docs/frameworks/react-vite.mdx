@@ -411,7 +411,7 @@ function ExploreResult({
 
 The key data shapes to know:
 
-- **`executeSQL` output** -- `{ success, columns, rows, row_count, truncated }` on success, or `{ success: false, error }` on failure. `columns` is `string[]`, `rows` is `Record<string, unknown>[]`.
+- **`executeSQL` output** -- `{ success, columns, rows, truncated }` on success, or `{ success: false, error }` on failure. `columns` is `string[]`, `rows` is `Record<string, unknown>[]`. Use `rows.length` to get the row count.
 - **`explore` output** -- a plain string containing the command's stdout, or a string starting with `"Error"` on failure.
 - **`state`** -- check for `"output-available"` to know when the result is ready. Other states: `"input-streaming"` (arguments streaming), `"input-available"` (executing), `"output-error"` (execution failed), `"output-denied"` (tool call denied). Show a loading indicator for any state that isn't `"output-available"` or `"output-error"`.
 - **Tool detection** -- use `isToolUIPart(part)` from `"ai"` to check if a part is a tool call. Use `getToolName(part)` to extract the tool name. Do **not** check `part.type === "tool-invocation"` -- that was AI SDK v4/v5. In v6, the type is `"tool-{toolName}"` or `"dynamic-tool"`.

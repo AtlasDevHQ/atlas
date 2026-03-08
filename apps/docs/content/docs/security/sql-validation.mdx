@@ -13,12 +13,19 @@ Every SQL query the agent writes passes through a multi-layer validation pipelin
 | 1 | Regex mutation guard | Quick reject of obvious DML/DDL keywords |
 | 2 | AST parse | Full SQL parse — verify single SELECT statement |
 | 3 | Table whitelist | Only allow tables defined in the semantic layer |
-| — | Per-source rate limiting | Atomic concurrency + QPM check before execution |
-| 4 | RLS injection | Inject WHERE clauses based on user claims (when enabled) |
-| 5 | Auto LIMIT | Append row limit to every query |
-| 6 | Statement timeout | Per-query execution deadline |
 
-Layers 0–3 run in `validateSQL()` before execution. Between validation and execution, `acquireSourceSlot(connId)` checks per-source concurrency and queries-per-minute limits. If the source is at capacity, the query is rejected with a rate-limit error (and an optional `retryAfterMs` hint) before any database work begins. Per-source limits are configurable via `rateLimit` in `atlas.config.ts` datasource entries. Layers 4–6 are applied during execution.
+Layers 0–3 run in `validateSQL()` before execution. Layers 4–6 below are applied during execution.
+
+### Execution-time controls
+
+These are not validation layers — they are applied during query execution in `executeSQL()`.
+
+| Control | Purpose |
+|---------|---------|
+| Per-source rate limiting | Atomic concurrency + QPM check via `acquireSourceSlot(connId)` before the query reaches the database. Rejects with a rate-limit error (and an optional `retryAfterMs` hint) when the source is at capacity. Configurable via `rateLimit` in `atlas.config.ts` datasource entries |
+| RLS injection (layer 4) | Inject WHERE clauses based on user claims (when enabled) |
+| Auto LIMIT (layer 5) | Append row limit to every query |
+| Statement timeout (layer 6) | Per-query execution deadline |
 
 The validation pipeline is identical across all supported databases. The only difference is the AST parser mode: `node-sql-parser` uses `PostgresQL` mode for PostgreSQL connections and `MySQL` mode for MySQL connections. Plugin-registered database types (any `dbType` beyond the two built-in ones) fall back to the PostgreSQL parser with a warning. Plugins can register a custom `parserDialect` via `ConnectionPluginMeta` to override the parser mode for any connection.
 
@@ -169,10 +176,10 @@ Queries that exceed the timeout are terminated by the database and return an err
 
 When plugins are installed, two hook points extend the pipeline:
 
-- **`beforeQuery`** — Plugins can inspect or rewrite SQL before execution. If a plugin rewrites the query, it is **re-validated** through layers 0–3 to prevent plugins from introducing DML or bypassing the whitelist.
+- **`beforeQuery`** — Plugins can inspect or rewrite SQL before execution. If a plugin rewrites the query, the rewritten SQL goes through layers 0–3 again for re-validation. This prevents plugins from introducing DML or bypassing the whitelist.
 - **`afterQuery`** — Plugins receive the query results for logging, transformation, or side effects.
 
-Custom validators (for non-SQL datasources like SOQL or GraphQL) replace the standard validation pipeline entirely. When a connection has a custom validator registered, `validateSQL` is not called — the custom validator is responsible for equivalent safety guarantees.
+**Custom validators:** For non-SQL datasources (SOQL, GraphQL, MQL), a plugin can provide a `customValidator` via `ConnectionPluginMeta.validate`. When a connection has a custom validator registered, it **completely replaces** the built-in validation layers 0–3 — `validateSQL` is not called. The custom validator is responsible for providing equivalent safety guarantees.
 
 ## Error handling
 

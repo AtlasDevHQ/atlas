@@ -596,6 +596,30 @@ export default definePlugin({
 
 `beforeQuery` and `beforeExplore` are mutable hooks -- handlers can return a mutation object (`{ sql }` or `{ command }`) to rewrite the operation, or throw an error to reject it entirely. All other hooks are observation-only (void return).
 
+## Schema Migrations
+
+Plugins can declare tables for the Atlas internal database via the `schema` property. Declared tables are auto-migrated at boot — no manual SQL needed:
+
+```typescript
+export default definePlugin({
+  id: "my-plugin",
+  type: "context",
+  version: "1.0.0",
+  schema: {
+    my_plugin_cache: {
+      fields: {
+        key: { type: "string", required: true, unique: true },
+        value: { type: "string", required: true },
+        updated_at: { type: "date" },
+      },
+    },
+  },
+  // ...
+});
+```
+
+The `schema` property is available on all plugin types. It requires `DATABASE_URL` to be set (the internal Postgres database). Use `ctx.db` in `initialize()` or hooks to query your plugin's tables.
+
 ## Datasource Plugin Properties
 
 Beyond the basics shown in [step 4](#4-plugin-object), datasource plugins support several additional properties.
@@ -656,9 +680,7 @@ connection: {
 
 These are ignored when a custom `validate` function is provided.
 
-<Callout type="warn">
-`parserDialect` and `forbiddenPatterns` are validated at plugin registration time but **not yet consumed at query time**. Wiring these into the core SQL validation pipeline is tracked in [#15](https://github.com/AtlasDevHQ/atlas/issues/15). Until that lands, use a custom `validate` function if you need to enforce dialect-specific validation rules at runtime.
-</Callout>
+Both properties are consumed during SQL validation: `parserDialect` sets the AST parser mode used in layer 2, and `forbiddenPatterns` are checked as additional regex guards in layer 1. See [SQL Validation Pipeline](/docs/security/sql-validation) for the full layer breakdown.
 
 ## Plugin Lifecycle
 

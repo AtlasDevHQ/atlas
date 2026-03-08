@@ -131,7 +131,6 @@ The `state` field progresses through the lifecycle: `"input-streaming"` (argumen
 {
   success: true,
   explanation: string,
-  row_count: number,
   columns: string[],             // e.g. ["name", "revenue", "region"]
   rows: Record<string, unknown>[], // e.g. [{ name: "Acme", revenue: 50000, region: "US" }]
   truncated: boolean               // true if result hit the row limit
@@ -176,7 +175,6 @@ A single assistant message might contain these parts, in order:
     "output": {
       "success": true,
       "explanation": "Top companies",
-      "row_count": 5,
       "columns": ["name", "revenue"],
       "rows": [
         { "name": "Acme", "revenue": 50000 },

@@ -145,7 +145,7 @@ export function useAtlasQuery(apiKey?: string) {
 
 If you use the `@ai-sdk/react` `useChat` approach, see the [React/Vite guide](/docs/frameworks/react-vite#rendering-tool-calls) for a complete `ToolPart` implementation -- it works identically in TanStack Start. The data shapes are the same across all frameworks:
 
-- **`executeSQL` output** -- `{ success, columns, rows, row_count, truncated }` on success, or `{ success: false, error }` on failure.
+- **`executeSQL` output** -- `{ success, columns, rows, truncated }` on success, or `{ success: false, error }` on failure. Use `rows.length` to get the row count.
 - **`explore` output** -- a plain string (stdout of the command).
 - **`state`** -- check for `"output-available"` to know when the result is ready.
 

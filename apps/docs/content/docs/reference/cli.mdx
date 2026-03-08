@@ -27,8 +27,8 @@ bun run atlas -- init [options]
 | `--schema <name>` | PostgreSQL schema name (default: `public`) |
 | `--source <name>` | Write to `semantic/{name}/` subdirectory (per-source layout). Mutually exclusive with `--connection` |
 | `--connection <name>` | Profile a named datasource from `atlas.config.ts`. Mutually exclusive with `--source` |
-| `--csv <file1.csv,...>` | Load CSV files via DuckDB (no DB server needed) |
-| `--parquet <f1.parquet,...>` | Load Parquet files via DuckDB |
+| `--csv <file1.csv,...>` | Load CSV files via DuckDB (no DB server needed). Requires `@duckdb/node-api` |
+| `--parquet <f1.parquet,...>` | Load Parquet files via DuckDB. Requires `@duckdb/node-api` |
 | `--enrich` | Add LLM-enriched descriptions and query patterns (requires API key) |
 | `--no-enrich` | Explicitly skip LLM enrichment |
 | `--demo [simple\|cybersec\|ecommerce]` | Load a demo dataset then profile (default: `simple`) |

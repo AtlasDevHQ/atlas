@@ -23,7 +23,7 @@ When `ATLAS_AUTH_MODE` is not set, Atlas auto-detects the mode from environment 
 | 3 | `ATLAS_API_KEY` | Simple Key |
 | 4 | None of the above | None |
 
-Set `ATLAS_AUTH_MODE` explicitly to override auto-detection: `none`, `api-key`, `managed`, or `byot`.
+Set `ATLAS_AUTH_MODE` explicitly to override auto-detection: `none`, `api-key` (alias: `simple-key`), `managed`, or `byot`.
 
 ## No Auth
 
@@ -120,11 +120,11 @@ The account is flagged with `password_change_required` -- the user must change t
 1. User signs in via `POST /api/auth/sign-in/email`
 2. Better Auth creates a session and sets a `better-auth.session_token` cookie
 3. Subsequent requests include the cookie automatically (browser) or send `Authorization: Bearer <session-token>` (API clients)
-4. Sessions last 7 days. The session expiry is extended when a request arrives at least 24 hours after the last session update
+4. Sessions last 7 days. On any request where the session is at least 24 hours old, the expiry is automatically renewed
 
 Users can log out via `POST /api/auth/sign-out` (clears the session cookie). Sessions are also revoked when the session expires (7 days) or if the user is deleted by an admin.
 
-> **Cookie cache:** Better Auth is configured with a 5-minute cookie cache (`cookieCache.maxAge = 300s`). This means role changes or session revocations may take up to 5 minutes to take effect. The cache improves performance by avoiding a database lookup on every request, but be aware of this delay when revoking access or changing user roles.
+> **Cookie cache:** Better Auth is configured with a 5-minute cookie cache (`cookieCache.maxAge = 300s`). This means **role changes and session revocations may take up to 5 minutes to take effect** due to the cache. The cache improves performance by avoiding a database lookup on every request, but be aware of this delay when revoking access or changing user roles.
 
 ### Cross-origin deployment
 
@@ -137,6 +137,8 @@ BETTER_AUTH_URL=https://api.example.com
 ```
 
 `ATLAS_CORS_ORIGIN` controls the HTTP `Access-Control-Allow-Origin` header (which origins can make API requests). `BETTER_AUTH_TRUSTED_ORIGINS` controls CSRF protection (which origins can submit auth forms). In most cross-origin setups, set both to the same value.
+
+> **Both variables are required together.** If you set `ATLAS_CORS_ORIGIN` but not `BETTER_AUTH_TRUSTED_ORIGINS`, CORS will pass but CSRF protection will reject auth requests. If you set `BETTER_AUTH_TRUSTED_ORIGINS` but not `ATLAS_CORS_ORIGIN`, the browser will block cross-origin requests entirely. Always set both for cross-origin managed auth.
 
 > **Cross-subdomain cookies:** When `ATLAS_CORS_ORIGIN` and `BETTER_AUTH_URL` are on different subdomains (e.g. `app.example.com` and `api.example.com`), the session cookie domain is automatically derived to the parent domain (`.example.com`). This allows cookies set by the API to be sent from the frontend subdomain. No manual cookie configuration is needed.
 

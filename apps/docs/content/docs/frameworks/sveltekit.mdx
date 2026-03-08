@@ -268,7 +268,7 @@ Here is a basic Svelte component for rendering tool calls:
 
 The key data shapes:
 
-- **`executeSQL` output** -- `{ success, columns, rows, row_count, truncated }` on success, or `{ success: false, error }` on failure.
+- **`executeSQL` output** -- `{ success, columns, rows, truncated }` on success, or `{ success: false, error }` on failure. Use `rows.length` to get the row count.
 - **`explore` output** -- a plain string (stdout of the command).
 - **`state`** -- check for `"output-available"` to know when the result is ready. Other states: `"input-streaming"`, `"input-available"`, `"output-error"`, `"output-denied"`.
 - **Tool detection** -- use `isToolUIPart(part)` from `"ai"` (not `part.type === "tool-invocation"`).

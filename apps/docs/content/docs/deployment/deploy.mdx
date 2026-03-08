@@ -155,7 +155,7 @@ Verify at `http://localhost:3001/api/health`.
 **What you get with one-click:** A full-stack Next.js app with the Hono API embedded via a catch-all route. Neon Postgres is provisioned automatically. The explore tool uses Vercel Sandbox (Firecracker microVM) for hardware-level isolation.
 
 - `ATLAS_PROVIDER=gateway` routes through [Vercel's AI Gateway](https://vercel.com/docs/ai-gateway) with usage tracking in the Vercel dashboard
-- The catch-all route sets `maxDuration = 300` (5 minutes, requires Pro plan) — adjust based on your [Vercel plan](https://vercel.com/docs/functions/configuring-functions/duration)
+- The catch-all route sets `maxDuration = 300` (5 minutes) — this requires the **Pro plan**. Hobby plan maximum is 60 seconds; set `maxDuration = 60` if you're on Hobby. See [Vercel plan limits](https://vercel.com/docs/functions/configuring-functions/duration)
 - `@vercel/sandbox` is auto-detected when `ATLAS_RUNTIME=vercel` is set or the `VERCEL` env var is present (set automatically on Vercel deployments)
 
 ### Docker
@@ -164,7 +164,7 @@ Verify at `http://localhost:3001/api/health`.
 
 - Images are based on [`oven/bun`](https://hub.docker.com/r/oven/bun) (see the [Dockerfile](https://github.com/AtlasDevHQ/atlas/blob/main/examples/docker/Dockerfile) for the pinned version)
 - The semantic layer (`semantic/`) is baked into the image at build time — rebuild if you update YAMLs
-- Build without nsjail for a smaller image: `docker build --build-arg INSTALL_NSJAIL=false -f Dockerfile -t atlas .`
+- The Dockerfile defaults to `INSTALL_NSJAIL=true` — nsjail is included in the image by default. Build without it for a smaller image: `docker build --build-arg INSTALL_NSJAIL=false -f Dockerfile -t atlas .`
 
 For development workflows where you're iterating on the semantic layer, mount it as a volume instead of baking it into the image:
 

@@ -11,7 +11,10 @@
  */
 
 import type { ExploreBackend, ExecResult } from "./explore";
+import { createLogger } from "@atlas/api/lib/logger";
 import * as fs from "fs";
+
+const log = createLogger("nsjail-sandbox");
 
 /** Maximum bytes to read from stdout/stderr (1 MB). */
 const MAX_OUTPUT = 1024 * 1024;
@@ -51,8 +54,8 @@ function parsePositiveInt(
   if (raw === undefined) return defaultValue;
   const parsed = parseInt(raw, 10);
   if (isNaN(parsed) || parsed <= 0) {
-    console.warn(
-      `[atlas] Invalid ${envVar}="${raw}" for ${name}, using default: ${defaultValue}`,
+    log.warn(
+      `Invalid ${envVar}="${raw}" for ${name}, using default: ${defaultValue}`,
     );
     return defaultValue;
   }
@@ -72,8 +75,8 @@ export function findNsjailBinary(): string | null {
         err instanceof Error && "code" in err
           ? (err as NodeJS.ErrnoException).code
           : "unknown";
-      console.error(
-        `[atlas] ATLAS_NSJAIL_PATH="${explicit}" is not executable (${code})`,
+      log.error(
+        `ATLAS_NSJAIL_PATH="${explicit}" is not executable (${code})`,
       );
       return null;
     }
@@ -294,7 +297,7 @@ export async function createNsjailBackend(
       } catch (err) {
         // Spawn itself failed — infrastructure error
         const detail = err instanceof Error ? err.message : String(err);
-        console.error("[atlas] nsjail spawn failed:", detail);
+        log.error({ err: detail }, "nsjail spawn failed");
         callbacks.onInfrastructureError();
         throw new Error(
           `nsjail infrastructure error: ${detail}. Backend cache cleared; nsjail will be re-initialized on next explore call.`,
@@ -311,8 +314,9 @@ export async function createNsjailBackend(
         exitCode = await proc.exited;
       } catch (err) {
         const detail = err instanceof Error ? err.message : String(err);
-        console.error(
-          `[atlas] nsjail process I/O error: ${detail} | command: ${command}`,
+        log.error(
+          { err: detail, command },
+          "nsjail process I/O error",
         );
         throw new Error(
           `nsjail process I/O error: ${detail}`,
@@ -322,9 +326,9 @@ export async function createNsjailBackend(
 
       // Interpret nsjail-specific exit codes
       if (exitCode === 109) {
-        console.error(
-          "[atlas] nsjail setup failure (exit 109) — sandbox may not have been applied. stderr:",
-          stderr,
+        log.error(
+          { exitCode, stderr },
+          "nsjail setup failure (exit 109) — sandbox may not have been applied",
         );
         // Mark nsjail as permanently failed so the system falls back to just-bash
         // (when ATLAS_SANDBOX=nsjail, getExploreBackend will still throw hard)
@@ -332,8 +336,9 @@ export async function createNsjailBackend(
       }
       if (exitCode > 128) {
         const signal = exitCode - 128;
-        console.warn(
-          `[atlas] nsjail child killed by signal ${signal} | command: ${command}`,
+        log.warn(
+          { signal, command },
+          "nsjail child killed by signal",
         );
       }
 

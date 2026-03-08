@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import { definePlugin, isContextPlugin } from "@useatlas/plugin-sdk";
+import { createMockContext } from "@useatlas/plugin-sdk/testing";
 import {
   contextYamlPlugin,
   buildContextYamlPlugin,
@@ -97,31 +98,8 @@ afterAll(() => {
 
 // ---------------------------------------------------------------------------
 // Helper: mock AtlasPluginContext for initialize()
+// (Uses @useatlas/plugin-sdk/testing utilities)
 // ---------------------------------------------------------------------------
-
-function makeMockCtx() {
-  const logged: string[] = [];
-  return {
-    ctx: {
-      db: null,
-      connections: {
-        get: () => {
-          throw new Error("not implemented");
-        },
-        list: () => [],
-      },
-      tools: { register: () => {} },
-      logger: {
-        info: (msg: string) => logged.push(msg),
-        warn: (msg: string) => logged.push(msg),
-        error: (msg: string) => logged.push(msg),
-        debug: (msg: string) => logged.push(msg),
-      },
-      config: {},
-    },
-    logged,
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Plugin shape validation
@@ -459,21 +437,21 @@ describe("healthCheck", () => {
 describe("initialize", () => {
   test("logs the semantic directory path", async () => {
     const plugin = contextYamlPlugin({ semanticDir });
-    const { ctx, logged } = makeMockCtx();
-    await plugin.initialize!(ctx as never);
-    const msg = logged.find((m) =>
-      m.includes("Context-YAML plugin initialized"),
+    const { ctx, logs } = createMockContext();
+    await plugin.initialize!(ctx);
+    const msg = logs.find((l) =>
+      l.msg.includes("Context-YAML plugin initialized"),
     );
     expect(msg).toBeDefined();
-    expect(msg).toContain(semanticDir);
+    expect(msg!.msg).toContain(semanticDir);
   });
 
   test("logs health check warning when unhealthy", async () => {
     const plugin = contextYamlPlugin({ semanticDir: "/nonexistent/dir" });
-    const { ctx, logged } = makeMockCtx();
-    await plugin.initialize!(ctx as never);
-    const warning = logged.find((m) =>
-      m.includes("[context-yaml] Health check warning"),
+    const { ctx, logs } = createMockContext();
+    await plugin.initialize!(ctx);
+    const warning = logs.find((l) =>
+      l.msg.includes("[context-yaml] Health check warning"),
     );
     expect(warning).toBeDefined();
   });

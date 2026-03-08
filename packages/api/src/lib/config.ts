@@ -398,7 +398,7 @@ async function tryLoadConfigFile(
 // Plugin shape validation
 // ---------------------------------------------------------------------------
 
-const VALID_PLUGIN_TYPES = new Set(["datasource", "context", "interaction", "action"]);
+const VALID_PLUGIN_TYPES = new Set(["datasource", "context", "interaction", "action", "sandbox"]);
 
 /**
  * Validate plugin array entries have the required structural shape:
@@ -450,7 +450,7 @@ function validatePlugins(plugins: unknown[]): void {
     if (!("type" in obj) || typeof obj.type !== "string") {
       errors.push(`${label} is missing "type" (string)`);
     } else if (!VALID_PLUGIN_TYPES.has(obj.type)) {
-      errors.push(`${label} has invalid type "${obj.type}" — must be one of: datasource, context, interaction, action`);
+      errors.push(`${label} has invalid type "${obj.type}" — must be one of: ${[...VALID_PLUGIN_TYPES].join(", ")}`);
     }
 
     // version

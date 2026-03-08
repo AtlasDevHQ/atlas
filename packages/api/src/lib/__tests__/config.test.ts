@@ -1060,4 +1060,44 @@ describe("plugin validation", () => {
     const resolved = validateAndResolve({ plugins: [factoryPlugin] });
     expect(resolved.plugins).toHaveLength(1);
   });
+
+  it("accepts sandbox plugin type", () => {
+    const resolved = validateAndResolve({
+      plugins: [
+        {
+          id: "e2b-sandbox",
+          type: "sandbox",
+          version: "0.1.0",
+          sandbox: { create: () => ({}) },
+        },
+      ],
+    });
+    expect(resolved.plugins).toHaveLength(1);
+  });
+
+  it("still rejects unknown plugin types after sandbox addition", () => {
+    expect(() =>
+      validateAndResolve({
+        plugins: [
+          { id: "bad", type: "compute", version: "1.0.0" },
+        ],
+      }),
+    ).toThrow('invalid type "compute"');
+  });
+
+  it("includes all valid types in the invalid-type error message", () => {
+    try {
+      validateAndResolve({
+        plugins: [{ id: "bad", type: "bogus", version: "1.0.0" }],
+      });
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      const msg = (err as Error).message;
+      expect(msg).toContain("datasource");
+      expect(msg).toContain("context");
+      expect(msg).toContain("interaction");
+      expect(msg).toContain("action");
+      expect(msg).toContain("sandbox");
+    }
+  });
 });

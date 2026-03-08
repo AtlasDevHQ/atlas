@@ -7,10 +7,10 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 Integrate Atlas into a Nuxt 3 app using `@ai-sdk/vue`.
 
-> **Prerequisites:** A running Atlas API server. See [Bring Your Own Frontend](/docs/frameworks/overview) for architecture and common setup.
+> **Prerequisites:** A running Atlas API server. See [Bring Your Own Frontend](/frameworks/overview) for architecture and common setup.
 
 <Callout type="info" title="AI SDK v6 — Vue adapter">
-  As of AI SDK v6, `@ai-sdk/vue` (v3+) supports the transport-based API (`DefaultChatTransport`, `sendMessage`) shown below. Make sure you install `@ai-sdk/vue@^3.0.0` and `ai@^6.0.0`. If you prefer not to use streaming, the [sync query endpoint](/docs/frameworks/overview#streaming-vs-synchronous) (`POST /api/v1/query`) works with any HTTP client. The [`@useatlas/sdk`](https://www.npmjs.com/package/@useatlas/sdk) package provides a typed client for that endpoint.
+  As of AI SDK v6, `@ai-sdk/vue` (v3+) supports the transport-based API (`DefaultChatTransport`, `sendMessage`) shown below. Make sure you install `@ai-sdk/vue@^3.0.0` and `ai@^6.0.0`. If you prefer not to use streaming, the [sync query endpoint](/frameworks/overview#streaming-vs-synchronous) (`POST /api/v1/query`) works with any HTTP client. The [`@useatlas/sdk`](https://www.npmjs.com/package/@useatlas/sdk) package provides a typed client for that endpoint.
 </Callout>
 
 ---
@@ -301,7 +301,7 @@ The key data shapes:
 - **`state`** -- check for `"output-available"` to know when the result is ready. Other states: `"input-streaming"`, `"input-available"`, `"output-error"`, `"output-denied"`.
 - **Tool detection** -- use `isToolUIPart(part)` from `"ai"` (not `part.type === "tool-invocation"`).
 
-See the [Data Stream Protocol](/docs/frameworks/overview#tool-call-parts-ai-sdk-v6) section for the full part structure and a concrete example.
+See the [Data Stream Protocol](/frameworks/overview#tool-call-parts-ai-sdk-v6) section for the full part structure and a concrete example.
 
 ## 6. Synchronous queries (alternative)
 
@@ -325,4 +325,4 @@ export async function queryAtlas(question: string) {
 }
 ```
 
-See [Bring Your Own Frontend](/docs/frameworks/overview) for the full architecture and what `@atlas/web` adds on top.
+See [Bring Your Own Frontend](/frameworks/overview) for the full architecture and what `@atlas/web` adds on top.

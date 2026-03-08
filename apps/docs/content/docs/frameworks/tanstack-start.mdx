@@ -7,7 +7,7 @@ Integrate Atlas into a TanStack Start app using plain `fetch` or TanStack Query.
 
 TanStack Start is a full-stack React framework. Unlike the other BYOF guides, this one does **not** use `@ai-sdk/react` -- it shows how to consume the Atlas API directly, which works with any HTTP client.
 
-> **Prerequisites:** A running Atlas API server. See [Bring Your Own Frontend](/docs/frameworks/overview) for architecture and common setup.
+> **Prerequisites:** A running Atlas API server. See [Bring Your Own Frontend](/frameworks/overview) for architecture and common setup.
 
 ---
 
@@ -19,7 +19,7 @@ For the synchronous approach:
 bun add @tanstack/react-query
 ```
 
-No AI SDK packages are required. If you prefer the `useChat` hook, you can install `@ai-sdk/react` and follow the [React Vite guide](/docs/frameworks/react-vite) -- it works the same in TanStack Start.
+No AI SDK packages are required. If you prefer the `useChat` hook, you can install `@ai-sdk/react` and follow the [React Vite guide](/frameworks/react-vite) -- it works the same in TanStack Start.
 
 ## 2. Configure the API URL
 
@@ -143,13 +143,13 @@ export function useAtlasQuery(apiKey?: string) {
 
 ## 4. Rendering tool calls
 
-If you use the `@ai-sdk/react` `useChat` approach, see the [React/Vite guide](/docs/frameworks/react-vite#rendering-tool-calls) for a complete `ToolPart` implementation -- it works identically in TanStack Start. The data shapes are the same across all frameworks:
+If you use the `@ai-sdk/react` `useChat` approach, see the [React/Vite guide](/frameworks/react-vite#rendering-tool-calls) for a complete `ToolPart` implementation -- it works identically in TanStack Start. The data shapes are the same across all frameworks:
 
 - **`executeSQL` output** -- `{ success, columns, rows, truncated }` on success, or `{ success: false, error }` on failure. Use `rows.length` to get the row count.
 - **`explore` output** -- a plain string (stdout of the command).
 - **`state`** -- check for `"output-available"` to know when the result is ready.
 
-For the TanStack Query approach, the sync endpoint returns data in the `data` array directly -- no tool part parsing needed. See the [Data Stream Protocol](/docs/frameworks/overview#tool-call-parts-ai-sdk-v6) section for details on both response formats.
+For the TanStack Query approach, the sync endpoint returns data in the `data` array directly -- no tool part parsing needed. See the [Data Stream Protocol](/frameworks/overview#tool-call-parts-ai-sdk-v6) section for details on both response formats.
 
 ## 5. Which approach to choose
 

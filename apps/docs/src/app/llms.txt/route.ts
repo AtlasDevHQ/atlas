@@ -9,8 +9,8 @@ export function GET() {
   const content = llms(source).index();
   // Convert relative URLs to absolute for LLM agent consumption
   const withAbsoluteUrls = content.replace(
-    /\]\(\/docs\//g,
-    `](${BASE_URL}/docs/`,
+    /\]\(\//g,
+    `](${BASE_URL}/`,
   );
 
   return new Response(withAbsoluteUrls, {

@@ -13,53 +13,53 @@ Atlas ships with 15 reference plugins covering all five types:
 
 ### Datasource Plugins
 
-Connect additional databases and APIs as query targets. See [Datasource Plugins](/docs/plugins/datasources) for full configuration details.
+Connect additional databases and APIs as query targets. See [Datasource Plugins](/plugins/datasources) for full configuration details.
 
 | Plugin | Package | Connects to |
 |--------|---------|-------------|
-| [ClickHouse](/docs/plugins/datasources#clickhouse) | `@atlas/plugin-clickhouse-datasource` | ClickHouse analytics database |
-| [DuckDB](/docs/plugins/datasources#duckdb) | `@atlas/plugin-duckdb-datasource` | DuckDB embedded analytics |
-| [MySQL](/docs/plugins/datasources#mysql) | `@atlas/plugin-mysql-datasource` | MySQL / MariaDB |
-| [Snowflake](/docs/plugins/datasources#snowflake) | `@atlas/plugin-snowflake-datasource` | Snowflake Data Cloud |
-| [Salesforce](/docs/plugins/datasources#salesforce) | `@atlas/plugin-salesforce-datasource` | Salesforce CRM (SOQL) |
+| [ClickHouse](/plugins/datasources#clickhouse) | `@atlas/plugin-clickhouse-datasource` | ClickHouse analytics database |
+| [DuckDB](/plugins/datasources#duckdb) | `@atlas/plugin-duckdb-datasource` | DuckDB embedded analytics |
+| [MySQL](/plugins/datasources#mysql) | `@atlas/plugin-mysql-datasource` | MySQL / MariaDB |
+| [Snowflake](/plugins/datasources#snowflake) | `@atlas/plugin-snowflake-datasource` | Snowflake Data Cloud |
+| [Salesforce](/plugins/datasources#salesforce) | `@atlas/plugin-salesforce-datasource` | Salesforce CRM (SOQL) |
 
 ### Sandbox Plugins
 
-Provide isolation backends for the explore and Python tools. See [Sandbox Plugins](/docs/plugins/sandboxes) for full configuration details.
+Provide isolation backends for the explore and Python tools. See [Sandbox Plugins](/plugins/sandboxes) for full configuration details.
 
 | Plugin | Package | Isolation Type | Priority |
 |--------|---------|---------------|----------|
-| [E2B](/docs/plugins/sandboxes#e2b) | `@atlas/plugin-e2b-sandbox` | Firecracker microVM | 90 |
-| [Daytona](/docs/plugins/sandboxes#daytona) | `@atlas/plugin-daytona-sandbox` | Managed cloud sandbox | 85 |
-| [nsjail](/docs/plugins/sandboxes#nsjail) | `@atlas/plugin-nsjail-sandbox` | Linux namespace sandbox | 75 |
-| [Sidecar](/docs/plugins/sandboxes#sidecar) | `@atlas/plugin-sidecar-sandbox` | HTTP-isolated container | 50 |
-| [Vercel](/docs/plugins/sandboxes#vercel) | `@atlas/plugin-vercel-sandbox` | Firecracker microVM (Vercel) | 100 |
+| [E2B](/plugins/sandboxes#e2b) | `@atlas/plugin-e2b-sandbox` | Firecracker microVM | 90 |
+| [Daytona](/plugins/sandboxes#daytona) | `@atlas/plugin-daytona-sandbox` | Managed cloud sandbox | 85 |
+| [nsjail](/plugins/sandboxes#nsjail) | `@atlas/plugin-nsjail-sandbox` | Linux namespace sandbox | 75 |
+| [Sidecar](/plugins/sandboxes#sidecar) | `@atlas/plugin-sidecar-sandbox` | HTTP-isolated container | 50 |
+| [Vercel](/plugins/sandboxes#vercel) | `@atlas/plugin-vercel-sandbox` | Firecracker microVM (Vercel) | 100 |
 
 ### Interaction Plugins
 
-Add new surfaces for users to interact with Atlas. See [Interaction Plugins](/docs/plugins/interactions).
+Add new surfaces for users to interact with Atlas. See [Interaction Plugins](/plugins/interactions).
 
 | Plugin | Package | Surface |
 |--------|---------|---------|
-| [MCP](/docs/plugins/interactions#mcp) | `@atlas/plugin-mcp-interaction` | Model Context Protocol (stdio/SSE) |
-| [Slack](/docs/plugins/interactions#slack) | `@atlas/plugin-slack-interaction` | Slack bot (commands, threads, OAuth) |
+| [MCP](/plugins/interactions#mcp) | `@atlas/plugin-mcp-interaction` | Model Context Protocol (stdio/SSE) |
+| [Slack](/plugins/interactions#slack) | `@atlas/plugin-slack-interaction` | Slack bot (commands, threads, OAuth) |
 
 ### Action Plugins
 
-Let the agent perform write operations with approval controls. See [Action Plugins](/docs/plugins/actions).
+Let the agent perform write operations with approval controls. See [Action Plugins](/plugins/actions).
 
 | Plugin | Package | Action |
 |--------|---------|--------|
-| [Email](/docs/plugins/actions#email) | `@atlas/plugin-email-action` | Send email reports via Resend |
-| [JIRA](/docs/plugins/actions#jira) | `@atlas/plugin-jira-action` | Create JIRA tickets |
+| [Email](/plugins/actions#email) | `@atlas/plugin-email-action` | Send email reports via Resend |
+| [JIRA](/plugins/actions#jira) | `@atlas/plugin-jira-action` | Create JIRA tickets |
 
 ### Context Plugins
 
-Inject additional knowledge into the agent's system prompt. See [Context Plugins](/docs/plugins/context).
+Inject additional knowledge into the agent's system prompt. See [Context Plugins](/plugins/context).
 
 | Plugin | Package | Source |
 |--------|---------|--------|
-| [YAML Context](/docs/plugins/context#yaml-context) | `@atlas/plugin-yaml-context` | Semantic layer (entities, glossary, metrics) |
+| [YAML Context](/plugins/context#yaml-context) | `@atlas/plugin-yaml-context` | Semantic layer (entities, glossary, metrics) |
 
 ## Quick Start
 
@@ -85,4 +85,4 @@ export default defineConfig({
 
 ## Building Your Own
 
-See the [Plugin Authoring Guide](/docs/plugins/authoring-guide) for a step-by-step tutorial on creating custom plugins.
+See the [Plugin Authoring Guide](/plugins/authoring-guide) for a step-by-step tutorial on creating custom plugins.

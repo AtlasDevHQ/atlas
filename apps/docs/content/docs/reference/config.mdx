@@ -5,7 +5,7 @@ description: Declarative configuration with atlas.config.ts for multi-datasource
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Atlas can be configured via environment variables (see [Environment Variables](/docs/reference/environment-variables)) or a declarative `atlas.config.ts` file. When both are present, the config file takes precedence for datasource, auth, and tool configuration. Environment variables still work as fallbacks.
+Atlas can be configured via environment variables (see [Environment Variables](/reference/environment-variables)) or a declarative `atlas.config.ts` file. When both are present, the config file takes precedence for datasource, auth, and tool configuration. Environment variables still work as fallbacks.
 
 ## When to Use Config File vs Env Vars
 
@@ -86,7 +86,7 @@ export default defineConfig({
 });
 ```
 
-When set to `"auto"` (or omitted), Atlas detects the mode from environment variables. See [Authentication](/docs/deployment/authentication) for details.
+When set to `"auto"` (or omitted), Atlas detects the mode from environment variables. See [Authentication](/deployment/authentication) for details.
 
 ---
 
@@ -120,7 +120,7 @@ export default defineConfig({
 });
 ```
 
-See [Plugin Authoring Guide](/docs/plugins/authoring-guide) for building custom plugins.
+See [Plugin Authoring Guide](/plugins/authoring-guide) for building custom plugins.
 
 ---
 
@@ -165,7 +165,7 @@ Equivalent env vars (for a single global policy only): `ATLAS_RLS_ENABLED=true`,
 
 ## Actions
 
-Configure the [action framework](/docs/guides/actions) with default approval modes and per-action overrides.
+Configure the [action framework](/guides/actions) with default approval modes and per-action overrides.
 
 ```typescript
 export default defineConfig({

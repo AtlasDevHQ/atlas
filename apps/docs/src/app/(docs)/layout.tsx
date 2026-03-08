@@ -17,13 +17,13 @@ export default function Layout({ children }: { children: ReactNode }) {
             title: "Docs",
             description: "Guides, configuration, and concepts",
             icon: <Book />,
-            url: "/docs",
+            url: "/",
           },
           {
             title: "API Reference",
             description: "REST API endpoints and request/response schemas",
             icon: <Braces />,
-            url: "/docs/api-reference",
+            url: "/api-reference",
           },
         ],
       }}

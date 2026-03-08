@@ -200,7 +200,7 @@ Optional (safe defaults):
 | `ATLAS_QUERY_TIMEOUT` | `30000` | Query timeout in ms |
 | `PORT` | `3001` | Set automatically by most platforms |
 
-See [Environment Variables](/docs/reference/environment-variables) for the full list.
+See [Environment Variables](/reference/environment-variables) for the full list.
 
 ## Authentication
 
@@ -212,7 +212,7 @@ Auth is opt-in. Set one variable to enable:
 | `BETTER_AUTH_SECRET` | Managed | Email/password login with sessions. Min 32 chars. Requires `DATABASE_URL` |
 | `ATLAS_AUTH_JWKS_URL` | BYOT | Stateless JWT verification against your identity provider |
 
-See [Authentication](/docs/deployment/authentication) for detailed configuration.
+See [Authentication](/deployment/authentication) for detailed configuration.
 
 ## Security & Isolation
 
@@ -229,7 +229,7 @@ Atlas auto-detects the best available sandbox for the explore tool, using a six-
 
 **Deploying for your own team?** Any tier is fine — you're protecting against prompt injection edge cases, not hostile tenants. **Multi-tenant?** Use Vercel or nsjail for real process isolation.
 
-See [Sandbox Architecture](/docs/architecture/sandbox) for the full threat model.
+See [Sandbox Architecture](/architecture/sandbox) for the full threat model.
 
 ## Health Check
 

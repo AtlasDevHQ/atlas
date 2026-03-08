@@ -52,7 +52,7 @@ Each provider requires its own API key:
 | `ATLAS_TABLE_WHITELIST` | `true` | Only allow queries against tables defined in the semantic layer |
 | `ATLAS_SCHEMA` | `public` | PostgreSQL schema name. Used by the CLI for profiling (`init`, `diff`) and by the API at runtime to set the connection `search_path` |
 
-See [SQL Validation Pipeline](/docs/security/sql-validation) for how these are enforced.
+See [SQL Validation Pipeline](/security/sql-validation) for how these are enforced.
 
 ## Authentication
 
@@ -67,7 +67,7 @@ When `ATLAS_AUTH_MODE` is not set, Atlas auto-detects based on which variables a
 3. `ATLAS_API_KEY` set → **Simple Key**
 4. None of the above → **No auth**
 
-See [Authentication](/docs/deployment/authentication) for full setup guides.
+See [Authentication](/deployment/authentication) for full setup guides.
 
 ### Simple Key
 
@@ -137,7 +137,7 @@ ATLAS_RLS_CLAIMS='{"tenant_id": "acme-corp"}'
 | `ATLAS_NSJAIL_TIME_LIMIT` | `10` | nsjail per-command time limit in seconds |
 | `ATLAS_NSJAIL_MEMORY_LIMIT` | `256` | nsjail per-command memory limit in MB |
 
-See [Sandbox Architecture](/docs/architecture/sandbox#backend-selection-priority) for the full selection priority.
+See [Sandbox Architecture](/architecture/sandbox#backend-selection-priority) for the full selection priority.
 
 ## Actions
 
@@ -149,7 +149,7 @@ See [Sandbox Architecture](/docs/architecture/sandbox#backend-selection-priority
 | `ATLAS_ACTION_MAX_PER_CONVERSATION` | `10` | Maximum number of actions allowed per conversation |
 | `ATLAS_EMAIL_ALLOWED_DOMAINS` | — | Comma-separated list of allowed email recipient domains for the email action plugin. When unset, all domains are allowed |
 
-These env vars can also be set via `atlas.config.ts` under `actions.defaults`. See the [declarative config guide](/docs/reference/config) for details.
+These env vars can also be set via `atlas.config.ts` under `actions.defaults`. See the [declarative config guide](/reference/config) for details.
 
 ## Scheduler
 

@@ -290,7 +290,7 @@ ATLAS_PROVIDER=anthropic ANTHROPIC_API_KEY=sk-ant-... \
 
 Enrichment is auto-enabled when `ATLAS_PROVIDER` and its API key are both set. Skip it explicitly with `--no-enrich`.
 
-See [CLI Reference](/docs/reference/cli#init) for all `init` flags including `--source`, `--connection`, `--csv`, and `--parquet`.
+See [CLI Reference](/reference/cli#init) for all `init` flags including `--source`, `--connection`, `--csv`, and `--parquet`.
 
 Enrichment adds:
 - Rich 2-3 sentence business descriptions for each entity
@@ -361,7 +361,7 @@ Atlas enforces several safety limits. Tune them via environment variables:
 
 ### SQL validation pipeline
 
-Every query passes through a 7-layer validation pipeline (regex guard, AST parse, table whitelist, RLS injection, auto-LIMIT, statement timeout) before execution. See [SQL Validation Pipeline](/docs/security/sql-validation) for the full breakdown.
+Every query passes through a 7-layer validation pipeline (regex guard, AST parse, table whitelist, RLS injection, auto-LIMIT, statement timeout) before execution. See [SQL Validation Pipeline](/security/sql-validation) for the full breakdown.
 
 ### Read-only enforcement by data source
 
@@ -387,7 +387,7 @@ ATLAS_QUERY_TIMEOUT=15000
 
 Lower the row limit to reduce load on your database. Reduce the query timeout to kill runaway queries faster.
 
-For multi-tenant deployments, enable [Row-Level Security](/docs/security/row-level-security) to automatically filter queries by tenant based on user claims.
+For multi-tenant deployments, enable [Row-Level Security](/security/row-level-security) to automatically filter queries by tenant based on user claims.
 
 ---
 

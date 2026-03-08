@@ -5,10 +5,10 @@ description: HTTP API overview and authentication guide. For endpoint details, s
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Atlas exposes a Hono-based HTTP API. All endpoints are mounted under `/api/`. Use the [SDK](/docs/reference/sdk) for a typed client, or call the API directly.
+Atlas exposes a Hono-based HTTP API. All endpoints are mounted under `/api/`. Use the [SDK](/reference/sdk) for a typed client, or call the API directly.
 
 <Callout>
-For detailed endpoint documentation with request/response schemas, see the **[interactive API Reference](/docs/api-reference/chat/chatStream)**, auto-generated from the OpenAPI specification.
+For detailed endpoint documentation with request/response schemas, see the **[interactive API Reference](/api-reference/chat/chatStream)**, auto-generated from the OpenAPI specification.
 </Callout>
 
 ## OpenAPI Specification
@@ -33,7 +33,7 @@ You can use this with tools like [Scalar](https://scalar.com), [Swagger UI](http
 
 ## Authentication
 
-Authentication headers depend on the configured [auth mode](/docs/deployment/authentication):
+Authentication headers depend on the configured [auth mode](/deployment/authentication):
 
 | Auth Mode | Header |
 |-----------|--------|
@@ -86,7 +86,7 @@ When `ATLAS_RATE_LIMIT_RPM` is set, the API enforces per-user rate limits (slidi
 - `Retry-After` header (seconds until the limit resets)
 - `retryAfterSeconds` in the response body
 
-See [Environment Variables](/docs/reference/environment-variables) for configuration.
+See [Environment Variables](/reference/environment-variables) for configuration.
 
 ---
 
@@ -94,4 +94,4 @@ See [Environment Variables](/docs/reference/environment-variables) for configura
 
 CORS is configured via `ATLAS_CORS_ORIGIN` (defaults to `*`). When an explicit origin is set, credentials (cookies) are allowed. The `Retry-After` and `x-conversation-id` headers are exposed to the client.
 
-For cross-origin managed auth deployments, see the [cross-origin section](/docs/deployment/authentication#cross-origin-deployment) in the authentication guide.
+For cross-origin managed auth deployments, see the [cross-origin section](/deployment/authentication#cross-origin-deployment) in the authentication guide.

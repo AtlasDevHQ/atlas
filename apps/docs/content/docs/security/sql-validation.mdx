@@ -133,7 +133,7 @@ SELECT * FROM internal.secrets
 
 When Row-Level Security is enabled, WHERE clauses are injected based on the authenticated user's claims. RLS injection occurs after all validation layers (0--3) pass and after all plugin hooks have run. This ordering ensures plugins cannot strip RLS conditions.
 
-RLS can be configured via [environment variables](/docs/reference/environment-variables#row-level-security) (single-policy shorthand) or declaratively in `atlas.config.ts` with the `rls` key (supports multiple policies targeting different tables and claims).
+RLS can be configured via [environment variables](/reference/environment-variables#row-level-security) (single-policy shorthand) or declaratively in `atlas.config.ts` with the `rls` key (supports multiple policies targeting different tables and claims).
 
 ```sql
 -- Original query
@@ -194,7 +194,7 @@ When a query fails at any validation layer, the response includes a structured e
 
 Database errors that might expose connection details or internal state (passwords, connection strings, SSL certificates) are automatically scrubbed before being returned to the agent. The full error is logged server-side.
 
-All queries — successful and failed — are recorded in the [audit log](/docs/deployment/authentication#audit-logging) with user attribution, timing, and error details.
+All queries — successful and failed — are recorded in the [audit log](/deployment/authentication#audit-logging) with user attribution, timing, and error details.
 
 ## Test coverage
 
@@ -216,5 +216,5 @@ Run the tests: `bun run test` (isolated per-file runner).
 
 ## Related
 
-- [Row-Level Security](/docs/security/row-level-security) -- automatic WHERE clause injection based on user claims (Layer 4)
-- [Connect Your Data](/docs/getting-started/connect-your-data#safety-knobs) -- configuring row limits, query timeouts, and table whitelists
+- [Row-Level Security](/security/row-level-security) -- automatic WHERE clause injection based on user claims (Layer 4)
+- [Connect Your Data](/getting-started/connect-your-data#safety-knobs) -- configuring row limits, query timeouts, and table whitelists

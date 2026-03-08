@@ -7,8 +7,8 @@ const config: NextConfig = {
   async rewrites() {
     return [
       {
-        source: "/docs/:path*.mdx",
-        destination: "/llms.mdx/docs/:path*",
+        source: "/:path*.mdx",
+        destination: "/llms.mdx/:path*",
       },
     ];
   },

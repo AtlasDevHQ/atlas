@@ -210,7 +210,7 @@ BETTER_AUTH_TRUSTED_ORIGINS=https://app.example.com
 BETTER_AUTH_URL=https://api.example.com
 ```
 
-See [Authentication - Cross-origin deployment](/docs/deployment/authentication#cross-origin-deployment).
+See [Authentication - Cross-origin deployment](/deployment/authentication#cross-origin-deployment).
 
 ### JWKS Fetch Failures (BYOT)
 
@@ -271,7 +271,7 @@ The scheduler uses an in-process lock to prevent overlapping ticks. If you see d
 
 ### All Queries Blocked
 
-- If `ATLAS_AUTH_MODE=none` with RLS enabled, all queries are blocked (no user context to resolve claims). This is by design -- see [Row-Level Security](/docs/security/row-level-security#auth-mode-compatibility)
+- If `ATLAS_AUTH_MODE=none` with RLS enabled, all queries are blocked (no user context to resolve claims). This is by design -- see [Row-Level Security](/security/row-level-security#auth-mode-compatibility)
 - Verify the auth mode provides claims (BYOT or managed auth)
 
 ### "RLS policy requires claim X but it is missing"

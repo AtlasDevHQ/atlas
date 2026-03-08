@@ -25,7 +25,7 @@ semantic/
         └── events.yml
 ```
 
-When using [multiple datasources](/docs/reference/config), each source can have its own `entities/` subdirectory under `semantic/{source}/`. Entities can also specify a `connection` field to indicate which datasource they belong to.
+When using [multiple datasources](/reference/config), each source can have its own `entities/` subdirectory under `semantic/{source}/`. Entities can also specify a `connection` field to indicate which datasource they belong to.
 
 ---
 
@@ -316,7 +316,7 @@ metrics:
 4. **Use metrics** -- If a question matches a defined metric, the agent uses that metric's SQL exactly
 5. **Write validated SQL** -- The agent writes a query using only tables and columns defined in the semantic layer
 
-The semantic layer also powers the [table whitelist](/docs/security/sql-validation) -- queries can only reference tables that have an entity YAML file.
+The semantic layer also powers the [table whitelist](/security/sql-validation) -- queries can only reference tables that have an entity YAML file.
 
 ---
 
@@ -337,7 +337,7 @@ Use `atlas diff` to detect schema drift between your database and semantic layer
 bun run atlas -- diff                    # Compare DB schema vs YAML files
 ```
 
-See [CLI Reference](/docs/reference/cli) for all options.
+See [CLI Reference](/reference/cli) for all options.
 
 ---
 

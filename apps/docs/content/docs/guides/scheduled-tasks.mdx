@@ -82,7 +82,7 @@ Recipient format:
 
 ### Slack
 
-Requires the [Slack integration](/docs/guides/slack) to be configured.
+Requires the [Slack integration](/guides/slack) to be configured.
 
 ```json
 { "type": "slack", "channel": "#analytics" }
@@ -204,7 +204,7 @@ All routes require authentication and are available at `/api/v1/scheduled-tasks`
 | `GET` | `/:id/runs` | List past runs |
 | `POST` | `/tick` | Serverless tick (webhook/vercel backends) |
 
-See the [SDK](/docs/reference/sdk) for typed client methods.
+See the [SDK](/reference/sdk) for typed client methods.
 
 ---
 
@@ -225,7 +225,7 @@ See the [SDK](/docs/reference/sdk) for typed client methods.
 The scheduled tasks default email address (`noreply@useatlas.dev`) differs from the actions framework default (`atlas@notifications.useatlas.dev`). Set `ATLAS_EMAIL_FROM` to use a consistent address across both.
 </Callout>
 
-See [Environment Variables](/docs/reference/environment-variables) for the full reference.
+See [Environment Variables](/reference/environment-variables) for the full reference.
 
 ---
 
@@ -237,4 +237,4 @@ See [Environment Variables](/docs/reference/environment-variables) for the full 
 
 **Duplicate runs** -- The scheduler uses an in-process lock. For multi-instance deployments, use the `webhook` backend with an external scheduler.
 
-See [Troubleshooting](/docs/guides/troubleshooting#scheduled-tasks) for more diagnostic steps.
+See [Troubleshooting](/guides/troubleshooting#scheduled-tasks) for more diagnostic steps.

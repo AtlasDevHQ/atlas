@@ -63,7 +63,7 @@ SLACK_SIGNING_SECRET=your-signing-secret
 
 ## Multi-Workspace OAuth Setup
 
-For distributing Atlas to multiple Slack workspaces. Requires an [internal database](/docs/reference/environment-variables) (`DATABASE_URL`) to store per-workspace bot tokens.
+For distributing Atlas to multiple Slack workspaces. Requires an [internal database](/reference/environment-variables) (`DATABASE_URL`) to store per-workspace bot tokens.
 
 ### 1. Configure OAuth
 
@@ -113,7 +113,7 @@ This provides multi-turn conversations within Slack threads.
 
 ### Action Approvals
 
-When the [action framework](/docs/guides/actions) is enabled and a query produces pending actions, Atlas posts approval buttons visible only to the requesting user. Clicking **Approve** or **Deny** triggers `POST /api/slack/interactions`.
+When the [action framework](/guides/actions) is enabled and a query produces pending actions, Atlas posts approval buttons visible only to the requesting user. Clicking **Approve** or **Deny** triggers `POST /api/slack/interactions`.
 
 ---
 
@@ -139,7 +139,7 @@ Block Kit limits: max 50 blocks per message, max 3,000 characters per text block
 | `SLACK_CLIENT_ID` | Multi-workspace | OAuth app client ID |
 | `SLACK_CLIENT_SECRET` | Multi-workspace | OAuth app client secret |
 
-See [Environment Variables](/docs/reference/environment-variables) for the full reference.
+See [Environment Variables](/reference/environment-variables) for the full reference.
 
 ---
 
@@ -161,4 +161,4 @@ See [Environment Variables](/docs/reference/environment-variables) for the full 
 
 **Bot doesn't respond in threads** -- The bot needs `message.channels` and `message.groups` event subscriptions. Also verify `DATABASE_URL` is set for conversation history persistence.
 
-See [Troubleshooting](/docs/guides/troubleshooting) for general diagnostic steps.
+See [Troubleshooting](/guides/troubleshooting) for general diagnostic steps.

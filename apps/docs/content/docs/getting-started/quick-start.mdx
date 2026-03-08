@@ -22,7 +22,7 @@ This launches a `postgres:16-alpine` container via Docker Compose with two datab
 - `atlas` -- Atlas internals (auth, audit, conversations)
 - `atlas_demo` -- Demo analytics data (50 companies, ~200 people, 80 accounts), seeded automatically on first start
 
-> **Note:** `db:up` already seeds the simple demo data -- you do not need `--demo` when using it. For a larger, production-like dataset, use `bun run atlas -- init --demo cybersec` or `bun run atlas -- init --demo ecommerce` instead. See [Demo Datasets](/docs/getting-started/demo-datasets) for all available demos.
+> **Note:** `db:up` already seeds the simple demo data -- you do not need `--demo` when using it. For a larger, production-like dataset, use `bun run atlas -- init --demo cybersec` or `bun run atlas -- init --demo ecommerce` instead. See [Demo Datasets](/getting-started/demo-datasets) for all available demos.
 
 Configure your environment:
 
@@ -83,9 +83,9 @@ To add LLM-enriched descriptions and query patterns (requires a configured API k
 bun run atlas -- init --enrich
 ```
 
-See [CLI Reference](/docs/reference/cli#init) for all `init` flags.
+See [CLI Reference](/reference/cli#init) for all `init` flags.
 
-See [Connect Your Data](/docs/getting-started/connect-your-data) for production database setup including read-only users, SSL, and safety configuration.
+See [Connect Your Data](/getting-started/connect-your-data) for production database setup including read-only users, SSL, and safety configuration.
 
 ## Useful commands
 
@@ -104,7 +104,7 @@ See [Connect Your Data](/docs/getting-started/connect-your-data) for production 
 | `bun run atlas -- doctor` | Validate environment and connectivity |
 | `bun run atlas -- diff` | Compare DB schema against semantic layer |
 
-See [CLI Reference](/docs/reference/cli) for all commands and flags.
+See [CLI Reference](/reference/cli) for all commands and flags.
 
 ## Troubleshooting
 
@@ -122,10 +122,10 @@ Run `bun run atlas -- validate` to check for YAML syntax issues, missing fields,
 
 ## Next steps
 
-- [Connect your own database](/docs/getting-started/connect-your-data) -- production setup with read-only users, SSL, and safety config
-- [Deploy to production](/docs/deployment/deploy) -- Railway, Vercel, or Docker
-- [Set up authentication](/docs/deployment/authentication) -- API key, managed auth, or bring-your-own-token
-- [Integrate with Slack](/docs/guides/slack) -- query data from Slack channels
-- [Use as MCP server](/docs/guides/mcp) -- connect Atlas to Claude Desktop or Cursor
-- [CLI Reference](/docs/reference/cli) -- all commands and flags
-- [Troubleshooting](/docs/guides/troubleshooting) -- common errors and debug logging
+- [Connect your own database](/getting-started/connect-your-data) -- production setup with read-only users, SSL, and safety config
+- [Deploy to production](/deployment/deploy) -- Railway, Vercel, or Docker
+- [Set up authentication](/deployment/authentication) -- API key, managed auth, or bring-your-own-token
+- [Integrate with Slack](/guides/slack) -- query data from Slack channels
+- [Use as MCP server](/guides/mcp) -- connect Atlas to Claude Desktop or Cursor
+- [CLI Reference](/reference/cli) -- all commands and flags
+- [Troubleshooting](/guides/troubleshooting) -- common errors and debug logging

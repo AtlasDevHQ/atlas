@@ -5,7 +5,7 @@ description: Integrate Atlas into a plain React app using @ai-sdk/react.
 
 Integrate Atlas into a plain React app (Vite, no Next.js) using `@ai-sdk/react`.
 
-> **Prerequisites:** A running Atlas API server. See [Bring Your Own Frontend](/docs/frameworks/overview) for architecture and common setup.
+> **Prerequisites:** A running Atlas API server. See [Bring Your Own Frontend](/frameworks/overview) for architecture and common setup.
 
 ---
 
@@ -417,7 +417,7 @@ The key data shapes to know:
 - **Tool detection** -- use `isToolUIPart(part)` from `"ai"` to check if a part is a tool call. Use `getToolName(part)` to extract the tool name. Do **not** check `part.type === "tool-invocation"` -- that was AI SDK v4/v5. In v6, the type is `"tool-{toolName}"` or `"dynamic-tool"`.
 - **Markdown** -- assistant text parts contain Markdown. For production use, render them with a Markdown library like `react-markdown`.
 
-See the [Data Stream Protocol](/docs/frameworks/overview#tool-call-parts-ai-sdk-v6) section in the overview for the full part structure.
+See the [Data Stream Protocol](/frameworks/overview#tool-call-parts-ai-sdk-v6) section in the overview for the full part structure.
 
 ## 6. Conversation management
 
@@ -514,4 +514,4 @@ export async function queryAtlas(question: string, apiKey?: string) {
 }
 ```
 
-See [Bring Your Own Frontend](/docs/frameworks/overview) for what `@atlas/web` adds on top of `@ai-sdk/react` (conversation sidebar, chart detection, managed auth, etc.).
+See [Bring Your Own Frontend](/frameworks/overview) for what `@atlas/web` adds on top of `@ai-sdk/react` (conversation sidebar, chart detection, managed auth, etc.).

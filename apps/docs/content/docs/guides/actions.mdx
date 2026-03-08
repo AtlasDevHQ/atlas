@@ -131,7 +131,7 @@ export default defineConfig({
 });
 ```
 
-See [Configuration](/docs/reference/config) for the full config schema.
+See [Configuration](/reference/config) for the full config schema.
 
 ---
 
@@ -139,7 +139,7 @@ See [Configuration](/docs/reference/config) for the full config schema.
 
 ### Web UI
 
-Pending actions appear in the chat UI with **Approve** and **Deny** buttons. Admins can also manage actions from the [Admin Console](/docs/guides/admin-console) at `/admin/actions`.
+Pending actions appear in the chat UI with **Approve** and **Deny** buttons. Admins can also manage actions from the [Admin Console](/guides/admin-console) at `/admin/actions`.
 
 ### API
 
@@ -157,7 +157,7 @@ curl -X POST http://localhost:3001/api/v1/actions/<id>/deny \
 
 ### Slack
 
-When using the [Slack integration](/docs/guides/slack), pending actions show as ephemeral messages with **Approve** and **Deny** buttons visible only to the requesting user.
+When using the [Slack integration](/guides/slack), pending actions show as ephemeral messages with **Approve** and **Deny** buttons visible only to the requesting user.
 
 ---
 
@@ -180,13 +180,13 @@ When using the [Slack integration](/docs/guides/slack), pending actions show as 
 | `analyst` | Yes | Yes | No |
 | `admin` | Yes | Yes | Yes |
 
-See [Authentication](/docs/deployment/authentication#roles) for role configuration.
+See [Authentication](/deployment/authentication#roles) for role configuration.
 
 ---
 
 ## Building Custom Actions
 
-Action plugins follow the same pattern as built-in actions. See [Plugin Authoring Guide](/docs/plugins/authoring-guide) for the `action` plugin type, which registers custom tools with approval gates and credential validation.
+Action plugins follow the same pattern as built-in actions. See [Plugin Authoring Guide](/plugins/authoring-guide) for the `action` plugin type, which registers custom tools with approval gates and credential validation.
 
 ---
 
@@ -196,4 +196,4 @@ Action plugins follow the same pattern as built-in actions. See [Plugin Authorin
 
 **Approval stuck** -- Check that the approving user has the required role. In `admin-only` mode, the requester cannot self-approve.
 
-See [Troubleshooting](/docs/guides/troubleshooting#action-framework) for more diagnostic steps.
+See [Troubleshooting](/guides/troubleshooting#action-framework) for more diagnostic steps.

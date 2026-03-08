@@ -332,7 +332,7 @@ export default definePlugin({
 });
 ```
 
-The `routes` field is optional — stdio-based transports like MCP omit it. Runtime dependencies (agent executor, conversations) are currently injected via config callbacks. See [`slack-interaction`](../plugins/slack/src/index.ts) for the full pattern with OAuth and thread tracking.
+The `routes` field is optional — stdio-based transports like MCP omit it. Runtime dependencies (agent executor, conversations) are currently injected via config callbacks. See [`slack`](../plugins/slack/src/index.ts) for the full pattern with OAuth and thread tracking.
 
 ### Action Plugin
 
@@ -357,7 +357,7 @@ const myAction: PluginAction = {
 };
 ```
 
-Every action declares `reversible`, `defaultApproval`, and `requiredCredentials`. See [`jira-action`](../plugins/jira/index.ts) and [`email-action`](../plugins/email/index.ts).
+Every action declares `reversible`, `defaultApproval`, and `requiredCredentials`. See [`jira`](../plugins/jira/index.ts) and [`email`](../plugins/email/index.ts).
 
 ### Sandbox Plugin
 
@@ -383,7 +383,7 @@ security: {
 },
 ```
 
-The `security` metadata is informational — it's the plugin's self-declaration, not enforced by the host. See [`nsjail-sandbox`](../plugins/nsjail/index.ts) for Linux namespace isolation, [`vercel-sandbox`](../plugins/vercel-sandbox/index.ts) for Firecracker microVMs, and [`e2b-sandbox`](../plugins/e2b/index.ts) for managed cloud VMs.
+The `security` metadata is informational — it's the plugin's self-declaration, not enforced by the host. See [`nsjail`](../plugins/nsjail/index.ts) for Linux namespace isolation, [`vercel-sandbox`](../plugins/vercel-sandbox/index.ts) for Firecracker microVMs, and [`e2b`](../plugins/e2b/index.ts) for managed cloud VMs.
 
 ## Common Patterns
 

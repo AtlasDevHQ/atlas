@@ -49,7 +49,7 @@ Connect to a database. Provides a connection factory, SQL dialect hints, and opt
 | `entities` | `EntityProvider` | No | Semantic layer fragments merged into the table whitelist at boot |
 | `dialect` | `string` | No | SQL dialect guidance injected into the agent system prompt |
 
-**Reference:** [`clickhouse-datasource`](../../plugins/clickhouse/index.ts)
+**Reference:** [`clickhouse`](../../plugins/clickhouse/index.ts)
 
 ### Context (`AtlasContextPlugin`)
 
@@ -70,7 +70,7 @@ Add communication surfaces. Interaction plugins mount HTTP routes or manage non-
 |-------|------|----------|-------------|
 | `routes` | `(app: Hono) => void` | No | Mount Hono routes for webhooks, OAuth, etc. Optional for non-HTTP transports |
 
-**Reference:** [`slack-interaction`](../../plugins/slack/src/index.ts), [`mcp-interaction`](../../plugins/mcp/src/index.ts)
+**Reference:** [`slack`](../../plugins/slack/src/index.ts), [`mcp`](../../plugins/mcp/src/index.ts)
 
 ### Action (`AtlasActionPlugin`)
 
@@ -86,7 +86,7 @@ Enable agent side-effects. Action plugins provide AI SDK tools with approval con
 | `actions[].defaultApproval` | `ActionApprovalMode` | Yes | `auto`, `manual`, or `admin-only` |
 | `actions[].requiredCredentials` | `string[]` | Yes | Config fields needed at runtime |
 
-**Reference:** [`jira-action`](../../plugins/jira/index.ts), [`email-action`](../../plugins/email/index.ts)
+**Reference:** [`jira`](../../plugins/jira/index.ts), [`email`](../../plugins/email/index.ts)
 
 ### Sandbox (`AtlasSandboxPlugin`)
 
@@ -98,7 +98,7 @@ Provide code isolation for the explore tool. Sandbox plugins create backends tha
 | `sandbox.priority` | `number` | No | Higher = tried first. Built-in: Vercel=100, E2B=90, Daytona=85, nsjail=75, sidecar=50, just-bash=0. Plugin default: 60 |
 | `security` | `object` | No | Informational metadata about isolation guarantees |
 
-**Reference:** [`nsjail-sandbox`](../../plugins/nsjail/index.ts), [`vercel-sandbox`](../../plugins/vercel-sandbox/index.ts)
+**Reference:** [`nsjail`](../../plugins/nsjail/index.ts), [`vercel-sandbox`](../../plugins/vercel-sandbox/index.ts)
 
 ## Base Fields
 

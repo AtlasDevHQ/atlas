@@ -20,20 +20,20 @@ COPY packages/sdk/package.json packages/sdk/package.json
 COPY apps/docs/package.json apps/docs/package.json
 COPY apps/www/package.json apps/www/package.json
 COPY examples/nextjs-standalone/package.json examples/nextjs-standalone/package.json
-COPY plugins/clickhouse-datasource/package.json plugins/clickhouse-datasource/package.json
+COPY plugins/clickhouse/package.json plugins/clickhouse/package.json
 COPY plugins/yaml-context/package.json plugins/yaml-context/package.json
-COPY plugins/daytona-sandbox/package.json plugins/daytona-sandbox/package.json
-COPY plugins/duckdb-datasource/package.json plugins/duckdb-datasource/package.json
-COPY plugins/e2b-sandbox/package.json plugins/e2b-sandbox/package.json
-COPY plugins/email-action/package.json plugins/email-action/package.json
-COPY plugins/mcp-interaction/package.json plugins/mcp-interaction/package.json
-COPY plugins/jira-action/package.json plugins/jira-action/package.json
-COPY plugins/mysql-datasource/package.json plugins/mysql-datasource/package.json
-COPY plugins/nsjail-sandbox/package.json plugins/nsjail-sandbox/package.json
-COPY plugins/sidecar-sandbox/package.json plugins/sidecar-sandbox/package.json
-COPY plugins/slack-interaction/package.json plugins/slack-interaction/package.json
-COPY plugins/snowflake-datasource/package.json plugins/snowflake-datasource/package.json
-COPY plugins/salesforce-datasource/package.json plugins/salesforce-datasource/package.json
+COPY plugins/daytona/package.json plugins/daytona/package.json
+COPY plugins/duckdb/package.json plugins/duckdb/package.json
+COPY plugins/e2b/package.json plugins/e2b/package.json
+COPY plugins/email/package.json plugins/email/package.json
+COPY plugins/mcp/package.json plugins/mcp/package.json
+COPY plugins/jira/package.json plugins/jira/package.json
+COPY plugins/mysql/package.json plugins/mysql/package.json
+COPY plugins/nsjail/package.json plugins/nsjail/package.json
+COPY plugins/sidecar/package.json plugins/sidecar/package.json
+COPY plugins/slack/package.json plugins/slack/package.json
+COPY plugins/snowflake/package.json plugins/snowflake/package.json
+COPY plugins/salesforce/package.json plugins/salesforce/package.json
 COPY plugins/vercel-sandbox/package.json plugins/vercel-sandbox/package.json
 RUN bun ci --ignore-scripts
 

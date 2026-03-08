@@ -1,4 +1,4 @@
-# MCP Interaction Plugin
+# @useatlas/mcp
 
 Reference implementation of `AtlasInteractionPlugin` from `@useatlas/plugin-sdk`.
 

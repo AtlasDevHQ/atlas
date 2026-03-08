@@ -390,10 +390,10 @@ mock.module("@atlas/api/lib/scheduler/engine", () => ({
 
 const adminUser = { id: "admin-1", mode: "api-key" as const, label: "Admin", role: "admin" as const };
 const userB = { id: "user-b", mode: "api-key" as const, label: "User B", role: "analyst" as const };
-let currentUser = adminUser;
+let currentUser: typeof adminUser | typeof userB = adminUser;
 
 const mockAuthenticateRequest: Mock<(req: Request) => Promise<
-  | { authenticated: true; mode: string; user: typeof adminUser }
+  | { authenticated: true; mode: string; user: typeof adminUser | typeof userB }
   | { authenticated: false; mode: string; status: 401; error: string }
 >> = mock(() =>
   Promise.resolve({
@@ -797,7 +797,7 @@ describe("E2E: Scheduler — user isolation", () => {
     expect(bodyA.total).toBe(1);
 
     // Switch to user B
-    currentUser = userB as typeof adminUser;
+    currentUser = userB;
     mockAuthenticateRequest.mockImplementation(() =>
       Promise.resolve({
         authenticated: true as const,
@@ -829,7 +829,7 @@ describe("E2E: Scheduler — user isolation", () => {
     const created = (await createRes.json()) as { id: string };
 
     // Switch to user B
-    currentUser = userB as typeof adminUser;
+    currentUser = userB;
     mockAuthenticateRequest.mockImplementation(() =>
       Promise.resolve({
         authenticated: true as const,

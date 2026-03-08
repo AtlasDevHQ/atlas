@@ -4,6 +4,7 @@
   "icon": "Braces",
   "root": true,
   "pages": [
+    "index",
     "chat",
     "query",
     "conversations",

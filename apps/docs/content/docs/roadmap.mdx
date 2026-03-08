@@ -1,0 +1,76 @@
+---
+title: Roadmap
+description: What we've shipped, what's next, and where Atlas is headed.
+---
+
+Atlas uses public semver starting at `0.0.x`. For real-time tracking, see the [GitHub Project Board](https://github.com/orgs/AtlasDevHQ/projects/2).
+
+## Shipped
+
+### Public Launch
+
+Initial open-source release with admin user management, one-click Vercel deploy (Neon + AI Gateway), `@useatlas` packages on npm, and CI automation for template drift checks and starter repo sync.
+
+### Adapter Plugin Refactor
+
+Datasource adapters extracted from core into standalone plugins. The Plugin SDK gained `parserDialect` and `forbiddenPatterns` hooks, SQL validation and the connection registry became plugin-aware, and official plugins shipped for ClickHouse, Snowflake, DuckDB, and Salesforce.
+
+### Python Data Science Sandbox
+
+A sandboxed `executePython` tool for data analysis — runs Python with import guards, renders charts inline in the chat UI, and works across all sandbox backends (nsjail, sidecar, Vercel).
+
+---
+
+## 0.1.0 — Documentation & Developer Experience
+
+The current milestone. Focused on making Atlas discoverable and easy to adopt.
+
+- **Docs site** — Reference pages, integration guides, and operations docs on [docs.useatlas.dev](https://docs.useatlas.dev)
+- **DX polish** — `atlas doctor` for env validation, `atlas validate` for config and semantic layer checks, better first-run error messages
+- **Test coverage** — Web UI tests, expanded E2E coverage
+- **Project hygiene** — CHANGELOG, CONTRIBUTING guide, issue and PR templates, brand unification
+
+---
+
+## 0.2.0 — Plugin Ecosystem
+
+Making it easy to build, publish, and discover Atlas plugins.
+
+- **Plugin distribution** — Official plugins published to npm under `@useatlas/*` (ClickHouse, Snowflake, DuckDB, Salesforce, Slack, MCP, and more). Install with `bun add` and register in `atlas.config.ts`
+- **Plugin SDK DX** — Testing utilities, scaffold command (`bun create @useatlas/plugin`), and a plugin cookbook in docs
+- **Plugin docs** — Per-plugin reference pages and a plugin listing page on the docs site
+
+---
+
+## 0.3.0 — Admin Console & Operations
+
+Self-service management and observability.
+
+- **Admin console** — Action approval UI, semantic layer editor, connection management, user management, plugin configuration
+- **Observability** — Query analytics dashboard, token usage tracking, OpenTelemetry traces, health dashboard
+- **Scheduled tasks v2** — Task management UI, execution history, delivery channel management
+
+---
+
+## 0.4.0 — UI & Collaboration
+
+Better chat experience and semantic layer tooling.
+
+- **Chat experience** — Theming (dark/light mode, custom brand colors), embeddable widget, conversation sharing, suggested follow-ups, saved queries
+- **Semantic layer UX** — Visual schema explorer, semantic layer diff in UI, guided setup wizard
+
+---
+
+## 0.5.0 — Enterprise
+
+Multi-tenancy, SSO, and compliance.
+
+- **Multi-tenancy** — Advanced RLS policies, tenant-scoped semantic layers, audit log UI
+- **SSO** — SAML provider support, SCIM provisioning, session management
+- **Compliance** — Query audit trails with data classification, PII detection and column masking
+
+---
+
+## Live Tracking
+
+The [GitHub Project Board](https://github.com/orgs/AtlasDevHQ/projects/2) is the source of truth for issue status, priorities, and assignments. File feature requests or bug reports on [GitHub Issues](https://github.com/AtlasDevHQ/atlas/issues).

@@ -292,3 +292,19 @@ bun run atlas -- migrate [options]
 | Flag | Description |
 |------|-------------|
 | `--apply` | Execute migrations against internal database (default: dry-run) |
+
+## benchmark
+
+Run the [BIRD benchmark](https://bird-bench.github.io/) for text-to-SQL accuracy evaluation. This is a developer tool for measuring Atlas's query generation quality.
+
+```bash
+bun run atlas -- benchmark [options]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--bird-path <path>` | Path to BIRD dev directory (required) |
+| `--limit <n>` | Max questions to evaluate |
+| `--db <name>` | Filter to a single database |
+| `--csv` | CSV output |
+| `--resume <file>` | Resume from existing JSONL results file |

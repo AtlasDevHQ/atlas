@@ -5,11 +5,13 @@
   "scripts": {
     "dev": "next dev --turbopack -p 3003",
     "build": "next build",
-    "start": "next start -p 3003"
+    "start": "next start -p 3003",
+    "generate:api": "bun ./scripts/generate-openapi.ts"
   },
   "dependencies": {
     "fumadocs-core": "^16.6.10",
     "fumadocs-mdx": "^14.2.9",
+    "fumadocs-openapi": "^10.3.17",
     "fumadocs-ui": "^16.6.10",
     "lucide-react": "^0.577.0",
     "next": "^16.1.6",

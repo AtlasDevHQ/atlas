@@ -1,0 +1,27 @@
+{
+  "title": "Admin",
+  "pages": [
+    "adminOverview",
+    "adminListEntities",
+    "adminGetEntity",
+    "adminListMetrics",
+    "adminGetGlossary",
+    "adminGetCatalog",
+    "adminSemanticStats",
+    "adminListConnections",
+    "adminTestConnection",
+    "adminListUsers",
+    "adminUserStats",
+    "adminChangeUserRole",
+    "adminBanUser",
+    "adminUnbanUser",
+    "adminDeleteUser",
+    "adminRevokeUserSessions",
+    "adminListAuditLog",
+    "adminAuditStats",
+    "adminListPlugins",
+    "adminPluginHealth",
+    "adminPasswordStatus",
+    "adminChangePassword"
+  ]
+}

@@ -13,7 +13,8 @@
   "scripts": {
     "dev": "bun run --hot src/api/server.ts",
     "test": "bun run scripts/test-isolated.ts",
-    "test:fast": "bun test src/api && bun test src/lib"
+    "test:fast": "bun test src/api && bun test src/lib",
+    "openapi:extract": "bun run scripts/extract-openapi.ts"
   },
   "dependencies": {
     "@ai-sdk/amazon-bedrock": "^4.0.63",

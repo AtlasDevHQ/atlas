@@ -80,7 +80,17 @@ export function createAtlasChat(apiKey: () => string) {
 }
 ```
 
-## 4. Synchronous queries (alternative)
+## 4. Rendering tool calls
+
+See the [React/Vite guide](/docs/frameworks/react-vite#rendering-tool-calls) for a complete `ToolPart` implementation. The data shapes are identical -- adapt the JSX to Svelte component syntax. The key shapes:
+
+- **`executeSQL` output** -- `{ success, columns, rows, row_count, truncated }` on success, or `{ success: false, error }` on failure.
+- **`explore` output** -- a plain string (stdout of the command).
+- **`state`** -- check for `"output-available"` to know when the result is ready.
+
+See the [Data Stream Protocol](/docs/frameworks/overview#data-stream-protocol) section for the full part structure and a concrete example.
+
+## 5. Synchronous queries (alternative)
 
 If streaming is not needed, use the JSON query endpoint:
 

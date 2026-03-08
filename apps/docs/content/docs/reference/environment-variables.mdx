@@ -57,7 +57,14 @@ See [SQL Validation Pipeline](/docs/security/sql-validation) for how these are e
 |----------|---------|-------------|
 | `ATLAS_AUTH_MODE` | Auto-detected | Explicit auth mode: `none`, `api-key`, `managed`, `byot` |
 
-Auth is auto-detected from environment variables when `ATLAS_AUTH_MODE` is not set. See [Authentication](/docs/deployment/authentication) for full setup guides.
+When `ATLAS_AUTH_MODE` is not set, Atlas auto-detects based on which variables are present (checked in this order):
+
+1. `ATLAS_AUTH_JWKS_URL` set → **BYOT**
+2. `BETTER_AUTH_SECRET` set → **Managed**
+3. `ATLAS_API_KEY` set → **Simple Key**
+4. None of the above → **No auth**
+
+See [Authentication](/docs/deployment/authentication) for full setup guides.
 
 ### Simple Key
 
@@ -98,7 +105,13 @@ Auth is auto-detected from environment variables when `ATLAS_AUTH_MODE` is not s
 | `ATLAS_RLS_ENABLED` | — | Set `true` to enable RLS filtering on queries |
 | `ATLAS_RLS_COLUMN` | — | Column name used for filtering (e.g. `tenant_id`) |
 | `ATLAS_RLS_CLAIM` | — | JWT/session claim path for RLS value extraction (e.g. `org_id`) |
-| `ATLAS_RLS_CLAIMS` | — | Static JSON claims for RLS with simple-key auth (e.g. `'{"tenant_id": "acme-corp"}'`) |
+| `ATLAS_RLS_CLAIMS` | — | Static JSON claims for RLS with simple-key auth |
+
+`ATLAS_RLS_CLAIMS` is a JSON string. Used with simple-key auth to provide static claims for row-level security filtering:
+
+```bash
+ATLAS_RLS_CLAIMS='{"tenant_id": "acme-corp"}'
+```
 
 ## Networking & CORS
 
@@ -120,6 +133,8 @@ Auth is auto-detected from environment variables when `ATLAS_AUTH_MODE` is not s
 | `ATLAS_NSJAIL_TIME_LIMIT` | `10` | nsjail per-command time limit in seconds |
 | `ATLAS_NSJAIL_MEMORY_LIMIT` | `256` | nsjail per-command memory limit in MB |
 
+See [Sandbox Architecture](/docs/architecture/sandbox#backend-selection-priority) for the full selection priority.
+
 ## Actions
 
 | Variable | Default | Description |
@@ -136,6 +151,12 @@ Auth is auto-detected from environment variables when `ATLAS_AUTH_MODE` is not s
 | `ATLAS_SCHEDULER_MAX_CONCURRENT` | `5` | Max concurrent task executions per tick |
 | `ATLAS_SCHEDULER_TIMEOUT` | `60000` | Per-task timeout in milliseconds |
 | `ATLAS_SCHEDULER_TICK_INTERVAL` | `60` | Tick interval in seconds |
+
+**Scheduler backend options:**
+
+- `bun` — In-process tick loop. Simplest for single-instance deployments.
+- `webhook` — External cron service hits `POST /:id/run`. Use when you need external scheduling.
+- `vercel` — Vercel Cron hits `POST /tick`. Use on Vercel deployments.
 
 ## Email Delivery
 

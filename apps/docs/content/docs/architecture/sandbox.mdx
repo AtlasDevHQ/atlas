@@ -109,6 +109,8 @@ export default defineConfig({
 | No secrets in sandbox | Yes | Yes | Yes | Yes | No |
 | No network | Yes | Yes | Yes | Yes | No |
 
+**Note on just-bash:** The just-bash backend shares the same process as the API server. While secrets are not passed to sandbox commands, a sophisticated attack could theoretically access parent process memory. For multi-tenant deployments, use a higher tier.
+
 ## Platform Capabilities
 
 | Platform | nsjail | Sidecar | Best tier |
@@ -140,6 +142,28 @@ Since no kernel-level sandbox works on Railway, isolation comes from **process/n
 +----------------------------------+     +-----------------------------+
         Railway private network
 ```
+
+## Backend Selection Priority
+
+At startup, the explore tool selects the highest-priority backend available. The selection is evaluated top-to-bottom — the first match wins:
+
+| Priority | Backend | Condition |
+|----------|---------|-----------|
+| 0 | **Sandbox plugin** | A sandbox plugin is registered via `atlas.config.ts` (skipped when `ATLAS_SANDBOX=nsjail`) |
+| 1 | **Vercel Sandbox** | `ATLAS_RUNTIME=vercel` or `VERCEL` env var is present |
+| 2 | **nsjail (explicit)** | `ATLAS_SANDBOX=nsjail` is set. Hard-fails if the nsjail binary is not found — no fallback |
+| 3 | **Sidecar** | `ATLAS_SANDBOX_URL` is set. Skips nsjail auto-detection entirely |
+| 4 | **nsjail (auto-detect)** | nsjail binary found on `PATH` (no explicit config needed). Falls back gracefully on failure |
+| 5 | **just-bash** | Fallback. OverlayFS + path-traversal protection only |
+
+Key behaviors:
+
+- **Sidecar skips nsjail auto-detection.** When `ATLAS_SANDBOX_URL` is set, the sidecar is the intended backend (e.g. Railway). nsjail auto-detection is skipped entirely to avoid noisy namespace warnings on platforms that block `clone()`.
+- **Explicit nsjail is strict.** Setting `ATLAS_SANDBOX=nsjail` means "nsjail or nothing" — if the binary is missing or initialization fails, the explore tool returns an error rather than falling back.
+- **Auto-detected nsjail is graceful.** If nsjail is found on `PATH` but fails to initialize (e.g. missing kernel capabilities), the backend falls back to just-bash with a warning.
+- **Plugin backends take top priority.** Sandbox plugins (E2B, Daytona, custom) are tried first and sorted by their `priority` field (highest wins). If all plugins fail, the built-in chain continues.
+
+The health endpoint (`GET /api/health`) reports which backend is active in the `explore.backend` field.
 
 ## Configuration
 

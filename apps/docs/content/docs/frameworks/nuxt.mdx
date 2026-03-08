@@ -104,7 +104,17 @@ export function useAtlasChat() {
 }
 ```
 
-## 4. Synchronous queries (alternative)
+## 4. Rendering tool calls
+
+See the [React/Vite guide](/docs/frameworks/react-vite#rendering-tool-calls) for a complete `ToolPart` implementation. The data shapes are identical -- adapt the JSX to Vue template syntax. The key shapes:
+
+- **`executeSQL` output** -- `{ success, columns, rows, row_count, truncated }` on success, or `{ success: false, error }` on failure.
+- **`explore` output** -- a plain string (stdout of the command).
+- **`state`** -- check for `"output-available"` to know when the result is ready.
+
+See the [Data Stream Protocol](/docs/frameworks/overview#data-stream-protocol) section for the full part structure and a concrete example.
+
+## 5. Synchronous queries (alternative)
 
 If you don't need streaming, use the JSON query endpoint instead:
 

@@ -205,7 +205,262 @@ export default function App() {
 }
 ```
 
-## 5. Synchronous queries (alternative)
+## 5. Rendering tool calls
+
+The chat component above references a `ToolPart` component. Here is a complete implementation that handles both `executeSQL` and `explore` results:
+
+```tsx
+// src/components/ToolPart.tsx
+import { useState } from "react";
+
+interface ToolPartProps {
+  part: {
+    type: string;
+    toolName?: string;
+    state?: string;
+    input?: Record<string, unknown>;
+    output?: unknown;
+  };
+}
+
+export function ToolPart({ part }: ToolPartProps) {
+  const toolName = part.toolName ?? "";
+  const state = part.state ?? "";
+  const input = part.input ?? {};
+  const output = part.output;
+  const done = state === "output-available";
+
+  // Loading state
+  if (!done) {
+    return (
+      <div className="my-2 animate-pulse rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-500 dark:border-zinc-700 dark:bg-zinc-900">
+        {toolName === "executeSQL" ? "Executing query..." : "Running command..."}
+      </div>
+    );
+  }
+
+  switch (toolName) {
+    case "executeSQL":
+      return <SQLResult input={input} output={output} />;
+    case "explore":
+      return <ExploreResult input={input} output={output} />;
+    default:
+      return (
+        <div className="my-2 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-500 dark:border-zinc-700 dark:bg-zinc-900">
+          Tool: {toolName}
+        </div>
+      );
+  }
+}
+
+function SQLResult({
+  input,
+  output,
+}: {
+  input: Record<string, unknown>;
+  output: unknown;
+}) {
+  const [showSql, setShowSql] = useState(false);
+  const result = output as Record<string, unknown> | null;
+
+  if (!result) {
+    return (
+      <div className="my-2 rounded-lg border border-yellow-300 bg-yellow-50 px-3 py-2 text-xs text-yellow-700">
+        Query completed but no result was returned.
+      </div>
+    );
+  }
+
+  if (!result.success) {
+    return (
+      <div className="my-2 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700">
+        Query failed: {String(result.error ?? "Unknown error")}
+      </div>
+    );
+  }
+
+  const columns = (result.columns as string[]) ?? [];
+  const rows = (result.rows as Record<string, unknown>[]) ?? [];
+  const sql = String(input.sql ?? "");
+
+  return (
+    <div className="my-2 overflow-hidden rounded-lg border border-zinc-200 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900">
+      <div className="flex items-center gap-2 px-3 py-2 text-xs">
+        <span className="rounded bg-blue-100 px-1.5 py-0.5 font-medium text-blue-700">
+          SQL
+        </span>
+        <span className="flex-1 truncate text-zinc-500">
+          {String(input.explanation ?? "Query result")}
+        </span>
+        <span className="text-zinc-500">
+          {rows.length} row{rows.length !== 1 ? "s" : ""}
+          {result.truncated ? "+" : ""}
+        </span>
+      </div>
+
+      {columns.length > 0 && rows.length > 0 && (
+        <div className="overflow-x-auto border-t border-zinc-200 dark:border-zinc-700">
+          <table className="w-full text-left text-xs">
+            <thead>
+              <tr className="border-b border-zinc-200 bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-800">
+                {columns.map((col) => (
+                  <th key={col} className="px-3 py-1.5 font-medium text-zinc-700 dark:text-zinc-300">
+                    {col}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, i) => (
+                <tr key={i} className="border-b border-zinc-100 dark:border-zinc-800">
+                  {columns.map((col) => (
+                    <td key={col} className="px-3 py-1.5 text-zinc-600 dark:text-zinc-400">
+                      {row[col] == null ? "\u2014" : String(row[col])}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {sql && (
+        <div className="px-3 py-2">
+          <button
+            onClick={() => setShowSql(!showSql)}
+            className="text-xs text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200"
+          >
+            {showSql ? "Hide SQL" : "Show SQL"}
+          </button>
+          {showSql && (
+            <pre className="mt-1 overflow-x-auto rounded bg-zinc-100 p-2 font-mono text-xs text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+              {sql}
+            </pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ExploreResult({
+  input,
+  output,
+}: {
+  input: Record<string, unknown>;
+  output: unknown;
+}) {
+  const [open, setOpen] = useState(false);
+  const command = String(input.command ?? "");
+  const text = output != null ? String(output) : "(no output)";
+  const isError = typeof output === "string" && output.startsWith("Error");
+
+  return (
+    <div className="my-2 overflow-hidden rounded-lg border border-zinc-200 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900">
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs hover:bg-zinc-100 dark:hover:bg-zinc-800"
+      >
+        <span className="font-mono text-green-500">$</span>
+        <span className="flex-1 truncate font-mono text-zinc-700 dark:text-zinc-300">
+          {command}
+        </span>
+        <span className="text-zinc-400">{open ? "\u25BE" : "\u25B8"}</span>
+      </button>
+      {open && (
+        <div className="border-t border-zinc-200 px-3 py-2 dark:border-zinc-700">
+          <pre
+            className={`max-h-60 overflow-auto whitespace-pre-wrap font-mono text-xs ${
+              isError ? "text-red-600 dark:text-red-400" : "text-zinc-500 dark:text-zinc-400"
+            }`}
+          >
+            {text}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+The key data shapes to know:
+
+- **`executeSQL` output** -- `{ success, columns, rows, row_count, truncated }` on success, or `{ success: false, error }` on failure. `columns` is `string[]`, `rows` is `Record<string, unknown>[]`.
+- **`explore` output** -- a plain string containing the command's stdout, or a string starting with `"Error"` on failure.
+- **`state`** -- check for `"output-available"` to know when the result is ready. Before that, show a loading indicator.
+
+See the [Data Stream Protocol](/docs/frameworks/overview#data-stream-protocol) section in the overview for the full part structure.
+
+## 6. Conversation management
+
+Atlas persists conversations server-side (requires `DATABASE_URL`). Here is a minimal hook for listing, loading, and resuming conversations:
+
+```typescript
+// src/hooks/use-conversations.ts
+import { useState, useEffect } from "react";
+
+const API_URL = import.meta.env.VITE_ATLAS_API_URL ?? "";
+
+interface Conversation {
+  id: string;
+  title: string | null;
+  surface: string;
+  starred: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface Message {
+  id: string;
+  role: "user" | "assistant" | "system" | "tool";
+  content: unknown;
+  createdAt: string;
+}
+
+export function useConversations(apiKey?: string) {
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const headers: Record<string, string> = {};
+  if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+
+  async function list() {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/api/v1/conversations`, { headers });
+      if (!res.ok) return;
+      const data = await res.json();
+      setConversations(data.conversations ?? []);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function load(id: string): Promise<Message[]> {
+    const res = await fetch(`${API_URL}/api/v1/conversations/${id}`, { headers });
+    if (!res.ok) throw new Error("Failed to load conversation");
+    const data = await res.json();
+    return data.messages ?? [];
+  }
+
+  async function remove(id: string) {
+    await fetch(`${API_URL}/api/v1/conversations/${id}`, {
+      method: "DELETE",
+      headers,
+    });
+    setConversations((prev) => prev.filter((c) => c.id !== id));
+  }
+
+  useEffect(() => { list(); }, [apiKey]);
+
+  return { conversations, loading, list, load, remove };
+}
+```
+
+To resume a conversation, pass the `conversationId` in the chat request body. The `useChat` hook from `@ai-sdk/react` does not manage this automatically, but you can track the ID from the `x-conversation-id` response header and include it in subsequent requests via the transport's `body` option.
+
+## 7. Synchronous queries (alternative)
 
 For non-streaming use cases, call the JSON endpoint directly:
 

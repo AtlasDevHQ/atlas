@@ -88,6 +88,130 @@ Atlas supports persistent conversations via:
 
 Conversation support requires `DATABASE_URL` to be configured on the API.
 
+## Data Stream Protocol
+
+The `POST /api/chat` endpoint returns a [Vercel AI SDK Data Stream](https://sdk.vercel.ai/docs/ai-sdk-ui/stream-protocol#data-stream-protocol). The stream contains text chunks and structured tool call parts. The AI SDK adapters (`useChat` in `@ai-sdk/react`, `@ai-sdk/vue`, `@ai-sdk/svelte`) parse the stream automatically and expose tool calls as message parts.
+
+### Tool call parts
+
+Each tool invocation appears as a message part with these fields:
+
+```typescript
+// Tool call part (while the tool is running or after it completes)
+{
+  type: "tool-invocation",    // always "tool-invocation"
+  toolInvocationId: string,   // unique ID for this invocation
+  toolName: string,           // "explore" | "executeSQL"
+  state: string,              // "partial-call" | "call" | "output-available"
+  input: { ... },             // tool arguments (shape depends on toolName)
+  output: unknown             // tool result (only present when state is "output-available")
+}
+```
+
+The `state` field progresses through the lifecycle: `"partial-call"` (arguments streaming in), `"call"` (arguments complete, execution started), `"output-available"` (result ready). You typically only need to render `"call"` (show a loading state) and `"output-available"` (show the result).
+
+### executeSQL result shape
+
+```typescript
+// input
+{ sql: string, explanation: string, connectionId?: string }
+
+// output (success)
+{
+  success: true,
+  explanation: string,
+  row_count: number,
+  columns: string[],             // e.g. ["name", "revenue", "region"]
+  rows: Record<string, unknown>[], // e.g. [{ name: "Acme", revenue: 50000, region: "US" }]
+  truncated: boolean               // true if result hit the row limit
+}
+
+// output (failure)
+{ success: false, error: string }
+```
+
+### explore result shape
+
+```typescript
+// input
+{ command: string }
+
+// output — a plain string (the stdout of the command)
+"catalog.yml\nentities/\nglossary.yml\nmetrics/"
+```
+
+On error, the string starts with `"Error: "` or `"Error (exit N):"`.
+
+### Concrete example
+
+A single assistant message might contain these parts, in order:
+
+```json
+[
+  { "type": "text", "text": "Let me look at the schema first." },
+  {
+    "type": "tool-invocation",
+    "toolName": "explore",
+    "state": "output-available",
+    "input": { "command": "cat entities/companies.yml" },
+    "output": "table: companies\ndescription: ..."
+  },
+  { "type": "text", "text": "Now I'll query the data." },
+  {
+    "type": "tool-invocation",
+    "toolName": "executeSQL",
+    "state": "output-available",
+    "input": { "sql": "SELECT name, revenue FROM companies LIMIT 5", "explanation": "Top companies" },
+    "output": {
+      "success": true,
+      "explanation": "Top companies",
+      "row_count": 5,
+      "columns": ["name", "revenue"],
+      "rows": [
+        { "name": "Acme", "revenue": 50000 },
+        { "name": "Globex", "revenue": 42000 }
+      ],
+      "truncated": false
+    }
+  },
+  { "type": "text", "text": "Acme leads with $50k in revenue." }
+]
+```
+
+### Streaming vs. synchronous
+
+| | `POST /api/chat` | `POST /api/v1/query` |
+|---|---|---|
+| Response | Data Stream (chunked) | JSON (single response) |
+| Tool visibility | Real-time tool call parts as they execute | Aggregated in `sql[]` and `data[]` arrays |
+| Client library | `useChat` from AI SDK adapters | Plain `fetch` or any HTTP client |
+| Response shape | Stream of message parts (above) | `{ answer, sql, data, steps, usage }` |
+
+The sync endpoint runs the same agent loop but waits for completion and returns a flat JSON object:
+
+```typescript
+{
+  answer: string,          // the agent's final text response
+  sql: string[],           // all SQL queries executed
+  data: Array<{
+    columns: string[],
+    rows: Record<string, unknown>[]
+  }>,
+  steps: number,           // agent steps taken
+  usage: { totalTokens: number }
+}
+```
+
+## Minimal viable frontend
+
+To build a working Atlas frontend, you only need:
+
+1. **A chat loop** -- `POST /api/chat` with `{ messages }`, parse the Data Stream response (or use `useChat` from an AI SDK adapter)
+2. **Text rendering** -- display `type: "text"` parts from assistant messages
+3. **Tool result rendering** -- detect `type: "tool-invocation"` parts and render SQL results as a table
+
+Everything else -- conversation persistence, chart auto-detection, managed auth UI, markdown rendering -- is optional. The `@atlas/web` package provides all of these, but none are required. If you just want a chatbot that queries your database, the three items above are sufficient.
+
 ## What @atlas/web adds
 
 The built-in `@atlas/web` package adds these features on top of `@ai-sdk/react`. You can port any of them by reading the source in `packages/web/src/ui/`:

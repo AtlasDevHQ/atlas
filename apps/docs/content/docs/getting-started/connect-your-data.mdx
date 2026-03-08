@@ -3,6 +3,8 @@ title: Connect Your Data
 description: Connect Atlas to PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, or Salesforce.
 ---
 
+import { Callout } from "fumadocs-ui/components/callout";
+
 Connect Atlas to your existing data sources. Atlas supports PostgreSQL, MySQL, ClickHouse, Snowflake, CSV/Parquet files (via DuckDB), and Salesforce (SOQL). This guide covers setup, semantic layer generation, and safety configuration for each.
 
 ## Prerequisites
@@ -208,7 +210,11 @@ No additional driver installation is needed -- `@duckdb/node-api` is bundled.
 
 ## Salesforce (SOQL)
 
-Salesforce uses SOQL, not SQL. It has a separate adapter and query tool (`querySalesforce`) rather than sharing the standard `executeSQL` pipeline.
+<Callout type="warn">
+Salesforce uses SOQL, not SQL. Atlas provides a separate `querySalesforce` tool and adapter. The query syntax and capabilities differ from SQL datasources.
+</Callout>
+
+Salesforce has a separate adapter and query tool (`querySalesforce`) rather than sharing the standard `executeSQL` pipeline.
 
 ### 1. Build the connection URL
 
@@ -273,6 +279,8 @@ ATLAS_PROVIDER=anthropic ANTHROPIC_API_KEY=sk-ant-... \
 ```
 
 Enrichment is auto-enabled when `ATLAS_PROVIDER` and its API key are both set. Skip it explicitly with `--no-enrich`.
+
+See [CLI Reference](/docs/reference/cli#init) for all `init` flags including `--source`, `--connection`, `--csv`, and `--parquet`.
 
 Enrichment adds:
 - Rich 2-3 sentence business descriptions for each entity

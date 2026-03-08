@@ -19,6 +19,8 @@ Every SQL query the agent writes passes through a multi-layer validation pipelin
 
 Layers 0–3 run in `validateSQL()` before execution. Layers 4–6 are applied during execution.
 
+The validation pipeline is identical across all supported databases. The only difference is the AST parser mode: `node-sql-parser` uses `PostgresQL` mode for PostgreSQL connections and `MySQL` mode for MySQL connections. ClickHouse, Snowflake, and DuckDB connections use their respective parser modes when available.
+
 ## Layer 0: Empty check
 
 Rejects empty strings, whitespace-only input, and trailing semicolons (stripped before processing).
@@ -119,7 +121,7 @@ SELECT * FROM internal.secrets
 
 ## Layer 4: RLS injection
 
-When [Row-Level Security](/docs/reference/environment-variables#row-level-security) is enabled, WHERE clauses are injected based on the authenticated user's claims. This happens after validation and plugin hooks, so plugins cannot strip RLS conditions.
+When [Row-Level Security](/docs/reference/environment-variables#row-level-security) is enabled, WHERE clauses are injected based on the authenticated user's claims. RLS injection occurs after all validation layers (0--3) pass and after all plugin hooks have run. This ordering ensures plugins cannot strip RLS conditions.
 
 ```sql
 -- Original query
@@ -193,5 +195,7 @@ The validation pipeline has ~103 unit tests covering edge cases including:
 - Semicolon injection
 - Unparseable SQL rejection
 - String literal false positives
+
+See [`packages/api/src/lib/tools/__tests__/sql.test.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/tools/__tests__/sql.test.ts) for the full test suite.
 
 Run the tests: `bun run test` (isolated per-file runner).

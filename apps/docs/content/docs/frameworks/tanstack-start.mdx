@@ -112,7 +112,17 @@ export function useAtlasQuery(apiKey?: string) {
 }
 ```
 
-## 4. Which approach to choose
+## 4. Rendering tool calls
+
+If you use the `@ai-sdk/react` `useChat` approach, see the [React/Vite guide](/docs/frameworks/react-vite#rendering-tool-calls) for a complete `ToolPart` implementation -- it works identically in TanStack Start. The data shapes are the same across all frameworks:
+
+- **`executeSQL` output** -- `{ success, columns, rows, row_count, truncated }` on success, or `{ success: false, error }` on failure.
+- **`explore` output** -- a plain string (stdout of the command).
+- **`state`** -- check for `"output-available"` to know when the result is ready.
+
+For the TanStack Query approach, the sync endpoint returns data in the `data` array directly -- no tool part parsing needed. See the [Data Stream Protocol](/docs/frameworks/overview#data-stream-protocol) section for details on both response formats.
+
+## 5. Which approach to choose
 
 | Approach | Streaming | Tool cards | Complexity |
 |----------|-----------|------------|------------|

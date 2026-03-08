@@ -22,7 +22,7 @@ This launches a `postgres:16-alpine` container via Docker Compose with two datab
 - `atlas` -- Atlas internals (auth, audit, conversations)
 - `atlas_demo` -- Demo analytics data (50 companies, ~200 people, 80 accounts)
 
-> For a larger, production-like dataset, use `bun run atlas -- init --demo cybersec` instead. This loads a 62-table cybersecurity SaaS database (~500K rows) with realistic tech debt patterns.
+> For a larger, production-like dataset, use `bun run atlas -- init --demo cybersec` instead. This loads a 62-table cybersecurity SaaS database (~500K rows) with realistic tech debt patterns. See [Demo Datasets](/docs/getting-started/demo-datasets) for all available demos.
 
 Configure your environment:
 
@@ -81,6 +81,8 @@ To add LLM-enriched descriptions and query patterns (requires a configured API k
 bun run atlas -- init --enrich
 ```
 
+See [CLI Reference](/docs/reference/cli#init) for all `init` flags.
+
 See [Connect Your Data](/docs/getting-started/connect-your-data) for production database setup including read-only users, SSL, and safety configuration.
 
 ## Useful commands
@@ -99,6 +101,22 @@ See [Connect Your Data](/docs/getting-started/connect-your-data) for production 
 | `bun run atlas -- validate` | Check semantic layer YAMLs for errors (offline, no DB needed) |
 | `bun run atlas -- doctor` | Validate environment and connectivity |
 | `bun run atlas -- diff` | Compare DB schema against semantic layer |
+
+See [CLI Reference](/docs/reference/cli) for all commands and flags.
+
+## Troubleshooting
+
+**Docker not running**
+If `bun run db:up` fails, make sure Docker Desktop is running. The local Postgres container requires Docker Compose.
+
+**Port 3000 or 3001 already in use**
+Check for other dev servers occupying those ports. Use `lsof -i :3000` (or `:3001`) to find the process, then stop it or choose a different port.
+
+**`bun run atlas -- init` fails**
+Verify that `ATLAS_DATASOURCE_URL` is set in your `.env` and that the database is reachable. Run `bun run atlas -- doctor` to check connectivity.
+
+**Semantic layer errors**
+Run `bun run atlas -- validate` to check for YAML syntax issues, missing fields, or invalid references. This runs offline -- no database or API key required.
 
 ## Next steps
 

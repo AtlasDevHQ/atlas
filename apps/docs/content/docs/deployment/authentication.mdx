@@ -112,6 +112,8 @@ On first deployment:
 3. Subsequent requests include the cookie automatically (browser) or send `Authorization: Bearer <session-token>` (API clients)
 4. Sessions last 7 days. Active sessions refresh daily
 
+Users can log out via `POST /api/auth/sign-out` (clears the session cookie). Sessions are also revoked when the session expires (7 days) or if the user is deleted by an admin.
+
 ### Cross-origin deployment
 
 When the API and frontend are on different origins (e.g. `api.example.com` and `app.example.com`):
@@ -121,6 +123,8 @@ ATLAS_CORS_ORIGIN=https://app.example.com
 BETTER_AUTH_TRUSTED_ORIGINS=https://app.example.com
 BETTER_AUTH_URL=https://api.example.com
 ```
+
+`ATLAS_CORS_ORIGIN` controls the HTTP `Access-Control-Allow-Origin` header (which origins can make API requests). `BETTER_AUTH_TRUSTED_ORIGINS` controls CSRF protection (which origins can submit auth forms). In most cross-origin setups, set both to the same value.
 
 ### Frontend integration
 
@@ -160,6 +164,8 @@ ATLAS_AUTH_ISSUER=https://your-idp.com/
 ATLAS_AUTH_AUDIENCE=your-atlas-api          # Optional but recommended
 ATLAS_AUTH_ROLE_CLAIM=app_metadata.role     # Optional, defaults to "role" then "atlas_role"
 ```
+
+If `ATLAS_AUTH_AUDIENCE` is set, audience validation is enforced — JWTs without a matching `aud` claim are rejected. If unset, audience validation is skipped entirely.
 
 ### How it works
 

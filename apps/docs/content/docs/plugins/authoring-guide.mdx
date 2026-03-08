@@ -3,7 +3,19 @@ title: Plugin Authoring Guide
 description: Step-by-step guide to building Atlas plugins for datasources, context, interactions, actions, and sandboxes.
 ---
 
+import { Callout } from "fumadocs-ui/components/callout";
+
 Step-by-step guide to building an Atlas plugin. We'll build a complete datasource plugin, then cover how the other four types differ.
+
+## Choosing a Plugin Type
+
+| Type | Use when you want to... | Example |
+|------|------------------------|---------|
+| **Datasource** | Connect a new database or API as a query target | ClickHouse, Snowflake, Salesforce |
+| **Context** | Inject additional context into the agent's prompt | Company glossary, user preferences, external docs |
+| **Interaction** | Add a new surface for users to interact with Atlas | Slack bot, Discord bot, email handler |
+| **Action** | Let the agent perform write operations (with approval) | Create JIRA ticket, send email, update CRM |
+| **Sandbox** | Provide a custom code execution environment | E2B, Daytona, custom Docker runner |
 
 ## Prerequisites
 
@@ -150,10 +162,13 @@ export function buildPlugin(config: PluginConfig): AtlasDatasourcePlugin<PluginC
 
     dialect: "This datasource uses PostgreSQL. Use DATE_TRUNC() for date truncation.",
 
+    // Called once during server startup. Throw to block startup (for fatal configuration errors).
     async initialize(ctx) {
       ctx.logger.info("My datasource plugin initialized");
     },
 
+    // Called by `atlas doctor` and the admin API. Always return a result — never throw.
+    // Return `{ healthy: false, message: '...' }` for recoverable issues.
     async healthCheck(): Promise<PluginHealthResult> {
       const start = performance.now();
       try {
@@ -193,13 +208,17 @@ export default defineConfig({
 });
 ```
 
+<Callout type="warn">
+Never commit credentials to version control. Use environment variables (`process.env.MY_DB_URL`) in `atlas.config.ts` and add `.env` to `.gitignore`.
+</Callout>
+
 ## 6. Test
 
 ```bash
 bun test plugins/my-datasource/src/index.test.ts
 ```
 
-Test config validation, plugin shape, connection factory, and health checks. See the ClickHouse plugin tests for the canonical pattern.
+See [Testing](#8-testing) below for a full test example and patterns.
 
 ## 7. Publish
 
@@ -222,23 +241,93 @@ For npm packages:
 
 Convention: `@useatlas/plugin-sdk` as a direct dependency, database driver as an optional peer dependency.
 
+## 8. Testing
+
+Test config validation, plugin shape, and health checks. Use `bun test` for a single file or `bun run test` for the full suite.
+
+```typescript
+import { describe, test, expect } from "bun:test";
+import { myPlugin } from "./index";
+
+describe("my-datasource plugin", () => {
+  test("validates config schema", () => {
+    // Test that invalid config is rejected
+    expect(() => myPlugin({ url: "" })).toThrow();
+  });
+
+  test("creates plugin with valid config", () => {
+    const plugin = myPlugin({ url: "postgresql://localhost/test" });
+    expect(plugin.id).toBe("my-datasource");
+    expect(plugin.type).toBe("datasource");
+  });
+
+  test("health check reports status", async () => {
+    const plugin = myPlugin({ url: "postgresql://localhost/test" });
+    const health = await plugin.healthCheck?.();
+    expect(health).toHaveProperty("healthy");
+  });
+});
+```
+
+Key testing patterns:
+
+- **Config validation** — Verify that invalid configs throw at factory call time, not at runtime
+- **Plugin shape** — Check `id`, `type`, `version`, and variant-specific properties (`connection`, `contextProvider`, `actions`, etc.)
+- **Health checks** — Ensure `healthCheck()` returns `{ healthy: boolean }` and never throws (even when the service is unreachable)
+- **Connection factory** — For datasource plugins, test that `connection.create()` returns a valid `PluginDBConnection`
+
 ## Other Plugin Types
 
 ### Context Plugin
 
-Context plugins load knowledge into the agent. Implement `contextProvider.load()`:
+Context plugins inject additional knowledge into the agent's system prompt. Implement `contextProvider.load()` to return a string that gets appended to the prompt, and optionally `contextProvider.refresh()` to support cache invalidation.
+
+- **`load()`** — Returns a string (typically Markdown) that is appended to the agent's system prompt. Called on each agent invocation. Cache the result internally for performance.
+- **`refresh()`** — Called when the semantic layer is reloaded or on manual refresh via the admin UI. Use it to clear any internal cache so the next `load()` picks up changes.
+
+Here is a minimal example that injects a company glossary:
 
 ```typescript
+import { definePlugin } from "@useatlas/plugin-sdk";
+
 export default definePlugin({
-  id: "my-context",
+  id: "company-glossary",
   type: "context",
   version: "1.0.0",
+  name: "Company Glossary",
+
   contextProvider: {
-    async load() { return "## Extra Context\n\nDomain-specific info..."; },
-    async refresh() { /* clear cache */ },
+    // Cache the loaded context to avoid re-reading on every request
+    _cache: null as string | null,
+
+    async load() {
+      if (this._cache) return this._cache;
+
+      // Load from any source: filesystem, database, API, etc.
+      const terms = [
+        { term: "ARR", definition: "Annual Recurring Revenue — sum of all active subscription values annualized" },
+        { term: "MRR", definition: "Monthly Recurring Revenue — ARR / 12" },
+        { term: "churn", definition: "Percentage of customers who cancel within a billing period" },
+      ];
+
+      const lines = terms.map((t) => `- **${t.term}**: ${t.definition}`);
+      this._cache = `## Company Glossary\n\n${lines.join("\n")}`;
+      return this._cache;
+    },
+
+    async refresh() {
+      // Clear cache so next load() re-reads from source
+      this._cache = null;
+    },
+  },
+
+  async initialize(ctx) {
+    ctx.logger.info("Company glossary context plugin initialized");
   },
 });
 ```
+
+The returned string from `load()` becomes part of the agent's system prompt, so the agent can use your glossary terms, user preferences, or any domain knowledge when interpreting questions and writing SQL.
 
 ### Interaction Plugin
 
@@ -259,25 +348,97 @@ export default definePlugin({
 
 ### Action Plugin
 
-Action plugins give the agent side-effects with approval controls:
+Action plugins give the agent side-effects with approval controls. Actions require user approval before execution: the agent proposes the action, the user sees a confirmation card in the chat UI, and only after approval does `execute()` run. This prevents unintended writes.
+
+The approval mode controls who can approve:
+
+- **`"manual"`** — Any user in the conversation can approve or reject
+- **`"admin-only"`** — Only users with the `admin` role can approve
+- **`"auto"`** — Executes immediately without approval (use sparingly)
+
+Here is a complete example that creates a support ticket:
 
 ```typescript
 import { z } from "zod";
 import { tool } from "ai";
+import { createPlugin } from "@useatlas/plugin-sdk";
+import type { AtlasActionPlugin, PluginAction } from "@useatlas/plugin-sdk";
 
-const myAction: PluginAction = {
-  name: "createTicket",
-  description: "Create a support ticket",
-  tool: tool({
-    description: "Create a support ticket",
-    parameters: z.object({ title: z.string(), body: z.string() }),
-    execute: async ({ title, body }) => { /* ... */ },
+const ticketConfigSchema = z.object({
+  apiUrl: z.string().url(),
+  apiKey: z.string().min(1, "apiKey must not be empty"),
+  defaultPriority: z.enum(["low", "medium", "high"]).default("medium"),
+});
+
+type TicketConfig = z.infer<typeof ticketConfigSchema>;
+
+export const ticketPlugin = createPlugin<TicketConfig, AtlasActionPlugin<TicketConfig>>({
+  configSchema: ticketConfigSchema,
+
+  create(config) {
+    const action: PluginAction = {
+      name: "createSupportTicket",
+      description: "Create a support ticket from analysis findings",
+      tool: tool({
+        description: "Create a support ticket. Requires user approval before execution.",
+        inputSchema: z.object({
+          title: z.string().max(200).describe("Short summary of the issue"),
+          body: z.string().describe("Detailed description with relevant data"),
+          priority: z
+            .enum(["low", "medium", "high"])
+            .optional()
+            .describe(`Priority level. Defaults to "${config.defaultPriority}"`),
+        }),
+        execute: async ({ title, body, priority }) => {
+          // This only runs AFTER the user approves in the chat UI
+          const response = await fetch(`${config.apiUrl}/tickets`, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${config.apiKey}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              title,
+              body,
+              priority: priority ?? config.defaultPriority,
+            }),
+          });
+
+          if (!response.ok) {
+            throw new Error(`Ticket API returned ${response.status}`);
+          }
+
+          const ticket = (await response.json()) as { id: string; url: string };
+          return { ticketId: ticket.id, url: ticket.url };
+        },
+      }),
+      actionType: "ticket:create",
+      reversible: false,
+      defaultApproval: "manual",
+      requiredCredentials: ["apiKey"],
+    };
+
+    return {
+      id: "ticket-action",
+      type: "action" as const,
+      version: "1.0.0",
+      name: "Support Ticket Action",
+      config,
+      actions: [action],
+    };
+  },
+});
+```
+
+Register it in `atlas.config.ts`:
+
+```typescript
+plugins: [
+  ticketPlugin({
+    apiUrl: process.env.TICKET_API_URL!,
+    apiKey: process.env.TICKET_API_KEY!,
   }),
-  actionType: "ticket:create",
-  reversible: true,
-  defaultApproval: "manual",
-  requiredCredentials: ["apiKey"],
-};
+],
 ```
 
 ### Sandbox Plugin

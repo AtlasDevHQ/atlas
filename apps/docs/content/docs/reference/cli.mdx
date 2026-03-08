@@ -31,7 +31,7 @@ bun run atlas -- init [options]
 | `--parquet <f1.parquet,...>` | Load Parquet files via DuckDB |
 | `--enrich` | Add LLM-enriched descriptions and query patterns (requires API key) |
 | `--no-enrich` | Explicitly skip LLM enrichment |
-| `--demo [simple\|cybersec]` | Load a demo dataset then profile (default: `simple`) |
+| `--demo [simple\|cybersec\|ecommerce]` | Load a demo dataset then profile (default: `simple`) |
 
 **Examples:**
 
@@ -60,6 +60,8 @@ bun run atlas -- init --csv sales.csv,products.csv
 # Per-source layout (writes to semantic/warehouse/)
 bun run atlas -- init --source warehouse --connection warehouse
 ```
+
+`--demo` without an argument loads the simple dataset (3 tables, ~330 rows). `--demo cybersec` loads the cybersec dataset (62 tables, ~500K rows). `--demo ecommerce` loads the e-commerce dataset (52 tables, ~480K rows).
 
 In TTY mode (interactive terminal), `init` presents a table picker. Pass `--tables` to skip the picker for scripted/CI usage.
 
@@ -154,6 +156,16 @@ No flags. Checks:
 - Semantic layer presence and validity
 - Sandbox availability
 
+**Example output:**
+
+```
+✓ Environment: ATLAS_PROVIDER=anthropic, ANTHROPIC_API_KEY set
+✓ Database: Connected to PostgreSQL 16.1
+✓ Semantic layer: 5 entities, 2 metrics, 1 glossary
+✓ Sandbox: nsjail available
+✓ Auth: managed (Better Auth)
+```
+
 ## validate
 
 Check the semantic layer YAML files for errors. Runs offline — no database or API key required.
@@ -181,7 +193,7 @@ bun run atlas -- mcp [options]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--transport <stdio\|sse>` | `stdio` | Transport type |
+| `--transport <stdio\|sse>` | `stdio` | Transport type. Use `stdio` for local MCP clients (Claude Desktop, Cursor). Use `sse` for remote or containerized MCP servers |
 | `--port <n>` | `8080` | Port for SSE transport (only used with `--transport sse`) |
 
 **Examples:**

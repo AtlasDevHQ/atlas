@@ -164,6 +164,14 @@ Verify at `http://localhost:3001/api/health`.
 - The semantic layer (`semantic/`) is baked into the image at build time — rebuild if you update YAMLs
 - Build without nsjail for a smaller image: `docker build --build-arg INSTALL_NSJAIL=false -f Dockerfile -t atlas .`
 
+For development workflows where you're iterating on the semantic layer, mount it as a volume instead of baking it into the image:
+
+```bash
+docker run -v ./semantic:/app/semantic -p 3001:3001 ... atlas
+```
+
+This avoids rebuilding the image on every YAML change.
+
 ---
 
 ## Environment Variables

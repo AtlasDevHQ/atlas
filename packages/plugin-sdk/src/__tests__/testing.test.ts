@@ -67,9 +67,9 @@ describe("createMockLogger", () => {
 
   test("captures non-string non-object arguments as stringified", () => {
     const { logger, logs } = createMockLogger();
-    (logger.info as Function)(42);
-    (logger.info as Function)(null);
-    (logger.info as Function)(undefined);
+    (logger.info as (...args: unknown[]) => void)(42);
+    (logger.info as (...args: unknown[]) => void)(null);
+    (logger.info as (...args: unknown[]) => void)(undefined);
     expect(logs).toHaveLength(3);
     expect(logs[0].msg).toBe("42");
     expect(logs[1].msg).toBe("null");

@@ -1,5 +1,7 @@
 {
   "title": "Architecture",
+  "description": "Internals, design decisions, and system diagrams",
+  "icon": "Layers",
   "pages": [
     "sandbox"
   ]

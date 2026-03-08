@@ -1,5 +1,7 @@
 {
   "title": "Plugins",
+  "description": "Extend Atlas with datasources, actions, and more",
+  "icon": "Plug",
   "pages": [
     "overview",
     "datasources",

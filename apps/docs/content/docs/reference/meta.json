@@ -1,5 +1,7 @@
 {
   "title": "Reference",
+  "description": "Environment variables, CLI, config, and SDK",
+  "icon": "FileCode",
   "pages": [
     "environment-variables",
     "cli",

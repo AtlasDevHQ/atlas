@@ -1,5 +1,7 @@
 {
   "title": "Security",
+  "description": "SQL validation, sandboxing, and row-level security",
+  "icon": "Shield",
   "pages": [
     "sql-validation",
     "row-level-security"

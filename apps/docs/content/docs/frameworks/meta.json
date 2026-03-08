@@ -1,5 +1,7 @@
 {
   "title": "Frameworks",
+  "description": "Embed Atlas in React, Vue, Svelte, and more",
+  "icon": "Blocks",
   "pages": [
     "overview",
     "react-vite",

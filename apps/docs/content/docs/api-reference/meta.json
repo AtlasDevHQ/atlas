@@ -1,5 +1,7 @@
 {
   "title": "API Reference",
+  "description": "REST API endpoints and request/response schemas",
+  "icon": "Braces",
   "pages": [
     "chat",
     "query",

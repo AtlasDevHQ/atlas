@@ -53,6 +53,7 @@ try {
     output: outputDir,
     per: "operation",
     groupBy: "tag",
+    includeDescription: true,
   });
 } catch (err) {
   console.error(

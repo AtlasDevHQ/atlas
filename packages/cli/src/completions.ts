@@ -27,7 +27,7 @@ interface CommandSpec {
   flags: Record<string, string>;
 }
 
-/** All CLI commands and their flags. */
+/** All CLI commands and their flags. Keep in sync with command handlers in bin/atlas.ts. */
 export const COMMANDS: Record<string, CommandSpec> = {
   init: {
     description: "Profile DB and generate semantic layer",
@@ -114,6 +114,11 @@ export const COMMANDS: Record<string, CommandSpec> = {
 
 const COMMAND_NAMES = Object.keys(COMMANDS);
 
+/** Escape a string for use inside single quotes in fish shell. */
+function fishEscape(s: string): string {
+  return s.replace(/'/g, "\\'");
+}
+
 export function generateBashCompletions(): string {
   const commandFlags: string[] = [];
   for (const [cmd, spec] of Object.entries(COMMANDS)) {
@@ -156,14 +161,14 @@ complete -F _atlas_completions atlas
 
 export function generateZshCompletions(): string {
   const commandDescriptions = COMMAND_NAMES.map(
-    (cmd) => `    '${cmd}:${COMMANDS[cmd].description}'`,
+    (cmd) => `    '${cmd}:${COMMANDS[cmd].description.replace(/'/g, "\\'")}'`,
   ).join("\n");
 
   const commandCases: string[] = [];
   for (const [cmd, spec] of Object.entries(COMMANDS)) {
     const flags = Object.entries(spec.flags);
     if (flags.length === 0) {
-      commandCases.push(`    ${cmd}) ;; `);
+      commandCases.push(`    ${cmd}) ;;`);
       continue;
     }
     const flagArgs = flags
@@ -217,7 +222,7 @@ export function generateFishCompletions(): string {
 
   for (const [cmd, spec] of Object.entries(COMMANDS)) {
     lines.push(
-      `complete -c atlas -n '__fish_use_subcommand' -a '${cmd}' -d '${spec.description}'`,
+      `complete -c atlas -n '__fish_use_subcommand' -a '${cmd}' -d '${fishEscape(spec.description)}'`,
     );
   }
 
@@ -228,7 +233,7 @@ export function generateFishCompletions(): string {
     for (const [flag, desc] of Object.entries(spec.flags)) {
       const long = flag.replace(/^--/, "");
       lines.push(
-        `complete -c atlas -n '__fish_seen_subcommand_from ${cmd}' -l '${long}' -d '${desc}'`,
+        `complete -c atlas -n '__fish_seen_subcommand_from ${cmd}' -l '${long}' -d '${fishEscape(desc)}'`,
       );
     }
   }

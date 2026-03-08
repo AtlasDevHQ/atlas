@@ -6,14 +6,13 @@ import {
   generateFishCompletions,
   generateCompletions,
   handleCompletions,
-  type Shell,
 } from "../completions";
 
 describe("completions", () => {
   const allCommands = Object.keys(COMMANDS);
 
   describe("COMMANDS registry", () => {
-    test("includes all CLI commands", () => {
+    test("includes all CLI commands (bidirectional)", () => {
       const expected = [
         "init", "diff", "query", "doctor", "validate",
         "mcp", "migrate", "plugin", "eval", "smoke",
@@ -22,6 +21,8 @@ describe("completions", () => {
       for (const cmd of expected) {
         expect(allCommands).toContain(cmd);
       }
+      // Also catch unexpected additions to COMMANDS not reflected here
+      expect(allCommands.length).toBe(expected.length);
     });
 
     test("every command has a description", () => {
@@ -154,14 +155,6 @@ describe("completions", () => {
   });
 
   describe("generateCompletions", () => {
-    test("dispatches to correct generator", () => {
-      const shells: Shell[] = ["bash", "zsh", "fish"];
-      for (const shell of shells) {
-        const result = generateCompletions(shell);
-        expect(result.length).toBeGreaterThan(0);
-      }
-    });
-
     test("bash output matches generateBashCompletions", () => {
       expect(generateCompletions("bash")).toBe(generateBashCompletions());
     });

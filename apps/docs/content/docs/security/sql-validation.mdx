@@ -61,15 +61,15 @@ DROP TABLE users
 -- Blocked: comment bypass attempt (comments stripped before check)
 /* harmless */ DELETE FROM users
 
--- Allowed: SELECT with matching keywords in string literals
-SELECT * FROM logs WHERE message LIKE '%DELETE%'
+-- Blocked: keyword inside string literal (known false positive)
+SELECT * FROM logs WHERE status = 'DELETE'
 ```
 
-The regex guard is intentionally broad — it catches obvious mutations quickly. Legitimate edge cases (like the string literal example above) pass through because the regex runs against comment-stripped SQL, and string-embedded keywords are handled by the AST parser in layer 2.
+The regex guard is intentionally broad — security over usability. Keywords inside string literals (like `WHERE status = 'DELETE'`) are blocked as a false positive. The agent can work around this by reformulating the query (e.g. using a subquery or different filter).
 
 ## Layer 2: AST parse
 
-The query is fully parsed into an abstract syntax tree using [node-sql-parser](https://github.com/nicolestandifer3/node-sql-parser). The parser mode is auto-detected based on the connection type (PostgreSQL or MySQL).
+The query is fully parsed into an abstract syntax tree using [node-sql-parser](https://github.com/taozhi8833998/node-sql-parser). The parser mode is auto-detected based on the connection type (PostgreSQL or MySQL).
 
 **Enforced rules:**
 

@@ -137,4 +137,4 @@ Atlas supports five plugin types: **datasource**, **context**, **interaction**,
 `definePlugin()` from `@useatlas/plugin-sdk`.
 
 Reference implementations live in `plugins/`. For authoring guidance, see
-`docs/guides/`.
+the [Plugin Authoring Guide](https://docs.useatlas.dev/docs/plugins/authoring-guide).

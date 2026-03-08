@@ -41,7 +41,7 @@ describe("ChangePasswordDialog", () => {
   beforeEach(() => {
     globalThis.fetch = mock(() =>
       Promise.resolve(new Response(JSON.stringify({}), { status: 200 })),
-    ) as typeof fetch;
+    ) as unknown as typeof fetch;
   });
 
   afterEach(() => {
@@ -100,7 +100,7 @@ describe("ChangePasswordDialog", () => {
     const onComplete = mock(() => {});
     const fetchMock = mock(() =>
       Promise.resolve(new Response(JSON.stringify({}), { status: 200 })),
-    ) as typeof fetch;
+    ) as unknown as typeof fetch;
     globalThis.fetch = fetchMock;
 
     renderDialog(true, onComplete);
@@ -111,7 +111,7 @@ describe("ChangePasswordDialog", () => {
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
-    const [url, opts] = (fetchMock as ReturnType<typeof mock>).mock.calls[0] as [string, RequestInit];
+    const [url, opts] = (fetchMock as unknown as ReturnType<typeof mock>).mock.calls[0] as [string, RequestInit];
     expect(url).toContain("/api/v1/admin/me/password");
     expect(opts.method).toBe("POST");
     expect(JSON.parse(opts.body as string)).toEqual({
@@ -125,7 +125,7 @@ describe("ChangePasswordDialog", () => {
       Promise.resolve(
         new Response(JSON.stringify({ message: "Wrong current password" }), { status: 400 }),
       ),
-    ) as typeof fetch;
+    ) as unknown as typeof fetch;
 
     renderDialog(true);
     fillAndSubmit("newpassword123");
@@ -138,7 +138,7 @@ describe("ChangePasswordDialog", () => {
   test("shows fallback error on API failure with non-JSON body", async () => {
     globalThis.fetch = mock(() =>
       Promise.resolve(new Response("Internal Server Error", { status: 500 })),
-    ) as typeof fetch;
+    ) as unknown as typeof fetch;
 
     renderDialog(true);
     fillAndSubmit("newpassword123");
@@ -151,7 +151,7 @@ describe("ChangePasswordDialog", () => {
   test("shows error on network failure", async () => {
     globalThis.fetch = mock(() =>
       Promise.reject(new Error("Network error")),
-    ) as typeof fetch;
+    ) as unknown as typeof fetch;
 
     renderDialog(true);
     fillAndSubmit("newpassword123");

@@ -50,8 +50,7 @@ const stubAuthClient = {
 function wrapper({ children }: { children: ReactNode }) {
   return createElement(
     AtlasUIProvider,
-    { config: { apiUrl: "http://localhost:3001", isCrossOrigin: false, authClient: stubAuthClient } },
-    children,
+    { config: { apiUrl: "http://localhost:3001", isCrossOrigin: false as const, authClient: stubAuthClient }, children },
   );
 }
 
@@ -61,7 +60,7 @@ describe("useAdminFetch", () => {
   beforeEach(() => {
     globalThis.fetch = mock(() =>
       Promise.resolve(new Response(JSON.stringify({ value: 42 }), { status: 200 })),
-    ) as typeof fetch;
+    ) as unknown as typeof fetch;
   });
 
   afterEach(() => {
@@ -90,7 +89,7 @@ describe("useAdminFetch", () => {
   test("sets error on non-OK response", async () => {
     globalThis.fetch = mock(() =>
       Promise.resolve(new Response("", { status: 403 })),
-    ) as typeof fetch;
+    ) as unknown as typeof fetch;
 
     const { result } = renderHook(() => useAdminFetch("/api/test"), { wrapper });
 
@@ -107,7 +106,7 @@ describe("useAdminFetch", () => {
   test("sets error on network failure", async () => {
     globalThis.fetch = mock(() =>
       Promise.reject(new Error("Network error")),
-    ) as typeof fetch;
+    ) as unknown as typeof fetch;
 
     const { result } = renderHook(() => useAdminFetch("/api/test"), { wrapper });
 
@@ -122,7 +121,7 @@ describe("useAdminFetch", () => {
   test("applies transform function", async () => {
     globalThis.fetch = mock(() =>
       Promise.resolve(new Response(JSON.stringify({ items: [1, 2, 3] }), { status: 200 })),
-    ) as typeof fetch;
+    ) as unknown as typeof fetch;
 
     const { result } = renderHook(
       () => useAdminFetch<number>("/api/test", { transform: (json: unknown) => (json as { items: number[] }).items.length }),
@@ -141,7 +140,7 @@ describe("useAdminFetch", () => {
     globalThis.fetch = mock(() => {
       callCount++;
       return Promise.resolve(new Response(JSON.stringify({ n: callCount }), { status: 200 }));
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     const { result } = renderHook(() => useAdminFetch<{ n: number }>("/api/test"), { wrapper });
 
@@ -162,16 +161,16 @@ describe("useAdminFetch", () => {
   test("uses same-origin credentials when not cross-origin", async () => {
     const fetchMock = mock(() =>
       Promise.resolve(new Response(JSON.stringify({}), { status: 200 })),
-    ) as typeof fetch;
+    ) as unknown as typeof fetch;
     globalThis.fetch = fetchMock;
 
     renderHook(() => useAdminFetch("/api/test"), { wrapper });
 
     await waitFor(() => {
-      expect((fetchMock as ReturnType<typeof mock>).mock.calls.length).toBeGreaterThan(0);
+      expect((fetchMock as unknown as ReturnType<typeof mock>).mock.calls.length).toBeGreaterThan(0);
     });
 
-    const [, opts] = (fetchMock as ReturnType<typeof mock>).mock.calls[0] as [string, RequestInit];
+    const [, opts] = (fetchMock as unknown as ReturnType<typeof mock>).mock.calls[0] as [string, RequestInit];
     expect(opts.credentials).toBe("same-origin");
   });
 
@@ -183,7 +182,7 @@ describe("useAdminFetch", () => {
           reject(new DOMException("The operation was aborted.", "AbortError"));
         });
       });
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     const { result, unmount } = renderHook(() => useAdminFetch("/api/test"), { wrapper });
 

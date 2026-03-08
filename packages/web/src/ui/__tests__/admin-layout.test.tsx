@@ -59,7 +59,7 @@ describe("AdminLayout", () => {
     // Mock fetch for password-status check
     globalThis.fetch = mock(() =>
       Promise.resolve(new Response(JSON.stringify({ passwordChangeRequired: false }), { status: 200 })),
-    ) as typeof fetch;
+    ) as unknown as typeof fetch;
   });
 
   afterEach(() => {
@@ -124,7 +124,7 @@ describe("AdminLayout", () => {
     mockSession = { data: { user: { email: "admin@test.com", role: "admin" } } };
     globalThis.fetch = mock(() =>
       Promise.resolve(new Response(JSON.stringify({ passwordChangeRequired: true }), { status: 200 })),
-    ) as typeof fetch;
+    ) as unknown as typeof fetch;
     renderLayout();
     await waitFor(() => {
       expect(document.body.textContent).toContain("Change your password");

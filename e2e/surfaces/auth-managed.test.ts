@@ -292,8 +292,8 @@ describe("E2E: Managed auth — session validation", () => {
       Cookie: "better-auth.session_token=valid-session-token",
     });
 
-    expect(res.status).not.toBe(401);
-    expect(res.status).toBeLessThan(500);
+    expect(res.status).toBe(200);
+    expect(mockValidateManaged).toHaveBeenCalled();
   });
 
   it("accepts requests with a valid bearer token in managed mode", async () => {
@@ -312,8 +312,8 @@ describe("E2E: Managed auth — session validation", () => {
       Authorization: "Bearer ba_valid-api-key-token",
     });
 
-    expect(res.status).not.toBe(401);
-    expect(res.status).toBeLessThan(500);
+    expect(res.status).toBe(200);
+    expect(mockValidateManaged).toHaveBeenCalled();
   });
 
   it("propagates admin role from managed session", async () => {
@@ -333,8 +333,8 @@ describe("E2E: Managed auth — session validation", () => {
       Cookie: "better-auth.session_token=admin-session",
     });
 
-    expect(res.status).not.toBe(401);
-    expect(res.status).not.toBe(403);
+    expect(res.status).toBe(200);
+    expect(mockValidateManaged).toHaveBeenCalled();
   });
 
   it("returns 500 when managed auth infrastructure fails", async () => {
@@ -384,8 +384,8 @@ describe("E2E: Managed auth — role enforcement", () => {
       Cookie: "better-auth.session_token=viewer-session",
     });
 
-    // Viewer should be able to query (auth succeeds, downstream may vary)
-    expect(res.status).not.toBe(401);
-    expect(res.status).not.toBe(403);
+    // Viewer should be able to query — auth succeeds and request is processed
+    expect(res.status).toBe(200);
+    expect(mockValidateManaged).toHaveBeenCalled();
   });
 });

@@ -1,12 +1,18 @@
 /**
  * E2E: Agent multi-step tests.
  *
- * Tests the /api/v1/query endpoint with a mock agent that simulates
- * multi-step tool call sequences (explore + SQL). Verifies that:
+ * Tests the /api/v1/query route's request validation, response
+ * serialization, and action URL enrichment using mocked agent results.
+ * The executeAgentQuery function is mocked — these tests verify the
+ * route handler correctly:
  *
- * 1. The agent explores the semantic layer before writing SQL
- * 2. Tool calls are reflected in the response (steps, sql, data)
- * 3. The query pipeline correctly handles multi-step results
+ * 1. Passes questions to executeAgentQuery
+ * 2. Serializes structured results (steps, sql, data) to JSON
+ * 3. Enriches pending actions with approve/deny URLs
+ * 4. Validates request bodies (empty, missing, invalid JSON)
+ *
+ * Note: Actual agent behavior (explore-then-SQL ordering, semantic
+ * layer consultation) is NOT tested here — the agent is fully mocked.
  *
  * Uses in-process Hono app.fetch() with a mocked executeAgentQuery
  * that returns structured multi-step results.

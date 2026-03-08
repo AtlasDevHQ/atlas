@@ -522,20 +522,22 @@ describe("E2E: Scheduler — CRUD lifecycle", () => {
 
   it("lists scheduled tasks for the authenticated user", async () => {
     // Create two tasks first
-    await app.fetch(
+    const createA = await app.fetch(
       makeRequest("POST", "/api/v1/scheduled-tasks", {
         name: "Task A",
         question: "Question A",
         cronExpression: "0 * * * *",
       }),
     );
-    await app.fetch(
+    expect(createA.status).toBe(201);
+    const createB = await app.fetch(
       makeRequest("POST", "/api/v1/scheduled-tasks", {
         name: "Task B",
         question: "Question B",
         cronExpression: "0 0 * * *",
       }),
     );
+    expect(createB.status).toBe(201);
 
     const res = await app.fetch(
       makeRequest("GET", "/api/v1/scheduled-tasks"),
@@ -560,6 +562,7 @@ describe("E2E: Scheduler — CRUD lifecycle", () => {
         recipients: [{ type: "webhook", url: "https://example.com/hook" }],
       }),
     );
+    expect(createRes.status).toBe(201);
     const created = (await createRes.json()) as { id: string };
 
     const res = await app.fetch(
@@ -604,6 +607,7 @@ describe("E2E: Scheduler — CRUD lifecycle", () => {
         cronExpression: "0 * * * *",
       }),
     );
+    expect(createRes.status).toBe(201);
     const created = (await createRes.json()) as { id: string };
 
     const updateRes = await app.fetch(
@@ -626,6 +630,7 @@ describe("E2E: Scheduler — CRUD lifecycle", () => {
         cronExpression: "0 * * * *",
       }),
     );
+    expect(createRes.status).toBe(201);
     const created = (await createRes.json()) as { id: string };
 
     const deleteRes = await app.fetch(
@@ -647,6 +652,7 @@ describe("E2E: Scheduler — trigger execution", () => {
         recipients: [{ type: "webhook", url: "https://example.com/hook" }],
       }),
     );
+    expect(createRes.status).toBe(201);
     const created = (await createRes.json()) as { id: string };
 
     const triggerRes = await app.fetch(
@@ -776,13 +782,19 @@ describe("E2E: Scheduler — webhook delivery (mock)", () => {
 describe("E2E: Scheduler — user isolation", () => {
   it("user B cannot see user A's tasks", async () => {
     // Create task as admin (user A)
-    await app.fetch(
+    const createRes = await app.fetch(
       makeRequest("POST", "/api/v1/scheduled-tasks", {
         name: "Admin's Task",
         question: "Admin question",
         cronExpression: "0 * * * *",
       }),
     );
+    expect(createRes.status).toBe(201);
+
+    // Verify user A can see their task
+    const listA = await app.fetch(makeRequest("GET", "/api/v1/scheduled-tasks"));
+    const bodyA = (await listA.json()) as { total: number };
+    expect(bodyA.total).toBe(1);
 
     // Switch to user B
     currentUser = userB as typeof adminUser;
@@ -813,6 +825,7 @@ describe("E2E: Scheduler — user isolation", () => {
         cronExpression: "0 * * * *",
       }),
     );
+    expect(createRes.status).toBe(201);
     const created = (await createRes.json()) as { id: string };
 
     // Switch to user B

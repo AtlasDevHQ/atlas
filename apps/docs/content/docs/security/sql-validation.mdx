@@ -1,0 +1,197 @@
+---
+title: SQL Validation Pipeline
+description: How Atlas enforces read-only SQL execution through a 7-layer defense-in-depth pipeline.
+---
+
+Every SQL query the agent writes passes through a multi-layer validation pipeline before it reaches your database. No query can bypass validation — if any layer rejects, the query is blocked.
+
+## Pipeline overview
+
+| Layer | Name | Purpose |
+|-------|------|---------|
+| 0 | Empty check | Reject empty or whitespace-only input |
+| 1 | Regex mutation guard | Quick reject of obvious DML/DDL keywords |
+| 2 | AST parse | Full SQL parse — verify single SELECT statement |
+| 3 | Table whitelist | Only allow tables defined in the semantic layer |
+| 4 | RLS injection | Inject WHERE clauses based on user claims (when enabled) |
+| 5 | Auto LIMIT | Append row limit to every query |
+| 6 | Statement timeout | Per-query execution deadline |
+
+Layers 0–3 run in `validateSQL()` before execution. Layers 4–6 are applied during execution.
+
+## Layer 0: Empty check
+
+Rejects empty strings, whitespace-only input, and trailing semicolons (stripped before processing).
+
+```sql
+-- Blocked
+""
+"   "
+";"
+```
+
+## Layer 1: Regex mutation guard
+
+A fast first-pass check that rejects queries containing DML or DDL keywords. Comments are stripped before testing so they can't be used to bypass the patterns.
+
+**Blocked keywords (all databases):**
+
+```
+INSERT, UPDATE, DELETE, DROP, CREATE, ALTER, TRUNCATE
+GRANT, REVOKE, EXEC, EXECUTE, CALL
+COPY, LOAD, VACUUM, REINDEX, OPTIMIZE
+INTO OUTFILE
+```
+
+**Additional blocked keywords (MySQL only):**
+
+```
+HANDLER, SHOW, DESCRIBE, EXPLAIN, USE
+```
+
+**Examples:**
+
+```sql
+-- Blocked: DML
+INSERT INTO users (name) VALUES ('alice')
+
+-- Blocked: DDL
+DROP TABLE users
+
+-- Blocked: comment bypass attempt (comments stripped before check)
+/* harmless */ DELETE FROM users
+
+-- Blocked: keyword inside string literal (known false positive)
+SELECT * FROM logs WHERE status = 'DELETE'
+```
+
+The regex guard is intentionally broad — security over usability. Keywords inside string literals (like `WHERE status = 'DELETE'`) are blocked as a false positive. The agent can work around this by reformulating the query (e.g. using a subquery or different filter).
+
+## Layer 2: AST parse
+
+The query is fully parsed into an abstract syntax tree using [node-sql-parser](https://github.com/taozhi8833998/node-sql-parser). The parser mode is auto-detected based on the connection type (PostgreSQL or MySQL).
+
+**Enforced rules:**
+
+1. **Single statement** — No semicolon-separated batches. Exactly one statement allowed.
+2. **SELECT only** — The parsed statement type must be `select`. Any other type (INSERT, UPDATE, CREATE, etc.) is rejected.
+3. **Must parse** — If the parser cannot understand the query, it is **rejected**. A query that passes the regex guard but confuses the parser could be a crafted bypass attempt. The agent can always reformulate into standard SQL.
+
+```sql
+-- Blocked: multiple statements
+SELECT 1; DROP TABLE users
+
+-- Blocked: non-SELECT
+CREATE TABLE evil (id INT)
+
+-- Blocked: unparseable (rejected, not allowed through)
+SELECT * FROM users UNION WEIRD SYNTAX
+
+-- Allowed: CTEs (WITH clause)
+WITH active AS (SELECT * FROM users WHERE active = true)
+SELECT * FROM active
+```
+
+CTE names (`WITH x AS (...)`) are extracted during parsing and excluded from the table whitelist check in layer 3.
+
+## Layer 3: Table whitelist
+
+Every table referenced in the query must exist in the semantic layer (`semantic/entities/*.yml` or `semantic/{source}/entities/*.yml`). Tables not in the whitelist are blocked.
+
+```sql
+-- Given semantic layer defines: users, orders, products
+
+-- Allowed
+SELECT * FROM users JOIN orders ON users.id = orders.user_id
+
+-- Blocked: "secrets" not in semantic layer
+SELECT * FROM secrets
+
+-- Blocked: schema-qualified reference requires qualified name in whitelist
+SELECT * FROM internal.secrets
+```
+
+**Schema-qualified queries:** If a query uses `schema.table` syntax (e.g. `analytics.orders`), the qualified name must be in the whitelist. Unqualified names cannot bypass schema restrictions.
+
+**CTE exclusion:** CTE names defined in `WITH` clauses are automatically excluded from the whitelist check — they're temporary result sets, not real tables.
+
+**Disabling:** Set `ATLAS_TABLE_WHITELIST=false` to disable (not recommended for production).
+
+## Layer 4: RLS injection
+
+When [Row-Level Security](/docs/reference/environment-variables#row-level-security) is enabled, WHERE clauses are injected based on the authenticated user's claims. This happens after validation and plugin hooks, so plugins cannot strip RLS conditions.
+
+```sql
+-- Original query
+SELECT * FROM orders WHERE status = 'active'
+
+-- After RLS injection (tenant_id from user's JWT org_id claim)
+SELECT * FROM orders WHERE status = 'active' AND orders.tenant_id = 'acme-corp'
+```
+
+RLS is fail-closed: if claims are missing or cannot be resolved, the query is blocked entirely.
+
+## Layer 5: Auto LIMIT
+
+A `LIMIT` clause is appended to every query that doesn't already have one. This prevents accidental full-table scans.
+
+```sql
+-- Input (no LIMIT)
+SELECT * FROM users
+
+-- Executed
+SELECT * FROM users LIMIT 1000
+```
+
+Default: 1000 rows. Configure with `ATLAS_ROW_LIMIT`.
+
+If the result set hits the limit, the response includes `truncated: true` so the agent knows data was cut off.
+
+## Layer 6: Statement timeout
+
+A per-query execution deadline prevents long-running queries from consuming database resources.
+
+- **PostgreSQL**: Session-level `statement_timeout` set on the connection
+- **MySQL**: Session-level timeout variable
+
+Default: 30 seconds (30000ms). Configure with `ATLAS_QUERY_TIMEOUT`.
+
+Queries that exceed the timeout are terminated by the database and return an error to the agent.
+
+## Plugin hooks
+
+When plugins are installed, two hook points extend the pipeline:
+
+- **`beforeQuery`** — Plugins can inspect or rewrite SQL before execution. If a plugin rewrites the query, it is **re-validated** through layers 1–3 to prevent plugins from introducing DML or bypassing the whitelist.
+- **`afterQuery`** — Plugins receive the query results for logging, transformation, or side effects.
+
+Custom validators (for non-SQL datasources like SOQL or GraphQL) replace the standard validation pipeline entirely. When a connection has a custom validator registered, `validateSQL` is not called — the custom validator is responsible for equivalent safety guarantees.
+
+## Error handling
+
+When a query fails at any validation layer, the response includes a structured error:
+
+```json
+{
+  "success": false,
+  "error": "Table \"secrets\" is not in the allowed list. Check catalog.yml for available tables."
+}
+```
+
+Database errors that might expose connection details or internal state (passwords, connection strings, SSL certificates) are automatically scrubbed before being returned to the agent. The full error is logged server-side.
+
+All queries — successful and failed — are recorded in the [audit log](/docs/deployment/authentication#audit-logging) with user attribution, timing, and error details.
+
+## Test coverage
+
+The validation pipeline has ~103 unit tests covering edge cases including:
+
+- Comment-based bypass attempts
+- CTE name exclusion
+- Schema-qualified table references
+- MySQL-specific forbidden patterns
+- Semicolon injection
+- Unparseable SQL rejection
+- String literal false positives
+
+Run the tests: `bun run test` (isolated per-file runner).

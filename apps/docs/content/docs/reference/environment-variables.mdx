@@ -1,0 +1,160 @@
+---
+title: Environment Variables
+description: Complete reference for all Atlas environment variables with defaults and examples.
+---
+
+All Atlas configuration is via environment variables. Most have safe defaults — a minimal deployment needs only an LLM provider key and a datasource URL.
+
+## LLM Provider
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_PROVIDER` | `anthropic` (`gateway` on Vercel) | LLM provider: `anthropic`, `openai`, `bedrock`, `ollama`, `gateway` |
+| `ATLAS_MODEL` | Provider default | Model ID override (e.g. `claude-sonnet-4-6`, `gpt-4o`) |
+
+Each provider requires its own API key:
+
+| Provider | API Key Variable |
+|----------|-----------------|
+| `anthropic` | `ANTHROPIC_API_KEY` |
+| `openai` | `OPENAI_API_KEY` |
+| `bedrock` | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` + `AWS_REGION` |
+| `ollama` | None (local) |
+| `gateway` | `AI_GATEWAY_API_KEY` |
+
+**Default models per provider:**
+
+| Provider | Default Model |
+|----------|--------------|
+| `anthropic` | `claude-opus-4-6` |
+| `openai` | `gpt-4o` |
+| `bedrock` | `anthropic.claude-opus-4-6-v1:0` |
+| `ollama` | `llama3.1` |
+| `gateway` | `anthropic/claude-opus-4.6` |
+
+## Database
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_DATASOURCE_URL` | — | Analytics datasource connection string (PostgreSQL or MySQL). Falls back to `DATABASE_URL_UNPOOLED` / `DATABASE_URL` when `ATLAS_DEMO_DATA=true` |
+| `DATABASE_URL` | — | Atlas internal Postgres (auth, audit, conversations). Optional — Atlas works without it |
+| `ATLAS_DEMO_DATA` | — | Set `true` to use the internal DB as both analytics datasource and internal DB |
+
+## Query Safety
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_ROW_LIMIT` | `1000` | Max rows returned per query |
+| `ATLAS_QUERY_TIMEOUT` | `30000` | Query timeout in milliseconds |
+| `ATLAS_TABLE_WHITELIST` | `true` | Only allow queries against tables defined in the semantic layer |
+| `ATLAS_SCHEMA` | `public` | PostgreSQL schema for profiling and runtime queries |
+
+See [SQL Validation Pipeline](/docs/security/sql-validation) for how these are enforced.
+
+## Authentication
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_AUTH_MODE` | Auto-detected | Explicit auth mode: `none`, `api-key`, `managed`, `byot` |
+
+Auth is auto-detected from environment variables when `ATLAS_AUTH_MODE` is not set. See [Authentication](/docs/deployment/authentication) for full setup guides.
+
+### Simple Key
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_API_KEY` | — | Shared secret. Clients send `Authorization: Bearer <key>` or `X-API-Key: <key>` |
+| `ATLAS_API_KEY_ROLE` | `analyst` | Role for API key users: `viewer`, `analyst`, `admin` |
+
+### Managed (Better Auth)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BETTER_AUTH_SECRET` | — | Session signing secret. Min 32 chars, cryptographically random. Requires `DATABASE_URL` |
+| `BETTER_AUTH_URL` | Auto-detected | Base URL for auth endpoints. Auto-detected on Vercel; set explicitly for Railway/Docker |
+| `BETTER_AUTH_TRUSTED_ORIGINS` | — | Comma-separated CSRF-allowed origins |
+| `ATLAS_ADMIN_EMAIL` | — | User matching this email gets `admin` role on signup. If unset, first signup gets admin |
+
+### BYOT (Bring Your Own Token)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_AUTH_JWKS_URL` | — | JWKS endpoint URL for JWT signature verification |
+| `ATLAS_AUTH_ISSUER` | — | Expected JWT `iss` claim (required) |
+| `ATLAS_AUTH_AUDIENCE` | — | Expected JWT `aud` claim (optional) |
+| `ATLAS_AUTH_ROLE_CLAIM` | `role`, `atlas_role` | Dot-delimited JWT claim path for role extraction (e.g. `app_metadata.role`) |
+
+### Rate Limiting
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_RATE_LIMIT_RPM` | `0` (disabled) | Max requests per minute per user. 0 or unset = unlimited |
+| `ATLAS_TRUST_PROXY` | `false` | Trust `X-Forwarded-For` / `X-Real-IP` headers. Set `true` behind a reverse proxy |
+
+## Row-Level Security
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_RLS_ENABLED` | — | Set `true` to enable RLS filtering on queries |
+| `ATLAS_RLS_COLUMN` | — | Column name used for filtering (e.g. `tenant_id`) |
+| `ATLAS_RLS_CLAIM` | — | JWT/session claim path for RLS value extraction (e.g. `org_id`) |
+| `ATLAS_RLS_CLAIMS` | — | Static JSON claims for RLS with simple-key auth (e.g. `'{"tenant_id": "acme-corp"}'`) |
+
+## Networking & CORS
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_CORS_ORIGIN` | `*` | CORS allowed origin. Must set explicitly for cross-origin + managed auth (cookie-based) |
+| `NEXT_PUBLIC_ATLAS_API_URL` | — | Next.js frontend: cross-origin API URL. When unset, same-origin via Next.js rewrites |
+| `ATLAS_API_URL` | `http://localhost:3001` | Rewrite target for same-origin mode (only used when `NEXT_PUBLIC_ATLAS_API_URL` is unset) |
+
+## Sandbox & Isolation
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_RUNTIME` | — | Runtime hint: `vercel` enables Vercel-specific sandbox and optimizations |
+| `ATLAS_SANDBOX` | — | Set `nsjail` to enforce nsjail isolation (hard fail if unavailable) |
+| `ATLAS_SANDBOX_URL` | — | Sidecar service URL for explore isolation (e.g. `http://sandbox-sidecar:8080`) |
+| `SIDECAR_AUTH_TOKEN` | — | Shared secret for sidecar auth (set on both API and sidecar) |
+| `ATLAS_NSJAIL_PATH` | Auto-detected | Explicit path to nsjail binary |
+| `ATLAS_NSJAIL_TIME_LIMIT` | `10` | nsjail per-command time limit in seconds |
+| `ATLAS_NSJAIL_MEMORY_LIMIT` | `256` | nsjail per-command memory limit in MB |
+
+## Actions
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_ACTIONS_ENABLED` | — | Set `true` to enable the action framework (approval-gated write operations) |
+
+## Scheduler
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_SCHEDULER_ENABLED` | — | Set `true` to enable scheduled task execution |
+| `ATLAS_SCHEDULER_BACKEND` | `bun` | Execution backend: `bun`, `webhook`, or `vercel` |
+| `ATLAS_SCHEDULER_SECRET` | — | Shared secret for the `/tick` endpoint (non-Vercel). On Vercel, use `CRON_SECRET` |
+| `ATLAS_SCHEDULER_MAX_CONCURRENT` | `5` | Max concurrent task executions per tick |
+| `ATLAS_SCHEDULER_TIMEOUT` | `60000` | Per-task timeout in milliseconds |
+| `ATLAS_SCHEDULER_TICK_INTERVAL` | `60` | Tick interval in seconds |
+
+## Email Delivery
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RESEND_API_KEY` | — | Resend API key for email delivery in scheduled tasks |
+| `ATLAS_EMAIL_FROM` | `Atlas <noreply@useatlas.dev>` | From address for scheduled task emails |
+
+## Slack Integration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SLACK_SIGNING_SECRET` | — | Enables Slack integration. Used to verify request signatures |
+| `SLACK_BOT_TOKEN` | — | Single-workspace mode (skip OAuth) |
+| `SLACK_CLIENT_ID` | — | Multi-workspace OAuth app client ID |
+| `SLACK_CLIENT_SECRET` | — | Multi-workspace OAuth app client secret |
+
+## Logging & Observability
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_LOG_LEVEL` | `info` | Pino log level: `trace`, `debug`, `info`, `warn`, `error`, `fatal` |

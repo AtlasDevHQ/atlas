@@ -303,10 +303,11 @@ Error boundary catches provider/DB errors → structured JSON response
 2. **AST parse** — `node-sql-parser` (database mode auto-detected: `"PostgresQL"` or `"MySQL"`) verifies single SELECT-only statement. Unparseable queries are **rejected**, not allowed through. CTE names are extracted here for the whitelist check
 3. **Table whitelist** — All tables must exist in `semantic/entities/*.yml` or `semantic/{source}/entities/*.yml` (CTE names excluded). Schema-qualified references (e.g. `analytics.orders`) require the qualified form in the whitelist. Parse failure = rejection
 
-**Applied during execution (2 layers):**
+**Applied during execution (3 layers):**
 
-4. **Auto LIMIT** — Appended to every query (default 1000)
-5. **Statement timeout** — Configurable per-query deadline
+4. **RLS injection** — WHERE clause injection based on user claims (when enabled via `ATLAS_RLS_ENABLED`). Applied after validation + plugin hooks so plugins cannot strip RLS conditions
+5. **Auto LIMIT** — Appended to every query (default 1000)
+6. **Statement timeout** — Configurable per-query deadline
 
 ~103 unit tests cover the validation pipeline — see `packages/api/src/lib/tools/__tests__/sql.test.ts`.
 

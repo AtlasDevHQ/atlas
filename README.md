@@ -86,7 +86,7 @@ atlas/
 | Railway | [atlas-starter-railway](https://github.com/AtlasDevHQ/atlas-starter-railway) | Docker + sidecar sandbox + Railway Postgres |
 | Docker | [atlas-starter-docker](https://github.com/AtlasDevHQ/atlas-starter-docker) | Docker Compose + optional nsjail isolation |
 
-See [Deploy options](docs/guides/deploy.md) for detailed instructions.
+See [Deploy options](https://docs.useatlas.dev/docs/deployment/deploy) for detailed instructions.
 
 ## Security
 
@@ -105,7 +105,7 @@ The explore tool (filesystem access to semantic YAML files) runs in a sandbox th
 
 Secrets (database credentials, API keys) never enter the sandbox. The agent accesses the database through scoped tools, not raw connection strings.
 
-See [sandbox architecture](docs/design/sandbox-architecture.md) for the full threat model and design.
+See [sandbox architecture](https://docs.useatlas.dev/docs/architecture/sandbox) for the full threat model and design.
 
 ## Environment Variables
 
@@ -122,12 +122,12 @@ See [`.env.example`](.env.example) for all options.
 
 ## Documentation
 
-- [Quick Start](docs/guides/quick-start.md) -- Local dev from zero to asking questions
-- [Deploy options](docs/guides/deploy.md) -- Docker, Railway, Vercel, and more
-- [Bring Your Own DB](docs/guides/bring-your-own-db.md) -- Connect to an existing database safely
-- [Bring Your Own Frontend](docs/guides/byof/overview.md) -- Nuxt, SvelteKit, React/Vite, TanStack Start
-- [Plugin Authoring](docs/guides/plugin-authoring-guide.md) -- Build custom plugins
-- [Security & Sandbox Architecture](docs/design/sandbox-architecture.md) -- Threat model, isolation tiers, platform capabilities
+- [Quick Start](https://docs.useatlas.dev/docs/getting-started/quick-start) -- Local dev from zero to asking questions
+- [Deploy options](https://docs.useatlas.dev/docs/deployment/deploy) -- Docker, Railway, Vercel, and more
+- [Connect Your Data](https://docs.useatlas.dev/docs/getting-started/connect-your-data) -- Connect to an existing database safely
+- [Bring Your Own Frontend](https://docs.useatlas.dev/docs/frameworks/overview) -- Nuxt, SvelteKit, React/Vite, TanStack Start
+- [Plugin Authoring](https://docs.useatlas.dev/docs/plugins/authoring-guide) -- Build custom plugins
+- [Security & Sandbox Architecture](https://docs.useatlas.dev/docs/architecture/sandbox) -- Threat model, isolation tiers, platform capabilities
 
 ## Acknowledgments
 

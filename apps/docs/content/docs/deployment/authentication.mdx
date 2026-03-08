@@ -1,0 +1,264 @@
+---
+title: Authentication
+description: Configure Atlas authentication — from no auth in development to enterprise SSO in production.
+---
+
+Atlas supports four authentication modes. Auth is optional — Atlas works with no auth for local development.
+
+| Mode | Best for | How it works |
+|------|----------|--------------|
+| **None** | Local dev, internal tools | No authentication. All requests are anonymous |
+| **Simple Key** | Headless integrations, CLI, SDKs | Single shared secret via `Authorization: Bearer <key>` |
+| **Managed** | Multi-user web apps | Email/password with sessions. Built on [Better Auth](https://www.better-auth.com/) |
+| **BYOT** | Enterprise SSO (Auth0, Clerk, Okta) | Stateless JWT verification against your identity provider's JWKS endpoint |
+
+## Auto-detection
+
+When `ATLAS_AUTH_MODE` is not set, Atlas auto-detects the mode from environment variables:
+
+| Priority | Variable present | Mode selected |
+|----------|-----------------|---------------|
+| 1 | `ATLAS_AUTH_JWKS_URL` | BYOT |
+| 2 | `BETTER_AUTH_SECRET` | Managed |
+| 3 | `ATLAS_API_KEY` | Simple Key |
+| 4 | None of the above | None |
+
+Set `ATLAS_AUTH_MODE` explicitly to override auto-detection: `none`, `api-key`, `managed`, or `byot`.
+
+## No Auth
+
+The default for local development. All requests pass through without authentication.
+
+```bash
+# No auth variables needed — just start the server
+bun run dev
+```
+
+No user identity is available. Rate limiting still works (keyed by IP). Audit logs record queries without user attribution.
+
+> Do not use no-auth mode in production unless Atlas is behind a VPN or reverse proxy that handles authentication externally.
+
+## Simple Key
+
+A single shared secret for API access. Best for headless integrations, CLI tools, and automation.
+
+### Setup
+
+```bash
+# .env
+ATLAS_API_KEY=your-secret-key-here
+ATLAS_API_KEY_ROLE=analyst    # Optional: viewer, analyst (default), admin
+```
+
+### Client usage
+
+Send the key in the `Authorization` header (preferred) or `X-API-Key` header:
+
+```bash
+# Authorization header
+curl -H "Authorization: Bearer your-secret-key-here" \
+  http://localhost:3001/api/v1/query \
+  -d '{"question": "How many users?"}'
+
+# X-API-Key header (alternative)
+curl -H "X-API-Key: your-secret-key-here" \
+  http://localhost:3001/api/v1/query \
+  -d '{"question": "How many users?"}'
+```
+
+### Security details
+
+- Keys are compared using constant-time SHA-256 hash comparison (timing-safe)
+- User IDs in logs are derived from a hash of the key — the raw key is never logged
+- A single key maps to a single user identity and role
+
+### RLS with Simple Key
+
+When using [Row-Level Security](/docs/reference/environment-variables#row-level-security) with simple-key auth, provide static claims:
+
+```bash
+ATLAS_RLS_CLAIMS='{"tenant_id": "acme-corp"}'
+```
+
+## Managed Auth
+
+Full user management with email/password login, sessions, and role-based access. Built on [Better Auth](https://www.better-auth.com/). Requires an internal Postgres database (`DATABASE_URL`).
+
+### Setup
+
+```bash
+# .env
+BETTER_AUTH_SECRET=your-random-secret-at-least-32-characters-long
+DATABASE_URL=postgresql://user:pass@host:5432/atlas
+
+# Optional
+BETTER_AUTH_URL=https://api.example.com        # Auto-detected on Vercel
+BETTER_AUTH_TRUSTED_ORIGINS=https://app.example.com,https://admin.example.com
+ATLAS_ADMIN_EMAIL=admin@example.com            # First admin account
+ATLAS_CORS_ORIGIN=https://app.example.com      # Required for cross-origin cookies
+```
+
+### Bootstrap admin
+
+On first deployment:
+- If `ATLAS_ADMIN_EMAIL` is set, the user matching that email gets `admin` role on signup
+- If `ATLAS_ADMIN_EMAIL` is not set, the first user to sign up gets `admin` automatically
+- Subsequent signups get the `analyst` role
+
+### How sessions work
+
+1. User signs in via `POST /api/auth/sign-in/email`
+2. Better Auth creates a session and sets a `session_token` cookie
+3. Subsequent requests include the cookie automatically (browser) or send `Authorization: Bearer <session-token>` (API clients)
+4. Sessions last 7 days. Active sessions refresh daily
+
+### Cross-origin deployment
+
+When the API and frontend are on different origins (e.g. `api.example.com` and `app.example.com`):
+
+```bash
+ATLAS_CORS_ORIGIN=https://app.example.com
+BETTER_AUTH_TRUSTED_ORIGINS=https://app.example.com
+BETTER_AUTH_URL=https://api.example.com
+```
+
+### Frontend integration
+
+The Atlas web UI includes a built-in auth client. For custom frontends, use the Better Auth React client:
+
+```typescript
+import { createAuthClient } from "better-auth/react";
+
+const auth = createAuthClient({
+  baseURL: "https://api.example.com",
+});
+
+// Sign up
+await auth.signUp.email({
+  email: "user@example.com",
+  password: "secure-password",
+  name: "User Name",
+});
+
+// Sign in
+await auth.signIn.email({
+  email: "user@example.com",
+  password: "secure-password",
+});
+```
+
+## BYOT (Bring Your Own Token)
+
+Stateless JWT verification against an external identity provider. Best for enterprises with existing SSO (Auth0, Clerk, Okta, Supabase Auth, etc.).
+
+### Setup
+
+```bash
+# .env
+ATLAS_AUTH_JWKS_URL=https://your-idp.com/.well-known/jwks.json
+ATLAS_AUTH_ISSUER=https://your-idp.com/
+ATLAS_AUTH_AUDIENCE=your-atlas-api          # Optional but recommended
+ATLAS_AUTH_ROLE_CLAIM=app_metadata.role     # Optional, defaults to "role" then "atlas_role"
+```
+
+### How it works
+
+1. Client obtains a JWT from your identity provider (Auth0, Clerk, etc.)
+2. Client sends `Authorization: Bearer <jwt>` to Atlas
+3. Atlas verifies the JWT signature against the JWKS endpoint
+4. Atlas validates `iss` (issuer) and `aud` (audience) claims
+5. Atlas extracts user ID from `sub` claim and role from the configured claim path
+
+### Provider examples
+
+**Auth0:**
+
+```bash
+ATLAS_AUTH_JWKS_URL=https://your-tenant.auth0.com/.well-known/jwks.json
+ATLAS_AUTH_ISSUER=https://your-tenant.auth0.com/
+ATLAS_AUTH_AUDIENCE=https://api.example.com
+ATLAS_AUTH_ROLE_CLAIM=https://example.com/roles
+```
+
+**Clerk:**
+
+```bash
+ATLAS_AUTH_JWKS_URL=https://your-app.clerk.accounts.dev/.well-known/jwks.json
+ATLAS_AUTH_ISSUER=https://your-app.clerk.accounts.dev
+ATLAS_AUTH_ROLE_CLAIM=metadata.role
+```
+
+**Supabase:**
+
+```bash
+ATLAS_AUTH_JWKS_URL=https://your-project.supabase.co/auth/v1/.well-known/jwks.json
+ATLAS_AUTH_ISSUER=https://your-project.supabase.co/auth/v1
+ATLAS_AUTH_ROLE_CLAIM=app_metadata.role
+```
+
+### Role claim extraction
+
+The `ATLAS_AUTH_ROLE_CLAIM` supports dot-delimited paths for nested JWT structures:
+
+```bash
+# Top-level claim
+ATLAS_AUTH_ROLE_CLAIM=role
+
+# Nested claim
+ATLAS_AUTH_ROLE_CLAIM=app_metadata.role
+
+# Deeply nested
+ATLAS_AUTH_ROLE_CLAIM=https://example.com/claims.atlas.role
+```
+
+If not set, Atlas checks `role` then `atlas_role` at the top level. Valid roles: `viewer`, `analyst`, `admin`.
+
+### RLS with BYOT
+
+The full JWT payload is available as user claims for [Row-Level Security](/docs/reference/environment-variables#row-level-security). This enables tenant isolation based on JWT claims:
+
+```bash
+ATLAS_RLS_ENABLED=true
+ATLAS_RLS_COLUMN=tenant_id
+ATLAS_RLS_CLAIM=org_id          # Extracted from JWT payload
+```
+
+## Roles
+
+Atlas has three roles with increasing privileges:
+
+| Role | Level | Can query | Can approve actions | Can approve admin actions |
+|------|-------|-----------|--------------------|-----------------------|
+| `viewer` | 0 | Yes | No | No |
+| `analyst` | 1 | Yes | Yes | No |
+| `admin` | 2 | Yes | Yes | Yes |
+
+Default roles by auth mode:
+- **Simple Key**: `analyst` (override with `ATLAS_API_KEY_ROLE`)
+- **Managed**: `analyst` for new signups (first signup or `ATLAS_ADMIN_EMAIL` match gets `admin`)
+- **BYOT**: Extracted from JWT claim (defaults to `viewer` if missing)
+
+## Rate Limiting
+
+Rate limiting is per-user, sliding-window (60-second window).
+
+```bash
+ATLAS_RATE_LIMIT_RPM=60         # 60 requests per minute per user
+ATLAS_TRUST_PROXY=true          # Required behind reverse proxy to get real IPs
+```
+
+When rate limited, the API returns HTTP 429 with a `Retry-After` header.
+
+> Rate limits apply to API requests, not agent steps. One chat request can trigger up to 25 internal agent steps.
+
+## Audit Logging
+
+Every SQL query is logged with user attribution, regardless of auth mode.
+
+**Pino logs** (always active): Structured JSON logs with user ID, query, duration, and success/failure. SQL truncated to 500 chars.
+
+**Internal database** (when `DATABASE_URL` is set): Persistent `audit_log` table with full query text (truncated to 2000 chars), user identity, timing, and error details. Auto-migrated on startup.
+
+Sensitive patterns (passwords, connection strings, credentials) are automatically scrubbed from both log destinations before writing.
+
+Set `ATLAS_LOG_LEVEL=debug` to see per-step agent actions in the logs.

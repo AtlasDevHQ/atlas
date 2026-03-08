@@ -39,6 +39,14 @@ For each suggestion:
 - Don't suggest more than one large effort at a time
 - If a parent issue's sub-issues are all done, suggest closing it
 
+**File issues for incidental findings:**
+During assessment, if you notice bugs, tech debt, stale references, or pre-existing errors that aren't tracked, file GH issues for them immediately — don't just mention them in chat. Use the standard format:
+```
+gh issue create -R AtlasDevHQ/atlas --title "fix: <description>" --body "<details>" --label "bug,area: <area>" --milestone "0.x.0 — <name>"
+gh project item-add 2 --owner AtlasDevHQ --url <issue_url>
+```
+Set appropriate priority and size on the board. This prevents findings from being lost between sessions.
+
 **Step 4: Output session prompts**
 
 The user runs up to 3 Claude Code sessions in parallel (separate checkouts).
@@ -62,6 +70,12 @@ IMPORTANT — Testing:
 IMPORTANT — Labels:
 - Every issue needs a type label (bug, feature, refactor, chore, docs) and area label(s) (area: api, area: web, area: cli, area: plugins, area: sandbox, area: deploy, area: ci, area: sdk, area: mcp, area: starter)
 - Apply labels when creating issues: `gh issue edit N -R AtlasDevHQ/atlas --add-label "feature,area: api"`
+
+IMPORTANT — Incidental findings:
+- When you discover bugs, tech debt, stale references, or pre-existing errors during your work that are NOT part of your current task, file a GH issue immediately — do not fix them inline or just mention them in chat
+- Use: `gh issue create -R AtlasDevHQ/atlas --title "fix: <description>" --body "<details>" --label "bug,area: <area>" --milestone "0.x.0 — <name>"`
+- Add to the project board: `gh project item-add 2 --owner AtlasDevHQ --url <issue_url>`
+- Keep your current work focused — the issue ensures the finding isn't lost
 
 IMPORTANT — Update the project board as you work:
 

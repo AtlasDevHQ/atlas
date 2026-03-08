@@ -1,9 +1,32 @@
-import { describe, expect, it, beforeEach, afterEach, spyOn } from "bun:test";
+import { describe, expect, it, beforeEach, afterEach, spyOn, mock } from "bun:test";
 import * as fs from "fs";
 
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
+
+// Mock structured logger — must be before explore-nsjail import
+let logWarnCalls: unknown[][] = [];
+let logErrorCalls: unknown[][] = [];
+
+const mockLogger = {
+  info: () => {},
+  warn: (...args: unknown[]) => { logWarnCalls.push(args); },
+  error: (...args: unknown[]) => { logErrorCalls.push(args); },
+  debug: () => {},
+  fatal: () => {},
+  trace: () => {},
+  child: () => mockLogger,
+  level: "info",
+};
+
+mock.module("@atlas/api/lib/logger", () => ({
+  createLogger: () => mockLogger,
+  getLogger: () => mockLogger,
+  withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
+  getRequestContext: () => undefined,
+  redactPaths: [],
+}));
 
 // Track Bun.spawn calls
 let spawnCalls: { args: unknown[]; options: unknown }[] = [];
@@ -50,7 +73,8 @@ const callbacks = {
   },
 };
 
-import { isNsjailAvailable, createNsjailBackend, testNsjailCapabilities } from "@atlas/api/lib/tools/explore-nsjail";
+const { isNsjailAvailable, createNsjailBackend, testNsjailCapabilities } =
+  await import("@atlas/api/lib/tools/explore-nsjail");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -145,6 +169,8 @@ describe("exec", () => {
     spawnCalls = [];
     invalidateCalled = false;
     markFailedCalled = false;
+    logWarnCalls = [];
+    logErrorCalls = [];
     setSpawnResult("", "", 0);
   });
 
@@ -311,8 +337,6 @@ describe("exec", () => {
       new Set(["/usr/local/bin/nsjail", SEMANTIC_ROOT]),
     );
 
-    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
-
     const backend = await createNsjailBackend(SEMANTIC_ROOT, callbacks);
     await backend.exec("ls");
 
@@ -320,7 +344,6 @@ describe("exec", () => {
     const tIndex = args.indexOf("-t");
     expect(args[tIndex + 1]).toBe("10"); // default
 
-    warnSpy.mockRestore();
     spy.mockRestore();
   });
 
@@ -331,8 +354,6 @@ describe("exec", () => {
       new Set(["/usr/local/bin/nsjail", SEMANTIC_ROOT]),
     );
 
-    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
-
     const backend = await createNsjailBackend(SEMANTIC_ROOT, callbacks);
     await backend.exec("ls");
 
@@ -340,7 +361,6 @@ describe("exec", () => {
     const tIndex = args.indexOf("-t");
     expect(args[tIndex + 1]).toBe("10"); // default
 
-    warnSpy.mockRestore();
     spy.mockRestore();
   });
 
@@ -351,8 +371,6 @@ describe("exec", () => {
       new Set(["/usr/local/bin/nsjail", SEMANTIC_ROOT]),
     );
 
-    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
-
     const backend = await createNsjailBackend(SEMANTIC_ROOT, callbacks);
     await backend.exec("ls");
 
@@ -360,7 +378,6 @@ describe("exec", () => {
     const memIndex = args.indexOf("--rlimit_as");
     expect(args[memIndex + 1]).toBe("256"); // default
 
-    warnSpy.mockRestore();
     spy.mockRestore();
   });
 
@@ -371,7 +388,6 @@ describe("exec", () => {
     );
 
     setSpawnResult("", "nsjail setup failure", 109);
-    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
 
     const backend = await createNsjailBackend(SEMANTIC_ROOT, callbacks);
     const result = await backend.exec("ls");
@@ -379,7 +395,6 @@ describe("exec", () => {
     expect(result.exitCode).toBe(109);
     expect(markFailedCalled).toBe(true);
 
-    errorSpy.mockRestore();
     spy.mockRestore();
   });
 
@@ -391,17 +406,16 @@ describe("exec", () => {
 
     // Exit code 137 = 128 + 9 (SIGKILL)
     setSpawnResult("", "", 137);
-    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
 
     const backend = await createNsjailBackend(SEMANTIC_ROOT, callbacks);
     const result = await backend.exec("sleep 999");
 
     expect(result.exitCode).toBe(137);
-    expect(warnSpy).toHaveBeenCalled();
-    const warnMsg = warnSpy.mock.calls[0]?.[0] as string;
-    expect(warnMsg).toContain("signal 9");
+    // log.warn({ signal, command }, "nsjail child killed by signal")
+    expect(logWarnCalls.length).toBeGreaterThanOrEqual(1);
+    const warnObj = logWarnCalls[0][0] as { signal: number };
+    expect(warnObj.signal).toBe(9);
 
-    warnSpy.mockRestore();
     spy.mockRestore();
   });
 });

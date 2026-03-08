@@ -1,0 +1,69 @@
+---
+title: E2B
+description: Managed Firecracker microVM sandbox isolation via the E2B cloud API.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Managed Firecracker microVM isolation via the [E2B](https://e2b.dev) API. Each agent session gets an ephemeral VM -- semantic layer files are uploaded at creation time and the VM is destroyed when the session ends. No infrastructure to manage; E2B handles provisioning, scaling, and cleanup.
+
+## Installation
+
+```bash
+bun add @useatlas/e2b e2b
+```
+
+## Configuration
+
+```typescript
+// atlas.config.ts
+import { defineConfig } from "@atlas/api/lib/config";
+import { e2bSandboxPlugin } from "@useatlas/e2b";
+
+export default defineConfig({
+  plugins: [
+    e2bSandboxPlugin({
+      apiKey: process.env.E2B_API_KEY!,
+      template: "my-custom-template", // optional
+      timeoutSec: 60,                 // optional
+    }),
+  ],
+});
+```
+
+### Options
+
+| Option | Type | Required | Default | Description |
+|--------|------|----------|---------|-------------|
+| `apiKey` | `string` | Yes | -- | E2B API key |
+| `template` | `string` | No | E2B default | Sandbox template ID for custom VM images |
+| `timeoutSec` | `number` | No | `30` | Per-command timeout in seconds |
+
+## Security
+
+| Property | Value |
+|----------|-------|
+| Network isolation | Yes |
+| Filesystem isolation | Yes (ephemeral VM filesystem) |
+| Unprivileged execution | Yes |
+| Priority | 90 |
+
+E2B Firecracker microVM (managed). Ephemeral VM with isolated network and filesystem. Semantic files uploaded at sandbox creation. No host access -- the VM is destroyed after use.
+
+## Troubleshooting
+
+### `e2b` package not found
+
+The `e2b` package is an optional peer dependency -- it is lazy-loaded at runtime. Install it explicitly: `bun add e2b`.
+
+### Health check API costs
+
+Health checks create and immediately destroy a sandbox instance, so they do incur a small API cost. Avoid high-frequency health checks.
+
+### Symlinks in semantic layer
+
+Symlinks in the semantic layer that escape the semantic root are skipped during file upload for safety. If entity files are missing in the sandbox, check for symlinks in your `semantic/` directory.
+
+### Custom templates
+
+Use the `template` option to specify a custom E2B sandbox template with additional tools or language runtimes pre-installed. Create templates via the [E2B dashboard](https://e2b.dev).

@@ -1,0 +1,81 @@
+---
+title: ClickHouse
+description: Connect Atlas to a ClickHouse analytics database via HTTP transport.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Connects to a ClickHouse instance via the HTTP transport provided by `@clickhouse/client`. The HTTP transport is stateless -- a new client is created per call, so no connection pooling is needed. Every query is executed with `readonly: 1` at the ClickHouse settings level, providing database-enforced read-only access.
+
+## Installation
+
+```bash
+bun add @useatlas/clickhouse @clickhouse/client
+```
+
+## Configuration
+
+```typescript
+// atlas.config.ts
+import { defineConfig } from "@atlas/api/lib/config";
+import { clickhousePlugin } from "@useatlas/clickhouse";
+
+export default defineConfig({
+  plugins: [
+    clickhousePlugin({
+      url: process.env.CLICKHOUSE_URL!,
+      database: "analytics",
+    }),
+  ],
+});
+```
+
+### Options
+
+| Option | Type | Required | Default | Description |
+|--------|------|----------|---------|-------------|
+| `url` | `string` | Yes | -- | Connection URL. Must start with `clickhouse://` (plain) or `clickhouses://` (TLS) |
+| `database` | `string` | No | from URL path | Database name override |
+
+The plugin rewrites `clickhouse://` to `http://` and `clickhouses://` to `https://` for the HTTP transport internally.
+
+### Connection string format
+
+```
+clickhouse://user:password@host:8123/database
+clickhouses://user:password@host:8443/database
+```
+
+## SQL Dialect
+
+The following hints are injected into the agent's system prompt so it writes valid ClickHouse SQL:
+
+- Use `toStartOfMonth()`, `toStartOfWeek()` for date truncation (not `DATE_TRUNC`)
+- Use `countIf(condition)` instead of `COUNT(CASE WHEN ... END)`
+- Use `sumIf(column, condition)` instead of `SUM(CASE WHEN ... END)`
+- Use `arrayJoin()` to unnest arrays
+- String functions: `lower()`, `upper()`, `trim()`, `splitByChar()`
+- Do not add `FORMAT` clauses -- the adapter handles output format automatically
+- ClickHouse is column-oriented -- avoid `SELECT *` on wide tables
+
+## Validation
+
+In addition to the standard SQL validation pipeline (regex guard + AST parse + table whitelist), the plugin blocks ClickHouse-specific admin commands: `SYSTEM`, `KILL`, `ATTACH`, `DETACH`, `RENAME`, `EXCHANGE`, `SHOW`, `DESCRIBE`, `EXPLAIN`, and `USE`. The AST parser uses PostgreSQL mode (the closest available match in `node-sql-parser`).
+
+## Security
+
+ClickHouse enforces read-only access at the query level via the `readonly: 1` setting on every request. Statement timeout is set per query via `max_execution_time`.
+
+## Troubleshooting
+
+### Connection refused
+
+Ensure the ClickHouse HTTP interface is enabled and accessible. The default HTTP port is `8123` (plain) or `8443` (TLS). Check firewall rules and that the ClickHouse server is running.
+
+### TLS certificate errors
+
+Use `clickhouses://` for TLS connections. If using a self-signed certificate, you may need to configure Node.js to trust it via the `NODE_EXTRA_CA_CERTS` environment variable.
+
+### Query timeout
+
+Increase `ATLAS_QUERY_TIMEOUT` (default 30000ms). The plugin passes this as `max_execution_time` to ClickHouse.

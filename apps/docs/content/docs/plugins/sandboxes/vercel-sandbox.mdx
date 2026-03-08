@@ -1,0 +1,81 @@
+---
+title: Vercel Sandbox
+description: Firecracker microVM isolation via @vercel/sandbox for Vercel deployments.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Firecracker microVM isolation via `@vercel/sandbox`. This is the highest-priority sandbox backend (priority 100) and the default on Vercel deployments. VMs run with a deny-all network policy and an ephemeral filesystem. Semantic layer files are copied into the VM at creation time.
+
+Supports two authentication modes:
+- **Auto-detected OIDC** (default on Vercel) -- no configuration needed when deployed to Vercel
+- **Access token** -- pass `accessToken` and `teamId` for non-Vercel environments
+
+## Installation
+
+```bash
+bun add @useatlas/vercel-sandbox @vercel/sandbox
+```
+
+## Configuration
+
+```typescript
+// atlas.config.ts
+import { defineConfig } from "@atlas/api/lib/config";
+import { vercelSandboxPlugin } from "@useatlas/vercel-sandbox";
+
+// On Vercel (auto-detected OIDC -- no config needed):
+export default defineConfig({
+  plugins: [
+    vercelSandboxPlugin({}),
+  ],
+});
+
+// Off Vercel (access token):
+export default defineConfig({
+  plugins: [
+    vercelSandboxPlugin({
+      accessToken: process.env.VERCEL_ACCESS_TOKEN!,
+      teamId: process.env.VERCEL_TEAM_ID!,
+    }),
+  ],
+});
+```
+
+### Options
+
+| Option | Type | Required | Default | Description |
+|--------|------|----------|---------|-------------|
+| `accessToken` | `string` | No | Auto-detected OIDC on Vercel | Access token for non-Vercel environments |
+| `teamId` | `string` | When using `accessToken` | -- | Vercel team ID (required with access token) |
+
+<Callout type="warn">
+When `accessToken` is provided, `teamId` is required. The config schema enforces this at validation time.
+</Callout>
+
+## Security
+
+| Property | Value |
+|----------|-------|
+| Network isolation | Yes (deny-all network policy) |
+| Filesystem isolation | Yes (ephemeral VM filesystem) |
+| Unprivileged execution | No |
+| Priority | 100 |
+
+Firecracker microVM with deny-all network policy. Ephemeral filesystem -- writes do not affect the host. Semantic layer files copied in at creation time. Uses Node.js 24 runtime inside the VM.
+
+This is the only sandbox plugin where `unprivilegedExecution` is `false` -- the VM provides strong isolation at the hypervisor level, so unprivileged execution inside the VM is not required for security.
+
+## Troubleshooting
+
+### OIDC token not found
+
+On Vercel, the sandbox authenticates via OIDC automatically. If you see OIDC errors, ensure the deployment is on a Vercel project with the sandbox feature enabled. For non-Vercel environments, use `accessToken` and `teamId` explicitly.
+
+### Health check costs
+
+Health checks create a real sandbox VM, so they incur Vercel sandbox usage. Avoid calling health checks at high frequency.
+
+### Sensitive data in error messages
+
+The plugin automatically scrubs sensitive patterns (passwords, connection strings, auth failures) from error messages before surfacing them to users.

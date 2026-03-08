@@ -1,0 +1,86 @@
+---
+title: Email
+description: Let the Atlas agent send email reports to stakeholders via the Resend API.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The email action plugin lets the Atlas agent send email reports to stakeholders via the [Resend](https://resend.com) API. It supports HTML-formatted emails, multiple recipients, and optional domain allowlisting to restrict who can receive reports.
+
+## Installation
+
+```bash
+bun add @useatlas/email
+```
+
+### Prerequisites
+
+- A [Resend API key](https://resend.com/api-keys)
+- A verified sending domain in Resend (or use the default `notifications.useatlas.dev`)
+
+## Configuration
+
+```typescript
+import { defineConfig } from "@atlas/api/lib/config";
+import { emailPlugin } from "@useatlas/email";
+
+export default defineConfig({
+  plugins: [
+    emailPlugin({
+      resendApiKey: process.env.RESEND_API_KEY!,
+      allowedDomains: ["myco.com"],
+      fromAddress: "Atlas <atlas@myco.com>",
+    }),
+  ],
+});
+```
+
+### Options
+
+| Option | Type | Required | Default | Description |
+|--------|------|----------|---------|-------------|
+| `resendApiKey` | `string` | Yes | -- | Resend API key |
+| `allowedDomains` | `string[]` | No | -- | Optional domain allowlist. When set, only recipients with matching domains are permitted |
+| `fromAddress` | `string` | No | `"Atlas <atlas@notifications.useatlas.dev>"` | Sender address for outgoing emails |
+| `approvalMode` | `"auto" \| "manual" \| "admin-only"` | No | `"admin-only"` | Who can approve email sends |
+
+## Action Details
+
+| Property | Value |
+|----------|-------|
+| **Action name** | `sendEmailReport` |
+| **Action type** | `email:send` |
+| **Reversible** | No |
+| **Default approval** | `admin-only` (configurable via `approvalMode`) |
+
+The agent tool accepts the following parameters:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `to` | `string \| string[]` | Recipient email address(es) |
+| `subject` | `string` | Email subject line |
+| `body` | `string` | Email body in HTML format |
+
+## Domain Allowlisting
+
+When `allowedDomains` is configured, the plugin validates every recipient's email domain before sending. Recipients with domains not in the allowlist are blocked, and the tool returns an error listing the blocked addresses and the allowed domains.
+
+The domain check handles display-name format addresses (e.g., `"User <user@company.com>"`) by extracting the domain from inside angle brackets.
+
+<Callout type="info">
+The health check verifies that the Resend API key is valid by calling the Resend domains endpoint. If the API returns a non-200 status, the plugin reports as unhealthy.
+</Callout>
+
+## Troubleshooting
+
+### Emails not being delivered
+
+Verify your sending domain is verified in Resend. Check the Resend dashboard for delivery status and bounce information. Unverified domains will reject sends.
+
+### Domain allowlist blocking recipients
+
+When `allowedDomains` is set, only recipients with matching domains are allowed. The error message lists the blocked addresses and the allowed domains. Remove the allowlist or add the recipient's domain.
+
+### Invalid API key
+
+The health check calls the Resend domains endpoint to verify the API key. If the plugin reports as unhealthy, regenerate the API key from the Resend dashboard.

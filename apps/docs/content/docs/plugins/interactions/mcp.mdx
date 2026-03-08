@@ -1,0 +1,90 @@
+---
+title: MCP Server
+description: Expose Atlas tools and semantic layer resources via the Model Context Protocol.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The MCP interaction plugin wraps the `@atlas/mcp` server package as an Atlas plugin, managing its lifecycle (initialization, health checks, teardown). It supports two transports: **stdio** for local tools like Claude Desktop and Cursor, and **SSE** (Streamable HTTP) for browser-based or remote MCP clients.
+
+Tool bridging and resource registration are handled internally by `@atlas/mcp` -- this plugin is a thin lifecycle wrapper that makes it configurable via `atlas.config.ts`.
+
+## Installation
+
+```bash
+bun add @useatlas/mcp @modelcontextprotocol/sdk
+```
+
+The `@atlas/mcp` server package is pulled in automatically via dynamic import.
+
+## Configuration
+
+```typescript
+import { defineConfig } from "@atlas/api/lib/config";
+import { mcpPlugin } from "@useatlas/mcp";
+
+export default defineConfig({
+  plugins: [
+    mcpPlugin({ transport: "stdio" }),
+  ],
+});
+```
+
+For SSE transport with a custom port:
+
+```typescript
+export default defineConfig({
+  plugins: [
+    mcpPlugin({ transport: "sse", port: 9090 }),
+  ],
+});
+```
+
+### Options
+
+| Option | Type | Required | Default | Description |
+|--------|------|----------|---------|-------------|
+| `transport` | `"stdio" \| "sse"` | No | `"stdio"` | Transport type. `stdio` communicates via stdin/stdout (JSON-RPC). `sse` starts a Streamable HTTP server. |
+| `port` | `number` | No | `8080` | Port for the SSE transport server. Ignored when transport is `stdio`. |
+
+## Transport Modes
+
+**stdio** -- The default. The MCP server communicates over stdin/stdout using JSON-RPC. Use this when connecting from local tools (Claude Desktop, Cursor, etc.) that launch Atlas as a subprocess. The plugin creates a single `StdioServerTransport` and connects it during `initialize()`.
+
+**SSE** -- Starts a standalone HTTP server that accepts Streamable HTTP connections. Use this for browser-based MCP clients or remote access. Each SSE session gets its own MCP server instance, managed internally by `@atlas/mcp`. The plugin tracks the HTTP server handle for graceful shutdown.
+
+<Callout type="info">
+Both transports use dynamic imports to avoid pulling in `@atlas/mcp` and its transitive dependencies at module evaluation time. The MCP server is only created when `initialize()` is called.
+</Callout>
+
+## Claude Desktop Setup
+
+Add Atlas as an MCP server in your Claude Desktop configuration:
+
+```json
+{
+  "mcpServers": {
+    "atlas": {
+      "command": "bun",
+      "args": ["run", "atlas", "--", "mcp"],
+      "cwd": "/path/to/your/atlas/project"
+    }
+  }
+}
+```
+
+See the [MCP guide](/guides/mcp) for full setup instructions.
+
+## Troubleshooting
+
+### stdio transport not receiving messages
+
+Ensure no other output is being written to stdout (e.g., `console.log` calls). The stdio transport requires exclusive access to stdin/stdout for JSON-RPC communication.
+
+### SSE port already in use
+
+If the SSE port is occupied, set a different port via the `port` option. The default is `8080`.
+
+### Dynamic import failures
+
+The plugin lazy-loads `@atlas/mcp` via dynamic import. If you see import errors, ensure `@atlas/mcp` is installed and accessible in your project.

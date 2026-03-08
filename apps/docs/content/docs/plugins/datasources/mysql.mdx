@@ -1,0 +1,82 @@
+---
+title: MySQL
+description: Connect Atlas to a MySQL or MariaDB database via a connection pool.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Connects to a MySQL instance via a `mysql2/promise` connection pool. The pool is cached per plugin instance -- unlike stateless HTTP transports, MySQL pools are heavyweight resources that should be reused.
+
+<Callout type="info">
+Atlas also supports MySQL natively via `ATLAS_DATASOURCE_URL` (when the URL starts with `mysql://`). Use this plugin when you need MySQL as an additional datasource alongside the native connection, or when you want explicit pool configuration.
+</Callout>
+
+## Installation
+
+```bash
+bun add @useatlas/mysql mysql2
+```
+
+## Configuration
+
+```typescript
+// atlas.config.ts
+import { defineConfig } from "@atlas/api/lib/config";
+import { mysqlPlugin } from "@useatlas/mysql";
+
+export default defineConfig({
+  plugins: [
+    mysqlPlugin({
+      url: process.env.MYSQL_URL!,
+      poolSize: 20,
+    }),
+  ],
+});
+```
+
+### Options
+
+| Option | Type | Required | Default | Description |
+|--------|------|----------|---------|-------------|
+| `url` | `string` | Yes | -- | Connection URL. Must start with `mysql://` or `mysql2://` |
+| `poolSize` | `number` | No | `10` | Maximum pool size (1--500) |
+| `idleTimeoutMs` | `number` | No | `30000` | Idle connection timeout in milliseconds |
+
+### Connection string format
+
+```
+mysql://user:password@host:3306/database
+mysql2://user:password@host:3306/database
+```
+
+## SQL Dialect
+
+- Use `LIMIT` before `OFFSET` (e.g. `LIMIT 10 OFFSET 20`)
+- Use backtick quoting for identifiers (e.g. `` `table_name` ``)
+- Use `DATE_FORMAT()` instead of `TO_CHAR()` for date formatting
+- Use `IFNULL()` instead of `COALESCE()` for two-argument null handling
+- Use `STR_TO_DATE()` for string-to-date conversion
+- `GROUP_CONCAT()` for string aggregation (not `STRING_AGG`)
+- Use `NOW()` for current timestamp, `CURDATE()` for current date
+
+## Validation
+
+The plugin uses the standard SQL validation pipeline with `MySQL` parser mode (auto-detected from `dbType: "mysql"`). No additional forbidden patterns are needed beyond the base DML/DDL guard.
+
+## Security
+
+Every query runs in a session set to `READ ONLY` mode (`SET SESSION TRANSACTION READ ONLY`), providing defense-in-depth beyond SQL validation. Per-query timeout is enforced via `SET SESSION MAX_EXECUTION_TIME`.
+
+## Troubleshooting
+
+### Connection pool exhaustion
+
+If queries start timing out waiting for connections, increase `poolSize` or reduce `idleTimeoutMs` to reclaim idle connections faster. Monitor active connections with `SHOW PROCESSLIST`.
+
+### Authentication errors
+
+MySQL 8+ uses `caching_sha2_password` by default. The `mysql2` driver supports this natively. If using an older authentication plugin, you may need to configure the MySQL user accordingly.
+
+### Character encoding issues
+
+The `mysql2` driver defaults to `utf8mb4`. If your database uses a different encoding, you may see garbled results. Ensure the database and tables use `utf8mb4` for full Unicode support.

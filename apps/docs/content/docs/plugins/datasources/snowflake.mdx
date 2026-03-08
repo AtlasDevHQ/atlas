@@ -1,0 +1,104 @@
+---
+title: Snowflake
+description: Connect Atlas to Snowflake Data Cloud for analytics queries.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Connects to a Snowflake account via the `snowflake-sdk` callback-based API. The plugin manages a connection pool internally (`snowflake.createPool()`) and sets a session-level statement timeout and audit tag before each query.
+
+## Installation
+
+```bash
+bun add @useatlas/snowflake snowflake-sdk
+```
+
+## Configuration
+
+```typescript
+// atlas.config.ts
+import { defineConfig } from "@atlas/api/lib/config";
+import { snowflakePlugin } from "@useatlas/snowflake";
+
+export default defineConfig({
+  plugins: [
+    snowflakePlugin({
+      url: process.env.SNOWFLAKE_URL!,
+      // e.g. "snowflake://analyst:pass@xy12345.us-east-1/ANALYTICS/PUBLIC?warehouse=COMPUTE_WH&role=ATLAS_READONLY"
+    }),
+  ],
+});
+```
+
+### Options
+
+| Option | Type | Required | Default | Description |
+|--------|------|----------|---------|-------------|
+| `url` | `string` | Yes | -- | Connection URL in the format `snowflake://user:pass@account/database/schema?warehouse=WH&role=ROLE` |
+| `maxConnections` | `number` | No | `10` | Maximum pool connections (1--100) |
+
+### Connection string format
+
+```
+snowflake://user:password@account/database/schema?warehouse=WAREHOUSE&role=ROLE
+```
+
+| URL component | Maps to |
+|---------------|---------|
+| hostname | `account` (e.g. `xy12345` or `xy12345.us-east-1`) |
+| username | `username` |
+| password | `password` |
+| path segment 1 | `database` (optional) |
+| path segment 2 | `schema` (optional) |
+| `?warehouse=` | `warehouse` (optional) |
+| `?role=` | `role` (optional) |
+
+## SQL Dialect
+
+- Use `FLATTEN()` for semi-structured data (`VARIANT`, `ARRAY`, `OBJECT` columns)
+- Use `PARSE_JSON()` to cast strings to semi-structured types
+- Use `DATE_TRUNC('month', col)` for date truncation (not `EXTRACT` or dateadd patterns)
+- Use `QUALIFY` for window function filtering (e.g. `QUALIFY ROW_NUMBER() OVER (...) = 1`)
+- Use `TRY_CAST()` for safe type conversions that return NULL on failure
+- Use `$$` for dollar-quoted string literals
+- Identifiers are case-insensitive and stored uppercase by default
+- `VARIANT` type supports semi-structured data -- use `:key` or `['key']` notation to access fields
+
+## Validation
+
+The plugin blocks Snowflake-specific statements beyond the standard SQL pipeline: `PUT`, `GET`, `LIST`, `REMOVE`, `RM`, `MERGE`, `SHOW`, `DESCRIBE`, `DESC`, `EXPLAIN`, and `USE`. The AST parser uses `Snowflake` mode (native support in `node-sql-parser`).
+
+## Security
+
+<Callout type="warn">
+Snowflake has no session-level read-only mode. Atlas enforces SELECT-only access via SQL validation (regex + AST parsing), but there is no database-level defense-in-depth like ClickHouse's `readonly: 1` or MySQL's `SET SESSION TRANSACTION READ ONLY`.
+</Callout>
+
+For defense-in-depth, configure the Snowflake connection with a role that has only `SELECT` privileges:
+
+```sql
+CREATE ROLE atlas_readonly;
+GRANT USAGE ON WAREHOUSE COMPUTE_WH TO ROLE atlas_readonly;
+GRANT USAGE ON DATABASE ANALYTICS TO ROLE atlas_readonly;
+GRANT USAGE ON SCHEMA ANALYTICS.PUBLIC TO ROLE atlas_readonly;
+GRANT SELECT ON ALL TABLES IN SCHEMA ANALYTICS.PUBLIC TO ROLE atlas_readonly;
+GRANT SELECT ON FUTURE TABLES IN SCHEMA ANALYTICS.PUBLIC TO ROLE atlas_readonly;
+```
+
+Then pass `?role=ATLAS_READONLY` in the connection URL.
+
+All Atlas queries are tagged with `QUERY_TAG = 'atlas:readonly'` for audit trail visibility in Snowflake's `QUERY_HISTORY`. Statement timeout is enforced via `ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS`.
+
+## Troubleshooting
+
+### Account identifier format
+
+Snowflake account identifiers may include a region suffix (e.g. `xy12345.us-east-1`). If connection fails, check that the full account identifier is in the URL hostname.
+
+### Warehouse suspended
+
+Queries will fail if the warehouse is suspended. Configure the warehouse to auto-resume: `ALTER WAREHOUSE COMPUTE_WH SET AUTO_RESUME = TRUE`.
+
+### Role permissions
+
+If queries return "insufficient privileges" errors, verify the role has `SELECT` grants on the target schema and tables. Use `SHOW GRANTS TO ROLE <role>` to inspect permissions.

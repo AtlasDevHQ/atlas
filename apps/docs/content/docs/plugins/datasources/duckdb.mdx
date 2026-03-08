@@ -1,0 +1,89 @@
+---
+title: DuckDB
+description: Connect Atlas to a DuckDB embedded analytics database, file-based or in-memory.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Connects to a DuckDB database -- either a file on disk or an in-memory instance. DuckDB runs in-process via `@duckdb/node-api`, so there is no network connection or connection pooling. The plugin uses lazy initialization with a cached connection promise and automatic retry on transient failures.
+
+## Installation
+
+```bash
+bun add @useatlas/duckdb @duckdb/node-api
+```
+
+## Configuration
+
+```typescript
+// atlas.config.ts
+import { defineConfig } from "@atlas/api/lib/config";
+import { duckdbPlugin } from "@useatlas/duckdb";
+
+export default defineConfig({
+  plugins: [
+    duckdbPlugin({ url: "duckdb://analytics.duckdb" }),
+  ],
+});
+```
+
+Or with a direct path:
+
+```typescript
+duckdbPlugin({ path: "/data/warehouse.duckdb", readOnly: true })
+```
+
+### Options
+
+| Option | Type | Required | Default | Description |
+|--------|------|----------|---------|-------------|
+| `url` | `string` | No | -- | Connection URL starting with `duckdb://`. Use `duckdb://:memory:` for in-memory, `duckdb:///absolute/path.duckdb` for absolute paths, or `duckdb://relative/path.duckdb` for relative paths |
+| `path` | `string` | No | -- | Direct path to a `.duckdb` file, or `:memory:` for in-memory. Alternative to `url` |
+| `readOnly` | `boolean` | No | `true` for files, `false` for `:memory:` | Open the database in read-only mode |
+
+Either `url` or `path` is required. When both are provided, `url` takes precedence.
+
+### Connection string format
+
+```
+duckdb://:memory:
+duckdb://relative/path.duckdb
+duckdb:///absolute/path.duckdb
+```
+
+## SQL Dialect
+
+- DuckDB syntax is similar to PostgreSQL with additional features
+- Use `UNNEST()` to expand arrays into rows
+- `LIST` and `STRUCT` types are natively supported
+- File-reading functions (`read_csv_auto`, `read_parquet`, etc.) are blocked for security
+- Use `DATE_TRUNC()` and `DATE_PART()` for date operations
+- Use `STRING_AGG()` for string aggregation
+- Supports window functions, CTEs, and lateral joins
+- In-process engine -- no connection pooling needed
+
+## Validation
+
+The plugin blocks DuckDB-specific statements beyond the standard SQL pipeline: `PRAGMA`, `ATTACH`, `DETACH`, `INSTALL`, `EXPORT`, `IMPORT`, `CHECKPOINT`, `SET`, `DESCRIBE`, `EXPLAIN`, and `SHOW`. File-reading table functions (`read_csv_auto`, `read_csv`, `read_parquet`, `read_json`, `read_json_auto`, `read_text`, `parquet_scan`, `csv_scan`, `json_scan`) are blocked to prevent host filesystem access. The AST parser uses PostgreSQL mode.
+
+## Security
+
+File-based databases default to `READ_ONLY` access mode, which provides database-enforced read-only access. In-memory databases cannot use read-only mode (nothing to protect), so they rely on SQL validation. DuckDB has no native query timeout API -- timeout is enforced via `Promise.race()`.
+
+<Callout type="info">
+DuckDB runs in the same process as Atlas. File-reading functions are blocked at the validation layer to prevent the agent from reading arbitrary files on the host filesystem.
+</Callout>
+
+## Troubleshooting
+
+### `MODULE_NOT_FOUND` for `@duckdb/node-api`
+
+The DuckDB driver is a peer dependency. Install it explicitly: `bun add @duckdb/node-api`.
+
+### Database locked errors
+
+DuckDB file databases only support one writer at a time. If another process has the file open, the plugin will fail to connect. Use `readOnly: true` for concurrent read access.
+
+### In-memory database is empty
+
+In-memory databases start fresh on every process restart. They are useful for testing and ephemeral workloads. For persistent data, use a file path.

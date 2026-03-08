@@ -13,27 +13,27 @@ Atlas ships with 15 reference plugins covering all five types:
 
 ### Datasource Plugins
 
-Connect additional databases and APIs as query targets. See [Datasource Plugins](/plugins/datasources) for full configuration details.
+Connect additional databases and APIs as query targets. See [Datasource Plugins](/plugins/datasources) for the full list.
 
 | Plugin | Package | Connects to |
 |--------|---------|-------------|
-| [ClickHouse](/plugins/datasources#clickhouse) | `@useatlas/clickhouse` | ClickHouse analytics database |
-| [DuckDB](/plugins/datasources#duckdb) | `@useatlas/duckdb` | DuckDB embedded analytics |
-| [MySQL](/plugins/datasources#mysql) | `@useatlas/mysql` | MySQL / MariaDB |
-| [Snowflake](/plugins/datasources#snowflake) | `@useatlas/snowflake` | Snowflake Data Cloud |
-| [Salesforce](/plugins/datasources#salesforce) | `@useatlas/salesforce` | Salesforce CRM (SOQL) |
+| [ClickHouse](/plugins/datasources/clickhouse) | `@useatlas/clickhouse` | ClickHouse analytics database |
+| [DuckDB](/plugins/datasources/duckdb) | `@useatlas/duckdb` | DuckDB embedded analytics |
+| [MySQL](/plugins/datasources/mysql) | `@useatlas/mysql` | MySQL / MariaDB |
+| [Snowflake](/plugins/datasources/snowflake) | `@useatlas/snowflake` | Snowflake Data Cloud |
+| [Salesforce](/plugins/datasources/salesforce) | `@useatlas/salesforce` | Salesforce CRM (SOQL) |
 
 ### Sandbox Plugins
 
-Provide isolation backends for the explore and Python tools. See [Sandbox Plugins](/plugins/sandboxes) for full configuration details.
+Provide isolation backends for the explore and Python tools. See [Sandbox Plugins](/plugins/sandboxes) for the full list.
 
 | Plugin | Package | Isolation Type | Priority |
 |--------|---------|---------------|----------|
-| [E2B](/plugins/sandboxes#e2b) | `@useatlas/e2b` | Firecracker microVM | 90 |
-| [Daytona](/plugins/sandboxes#daytona) | `@useatlas/daytona` | Managed cloud sandbox | 85 |
-| [nsjail](/plugins/sandboxes#nsjail) | `@useatlas/nsjail` | Linux namespace sandbox | 75 |
-| [Sidecar](/plugins/sandboxes#sidecar) | `@useatlas/sidecar` | HTTP-isolated container | 50 |
-| [Vercel](/plugins/sandboxes#vercel) | `@useatlas/vercel-sandbox` | Firecracker microVM (Vercel) | 100 |
+| [Vercel](/plugins/sandboxes/vercel-sandbox) | `@useatlas/vercel-sandbox` | Firecracker microVM (Vercel) | 100 |
+| [E2B](/plugins/sandboxes/e2b) | `@useatlas/e2b` | Firecracker microVM | 90 |
+| [Daytona](/plugins/sandboxes/daytona) | `@useatlas/daytona` | Managed cloud sandbox | 85 |
+| [nsjail](/plugins/sandboxes/nsjail) | `@useatlas/nsjail` | Linux namespace sandbox | 75 |
+| [Sidecar](/plugins/sandboxes/sidecar) | `@useatlas/sidecar` | HTTP-isolated container | 50 |
 
 ### Interaction Plugins
 
@@ -41,8 +41,8 @@ Add new surfaces for users to interact with Atlas. See [Interaction Plugins](/pl
 
 | Plugin | Package | Surface |
 |--------|---------|---------|
-| [MCP](/plugins/interactions#mcp) | `@useatlas/mcp` | Model Context Protocol (stdio/SSE) |
-| [Slack](/plugins/interactions#slack) | `@useatlas/slack` | Slack bot (commands, threads, OAuth) |
+| [MCP](/plugins/interactions/mcp) | `@useatlas/mcp` | Model Context Protocol (stdio/SSE) |
+| [Slack](/plugins/interactions/slack) | `@useatlas/slack` | Slack bot (commands, threads, OAuth) |
 
 ### Action Plugins
 
@@ -50,8 +50,8 @@ Let the agent perform write operations with approval controls. See [Action Plugi
 
 | Plugin | Package | Action |
 |--------|---------|--------|
-| [Email](/plugins/actions#email) | `@useatlas/email` | Send email reports via Resend |
-| [JIRA](/plugins/actions#jira) | `@useatlas/jira` | Create JIRA tickets |
+| [Email](/plugins/actions/email) | `@useatlas/email` | Send email reports via Resend |
+| [JIRA](/plugins/actions/jira) | `@useatlas/jira` | Create JIRA tickets |
 
 ### Context Plugins
 
@@ -59,7 +59,7 @@ Inject additional knowledge into the agent's system prompt. See [Context Plugins
 
 | Plugin | Package | Source |
 |--------|---------|--------|
-| [YAML Context](/plugins/context#yaml-context) | `@useatlas/yaml-context` | Semantic layer (entities, glossary, metrics) |
+| [YAML Context](/plugins/context/yaml-context) | `@useatlas/yaml-context` | Semantic layer (entities, glossary, metrics) |
 
 ## Quick Start
 

@@ -1,0 +1,72 @@
+---
+title: Daytona
+description: Managed cloud sandbox isolation via the Daytona SDK.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Managed cloud sandbox isolation via the [Daytona](https://www.daytona.io) SDK. Similar to E2B -- ephemeral, cloud-hosted environments with no local infrastructure required. Semantic layer files are uploaded into the sandbox and commands are executed remotely.
+
+## Installation
+
+```bash
+bun add @useatlas/daytona @daytonaio/sdk
+```
+
+## Configuration
+
+```typescript
+// atlas.config.ts
+import { defineConfig } from "@atlas/api/lib/config";
+import { daytonaSandboxPlugin } from "@useatlas/daytona";
+
+export default defineConfig({
+  plugins: [
+    daytonaSandboxPlugin({
+      apiKey: process.env.DAYTONA_API_KEY!,
+      apiUrl: "https://my-daytona.example.com", // optional
+    }),
+  ],
+});
+```
+
+### Options
+
+| Option | Type | Required | Default | Description |
+|--------|------|----------|---------|-------------|
+| `apiKey` | `string` | Yes | -- | Daytona API key |
+| `apiUrl` | `string` | No | Daytona cloud endpoint | Custom API URL for self-hosted Daytona |
+| `timeoutSec` | `number` | No | `30` | Per-command timeout in seconds |
+
+## Security
+
+| Property | Value |
+|----------|-------|
+| Network isolation | Yes |
+| Filesystem isolation | Yes (ephemeral per sandbox) |
+| Unprivileged execution | Yes |
+| Priority | 85 |
+
+Daytona managed sandbox. Cloud-hosted ephemeral environment with network isolation, filesystem isolation, and unprivileged execution. Sandbox is deleted after use.
+
+## Troubleshooting
+
+### `@daytonaio/sdk` package not found
+
+The `@daytonaio/sdk` package is an optional peer dependency, lazy-loaded at runtime. Install it explicitly: `bun add @daytonaio/sdk`.
+
+### Combined stdout/stderr
+
+Daytona combines stdout and stderr into a single `result` field, so the plugin returns stderr as an empty string. This means error output from commands will appear in stdout.
+
+### Nested directory uploads
+
+Parent directories are explicitly created before file upload since Daytona may not auto-create them for nested paths (e.g. `semantic/entities/users.yml`).
+
+### No semantic layer files
+
+The plugin errors if no semantic layer files are found. Run `atlas init` to generate a semantic layer before using this plugin.
+
+### Health check API costs
+
+Health checks create a real sandbox instance. Avoid calling at high frequency to minimize API costs.

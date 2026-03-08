@@ -22,6 +22,14 @@ export default function Layout({ children }: { children: ReactNode }) {
           external: true,
         },
         {
+          text: "llms.txt",
+          url: "/llms.txt",
+        },
+        {
+          text: "llms-full.txt",
+          url: "/llms-full.txt",
+        },
+        {
           type: "icon" as const,
           text: "GitHub",
           url: "https://github.com/AtlasDevHQ/atlas",

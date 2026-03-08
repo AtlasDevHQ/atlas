@@ -141,3 +141,15 @@ const server = await createAtlasMcpServer();
 ```
 
 The server factory initializes configuration, registers tools and resources, and returns a ready-to-use `McpServer` instance. Connect it to any transport (stdio, SSE, or custom).
+
+---
+
+## Troubleshooting
+
+**"ATLAS_DATASOURCE_URL is not set"** -- The MCP server requires the same environment variables as the main API. Set them in your MCP client config's `env` block or ensure they're available in the shell.
+
+**Tools not appearing in Claude Desktop** -- Restart Claude Desktop after changing `claude_desktop_config.json`. Check the `cwd` path points to your Atlas project root (where `package.json` and `semantic/` live).
+
+**SSE connection refused** -- The MCP server defaults to stdio, not SSE. Verify you started with `--transport sse` (e.g., `bun packages/mcp/bin/serve.ts --transport sse`). Check the port is not already in use (default 8080) and firewall rules allow the connection.
+
+See [Troubleshooting](/docs/guides/troubleshooting) for general diagnostic steps.

@@ -150,3 +150,15 @@ See [Environment Variables](/docs/reference/environment-variables) for the full 
 - Rate limiting is per Slack user per team for commands, and per team for thread follow-ups
 - Error messages sent to Slack are scrubbed to prevent leaking connection strings, API keys, or stack traces
 - Without an internal database (`DATABASE_URL`), thread conversation mappings and OAuth tokens cannot be persisted. Single-workspace mode with `SLACK_BOT_TOKEN` still works, but thread follow-ups won't have conversation history
+
+---
+
+## Troubleshooting
+
+**Events not being delivered** -- Verify the Request URL in your Slack app settings is HTTPS and publicly reachable. Slack retries failed deliveries but will disable the subscription after repeated failures.
+
+**OAuth callback fails** -- Ensure the Redirect URL in your Slack app settings matches `https://your-api-host/api/slack/callback` exactly. Check that `DATABASE_URL` is set (required for storing OAuth tokens).
+
+**Bot doesn't respond in threads** -- The bot needs `message.channels` and `message.groups` event subscriptions. Also verify `DATABASE_URL` is set for conversation history persistence.
+
+See [Troubleshooting](/docs/guides/troubleshooting) for general diagnostic steps.

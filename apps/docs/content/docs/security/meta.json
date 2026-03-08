@@ -1,6 +1,7 @@
 {
   "title": "Security",
   "pages": [
-    "sql-validation"
+    "sql-validation",
+    "row-level-security"
   ]
 }

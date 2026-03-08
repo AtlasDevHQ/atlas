@@ -387,6 +387,8 @@ ATLAS_QUERY_TIMEOUT=15000
 
 Lower the row limit to reduce load on your database. Reduce the query timeout to kill runaway queries faster.
 
+For multi-tenant deployments, enable [Row-Level Security](/docs/security/row-level-security) to automatically filter queries by tenant based on user claims.
+
 ---
 
 ## Verify the setup

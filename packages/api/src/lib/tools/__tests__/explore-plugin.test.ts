@@ -67,7 +67,7 @@ mock.module("@atlas/api/lib/plugins/hooks", () => ({
 
 let mockSandboxPlugins: Array<{
   id: string;
-  type: string;
+  types: string[];
   version: string;
   sandbox: {
     create(root: string): Promise<ExploreBackend> | ExploreBackend;
@@ -146,7 +146,7 @@ describe("explore sandbox plugin integration", () => {
     mockSandboxPlugins = [
       {
         id: "plugin-a",
-        type: "sandbox",
+        types: ["sandbox"],
         version: "1.0.0",
         sandbox: { create: async () => backend },
       },
@@ -165,7 +165,7 @@ describe("explore sandbox plugin integration", () => {
     mockSandboxPlugins = [
       {
         id: "low-priority",
-        type: "sandbox",
+        types: ["sandbox"],
         version: "1.0.0",
         sandbox: {
           create: async () => makeMockBackend("low"),
@@ -174,7 +174,7 @@ describe("explore sandbox plugin integration", () => {
       },
       {
         id: "high-priority",
-        type: "sandbox",
+        types: ["sandbox"],
         version: "1.0.0",
         sandbox: {
           create: async () => makeMockBackend("high"),
@@ -196,7 +196,7 @@ describe("explore sandbox plugin integration", () => {
     mockSandboxPlugins = [
       {
         id: "broken-plugin",
-        type: "sandbox",
+        types: ["sandbox"],
         version: "1.0.0",
         sandbox: {
           create: async () => { throw new Error("init failed"); },
@@ -205,7 +205,7 @@ describe("explore sandbox plugin integration", () => {
       },
       {
         id: "working-plugin",
-        type: "sandbox",
+        types: ["sandbox"],
         version: "1.0.0",
         sandbox: {
           create: async () => makeMockBackend("working"),
@@ -228,7 +228,7 @@ describe("explore sandbox plugin integration", () => {
     mockSandboxPlugins = [
       {
         id: "broken-1",
-        type: "sandbox",
+        types: ["sandbox"],
         version: "1.0.0",
         sandbox: {
           create: async () => { throw new Error("fail 1"); },
@@ -236,7 +236,7 @@ describe("explore sandbox plugin integration", () => {
       },
       {
         id: "broken-2",
-        type: "sandbox",
+        types: ["sandbox"],
         version: "1.0.0",
         sandbox: {
           create: async () => { throw new Error("fail 2"); },
@@ -255,7 +255,7 @@ describe("explore sandbox plugin integration", () => {
     mockSandboxPlugins = [
       {
         id: "my-sandbox",
-        type: "sandbox",
+        types: ["sandbox"],
         version: "2.0.0",
         sandbox: { create: async () => makeMockBackend("my-sandbox") },
       },
@@ -274,7 +274,7 @@ describe("explore sandbox plugin integration", () => {
     mockSandboxPlugins = [
       {
         id: "test-plugin",
-        type: "sandbox",
+        types: ["sandbox"],
         version: "1.0.0",
         sandbox: { create: async () => makeMockBackend("test") },
       },
@@ -297,7 +297,7 @@ describe("explore sandbox plugin integration", () => {
     mockSandboxPlugins = [
       {
         id: "clearable-plugin",
-        type: "sandbox",
+        types: ["sandbox"],
         version: "1.0.0",
         sandbox: { create: async () => makeMockBackend("clearable") },
       },
@@ -321,7 +321,7 @@ describe("explore sandbox plugin integration", () => {
     mockSandboxPlugins = [
       {
         id: "should-be-skipped",
-        type: "sandbox",
+        types: ["sandbox"],
         version: "1.0.0",
         sandbox: { create: async () => makeMockBackend("skipped") },
       },
@@ -343,7 +343,7 @@ describe("explore sandbox plugin integration", () => {
     mockSandboxPlugins = [
       {
         id: "explicit-low",
-        type: "sandbox",
+        types: ["sandbox"],
         version: "1.0.0",
         sandbox: {
           create: async () => makeMockBackend("explicit-low"),
@@ -352,7 +352,7 @@ describe("explore sandbox plugin integration", () => {
       },
       {
         id: "default-priority",
-        type: "sandbox",
+        types: ["sandbox"],
         version: "1.0.0",
         sandbox: {
           // No priority — defaults to 60 (SANDBOX_DEFAULT_PRIORITY)

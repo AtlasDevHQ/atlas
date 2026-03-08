@@ -18,7 +18,7 @@ function makeHookPlugin(
 ): PluginLike {
   return {
     id,
-    type: (opts?.type ?? "context") as PluginLike["type"],
+    types: [opts?.type ?? "context"] as PluginLike["types"],
     version: "1.0.0",
     hooks,
     ...(opts?.unhealthy
@@ -140,7 +140,7 @@ describe("dispatchHook", () => {
   test("plugins without hooks object are silently skipped", async () => {
     registry.register({
       id: "no-hooks",
-      type: "context",
+      types: ["context"],
       version: "1.0.0",
     });
     await registry.initializeAll(minimalCtx);

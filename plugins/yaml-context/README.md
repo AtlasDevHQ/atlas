@@ -60,7 +60,7 @@ Use this reference as a starting point. A `ContextPlugin` needs:
 
 1. `id` — unique plugin identifier (required by `AtlasPluginBase`)
 2. `version` — semver version string (required by `AtlasPluginBase`)
-3. `type: "context"` — identifies the plugin type
+3. `types: ["context"]` — identifies the plugin type(s)
 4. `contextProvider.load()` — returns a string that gets appended to the agent system prompt
 5. `contextProvider.refresh()` (optional) — clears the in-memory cache so the next `load()` re-reads from disk
 
@@ -70,7 +70,7 @@ import type { AtlasContextPlugin } from "@useatlas/plugin-sdk";
 
 export default definePlugin({
   id: "my-context",
-  type: "context",
+  types: ["context"],
   version: "1.0.0",
   name: "My Custom Context",
   contextProvider: {

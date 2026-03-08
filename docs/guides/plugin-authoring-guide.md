@@ -129,7 +129,7 @@ export function buildPlugin(config: PluginConfig): AtlasDatasourcePlugin<PluginC
 
   return {
     id: "my-datasource",
-    type: "datasource" as const,
+    types: ["datasource"] as const,
     version: "1.0.0",
     name: "My DataSource",
     config,
@@ -303,7 +303,7 @@ Context plugins load knowledge into the agent. Simpler than datasource — just 
 ```typescript
 export default definePlugin({
   id: "my-context",
-  type: "context",
+  types: ["context"],
   version: "1.0.0",
   contextProvider: {
     async load() { return "## Extra Context\n\nDomain-specific info..."; },
@@ -321,7 +321,7 @@ Interaction plugins add communication surfaces. They may mount Hono routes (Slac
 ```typescript
 export default definePlugin({
   id: "my-webhook",
-  type: "interaction",
+  types: ["interaction"],
   version: "1.0.0",
   routes(app) {
     app.post("/webhooks/my-service", async (c) => {

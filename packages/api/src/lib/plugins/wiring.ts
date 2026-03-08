@@ -53,7 +53,7 @@ interface InteractionShape {
 
 function hasContextProvider(p: PluginLike): p is PluginLike & ContextShape {
   return (
-    p.type === "context" &&
+    p.types.includes("context") &&
     typeof (p as Record<string, unknown>).contextProvider === "object" &&
     (p as Record<string, unknown>).contextProvider !== null &&
     typeof ((p as Record<string, unknown>).contextProvider as Record<string, unknown>)?.load === "function"
@@ -62,18 +62,18 @@ function hasContextProvider(p: PluginLike): p is PluginLike & ContextShape {
 
 function hasDatasource(p: PluginLike): p is PluginLike & DatasourceShape {
   return (
-    p.type === "datasource" &&
+    p.types.includes("datasource") &&
     typeof (p as Record<string, unknown>).connection === "object" &&
     (p as Record<string, unknown>).connection !== null
   );
 }
 
 function hasActions(p: PluginLike): p is PluginLike & ActionShape {
-  return p.type === "action" && Array.isArray((p as Record<string, unknown>).actions);
+  return p.types.includes("action") && Array.isArray((p as Record<string, unknown>).actions);
 }
 
 function hasRoutes(p: PluginLike): p is PluginLike & InteractionShape {
-  return p.type === "interaction" && typeof (p as Record<string, unknown>).routes === "function";
+  return p.types.includes("interaction") && typeof (p as Record<string, unknown>).routes === "function";
 }
 
 // ---------------------------------------------------------------------------

@@ -94,7 +94,7 @@ describe("config validation", () => {
       url: "mysql://localhost:3306/mydb",
     });
     expect(plugin.id).toBe("mysql-datasource");
-    expect(plugin.type).toBe("datasource");
+    expect(plugin.types).toEqual(["datasource"]);
     expect(plugin.config?.url).toBe("mysql://localhost:3306/mydb");
   });
 
@@ -143,7 +143,7 @@ describe("plugin shape", () => {
   test("createPlugin factory returns a valid plugin", () => {
     const plugin = mysqlPlugin(validConfig);
     expect(plugin.id).toBe("mysql-datasource");
-    expect(plugin.type).toBe("datasource");
+    expect(plugin.types).toEqual(["datasource"]);
     expect(plugin.version).toBe("0.1.0");
     expect(plugin.name).toBe("MySQL DataSource");
   });

@@ -143,7 +143,7 @@ export function buildPlugin(config: PluginConfig): AtlasDatasourcePlugin<PluginC
 
   return {
     id: "my-datasource",
-    type: "datasource" as const,
+    types: ["datasource"] as const,
     version: "1.0.0",
     name: "My DataSource",
     config,
@@ -293,7 +293,7 @@ import { definePlugin } from "@useatlas/plugin-sdk";
 
 export default definePlugin({
   id: "company-glossary",
-  type: "context",
+  types: ["context"],
   version: "1.0.0",
   name: "Company Glossary",
 
@@ -337,7 +337,7 @@ Interaction plugins add communication surfaces. They may mount Hono routes (Slac
 ```typescript
 export default definePlugin({
   id: "my-webhook",
-  type: "interaction",
+  types: ["interaction"],
   version: "1.0.0",
   routes(app) {
     app.post("/webhooks/my-service", async (c) => {
@@ -425,7 +425,7 @@ export const ticketPlugin = createPlugin<TicketConfig, AtlasActionPlugin<TicketC
 
     return {
       id: "ticket-action",
-      type: "action" as const,
+      types: ["action"] as const,
       version: "1.0.0",
       name: "Support Ticket Action",
       config,
@@ -496,7 +496,7 @@ export const myPlugin = createPlugin({
   configSchema: z.object({ url: z.string().url() }),
   create: (config) => ({
     id: "my-plugin",
-    type: "datasource" as const,
+    types: ["datasource"] as const,
     version: "1.0.0",
     config,
     connection: { create: () => makeConnection(config.url), dbType: "postgres" },
@@ -514,7 +514,7 @@ import { definePlugin } from "@useatlas/plugin-sdk";
 
 export default definePlugin({
   id: "my-context",
-  type: "context",
+  types: ["context"],
   version: "1.0.0",
   contextProvider: {
     async load() { return "Additional context for the agent"; },
@@ -566,7 +566,7 @@ Define hooks on any plugin type via the `hooks` property:
 ```typescript
 export default definePlugin({
   id: "audit-logger",
-  type: "context",
+  types: ["context"],
   version: "1.0.0",
   contextProvider: { async load() { return ""; } },
 
@@ -607,7 +607,7 @@ Plugins can declare tables for the Atlas internal database via the `schema` prop
 ```typescript
 export default definePlugin({
   id: "my-plugin",
-  type: "context",
+  types: ["context"],
   version: "1.0.0",
   schema: {
     my_plugin_cache: {

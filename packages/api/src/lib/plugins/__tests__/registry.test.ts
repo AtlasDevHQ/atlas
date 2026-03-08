@@ -13,7 +13,7 @@ const minimalCtx: PluginContextLike = {
 function makePlugin(overrides: Partial<PluginLike> = {}): PluginLike {
   return {
     id: "test-plugin",
-    type: "datasource",
+    types: ["datasource"],
     version: "1.0.0",
     ...overrides,
   };
@@ -282,12 +282,12 @@ describe("PluginRegistry", () => {
 
   describe("getByType", () => {
     test("filters by type and health status", async () => {
-      registry.register(makePlugin({ id: "ds1", type: "datasource" }));
-      registry.register(makePlugin({ id: "ctx1", type: "context" }));
+      registry.register(makePlugin({ id: "ds1", types: ["datasource"] }));
+      registry.register(makePlugin({ id: "ctx1", types: ["context"] }));
       registry.register(
         makePlugin({
           id: "ds2",
-          type: "datasource",
+          types: ["datasource"],
           initialize: async () => {
             throw new Error("fail");
           },
@@ -300,7 +300,7 @@ describe("PluginRegistry", () => {
     });
 
     test("returns empty array when no plugins of type", async () => {
-      registry.register(makePlugin({ id: "ds1", type: "datasource" }));
+      registry.register(makePlugin({ id: "ds1", types: ["datasource"] }));
       await registry.initializeAll(minimalCtx);
 
       expect(registry.getByType("action")).toEqual([]);

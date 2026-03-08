@@ -117,7 +117,7 @@ describe("config validation", () => {
       url: "duckdb://analytics.duckdb",
     });
     expect(plugin.id).toBe("duckdb-datasource");
-    expect(plugin.type).toBe("datasource");
+    expect(plugin.types).toEqual(["datasource"]);
     expect(plugin.config?.url).toBe("duckdb://analytics.duckdb");
   });
 
@@ -155,7 +155,7 @@ describe("config validation", () => {
   test("accepts path-based config", () => {
     const plugin = duckdbPlugin({ path: "/data/analytics.duckdb" });
     expect(plugin.id).toBe("duckdb-datasource");
-    expect(plugin.type).toBe("datasource");
+    expect(plugin.types).toEqual(["datasource"]);
   });
 
   test("accepts path-based in-memory config", () => {
@@ -195,7 +195,7 @@ describe("plugin shape", () => {
   test("createPlugin factory returns a valid plugin", () => {
     const plugin = duckdbPlugin(validConfig);
     expect(plugin.id).toBe("duckdb-datasource");
-    expect(plugin.type).toBe("datasource");
+    expect(plugin.types).toEqual(["datasource"]);
     expect(plugin.version).toBe("0.1.0");
     expect(plugin.name).toBe("DuckDB DataSource");
   });

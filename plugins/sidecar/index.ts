@@ -207,7 +207,7 @@ export function buildSidecarSandboxPlugin(
 
   return {
     id: "sidecar-sandbox",
-    type: "sandbox" as const,
+    types: ["sandbox"] as const,
     version: "0.1.0",
     name: "Sidecar Sandbox",
     config,

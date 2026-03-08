@@ -65,7 +65,7 @@ describe("mcpPlugin — shape validation", () => {
   test("createPlugin() produces a valid AtlasInteractionPlugin", () => {
     const plugin = mcpPlugin({ transport: "stdio" });
     expect(plugin.id).toBe("mcp-interaction");
-    expect(plugin.type).toBe("interaction");
+    expect(plugin.types).toEqual(["interaction"]);
     expect(plugin.version).toBe("0.1.0");
     expect(plugin.name).toBe("MCP Server");
   });
@@ -94,7 +94,7 @@ describe("mcpPlugin — shape validation", () => {
   test("buildMcpPlugin is available for direct use", () => {
     const plugin = buildMcpPlugin({ transport: "stdio" });
     expect(plugin.id).toBe("mcp-interaction");
-    expect(plugin.type).toBe("interaction");
+    expect(plugin.types).toEqual(["interaction"]);
   });
 });
 
@@ -428,8 +428,8 @@ describe("mcpPlugin — config registration", () => {
 
     expect(typeof plugin.id).toBe("string");
     expect(plugin.id.trim().length).toBeGreaterThan(0);
-    expect(typeof plugin.type).toBe("string");
-    expect(["datasource", "context", "interaction", "action"]).toContain(plugin.type);
+    expect(Array.isArray(plugin.types)).toBe(true);
+    expect(plugin.types.every((t: string) => ["datasource", "context", "interaction", "action", "sandbox"].includes(t))).toBe(true);
     expect(typeof plugin.version).toBe("string");
     expect(plugin.version.trim().length).toBeGreaterThan(0);
   });

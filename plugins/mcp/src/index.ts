@@ -51,7 +51,7 @@ export function buildMcpPlugin(
 
   return {
     id: "mcp-interaction",
-    type: "interaction" as const,
+    types: ["interaction"] as const,
     version: "0.1.0",
     name: "MCP Server",
     config,

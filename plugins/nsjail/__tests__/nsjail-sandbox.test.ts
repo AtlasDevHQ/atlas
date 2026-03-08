@@ -19,7 +19,7 @@ describe("config validation", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = nsjailSandboxPlugin({} as any);
     expect(plugin.id).toBe("nsjail-sandbox");
-    expect(plugin.type).toBe("sandbox");
+    expect(plugin.types).toEqual(["sandbox"]);
     expect(plugin.config?.timeLimitSec).toBe(10);
     expect(plugin.config?.memoryLimitMb).toBe(256);
   });
@@ -64,7 +64,7 @@ describe("plugin shape", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = nsjailSandboxPlugin({} as any);
     expect(plugin.id).toBe("nsjail-sandbox");
-    expect(plugin.type).toBe("sandbox");
+    expect(plugin.types).toEqual(["sandbox"]);
     expect(plugin.version).toBe("0.1.0");
     expect(plugin.name).toBe("nsjail Sandbox");
   });

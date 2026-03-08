@@ -211,7 +211,7 @@ describe("wireDatasourcePlugins metadata passthrough", () => {
 
     const plugin: PluginLike = {
       id: "dialect-ds",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -241,7 +241,7 @@ describe("wireDatasourcePlugins metadata passthrough", () => {
 
     const plugin: PluginLike = {
       id: "plain-ds",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -266,7 +266,7 @@ describe("wireDatasourcePlugins metadata passthrough", () => {
 
     const plugin: PluginLike = {
       id: "dialect-only",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -296,7 +296,7 @@ describe("wireDatasourcePlugins metadata passthrough", () => {
 
     const plugin: PluginLike = {
       id: "patterns-only",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),

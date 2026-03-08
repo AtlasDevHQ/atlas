@@ -3169,7 +3169,7 @@ export async function handleActionApproval(
 
 interface PluginInfo {
   id: string;
-  type: string;
+  types: string[];
   version: string;
   name?: string;
   healthy?: boolean;
@@ -3204,7 +3204,7 @@ export async function handlePluginList(): Promise<void> {
   for (const p of plugins) {
     const info: PluginInfo = {
       id: String(p.id ?? "unknown"),
-      type: String(p.type ?? "unknown"),
+      types: Array.isArray(p.types) ? (p.types as string[]).map(String) : ["unknown"],
       version: String(p.version ?? "unknown"),
       name: p.name ? String(p.name) : undefined,
     };
@@ -3229,7 +3229,7 @@ export async function handlePluginList(): Promise<void> {
   const rows = infos.map((info) => ({
     Name: info.name ?? info.id,
     ID: info.id,
-    Type: info.type,
+    Type: info.types.join(", "),
     Version: info.version,
     Health:
       info.healthy === undefined
@@ -3265,7 +3265,7 @@ import type { AtlasDatasourcePlugin, PluginDBConnection } from "@useatlas/plugin
 
 export default definePlugin({
   id: "${id}",
-  type: "datasource",
+  types: ["datasource"],
   version: "0.1.0",
   name: "${pascalName}",
 
@@ -3294,7 +3294,7 @@ import type { AtlasContextPlugin } from "@useatlas/plugin-sdk";
 
 export default definePlugin({
   id: "${id}",
-  type: "context",
+  types: ["context"],
   version: "0.1.0",
   name: "${pascalName}",
 
@@ -3325,7 +3325,7 @@ import type { Hono } from "hono";
 
 export default definePlugin({
   id: "${id}",
-  type: "interaction",
+  types: ["interaction"],
   version: "0.1.0",
   name: "${pascalName}",
 
@@ -3352,7 +3352,7 @@ import { z } from "zod";
 
 export default definePlugin({
   id: "${id}",
-  type: "action",
+  types: ["action"],
   version: "0.1.0",
   name: "${pascalName}",
 
@@ -3393,7 +3393,7 @@ import type { AtlasSandboxPlugin, PluginExploreBackend, PluginExecResult } from 
 
 export default definePlugin({
   id: "${id}",
-  type: "sandbox",
+  types: ["sandbox"],
   version: "0.1.0",
   name: "${pascalName}",
 
@@ -3433,7 +3433,7 @@ import plugin from "./index";
 describe("${name} plugin", () => {
   test("has correct id and type", () => {
     expect(plugin.id).toBe("${name}");
-    expect(plugin.type).toBe("${pluginType}");
+    expect(plugin.types).toContain("${pluginType}");
   });
 
   test("has a version string", () => {

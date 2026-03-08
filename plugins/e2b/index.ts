@@ -161,7 +161,7 @@ export function buildE2BSandboxPlugin(
 
   return {
     id: "e2b-sandbox",
-    type: "sandbox" as const,
+    types: ["sandbox"] as const,
     version: "0.1.0",
     name: "E2B Sandbox",
     config,

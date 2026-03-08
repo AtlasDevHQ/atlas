@@ -41,7 +41,8 @@ export interface PluginContextLike {
  */
 export interface PluginLike {
   readonly id: string;
-  readonly type: PluginType;
+  /** Plugin type(s). A plugin can implement multiple types. */
+  readonly types: readonly PluginType[];
   readonly version: string;
   readonly name?: string;
   initialize?(ctx: PluginContextLike): Promise<void>;
@@ -59,7 +60,7 @@ interface PluginEntry {
 
 export interface PluginDescription {
   id: string;
-  type: PluginType;
+  types: readonly PluginType[];
   version: string;
   name: string;
   status: PluginStatus;
@@ -83,7 +84,7 @@ export class PluginRegistry {
     }
     this.idSet.add(plugin.id);
     this.entries.push({ plugin, status: "registered" });
-    log.info({ pluginId: plugin.id, type: plugin.type }, "Plugin registered");
+    log.info({ pluginId: plugin.id, types: plugin.types }, "Plugin registered");
   }
 
   /**
@@ -190,10 +191,10 @@ export class PluginRegistry {
     return this.entries.find((e) => e.plugin.id === id)?.status;
   }
 
-  /** Return plugins of the given type that are currently healthy. */
+  /** Return plugins whose types array includes the given type and are currently healthy. */
   getByType(type: PluginType): PluginLike[] {
     return this.entries
-      .filter((e) => e.plugin.type === type && e.status === "healthy")
+      .filter((e) => e.plugin.types.includes(type) && e.status === "healthy")
       .map((e) => e.plugin);
   }
 
@@ -208,7 +209,7 @@ export class PluginRegistry {
   describe(): PluginDescription[] {
     return this.entries.map((e) => ({
       id: e.plugin.id,
-      type: e.plugin.type,
+      types: e.plugin.types,
       version: e.plugin.version,
       name: e.plugin.name ?? e.plugin.id,
       status: e.status,

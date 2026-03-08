@@ -49,7 +49,7 @@ function makeDatasourcePlugin(
   };
   return {
     id,
-    type: "datasource",
+    types: ["datasource"],
     version: "1.0.0",
     connection: {
       create: () => conn,
@@ -66,7 +66,7 @@ function makeDatasourcePlugin(
 function makeActionPlugin(id: string, opts?: { unhealthy?: boolean }): PluginLike {
   return {
     id,
-    type: "action",
+    types: ["action"],
     version: "1.0.0",
     actions: [
       {
@@ -88,7 +88,7 @@ function makeActionPlugin(id: string, opts?: { unhealthy?: boolean }): PluginLik
 function makeInteractionPlugin(id: string, routesFn: (app: unknown) => void, opts?: { unhealthy?: boolean }): PluginLike {
   return {
     id,
-    type: "interaction",
+    types: ["interaction"],
     version: "1.0.0",
     routes: routesFn,
     ...(opts?.unhealthy
@@ -127,7 +127,7 @@ describe("wireDatasourcePlugins", () => {
     const validator = (q: string) => ({ valid: /^SELECT/i.test(q) });
     const plugin: PluginLike = {
       id: "validated-ds",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -151,7 +151,7 @@ describe("wireDatasourcePlugins", () => {
     const patterns = [/^\s*(KILL)\b/i];
     const plugin: PluginLike = {
       id: "meta-ds",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
@@ -220,7 +220,7 @@ describe("wireDatasourcePlugins", () => {
   test("continues when one create() throws and returns failures", async () => {
     const failingPlugin: PluginLike = {
       id: "failing-ds",
-      type: "datasource",
+      types: ["datasource"],
       version: "1.0.0",
       connection: {
         create: () => { throw new Error("conn failed"); },
@@ -430,7 +430,7 @@ describe("wireActionPlugins", () => {
   test("registers all actions from a multi-action plugin", async () => {
     const plugin: PluginLike = {
       id: "multi-action",
-      type: "action",
+      types: ["action"],
       version: "1.0.0",
       actions: [
         { name: "action-a", description: "A", tool: {}, actionType: "t", reversible: false, defaultApproval: "manual", requiredCredentials: [] },
@@ -462,7 +462,7 @@ describe("wireActionPlugins", () => {
 
     const plugin: PluginLike = {
       id: "fail-action",
-      type: "action",
+      types: ["action"],
       version: "1.0.0",
       actions: [
         { name: "fail-action", description: "Fails", tool: {}, actionType: "t", reversible: false, defaultApproval: "manual", requiredCredentials: [] },
@@ -526,7 +526,7 @@ describe("wireInteractionPlugins", () => {
     const fakeApp = { route: mock(() => {}) };
     const routelessPlugin: PluginLike = {
       id: "stdio-interaction",
-      type: "interaction",
+      types: ["interaction"],
       version: "1.0.0",
       // No routes property — like MCP stdio transport
     };
@@ -547,7 +547,7 @@ describe("wireInteractionPlugins", () => {
 function makeContextPlugin(id: string, loadFn: () => Promise<string>, opts?: { unhealthy?: boolean }): PluginLike {
   return {
     id,
-    type: "context",
+    types: ["context"],
     version: "1.0.0",
     contextProvider: { load: loadFn },
     ...(opts?.unhealthy
@@ -612,7 +612,7 @@ describe("wireContextPlugins", () => {
   test("skips context plugins without contextProvider", async () => {
     const noProvider: PluginLike = {
       id: "no-provider",
-      type: "context",
+      types: ["context"],
       version: "1.0.0",
     };
     registry.register(noProvider);

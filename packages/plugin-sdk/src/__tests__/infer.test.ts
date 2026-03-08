@@ -27,7 +27,7 @@ const testDatasourcePlugin = createPlugin({
   }),
   create: (config) => ({
     id: "test-datasource",
-    type: "datasource" as const,
+    types: ["datasource"] as const,
     version: "1.0.0",
     name: "Test DataSource",
     config,
@@ -48,7 +48,7 @@ const testActionPlugin = createPlugin({
   }),
   create: (config) => ({
     id: "test-action",
-    type: "action" as const,
+    types: ["action"] as const,
     version: "2.0.0",
     config,
     actions: [] as PluginAction[],
@@ -62,7 +62,7 @@ const testInteractionPlugin = createPlugin({
   }),
   create: (config) => ({
     id: "test-interaction",
-    type: "interaction" as const,
+    types: ["interaction"] as const,
     version: "0.1.0",
     name: "Test Interaction",
     config,
@@ -75,7 +75,7 @@ const testContextPlugin = createPlugin({
   }),
   create: (config) => ({
     id: "test-context-factory",
-    type: "context" as const,
+    types: ["context"] as const,
     version: "0.3.0",
     name: "Test Context Factory",
     config,
@@ -90,7 +90,7 @@ const testSandboxPlugin = createPlugin({
   }),
   create: (config) => ({
     id: "test-sandbox",
-    type: "sandbox" as const,
+    types: ["sandbox"] as const,
     version: "1.0.0",
     name: "Test Sandbox",
     config,
@@ -114,7 +114,7 @@ function buildTestContextPlugin(
 ): AtlasContextPlugin<{ semanticDir?: string }> {
   return definePlugin({
     id: "test-context",
-    type: "context" as const,
+    types: ["context"] as const,
     version: "0.2.0",
     name: "Test Context",
     config,
@@ -145,15 +145,15 @@ describe("$InferServerPlugin — createPlugin factory functions", () => {
     void _bad;
   });
 
-  test("infers Type from datasource factory", () => {
+  test("infers Types from datasource factory", () => {
     type DS = $InferServerPlugin<typeof testDatasourcePlugin>;
 
-    const _type: DS["Type"] = "datasource";
-    expect(_type).toBe("datasource");
+    const _types: DS["Types"] = ["datasource"] as const;
+    expect(_types).toEqual(["datasource"]);
 
-    // @ts-expect-error — wrong type literal
-    const _badType: DS["Type"] = "action";
-    void _badType;
+    // @ts-expect-error — wrong type array
+    const _badTypes: DS["Types"] = ["action"] as const;
+    void _badTypes;
   });
 
   test("infers Config from action factory", () => {
@@ -167,15 +167,15 @@ describe("$InferServerPlugin — createPlugin factory functions", () => {
     void _bad;
   });
 
-  test("infers Type from action factory", () => {
+  test("infers Types from action factory", () => {
     type ACT = $InferServerPlugin<typeof testActionPlugin>;
 
-    const _type: ACT["Type"] = "action";
-    expect(_type).toBe("action");
+    const _types: ACT["Types"] = ["action"] as const;
+    expect(_types).toEqual(["action"]);
 
-    // @ts-expect-error — wrong type literal
-    const _badType: ACT["Type"] = "datasource";
-    void _badType;
+    // @ts-expect-error — wrong type array
+    const _badTypes: ACT["Types"] = ["datasource"] as const;
+    void _badTypes;
   });
 
   test("infers Config from interaction factory", () => {
@@ -189,15 +189,15 @@ describe("$InferServerPlugin — createPlugin factory functions", () => {
     expect(_config2.port).toBe(8080);
   });
 
-  test("infers Type from interaction factory", () => {
+  test("infers Types from interaction factory", () => {
     type INT = $InferServerPlugin<typeof testInteractionPlugin>;
 
-    const _type: INT["Type"] = "interaction";
-    expect(_type).toBe("interaction");
+    const _types: INT["Types"] = ["interaction"] as const;
+    expect(_types).toEqual(["interaction"]);
 
-    // @ts-expect-error — wrong type literal
-    const _badType: INT["Type"] = "context";
-    void _badType;
+    // @ts-expect-error — wrong type array
+    const _badTypes: INT["Types"] = ["context"] as const;
+    void _badTypes;
   });
 
   test("infers Config from context factory", () => {
@@ -211,15 +211,15 @@ describe("$InferServerPlugin — createPlugin factory functions", () => {
     expect(_config2).toEqual({});
   });
 
-  test("infers Type from context factory", () => {
+  test("infers Types from context factory", () => {
     type CTX = $InferServerPlugin<typeof testContextPlugin>;
 
-    const _type: CTX["Type"] = "context";
-    expect(_type).toBe("context");
+    const _types: CTX["Types"] = ["context"] as const;
+    expect(_types).toEqual(["context"]);
 
-    // @ts-expect-error — wrong type literal
-    const _badType: CTX["Type"] = "datasource";
-    void _badType;
+    // @ts-expect-error — wrong type array
+    const _badTypes: CTX["Types"] = ["datasource"] as const;
+    void _badTypes;
   });
 
   test("infers Version from factory", () => {
@@ -239,12 +239,9 @@ describe("$InferServerPlugin — definePlugin / direct objects", () => {
     const plugin = buildTestContextPlugin({ semanticDir: "/data" });
     type CTX = $InferServerPlugin<typeof plugin>;
 
-    const _type: CTX["Type"] = "context";
-    expect(_type).toBe("context");
-
-    // @ts-expect-error — wrong type
-    const _badType: CTX["Type"] = "action";
-    void _badType;
+    // buildTestContextPlugin returns AtlasContextPlugin<...> — Types is readonly PluginType[]
+    const _types: CTX["Types"] = ["context"];
+    expect(_types).toEqual(["context"]);
   });
 
   test("infers Config from direct plugin object", () => {
@@ -262,7 +259,7 @@ describe("$InferServerPlugin — definePlugin / direct objects", () => {
   test("infers from inline definePlugin with satisfies", () => {
     const plugin = definePlugin({
       id: "inline-ds",
-      type: "datasource" as const,
+      types: ["datasource"] as const,
       version: "3.0.0",
       connection: {
         create: () => ({
@@ -274,8 +271,8 @@ describe("$InferServerPlugin — definePlugin / direct objects", () => {
     } satisfies AtlasDatasourcePlugin);
 
     type P = $InferServerPlugin<typeof plugin>;
-    const _type: P["Type"] = "datasource";
-    expect(_type).toBe("datasource");
+    const _types: P["Types"] = ["datasource"] as const;
+    expect(_types).toEqual(["datasource"]);
   });
 });
 
@@ -435,15 +432,15 @@ describe("$InferServerPlugin — Security", () => {
     expect(_check).toBe(true);
   });
 
-  test("infers Type as 'sandbox' from sandbox factory", () => {
+  test("infers Types as ['sandbox'] from sandbox factory", () => {
     type SB = $InferServerPlugin<typeof testSandboxPlugin>;
 
-    const _type: SB["Type"] = "sandbox";
-    expect(_type).toBe("sandbox");
+    const _types: SB["Types"] = ["sandbox"] as const;
+    expect(_types).toEqual(["sandbox"]);
 
-    // @ts-expect-error — wrong type literal
-    const _badType: SB["Type"] = "datasource";
-    void _badType;
+    // @ts-expect-error — wrong type array
+    const _badTypes: SB["Types"] = ["datasource"] as const;
+    void _badTypes;
   });
 
   test("infers Config from sandbox factory", () => {
@@ -469,7 +466,7 @@ describe("$InferServerPlugin — edge cases", () => {
   test("plugin with no config field — Config infers as unknown", () => {
     const plugin = definePlugin({
       id: "no-config",
-      type: "context" as const,
+      types: ["context"] as const,
       version: "1.0.0",
       contextProvider: { load: async () => "" },
     } satisfies AtlasContextPlugin);
@@ -501,7 +498,7 @@ describe("$InferServerPlugin — edge cases", () => {
     function buildPlugin(config: { url: string }): AtlasDatasourcePlugin<{ url: string }> {
       return {
         id: "custom",
-        type: "datasource",
+        types: ["datasource"],
         version: "1.0.0",
         config,
         connection: {
@@ -519,8 +516,9 @@ describe("$InferServerPlugin — edge cases", () => {
     const _config: P["Config"] = { url: "pg://localhost" };
     expect(_config.url).toBe("pg://localhost");
 
-    const _type: P["Type"] = "datasource";
-    expect(_type).toBe("datasource");
+    // buildPlugin returns AtlasDatasourcePlugin<...> — Types is readonly PluginType[]
+    const _types: P["Types"] = ["datasource"];
+    expect(_types).toEqual(["datasource"]);
 
     // @ts-expect-error — missing url
     const _bad: P["Config"] = {};
@@ -534,7 +532,7 @@ describe("$InferServerPlugin — edge cases", () => {
     ): AtlasContextPlugin<{ dir?: string }> {
       return definePlugin({
         id: "optional-cfg",
-        type: "context" as const,
+        types: ["context"] as const,
         version: "1.0.0",
         config,
         contextProvider: { load: async () => "" },
@@ -542,8 +540,9 @@ describe("$InferServerPlugin — edge cases", () => {
     }
 
     type P = $InferServerPlugin<typeof optionalConfigFactory>;
-    const _type: P["Type"] = "context";
-    expect(_type).toBe("context");
+    // Returns AtlasContextPlugin<...> — Types is readonly PluginType[]
+    const _types: P["Types"] = ["context"];
+    expect(_types).toEqual(["context"]);
 
     const _config: P["Config"] = { dir: "/semantic" };
     expect(_config.dir).toBe("/semantic");
@@ -552,7 +551,7 @@ describe("$InferServerPlugin — edge cases", () => {
   test("type alias compiles and works in type position", () => {
     type T = $InferServerPlugin<typeof testDatasourcePlugin>;
 
-    const typeCheck: T["Type"] = "datasource";
-    expect(typeCheck).toBe("datasource");
+    const typeCheck: T["Types"] = ["datasource"] as const;
+    expect(typeCheck).toEqual(["datasource"]);
   });
 });

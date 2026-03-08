@@ -90,7 +90,7 @@ export const jiraPlugin = createPlugin<JiraPluginConfig, AtlasActionPlugin<JiraP
 
     return {
       id: "jira-action",
-      type: "action" as const,
+      types: ["action"] as const,
       version: "1.0.0",
       name: "JIRA Action",
       config,

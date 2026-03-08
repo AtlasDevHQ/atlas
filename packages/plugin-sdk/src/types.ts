@@ -221,7 +221,7 @@ export interface PluginHooks {
 }
 
 // ---------------------------------------------------------------------------
-// Schema type — declarative table definitions (migration deferred to #151)
+// Schema type — declarative table definitions (migration deferred to #116)
 // ---------------------------------------------------------------------------
 
 export interface PluginFieldDefinition {
@@ -243,7 +243,8 @@ export interface PluginTableDefinition {
 export interface AtlasPluginBase<TConfig = undefined> {
   /** Unique plugin identifier (e.g. "salesforce-datasource", "slack-interaction"). */
   readonly id: string;
-  readonly type: PluginType;
+  /** Plugin type(s). A plugin can implement multiple types (e.g. ["interaction", "action"]). */
+  readonly types: readonly PluginType[];
   /** SemVer version string. */
   readonly version: string;
   /** Human-readable name. Falls back to `id` in UIs. */
@@ -276,7 +277,7 @@ export interface AtlasPluginBase<TConfig = undefined> {
 
   /**
    * Declarative table definitions for the internal database.
-   * Tables are auto-migrated at boot (migration logic in #151).
+   * Tables are auto-migrated at boot (migration logic in #116).
    */
   schema?: Record<string, PluginTableDefinition>;
 }
@@ -305,7 +306,6 @@ export type EntityProvider =
   | (() => Promise<PluginEntity[]> | PluginEntity[]);
 
 export interface AtlasDatasourcePlugin<TConfig = undefined> extends AtlasPluginBase<TConfig> {
-  readonly type: "datasource";
   readonly connection: {
     /** Factory: create a DBConnection for the registry. */
     create(): Promise<PluginDBConnection> | PluginDBConnection;
@@ -369,7 +369,6 @@ export interface AtlasDatasourcePlugin<TConfig = undefined> extends AtlasPluginB
 // ---------------------------------------------------------------------------
 
 export interface AtlasContextPlugin<TConfig = undefined> extends AtlasPluginBase<TConfig> {
-  readonly type: "context";
   readonly contextProvider: {
     /** Load context (e.g. additional system prompt fragments, entity YAMLs). */
     load(): Promise<string>;
@@ -383,7 +382,6 @@ export interface AtlasContextPlugin<TConfig = undefined> extends AtlasPluginBase
 // ---------------------------------------------------------------------------
 
 export interface AtlasInteractionPlugin<TConfig = undefined> extends AtlasPluginBase<TConfig> {
-  readonly type: "interaction";
   /**
    * Mount routes on the Hono app. Optional — not all interaction plugins
    * need HTTP routes (e.g., stdio-based transports like MCP).
@@ -407,7 +405,6 @@ export interface PluginAction {
 }
 
 export interface AtlasActionPlugin<TConfig = undefined> extends AtlasPluginBase<TConfig> {
-  readonly type: "action";
   readonly actions: PluginAction[];
 }
 
@@ -446,7 +443,6 @@ export interface PluginExploreBackend {
  * backends are trust-the-author.
  */
 export interface AtlasSandboxPlugin<TConfig = undefined> extends AtlasPluginBase<TConfig> {
-  readonly type: "sandbox";
   readonly sandbox: {
     /**
      * Create an ExploreBackend instance.
@@ -523,8 +519,8 @@ type _ExtractConfig<T> =
 type _InferFrom<P, C> = {
   /** The plugin's configuration type (parameter type for factories, TConfig for direct objects). */
   Config: C;
-  /** The plugin type literal. */
-  Type: P extends { type: infer U } ? U : never;
+  /** The plugin type(s). */
+  Types: P extends { types: infer U } ? U : never;
   /** The plugin ID. */
   Id: P extends { id: infer U } ? U : never;
   /** The plugin display name. */
@@ -553,7 +549,7 @@ type _InferFrom<P, C> = {
  *
  * type CH = $InferServerPlugin<typeof clickhousePlugin>;
  * // CH["Config"] → { url: string; database?: string }
- * // CH["Type"]   → "datasource"
+ * // CH["Types"]  → readonly ["datasource"]
  * // CH["Id"]     → string
  * ```
  */

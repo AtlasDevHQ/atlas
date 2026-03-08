@@ -56,7 +56,7 @@ export function buildMySQLPlugin(
 
   return {
     id: "mysql-datasource",
-    type: "datasource" as const,
+    types: ["datasource"] as const,
     version: "0.1.0",
     name: "MySQL DataSource",
     config,

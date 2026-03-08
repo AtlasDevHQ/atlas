@@ -220,7 +220,7 @@ describe("config validation", () => {
   test("accepts valid salesforce:// URL", () => {
     const plugin = salesforcePlugin({ url: VALID_URL });
     expect(plugin.id).toBe("salesforce-datasource");
-    expect(plugin.type).toBe("datasource");
+    expect(plugin.types).toEqual(["datasource"]);
     expect(plugin.config?.url).toBe(VALID_URL);
   });
 
@@ -256,7 +256,7 @@ describe("plugin shape", () => {
   test("createPlugin factory returns a valid plugin", () => {
     const plugin = salesforcePlugin({ url: VALID_URL });
     expect(plugin.id).toBe("salesforce-datasource");
-    expect(plugin.type).toBe("datasource");
+    expect(plugin.types).toEqual(["datasource"]);
     expect(plugin.version).toBe("0.1.0");
     expect(plugin.name).toBe("Salesforce DataSource");
   });

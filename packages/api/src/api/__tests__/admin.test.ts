@@ -197,13 +197,13 @@ const mockPluginHealthCheck: Mock<() => Promise<unknown>> = mock(() =>
 mock.module("@atlas/api/lib/plugins/registry", () => ({
   plugins: {
     describe: () => [
-      { id: "test-plugin", type: "context", version: "1.0.0", name: "Test Plugin", status: "healthy" },
+      { id: "test-plugin", types: ["context"], version: "1.0.0", name: "Test Plugin", status: "healthy" },
     ],
     get: (id: string) => {
       if (id === "test-plugin") {
         return {
           id: "test-plugin",
-          type: "context",
+          types: ["context"],
           version: "1.0.0",
           name: "Test Plugin",
           healthCheck: mockPluginHealthCheck,
@@ -212,7 +212,7 @@ mock.module("@atlas/api/lib/plugins/registry", () => ({
       if (id === "no-health-plugin") {
         return {
           id: "no-health-plugin",
-          type: "action",
+          types: ["action"],
           version: "0.1.0",
           name: "No Health Plugin",
         };

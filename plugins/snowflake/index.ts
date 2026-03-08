@@ -64,7 +64,7 @@ export function buildSnowflakePlugin(
 
   return {
     id: "snowflake-datasource",
-    type: "datasource" as const,
+    types: ["datasource"] as const,
     version: "0.1.0",
     name: "Snowflake DataSource",
     config,

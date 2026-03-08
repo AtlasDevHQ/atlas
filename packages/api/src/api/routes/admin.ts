@@ -347,7 +347,7 @@ admin.get("/overview", async (c) => {
       pluginHealth: pluginList.map((p) => ({
         id: p.id,
         name: p.name,
-        type: p.type,
+        types: p.types,
         status: p.status,
       })),
     });

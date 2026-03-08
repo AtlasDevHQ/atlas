@@ -27,12 +27,17 @@ function validatePluginShape(plugin: AtlasPlugin): void {
   if (!plugin.version || !plugin.version.trim()) {
     throw new Error("Plugin version must not be empty");
   }
-  if (!VALID_TYPES.has(plugin.type)) {
-    throw new Error(`Invalid plugin type "${plugin.type}" — must be one of: datasource, context, interaction, action, sandbox`);
+  if (!Array.isArray(plugin.types) || plugin.types.length === 0) {
+    throw new Error(`Plugin "types" must be a non-empty array of plugin types`);
+  }
+  for (const t of plugin.types) {
+    if (!VALID_TYPES.has(t)) {
+      throw new Error(`Invalid plugin type "${t}" — must be one of: datasource, context, interaction, action, sandbox`);
+    }
   }
 
-  // Variant-specific structural checks
-  if (plugin.type === "datasource") {
+  // Variant-specific structural checks — validate for each declared type
+  if (plugin.types.includes("datasource")) {
     const ds = plugin as AtlasDatasourcePlugin;
     if (!ds.connection || typeof ds.connection !== "object") {
       throw new Error('Datasource plugin must have a "connection" property');
@@ -70,25 +75,25 @@ function validatePluginShape(plugin: AtlasPlugin): void {
       throw new Error('Datasource plugin "dialect" must be a non-empty string');
     }
   }
-  if (plugin.type === "context") {
+  if (plugin.types.includes("context")) {
     const ctx = plugin as AtlasContextPlugin;
     if (!ctx.contextProvider || typeof ctx.contextProvider !== "object") {
       throw new Error('Context plugin must have a "contextProvider" property');
     }
   }
-  if (plugin.type === "interaction") {
+  if (plugin.types.includes("interaction")) {
     const int = plugin as AtlasInteractionPlugin;
     if (int.routes !== undefined && typeof int.routes !== "function") {
       throw new Error('Interaction plugin "routes" must be a function when provided');
     }
   }
-  if (plugin.type === "action") {
+  if (plugin.types.includes("action")) {
     const act = plugin as AtlasActionPlugin;
     if (!Array.isArray(act.actions)) {
       throw new Error('Action plugin must have an "actions" array');
     }
   }
-  if (plugin.type === "sandbox") {
+  if (plugin.types.includes("sandbox")) {
     const sb = plugin as AtlasSandboxPlugin;
     if (!sb.sandbox || typeof sb.sandbox !== "object") {
       throw new Error('Sandbox plugin must have a "sandbox" property');
@@ -114,7 +119,7 @@ function validatePluginShape(plugin: AtlasPlugin): void {
  *
  * export default definePlugin({
  *   id: "my-datasource",
- *   type: "datasource",
+ *   types: ["datasource"],
  *   version: "1.0.0",
  *   connection: {
  *     create: () => myDBConnection,
@@ -171,7 +176,7 @@ export interface CreatePluginOptions<TConfig, TPlugin extends AtlasPluginBase<TC
  *   }),
  *   create: (config) => ({
  *     id: "bigquery",
- *     type: "datasource" as const,
+ *     types: ["datasource"] as const,
  *     version: "1.0.0",
  *     config,
  *     connection: {
@@ -222,29 +227,29 @@ export function createPlugin<TConfig, TPlugin extends AtlasPluginBase<TConfig>>(
 export function isDatasourcePlugin(
   plugin: AtlasPlugin,
 ): plugin is AtlasDatasourcePlugin {
-  return plugin.type === "datasource";
+  return plugin.types.includes("datasource");
 }
 
 export function isContextPlugin(
   plugin: AtlasPlugin,
 ): plugin is AtlasContextPlugin {
-  return plugin.type === "context";
+  return plugin.types.includes("context");
 }
 
 export function isInteractionPlugin(
   plugin: AtlasPlugin,
 ): plugin is AtlasInteractionPlugin {
-  return plugin.type === "interaction";
+  return plugin.types.includes("interaction");
 }
 
 export function isActionPlugin(
   plugin: AtlasPlugin,
 ): plugin is AtlasActionPlugin {
-  return plugin.type === "action";
+  return plugin.types.includes("action");
 }
 
 export function isSandboxPlugin(
   plugin: AtlasPlugin,
 ): plugin is AtlasSandboxPlugin {
-  return plugin.type === "sandbox";
+  return plugin.types.includes("sandbox");
 }

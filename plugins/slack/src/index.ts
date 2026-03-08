@@ -137,7 +137,7 @@ function buildSlackPlugin(
 
   return {
     id: "slack-interaction",
-    type: "interaction" as const,
+    types: ["interaction"] as const,
     version: "0.1.0",
     name: "Slack Bot",
     config,

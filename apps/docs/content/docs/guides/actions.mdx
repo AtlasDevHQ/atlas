@@ -1,0 +1,189 @@
+---
+title: Actions Framework
+description: Enable approval-gated write operations like sending emails and creating JIRA tickets from the agent.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The action framework lets the Atlas agent perform write operations -- sending emails, creating JIRA tickets, and more -- with configurable approval gates. Actions go through a request-approve-execute lifecycle that gives humans control over what the agent does.
+
+## Enable
+
+```bash
+ATLAS_ACTIONS_ENABLED=true
+```
+
+Actions require authentication (any mode except `none`) and an internal database (`DATABASE_URL`) for the action log.
+
+---
+
+## Approval Modes
+
+Each action has an approval mode that controls whether human approval is required before execution.
+
+| Mode | Behavior | Who can approve |
+|------|----------|-----------------|
+| `auto` | Execute immediately, no approval needed | N/A |
+| `manual` | Queue for approval | `analyst` or `admin` |
+| `admin-only` | Queue for approval, admin required | `admin` only |
+
+<Callout type="info">
+In `admin-only` mode, the user who requested the action cannot approve their own request (separation of duties).
+</Callout>
+
+---
+
+## Action Lifecycle
+
+```
+Agent requests action → pending
+                          ↓
+         ┌────────────────┼────────────────┐
+         ↓                ↓                ↓
+    auto_approved      approved          denied
+         ↓                ↓
+      executed         executed
+         ↓                ↓
+    success/failed    success/failed
+```
+
+- **auto** mode: `pending` → `auto_approved` → `executed` (or `failed`)
+- **manual** / **admin-only** mode: `pending` → `approved` / `denied` → `executed` (or `failed`)
+
+---
+
+## Built-in Actions
+
+### Email (`email:send`)
+
+Send email reports via [Resend](https://resend.com).
+
+**Default approval:** `admin-only`
+
+**Required credentials:**
+- `RESEND_API_KEY` -- Resend API token
+
+**Optional:**
+- `ATLAS_EMAIL_FROM` -- From address (default: `Atlas <atlas@notifications.useatlas.dev>`)
+- `ATLAS_EMAIL_ALLOWED_DOMAINS` -- Comma-separated domain whitelist for recipients
+
+**Input:**
+- `to` -- Recipient email address(es)
+- `subject` -- Email subject line
+- `body` -- Email body (HTML)
+
+### JIRA (`jira:create`)
+
+Create JIRA issues from data insights.
+
+**Default approval:** `manual`
+
+**Required credentials:**
+- `JIRA_BASE_URL` -- JIRA instance URL (e.g., `https://myco.atlassian.net`)
+- `JIRA_EMAIL` -- Authentication email
+- `JIRA_API_TOKEN` -- API token
+
+**Optional:**
+- `JIRA_DEFAULT_PROJECT` -- Default project key when not specified
+
+**Input:**
+- `summary` -- Issue title (max 255 chars)
+- `description` -- Issue description
+- `project` -- Project key (optional, falls back to `JIRA_DEFAULT_PROJECT`)
+- `labels` -- Optional labels
+
+This action is **reversible** -- on rollback, Atlas transitions the created issue to "Closed" (best-effort, depends on JIRA workflow).
+
+---
+
+## Configuration
+
+### Via Environment Variables
+
+```bash
+ATLAS_ACTIONS_ENABLED=true
+```
+
+### Via atlas.config.ts
+
+Override approval modes and role requirements per action:
+
+```typescript
+import { defineConfig } from "@atlas/api/lib/config";
+
+export default defineConfig({
+  actions: {
+    defaults: {
+      approval: "manual",
+    },
+    "email:send": {
+      approval: "admin-only",
+      requiredRole: "admin",
+      credentials: {
+        RESEND_API_KEY: { env: "RESEND_API_KEY" },
+      },
+    },
+    "jira:create": {
+      approval: "manual",
+      requiredRole: "analyst",
+    },
+  },
+});
+```
+
+See [Configuration](/docs/reference/config) for the full config schema.
+
+---
+
+## Approving and Denying Actions
+
+### Web UI
+
+Pending actions appear in the chat UI with **Approve** and **Deny** buttons. Admins can also manage actions from the [Admin Console](/docs/guides/admin-console) at `/admin/actions`.
+
+### API
+
+```bash
+# Approve
+curl -X POST http://localhost:3001/api/v1/actions/<id>/approve \
+  -H "Authorization: Bearer <key>"
+
+# Deny with reason
+curl -X POST http://localhost:3001/api/v1/actions/<id>/deny \
+  -H "Authorization: Bearer <key>" \
+  -H "Content-Type: application/json" \
+  -d '{"reason": "Not relevant"}'
+```
+
+### Slack
+
+When using the [Slack integration](/docs/guides/slack), pending actions show as ephemeral messages with **Approve** and **Deny** buttons visible only to the requesting user.
+
+---
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/actions` | List actions (filter by `status`, default: `pending`) |
+| `GET` | `/api/v1/actions/:id` | Get action details |
+| `POST` | `/api/v1/actions/:id/approve` | Approve a pending action |
+| `POST` | `/api/v1/actions/:id/deny` | Deny a pending action |
+
+---
+
+## Role Requirements
+
+| Role | Can request actions | Can approve `manual` | Can approve `admin-only` |
+|------|--------------------|--------------------|------------------------|
+| `viewer` | Yes | No | No |
+| `analyst` | Yes | Yes | No |
+| `admin` | Yes | Yes | Yes |
+
+See [Authentication](/docs/deployment/authentication#roles) for role configuration.
+
+---
+
+## Building Custom Actions
+
+Action plugins follow the same pattern as built-in actions. See [Plugin Authoring Guide](/docs/plugins/authoring-guide) for the `action` plugin type, which registers custom tools with approval gates and credential validation.

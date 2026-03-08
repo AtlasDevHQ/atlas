@@ -1,0 +1,247 @@
+---
+title: Configuration
+description: Declarative configuration with atlas.config.ts for multi-datasource deployments, plugins, RLS, and actions.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas can be configured via environment variables (see [Environment Variables](/docs/reference/environment-variables)) or a declarative `atlas.config.ts` file. When both are present, the config file takes precedence for datasource, auth, and tool configuration. Environment variables still work as fallbacks.
+
+## When to Use Config File vs Env Vars
+
+| Scenario | Recommended |
+|----------|-------------|
+| Single datasource, simple setup | Env vars only |
+| Multiple datasources | Config file |
+| Custom plugins | Config file |
+| RLS policies | Config file |
+| Action framework overrides | Config file |
+| CI/CD with secrets | Env vars for secrets, config file for structure |
+
+---
+
+## defineConfig
+
+Create an `atlas.config.ts` in your project root:
+
+```typescript
+import { defineConfig } from "@atlas/api/lib/config";
+
+export default defineConfig({
+  datasources: {
+    default: { url: process.env.ATLAS_DATASOURCE_URL! },
+  },
+  tools: ["explore", "executeSQL"],
+  auth: "auto",
+  semanticLayer: "./semantic",
+});
+```
+
+---
+
+## Datasources
+
+Configure one or more datasources. Each gets its own connection pool, table whitelist, and optional semantic layer partition.
+
+```typescript
+export default defineConfig({
+  datasources: {
+    default: {
+      url: process.env.ATLAS_DATASOURCE_URL!,
+      schema: "public",
+      description: "Primary PostgreSQL database",
+    },
+    warehouse: {
+      url: "snowflake://user:pass@account/db/schema?warehouse=WH",
+      description: "Snowflake data warehouse",
+    },
+    analytics: {
+      url: "clickhouses://user:pass@host:8443/analytics",
+      description: "ClickHouse analytics cluster",
+    },
+  },
+});
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `url` | string | Yes | Connection string |
+| `schema` | string | No | Database schema (PostgreSQL only, default: `public`) |
+| `description` | string | No | Human-readable label |
+| `maxConnections` | number | No | Connection pool size |
+| `idleTimeoutMs` | number | No | Idle connection timeout |
+| `rateLimit` | number | No | Per-datasource rate limit |
+
+The `"default"` datasource is used when the agent's `executeSQL` tool is called without a `connectionId`. Each datasource can have its own semantic layer directory at `semantic/{sourceId}/entities/`.
+
+---
+
+## Auth
+
+Set the authentication mode explicitly or let Atlas auto-detect:
+
+```typescript
+export default defineConfig({
+  auth: "managed", // "none" | "api-key" | "managed" | "byot" | "auto"
+});
+```
+
+When set to `"auto"` (or omitted), Atlas detects the mode from environment variables. See [Authentication](/docs/deployment/authentication) for details.
+
+---
+
+## Tools
+
+Specify which tools the agent has access to:
+
+```typescript
+export default defineConfig({
+  tools: ["explore", "executeSQL"],
+});
+```
+
+The default tools are `explore` (read semantic layer files) and `executeSQL` (run validated SQL queries). When the action framework is enabled, action tools are also registered.
+
+---
+
+## Plugins
+
+Register plugins with optional per-plugin configuration:
+
+```typescript
+import clickhouse from "@atlas/plugin-clickhouse";
+import snowflake from "@atlas/plugin-snowflake";
+
+export default defineConfig({
+  plugins: [
+    clickhouse({ connectionId: "analytics" }),
+    snowflake({ connectionId: "warehouse" }),
+  ],
+});
+```
+
+See [Plugin Authoring Guide](/docs/plugins/authoring-guide) for building custom plugins.
+
+---
+
+## RLS (Row-Level Security)
+
+Define RLS policies that inject WHERE clauses on every query based on user JWT claims.
+
+### Single Policy
+
+```typescript
+export default defineConfig({
+  rls: {
+    column: "tenant_id",
+    claim: "org_id",
+  },
+});
+```
+
+This injects `WHERE tenant_id = '<user's org_id claim>'` on every query.
+
+### Per-Table Policies
+
+```typescript
+export default defineConfig({
+  rls: {
+    column: "tenant_id",
+    claim: "org_id",
+    table: "orders", // Only apply to the orders table
+  },
+});
+```
+
+Equivalent env vars: `ATLAS_RLS_ENABLED=true`, `ATLAS_RLS_COLUMN=tenant_id`, `ATLAS_RLS_CLAIM=org_id`.
+
+---
+
+## Actions
+
+Configure the [action framework](/docs/guides/actions) with default approval modes and per-action overrides.
+
+```typescript
+export default defineConfig({
+  actions: {
+    defaults: {
+      approval: "manual",
+    },
+    "email:send": {
+      approval: "admin-only",
+      requiredRole: "admin",
+      credentials: {
+        RESEND_API_KEY: { env: "RESEND_API_KEY" },
+      },
+    },
+    "jira:create": {
+      approval: "manual",
+      requiredRole: "analyst",
+    },
+  },
+});
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `defaults.approval` | string | Default approval mode: `auto`, `manual`, `admin-only` |
+| `defaults.timeout` | number | Per-action timeout in ms (reserved) |
+| `[actionType].approval` | string | Override approval mode for this action |
+| `[actionType].requiredRole` | string | Minimum role to approve: `viewer`, `analyst`, `admin` |
+| `[actionType].enabled` | boolean | Enable/disable this action |
+| `[actionType].credentials` | object | Required env vars (validated at startup) |
+
+---
+
+## Semantic Layer Path
+
+Override the default semantic layer directory:
+
+```typescript
+export default defineConfig({
+  semanticLayer: "./custom/semantic",
+});
+```
+
+Default: `"./semantic"` relative to the project root.
+
+---
+
+## Full Example
+
+```typescript
+import { defineConfig } from "@atlas/api/lib/config";
+
+export default defineConfig({
+  datasources: {
+    default: {
+      url: process.env.ATLAS_DATASOURCE_URL!,
+      description: "Primary Postgres",
+    },
+    warehouse: {
+      url: process.env.WAREHOUSE_URL!,
+      schema: "analytics",
+      description: "Snowflake warehouse",
+    },
+  },
+
+  tools: ["explore", "executeSQL"],
+  auth: "auto",
+  semanticLayer: "./semantic",
+
+  rls: {
+    column: "tenant_id",
+    claim: "org_id",
+  },
+
+  actions: {
+    defaults: { approval: "manual" },
+    "email:send": {
+      approval: "admin-only",
+      credentials: {
+        RESEND_API_KEY: { env: "RESEND_API_KEY" },
+      },
+    },
+  },
+});
+```

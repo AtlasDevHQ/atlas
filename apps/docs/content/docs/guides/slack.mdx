@@ -1,0 +1,152 @@
+---
+title: Slack Integration
+description: Query your data from Slack with slash commands and threaded follow-ups.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas integrates with Slack via a slash command (`/atlas`) and threaded follow-ups. Ask questions in any channel, get answers with formatted data tables, and continue the conversation in a thread.
+
+## Setup Modes
+
+| Mode | Env Vars | Best For |
+|------|----------|----------|
+| Single-workspace | `SLACK_BOT_TOKEN` + `SLACK_SIGNING_SECRET` | One Slack workspace |
+| Multi-workspace (OAuth) | `SLACK_CLIENT_ID` + `SLACK_CLIENT_SECRET` + `SLACK_SIGNING_SECRET` | Distributing to multiple workspaces |
+
+Both modes require `SLACK_SIGNING_SECRET` for request signature verification.
+
+---
+
+## Single-Workspace Setup
+
+The simplest setup -- no OAuth flow, no database storage for tokens.
+
+### 1. Create a Slack App
+
+Go to [api.slack.com/apps](https://api.slack.com/apps) and create a new app from scratch.
+
+### 2. Configure Scopes
+
+Under **OAuth & Permissions**, add these **Bot Token Scopes**:
+
+- `commands` -- Register slash commands
+- `chat:write` -- Post messages
+- `app_mentions:read` -- Read mentions (for thread follow-ups)
+
+### 3. Create the Slash Command
+
+Under **Slash Commands**, create a new command:
+
+- **Command:** `/atlas`
+- **Request URL:** `https://your-api-host/api/slack/commands`
+- **Description:** Ask a data question
+
+### 4. Enable Events
+
+Under **Event Subscriptions**:
+
+- **Request URL:** `https://your-api-host/api/slack/events`
+- **Subscribe to bot events:** `message.channels`, `message.groups`
+
+### 5. Install and Configure
+
+Install the app to your workspace, then copy the **Bot User OAuth Token** and **Signing Secret**:
+
+```bash
+# .env
+SLACK_BOT_TOKEN=xoxb-your-bot-token
+SLACK_SIGNING_SECRET=your-signing-secret
+```
+
+---
+
+## Multi-Workspace OAuth Setup
+
+For distributing Atlas to multiple Slack workspaces. Requires an [internal database](/docs/reference/environment-variables) (`DATABASE_URL`) to store per-workspace bot tokens.
+
+### 1. Configure OAuth
+
+In your Slack app settings, under **OAuth & Permissions**:
+
+- **Redirect URL:** `https://your-api-host/api/slack/callback`
+
+### 2. Set Environment Variables
+
+```bash
+# .env
+SLACK_CLIENT_ID=your-client-id
+SLACK_CLIENT_SECRET=your-client-secret
+SLACK_SIGNING_SECRET=your-signing-secret
+DATABASE_URL=postgresql://...        # Required for token storage
+```
+
+### 3. Install Flow
+
+Direct users to `https://your-api-host/api/slack/install`. This redirects to Slack's OAuth authorize page. After approval, the callback stores the bot token in the `slack_installations` table.
+
+---
+
+## How It Works
+
+### Slash Command
+
+```
+/atlas What was last month's revenue?
+```
+
+1. Slack sends the command to `POST /api/slack/commands`
+2. Atlas verifies the request signature (HMAC-SHA256, 5-minute timestamp window)
+3. Atlas immediately acknowledges within 3 seconds (Slack requirement)
+4. In the background, Atlas posts a "Thinking..." message, runs the agent, and updates the message with the formatted response
+
+### Thread Follow-ups
+
+When a user replies in a thread started by Atlas:
+
+1. Atlas receives the message via the Events API
+2. Loads the conversation history from the original thread
+3. Runs the agent with the full conversation context
+4. Posts the response in the same thread
+
+This provides multi-turn conversations within Slack threads.
+
+### Action Approvals
+
+When the [action framework](/docs/guides/actions) is enabled and a query produces pending actions, Atlas posts approval buttons visible only to the requesting user. Clicking **Approve** or **Deny** triggers `POST /api/slack/interactions`.
+
+---
+
+## Message Formatting
+
+Atlas formats responses using Slack Block Kit:
+
+- **Answer text** -- The agent's narrative response
+- **SQL** -- The executed query in a code block
+- **Data table** -- Column-aligned text table (max 20 rows displayed, with a "Showing X of Y" note)
+- **Metadata** -- Steps taken, tokens used
+
+Block Kit limits: max 50 blocks per message, max 3,000 characters per text block.
+
+---
+
+## Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `SLACK_SIGNING_SECRET` | Yes | Request signature verification |
+| `SLACK_BOT_TOKEN` | Single-workspace | Bot OAuth token |
+| `SLACK_CLIENT_ID` | Multi-workspace | OAuth app client ID |
+| `SLACK_CLIENT_SECRET` | Multi-workspace | OAuth app client secret |
+
+See [Environment Variables](/docs/reference/environment-variables) for the full reference.
+
+---
+
+## Deployment Notes
+
+- The API must be accessible over **HTTPS** for Slack to deliver events and commands
+- Slash commands have a **3-second response deadline** -- Atlas acknowledges immediately and processes asynchronously
+- Rate limiting is per Slack user per team for commands, and per team for thread follow-ups
+- Error messages sent to Slack are scrubbed to prevent leaking connection strings, API keys, or stack traces
+- Without an internal database (`DATABASE_URL`), thread conversation mappings and OAuth tokens cannot be persisted. Single-workspace mode with `SLACK_BOT_TOKEN` still works, but thread follow-ups won't have conversation history

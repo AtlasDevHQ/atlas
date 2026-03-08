@@ -1,0 +1,224 @@
+---
+title: Scheduled Tasks
+description: Run recurring queries on a cron schedule and deliver results via email, Slack, or webhook.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Scheduled tasks run natural language queries on a cron schedule and deliver results to configured recipients. Use them for daily reports, weekly digests, or real-time alerting via webhooks.
+
+## Prerequisites
+
+- `ATLAS_SCHEDULER_ENABLED=true`
+- An internal database (`DATABASE_URL`) for task persistence
+- Authentication enabled (any mode except `none`)
+
+---
+
+## Task Definition
+
+A scheduled task consists of a question, a cron schedule, and delivery configuration.
+
+```bash
+curl -X POST http://localhost:3001/api/v1/scheduled-tasks \
+  -H "Authorization: Bearer <key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Daily revenue check",
+    "question": "What was yesterday total revenue?",
+    "cronExpression": "0 9 * * *",
+    "deliveryChannel": "email",
+    "recipients": [
+      { "type": "email", "address": "team@example.com" }
+    ]
+  }'
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Task name (1--200 chars) |
+| `question` | string | Yes | Natural language question (1--2000 chars) |
+| `cronExpression` | string | Yes | Standard 5-field cron expression |
+| `deliveryChannel` | string | No | `email`, `slack`, or `webhook` (default: `webhook`) |
+| `recipients` | array | No | Delivery destinations |
+| `connectionId` | string | No | Target datasource (default if omitted) |
+| `approvalMode` | string | No | `auto` or `manual` (default: `auto`) |
+
+### Cron Expression Format
+
+Standard 5-field cron syntax:
+
+```
+minute  hour  day-of-month  month  day-of-week
+0-59    0-23  1-31          1-12   0-6 (0=Sunday)
+```
+
+| Expression | Schedule |
+|------------|----------|
+| `0 9 * * *` | Daily at 9:00 AM |
+| `0 9 * * 1-5` | Weekdays at 9:00 AM |
+| `0 0 * * 1` | Every Monday at midnight |
+| `0 9 1 * *` | First of every month at 9:00 AM |
+| `*/15 * * * *` | Every 15 minutes |
+
+---
+
+## Delivery Channels
+
+### Email
+
+Requires [Resend](https://resend.com) for email delivery.
+
+```bash
+RESEND_API_KEY=re_...
+ATLAS_EMAIL_FROM="Atlas <reports@example.com>"  # Optional, default: Atlas <noreply@useatlas.dev>
+```
+
+Recipient format:
+
+```json
+{ "type": "email", "address": "user@example.com" }
+```
+
+### Slack
+
+Requires the [Slack integration](/docs/guides/slack) to be configured.
+
+```json
+{ "type": "slack", "channel": "#analytics" }
+```
+
+For multi-workspace OAuth, include `teamId`:
+
+```json
+{ "type": "slack", "channel": "#analytics", "teamId": "T0123456" }
+```
+
+### Webhook
+
+Sends a JSON payload to an HTTPS endpoint.
+
+```json
+{
+  "type": "webhook",
+  "url": "https://hooks.example.com/atlas",
+  "headers": { "X-Custom-Header": "value" }
+}
+```
+
+<Callout type="warn">
+Webhook URLs must use HTTPS in production. Private/internal IPs (localhost, 127.*, 10.*, 172.16-31.*, 192.168.*, 169.254.*) are blocked. Sensitive headers (authorization, cookie) are filtered.
+</Callout>
+
+---
+
+## Execution Backends
+
+The scheduler needs a mechanism to trigger periodic checks for due tasks.
+
+### `bun` (Default)
+
+In-process tick loop using `setInterval`. No external dependencies.
+
+```bash
+ATLAS_SCHEDULER_BACKEND=bun
+```
+
+Best for single-instance deployments. The tick loop starts automatically when the API server boots.
+
+### `webhook`
+
+External cron service calls the tick endpoint. Multi-instance safe.
+
+```bash
+ATLAS_SCHEDULER_BACKEND=webhook
+ATLAS_SCHEDULER_SECRET=your-random-secret
+```
+
+Configure your external cron to call:
+
+```bash
+curl -X POST https://api.example.com/api/v1/scheduled-tasks/tick \
+  -H "Authorization: Bearer $ATLAS_SCHEDULER_SECRET"
+```
+
+### `vercel`
+
+Uses Vercel's built-in cron service. Configure in `vercel.json`:
+
+```json
+{
+  "crons": [{
+    "path": "/api/v1/scheduled-tasks/tick",
+    "schedule": "*/5 * * * *"
+  }]
+}
+```
+
+```bash
+ATLAS_SCHEDULER_BACKEND=vercel
+# CRON_SECRET is auto-injected by Vercel
+```
+
+---
+
+## Execution Model
+
+Each tick cycle:
+
+1. Fetch all enabled tasks where `next_run_at <= now()`
+2. Lock each task atomically (prevents double-execution across instances)
+3. Run up to `ATLAS_SCHEDULER_MAX_CONCURRENT` tasks in parallel
+4. For each task: execute the agent query, deliver results, log the run
+5. Recompute `next_run_at` from the cron expression
+
+### Concurrency and Timeouts
+
+| Setting | Env Var | Default | Description |
+|---------|---------|---------|-------------|
+| Max concurrent | `ATLAS_SCHEDULER_MAX_CONCURRENT` | 5 | Max tasks per tick |
+| Task timeout | `ATLAS_SCHEDULER_TIMEOUT` | 60000 | Per-task deadline (ms) |
+| Tick interval | `ATLAS_SCHEDULER_TICK_INTERVAL` | 60 | Seconds between ticks (bun backend only) |
+
+### Failure Handling
+
+- **Task timeout** -- Run marked as `failed` with timeout error
+- **Agent error** -- Run marked as `failed`, error logged
+- **Partial delivery failure** -- If 1 of 3 recipients fails, the run is still `success`. Delivery failures are logged separately
+- **Lock contention** -- Second instance skips the task (atomic locking)
+
+---
+
+## API Endpoints
+
+All routes require authentication and are available at `/api/v1/scheduled-tasks`.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/` | List tasks (paginated, filterable by `enabled`) |
+| `POST` | `/` | Create a new task |
+| `GET` | `/:id` | Get task with recent runs |
+| `PUT` | `/:id` | Update task fields |
+| `DELETE` | `/:id` | Disable task (soft delete for audit trail) |
+| `POST` | `/:id/run` | Trigger immediate execution |
+| `GET` | `/:id/runs` | List past runs |
+| `POST` | `/tick` | Serverless tick (webhook/vercel backends) |
+
+See the [SDK](/docs/reference/sdk) for typed client methods.
+
+---
+
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_SCHEDULER_ENABLED` | — | Set to `true` to enable |
+| `ATLAS_SCHEDULER_BACKEND` | `bun` | `bun`, `webhook`, or `vercel` |
+| `ATLAS_SCHEDULER_MAX_CONCURRENT` | `5` | Max concurrent tasks |
+| `ATLAS_SCHEDULER_TIMEOUT` | `60000` | Per-task timeout (ms) |
+| `ATLAS_SCHEDULER_TICK_INTERVAL` | `60` | Tick interval in seconds |
+| `ATLAS_SCHEDULER_SECRET` | — | Shared secret for `/tick` endpoint |
+| `RESEND_API_KEY` | — | Required for email delivery |
+| `ATLAS_EMAIL_FROM` | `Atlas <noreply@useatlas.dev>` | Email from address |
+
+See [Environment Variables](/docs/reference/environment-variables) for the full reference.

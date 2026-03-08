@@ -1,0 +1,93 @@
+---
+title: Python Data Analysis
+description: Sandboxed Python execution for data analysis, charting, and statistical computation.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas can execute Python code in a sandboxed environment for data analysis, statistical computation, and chart generation. The agent writes Python after running SQL queries to produce visualizations and deeper analysis.
+
+## Enable
+
+```bash
+ATLAS_PYTHON_ENABLED=true
+```
+
+<Callout type="warn">
+Python execution requires an isolated sandbox backend. Atlas refuses to run Python without one -- it will not fall back to direct execution. See [Sandbox Architecture](/docs/architecture/sandbox) for backend details.
+</Callout>
+
+---
+
+## Sandbox Backends
+
+Python runs through the same sandbox infrastructure as the `explore` tool, with the following priority:
+
+| Priority | Backend | How to enable |
+|----------|---------|---------------|
+| 1 | Sidecar | Set `ATLAS_SANDBOX_URL` |
+| 2 | Vercel sandbox | Set `ATLAS_RUNTIME=vercel` (Python 3.13) |
+| 3 | nsjail (explicit) | Set `ATLAS_SANDBOX=nsjail` |
+| 4 | nsjail (auto-detect) | nsjail binary on `PATH` or `ATLAS_NSJAIL_PATH` |
+
+Unlike the `explore` tool, there is no `just-bash` fallback for Python. If no isolated backend is available, Python execution is rejected with an error.
+
+---
+
+## Available Libraries
+
+The following libraries are available in the sandbox:
+
+- **pandas** -- DataFrames and data manipulation
+- **numpy** -- Numerical computation
+- **matplotlib** -- Static charts and plots
+- **plotly** -- Interactive charts
+
+The exact set of available libraries depends on the sandbox backend and its Python environment.
+
+---
+
+## Chart Rendering
+
+When Python code generates charts (via matplotlib or plotly), they appear inline in the chat UI. The agent can produce:
+
+- Bar charts, line charts, pie charts, scatter plots
+- Statistical visualizations (histograms, box plots)
+- Multi-series and grouped charts
+
+Charts generated with **Recharts** format (a React charting library) are rendered natively in the web UI for interactive exploration.
+
+---
+
+## Security Model
+
+Python execution is isolated at multiple layers:
+
+1. **Import guard** -- Defense-in-depth blocking of dangerous modules: `subprocess`, `os`, `socket`, `requests`, `pickle`, `tempfile`, `shutil`, and others. This is a first-pass filter; the sandbox backend is the real security boundary
+2. **No filesystem writes** -- The sandbox environment is read-only
+3. **No network access** -- Outbound connections are blocked by the sandbox
+4. **No shell access** -- `os.system()`, `subprocess.run()`, and similar are blocked
+5. **Timeout enforcement** -- Each execution has a configurable time limit
+
+---
+
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_PYTHON_ENABLED` | — | Set to `true` to enable Python execution |
+| `ATLAS_PYTHON_TIMEOUT` | — | Per-execution timeout |
+
+The sandbox itself is configured via the standard sandbox variables. See [Environment Variables](/docs/reference/environment-variables) and [Sandbox Architecture](/docs/architecture/sandbox).
+
+---
+
+## How It Works
+
+1. The agent runs a SQL query via `executeSQL` and gets tabular data
+2. The agent writes Python code using the query results as input (passed as a `data` parameter with `columns` and `rows`)
+3. Atlas validates the code against blocked imports and builtins
+4. The code runs in the sandbox backend with the data available
+5. Output (text, tables, or charts) is returned to the agent and displayed in the chat UI
+
+The agent decides when to use Python based on the question -- statistical analysis, trend detection, and visualization requests typically trigger Python execution.

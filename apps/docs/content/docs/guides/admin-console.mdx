@@ -1,0 +1,179 @@
+---
+title: Admin Console
+description: Monitor connections, browse the semantic layer, review audit logs, and manage users from the web UI.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The admin console is a built-in web UI for managing your Atlas deployment. Access it at `/admin` in the Atlas web app.
+
+## Prerequisites
+
+- [Managed auth](/docs/deployment/authentication#managed-auth) enabled (or auth mode `none` for local dev)
+- A user with the `admin` role
+
+<Callout type="info">
+When auth mode is `none` (local development), all users have implicit admin access.
+</Callout>
+
+---
+
+## Dashboard
+
+**Route:** `/admin`
+
+The dashboard shows deployment health at a glance:
+
+- **Connections** -- Number of registered datasources
+- **Entities** -- Tables and views in the semantic layer
+- **Plugins** -- Installed plugins and their health status
+- **Overall health** -- Aggregated status (healthy, degraded, unhealthy)
+
+---
+
+## Connections
+
+**Route:** `/admin/connections`
+
+Lists all registered datasource connections with their database type, description, health status, and latency.
+
+**Actions:**
+- **Test connection** -- Runs a health check query against the datasource and reports latency and status
+
+---
+
+## Semantic Layer Browser
+
+**Route:** `/admin/semantic`
+
+A two-panel browser for exploring the semantic layer:
+
+- **Left sidebar** -- File tree showing entities, metrics, glossary, and catalog
+- **Right panel** -- Detail view with a **Pretty** / **YAML** toggle
+
+In **Pretty** mode, entities show parsed dimensions, joins, measures, and query patterns with formatted tables. In **YAML** mode, the raw YAML source is displayed with syntax highlighting.
+
+Browse entities by clicking them in the sidebar. The catalog shows `use_for` tags and `common_questions`. The glossary highlights ambiguous terms. Metrics display SQL, aggregation type, and objectives.
+
+See [Semantic Layer](/docs/getting-started/semantic-layer) for the YAML format reference.
+
+---
+
+## Audit Log
+
+**Route:** `/admin/audit`
+
+<Callout type="info">
+Requires an internal database (`DATABASE_URL`). Without it, this page shows a feature gate message.
+</Callout>
+
+Shows every SQL query executed by the agent with:
+
+- **Stats** -- Total queries, total errors, error rate
+- **Log table** -- Timestamp, user, SQL query, duration, row count, success/failure
+
+**Filters:**
+- Date range (from/to)
+- User ID
+- Errors only toggle
+- Pagination
+
+---
+
+## Actions
+
+**Route:** `/admin/actions`
+
+<Callout type="info">
+Requires `ATLAS_ACTIONS_ENABLED=true`. Without it, this page shows a feature gate message.
+</Callout>
+
+Lists action log entries with status filtering:
+
+- **Tabs** -- Pending, Executed, Denied, Failed, All
+- **Table** -- Timestamp, action type, target, summary, status badge
+- **Expandable rows** -- Full payload, timestamps, error details
+
+**Actions:**
+- **Approve** pending actions
+- **Deny** pending actions with a reason
+
+See [Actions Framework](/docs/guides/actions) for details on approval modes.
+
+---
+
+## Scheduled Tasks
+
+**Route:** `/admin/scheduled-tasks`
+
+<Callout type="info">
+Requires `ATLAS_SCHEDULER_ENABLED=true`.
+</Callout>
+
+Manages recurring queries:
+
+- **Filter tabs** -- All, Enabled, Disabled
+- **Table** -- Name, question, cron expression, delivery channel, next run time, enabled status
+- **Expandable rows** -- Recent run history with status, timing, and token usage
+
+**Actions:**
+- **Toggle enabled/disabled**
+- **Run now** -- Trigger immediate execution
+
+See [Scheduled Tasks](/docs/guides/scheduled-tasks) for setup and configuration.
+
+---
+
+## User Management
+
+**Route:** `/admin/users`
+
+<Callout type="info">
+Requires managed auth with the Better Auth admin plugin. Not available in simple-key, BYOT, or no-auth modes.
+</Callout>
+
+Full user management with stats and controls:
+
+- **Stats** -- Total users, admins, analysts, viewers
+- **Search** -- Filter by email
+- **Role filter** -- Filter by role
+
+**Actions (per user):**
+- **Change role** -- Set to viewer, analyst, or admin
+- **Ban/unban** -- Temporarily or permanently ban a user
+- **Revoke sessions** -- Force logout across all devices
+- **Delete** -- Permanently remove user and sessions
+
+**Safety guards:**
+- Cannot change your own role
+- Cannot ban or delete yourself
+- Cannot demote or delete the last admin
+
+---
+
+## API Endpoints
+
+All admin endpoints are at `/api/v1/admin/` and require the `admin` role. See the [SDK](/docs/reference/sdk) for typed client methods.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/overview` | Dashboard stats |
+| `GET` | `/connections` | List connections |
+| `POST` | `/connections/:id/test` | Test connection health |
+| `GET` | `/semantic/entities` | List entity summaries |
+| `GET` | `/semantic/entities/:name` | Get entity detail |
+| `GET` | `/semantic/metrics` | List all metrics |
+| `GET` | `/semantic/glossary` | Get glossary |
+| `GET` | `/semantic/catalog` | Get catalog |
+| `GET` | `/semantic/stats` | Semantic coverage stats |
+| `GET` | `/audit` | Query audit log |
+| `GET` | `/audit/stats` | Audit aggregates |
+| `GET` | `/plugins` | List plugins |
+| `POST` | `/plugins/:id/health` | Plugin health check |
+| `GET` | `/users` | List users |
+| `GET` | `/users/stats` | User stats |
+| `PATCH` | `/users/:id/role` | Change role |
+| `POST` | `/users/:id/ban` | Ban user |
+| `POST` | `/users/:id/unban` | Unban user |
+| `POST` | `/users/:id/revoke` | Revoke sessions |
+| `DELETE` | `/users/:id` | Delete user |

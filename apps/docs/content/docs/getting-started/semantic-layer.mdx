@@ -1,0 +1,355 @@
+---
+title: Semantic Layer
+description: Define your data schema in YAML so the Atlas agent understands your database before writing SQL.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The semantic layer is a set of YAML files that describe your database schema, business terminology, and key metrics. The agent reads these files before writing SQL -- they are the primary mechanism for grounding the agent in your data model.
+
+## Directory Structure
+
+```
+semantic/
+├── catalog.yml              # Index of all entities with use_for guidance
+├── glossary.yml             # Business term definitions and disambiguation
+├── entities/                # One YAML per table or view
+│   ├── customers.yml
+│   ├── orders.yml
+│   └── products.yml
+├── metrics/                 # Metric definitions per entity
+│   ├── customers.yml
+│   └── orders.yml
+└── warehouse/               # Per-source directory (multi-datasource)
+    └── entities/
+        └── events.yml
+```
+
+When using [multiple datasources](/docs/reference/config), each source can have its own `entities/` subdirectory under `semantic/{source}/`. Entities can also specify a `connection` field to indicate which datasource they belong to.
+
+---
+
+## Entity YAML Reference
+
+Each file in `semantic/entities/` describes one table or view. The agent reads these to understand column types, relationships, and query patterns.
+
+```yaml
+# semantic/entities/orders.yml
+name: Orders
+type: fact_table                      # dimension_table, fact_table, or view
+table: orders                         # Database table name (can be schema-qualified: analytics.orders)
+grain: one row per order
+description: |
+  Customer orders with line items, totals, and fulfillment status.
+  Each row represents a single order placed by a customer.
+
+dimensions:
+  - name: id
+    sql: id
+    type: integer
+    description: Unique order identifier
+    primary_key: true
+    sample_values: [1001, 1002, 1003]
+
+  - name: status
+    sql: status
+    type: string
+    description: Current order status
+    sample_values: [pending, shipped, delivered, cancelled]
+
+  - name: order_month
+    sql: "DATE_TRUNC('month', created_at)"
+    type: date
+    description: Month the order was placed
+    virtual: true                     # Computed column (not a raw DB column)
+
+measures:
+  - name: order_count
+    sql: id
+    type: count_distinct
+    description: Total number of unique orders
+
+  - name: total_revenue
+    sql: total_amount
+    type: sum
+    description: Sum of order totals
+
+joins:
+  - target_entity: Customers
+    relationship: many_to_one
+    join_columns:
+      from: customer_id
+      to: id
+    description: orders.customer_id → customers.id
+
+virtual_dimensions:
+  - name: order_size_bucket
+    sql: |
+      CASE
+        WHEN total_amount < 50 THEN 'small'
+        WHEN total_amount < 200 THEN 'medium'
+        ELSE 'large'
+      END
+    type: string
+    description: Order size category based on total amount
+
+query_patterns:
+  - description: Revenue by month
+    sql: |
+      SELECT DATE_TRUNC('month', created_at) AS month,
+             SUM(total_amount) AS revenue
+      FROM orders
+      GROUP BY 1
+      ORDER BY 1
+
+use_cases:
+  - Revenue analysis and forecasting
+  - Order fulfillment tracking
+
+cross_source_joins:                   # Optional: joins to other datasources
+  - source: warehouse
+    target_table: events
+    on: "orders.id = events.order_id"
+    relationship: one_to_many
+    description: Join orders to event stream in warehouse
+```
+
+### Dimension Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Column identifier |
+| `sql` | string | Yes | SQL expression (column name, CASE statement, function call) |
+| `type` | string | Yes | `string`, `number`, `integer`, `real`, `numeric`, `date`, `boolean`, `timestamp`, `text` |
+| `description` | string | Yes | What this column represents |
+| `primary_key` | boolean | No | Marks primary key columns |
+| `virtual` | boolean | No | Marks computed columns (not raw DB columns) |
+| `sample_values` | array | No | Example values to guide the agent |
+
+### Measure Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Metric identifier |
+| `sql` | string | Yes | Column to aggregate |
+| `type` | string | Yes | `count_distinct`, `sum`, `avg`, `min`, `max` |
+| `description` | string | Yes | What this metric measures |
+
+### Join Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `target_entity` | string | Yes | Name of the target entity |
+| `relationship` | string | Yes | `many_to_one`, `one_to_many`, `one_to_one`, `many_to_many` |
+| `join_columns.from` | string | Yes | Local foreign key column |
+| `join_columns.to` | string | Yes | Target primary key column |
+| `description` | string | No | Human-readable relationship description |
+
+### Entity Types
+
+| Type | Description | Generated features |
+|------|-------------|-------------------|
+| `dimension_table` | Lookup/reference table | Full: PKs, FKs, measures, query patterns |
+| `fact_table` | Event/transaction table | Full: PKs, FKs, measures, query patterns |
+| `view` | Database view | Simplified: no PK/FK, no measures, no query patterns |
+
+---
+
+## Catalog
+
+The catalog (`semantic/catalog.yml`) is an index that tells the agent what each entity is for and what questions it can answer.
+
+```yaml
+version: "1.0"
+name: Acme Analytics
+description: Sales and customer analytics for Acme Corp
+
+entities:
+  - name: Orders
+    file: entities/orders.yml
+    grain: one row per order
+    description: Customer orders with line items and totals
+    use_for:
+      - Revenue analysis
+      - Order volume tracking
+    common_questions:
+      - What was last month's revenue?
+      - How many orders were placed this week?
+
+  - name: Customers
+    file: entities/customers.yml
+    grain: one row per customer
+    description: Customer profiles and account information
+    use_for:
+      - Customer segmentation
+      - Churn analysis
+    common_questions:
+      - How many active customers do we have?
+
+glossary: glossary.yml
+
+metrics:
+  - file: metrics/orders.yml
+    description: Order and revenue metrics
+```
+
+The `use_for` and `common_questions` fields help the agent decide which entities to read for a given question.
+
+---
+
+## Glossary
+
+The glossary (`semantic/glossary.yml`) defines business terms and flags ambiguous ones that require clarification.
+
+```yaml
+terms:
+  revenue:
+    status: defined
+    definition: |
+      Total order amount after discounts, before tax.
+      Calculated as SUM(orders.total_amount).
+    tables:
+      - orders
+
+  status:
+    status: ambiguous
+    note: |
+      "Status" appears in multiple tables with different meanings.
+      Ask the user which entity they mean.
+    tables:
+      - orders
+      - customers
+      - shipments
+    possible_mappings:
+      - orders.status
+      - customers.account_status
+      - shipments.delivery_status
+
+  active_customer:
+    status: defined
+    definition: A customer with at least one order in the last 90 days.
+    tables:
+      - customers
+      - orders
+```
+
+When a term is marked `ambiguous`, the agent should ask a clarifying question before writing SQL.
+
+---
+
+## Metrics
+
+Metric files (`semantic/metrics/*.yml`) define authoritative SQL for key business metrics. The agent uses these SQL statements exactly as written.
+
+```yaml
+metrics:
+  - id: total_revenue
+    label: Total Revenue
+    description: Sum of all order totals after discounts
+    type: atomic
+    unit: USD
+    sql: |
+      SELECT SUM(total_amount) AS total_revenue
+      FROM orders
+    aggregation: sum
+    objective: maximize
+
+  - id: revenue_by_month
+    label: Revenue by Month
+    description: Monthly revenue breakdown
+    type: breakdown
+    unit: USD
+    sql: |
+      SELECT DATE_TRUNC('month', created_at) AS month,
+             SUM(total_amount) AS revenue
+      FROM orders
+      GROUP BY 1
+      ORDER BY 1
+    aggregation: sum
+    objective: maximize
+    source:
+      entity: Orders
+      measure: total_revenue
+
+  - id: average_order_value
+    label: Average Order Value
+    description: Average revenue per order
+    type: derived
+    unit: USD
+    sql: |
+      SELECT AVG(total_amount) AS avg_order_value
+      FROM orders
+    aggregation: avg
+    objective: maximize
+```
+
+### Metric Types
+
+| Type | Description | Example |
+|------|-------------|---------|
+| `atomic` | Base metric directly from data | Total MRR, User Count |
+| `derived` | Calculated from expressions | Churn Rate, Average Order Value |
+| `breakdown` | Metric split by dimensions | Revenue by Region, Users by Plan |
+
+### Metric Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | Yes | Unique identifier |
+| `label` | string | Yes | Human-readable name |
+| `description` | string | Yes | What this metric measures |
+| `type` | string | Yes | `atomic`, `derived`, or `breakdown` |
+| `sql` | string | Yes | Authoritative SQL (used exactly as written) |
+| `unit` | string | No | `USD`, `count`, `percent`, `months`, `ratio` |
+| `aggregation` | string | No | `sum`, `avg`, `count`, `count_distinct`, `min`, `max`, `ratio` |
+| `objective` | string | No | `maximize`, `minimize`, `maintain` |
+| `source.entity` | string | No | Source entity name |
+| `source.measure` | string | No | Source measure name |
+
+---
+
+## How the Agent Uses the Semantic Layer
+
+1. **Read the catalog** -- The agent starts by reading `catalog.yml` to understand which entities are relevant to the question
+2. **Explore entities** -- The agent reads entity YAML files to learn column types, sample values, joins, and query patterns
+3. **Check the glossary** -- If a term is ambiguous, the agent asks the user for clarification
+4. **Use metrics** -- If a question matches a defined metric, the agent uses that metric's SQL exactly
+5. **Write validated SQL** -- The agent writes a query using only tables and columns defined in the semantic layer
+
+The semantic layer also powers the [table whitelist](/docs/security/sql-validation) -- queries can only reference tables that have an entity YAML file.
+
+---
+
+## Generating the Semantic Layer
+
+Use `atlas init` to auto-generate entity files, glossary, metrics, and catalog from your database schema:
+
+```bash
+bun run atlas -- init                    # Profile all tables and views
+bun run atlas -- init --tables t1,t2     # Profile specific tables
+bun run atlas -- init --enrich           # Add LLM-generated descriptions
+bun run atlas -- init --schema analytics # Profile a non-public schema
+```
+
+Use `atlas diff` to detect schema drift between your database and semantic layer:
+
+```bash
+bun run atlas -- diff                    # Compare DB schema vs YAML files
+```
+
+See [CLI Reference](/docs/reference/cli) for all options.
+
+---
+
+## Manual Editing Tips
+
+The generated YAML is a starting point. Improve agent accuracy by:
+
+- **Adding business context** to descriptions that the profiler cannot infer
+- **Removing columns** that should not be queryable (internal IDs, PII)
+- **Adding virtual dimensions** for common groupings (date buckets, status categories)
+- **Defining query patterns** for frequently asked questions
+- **Marking glossary terms** as `ambiguous` when the same word means different things in different tables
+- **Writing metrics** for KPIs the team tracks -- the agent will use the exact SQL you provide
+
+Re-run `atlas init --enrich` after manual edits to fill in any missing fields with LLM-generated content. Existing values are preserved.

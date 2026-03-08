@@ -9,7 +9,18 @@ Atlas lets you connect your database, auto-generate a semantic layer, and query 
 
 - [Quick Start](/docs/getting-started/quick-start) -- Get Atlas running locally in minutes
 - [Connect Your Data](/docs/getting-started/connect-your-data) -- Connect to PostgreSQL, MySQL, or plugin-based sources (ClickHouse, Snowflake, DuckDB, Salesforce)
+- [Semantic Layer](/docs/getting-started/semantic-layer) -- Define your data schema in YAML so the agent understands your database
 - [Demo Datasets](/docs/getting-started/demo-datasets) -- Try Atlas with pre-built demo data
+
+## Guides
+
+- [MCP Server](/docs/guides/mcp) -- Use Atlas in Claude Desktop, Cursor, and other MCP clients
+- [Slack Integration](/docs/guides/slack) -- Query your data from Slack with slash commands and threaded follow-ups
+- [Python Data Analysis](/docs/guides/python) -- Sandboxed Python execution for charts and statistical analysis
+- [Scheduled Tasks](/docs/guides/scheduled-tasks) -- Run recurring queries and deliver results via email, Slack, or webhook
+- [Actions Framework](/docs/guides/actions) -- Approval-gated write operations (email, JIRA, and more)
+- [Admin Console](/docs/guides/admin-console) -- Monitor connections, browse the semantic layer, and manage users
+- [Troubleshooting](/docs/guides/troubleshooting) -- Diagnose and fix common issues
 
 ## Deployment
 
@@ -21,15 +32,6 @@ Atlas lets you connect your database, auto-generate a semantic layer, and query 
 - [Bring Your Own Frontend](/docs/frameworks/overview) -- Use Atlas with any frontend framework
 - Framework-specific guides for [React/Vite](/docs/frameworks/react-vite), [Nuxt](/docs/frameworks/nuxt), [SvelteKit](/docs/frameworks/sveltekit), and [TanStack Start](/docs/frameworks/tanstack-start)
 
-## Plugins
-
-- [Plugin Authoring Guide](/docs/plugins/authoring-guide) -- Build datasource, context, interaction, action, and sandbox plugins
-
-## SDK & Integrations
-
-- [Framework Integration](/docs/frameworks/overview) -- Bring your own frontend (React, Vue, Svelte, etc.) with `@useatlas/sdk` for programmatic access
-- [MCP Server](/docs/reference/cli#mcp) -- Model Context Protocol server for Claude Desktop, Cursor, and other MCP clients
-
 ## Security
 
 - [SQL Validation Pipeline](/docs/security/sql-validation) -- 7-layer defense-in-depth for read-only SQL enforcement
@@ -38,6 +40,13 @@ Atlas lets you connect your database, auto-generate a semantic layer, and query 
 
 - [Environment Variables](/docs/reference/environment-variables) -- Complete env var reference with defaults
 - [CLI Reference](/docs/reference/cli) -- All commands: init, diff, query, doctor, validate, mcp, and more
+- [Configuration](/docs/reference/config) -- Declarative config with `atlas.config.ts`
+- [SDK Reference](/docs/reference/sdk) -- TypeScript SDK for programmatic API access
+- [API Reference](/docs/reference/api) -- HTTP API endpoints for chat, queries, and conversations
+
+## Plugins
+
+- [Plugin Authoring Guide](/docs/plugins/authoring-guide) -- Build datasource, context, interaction, action, and sandbox plugins
 
 ## Architecture
 

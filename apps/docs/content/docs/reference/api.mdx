@@ -1,0 +1,273 @@
+---
+title: API Reference
+description: HTTP API endpoints for chat, queries, conversations, actions, and health checks.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas exposes a Hono-based HTTP API. All endpoints are mounted under `/api/`. Use the [SDK](/docs/reference/sdk) for a typed client, or call the API directly.
+
+## Base URL
+
+| Setup | Base URL |
+|-------|----------|
+| Same-origin (Next.js rewrites) | `http://localhost:3000/api` |
+| Standalone API | `http://localhost:3001/api` |
+| Cross-origin | Set `NEXT_PUBLIC_ATLAS_API_URL` to the API host |
+
+---
+
+## Authentication
+
+Authentication headers depend on the configured [auth mode](/docs/deployment/authentication):
+
+| Auth Mode | Header |
+|-----------|--------|
+| None | No header required |
+| Simple Key | `Authorization: Bearer <api-key>` or `X-API-Key: <key>` |
+| Managed | `Cookie: better-auth.session_token=<token>` (browser) or `Authorization: Bearer <session-token>` |
+| BYOT | `Authorization: Bearer <jwt>` |
+
+---
+
+## POST /api/chat
+
+Streaming chat endpoint. Returns an event stream using the AI SDK Data Stream Protocol.
+
+### Request
+
+```bash
+curl -X POST http://localhost:3001/api/chat \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <key>" \
+  -d '{
+    "messages": [
+      {
+        "id": "msg-1",
+        "role": "user",
+        "parts": [{ "type": "text", "text": "How many users signed up last week?" }]
+      }
+    ],
+    "conversationId": "optional-uuid"
+  }'
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `messages` | array | Yes | Chat messages with `id`, `role`, and `parts` |
+| `conversationId` | string (UUID) | No | Resume an existing conversation |
+
+### Response
+
+Server-sent event stream. The `x-conversation-id` header contains the conversation ID.
+
+---
+
+## POST /api/v1/query
+
+Synchronous JSON query endpoint. Runs the agent and returns structured results.
+
+### Request
+
+```bash
+curl -X POST http://localhost:3001/api/v1/query \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <key>" \
+  -d '{"question": "What was last month revenue?"}'
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `question` | string | Yes | Natural language question |
+| `conversationId` | string (UUID) | No | Resume an existing conversation |
+
+### Response
+
+```json
+{
+  "answer": "Last month's revenue was $1.2M, a 15% increase...",
+  "sql": ["SELECT SUM(total_amount) FROM orders WHERE ..."],
+  "data": [
+    {
+      "columns": ["total_revenue"],
+      "rows": [{ "total_revenue": 1200000 }]
+    }
+  ],
+  "steps": 3,
+  "usage": { "totalTokens": 1523 },
+  "conversationId": "uuid",
+  "pendingActions": []
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `answer` | string | Agent's natural language response |
+| `sql` | string[] | SQL queries executed |
+| `data` | array | Query results with `columns` and `rows` |
+| `steps` | number | Agent steps taken |
+| `usage.totalTokens` | number | Tokens consumed |
+| `conversationId` | string | Conversation ID (if persisted) |
+| `pendingActions` | array | Actions awaiting approval (if action framework enabled) |
+
+---
+
+## GET /api/v1/conversations
+
+List conversations for the authenticated user.
+
+### Query Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `limit` | number | 20 | Max results (1--100) |
+| `offset` | number | 0 | Pagination offset |
+| `starred` | boolean | — | Filter by starred status |
+
+### Response
+
+```json
+{
+  "conversations": [
+    {
+      "id": "uuid",
+      "userId": "user-id",
+      "title": "Revenue analysis",
+      "surface": "web",
+      "connectionId": null,
+      "starred": false,
+      "createdAt": "2026-01-15T10:30:00Z",
+      "updatedAt": "2026-01-15T10:35:00Z"
+    }
+  ],
+  "total": 42
+}
+```
+
+---
+
+## GET /api/v1/conversations/:id
+
+Get a conversation with all messages.
+
+### Response
+
+```json
+{
+  "id": "uuid",
+  "userId": "user-id",
+  "title": "Revenue analysis",
+  "surface": "web",
+  "starred": false,
+  "createdAt": "2026-01-15T10:30:00Z",
+  "updatedAt": "2026-01-15T10:35:00Z",
+  "messages": [
+    {
+      "id": "msg-uuid",
+      "conversationId": "uuid",
+      "role": "user",
+      "content": { "parts": [{ "type": "text", "text": "..." }] },
+      "createdAt": "2026-01-15T10:30:00Z"
+    }
+  ]
+}
+```
+
+---
+
+## PATCH /api/v1/conversations/:id/star
+
+Star or unstar a conversation.
+
+```bash
+curl -X PATCH http://localhost:3001/api/v1/conversations/<id>/star \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <key>" \
+  -d '{"starred": true}'
+```
+
+---
+
+## DELETE /api/v1/conversations/:id
+
+Delete a conversation and its messages. Returns `204 No Content`.
+
+---
+
+## GET /api/health
+
+Health check endpoint. No authentication required.
+
+### Response
+
+```json
+{
+  "status": "ok",
+  "checks": {
+    "datasource": { "status": "ok", "latencyMs": 12 },
+    "provider": { "status": "ok", "provider": "anthropic", "model": "(default)" },
+    "semanticLayer": { "status": "ok", "entityCount": 5 },
+    "internalDb": { "status": "not_configured" },
+    "explore": { "backend": "nsjail", "isolated": true },
+    "auth": { "mode": "managed", "enabled": true },
+    "slack": { "enabled": false, "mode": "disabled" }
+  },
+  "sources": {
+    "default": { "status": "healthy", "latencyMs": 12, "dbType": "postgres" }
+  }
+}
+```
+
+---
+
+## Error Responses
+
+All error responses follow a consistent format:
+
+```json
+{
+  "error": "error_code",
+  "message": "Human-readable error description",
+  "retryAfterSeconds": 12
+}
+```
+
+### Error Codes
+
+| Code | Status | Description |
+|------|--------|-------------|
+| `auth_error` | 401 | Authentication failed or missing |
+| `rate_limited` | 429 | Too many requests. `Retry-After` header included |
+| `configuration_error` | 400 | Atlas is not fully configured (missing provider, etc.) |
+| `no_datasource` | 400 | No datasource URL configured |
+| `invalid_request` | 400 | Invalid request body or parameters |
+| `validation_error` | 422 | Request validation failed (Zod errors in `details`) |
+| `not_found` | 404 | Resource not found |
+| `not_available` | 404 | Feature not available (e.g., no internal DB) |
+| `provider_model_not_found` | 400 | Configured AI model does not exist |
+| `provider_auth_error` | 502 | AI provider authentication failed |
+| `provider_rate_limit` | 429 | AI provider rate limited |
+| `provider_timeout` | 504 | AI provider timed out |
+| `provider_unreachable` | 502 | Could not reach the AI provider |
+| `provider_error` | 502 | AI provider returned an error |
+| `internal_error` | 500 | Unexpected server error |
+
+---
+
+## Rate Limiting
+
+When `ATLAS_RATE_LIMIT_RPM` is set, the API enforces per-user rate limits (sliding 60-second window). Rate-limited responses include:
+
+- HTTP status `429`
+- `Retry-After` header (seconds until the limit resets)
+- `retryAfterSeconds` in the response body
+
+See [Environment Variables](/docs/reference/environment-variables) for configuration.
+
+---
+
+## CORS
+
+CORS is configured via `ATLAS_CORS_ORIGIN` (defaults to `*`). When an explicit origin is set, credentials (cookies) are allowed. The `Retry-After` and `x-conversation-id` headers are exposed to the client.
+
+For cross-origin managed auth deployments, see the [cross-origin section](/docs/deployment/authentication#cross-origin-deployment) in the authentication guide.

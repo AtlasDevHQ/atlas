@@ -1,0 +1,292 @@
+---
+title: SDK Reference
+description: TypeScript SDK for programmatic access to the Atlas API.
+---
+
+The `@useatlas/sdk` package provides a typed client for the Atlas API. Use it to run queries, stream chat responses, and manage conversations from any TypeScript or JavaScript application.
+
+## Installation
+
+```bash
+bun add @useatlas/sdk
+```
+
+---
+
+## Create a Client
+
+```typescript
+import { createAtlasClient } from "@useatlas/sdk";
+
+// Simple API key auth
+const atlas = createAtlasClient({
+  baseUrl: "https://api.example.com",
+  apiKey: "your-api-key",
+});
+
+// Bearer token auth (managed sessions or BYOT JWTs)
+const atlas = createAtlasClient({
+  baseUrl: "https://api.example.com",
+  bearerToken: "your-jwt-or-session-token",
+});
+```
+
+### Options
+
+```typescript
+type AtlasClientOptions = {
+  baseUrl: string; // Atlas API base URL
+} & (
+  | { apiKey: string }          // Simple API key
+  | { bearerToken: string }     // Bearer token (managed/BYOT)
+);
+```
+
+When both `apiKey` and `bearerToken` are provided, the API key takes precedence.
+
+---
+
+## Query
+
+Run a natural language query and get a structured response.
+
+```typescript
+const result = await atlas.query("What was last month's revenue?");
+
+console.log(result.answer);     // "Last month's revenue was $1.2M..."
+console.log(result.sql);        // ["SELECT SUM(total) FROM orders WHERE ..."]
+console.log(result.data);       // [{ columns: ["total"], rows: [{ total: 1200000 }] }]
+console.log(result.steps);      // 3
+console.log(result.usage);      // { totalTokens: 1523 }
+```
+
+### Options
+
+```typescript
+const result = await atlas.query("Revenue by region", {
+  conversationId: "existing-conversation-id", // Continue a conversation
+});
+```
+
+### Response
+
+```typescript
+interface QueryResponse {
+  answer: string;
+  sql: string[];
+  data: Array<{
+    columns: string[];
+    rows: Array<Record<string, unknown>>;
+  }>;
+  steps: number;
+  usage: { totalTokens: number };
+  conversationId?: string;
+  pendingActions?: Array<{
+    id: string;
+    type: string;
+    target: string;
+    summary: string;
+    approveUrl: string;
+    denyUrl: string;
+  }>;
+}
+```
+
+---
+
+## Chat
+
+Stream a chat response using the AI SDK Data Stream Protocol.
+
+```typescript
+const response = await atlas.chat([
+  {
+    id: "msg-1",
+    role: "user",
+    parts: [{ type: "text", text: "How many active customers?" }],
+  },
+]);
+
+// response is a raw Response with an SSE stream
+const reader = response.body?.getReader();
+```
+
+### Options
+
+```typescript
+const response = await atlas.chat(messages, {
+  conversationId: "existing-conversation-id",
+});
+```
+
+---
+
+## Conversations
+
+List, retrieve, star, and delete conversations.
+
+```typescript
+// List conversations
+const { conversations, total } = await atlas.conversations.list({
+  limit: 20,
+  offset: 0,
+  starred: true, // Optional: filter starred only
+});
+
+// Get a conversation with messages
+const conversation = await atlas.conversations.get("conversation-id");
+console.log(conversation.messages);
+
+// Star / unstar
+await atlas.conversations.star("conversation-id");
+await atlas.conversations.unstar("conversation-id");
+
+// Delete
+await atlas.conversations.delete("conversation-id");
+```
+
+### Types
+
+```typescript
+interface Conversation {
+  id: string;
+  userId: string | null;
+  title: string | null;
+  surface: "web" | "api" | "mcp" | "slack";
+  connectionId: string | null;
+  starred: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface ConversationWithMessages extends Conversation {
+  messages: Message[];
+}
+
+interface Message {
+  id: string;
+  conversationId: string;
+  role: "user" | "assistant" | "system" | "tool";
+  content: unknown;
+  createdAt: string;
+}
+```
+
+---
+
+## Scheduled Tasks
+
+Create and manage recurring queries. Requires `ATLAS_SCHEDULER_ENABLED=true` on the server.
+
+```typescript
+// Create a scheduled task
+const task = await atlas.scheduledTasks.create({
+  name: "Daily revenue check",
+  question: "What was yesterday's total revenue?",
+  cronExpression: "0 9 * * *",
+  deliveryChannel: "email",
+  recipients: [{ type: "email", address: "team@example.com" }],
+});
+
+// List tasks
+const { tasks, total } = await atlas.scheduledTasks.list({ enabled: true });
+
+// Get task with recent runs
+const taskDetail = await atlas.scheduledTasks.get(task.id);
+console.log(taskDetail.recentRuns);
+
+// Update
+await atlas.scheduledTasks.update(task.id, { enabled: false });
+
+// Trigger immediate run
+await atlas.scheduledTasks.trigger(task.id);
+
+// List past runs
+const { runs } = await atlas.scheduledTasks.listRuns(task.id, { limit: 10 });
+
+// Delete
+await atlas.scheduledTasks.delete(task.id);
+```
+
+See [Scheduled Tasks](/docs/guides/scheduled-tasks) for full configuration details.
+
+---
+
+## Admin
+
+Access admin-only endpoints. Requires the `admin` role.
+
+```typescript
+// Dashboard overview
+const overview = await atlas.admin.overview();
+// { connections: 2, entities: 15, metrics: 8, glossaryTerms: 12, plugins: 1, pluginHealth: [...] }
+
+// Semantic layer
+const { entities } = await atlas.admin.semantic.entities();
+const { entity } = await atlas.admin.semantic.entity("orders");
+const { metrics } = await atlas.admin.semantic.metrics();
+const { glossary } = await atlas.admin.semantic.glossary();
+const { catalog } = await atlas.admin.semantic.catalog();
+const stats = await atlas.admin.semantic.stats();
+
+// Connections
+const { connections } = await atlas.admin.connections();
+const health = await atlas.admin.testConnection("default");
+
+// Audit log
+const { rows, total } = await atlas.admin.audit({
+  limit: 50,
+  from: "2026-01-01",
+  success: false, // errors only
+});
+const auditStats = await atlas.admin.auditStats();
+
+// Plugins
+const { plugins } = await atlas.admin.plugins();
+const pluginHealth = await atlas.admin.pluginHealth("clickhouse");
+```
+
+See [Admin Console](/docs/guides/admin-console) for details on each endpoint.
+
+---
+
+## Error Handling
+
+All API errors are thrown as `AtlasError` instances.
+
+```typescript
+import { AtlasError } from "@useatlas/sdk";
+
+try {
+  await atlas.query("...");
+} catch (error) {
+  if (error instanceof AtlasError) {
+    console.log(error.code);    // "rate_limited"
+    console.log(error.status);  // 429
+    console.log(error.message); // "Too many requests"
+
+    if (error.code === "rate_limited") {
+      console.log(error.retryAfterSeconds); // 12
+    }
+  }
+}
+```
+
+### Error Codes
+
+| Code | Status | Description |
+|------|--------|-------------|
+| `auth_error` | 401 | Authentication failed |
+| `forbidden` | 403 | Insufficient permissions |
+| `rate_limited` | 429 | Too many requests (check `retryAfterSeconds`) |
+| `configuration_error` | 400 | Server misconfigured |
+| `no_datasource` | 400 | No datasource connected |
+| `invalid_request` | 400 | Invalid request body |
+| `not_found` | 404 | Resource not found |
+| `provider_auth_error` | 502 | LLM provider auth failed |
+| `provider_rate_limit` | 429 | LLM provider rate limited |
+| `provider_timeout` | 504 | LLM provider timed out |
+| `provider_error` | 502 | LLM provider error |
+| `internal_error` | 500 | Server error |
+| `network_error` | — | Could not reach the API |
+| `invalid_response` | — | Response could not be parsed |

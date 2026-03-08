@@ -1,0 +1,143 @@
+---
+title: MCP Server
+description: Use Atlas as a Model Context Protocol server in Claude Desktop, Cursor, and other MCP clients.
+---
+
+Atlas exposes a [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that gives any MCP-compatible client access to your semantic layer and validated SQL execution.
+
+## Quick Start
+
+```bash
+bun run mcp              # Start MCP server on stdio
+bun run dev:mcp           # Start with hot reload
+bun run atlas -- mcp      # Same as bun run mcp
+```
+
+---
+
+## Claude Desktop
+
+Add Atlas to your Claude Desktop configuration at `~/.claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "atlas": {
+      "command": "bun",
+      "args": ["run", "mcp"],
+      "cwd": "/path/to/your/atlas/project",
+      "env": {
+        "ATLAS_DATASOURCE_URL": "postgresql://user:pass@host:5432/db",
+        "ATLAS_PROVIDER": "anthropic",
+        "ANTHROPIC_API_KEY": "sk-ant-..."
+      }
+    }
+  }
+}
+```
+
+---
+
+## Cursor
+
+In Cursor settings, add an MCP server with:
+
+- **Command:** `bun`
+- **Args:** `["run", "mcp"]`
+- **Working directory:** Your Atlas project root
+
+---
+
+## Other MCP Clients
+
+Any client that supports the stdio transport can use Atlas. The server reads JSON-RPC on stdin and writes responses to stdout. Logs go to stderr.
+
+---
+
+## SSE Transport
+
+For remote or containerized setups, use the SSE (Server-Sent Events) transport:
+
+```bash
+bun packages/mcp/bin/serve.ts --transport sse
+bun packages/mcp/bin/serve.ts --transport sse --port 9090
+bun packages/mcp/bin/serve.ts --transport sse --cors-origin "https://example.com"
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--transport` | `stdio` | `stdio` or `sse` |
+| `--port` | `8080` | Port for SSE transport |
+| `--cors-origin` | `*` (or `ATLAS_CORS_ORIGIN`) | CORS allowed origin |
+
+The SSE endpoint is available at `http://localhost:8080/mcp`.
+
+---
+
+## Available Tools
+
+The MCP server exposes two tools:
+
+### explore
+
+Read files from the semantic layer directory. Accepts bash commands scoped to the `semantic/` directory.
+
+```
+command: "cat catalog.yml"
+command: "grep -r revenue entities/"
+command: "ls entities/"
+```
+
+This is the same `explore` tool the agent uses -- read-only, path-traversal protected.
+
+### executeSQL
+
+Execute a validated SQL query against the analytics datasource.
+
+```
+sql: "SELECT COUNT(*) FROM orders"
+explanation: "Count total orders"
+connectionId: "warehouse"  (optional)
+```
+
+All SQL validation applies: SELECT-only, table whitelist, auto-LIMIT, statement timeout, and audit logging. See [SQL Validation Pipeline](/docs/security/sql-validation).
+
+---
+
+## Available Resources
+
+The MCP server exposes the semantic layer as read-only resources:
+
+| URI | Description |
+|-----|-------------|
+| `atlas://semantic/catalog` | Data catalog (`catalog.yml`) |
+| `atlas://semantic/glossary` | Business glossary (`glossary.yml`) |
+| `atlas://semantic/entities/{name}` | Entity schema (e.g., `entities/orders.yml`) |
+| `atlas://semantic/metrics/{name}` | Metric definitions (e.g., `metrics/orders.yml`) |
+
+Entity and metric resources are listable -- clients can discover all available files.
+
+---
+
+## Configuration
+
+The MCP server uses the same configuration as the main API server:
+
+- `atlas.config.ts` (if present)
+- Environment variables: `ATLAS_DATASOURCE_URL`, `ATLAS_PROVIDER`, provider API keys, etc.
+
+See [Environment Variables](/docs/reference/environment-variables) for the full reference.
+
+---
+
+## Programmatic Usage
+
+Create an MCP server instance in your own code:
+
+```typescript
+import { createAtlasMcpServer } from "@atlas/mcp/server";
+
+const server = await createAtlasMcpServer();
+```
+
+The server factory initializes configuration, registers tools and resources, and returns a ready-to-use `McpServer` instance. Connect it to any transport (stdio, SSE, or custom).

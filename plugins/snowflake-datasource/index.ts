@@ -19,7 +19,7 @@
 
 import { z } from "zod";
 import { createPlugin } from "@useatlas/plugin-sdk";
-import type { AtlasDatasourcePlugin, PluginDBConnection, PluginHealthResult } from "@useatlas/plugin-sdk";
+import type { AtlasDatasourcePlugin, PluginDBConnection, PluginHealthResult, PluginLogger } from "@useatlas/plugin-sdk";
 import {
   createSnowflakeConnection,
   extractAccount,
@@ -60,6 +60,8 @@ export type SnowflakeConfig = z.infer<typeof SnowflakeConfigSchema>;
 export function buildSnowflakePlugin(
   config: SnowflakeConfig,
 ): AtlasDatasourcePlugin<SnowflakeConfig> {
+  let log: PluginLogger | undefined;
+
   return {
     id: "snowflake-datasource",
     type: "datasource" as const,
@@ -69,7 +71,7 @@ export function buildSnowflakePlugin(
 
     connection: {
       create: () =>
-        createSnowflakeConnection({ url: config.url, maxConnections: config.maxConnections }),
+        createSnowflakeConnection({ url: config.url, maxConnections: config.maxConnections, logger: log }),
       dbType: "snowflake",
       parserDialect: "Snowflake",
       forbiddenPatterns: SNOWFLAKE_FORBIDDEN_PATTERNS,
@@ -90,6 +92,7 @@ export function buildSnowflakePlugin(
     ].join("\n"),
 
     async initialize(ctx) {
+      log = ctx.logger;
       ctx.logger.info(`Snowflake datasource plugin initialized (${extractAccount(config.url)})`);
       ctx.logger.warn(
         "Snowflake has no session-level read-only mode — Atlas enforces SELECT-only " +
@@ -120,10 +123,7 @@ export function buildSnowflakePlugin(
           try {
             await conn.close();
           } catch (closeErr) {
-            console.warn(
-              "[snowflake-datasource] Failed to close health-check connection:",
-              closeErr instanceof Error ? closeErr.message : String(closeErr),
-            );
+            (log ?? console).warn(`[snowflake-datasource] Failed to close health-check connection: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`);
           }
         }
       }

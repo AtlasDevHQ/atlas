@@ -20,7 +20,7 @@
 
 import { z } from "zod";
 import { createPlugin } from "@useatlas/plugin-sdk";
-import type { AtlasDatasourcePlugin, PluginDBConnection, PluginHealthResult } from "@useatlas/plugin-sdk";
+import type { AtlasDatasourcePlugin, PluginDBConnection, PluginHealthResult, PluginLogger } from "@useatlas/plugin-sdk";
 import {
   createClickHouseConnection,
   extractHost,
@@ -50,6 +50,8 @@ export type ClickHouseConfig = z.infer<typeof ClickHouseConfigSchema>;
 export function buildClickHousePlugin(
   config: ClickHouseConfig,
 ): AtlasDatasourcePlugin<ClickHouseConfig> {
+  let log: PluginLogger | undefined;
+
   return {
     id: "clickhouse-datasource",
     type: "datasource" as const,
@@ -61,7 +63,7 @@ export function buildClickHousePlugin(
       create: () =>
         // ClickHouse HTTP transport is stateless — safe to create per call.
         // Pool-based databases (Postgres, MySQL) should cache the connection.
-        createClickHouseConnection({ url: config.url, database: config.database }),
+        createClickHouseConnection({ url: config.url, database: config.database, logger: log }),
       dbType: "clickhouse",
       parserDialect: "PostgresQL", // closest match in node-sql-parser
       forbiddenPatterns: CLICKHOUSE_FORBIDDEN_PATTERNS,
@@ -81,6 +83,7 @@ export function buildClickHousePlugin(
     ].join("\n"),
 
     async initialize(ctx) {
+      log = ctx.logger;
       ctx.logger.info(`ClickHouse datasource plugin initialized (${extractHost(config.url)})`);
     },
 

@@ -83,6 +83,7 @@ function loadE2BSDK(): { Sandbox: any } {
 function collectSemanticFiles(
   localDir: string,
   sandboxDir: string,
+  logger?: { warn(msg: string): void },
 ): { path: string; data: string }[] {
   const results: { path: string; data: string }[] = [];
 
@@ -101,7 +102,7 @@ function collectSemanticFiles(
         try {
           const realPath = fs.realpathSync(localPath);
           if (!realPath.startsWith(localDir)) {
-            console.warn(`[e2b-sandbox] Skipping symlink escaping semantic root: ${localPath} -> ${realPath}`);
+            (logger ?? console).warn(`[e2b-sandbox] Skipping symlink escaping semantic root: ${localPath} -> ${realPath}`);
             continue;
           }
           const stat = fs.statSync(localPath);
@@ -156,6 +157,8 @@ async function createE2BSandbox(config: E2BSandboxConfig): Promise<any> {
 export function buildE2BSandboxPlugin(
   config: E2BSandboxConfig,
 ): AtlasSandboxPlugin<E2BSandboxConfig> {
+  let log: { warn(msg: string): void } | undefined;
+
   return {
     id: "e2b-sandbox",
     type: "sandbox" as const,
@@ -169,7 +172,7 @@ export function buildE2BSandboxPlugin(
 
         try {
           // Collect and upload semantic layer files
-          const files = collectSemanticFiles(semanticRoot, "semantic");
+          const files = collectSemanticFiles(semanticRoot, "semantic", log);
 
           if (files.length > 0) {
             await sandbox.files.write(files);
@@ -229,6 +232,7 @@ export function buildE2BSandboxPlugin(
     },
 
     async initialize(ctx) {
+      log = ctx.logger;
       ctx.logger.info("E2B sandbox plugin initialized");
     },
 

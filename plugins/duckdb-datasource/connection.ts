@@ -13,6 +13,7 @@ export interface DuckDBConnectionConfig {
   path: string;
   /** Open in read-only mode (default: true for non-memory databases). */
   readOnly?: boolean;
+  logger?: { warn(msg: string): void };
 }
 
 /**
@@ -135,10 +136,7 @@ export function createDuckDBConnection(
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           (instance as any).closeSync();
         } catch (err) {
-          console.warn(
-            "[duckdb-datasource] Failed to close DuckDB connection:",
-            err instanceof Error ? err.message : String(err),
-          );
+          (config.logger ?? console).warn(`[duckdb-datasource] Failed to close DuckDB connection: ${err instanceof Error ? err.message : String(err)}`);
         }
         instancePromise = null;
       }

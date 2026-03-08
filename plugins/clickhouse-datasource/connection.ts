@@ -39,6 +39,7 @@ export function extractHost(url: string): string {
 export interface ClickHouseConnectionConfig {
   url: string;
   database?: string;
+  logger?: { warn(msg: string): void };
 }
 
 /**
@@ -117,10 +118,7 @@ export function createClickHouseConnection(
       try {
         await client.close();
       } catch (err) {
-        console.warn(
-          "[clickhouse-datasource] Failed to close ClickHouse client:",
-          err instanceof Error ? err.message : String(err),
-        );
+        (config.logger ?? console).warn(`[clickhouse-datasource] Failed to close ClickHouse client: ${err instanceof Error ? err.message : String(err)}`);
       }
     },
   };

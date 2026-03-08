@@ -12,6 +12,7 @@ interface MySQLConnectionConfig {
   url: string;
   poolSize?: number;
   idleTimeoutMs?: number;
+  logger?: { warn(msg: string): void };
 }
 
 /**
@@ -65,6 +66,8 @@ export function createMySQLConnection(
     bigNumberStrings: true,
   });
 
+  const warn = (msg: string) => (config.logger ?? console).warn(msg);
+
   return {
     async query(sql: string, timeoutMs = 30000): Promise<PluginQueryResult> {
       const conn = await pool.getConnection();
@@ -90,10 +93,7 @@ export function createMySQLConnection(
         try {
           conn.release();
         } catch (releaseErr) {
-          console.warn(
-            "[mysql-datasource] Failed to release MySQL connection:",
-            releaseErr instanceof Error ? releaseErr.message : String(releaseErr),
-          );
+          warn(`[mysql-datasource] Failed to release MySQL connection: ${releaseErr instanceof Error ? releaseErr.message : String(releaseErr)}`);
         }
       }
     },
@@ -101,10 +101,7 @@ export function createMySQLConnection(
       try {
         await pool.end();
       } catch (err) {
-        console.warn(
-          "[mysql-datasource] Failed to close MySQL pool:",
-          err instanceof Error ? err.message : String(err),
-        );
+        warn(`[mysql-datasource] Failed to close MySQL pool: ${err instanceof Error ? err.message : String(err)}`);
       }
     },
   };

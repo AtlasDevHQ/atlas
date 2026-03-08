@@ -75,6 +75,7 @@ export function extractAccount(url: string): string {
 export interface SnowflakeConnectionConfig {
   url: string;
   maxConnections?: number;
+  logger?: { warn(msg: string): void };
 }
 
 /**
@@ -111,6 +112,8 @@ export function createSnowflakeConnection(
   snowflake.configure({ logLevel: "ERROR" });
 
   const opts = parseSnowflakeURL(config.url);
+
+  const warn = (msg: string) => (config.logger ?? console).warn(msg);
 
   const pool = snowflake.createPool(
     {
@@ -165,9 +168,7 @@ export function createSnowflakeConnection(
             });
           });
         } catch (tagErr) {
-          console.warn(
-            `[snowflake-datasource] Failed to set QUERY_TAG — query will proceed without audit tag: ${tagErr instanceof Error ? tagErr.message : String(tagErr)}`,
-          );
+          warn(`[snowflake-datasource] Failed to set QUERY_TAG — query will proceed without audit tag: ${tagErr instanceof Error ? tagErr.message : String(tagErr)}`);
         }
 
         // Execute the actual query
@@ -204,18 +205,12 @@ export function createSnowflakeConnection(
       try {
         await pool.drain();
       } catch (err) {
-        console.warn(
-          "[snowflake-datasource] Failed to drain Snowflake connection pool:",
-          err instanceof Error ? err.message : String(err),
-        );
+        warn(`[snowflake-datasource] Failed to drain Snowflake connection pool: ${err instanceof Error ? err.message : String(err)}`);
       }
       try {
         await pool.clear();
       } catch (err) {
-        console.warn(
-          "[snowflake-datasource] Failed to clear Snowflake connection pool:",
-          err instanceof Error ? err.message : String(err),
-        );
+        warn(`[snowflake-datasource] Failed to clear Snowflake connection pool: ${err instanceof Error ? err.message : String(err)}`);
       }
     },
   };

@@ -47,6 +47,7 @@ export function buildMcpPlugin(
   let mcpServer: { close(): Promise<void> } | null = null;
   let sseHandle: { close(): Promise<void> } | null = null;
   let connected = false;
+  let log: { error(msg: string): void } | undefined;
 
   return {
     id: "mcp-interaction",
@@ -61,6 +62,7 @@ export function buildMcpPlugin(
       if (connected) {
         throw new Error("MCP plugin already initialized — call teardown() first");
       }
+      log = ctx.logger;
 
       if (config.transport === "sse") {
         // Dynamic import to avoid pulling in @atlas/mcp (and its transitive
@@ -90,7 +92,7 @@ export function buildMcpPlugin(
           await server.connect(transport);
         } catch (err) {
           await server.close().catch((e) => {
-            console.error(`[mcp-plugin] Error closing server after init failure: ${e instanceof Error ? e.message : String(e)}`);
+            (log ?? console).error(`[mcp-plugin] Error closing server after init failure: ${e instanceof Error ? e.message : String(e)}`);
           });
           throw err;
         }
@@ -123,7 +125,7 @@ export function buildMcpPlugin(
         const h = sseHandle;
         sseHandle = null;
         await h.close().catch((err) => {
-          console.error(`[mcp-plugin] Error closing SSE handle: ${err instanceof Error ? err.message : String(err)}`);
+          (log ?? console).error(`[mcp-plugin] Error closing SSE handle: ${err instanceof Error ? err.message : String(err)}`);
         });
       }
       if (mcpServer) {

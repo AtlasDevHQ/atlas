@@ -53,7 +53,7 @@ export type NsjailSandboxConfig = z.infer<typeof NsjailConfigSchema>;
 // ---------------------------------------------------------------------------
 
 /** Resolve the nsjail binary path, or null if unavailable. */
-export function findNsjailBinary(explicit?: string): string | null {
+export function findNsjailBinary(explicit?: string, logger?: { error(msg: string): void }): string | null {
   if (explicit) {
     try {
       fs.accessSync(explicit, fs.constants.X_OK);
@@ -63,7 +63,7 @@ export function findNsjailBinary(explicit?: string): string | null {
         err instanceof Error && "code" in err
           ? (err as NodeJS.ErrnoException).code
           : "unknown";
-      console.error(
+      (logger ?? console).error(
         `[nsjail-sandbox] nsjailPath="${explicit}" is not executable (${code})`,
       );
       return null;
@@ -247,7 +247,7 @@ export function buildNsjailSandboxPlugin(
     },
 
     async initialize(ctx) {
-      const nsjailPath = findNsjailBinary(config.nsjailPath);
+      const nsjailPath = findNsjailBinary(config.nsjailPath, ctx.logger);
       if (nsjailPath) {
         ctx.logger.info(`nsjail sandbox plugin initialized (binary: ${nsjailPath})`);
       } else {

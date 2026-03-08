@@ -68,7 +68,7 @@ export function buildDuckDBPlugin(
     config,
 
     connection: {
-      create: () => createDuckDBConnection(dbConfig),
+      create: () => createDuckDBConnection({ ...dbConfig, logger: log }),
       dbType: "duckdb",
       parserDialect: "PostgresQL",
       forbiddenPatterns: DUCKDB_FORBIDDEN_PATTERNS,

@@ -147,6 +147,8 @@ function collectSemanticFiles(
 export function buildDaytonaSandboxPlugin(
   config: DaytonaSandboxConfig,
 ): AtlasSandboxPlugin<DaytonaSandboxConfig> {
+  let log: { warn(msg: string): void } | undefined;
+
   return {
     id: "daytona-sandbox",
     type: "sandbox" as const,
@@ -247,10 +249,7 @@ export function buildDaytonaSandboxPlugin(
             try {
               await daytona.delete(sandbox);
             } catch (err) {
-              console.warn(
-                "[daytona-sandbox] Failed to delete sandbox:",
-                err instanceof Error ? err.message : String(err),
-              );
+              (log ?? console).warn(`[daytona-sandbox] Failed to delete sandbox: ${err instanceof Error ? err.message : String(err)}`);
             }
           },
         };
@@ -268,6 +267,7 @@ export function buildDaytonaSandboxPlugin(
     },
 
     async initialize(ctx) {
+      log = ctx.logger;
       ctx.logger.info("Daytona sandbox plugin ready");
     },
 

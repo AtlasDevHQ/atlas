@@ -62,14 +62,14 @@ function resolveDir(config?: ContextYamlConfig): string {
   return path.resolve(config?.semanticDir ?? "./semantic");
 }
 
-export function readEntitySummaries(semanticDir: string): EntitySummary[] {
+export function readEntitySummaries(semanticDir: string, logger?: { warn(msg: string): void }): EntitySummary[] {
   const entitiesDir = path.join(semanticDir, "entities");
 
   let files: string[];
   try {
     files = fs.readdirSync(entitiesDir).filter((f) => f.endsWith(".yml"));
   } catch (err) {
-    console.warn(`[context-yaml] Failed to read entities dir: ${err instanceof Error ? err.message : err}`);
+    (logger ?? console).warn(`[context-yaml] Failed to read entities dir: ${err instanceof Error ? err.message : err}`);
     return [];
   }
 
@@ -92,14 +92,14 @@ export function readEntitySummaries(semanticDir: string): EntitySummary[] {
             : 0,
       });
     } catch (err) {
-      console.warn(`[context-yaml] Failed to parse entity file ${file}: ${err instanceof Error ? err.message : err}`);
+      (logger ?? console).warn(`[context-yaml] Failed to parse entity file ${file}: ${err instanceof Error ? err.message : err}`);
     }
   }
 
   return summaries;
 }
 
-export function readGlossaryTerms(semanticDir: string): GlossaryTerm[] {
+export function readGlossaryTerms(semanticDir: string, logger?: { warn(msg: string): void }): GlossaryTerm[] {
   const glossaryPath = path.join(semanticDir, "glossary.yml");
 
   try {
@@ -116,19 +116,19 @@ export function readGlossaryTerms(semanticDir: string): GlossaryTerm[] {
           typeof t.definition === "string" ? t.definition.trim() : undefined,
       }));
   } catch (err) {
-    console.warn(`[context-yaml] Failed to read glossary ${glossaryPath}: ${err instanceof Error ? err.message : err}`);
+    (logger ?? console).warn(`[context-yaml] Failed to read glossary ${glossaryPath}: ${err instanceof Error ? err.message : err}`);
     return [];
   }
 }
 
-export function readMetricSummaries(semanticDir: string): MetricSummary[] {
+export function readMetricSummaries(semanticDir: string, logger?: { warn(msg: string): void }): MetricSummary[] {
   const metricsDir = path.join(semanticDir, "metrics");
 
   let files: string[];
   try {
     files = fs.readdirSync(metricsDir).filter((f) => f.endsWith(".yml"));
   } catch (err) {
-    console.warn(`[context-yaml] Failed to read metrics dir: ${err instanceof Error ? err.message : err}`);
+    (logger ?? console).warn(`[context-yaml] Failed to read metrics dir: ${err instanceof Error ? err.message : err}`);
     return [];
   }
 
@@ -158,7 +158,7 @@ export function readMetricSummaries(semanticDir: string): MetricSummary[] {
         }
       }
     } catch (err) {
-      console.warn(`[context-yaml] Failed to parse metric file ${file}: ${err instanceof Error ? err.message : err}`);
+      (logger ?? console).warn(`[context-yaml] Failed to parse metric file ${file}: ${err instanceof Error ? err.message : err}`);
     }
   }
 
@@ -227,6 +227,7 @@ export function buildContextYamlPlugin(
 ): AtlasContextPlugin<ContextYamlConfig> {
   const semanticDir = resolveDir(config);
   let cachedContext: string | null = null;
+  let log: { warn(msg: string): void } | undefined;
 
   return definePlugin({
     id: "context-yaml",
@@ -239,12 +240,12 @@ export function buildContextYamlPlugin(
       async load(): Promise<string> {
         if (cachedContext !== null) return cachedContext;
 
-        const entities = readEntitySummaries(semanticDir);
-        const glossary = readGlossaryTerms(semanticDir);
-        const metrics = readMetricSummaries(semanticDir);
+        const entities = readEntitySummaries(semanticDir, log);
+        const glossary = readGlossaryTerms(semanticDir, log);
+        const metrics = readMetricSummaries(semanticDir, log);
 
         if (entities.length === 0 && glossary.length === 0 && metrics.length === 0) {
-          console.warn(`[context-yaml] Semantic directory ${semanticDir} returned no entities, glossary terms, or metrics`);
+          (log ?? console).warn(`[context-yaml] Semantic directory ${semanticDir} returned no entities, glossary terms, or metrics`);
         }
 
         cachedContext = buildContextString(entities, glossary, metrics);
@@ -257,6 +258,7 @@ export function buildContextYamlPlugin(
     },
 
     async initialize(ctx) {
+      log = ctx.logger;
       ctx.logger.info(
         `Context-YAML plugin initialized (dir: ${semanticDir})`,
       );

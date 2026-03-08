@@ -19,7 +19,7 @@
 
 import { z } from "zod";
 import { createPlugin } from "@useatlas/plugin-sdk";
-import type { AtlasDatasourcePlugin, PluginDBConnection, PluginHealthResult } from "@useatlas/plugin-sdk";
+import type { AtlasDatasourcePlugin, PluginDBConnection, PluginHealthResult, PluginLogger } from "@useatlas/plugin-sdk";
 import { createMySQLConnection, extractHost } from "./connection";
 
 const MySQLConfigSchema = z.object({
@@ -52,6 +52,7 @@ export function buildMySQLPlugin(
   // Unlike stateless HTTP transports (ClickHouse), pool-based databases should
   // reuse a single connection/pool per plugin instance.
   let cachedConnection: PluginDBConnection | undefined;
+  let log: PluginLogger | undefined;
 
   return {
     id: "mysql-datasource",
@@ -67,6 +68,7 @@ export function buildMySQLPlugin(
             url: config.url,
             poolSize: config.poolSize,
             idleTimeoutMs: config.idleTimeoutMs,
+            logger: log,
           });
         }
         return cachedConnection;
@@ -88,6 +90,7 @@ export function buildMySQLPlugin(
     ].join("\n"),
 
     async initialize(ctx) {
+      log = ctx.logger;
       ctx.logger.info(`MySQL datasource plugin initialized (${extractHost(config.url)})`);
     },
 

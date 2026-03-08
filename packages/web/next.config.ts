@@ -5,6 +5,19 @@ const nextConfig: NextConfig = {
   reactCompiler: true,
   // standalone is for self-hosted deployments (Docker, Railway, etc.); Vercel uses its own build pipeline
   ...(process.env.VERCEL ? {} : { output: "standalone" }),
+  // Native bindings and worker-thread packages that must not be bundled by Next.js.
+  // Matches the list in examples/nextjs-standalone/ and create-atlas/ template.
+  serverExternalPackages: [
+    "pg",
+    "mysql2",
+    "@clickhouse/client",
+    "@duckdb/node-api",
+    "snowflake-sdk",
+    "jsforce",
+    "just-bash",
+    "pino",
+    "pino-pretty",
+  ],
   // Monorepo: trace files up to the repo root so standalone output includes all packages
   outputFileTracingRoot: path.resolve(import.meta.dirname, "../.."),
   // Type checking is handled by `bun run type` (tsgo); skip during Next.js build

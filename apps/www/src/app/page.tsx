@@ -289,7 +289,7 @@ export default function Home() {
         <div className="flex items-center justify-between pt-8">
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2">
-              {/* Muted footer mark: favicon geometry with reduced opacity stroke */}
+              {/* Muted footer mark: favicon geometry with reduced opacity fill + stroke */}
               <svg viewBox="0 0 256 256" fill="none" className="h-4 w-4 text-brand" aria-hidden="true">
                 <path d="M128 28 L228 212 L28 212 Z" fill="currentColor" opacity="0.4"/>
                 <path d="M128 28 L228 212 L28 212 Z" stroke="currentColor" strokeWidth="18" fill="none" strokeLinejoin="round" opacity="0.4"/>

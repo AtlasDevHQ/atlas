@@ -1,13 +1,13 @@
 /* Atlas brand tokens — single source of truth.
- * Brand green: #23CE9E
+ * Brand green: #23CE9E / oklch(0.765 0.177 163.22)
  *
  * Adapters per frontend:
- *   packages/web/globals.css  → --primary, --ring (shadcn/ui)
- *   apps/docs/globals.css     → --color-fd-primary (Fumadocs)
- *   apps/www/globals.css      → --color-brand (Tailwind utility)
+ *   packages/web/globals.css  → shadcn/ui theme tokens (primary, ring, sidebar-*)
+ *   apps/docs/globals.css     → Fumadocs theme tokens (fd-primary, fd-ring)
+ *   apps/www/globals.css      → Tailwind utilities (brand, brand-hover)
  */
 :root {
-  --atlas-brand: oklch(0.765 0.177 163.22);
-  --atlas-brand-hover: oklch(0.82 0.16 163.22);
+  --atlas-brand: oklch(0.759 0.148 167.71);
+  --atlas-brand-hover: oklch(0.82 0.148 167.71);
   --atlas-brand-foreground: oklch(0.145 0 0);
 }

@@ -6,6 +6,5 @@ const baseUrl = "https://docs.useatlas.dev";
 export default function sitemap(): MetadataRoute.Sitemap {
   return source.getPages().map((page) => ({
     url: `${baseUrl}${page.url}`,
-    lastModified: new Date(),
   }));
 }

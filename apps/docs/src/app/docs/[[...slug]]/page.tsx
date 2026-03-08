@@ -43,7 +43,10 @@ export async function generateMetadata(props: {
   const page = source.getPage(params.slug);
   if (!page) notFound();
 
-  const imageUrl = `/docs-og/${(params.slug ?? []).join("/")}/image.png`;
+  const slugPath = (params.slug ?? []).join("/");
+  const imageUrl = slugPath
+    ? `/docs-og/${slugPath}/image.png`
+    : `/docs-og/image.png`;
 
   return {
     title: page.data.title,

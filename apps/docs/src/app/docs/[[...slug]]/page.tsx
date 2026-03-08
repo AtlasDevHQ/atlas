@@ -43,8 +43,22 @@ export async function generateMetadata(props: {
   const page = source.getPage(params.slug);
   if (!page) notFound();
 
+  const imageUrl = `/docs-og/${(params.slug ?? []).join("/")}/image.png`;
+
   return {
     title: page.data.title,
     description: page.data.description,
+    openGraph: {
+      title: page.data.title,
+      description: page.data.description,
+      images: imageUrl,
+      siteName: "Atlas Docs",
+    },
+    twitter: {
+      card: "summary_large_image",
+      title: page.data.title,
+      description: page.data.description,
+      images: imageUrl,
+    },
   };
 }

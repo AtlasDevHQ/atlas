@@ -1,8 +1,10 @@
 import { RootProvider } from "fumadocs-ui/provider/next";
+import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import "./globals.css";
 
-export const metadata = {
+export const metadata: Metadata = {
+  metadataBase: new URL("https://docs.useatlas.dev"),
   title: {
     template: "%s | Atlas Docs",
     default: "Atlas Docs",

@@ -12,7 +12,8 @@ export async function GET(
   const page = source.getPage(slug);
   if (!page) notFound();
 
-  return new Response(getLLMText(page), {
+  const content = await getLLMText(page);
+  return new Response(content, {
     headers: { "Content-Type": "text/markdown; charset=utf-8" },
   });
 }

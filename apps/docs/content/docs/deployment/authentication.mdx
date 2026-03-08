@@ -103,7 +103,7 @@ ATLAS_CORS_ORIGIN=https://app.example.com      # Required for cross-origin cooki
 On first deployment:
 - If `ATLAS_ADMIN_EMAIL` is set, the user matching that email gets `admin` role on signup
 - If `ATLAS_ADMIN_EMAIL` is not set, the first user to sign up gets `admin` automatically
-- Subsequent signups get the `analyst` role
+- Subsequent signups get the `analyst` role (set by Better Auth's `defaultRole` in the admin plugin)
 
 ### Dev admin seeding
 
@@ -176,10 +176,12 @@ Stateless JWT verification against an external identity provider. Best for enter
 ```bash
 # .env
 ATLAS_AUTH_JWKS_URL=https://your-idp.com/.well-known/jwks.json
-ATLAS_AUTH_ISSUER=https://your-idp.com/
+ATLAS_AUTH_ISSUER=https://your-idp.com/                        # Required
 ATLAS_AUTH_AUDIENCE=your-atlas-api          # Optional but recommended
 ATLAS_AUTH_ROLE_CLAIM=app_metadata.role     # Optional, defaults to "role" then "atlas_role"
 ```
+
+> `ATLAS_AUTH_ISSUER` is **required** for BYOT mode. Atlas will return a startup error if `ATLAS_AUTH_JWKS_URL` is set without `ATLAS_AUTH_ISSUER`.
 
 If `ATLAS_AUTH_AUDIENCE` is set, audience validation is enforced — JWTs without a matching `aud` claim are rejected. If unset, audience validation is skipped entirely.
 
@@ -244,6 +246,8 @@ ATLAS_RLS_ENABLED=true
 ATLAS_RLS_COLUMN=tenant_id
 ATLAS_RLS_CLAIM=org_id          # Extracted from JWT payload
 ```
+
+> **`ATLAS_AUTH_ROLE_CLAIM` vs `ATLAS_RLS_CLAIM`:** These serve different purposes. `ATLAS_AUTH_ROLE_CLAIM` extracts the user's role (`viewer`/`analyst`/`admin`) for permission checks. `ATLAS_RLS_CLAIM` extracts a value (e.g. a tenant ID) that gets injected as a WHERE clause filter on every query for row-level security.
 
 ## Roles
 

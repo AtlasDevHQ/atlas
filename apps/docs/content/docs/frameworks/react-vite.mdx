@@ -431,8 +431,10 @@ const API_URL = import.meta.env.VITE_ATLAS_API_URL ?? "";
 
 interface Conversation {
   id: string;
+  userId: string | null;
   title: string | null;
   surface: string;
+  connectionId: string | null;
   starred: boolean;
   createdAt: string;
   updatedAt: string;

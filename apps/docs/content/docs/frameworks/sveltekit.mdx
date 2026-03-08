@@ -275,7 +275,85 @@ The key data shapes:
 
 See the [Data Stream Protocol](/docs/frameworks/overview#tool-call-parts-ai-sdk-v6) section for the full part structure and a concrete example.
 
-## 6. Synchronous queries (alternative)
+## 6. Conversation management
+
+Atlas persists conversations server-side (requires `DATABASE_URL`). Here is a minimal Svelte module for listing, loading, and deleting conversations:
+
+```typescript
+// src/lib/atlas-conversations.ts
+import { writable } from "svelte/store";
+import { env } from "$env/dynamic/public";
+
+const apiUrl = env.PUBLIC_ATLAS_API_URL ?? "";
+
+export interface Conversation {
+  id: string;
+  userId: string | null;
+  title: string | null;
+  surface: string;
+  connectionId: string | null;
+  starred: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Message {
+  id: string;
+  conversationId: string;
+  role: "user" | "assistant" | "system" | "tool";
+  content: unknown;
+  createdAt: string;
+}
+
+export function createConversationStore(apiKey: () => string) {
+  const conversations = writable<Conversation[]>([]);
+  const loading = writable(false);
+
+  function headers(): Record<string, string> {
+    const key = apiKey();
+    const h: Record<string, string> = {};
+    if (key) h["Authorization"] = `Bearer ${key}`;
+    return h;
+  }
+
+  async function list() {
+    loading.set(true);
+    try {
+      const res = await fetch(`${apiUrl}/api/v1/conversations`, {
+        headers: headers(),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      conversations.set(data.conversations ?? []);
+    } finally {
+      loading.set(false);
+    }
+  }
+
+  async function load(id: string): Promise<Message[]> {
+    const res = await fetch(`${apiUrl}/api/v1/conversations/${id}`, {
+      headers: headers(),
+    });
+    if (!res.ok) throw new Error("Failed to load conversation");
+    const data = await res.json();
+    return data.messages ?? [];
+  }
+
+  async function remove(id: string) {
+    await fetch(`${apiUrl}/api/v1/conversations/${id}`, {
+      method: "DELETE",
+      headers: headers(),
+    });
+    conversations.update((prev) => prev.filter((c) => c.id !== id));
+  }
+
+  return { conversations, loading, list, load, remove };
+}
+```
+
+To resume a conversation, pass the `conversationId` in the chat request body. The `useChat` composable from `@ai-sdk/svelte` does not manage this automatically, but the chat store in section 3 shows how to track the ID from the `x-conversation-id` response header and include it in subsequent requests via the transport's `body` option.
+
+## 7. Synchronous queries (alternative)
 
 If streaming is not needed, use the JSON query endpoint:
 

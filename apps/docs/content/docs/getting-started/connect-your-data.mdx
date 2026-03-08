@@ -97,11 +97,15 @@ For SSL, use `?ssl=true` or configure SSL via the connection string options supp
 
 ---
 
-## ClickHouse
+## Plugin-Based Sources
 
 <Callout type="info">
 ClickHouse, Snowflake, DuckDB, and Salesforce are implemented as datasource plugins in the `plugins/` directory (e.g. `plugins/clickhouse-datasource`). PostgreSQL and MySQL are built into `@atlas/api` directly.
+
+**Driver installation:** If you're working in the Atlas monorepo, drivers are bundled with each plugin package. The `bun add` install commands below are only needed for standalone or scaffolded projects (e.g. those created with `bun create atlas-agent`).
 </Callout>
+
+## ClickHouse
 
 ### 1. Create a read-only user
 
@@ -132,10 +136,6 @@ ATLAS_DATASOURCE_URL=clickhouses://atlas_reader:your-strong-password@your-host:8
 > **Note:** If you use `clickhouse://` with port 8443 (the conventional TLS port), Atlas will warn that you likely intended `clickhouses://`.
 
 ### 3. Install the driver
-
-<Callout type="info">
-If you're working in the Atlas monorepo, the driver is bundled with the plugin package. These install commands are only needed for standalone or scaffolded projects (e.g. those created with `bun create atlas-agent`).
-</Callout>
 
 ```bash
 bun add @clickhouse/client
@@ -176,10 +176,6 @@ URL format: `snowflake://user:pass@account/database/schema?warehouse=WH&role=ROL
 Atlas sets `STATEMENT_TIMEOUT_IN_SECONDS` per session and tags all queries with `QUERY_TAG = 'atlas:readonly'` for audit trail in `QUERY_HISTORY`.
 
 ### 3. Install the driver
-
-<Callout type="info">
-If you're working in the Atlas monorepo, the driver is bundled with the plugin package. These install commands are only needed for standalone or scaffolded projects (e.g. those created with `bun create atlas-agent`).
-</Callout>
 
 ```bash
 bun add snowflake-sdk
@@ -243,10 +239,6 @@ URL format: `salesforce://username:password@hostname?token=TOKEN&clientId=ID&cli
 - `clientId` / `clientSecret` -- optional, for OAuth connected app authentication
 
 ### 2. Install the driver
-
-<Callout type="info">
-If you're working in the Atlas monorepo, the driver is bundled with the plugin package. These install commands are only needed for standalone or scaffolded projects (e.g. those created with `bun create atlas-agent`).
-</Callout>
 
 ```bash
 bun add jsforce

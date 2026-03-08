@@ -22,7 +22,7 @@ These are not validation layers — they are applied during query execution in `
 
 | Control | Purpose |
 |---------|---------|
-| Per-source rate limiting | Atomic concurrency + QPM check via `acquireSourceSlot(connId)` before the query reaches the database. Rejects with a rate-limit error (and an optional `retryAfterMs` hint) when the source is at capacity. Configurable via `rateLimit` in `atlas.config.ts` datasource entries |
+| Per-source rate limiting | Atomic concurrency + QPM check via `acquireSourceSlot(connId)` before the query reaches the database. Sits between validation (layers 0--3) and RLS injection (layer 4). Rejects with a rate-limit error (and an optional `retryAfterMs` hint) when the source is at capacity. Configurable via `rateLimit` in `atlas.config.ts` datasource entries (`queriesPerMinute` and `concurrency` fields, defaults 60 and 5 respectively) |
 | RLS injection (layer 4) | Inject WHERE clauses based on user claims (when enabled) |
 | Auto LIMIT (layer 5) | Append row limit to every query |
 | Statement timeout (layer 6) | Per-query execution deadline |
@@ -179,7 +179,7 @@ When plugins are installed, two hook points extend the pipeline:
 - **`beforeQuery`** — Plugins can inspect or rewrite SQL before execution. If a plugin rewrites the query, the rewritten SQL goes through layers 0–3 again for re-validation. This prevents plugins from introducing DML or bypassing the whitelist.
 - **`afterQuery`** — Plugins receive the query results for logging, transformation, or side effects.
 
-**Custom validators:** For non-SQL datasources (SOQL, GraphQL, MQL), a plugin can provide a `customValidator` via `ConnectionPluginMeta.validate`. When a connection has a custom validator registered, it **completely replaces** the built-in validation layers 0–3 — `validateSQL` is not called. The custom validator is responsible for providing equivalent safety guarantees.
+**Custom validators:** For non-SQL datasources (SOQL, GraphQL, MQL), a plugin can provide a `customValidator` via `ConnectionPluginMeta.validate`. When a connection has a custom validator registered, it **completely replaces** the built-in validation layers 0–3 — `validateSQL` is not called. RLS injection (layer 4) and auto LIMIT (layer 5) are also skipped, since non-SQL languages may not support standard WHERE/LIMIT syntax. The custom validator is responsible for providing equivalent safety guarantees, including any row-level isolation.
 
 ## Error handling
 

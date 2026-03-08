@@ -129,7 +129,7 @@ Key points:
 
 ## 4. Plugin Object
 
-Wire everything together with `createPlugin()`, which validates config via a Zod schema and returns a factory function. (For plugins that don't need runtime configuration, use `definePlugin()` instead -- see [`createPlugin` vs `definePlugin`](#createplugin-vs-defineplugin) below.)
+Wire everything together with `createPlugin()`, which validates config and returns a factory function. The `configSchema` can be any object with a `parse()` method -- Zod is recommended but not required (e.g. a custom validator that throws on invalid input works too). For plugins that don't need runtime configuration, use `definePlugin()` instead -- see [`createPlugin` vs `definePlugin`](#createplugin-vs-defineplugin) below.
 
 ```typescript
 // src/index.ts
@@ -417,6 +417,10 @@ export const ticketPlugin = createPlugin<TicketConfig, AtlasActionPlugin<TicketC
       reversible: false,
       defaultApproval: "manual",
       requiredCredentials: ["apiKey"],
+      // ^ Values must match environment variable names (e.g. process.env.apiKey).
+      // At startup, Atlas checks these env vars exist and logs a warning for any
+      // that are missing (see validateActionCredentials in the ToolRegistry).
+      // Missing credentials do not block startup — they produce warnings only.
     };
 
     return {
@@ -705,6 +709,22 @@ The `ctx` object passed to `initialize()` and hook handlers provides:
 | `ctx.tools` | `{ register(tool) }` | Tool registry -- plugins can register additional agent tools |
 | `ctx.logger` | `PluginLogger` | Pino-compatible child logger scoped to the plugin ID |
 | `ctx.config` | `Record<string, unknown>` | Resolved Atlas configuration (cast if you know the shape) |
+
+Example -- registering a custom tool from `initialize()`:
+
+```typescript
+async initialize(ctx) {
+  ctx.tools.register({
+    name: "lookupInventory",
+    description: "Check inventory levels for a product SKU",
+    tool: tool({
+      description: "Look up current inventory by SKU",
+      inputSchema: z.object({ sku: z.string() }),
+      execute: async ({ sku }) => fetchInventory(sku),
+    }),
+  });
+},
+```
 
 ## Reference Plugins
 

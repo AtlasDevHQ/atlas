@@ -37,9 +37,11 @@ Each provider requires its own API key:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ATLAS_DATASOURCE_URL` | — | Analytics datasource connection string (PostgreSQL or MySQL). Falls back to `DATABASE_URL_UNPOOLED` / `DATABASE_URL` when `ATLAS_DEMO_DATA=true`. Optional when datasources are defined in `atlas.config.ts` |
+| `ATLAS_DATASOURCE_URL` | — | Analytics datasource connection string (PostgreSQL or MySQL). Optional when datasources are defined in `atlas.config.ts` |
 | `DATABASE_URL` | — | Atlas internal Postgres (auth, audit, conversations). Optional — Atlas works without it |
 | `ATLAS_DEMO_DATA` | — | Set `true` to use the internal DB as both analytics datasource and internal DB |
+
+**Demo data fallback chain:** When `ATLAS_DEMO_DATA=true` and `ATLAS_DATASOURCE_URL` is not set, Atlas resolves the analytics datasource by checking `DATABASE_URL_UNPOOLED` first, then `DATABASE_URL`. This lets a single Postgres instance (e.g. Neon on Vercel) serve as both the analytics datasource and Atlas's internal database.
 
 ## Query Safety
 
@@ -108,7 +110,7 @@ See [Authentication](/docs/deployment/authentication) for full setup guides.
 | `ATLAS_RLS_CLAIM` | — | JWT/session claim path for RLS value extraction (e.g. `org_id`) |
 | `ATLAS_RLS_CLAIMS` | — | Static JSON claims for RLS with simple-key auth |
 
-`ATLAS_RLS_CLAIMS` is a JSON string. Used with simple-key auth to provide static claims for row-level security filtering:
+`ATLAS_RLS_CLAIMS` is a JSON string that provides static claims for row-level security filtering. **This variable is only used with simple-key (`ATLAS_API_KEY`) auth mode**, where there is no JWT or session to extract claims from. For managed and BYOT auth, RLS claims are extracted from the user's JWT/session automatically.
 
 ```bash
 ATLAS_RLS_CLAIMS='{"tenant_id": "acme-corp"}'
@@ -141,9 +143,8 @@ See [Sandbox Architecture](/docs/architecture/sandbox#backend-selection-priority
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ATLAS_ACTIONS_ENABLED` | — | Set `true` to enable the action framework (approval-gated write operations) |
-| `ATLAS_ACTION_APPROVAL` | `manual` | Default approval mode for actions: `auto`, `manual`, `admin-only` |
-| `ATLAS_ACTION_TIMEOUT` | — | Per-action execution timeout in milliseconds |
-| `ATLAS_ACTION_MAX_PER_CONVERSATION` | — | Maximum number of actions allowed per conversation |
+
+Action defaults (approval mode, timeout, max per conversation) are configured via `atlas.config.ts` under `actions.defaults`, not environment variables. See the [declarative config guide](/docs/deployment/configuration) for details.
 
 ## Scheduler
 

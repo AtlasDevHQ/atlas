@@ -71,6 +71,7 @@ Create a composable that wraps `@ai-sdk/vue`'s `useChat`:
 // composables/useAtlasChat.ts
 import { useChat } from "@ai-sdk/vue";
 import { DefaultChatTransport } from "ai";
+import { ref, computed } from "vue";
 
 export function useAtlasChat() {
   const config = useRuntimeConfig();
@@ -106,6 +107,9 @@ export function useAtlasChat() {
     });
   });
 
+  // Pass transport.value — useChat expects a plain object, not a Vue ref.
+  // The transport uses getter-based headers internally, so it picks up
+  // apiKey changes without needing to recreate the transport instance.
   const { messages, sendMessage, status, error } = useChat({
     transport: transport.value,
   });

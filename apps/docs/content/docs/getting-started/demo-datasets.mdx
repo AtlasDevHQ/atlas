@@ -239,40 +239,12 @@ Try these in the Atlas chat UI to exercise different patterns:
 
 ### Tech Debt Patterns
 
-The e-commerce dataset includes the same four real-world tech debt patterns as the cybersec demo:
+The e-commerce dataset includes the same four tech-debt patterns as the cybersec demo (missing FK constraints, abandoned tables, inconsistent enums, denormalized tables). E-commerce-specific examples:
 
-#### 1. Missing FK Constraints
-
-Nineteen `*_id` columns reference other tables but lack `FOREIGN KEY` constraints.
-
-Additionally, ~1.5% of payments reference nonexistent orders (orphaned from deleted test orders).
-
-#### 2. Abandoned Tables
-
-Four tables match legacy/temp naming patterns and have no inbound foreign keys:
-
-- `old_orders_v1` -- pre-migration 2020 order data with different column names
-- `temp_product_import_2023` -- one-time CSV import artifact
-- `legacy_analytics_events` -- old event tracking, replaced in 2024
-- `payment_methods_backup` -- backup from Stripe-to-Adyen migration
-
-#### 3. Inconsistent Enums
-
-Several text columns have case-inconsistent values:
-
-- `customers.acquisition_source`: 'Google', 'google', 'GOOGLE', 'Organic', 'organic'
-- `loyalty_accounts.tier`: 'Gold', 'gold', 'GOLD', 'Silver', 'silver'
-- `returns.reason`: 'Defective', 'defective', 'DEFECTIVE', 'Wrong Item', 'wrong_item'
-
-#### 4. Denormalized Tables
-
-Five reporting/cache tables duplicate data from other tables:
-
-- `orders_denormalized` -- pre-joined orders + customer + product info
-- `daily_sales_summary` -- daily rollup
-- `monthly_revenue_summary` -- monthly aggregates
-- `product_performance_cache` -- pre-computed product metrics
-- `customer_ltv_cache` -- lifetime value estimates
+- **19 missing FK constraints** -- plus ~1.5% of payments reference nonexistent orders (orphaned from deleted test orders)
+- **4 abandoned tables** -- `old_orders_v1`, `temp_product_import_2023`, `legacy_analytics_events`, `payment_methods_backup`
+- **Inconsistent enums** -- e.g. `customers.acquisition_source`: 'Google'/'google'/'GOOGLE'; `loyalty_accounts.tier`: 'Gold'/'gold'/'GOLD'
+- **5 denormalized tables** -- `orders_denormalized`, `daily_sales_summary`, `monthly_revenue_summary`, `product_performance_cache`, `customer_ltv_cache`
 
 ### Schema Evolution Artifacts
 

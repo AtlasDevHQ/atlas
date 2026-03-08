@@ -63,7 +63,11 @@ bun run atlas -- init --source warehouse
 
 `--demo` without an argument loads the simple dataset (3 tables, ~330 rows). `--demo cybersec` loads the cybersec dataset (62 tables, ~500K rows). `--demo ecommerce` loads the e-commerce dataset (52 tables, ~480K rows).
 
-`--connection` and `--source` cannot be used together. `--connection` profiles a named datasource from `atlas.config.ts` and automatically determines the output directory, while `--source` is the legacy flag for manually specifying the per-source output directory.
+`--connection` and `--source` cannot be used together. Here's how they differ:
+
+- **No flag** — Profiles the default datasource (`ATLAS_DATASOURCE_URL`) and writes output to `semantic/entities/`.
+- **`--source <name>`** — Writes output to `semantic/<name>/entities/` (for multi-source layouts where you organize by source). Does not change which datasource is profiled.
+- **`--connection <name>`** — Profiles a named datasource defined in `atlas.config.ts` (e.g. `datasources.warehouse`) and automatically writes output to the matching `semantic/<name>/` subdirectory.
 
 In TTY mode (interactive terminal), `init` presents a table picker. Pass `--tables` to skip the picker for scripted/CI usage.
 
@@ -235,6 +239,8 @@ bun run atlas -- mcp --transport sse --port 9090
 
 Run the evaluation pipeline against demo schemas. Used to measure text-to-SQL accuracy.
 
+Test cases are YAML files in `eval/cases/`, organized by dataset (`simple/`, `cybersec/`, `ecommerce/`). Each case specifies `id`, `question`, `schema`, `difficulty`, `category`, `gold_sql`, and optionally `expected_rows` and `tags`. Results are written to JSONL files and can be compared against baselines for regression detection.
+
 ```bash
 bun run atlas -- eval [options]
 ```
@@ -323,13 +329,15 @@ bun run atlas -- migrate [options]
 
 Run the [BIRD benchmark](https://bird-bench.github.io/) for text-to-SQL accuracy evaluation. This is a developer tool for measuring Atlas's query generation quality.
 
+BIRD is an external academic benchmark dataset (~1500 questions across 11 SQLite databases) and is **not included in the Atlas repository**. You must download the BIRD dev set separately from the [BIRD website](https://bird-bench.github.io/) and point `--bird-path` to the extracted directory.
+
 ```bash
 bun run atlas -- benchmark [options]
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--bird-path <path>` | Path to BIRD dev directory (required) |
+| `--bird-path <path>` | Path to the downloaded BIRD dev directory (required) |
 | `--limit <n>` | Max questions to evaluate |
 | `--db <name>` | Filter to a single database |
 | `--csv` | CSV output |

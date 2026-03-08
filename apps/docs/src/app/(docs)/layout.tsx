@@ -3,6 +3,17 @@ import { source } from "@/lib/source";
 import { Book, Braces } from "lucide-react";
 import type { ReactNode } from "react";
 
+// Build URL sets for sidebar tab activation.
+// url:"/" only matches exactly "/" in Fumadocs (startsWith("//") is always false),
+// so we need explicit URL sets for the Docs tab to stay active on sub-pages.
+const pages = source.getPages();
+const docsUrls = new Set(
+  pages.filter((p) => !p.url.startsWith("/api-reference")).map((p) => p.url),
+);
+const apiUrls = new Set(
+  pages.filter((p) => p.url.startsWith("/api-reference")).map((p) => p.url),
+);
+
 export default function Layout({ children }: { children: ReactNode }) {
   return (
     <DocsLayout
@@ -18,12 +29,14 @@ export default function Layout({ children }: { children: ReactNode }) {
             description: "Guides, configuration, and concepts",
             icon: <Book />,
             url: "/",
+            urls: docsUrls,
           },
           {
             title: "API Reference",
             description: "REST API endpoints and request/response schemas",
             icon: <Braces />,
             url: "/api-reference",
+            urls: apiUrls,
           },
         ],
       }}

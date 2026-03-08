@@ -6,7 +6,7 @@
  *
  * @example
  * ```typescript
- * import { createMockContext, createMockConnection } from "@useatlas/plugin-sdk/testing";
+ * import { createMockContext } from "@useatlas/plugin-sdk/testing";
  *
  * const { ctx, logs, registeredTools } = createMockContext();
  * await plugin.initialize(ctx);
@@ -28,14 +28,15 @@ import type {
 // ---------------------------------------------------------------------------
 
 export interface CapturedLog {
-  level: "info" | "warn" | "error" | "debug";
+  level: keyof PluginLogger;
   msg: string;
   obj?: Record<string, unknown>;
 }
 
 /**
  * Create a PluginLogger that captures all log calls to an array.
- * Useful for asserting that a plugin logs expected messages.
+ * Optionally pass an existing array to append to (useful for sharing
+ * a log sink across multiple loggers).
  */
 export function createMockLogger(logs?: CapturedLog[]): {
   logger: PluginLogger;
@@ -53,6 +54,9 @@ export function createMockLogger(logs?: CapturedLog[]): {
           obj: args[0] as Record<string, unknown>,
           msg: typeof args[1] === "string" ? args[1] : "",
         });
+      } else {
+        // Capture unexpected argument shapes so they don't silently vanish
+        captured.push({ level, msg: String(args[0]) });
       }
     };
   }
@@ -72,20 +76,20 @@ export function createMockLogger(logs?: CapturedLog[]): {
 // ---------------------------------------------------------------------------
 
 export interface MockConnectionOptions {
-  /** The result to return from query(). Can be overridden per-call via mockQuery(). */
+  /** The result to return from query(). Can be overridden later via mockQueryResult(). */
   queryResult?: PluginQueryResult;
-  /** If set, query() rejects with this error. */
+  /** If set, query() rejects with this error. Resets after one throw. */
   queryError?: Error;
 }
 
 export interface MockConnection extends PluginDBConnection {
-  /** All calls made to query(), in order. */
-  queryCalls: Array<{ sql: string; timeoutMs?: number }>;
+  /** All calls made to query(), in order (read-only — populated by query()). */
+  readonly queryCalls: ReadonlyArray<{ sql: string; timeoutMs?: number }>;
   /** Whether close() has been called. */
-  closed: boolean;
-  /** Override the next query result. */
+  readonly closed: boolean;
+  /** Set the query result for all subsequent calls. Also clears any pending error. */
   mockQueryResult(result: PluginQueryResult): void;
-  /** Override the next query to reject. */
+  /** Make the next query() call reject with this error. Resets after one throw. */
   mockQueryError(error: Error): void;
 }
 
@@ -102,12 +106,15 @@ export function createMockConnection(
   };
   let nextError: Error | undefined = opts.queryError;
 
+  // Internal mutable arrays — exposed as readonly on the interface
+  const queryCalls: Array<{ sql: string; timeoutMs?: number }> = [];
+
   const conn: MockConnection = {
-    queryCalls: [],
+    queryCalls,
     closed: false,
 
     async query(sql: string, timeoutMs?: number): Promise<PluginQueryResult> {
-      conn.queryCalls.push({ sql, timeoutMs });
+      queryCalls.push({ sql, timeoutMs });
       if (nextError) {
         const err = nextError;
         // Reset so subsequent calls don't re-throw unless explicitly set
@@ -118,7 +125,7 @@ export function createMockConnection(
     },
 
     async close(): Promise<void> {
-      conn.closed = true;
+      (conn as { closed: boolean }).closed = true;
     },
 
     mockQueryResult(result: PluginQueryResult) {
@@ -139,20 +146,20 @@ export function createMockConnection(
 // ---------------------------------------------------------------------------
 
 export interface MockExploreBackendOptions {
-  /** The result to return from exec(). */
+  /** The result to return from exec(). Can be overridden later via mockExecResult(). */
   execResult?: PluginExecResult;
-  /** If set, exec() rejects with this error. */
+  /** If set, exec() rejects with this error. Resets after one throw. */
   execError?: Error;
 }
 
 export interface MockExploreBackend extends PluginExploreBackend {
-  /** All commands passed to exec(), in order. */
-  execCalls: string[];
+  /** All commands passed to exec(), in order (read-only — populated by exec()). */
+  readonly execCalls: ReadonlyArray<string>;
   /** Whether close() has been called. */
-  closed: boolean;
-  /** Override the next exec result. */
+  readonly closed: boolean;
+  /** Set the exec result for all subsequent calls. Also clears any pending error. */
   mockExecResult(result: PluginExecResult): void;
-  /** Override the next exec to reject. */
+  /** Make the next exec() call reject with this error. Resets after one throw. */
   mockExecError(error: Error): void;
 }
 
@@ -170,12 +177,15 @@ export function createMockExploreBackend(
   };
   let nextError: Error | undefined = opts.execError;
 
+  // Internal mutable array — exposed as readonly on the interface
+  const execCalls: string[] = [];
+
   const backend: MockExploreBackend = {
-    execCalls: [],
+    execCalls,
     closed: false,
 
     async exec(command: string): Promise<PluginExecResult> {
-      backend.execCalls.push(command);
+      execCalls.push(command);
       if (nextError) {
         const err = nextError;
         nextError = undefined;
@@ -185,7 +195,7 @@ export function createMockExploreBackend(
     },
 
     async close(): Promise<void> {
-      backend.closed = true;
+      (backend as { closed: boolean }).closed = true;
     },
 
     mockExecResult(result: PluginExecResult) {
@@ -237,7 +247,9 @@ export interface MockContextResult {
  * All fields can be overridden.
  *
  * Returns the context along with captured log entries and registered tools
- * for easy assertions.
+ * for easy assertions. Note: when `logger` or `tools` are overridden, the
+ * returned `logs` and `registeredTools` arrays are not connected to the
+ * overridden implementations.
  */
 export function createMockContext(
   overrides: MockContextOverrides = {},
@@ -247,17 +259,15 @@ export function createMockContext(
   const { logger } = createMockLogger(logs);
 
   const ctx: AtlasPluginContext = {
-    db:
-      overrides.db === undefined
-        ? null
-        : overrides.db === null
-          ? null
-          : overrides.db,
+    db: overrides.db ?? null,
     connections: {
       get:
         overrides.connections?.get ??
-        (() => {
-          throw new Error("No connections registered in mock context");
+        ((id: string) => {
+          throw new Error(
+            `No connection "${id}" registered in mock context. ` +
+            `Pass a connections override to createMockContext() to provide one.`,
+          );
         }),
       list: overrides.connections?.list ?? (() => []),
     },

@@ -64,6 +64,17 @@ describe("createMockLogger", () => {
     logger.warn("b");
     expect(shared).toHaveLength(2);
   });
+
+  test("captures non-string non-object arguments as stringified", () => {
+    const { logger, logs } = createMockLogger();
+    (logger.info as Function)(42);
+    (logger.info as Function)(null);
+    (logger.info as Function)(undefined);
+    expect(logs).toHaveLength(3);
+    expect(logs[0].msg).toBe("42");
+    expect(logs[1].msg).toBe("null");
+    expect(logs[2].msg).toBe("undefined");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -134,6 +145,13 @@ describe("createMockConnection", () => {
     expect(conn.closed).toBe(false);
     await conn.close();
     expect(conn.closed).toBe(true);
+  });
+
+  test("mockQueryResult clears pending error", async () => {
+    const conn = createMockConnection({ queryError: new Error("fail") });
+    conn.mockQueryResult({ columns: ["ok"], rows: [] });
+    const result = await conn.query("SELECT 1");
+    expect(result.columns).toEqual(["ok"]);
   });
 
   test("satisfies PluginDBConnection interface", () => {
@@ -233,10 +251,10 @@ describe("createMockContext", () => {
     expect(typeof ctx.logger.debug).toBe("function");
   });
 
-  test("default connections.get() throws", () => {
+  test("default connections.get() throws with requested ID", () => {
     const { ctx } = createMockContext();
     expect(() => ctx.connections.get("default")).toThrow(
-      "No connections registered in mock context",
+      'No connection "default" registered in mock context',
     );
   });
 
@@ -318,6 +336,15 @@ describe("createMockContext", () => {
     expect(customResult.logs).toHaveLength(1);
     expect(customResult.logs[0].msg).toBe("custom");
     expect(logs).toHaveLength(0);
+  });
+
+  test("error propagates through context connections", async () => {
+    const conn = createMockConnection({ queryError: new Error("db down") });
+    const { ctx } = createMockContext({
+      connections: { get: () => conn, list: () => ["default"] },
+    });
+    const dbConn = ctx.connections.get("default");
+    await expect(dbConn.query("SELECT 1")).rejects.toThrow("db down");
   });
 
   test("satisfies AtlasPluginContext interface", () => {

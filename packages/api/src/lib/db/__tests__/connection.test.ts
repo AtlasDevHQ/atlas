@@ -128,7 +128,7 @@ describe("detectDBType", () => {
   });
 
   it("suggests correct plugin name for TLS scheme variants", () => {
-    expect(() => detectDBType("clickhouses://localhost:8443/default")).toThrow("@atlas/plugin-clickhouse");
+    expect(() => detectDBType("clickhouses://localhost:8443/default")).toThrow("@useatlas/clickhouse");
   });
 
   it("includes the detected scheme in the error message", () => {

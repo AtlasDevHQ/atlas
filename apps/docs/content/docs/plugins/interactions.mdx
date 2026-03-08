@@ -15,7 +15,7 @@ Tool bridging and resource registration are handled internally by `@atlas/mcp` -
 
 ### Prerequisites
 
-- `@atlas/plugin-mcp-interaction` -- the plugin package (workspace dependency)
+- `@useatlas/mcp` -- the plugin package (workspace dependency)
 - `@atlas/mcp` -- the underlying MCP server (pulled in automatically via dynamic import)
 - `@modelcontextprotocol/sdk` -- MCP protocol SDK (required for stdio transport)
 
@@ -30,7 +30,7 @@ Tool bridging and resource registration are handled internally by `@atlas/mcp` -
 
 ```typescript
 import { defineConfig } from "@atlas/api/lib/config";
-import { mcpPlugin } from "@atlas/plugin-mcp-interaction";
+import { mcpPlugin } from "@useatlas/mcp";
 
 export default defineConfig({
   plugins: [
@@ -69,7 +69,7 @@ This plugin uses the `routes()` interface to mount Hono routes directly into the
 
 ### Prerequisites
 
-- `@atlas/plugin-slack-interaction` -- the plugin package (workspace dependency)
+- `@useatlas/slack` -- the plugin package (workspace dependency)
 - A Slack app configured with slash commands and Events API subscriptions
 - Either a bot token (single-workspace) or OAuth credentials (multi-workspace)
 
@@ -96,7 +96,7 @@ Either `botToken` (single-workspace) or both `clientId` and `clientSecret` (mult
 ```typescript
 import { defineConfig } from "@atlas/api/lib/config";
 import { executeAgentQuery } from "@atlas/api/lib/agent-query";
-import { slackPlugin } from "@atlas/plugin-slack-interaction";
+import { slackPlugin } from "@useatlas/slack";
 
 export default defineConfig({
   plugins: [
@@ -114,7 +114,7 @@ For multi-workspace OAuth with conversation persistence and action approval:
 ```typescript
 import { defineConfig } from "@atlas/api/lib/config";
 import { executeAgentQuery } from "@atlas/api/lib/agent-query";
-import { slackPlugin } from "@atlas/plugin-slack-interaction";
+import { slackPlugin } from "@useatlas/slack";
 
 export default defineConfig({
   plugins: [

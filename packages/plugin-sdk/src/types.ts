@@ -549,7 +549,7 @@ type _InferFrom<P, C> = {
  * @example
  * ```typescript
  * import type { $InferServerPlugin } from "@useatlas/plugin-sdk";
- * import type { clickhousePlugin } from "@atlas/plugin-clickhouse-datasource";
+ * import type { clickhousePlugin } from "@useatlas/clickhouse";
  *
  * type CH = $InferServerPlugin<typeof clickhousePlugin>;
  * // CH["Config"] → { url: string; database?: string }

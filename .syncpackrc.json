@@ -16,7 +16,7 @@
     },
     {
       "label": "Plugin peer deps use wide ranges for compatibility",
-      "packages": ["@useatlas/plugin-sdk", "@atlas/plugin-clickhouse-datasource", "@atlas/plugin-jira-action"],
+      "packages": ["@useatlas/plugin-sdk", "@useatlas/clickhouse", "@useatlas/jira"],
       "dependencyTypes": ["peer"],
       "isIgnored": true
     },

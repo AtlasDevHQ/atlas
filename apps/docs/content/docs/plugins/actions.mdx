@@ -13,7 +13,7 @@ The email action plugin lets the Atlas agent send email reports to stakeholders 
 
 ### Prerequisites
 
-- `@atlas/plugin-email-action` -- the plugin package (workspace dependency)
+- `@useatlas/email` -- the plugin package (workspace dependency)
 - A [Resend API key](https://resend.com/api-keys)
 - A verified sending domain in Resend (or use the default `notifications.useatlas.dev`)
 
@@ -30,7 +30,7 @@ The email action plugin lets the Atlas agent send email reports to stakeholders 
 
 ```typescript
 import { defineConfig } from "@atlas/api/lib/config";
-import { emailPlugin } from "@atlas/plugin-email-action";
+import { emailPlugin } from "@useatlas/email";
 
 export default defineConfig({
   plugins: [
@@ -79,7 +79,7 @@ The JIRA action plugin lets the Atlas agent create JIRA issues based on analysis
 
 ### Prerequisites
 
-- `@atlas/plugin-jira-action` -- the plugin package (workspace dependency)
+- `@useatlas/jira` -- the plugin package (workspace dependency)
 - A JIRA Cloud instance (Atlassian)
 - A JIRA API token ([generate one here](https://id.atlassian.net/manage-profile/security/api-tokens))
 - The email address associated with the API token
@@ -98,7 +98,7 @@ The JIRA action plugin lets the Atlas agent create JIRA issues based on analysis
 
 ```typescript
 import { defineConfig } from "@atlas/api/lib/config";
-import { jiraPlugin } from "@atlas/plugin-jira-action";
+import { jiraPlugin } from "@useatlas/jira";
 
 export default defineConfig({
   plugins: [

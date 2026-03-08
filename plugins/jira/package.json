@@ -1,0 +1,19 @@
+{
+  "name": "@useatlas/jira",
+  "version": "0.1.0",
+  "private": false,
+  "scripts": {
+    "test": "bun test __tests__/plugin.test.ts"
+  },
+  "dependencies": {
+    "@useatlas/plugin-sdk": "workspace:*"
+  },
+  "peerDependencies": {
+    "ai": "^6.0.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "ai": "^6.0.97",
+    "zod": "^4.3.6"
+  }
+}

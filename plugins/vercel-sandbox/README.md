@@ -1,4 +1,4 @@
-# @atlas/plugin-vercel-sandbox
+# @useatlas/vercel-sandbox
 
 Firecracker microVM isolation via @vercel/sandbox with deny-all network policy.
 
@@ -15,7 +15,7 @@ Firecracker microVM isolation via @vercel/sandbox with deny-all network policy.
 
 ```typescript
 import { defineConfig } from "@atlas/api/lib/config";
-import { vercelSandboxPlugin } from "@atlas/plugin-vercel-sandbox";
+import { vercelSandboxPlugin } from "@useatlas/vercel-sandbox";
 
 // On Vercel (auto-detected OIDC):
 export default defineConfig({

@@ -43,7 +43,7 @@ The plugin rewrites `clickhouse://` to `http://` and `clickhouses://` to `https:
 ```typescript
 // atlas.config.ts
 import { defineConfig } from "@atlas/api/lib/config";
-import { clickhousePlugin } from "@atlas/plugin-clickhouse-datasource";
+import { clickhousePlugin } from "@useatlas/clickhouse";
 
 export default defineConfig({
   plugins: [
@@ -102,7 +102,7 @@ Either `url` or `path` is required. When both are provided, `url` takes preceden
 ```typescript
 // atlas.config.ts
 import { defineConfig } from "@atlas/api/lib/config";
-import { duckdbPlugin } from "@atlas/plugin-duckdb-datasource";
+import { duckdbPlugin } from "@useatlas/duckdb";
 
 export default defineConfig({
   plugins: [
@@ -165,7 +165,7 @@ bun add mysql2
 ```typescript
 // atlas.config.ts
 import { defineConfig } from "@atlas/api/lib/config";
-import { mysqlPlugin } from "@atlas/plugin-mysql-datasource";
+import { mysqlPlugin } from "@useatlas/mysql";
 
 export default defineConfig({
   plugins: [
@@ -235,7 +235,7 @@ The URL is parsed into Snowflake SDK connection options:
 ```typescript
 // atlas.config.ts
 import { defineConfig } from "@atlas/api/lib/config";
-import { snowflakePlugin } from "@atlas/plugin-snowflake-datasource";
+import { snowflakePlugin } from "@useatlas/snowflake";
 
 export default defineConfig({
   plugins: [
@@ -317,7 +317,7 @@ The URL is parsed into Salesforce connection options:
 ```typescript
 // atlas.config.ts
 import { defineConfig } from "@atlas/api/lib/config";
-import { salesforcePlugin } from "@atlas/plugin-salesforce-datasource";
+import { salesforcePlugin } from "@useatlas/salesforce";
 
 export default defineConfig({
   plugins: [

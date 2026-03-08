@@ -840,8 +840,8 @@ async function main() {
   // Generate atlas.config.ts for plugin-based sandboxes (E2B, Daytona)
   if (platform === "other" && (sandboxChoice === "e2b" || sandboxChoice === "daytona")) {
     const pluginPkg = sandboxChoice === "e2b"
-      ? "@atlas/plugin-e2b-sandbox"
-      : "@atlas/plugin-daytona-sandbox";
+      ? "@useatlas/e2b"
+      : "@useatlas/daytona";
     const pluginExport = sandboxChoice === "e2b"
       ? "e2bSandboxPlugin"
       : "daytonaSandboxPlugin";
@@ -967,7 +967,7 @@ export default defineConfig({
       if (sandboxChoice === "sidecar") {
         noteBody += "\n\n" + pc.dim("Deploy sidecar/ as a separate service. Set SIDECAR_AUTH_TOKEN on both.");
       } else if (sandboxChoice === "e2b" || sandboxChoice === "daytona") {
-        noteBody += "\n\n" + pc.dim(`Install ${sandboxChoice === "e2b" ? "@atlas/plugin-e2b-sandbox" : "@atlas/plugin-daytona-sandbox"} when available.`);
+        noteBody += "\n\n" + pc.dim(`Install ${sandboxChoice === "e2b" ? "@useatlas/e2b" : "@useatlas/daytona"} when available.`);
       }
       break;
   }

@@ -115,7 +115,7 @@ export function detectDBType(url?: string): DBType {
   throw new Error(
     `Unsupported database URL scheme "${rawScheme}://". ` +
     `This adapter is now a plugin. Install the appropriate datasource plugin ` +
-    `(e.g. @atlas/plugin-${baseScheme}) and add it to the plugins array in atlas.config.ts. ` +
+    `(e.g. @useatlas/${baseScheme}) and add it to the plugins array in atlas.config.ts. ` +
     `Ensure the plugin is listed before any datasources that use it. ` +
     `Core adapters support postgresql:// and mysql:// only.`
   );

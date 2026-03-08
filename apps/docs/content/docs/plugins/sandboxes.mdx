@@ -50,7 +50,7 @@ bun add e2b
 ```typescript
 // atlas.config.ts
 import { defineConfig } from "@atlas/api/lib/config";
-import { e2bSandboxPlugin } from "@atlas/plugin-e2b-sandbox";
+import { e2bSandboxPlugin } from "@useatlas/e2b";
 
 export default defineConfig({
   plugins: [
@@ -105,7 +105,7 @@ bun add @daytonaio/sdk
 ```typescript
 // atlas.config.ts
 import { defineConfig } from "@atlas/api/lib/config";
-import { daytonaSandboxPlugin } from "@atlas/plugin-daytona-sandbox";
+import { daytonaSandboxPlugin } from "@useatlas/daytona";
 
 export default defineConfig({
   plugins: [
@@ -171,7 +171,7 @@ No npm dependencies are required beyond `@useatlas/plugin-sdk`.
 ```typescript
 // atlas.config.ts
 import { defineConfig } from "@atlas/api/lib/config";
-import { nsjailSandboxPlugin } from "@atlas/plugin-nsjail-sandbox";
+import { nsjailSandboxPlugin } from "@useatlas/nsjail";
 
 export default defineConfig({
   plugins: [
@@ -243,7 +243,7 @@ docker build -f packages/sandbox-sidecar/Dockerfile -t atlas-sidecar .
 ```typescript
 // atlas.config.ts
 import { defineConfig } from "@atlas/api/lib/config";
-import { sidecarSandboxPlugin } from "@atlas/plugin-sidecar-sandbox";
+import { sidecarSandboxPlugin } from "@useatlas/sidecar";
 
 export default defineConfig({
   plugins: [
@@ -306,7 +306,7 @@ When `accessToken` is provided, `teamId` is required. The config schema enforces
 ```typescript
 // atlas.config.ts
 import { defineConfig } from "@atlas/api/lib/config";
-import { vercelSandboxPlugin } from "@atlas/plugin-vercel-sandbox";
+import { vercelSandboxPlugin } from "@useatlas/vercel-sandbox";
 
 // On Vercel (auto-detected OIDC -- no config needed):
 export default defineConfig({
@@ -364,8 +364,8 @@ You can register multiple sandbox plugins. Atlas picks the highest-priority one 
 ```typescript
 // atlas.config.ts
 import { defineConfig } from "@atlas/api/lib/config";
-import { nsjailSandboxPlugin } from "@atlas/plugin-nsjail-sandbox";
-import { sidecarSandboxPlugin } from "@atlas/plugin-sidecar-sandbox";
+import { nsjailSandboxPlugin } from "@useatlas/nsjail";
+import { sidecarSandboxPlugin } from "@useatlas/sidecar";
 
 export default defineConfig({
   plugins: [

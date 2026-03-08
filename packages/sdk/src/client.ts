@@ -315,7 +315,7 @@ export interface AuditStats {
 
 export interface PluginInfo {
   id: string;
-  type: PluginType;
+  types: PluginType[];
   version: string;
   name: string;
   status: PluginStatus;

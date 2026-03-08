@@ -549,7 +549,7 @@ type _InferFrom<P, C> = {
  *
  * type CH = $InferServerPlugin<typeof clickhousePlugin>;
  * // CH["Config"] → { url: string; database?: string }
- * // CH["Type"]   → "datasource"
+ * // CH["Types"]  → readonly ["datasource"]
  * // CH["Id"]     → string
  * ```
  */

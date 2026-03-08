@@ -3169,7 +3169,7 @@ export async function handleActionApproval(
 
 interface PluginInfo {
   id: string;
-  type: string;
+  types: string[];
   version: string;
   name?: string;
   healthy?: boolean;
@@ -3204,7 +3204,7 @@ export async function handlePluginList(): Promise<void> {
   for (const p of plugins) {
     const info: PluginInfo = {
       id: String(p.id ?? "unknown"),
-      type: String(p.type ?? "unknown"),
+      types: Array.isArray(p.types) ? (p.types as string[]).map(String) : ["unknown"],
       version: String(p.version ?? "unknown"),
       name: p.name ? String(p.name) : undefined,
     };
@@ -3229,7 +3229,7 @@ export async function handlePluginList(): Promise<void> {
   const rows = infos.map((info) => ({
     Name: info.name ?? info.id,
     ID: info.id,
-    Type: info.type,
+    Type: info.types.join(", "),
     Version: info.version,
     Health:
       info.healthy === undefined

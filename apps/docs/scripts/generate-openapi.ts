@@ -23,6 +23,20 @@ if (!fs.existsSync(specPath)) {
   process.exit(1);
 }
 
+// Validate spec contents before passing to fumadocs
+let spec: unknown;
+try {
+  spec = JSON.parse(fs.readFileSync(specPath, "utf-8"));
+} catch {
+  console.error("openapi.json is not valid JSON. Re-run extraction.");
+  process.exit(1);
+}
+
+if (!spec || typeof spec !== "object" || !("openapi" in spec)) {
+  console.error("openapi.json does not contain a valid OpenAPI spec.");
+  process.exit(1);
+}
+
 // Clean output directory before regenerating
 if (fs.existsSync(outputDir)) {
   fs.rmSync(outputDir, { recursive: true });
@@ -33,11 +47,19 @@ const openapi = createOpenAPI({
   input: ["./openapi.json"],
 });
 
-await generateFiles({
-  input: openapi,
-  output: outputDir,
-  per: "operation",
-  groupBy: "tag",
-});
+try {
+  await generateFiles({
+    input: openapi,
+    output: outputDir,
+    per: "operation",
+    groupBy: "tag",
+  });
+} catch (err) {
+  console.error(
+    "Failed to generate API reference docs:",
+    err instanceof Error ? err.message : err,
+  );
+  process.exit(1);
+}
 
 console.log(`Generated API reference docs in ${outputDir}`);

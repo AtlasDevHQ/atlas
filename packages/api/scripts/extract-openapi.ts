@@ -21,9 +21,33 @@ app.route("/api/v1/openapi.json", openapi);
 
 const req = new Request("http://localhost/api/v1/openapi.json");
 const res = await app.fetch(req);
-const spec = await res.json();
+
+if (!res.ok) {
+  const body = await res.text();
+  console.error(`OpenAPI route returned HTTP ${res.status}:\n${body}`);
+  process.exit(1);
+}
+
+const spec = (await res.json()) as Record<string, unknown>;
+
+// Sanity check: must look like an OpenAPI spec
+if (!spec || spec.openapi !== "3.1.0" || !spec.paths) {
+  console.error(
+    "Extracted spec is not a valid OpenAPI 3.1.0 document:",
+    JSON.stringify(spec, null, 2).slice(0, 500),
+  );
+  process.exit(1);
+}
 
 const outPath = path.resolve(import.meta.dirname, "..", "..", "..", "apps", "docs", "openapi.json");
-fs.writeFileSync(outPath, JSON.stringify(spec, null, 2) + "\n");
+try {
+  fs.writeFileSync(outPath, JSON.stringify(spec, null, 2) + "\n");
+} catch (err) {
+  console.error(
+    `Failed to write OpenAPI spec to ${outPath}:`,
+    err instanceof Error ? err.message : err,
+  );
+  process.exit(1);
+}
 
 console.log(`Wrote OpenAPI spec to ${outPath}`);

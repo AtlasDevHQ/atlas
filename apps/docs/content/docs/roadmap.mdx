@@ -19,22 +19,15 @@ Datasource adapters extracted from core into standalone plugins. The Plugin SDK 
 
 A sandboxed `executePython` tool for data analysis — runs Python with import guards, renders charts inline in the chat UI, and works across all sandbox backends (nsjail, sidecar, Vercel).
 
----
+### 0.1.0 — Documentation & Developer Experience
 
-## 0.1.0 — Documentation & Developer Experience
-
-The current milestone. Focused on making Atlas discoverable and easy to adopt.
-
-- **Docs site** — Reference pages, integration guides, and operations docs on [docs.useatlas.dev](https://docs.useatlas.dev)
-- **DX polish** — `atlas doctor` for env validation, `atlas validate` for config and semantic layer checks, better first-run error messages
-- **Test coverage** — Web UI tests, expanded E2E coverage
-- **Project hygiene** — CHANGELOG, CONTRIBUTING guide, issue and PR templates, brand unification
+Docs site launched at [docs.useatlas.dev](https://docs.useatlas.dev) with reference pages, integration guides, interactive API reference from OpenAPI, OG images, sitemap, and llms.txt. CLI gained `atlas doctor`, `atlas validate`, shell completions, and better first-run errors. Test coverage expanded across web UI, SDK integration, and E2E suites. Added CHANGELOG, CONTRIBUTING guide, issue/PR templates, and unified brand colors.
 
 ---
 
 ## 0.2.0 — Plugin Ecosystem
 
-Making it easy to build, publish, and discover Atlas plugins.
+The current milestone. Making it easy to build, publish, and discover Atlas plugins.
 
 - **Plugin distribution** — Official plugins published to npm under `@useatlas/*` (ClickHouse, Snowflake, DuckDB, Salesforce, Slack, MCP, and more). Install with `bun add` and register in `atlas.config.ts`
 - **Plugin SDK DX** — Testing utilities, scaffold command (`bun create @useatlas/plugin`), and a plugin cookbook in docs

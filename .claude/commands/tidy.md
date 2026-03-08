@@ -52,6 +52,8 @@ Run these in parallel:
 
 8. `.claude/research/ROADMAP.md` — Read the current milestone sections (if it exists)
 
+9. `apps/docs/content/docs/roadmap.mdx` — Read the public docs site roadmap
+
 ---
 
 **Step 2: Cross-reference and identify gaps**
@@ -63,7 +65,15 @@ For each category, build a list of actions needed:
 - Any shipped work still showing `- [ ]` -> change to `- [x]` and add issue/PR refs
 - Any new shipped work not listed in ROADMAP -> add as new line items under the appropriate milestone section
 
-### 2b. Project board status
+### 2b. Docs site roadmap (`apps/docs/content/docs/roadmap.mdx`)
+The public roadmap is a prose summary (no checkboxes). Keep it in sync with the internal ROADMAP:
+- When a milestone is fully shipped (all internal ROADMAP checkboxes checked), move it from its current section to the "Shipped" section in the docs roadmap. Write a 1-2 sentence prose summary of what shipped (matching the style of existing Shipped entries). Remove the `---` separator and section that was moved
+- Update "The current milestone" language if the active milestone changed (e.g. if 0.1.0 just shipped, 0.2.0 becomes the current milestone)
+- If new shipped work doesn't fit an existing Shipped entry, add a new `### Sub-heading` under Shipped with a prose summary
+- Don't add issue/PR numbers to the docs roadmap — keep it clean and user-facing
+- If a milestone's scope changed significantly (items added/removed), update its bullet points to match
+
+### 2c. Project board status
 - Items marked "Done" on board but issue still OPEN with open sub-issues -> move to "In Progress"
 - Issues that are CLOSED but board shows "Todo" or "In Progress" -> move to "Done"
 - Duplicate items (same title, issue + PR both on board) -> remove the PR entry, keep the issue
@@ -72,7 +82,7 @@ For each category, build a list of actions needed:
   - Status field: `PVTSSF_lADOD8aze84BRASFzg-9gBo`
   - Backlog: `f75ad846`, Ready: `61e4505c`, In Progress: `47fc9ee4`, In Review: `df73e18b`, Done: `98236657`
 
-### 2c. Issue hygiene
+### 2d. Issue hygiene
 - Open issues whose work is fully shipped (all items done, PR merged) -> close with comment
 - **Issues missing labels** -> every issue needs a type label AND area label(s):
   - Type (exactly one): `bug`, `feature`, `refactor`, `chore`, `docs`
@@ -85,12 +95,12 @@ For each category, build a list of actions needed:
   - 0.5.0 — Enterprise
 - Parent issues with shipped sub-issues -> add status comment listing what shipped and what remains
 
-### 2d. CI health
+### 2e. CI health
 - If CI is failing on main, this is **urgent** — diagnose the failure and fix it before other tidy work
 - Check if failures are from recently merged PRs (regressions) or pre-existing
 - Common causes: type errors in new code, missing test mocks, dependency drift
 
-### 2e. Untracked work
+### 2f. Untracked work
 - Merged PRs or commits that don't reference any issue -> assess whether a new issue should be created or if it's too minor (bug fixes, typos = skip)
 - New issues needed for significant untracked features or infrastructure changes -> create with appropriate labels, milestone, and add to project board
 
@@ -154,9 +164,11 @@ gh project item-edit --project-id PVT_kwDOD8aze84BRASF --id "$ITEM_ID" --field-i
 
 **Step 4: Commit and report**
 
-If `.claude/research/ROADMAP.md` was changed:
-1. `git add .claude/research/ROADMAP.md`
-2. Commit with message like: `Update ROADMAP: mark <milestone> items as shipped, add missing items`
+If `.claude/research/ROADMAP.md` was changed, update it (it's gitignored, so no commit needed — it's a local tracking file).
+
+If `apps/docs/content/docs/roadmap.mdx` was changed:
+1. `git add apps/docs/content/docs/roadmap.mdx`
+2. Commit with message like: `docs: update roadmap — mark 0.x.0 as shipped`
 3. `git push`
 
 Output a summary:

@@ -1,5 +1,6 @@
 import { DocsLayout } from "fumadocs-ui/layouts/docs";
 import { source } from "@/lib/source";
+import { Book, Braces } from "lucide-react";
 import type { ReactNode } from "react";
 
 export default function Layout({ children }: { children: ReactNode }) {
@@ -9,6 +10,22 @@ export default function Layout({ children }: { children: ReactNode }) {
       nav={{
         title: "Atlas",
         url: "/",
+      }}
+      sidebar={{
+        tabs: [
+          {
+            title: "Docs",
+            description: "Guides, configuration, and concepts",
+            icon: <Book />,
+            url: "/docs",
+          },
+          {
+            title: "API Reference",
+            description: "REST API endpoints and request/response schemas",
+            icon: <Braces />,
+            url: "/docs/api-reference",
+          },
+        ],
       }}
       links={[
         {

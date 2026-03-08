@@ -1,0 +1,11 @@
+{
+  "title": "Datasources",
+  "pages": [
+    "index",
+    "clickhouse",
+    "duckdb",
+    "mysql",
+    "snowflake",
+    "salesforce"
+  ]
+}

@@ -1,29 +1,19 @@
 ---
-title: Context Plugins
-description: Inject additional context into the Atlas agent's system prompt.
+title: YAML Context
+description: Inject a structured semantic layer overview into the Atlas agent's system prompt.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Context plugins provide additional knowledge to the agent's system prompt. The YAML Context plugin is the reference implementation -- it reads the semantic layer and builds a structured overview.
-
-## YAML Context
-
 The YAML context plugin reads your semantic layer directory (entities, glossary, metrics) and builds a structured Markdown overview that is injected into the agent's system prompt. This gives the agent an at-a-glance understanding of the available tables, business terminology, and predefined metrics before it starts exploring or writing SQL.
 
-### Prerequisites
+## Installation
 
-- `@useatlas/yaml-context` -- the plugin package (workspace dependency)
-- `js-yaml` -- YAML parser (peer dependency)
-- A populated `semantic/` directory with entity YAML files
+```bash
+bun add @useatlas/yaml-context
+```
 
-### Configuration
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `semanticDir` | `string` | `"./semantic"` | Path to the semantic layer directory. Resolved relative to the working directory. |
-
-### Usage
+## Configuration
 
 ```typescript
 import { defineConfig } from "@atlas/api/lib/config";
@@ -46,7 +36,13 @@ export default defineConfig({
 });
 ```
 
-### How it works
+### Options
+
+| Option | Type | Required | Default | Description |
+|--------|------|----------|---------|-------------|
+| `semanticDir` | `string` | No | `"./semantic"` | Path to the semantic layer directory. Resolved relative to the working directory |
+
+## How It Works
 
 On the first call to `load()`, the plugin reads three sources from the semantic directory and builds a single Markdown string:
 
@@ -78,13 +74,13 @@ The result is a structured Markdown document like:
 - **avg_deal_size** (accounts) — Average account value
 ```
 
-### Caching and refresh
+## Caching and Refresh
 
 The context string is cached after the first `load()` call. Subsequent calls return the cached result without re-reading the filesystem. This is important for performance since `load()` is called on every agent invocation.
 
 To invalidate the cache, call `refresh()`. This clears the cached string so the next `load()` re-reads all YAML files from disk. The refresh mechanism is used when the semantic layer is reloaded (e.g., after running `atlas init`) or via the admin UI.
 
-### Health checks
+## Health Checks
 
 The plugin validates three conditions during health checks:
 
@@ -95,5 +91,19 @@ The plugin validates three conditions during health checks:
 If any condition fails, the plugin reports as unhealthy with a descriptive message. On success, it reports the number of entity files found.
 
 <Callout type="info">
-This plugin uses `definePlugin()` instead of `createPlugin()` because the config is a simple optional object that does not need Zod schema validation. The `contextYamlPlugin()` factory function wraps `buildContextYamlPlugin()` directly.
+This plugin uses `definePlugin()` instead of `createPlugin()` because the config is a simple optional object that does not need Zod schema validation.
 </Callout>
+
+## Troubleshooting
+
+### "Semantic directory not found"
+
+Ensure the `semanticDir` path is correct and the directory exists. The default is `./semantic` relative to the working directory. Run `atlas init` to generate the semantic layer if it doesn't exist.
+
+### Empty context output
+
+The plugin requires at least one `.yml` file in `semantic/entities/`. If the context is empty, check that entity files exist and are valid YAML.
+
+### Stale context after `atlas init`
+
+The context is cached after first load. If you regenerate the semantic layer with `atlas init`, the cache must be invalidated. This happens automatically when the semantic layer is reloaded via the admin UI, or you can restart the server.

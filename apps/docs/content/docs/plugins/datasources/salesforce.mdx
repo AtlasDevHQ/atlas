@@ -1,0 +1,112 @@
+---
+title: Salesforce
+description: Connect Atlas to Salesforce CRM for SOQL queries via the jsforce library.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Connects to Salesforce via the `jsforce` library. Unlike the other datasource plugins, Salesforce uses SOQL (Salesforce Object Query Language) instead of SQL. The plugin registers a dedicated `querySalesforce` agent tool -- the agent uses this tool instead of `executeSQL` when querying Salesforce data.
+
+## Installation
+
+```bash
+bun add @useatlas/salesforce jsforce
+```
+
+## Configuration
+
+```typescript
+// atlas.config.ts
+import { defineConfig } from "@atlas/api/lib/config";
+import { salesforcePlugin } from "@useatlas/salesforce";
+
+export default defineConfig({
+  plugins: [
+    salesforcePlugin({
+      url: process.env.SALESFORCE_URL!,
+      // e.g. "salesforce://analyst@company.com:password@login.salesforce.com?token=SECURITY_TOKEN"
+    }),
+  ],
+});
+```
+
+### Options
+
+| Option | Type | Required | Default | Description |
+|--------|------|----------|---------|-------------|
+| `url` | `string` | Yes | -- | Connection URL in the format `salesforce://user:pass@login.salesforce.com?token=TOKEN` |
+
+### Connection string format
+
+```
+salesforce://user:password@login.salesforce.com?token=SECURITY_TOKEN
+salesforce://user:password@test.salesforce.com?token=TOKEN&clientId=ID&clientSecret=SECRET
+```
+
+| URL component | Maps to |
+|---------------|---------|
+| hostname | `loginUrl` (defaults to `login.salesforce.com`; use `test.salesforce.com` for sandboxes) |
+| username | `username` |
+| password | `password` |
+| `?token=` | `securityToken` (appended to password for login) |
+| `?clientId=` | `clientId` (for OAuth Connected App) |
+| `?clientSecret=` | `clientSecret` (for OAuth Connected App) |
+
+## The `querySalesforce` Tool
+
+The plugin automatically registers a `querySalesforce` tool during initialization. The agent uses this tool instead of `executeSQL` for Salesforce queries. The tool:
+
+- Validates SOQL structure (SELECT-only, no DML, no semicolons)
+- Checks the object whitelist against the semantic layer
+- Auto-appends a `LIMIT` clause (respects `ATLAS_ROW_LIMIT`, default 1000)
+- Enforces query timeout (respects `ATLAS_QUERY_TIMEOUT`, default 30s)
+- Scrubs sensitive error messages (credentials, session IDs) before returning them to the agent
+
+## SOQL Dialect
+
+SOQL is not SQL. The agent receives these hints to write valid SOQL:
+
+- SOQL queries Salesforce objects, not database tables
+- No JOINs -- use relationship queries instead (e.g. `SELECT Account.Name FROM Contact`)
+- Parent-to-child: subquery in SELECT (e.g. `SELECT Id, (SELECT LastName FROM Contacts) FROM Account`)
+- Child-to-parent: dot notation (e.g. `SELECT Account.Name FROM Contact`)
+- Aggregate functions: `COUNT()`, `SUM()`, `AVG()`, `MIN()`, `MAX()`, `COUNT_DISTINCT()`
+- `GROUP BY` and `HAVING` are supported
+- Date literals: `YESTERDAY`, `TODAY`, `LAST_WEEK`, `THIS_MONTH`, `LAST_N_DAYS:n`, etc.
+- No wildcards in field lists -- always list specific fields (no `SELECT *`)
+
+## Validation
+
+Salesforce uses a custom SOQL validation pipeline instead of the standard `node-sql-parser`-based SQL validation:
+
+1. **Empty check** -- reject empty/whitespace queries
+2. **Semicolons** -- reject statement chaining
+3. **Regex mutation guard** -- block `INSERT`, `UPDATE`, `DELETE`, `UPSERT`, `MERGE`, `UNDELETE` (string literals are stripped first to prevent false positives)
+4. **SELECT-only** -- query must start with `SELECT`
+5. **Object whitelist** -- objects in `FROM` clauses must be in the semantic layer (case-insensitive). Parent-to-child relationship subqueries in the SELECT list are skipped since they use relationship names, not object names
+
+## Security
+
+The jsforce session is stateful and cached -- the plugin handles session expiry by automatically re-authenticating and retrying the query. Error messages are scrubbed for sensitive patterns (passwords, credentials, session IDs, login errors) before being returned to the agent or user.
+
+<Callout type="info">
+Salesforce enforces object-level and field-level security server-side based on the connected user's profile and permission sets. Use a dedicated integration user with read-only access to the objects the agent should query.
+</Callout>
+
+## Troubleshooting
+
+### Login failures
+
+Ensure the security token is appended correctly. Salesforce requires `password + securityToken` for API login. If your org has IP restrictions, whitelist the Atlas server's IP address or use a Connected App with OAuth.
+
+### Session expiry
+
+The plugin automatically re-authenticates on session expiry. If you see frequent re-auth, check that the integration user's session timeout settings in Salesforce are reasonable.
+
+### Sandbox vs production
+
+Use `test.salesforce.com` as the hostname for Salesforce sandbox environments. The `login.salesforce.com` hostname is for production orgs only.
+
+### SOQL query limits
+
+Salesforce imposes governor limits on SOQL queries (e.g., 50,000 row limit per query). The plugin respects `ATLAS_ROW_LIMIT` (default 1000) which stays well under this limit.

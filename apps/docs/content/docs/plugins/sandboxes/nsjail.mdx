@@ -1,0 +1,96 @@
+---
+title: nsjail
+description: Linux namespace sandbox isolation using the nsjail binary.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Linux namespace isolation using [nsjail](https://nsjail.dev). Commands run in a jailed process on the same host with no network access, a read-only bind-mount of the `semantic/` directory, and strict resource limits. This is the reference sandbox implementation -- no external API or cloud service required, just the `nsjail` binary on the host.
+
+## Installation
+
+nsjail is a system-level binary, not an npm package. Install it via your OS package manager or build from source:
+
+```bash
+# Debian/Ubuntu
+apt-get install nsjail
+
+# Or build from source
+git clone https://github.com/google/nsjail && cd nsjail && make
+
+# Docker: included in the examples/docker/ Dockerfile
+```
+
+Then install the plugin package:
+
+```bash
+bun add @useatlas/nsjail
+```
+
+## Configuration
+
+```typescript
+// atlas.config.ts
+import { defineConfig } from "@atlas/api/lib/config";
+import { nsjailSandboxPlugin } from "@useatlas/nsjail";
+
+export default defineConfig({
+  plugins: [
+    nsjailSandboxPlugin({
+      timeLimitSec: 15,
+      memoryLimitMb: 512,
+    }),
+  ],
+});
+```
+
+### Options
+
+| Option | Type | Required | Default | Description |
+|--------|------|----------|---------|-------------|
+| `nsjailPath` | `string` | No | Auto-detected on `PATH` | Explicit path to the nsjail binary |
+| `timeLimitSec` | `number` | No | `10` | Per-command time limit in seconds |
+| `memoryLimitMb` | `number` | No | `256` | Per-command memory limit in MB |
+
+## Security
+
+| Property | Value |
+|----------|-------|
+| Network isolation | Yes (disabled by nsjail) |
+| Filesystem isolation | Yes (read-only bind-mount) |
+| Unprivileged execution | Yes (runs as `nobody:65534`) |
+| Priority | 75 |
+
+Linux namespace isolation via nsjail. No network access, read-only `semantic/` bind-mount, writable tmpfs for scratch, runs as `nobody:65534`. Additional resource limits: max 5 processes, 64 open file descriptors, 10 MB max file size.
+
+### Jail environment
+
+The jailed process gets a minimal environment with no host secrets:
+
+| Variable | Value |
+|----------|-------|
+| `PATH` | `/bin:/usr/bin` |
+| `HOME` | `/tmp` |
+| `LANG` | `C.UTF-8` |
+
+Read-only bind-mounts: `/bin`, `/usr/bin`, `/lib`, `/lib64`, `/usr/lib`, `/dev/null`, `/dev/zero`, `/dev/urandom`, and the `semantic/` directory at `/semantic`.
+
+## Platform Requirements
+
+<Callout type="warn">
+Requires Linux with namespace support. Will not work on macOS or Windows. Use E2B, Daytona, or the sidecar instead on non-Linux platforms.
+</Callout>
+
+## Troubleshooting
+
+### nsjail binary not found
+
+The nsjail binary is auto-detected on `PATH` if `nsjailPath` is not set. If the binary is not found, the plugin logs a warning at initialization and fails on first use. Set `nsjailPath` explicitly or install nsjail to a directory on your `PATH`.
+
+### Namespace permission errors
+
+nsjail requires Linux namespace support. On some container runtimes (e.g., Docker without `--privileged`), namespace creation may fail. Ensure the container has the necessary capabilities or use the `--privileged` flag.
+
+### Output truncation
+
+Stdout and stderr are each capped at 1 MB to prevent memory exhaustion from runaway commands. If output is truncated, refine the explore command to produce less output (e.g., use `head` or `grep`).

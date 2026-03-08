@@ -1,0 +1,97 @@
+---
+title: JIRA
+description: Let the Atlas agent create JIRA tickets from analysis findings with approval controls.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The JIRA action plugin lets the Atlas agent create JIRA issues based on analysis findings. When the agent identifies something actionable -- an anomaly, a data quality issue, a trend worth tracking -- it can propose creating a ticket. The user reviews the proposed ticket in the chat UI and approves or rejects it before anything is created.
+
+## Installation
+
+```bash
+bun add @useatlas/jira
+```
+
+### Prerequisites
+
+- A JIRA Cloud instance (Atlassian)
+- A JIRA API token ([generate one here](https://id.atlassian.net/manage-profile/security/api-tokens))
+- The email address associated with the API token
+
+## Configuration
+
+```typescript
+import { defineConfig } from "@atlas/api/lib/config";
+import { jiraPlugin } from "@useatlas/jira";
+
+export default defineConfig({
+  plugins: [
+    jiraPlugin({
+      host: "https://myco.atlassian.net",
+      email: process.env.JIRA_EMAIL!,
+      apiToken: process.env.JIRA_API_TOKEN!,
+      projectKey: "ENG",
+      labels: ["atlas-generated"],
+    }),
+  ],
+});
+```
+
+### Options
+
+| Option | Type | Required | Default | Description |
+|--------|------|----------|---------|-------------|
+| `host` | `string` | Yes | -- | JIRA instance URL (e.g., `"https://myco.atlassian.net"`). Must start with `https://` or `http://` |
+| `email` | `string` | Yes | -- | Email address for JIRA API authentication (Basic auth) |
+| `apiToken` | `string` | Yes | -- | JIRA API token |
+| `projectKey` | `string` | Yes | -- | Default JIRA project key (e.g., `"ENG"`). Must be uppercase alphanumeric |
+| `labels` | `string[]` | No | -- | Optional labels applied to every created issue |
+
+<Callout type="warn">
+Never commit JIRA credentials to version control. Use environment variables in `atlas.config.ts` and add `.env` to `.gitignore`.
+</Callout>
+
+## Action Details
+
+| Property | Value |
+|----------|-------|
+| **Action name** | `createJiraTicket` |
+| **Action type** | `jira:create` |
+| **Reversible** | Yes |
+| **Default approval** | `manual` |
+
+The agent tool accepts the following parameters:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `summary` | `string` | Issue summary / title (max 255 characters) |
+| `description` | `string` | Detailed issue description. Converted to Atlassian Document Format (ADF) automatically |
+| `project` | `string` (optional) | JIRA project key override. Defaults to the `projectKey` from plugin config |
+| `labels` | `string[]` (optional) | Labels for this specific issue. Falls back to the plugin-level `labels` config if not specified |
+
+## How It Works
+
+1. The agent calls `createJiraTicket` with a summary and description
+2. The user sees an approval card in the chat UI
+3. On approval, the plugin calls the JIRA REST API v3 to create a Task-type issue
+4. Plain text descriptions are automatically converted to Atlassian Document Format (ADF), which JIRA v3 requires
+5. The tool returns the issue key (e.g., `ENG-123`) and a browse URL
+
+<Callout type="info">
+The health check verifies JIRA connectivity by calling the `/rest/api/3/myself` endpoint with the configured credentials. If authentication fails or the instance is unreachable, the plugin reports as unhealthy.
+</Callout>
+
+## Troubleshooting
+
+### Authentication failures
+
+JIRA uses Basic auth with email + API token. Ensure the API token was generated for the correct Atlassian account and has not expired. Regenerate tokens at [Atlassian API tokens](https://id.atlassian.net/manage-profile/security/api-tokens).
+
+### Invalid project key
+
+The `projectKey` must be uppercase alphanumeric (e.g., `"ENG"`, `"DATA"`). The regex pattern is `^[A-Z][A-Z0-9_]*$`. Check your JIRA project settings for the correct key.
+
+### ADF conversion issues
+
+The plugin converts plain text descriptions to Atlassian Document Format (ADF). If descriptions appear incorrectly formatted in JIRA, ensure the input is plain text -- HTML or Markdown in the description may not convert as expected.

@@ -1,0 +1,25 @@
+---
+title: Action Plugins
+description: Let the Atlas agent send emails and create JIRA tickets with approval-gated actions.
+---
+
+import { Cards, Card } from "fumadocs-ui/components/card";
+
+Action plugins give the agent the ability to perform write operations. All actions go through the approval framework -- the agent proposes an action, and the user must approve it before execution.
+
+## Available Action Plugins
+
+<Cards>
+  <Card title="Email" href="/plugins/actions/email" description="Send email reports to stakeholders via Resend" />
+  <Card title="JIRA" href="/plugins/actions/jira" description="Create JIRA tickets from analysis findings" />
+</Cards>
+
+## Approval Modes
+
+The approval mode controls who can approve actions:
+
+| Mode | Description |
+|------|-------------|
+| `"auto"` | Executes immediately without approval (use sparingly) |
+| `"manual"` | Any user in the conversation can approve or reject |
+| `"admin-only"` | Only users with the `admin` role can approve |

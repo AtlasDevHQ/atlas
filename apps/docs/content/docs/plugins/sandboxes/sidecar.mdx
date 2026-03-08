@@ -1,0 +1,73 @@
+---
+title: Sidecar
+description: HTTP-isolated container sandbox running alongside the Atlas API.
+---
+
+HTTP-isolated container running alongside the main Atlas API. The sidecar is a separate Docker container (`packages/sandbox-sidecar/`) containing only bash, coreutils, and the semantic layer files. Commands are sent over HTTP and executed inside the container. No host filesystem or secrets are accessible.
+
+## Installation
+
+No npm dependencies required beyond the plugin package. The sidecar is deployed as a separate container using the `packages/sandbox-sidecar/Dockerfile`.
+
+```bash
+bun add @useatlas/sidecar
+
+# Build the sidecar container
+docker build -f packages/sandbox-sidecar/Dockerfile -t atlas-sidecar .
+
+# Or use docker-compose / Railway to deploy alongside the API
+```
+
+## Configuration
+
+```typescript
+// atlas.config.ts
+import { defineConfig } from "@atlas/api/lib/config";
+import { sidecarSandboxPlugin } from "@useatlas/sidecar";
+
+export default defineConfig({
+  plugins: [
+    sidecarSandboxPlugin({
+      url: process.env.ATLAS_SANDBOX_URL ?? "http://sandbox-sidecar:8080",
+      authToken: process.env.SIDECAR_AUTH_TOKEN,
+    }),
+  ],
+});
+```
+
+### Options
+
+| Option | Type | Required | Default | Description |
+|--------|------|----------|---------|-------------|
+| `url` | `string` | Yes | -- | Sidecar service URL (e.g. `http://sandbox-sidecar:8080`) |
+| `authToken` | `string` | No | -- | Shared secret for sidecar authentication |
+| `timeoutMs` | `number` | No | `10000` | Per-command timeout in milliseconds |
+
+## Security
+
+| Property | Value |
+|----------|-------|
+| Network isolation | Yes (container boundary) |
+| Filesystem isolation | Yes (container filesystem) |
+| Unprivileged execution | Yes |
+| Priority | 50 |
+
+HTTP-isolated container with no secrets or DB drivers. Communication occurs only via HTTP to the sidecar service. The container has only bash/coreutils and the semantic layer files baked in at build time.
+
+## Troubleshooting
+
+### Connection refused (ECONNREFUSED)
+
+The sidecar service may be down or unreachable. Check that the sidecar container is running and the URL is correct. On Docker Compose, ensure the services are on the same network.
+
+### Semantic layer out of sync
+
+The sidecar container has its own copy of the semantic layer files, baked into the Docker image at build time. After running `atlas init` to update the semantic layer, rebuild the sidecar container to pick up changes.
+
+### HTTP timeout
+
+HTTP requests include a 5-second overhead on top of the configured `timeoutMs` to account for network latency. If commands are timing out, increase `timeoutMs`.
+
+### Authentication errors
+
+When `authToken` is configured on the API side, the same `SIDECAR_AUTH_TOKEN` must be set on the sidecar service. Mismatched tokens will result in authentication failures.

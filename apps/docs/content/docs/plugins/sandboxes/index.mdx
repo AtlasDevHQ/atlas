@@ -1,0 +1,71 @@
+---
+title: Sandbox Plugins
+description: Isolate code execution with E2B, Daytona, nsjail, sidecar, and Vercel sandbox plugins.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+import { Cards, Card } from "fumadocs-ui/components/card";
+
+Sandbox plugins provide isolation backends for the `explore` tool. They run user-initiated commands (file listing, grep, cat) in restricted environments to prevent unauthorized filesystem or network access. Each plugin implements the `AtlasSandboxPlugin` interface from `@useatlas/plugin-sdk`.
+
+All five plugins follow the same pattern: validate config via a Zod schema, create an isolated environment, upload semantic layer files, execute commands, and clean up. The differences are in the isolation technology and where the sandbox runs.
+
+## Available Sandbox Plugins
+
+<Cards>
+  <Card title="Vercel Sandbox" href="/plugins/sandboxes/vercel-sandbox" description="Firecracker microVM on Vercel infrastructure (priority 100)" />
+  <Card title="E2B" href="/plugins/sandboxes/e2b" description="Managed Firecracker microVM via E2B cloud (priority 90)" />
+  <Card title="Daytona" href="/plugins/sandboxes/daytona" description="Managed cloud sandbox via Daytona SDK (priority 85)" />
+  <Card title="nsjail" href="/plugins/sandboxes/nsjail" description="Linux namespace sandbox on same host (priority 75)" />
+  <Card title="Sidecar" href="/plugins/sandboxes/sidecar" description="HTTP-isolated container alongside API (priority 50)" />
+</Cards>
+
+## Priority Order
+
+When multiple sandbox backends are available, Atlas selects the highest-priority one. Higher priority means stronger isolation guarantees.
+
+| Plugin | Priority | Isolation Type | Runs on |
+|--------|----------|---------------|---------|
+| [Vercel](/plugins/sandboxes/vercel-sandbox) | 100 | Firecracker microVM | Vercel infrastructure |
+| [E2B](/plugins/sandboxes/e2b) | 90 | Firecracker microVM (managed) | E2B cloud |
+| [Daytona](/plugins/sandboxes/daytona) | 85 | Managed cloud sandbox | Daytona cloud |
+| [nsjail](/plugins/sandboxes/nsjail) | 75 | Linux namespace sandbox | Same host (Linux only) |
+| **Plugin default** | **60** | `SANDBOX_DEFAULT_PRIORITY` | -- |
+| [Sidecar](/plugins/sandboxes/sidecar) | 50 | HTTP-isolated container | Separate container |
+| just-bash (built-in) | 0 | OverlayFs (dev fallback) | Same host |
+
+<Callout type="info">
+The built-in `just-bash` backend (priority 0) is a development-only fallback. It uses OverlayFs for read-only filesystem protection but provides no network isolation. Never use it in production.
+</Callout>
+
+## Choosing a Sandbox
+
+Use this decision tree to pick the right sandbox for your deployment:
+
+1. **Deploying on Vercel?** Use [Vercel Sandbox](/plugins/sandboxes/vercel-sandbox) -- it is auto-selected as the highest-priority backend and requires no configuration.
+2. **Want managed cloud isolation with no infrastructure?** Use [E2B](/plugins/sandboxes/e2b) or [Daytona](/plugins/sandboxes/daytona). Both provide ephemeral VMs/sandboxes via a managed API.
+3. **Self-hosting on Linux with root access?** Use [nsjail](/plugins/sandboxes/nsjail) -- strong namespace isolation with no external dependencies beyond the nsjail binary.
+4. **Self-hosting on Docker/Railway without root?** Use [Sidecar](/plugins/sandboxes/sidecar) -- deploy the sidecar container alongside the API. No special kernel capabilities needed.
+5. **Local development?** The built-in `just-bash` fallback (priority 0) works for development.
+
+## Combining Multiple Sandboxes
+
+You can register multiple sandbox plugins. Atlas picks the highest-priority one that is available at runtime:
+
+```typescript
+// atlas.config.ts
+import { defineConfig } from "@atlas/api/lib/config";
+import { nsjailSandboxPlugin } from "@useatlas/nsjail";
+import { sidecarSandboxPlugin } from "@useatlas/sidecar";
+
+export default defineConfig({
+  plugins: [
+    // nsjail (priority 75) is preferred when available
+    nsjailSandboxPlugin({ timeLimitSec: 15 }),
+    // Sidecar (priority 50) is the fallback
+    sidecarSandboxPlugin({
+      url: process.env.ATLAS_SANDBOX_URL ?? "http://sandbox-sidecar:8080",
+    }),
+  ],
+});
+```

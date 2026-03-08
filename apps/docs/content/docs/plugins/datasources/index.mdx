@@ -1,0 +1,41 @@
+---
+title: Datasource Plugins
+description: Connect ClickHouse, DuckDB, MySQL, Snowflake, and Salesforce as Atlas query targets.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+import { Cards, Card } from "fumadocs-ui/components/card";
+
+Atlas supports PostgreSQL and MySQL natively via `ATLAS_DATASOURCE_URL`. For other databases and APIs, use datasource plugins. Each plugin provides a connection factory, SQL dialect hints for the agent, query validation rules, and health checks.
+
+All datasource plugins follow the same pattern:
+
+1. Install the database driver (optional peer dependency)
+2. Import the plugin factory in `atlas.config.ts`
+3. Pass connection credentials via environment variables
+
+<Callout type="warn">
+Never commit credentials to version control. Use environment variables (`process.env.CLICKHOUSE_URL`) in `atlas.config.ts` and add `.env` to `.gitignore`.
+</Callout>
+
+## Available Datasource Plugins
+
+<Cards>
+  <Card title="ClickHouse" href="/plugins/datasources/clickhouse" description="Column-oriented analytics database via HTTP transport" />
+  <Card title="DuckDB" href="/plugins/datasources/duckdb" description="Embedded analytics engine, file-based or in-memory" />
+  <Card title="MySQL" href="/plugins/datasources/mysql" description="MySQL / MariaDB via connection pool" />
+  <Card title="Snowflake" href="/plugins/datasources/snowflake" description="Snowflake Data Cloud with pool management" />
+  <Card title="Salesforce" href="/plugins/datasources/salesforce" description="Salesforce CRM via SOQL (not SQL)" />
+</Cards>
+
+## Comparison
+
+| Feature | ClickHouse | DuckDB | MySQL | Snowflake | Salesforce |
+|---------|-----------|--------|-------|-----------|------------|
+| Driver package | `@clickhouse/client` | `@duckdb/node-api` | `mysql2` | `snowflake-sdk` | `jsforce` |
+| Transport | HTTP | In-process | TCP pool | SDK pool | REST API |
+| Query language | ClickHouse SQL | DuckDB SQL | MySQL SQL | Snowflake SQL | SOQL |
+| Parser dialect | PostgreSQL (closest) | PostgreSQL (closest) | MySQL | Snowflake | Custom (regex) |
+| Read-only enforcement | `readonly: 1` per query | `READ_ONLY` access mode (file-based only) | `READ ONLY` session | SQL validation only | SELECT-only validation |
+| Agent tool | `executeSQL` | `executeSQL` | `executeSQL` | `executeSQL` | `querySalesforce` |
+| Connection caching | No (stateless HTTP) | Yes (in-process) | Yes (pool) | Yes (pool) | Yes (session) |

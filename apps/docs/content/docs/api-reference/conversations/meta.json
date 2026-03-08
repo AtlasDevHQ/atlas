@@ -1,0 +1,9 @@
+{
+  "title": "Conversations",
+  "pages": [
+    "listConversations",
+    "getConversation",
+    "deleteConversation",
+    "starConversation"
+  ]
+}

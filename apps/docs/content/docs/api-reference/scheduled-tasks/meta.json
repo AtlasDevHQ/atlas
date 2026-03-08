@@ -1,0 +1,13 @@
+{
+  "title": "Scheduled Tasks",
+  "pages": [
+    "listScheduledTasks",
+    "createScheduledTask",
+    "getScheduledTask",
+    "updateScheduledTask",
+    "deleteScheduledTask",
+    "triggerScheduledTask",
+    "listTaskRuns",
+    "schedulerTick"
+  ]
+}

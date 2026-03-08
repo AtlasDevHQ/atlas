@@ -1,0 +1,9 @@
+{
+  "title": "Slack",
+  "pages": [
+    "slackCommand",
+    "slackEvents",
+    "slackInstall",
+    "slackCallback"
+  ]
+}

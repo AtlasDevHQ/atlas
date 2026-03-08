@@ -1,0 +1,9 @@
+{
+  "title": "Auth",
+  "pages": [
+    "signUpEmail",
+    "signInEmail",
+    "getSession",
+    "signOut"
+  ]
+}

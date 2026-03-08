@@ -10,6 +10,7 @@ import defaultMdxComponents from "fumadocs-ui/mdx";
 import { Tab, Tabs } from "fumadocs-ui/components/tabs";
 import { Step, Steps } from "fumadocs-ui/components/steps";
 import { Accordion, Accordions } from "fumadocs-ui/components/accordion";
+import { APIPage } from "@/components/api-page";
 import { LLMCopyButton } from "@/components/llm-copy-button";
 import { getGithubLastEdit } from "fumadocs-core/content/github";
 
@@ -55,10 +56,13 @@ export default async function Page(props: {
   const MDX = page.data.body;
   const lastUpdate = await getLastUpdate(page.path);
 
+  const isFullWidth = page.data.full === true;
+
   return (
     <DocsPage
       toc={page.data.toc}
       lastUpdate={lastUpdate}
+      full={isFullWidth}
       editOnGithub={{
         owner: "AtlasDevHQ",
         repo: "atlas",
@@ -68,9 +72,11 @@ export default async function Page(props: {
     >
       <DocsTitle>{page.data.title}</DocsTitle>
       <DocsDescription>{page.data.description}</DocsDescription>
-      <div className="flex items-center gap-2 border-b pb-4">
-        <LLMCopyButton url={`${page.url}.mdx`} />
-      </div>
+      {!isFullWidth && (
+        <div className="flex items-center gap-2 border-b pb-4">
+          <LLMCopyButton url={`${page.url}.mdx`} />
+        </div>
+      )}
       <DocsBody>
         <MDX
           components={{
@@ -81,6 +87,7 @@ export default async function Page(props: {
             Steps,
             Accordion,
             Accordions,
+            APIPage,
           }}
         />
       </DocsBody>

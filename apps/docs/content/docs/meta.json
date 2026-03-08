@@ -22,6 +22,8 @@
     "---Plugins---",
     "plugins/authoring-guide",
     "---Architecture---",
-    "architecture/sandbox"
+    "architecture/sandbox",
+    "---",
+    "roadmap"
   ]
 }

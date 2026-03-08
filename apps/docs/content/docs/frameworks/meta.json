@@ -1,0 +1,10 @@
+{
+  "title": "Frameworks",
+  "pages": [
+    "overview",
+    "react-vite",
+    "nuxt",
+    "sveltekit",
+    "tanstack-start"
+  ]
+}

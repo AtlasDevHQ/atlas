@@ -1,0 +1,10 @@
+{
+  "title": "Getting Started",
+  "defaultOpen": true,
+  "pages": [
+    "quick-start",
+    "connect-your-data",
+    "semantic-layer",
+    "demo-datasets"
+  ]
+}

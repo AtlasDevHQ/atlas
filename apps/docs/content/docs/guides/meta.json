@@ -1,0 +1,13 @@
+{
+  "title": "Guides",
+  "pages": [
+    "mcp",
+    "slack",
+    "python",
+    "scheduled-tasks",
+    "actions",
+    "admin-console",
+    "troubleshooting",
+    "observability"
+  ]
+}

@@ -60,4 +60,6 @@ COPY --from=builder --chown=atlas:atlas /app/packages/web/public ./packages/web/
 USER atlas
 ENV HOSTNAME=0.0.0.0
 EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD bun -e "try { const r = await fetch('http://localhost:3000/'); if(!r.ok){console.error(r.status); process.exit(1)} } catch(e) { console.error(e.message); process.exit(1) }"
 CMD ["bun", "packages/web/server.js"]

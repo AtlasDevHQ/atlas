@@ -1,4 +1,10 @@
 @import "tailwindcss";
+@import "../../../../brand.css";
+
+@theme inline {
+  --color-brand: var(--atlas-brand);
+  --color-brand-hover: var(--atlas-brand-hover);
+}
 
 @theme {
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
@@ -17,7 +23,7 @@
   }
 
   ::selection {
-    background: oklch(0.765 0.177 163.22 / 0.3);
+    background: color-mix(in oklch, var(--atlas-brand) 30%, transparent);
   }
 }
 

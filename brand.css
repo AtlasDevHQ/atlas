@@ -1,0 +1,13 @@
+/* Atlas brand tokens — single source of truth.
+ * Brand green: #23CE9E
+ *
+ * Adapters per frontend:
+ *   packages/web/globals.css  → --primary, --ring (shadcn/ui)
+ *   apps/docs/globals.css     → --color-fd-primary (Fumadocs)
+ *   apps/www/globals.css      → --color-brand (Tailwind utility)
+ */
+:root {
+  --atlas-brand: oklch(0.765 0.177 163.22);
+  --atlas-brand-hover: oklch(0.82 0.16 163.22);
+  --atlas-brand-foreground: oklch(0.145 0 0);
+}

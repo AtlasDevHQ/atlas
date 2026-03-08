@@ -28,9 +28,9 @@ const MenuIcon = (
 );
 
 const AtlasLogo = (
-  <svg viewBox="0 0 256 256" fill="none" className="h-7 w-7 shrink-0" aria-hidden="true">
-    <path d="M128 24 L232 208 L24 208 Z" stroke="#23CE9E" strokeWidth="14" fill="none" strokeLinejoin="round"/>
-    <circle cx="128" cy="28" r="16" fill="#23CE9E"/>
+  <svg viewBox="0 0 256 256" fill="none" className="h-7 w-7 shrink-0 text-primary" aria-hidden="true">
+    <path d="M128 24 L232 208 L24 208 Z" stroke="currentColor" strokeWidth="14" fill="none" strokeLinejoin="round"/>
+    <circle cx="128" cy="28" r="16" fill="currentColor"/>
   </svg>
 );
 

@@ -6,21 +6,21 @@ export default function Home() {
         className="pointer-events-none absolute top-0 left-1/2 -z-10 h-[600px] w-[800px] -translate-x-1/2"
         style={{
           background:
-            "radial-gradient(ellipse at center, oklch(0.765 0.177 163.22 / 0.06) 0%, transparent 70%)",
+            "radial-gradient(ellipse at center, color-mix(in oklch, var(--atlas-brand) 6%, transparent) 0%, transparent 70%)",
         }}
       />
 
       {/* Nav */}
       <nav className="animate-fade-in mx-auto flex max-w-5xl items-center justify-between px-6 py-6">
         <div className="flex items-center gap-2.5">
-          <svg viewBox="0 0 256 256" fill="none" className="h-6 w-6" aria-hidden="true">
-            <path d="M128 24 L232 208 L24 208 Z" stroke="#23CE9E" strokeWidth="14" fill="none" strokeLinejoin="round"/>
-            <circle cx="128" cy="28" r="16" fill="#23CE9E"/>
+          <svg viewBox="0 0 256 256" fill="none" className="h-6 w-6 text-brand" aria-hidden="true">
+            <path d="M128 24 L232 208 L24 208 Z" stroke="currentColor" strokeWidth="14" fill="none" strokeLinejoin="round"/>
+            <circle cx="128" cy="28" r="16" fill="currentColor"/>
           </svg>
           <span className="font-mono text-lg font-semibold tracking-tight text-zinc-100">
             atlas
           </span>
-          <span className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 py-0.5 font-mono text-[10px] font-medium tracking-wider text-emerald-400 uppercase">
+          <span className="rounded-full border border-brand/20 bg-brand/10 px-2 py-0.5 font-mono text-[10px] font-medium tracking-wider text-brand uppercase">
             beta
           </span>
         </div>
@@ -49,14 +49,14 @@ export default function Home() {
       {/* Hero */}
       <section className="mx-auto max-w-5xl px-6 pt-24 pb-20 md:pt-36 md:pb-28">
         <div className="max-w-3xl">
-          <p className="animate-fade-in-up delay-100 mb-5 font-mono text-sm tracking-wide text-emerald-400">
+          <p className="animate-fade-in-up delay-100 mb-5 font-mono text-sm tracking-wide text-brand">
             Text-to-SQL agent
           </p>
           <h1 className="animate-fade-in-up delay-200 text-4xl leading-[1.1] font-semibold tracking-tight text-zinc-100 md:text-6xl">
             Ask your data
             <br />
             anything
-            <span className="animate-blink ml-0.5 inline-block text-emerald-400">
+            <span className="animate-blink ml-0.5 inline-block text-brand">
               _
             </span>
           </h1>
@@ -68,7 +68,7 @@ export default function Home() {
           <div className="animate-fade-in-up delay-400 mt-10 flex flex-wrap items-center gap-4">
             <a
               href="https://app.useatlas.dev"
-              className="group inline-flex items-center gap-2 rounded-lg bg-emerald-500 px-5 py-2.5 text-sm font-medium text-zinc-950 transition-all hover:bg-emerald-400"
+              className="group inline-flex items-center gap-2 rounded-lg bg-brand px-5 py-2.5 text-sm font-medium text-zinc-950 transition-all hover:bg-brand-hover"
             >
               Try the demo
               <svg
@@ -173,7 +173,7 @@ export default function Home() {
             },
           ].map((feature, i) => (
             <div key={i} className="bg-zinc-950 p-8 md:p-10">
-              <div className="mb-4 flex h-9 w-9 items-center justify-center rounded-lg border border-zinc-800 text-emerald-400">
+              <div className="mb-4 flex h-9 w-9 items-center justify-center rounded-lg border border-zinc-800 text-brand">
                 {feature.icon}
               </div>
               <h3 className="mb-2 font-mono text-sm font-medium tracking-wide text-zinc-100">
@@ -189,7 +189,7 @@ export default function Home() {
 
       {/* How it works */}
       <section className="mx-auto max-w-5xl px-6 pb-20 md:pb-28">
-        <h2 className="mb-4 font-mono text-xs tracking-widest text-emerald-400/80 uppercase">
+        <h2 className="mb-4 font-mono text-xs tracking-widest text-brand/80 uppercase">
           How it works
         </h2>
         <div className="grid gap-12 md:grid-cols-3 md:gap-8">
@@ -243,7 +243,7 @@ export default function Home() {
 
       {/* Security */}
       <section className="mx-auto max-w-5xl px-6 py-20 md:py-28">
-        <h2 className="mb-4 font-mono text-xs tracking-widest text-emerald-400/80 uppercase">
+        <h2 className="mb-4 font-mono text-xs tracking-widest text-brand/80 uppercase">
           Security
         </h2>
         <p className="mb-10 max-w-xl text-zinc-400">
@@ -263,7 +263,7 @@ export default function Home() {
               className="flex items-start gap-2.5 rounded-lg border border-zinc-800/40 bg-zinc-900/30 px-4 py-3"
             >
               <svg
-                className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-500"
+                className="mt-0.5 h-3.5 w-3.5 shrink-0 text-brand"
                 fill="none"
                 viewBox="0 0 24 24"
                 stroke="currentColor"
@@ -290,9 +290,9 @@ export default function Home() {
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2">
               {/* Muted footer mark: favicon geometry with reduced opacity stroke */}
-              <svg viewBox="0 0 256 256" fill="none" className="h-4 w-4" aria-hidden="true">
-                <path d="M128 28 L228 212 L28 212 Z" fill="#23CE9E" opacity="0.4"/>
-                <path d="M128 28 L228 212 L28 212 Z" stroke="#23CE9E" strokeWidth="18" fill="none" strokeLinejoin="round" opacity="0.4"/>
+              <svg viewBox="0 0 256 256" fill="none" className="h-4 w-4 text-brand" aria-hidden="true">
+                <path d="M128 28 L228 212 L28 212 Z" fill="currentColor" opacity="0.4"/>
+                <path d="M128 28 L228 212 L28 212 Z" stroke="currentColor" strokeWidth="18" fill="none" strokeLinejoin="round" opacity="0.4"/>
               </svg>
               <span className="font-mono text-sm text-zinc-600">
                 atlas

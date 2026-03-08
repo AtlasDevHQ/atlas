@@ -63,7 +63,7 @@ docker compose -f examples/docker/docker-compose.yml up
    - `ATLAS_PROVIDER` + API key (e.g. `ANTHROPIC_API_KEY`)
    - `ATLAS_DATASOURCE_URL` — your analytics database
 
-See [docs/guides/railway-template.md](../../docs/guides/railway-template.md) for full template configuration details.
+See [Railway Templates](https://docs.useatlas.dev/docs/deployment/railway-template) for full template configuration details.
 
 ## Environment Variables
 

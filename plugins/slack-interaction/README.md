@@ -46,4 +46,4 @@ Either `botToken` or `clientId` + `clientSecret` is required.
 ## Reference
 
 - [Plugin SDK docs](../../packages/plugin-sdk/README.md)
-- [Authoring guide](../../docs/guides/plugin-authoring-guide.md)
+- [Authoring guide](https://docs.useatlas.dev/docs/plugins/authoring-guide)

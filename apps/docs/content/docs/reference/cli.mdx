@@ -1,0 +1,294 @@
+---
+title: CLI Reference
+description: Complete reference for the Atlas CLI — init, diff, query, doctor, validate, mcp, and more.
+---
+
+The Atlas CLI (`atlas`) profiles databases, generates semantic layers, validates configuration, and queries data from the terminal.
+
+```bash
+# Run via bun workspace
+bun run atlas -- <command> [options]
+
+# Or directly (if installed globally)
+atlas <command> [options]
+```
+
+## init
+
+Profile a database and generate semantic layer YAML files.
+
+```bash
+bun run atlas -- init [options]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--tables <t1,t2>` | Profile only specific tables/views (comma-separated) |
+| `--schema <name>` | PostgreSQL schema name (default: `public`) |
+| `--source <name>` | Write to `semantic/{name}/` subdirectory (per-source layout) |
+| `--connection <name>` | Profile a named datasource from `atlas.config.ts` |
+| `--csv <file1.csv,...>` | Load CSV files via DuckDB (no DB server needed) |
+| `--parquet <f1.parquet,...>` | Load Parquet files via DuckDB |
+| `--enrich` | Add LLM-enriched descriptions and query patterns (requires API key) |
+| `--no-enrich` | Explicitly skip LLM enrichment |
+| `--demo [simple\|cybersec]` | Load a demo dataset then profile (default: `simple`) |
+
+**Examples:**
+
+```bash
+# Profile all tables in the default schema
+bun run atlas -- init
+
+# Profile specific tables only
+bun run atlas -- init --tables users,orders,products
+
+# Profile a non-public schema
+bun run atlas -- init --schema analytics
+
+# Profile with LLM enrichment
+bun run atlas -- init --enrich
+
+# Load the cybersec demo dataset (62 tables, ~500K rows)
+bun run atlas -- init --demo cybersec
+
+# Profile a named connection from atlas.config.ts
+bun run atlas -- init --connection warehouse
+
+# Profile CSV files directly (no database needed)
+bun run atlas -- init --csv sales.csv,products.csv
+
+# Per-source layout (writes to semantic/warehouse/)
+bun run atlas -- init --source warehouse --connection warehouse
+```
+
+In TTY mode (interactive terminal), `init` presents a table picker. Pass `--tables` to skip the picker for scripted/CI usage.
+
+**What it generates:**
+
+- `semantic/entities/*.yml` — One file per table/view with columns, types, sample values, joins, measures, virtual dimensions, and query patterns
+- `semantic/metrics/*.yml` — Atomic and breakdown metrics per table
+- `semantic/glossary.yml` — Ambiguous terms, FK relationships, enum definitions
+- `semantic/catalog.yml` — Table catalog with `use_for` and `common_questions`
+
+## diff
+
+Compare the database schema against the existing semantic layer. Exits with code 1 if drift is detected.
+
+```bash
+bun run atlas -- diff [options]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--tables <t1,t2>` | Diff only specific tables/views |
+| `--schema <name>` | PostgreSQL schema (default: `public`) |
+| `--source <name>` | Read from `semantic/{name}/` subdirectory |
+
+**Examples:**
+
+```bash
+# Check all tables for schema drift
+bun run atlas -- diff
+
+# Check specific tables only
+bun run atlas -- diff --tables users,orders
+
+# CI usage: fail the build if schema drifted
+bun run atlas -- diff || echo "Schema drift detected!"
+```
+
+## query
+
+Ask a natural language question and get an answer. Requires a running Atlas API server.
+
+```bash
+bun run atlas -- query "your question" [options]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Raw JSON output (pipe-friendly) |
+| `--csv` | CSV output (headers + rows, no narrative) |
+| `--quiet` | Data only — no narrative, SQL, or stats |
+| `--auto-approve` | Auto-approve any pending actions |
+| `--connection <id>` | Query a specific datasource |
+
+**Environment:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_API_URL` | `http://localhost:3001` | API server URL |
+| `ATLAS_API_KEY` | — | API key for authentication |
+
+**Examples:**
+
+```bash
+# Table output (default)
+bun run atlas -- query "How many users signed up last month?"
+
+# JSON output for scripting
+bun run atlas -- query "top 10 customers by revenue" --json
+
+# CSV output (pipe to other tools)
+bun run atlas -- query "monthly revenue by product" --csv > report.csv
+
+# Data only, no explanation
+bun run atlas -- query "active users today" --quiet
+
+# Query a specific datasource
+bun run atlas -- query "warehouse inventory" --connection warehouse
+```
+
+## doctor
+
+Validate the environment, connectivity, and configuration. Checks that all required services are reachable and properly configured.
+
+```bash
+bun run atlas -- doctor
+```
+
+No flags. Checks:
+- Database connectivity (`ATLAS_DATASOURCE_URL`)
+- Internal DB connectivity (`DATABASE_URL`)
+- LLM provider configuration
+- Semantic layer presence and validity
+- Sandbox availability
+
+## validate
+
+Check the semantic layer YAML files for errors. Runs offline — no database or API key required.
+
+```bash
+bun run atlas -- validate
+```
+
+No flags. Validates:
+- YAML syntax and required fields
+- Column type consistency
+- Join references
+- Metric SQL syntax
+- Glossary entries
+
+Useful in CI to catch semantic layer errors before deployment.
+
+## mcp
+
+Start an MCP (Model Context Protocol) server for use with Claude Desktop, Cursor, and other MCP-compatible clients.
+
+```bash
+bun run atlas -- mcp [options]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--transport <stdio\|sse>` | `stdio` | Transport type |
+| `--port <n>` | `8080` | Port for SSE transport (only used with `--transport sse`) |
+
+**Examples:**
+
+```bash
+# Start MCP server on stdio (default, for Claude Desktop)
+bun run atlas -- mcp
+
+# Start with SSE transport on a custom port
+bun run atlas -- mcp --transport sse --port 9090
+```
+
+**Claude Desktop configuration** (`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "atlas": {
+      "command": "bun",
+      "args": ["run", "atlas", "--", "mcp"],
+      "env": {
+        "ATLAS_DATASOURCE_URL": "postgresql://user:pass@host:5432/db",
+        "ATLAS_PROVIDER": "anthropic",
+        "ANTHROPIC_API_KEY": "sk-ant-..."
+      }
+    }
+  }
+}
+```
+
+## eval
+
+Run the evaluation pipeline against demo schemas. Used to measure text-to-SQL accuracy.
+
+```bash
+bun run atlas -- eval [options]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--schema <name>` | Filter by schema |
+| `--category <name>` | Filter by category |
+| `--difficulty <simple\|medium\|complex>` | Filter by difficulty |
+| `--id <case-id>` | Run a single case |
+| `--limit <n>` | Max cases to evaluate |
+| `--resume <file>` | Resume from existing JSONL results file |
+| `--baseline` | Save results as new baseline |
+| `--compare <file.jsonl>` | Diff against baseline (exit 1 on regression) |
+| `--csv` | CSV output |
+| `--json` | JSON summary output |
+
+## smoke
+
+Run end-to-end smoke tests against a running Atlas deployment.
+
+```bash
+bun run atlas -- smoke [options]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--target <url>` | `http://localhost:3001` | API base URL |
+| `--api-key <key>` | — | Bearer auth token |
+| `--timeout <ms>` | `30000` | Per-check timeout |
+| `--verbose` | — | Show full response bodies on failure |
+| `--json` | — | Machine-readable JSON output |
+
+## plugin
+
+Manage Atlas plugins.
+
+### plugin list
+
+List installed plugins from `atlas.config.ts`.
+
+```bash
+bun run atlas -- plugin list
+```
+
+### plugin create
+
+Scaffold a new plugin.
+
+```bash
+bun run atlas -- plugin create <name> --type <type>
+```
+
+| Flag | Description |
+|------|-------------|
+| `--type <type>` | Plugin type: `datasource`, `context`, `interaction`, `action`, `sandbox` (required) |
+
+### plugin add
+
+Install a plugin package.
+
+```bash
+bun run atlas -- plugin add <package-name>
+```
+
+## migrate
+
+Generate or apply plugin schema migrations.
+
+```bash
+bun run atlas -- migrate [options]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--apply` | Execute migrations against internal database (default: dry-run) |

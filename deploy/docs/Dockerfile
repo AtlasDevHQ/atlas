@@ -12,6 +12,7 @@ FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY apps/docs/ ./
+COPY brand.css /brand.css
 RUN bun run build
 
 # --- Runtime ---

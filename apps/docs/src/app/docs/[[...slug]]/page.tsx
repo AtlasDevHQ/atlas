@@ -11,6 +11,27 @@ import { Tab, Tabs } from "fumadocs-ui/components/tabs";
 import { Step, Steps } from "fumadocs-ui/components/steps";
 import { Accordion, Accordions } from "fumadocs-ui/components/accordion";
 import { LLMCopyButton } from "@/components/llm-copy-button";
+import { getGithubLastEdit } from "fumadocs-core/content/github";
+
+async function getLastUpdate(path: string): Promise<Date | undefined> {
+  if (process.env.NODE_ENV === "development") return undefined;
+
+  try {
+    const time = await getGithubLastEdit({
+      owner: "AtlasDevHQ",
+      repo: "atlas",
+      sha: "main",
+      path: `apps/docs/content/docs/${path}.mdx`,
+      token: process.env.GITHUB_TOKEN
+        ? `Bearer ${process.env.GITHUB_TOKEN}`
+        : undefined,
+      options: { next: { revalidate: 86400 } },
+    });
+    return time ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export default async function Page(props: {
   params: Promise<{ slug?: string[] }>;
@@ -20,11 +41,12 @@ export default async function Page(props: {
   if (!page) notFound();
 
   const MDX = page.data.body;
+  const lastUpdate = await getLastUpdate(page.path);
 
   return (
     <DocsPage
       toc={page.data.toc}
-      lastUpdate={page.data.lastModified}
+      lastUpdate={lastUpdate}
       editOnGithub={{
         owner: "AtlasDevHQ",
         repo: "atlas",

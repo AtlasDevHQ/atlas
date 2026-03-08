@@ -1,7 +1,6 @@
 import { defineDocs, defineConfig } from "fumadocs-mdx/config";
 import { transformerMetaHighlight } from "@shikijs/transformers";
 import { rehypeCodeDefaultOptions } from "fumadocs-core/mdx-plugins";
-import lastModified from "fumadocs-mdx/plugins/last-modified";
 
 export const docs = defineDocs({
   dir: "content/docs",
@@ -13,7 +12,6 @@ export const docs = defineDocs({
 });
 
 export default defineConfig({
-  plugins: [lastModified()],
   mdxOptions: {
     rehypeCodeOptions: {
       themes: {

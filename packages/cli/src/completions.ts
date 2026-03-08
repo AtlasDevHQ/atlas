@@ -162,7 +162,7 @@ export function generateZshCompletions(): string {
     }
     const flagArgs = flags
       .map(([flag, desc]) => `      '${flag}[${desc.replace(/'/g, "\\'")}]'`)
-      .join("\n");
+      .join(" \\\n");
     commandCases.push(`    ${cmd})\n      _arguments -s \\\n${flagArgs}\n      ;;`);
   }
 

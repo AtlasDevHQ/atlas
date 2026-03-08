@@ -1,10 +1,11 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import {
   COMMANDS,
   generateBashCompletions,
   generateZshCompletions,
   generateFishCompletions,
   generateCompletions,
+  handleCompletions,
   type Shell,
 } from "../completions";
 
@@ -93,6 +94,34 @@ describe("completions", () => {
       expect(script).toContain("--tables");
       expect(script).toContain("--json");
     });
+
+    test("multi-flag commands use line-continuation backslashes", () => {
+      const lines = script.split("\n");
+      // Find _arguments blocks — lines between "_arguments -s \" and ";;"
+      let inBlock = false;
+      let blockFlags: string[] = [];
+      for (const line of lines) {
+        if (line.includes("_arguments -s")) {
+          inBlock = true;
+          blockFlags = [];
+          continue;
+        }
+        if (inBlock && line.trim() === ";;") {
+          // All flags except the last should end with \
+          for (let i = 0; i < blockFlags.length - 1; i++) {
+            expect(blockFlags[i].trimEnd().endsWith("\\")).toBe(true);
+          }
+          // Last flag should NOT end with \
+          if (blockFlags.length > 0) {
+            expect(blockFlags[blockFlags.length - 1].trimEnd().endsWith("\\")).toBe(false);
+          }
+          inBlock = false;
+        }
+        if (inBlock && line.trim().startsWith("'--")) {
+          blockFlags.push(line);
+        }
+      }
+    });
   });
 
   describe("generateFishCompletions", () => {
@@ -137,6 +166,55 @@ describe("completions", () => {
 
     test("fish output matches generateFishCompletions", () => {
       expect(generateCompletions("fish")).toBe(generateFishCompletions());
+    });
+  });
+
+  describe("handleCompletions", () => {
+    test("writes completion script to stdout for valid shell", () => {
+      const chunks: string[] = [];
+      const origWrite = process.stdout.write;
+      process.stdout.write = ((chunk: string) => {
+        chunks.push(chunk);
+        return true;
+      }) as typeof process.stdout.write;
+      try {
+        handleCompletions(["completions", "bash"]);
+        expect(chunks.join("")).toBe(generateBashCompletions());
+      } finally {
+        process.stdout.write = origWrite;
+      }
+    });
+
+    test("exits with code 1 for missing shell argument", () => {
+      const exitError = new Error("process.exit");
+      const origExit = process.exit;
+      process.exit = (() => { throw exitError; }) as never;
+      const origError = console.error;
+      console.error = mock(() => {});
+      try {
+        handleCompletions(["completions"]);
+      } catch (e) {
+        expect(e).toBe(exitError);
+      } finally {
+        process.exit = origExit;
+        console.error = origError;
+      }
+    });
+
+    test("exits with code 1 for unsupported shell", () => {
+      const exitError = new Error("process.exit");
+      const origExit = process.exit;
+      process.exit = (() => { throw exitError; }) as never;
+      const origError = console.error;
+      console.error = mock(() => {});
+      try {
+        handleCompletions(["completions", "powershell"]);
+      } catch (e) {
+        expect(e).toBe(exitError);
+      } finally {
+        process.exit = origExit;
+        console.error = origError;
+      }
     });
   });
 });

@@ -1,4 +1,4 @@
-import { describe, expect, test, mock, beforeEach } from "bun:test";
+import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
 
 // Track the session value returned by useSession
 let mockSession: {
@@ -24,7 +24,7 @@ mock.module("next/link", () => ({
   ),
 }));
 
-import { render, fireEvent, waitFor } from "@testing-library/react";
+import { render, fireEvent, waitFor, cleanup } from "@testing-library/react";
 import type React from "react";
 import { AdminLayout } from "../components/admin/admin-layout";
 import { AtlasUIProvider, type AtlasAuthClient } from "../context";
@@ -50,6 +50,8 @@ function renderLayout(authClient?: AtlasAuthClient) {
   );
 }
 
+const originalFetch = globalThis.fetch;
+
 describe("AdminLayout", () => {
   beforeEach(() => {
     mockSession = { data: null };
@@ -58,6 +60,11 @@ describe("AdminLayout", () => {
     globalThis.fetch = mock(() =>
       Promise.resolve(new Response(JSON.stringify({ passwordChangeRequired: false }), { status: 200 })),
     ) as typeof fetch;
+  });
+
+  afterEach(() => {
+    cleanup();
+    globalThis.fetch = originalFetch;
   });
 
   test("shows loading state when session is pending", () => {
@@ -110,6 +117,17 @@ describe("AdminLayout", () => {
     const { container } = renderLayout();
     await waitFor(() => {
       expect(container.textContent).toContain("Admin Console");
+    });
+  });
+
+  test("shows password change dialog when required", async () => {
+    mockSession = { data: { user: { email: "admin@test.com", role: "admin" } } };
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response(JSON.stringify({ passwordChangeRequired: true }), { status: 200 })),
+    ) as typeof fetch;
+    renderLayout();
+    await waitFor(() => {
+      expect(document.body.textContent).toContain("Change your password");
     });
   });
 });

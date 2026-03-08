@@ -1,5 +1,5 @@
-import { describe, expect, test, mock, beforeEach } from "bun:test";
-import { render, fireEvent, waitFor } from "@testing-library/react";
+import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
+import { render, fireEvent, waitFor, cleanup } from "@testing-library/react";
 import { ChangePasswordDialog } from "../components/admin/change-password-dialog";
 import { AtlasUIProvider, type AtlasAuthClient } from "../context";
 
@@ -27,11 +27,18 @@ function getForm() {
   return document.querySelector("form");
 }
 
+const originalFetch = globalThis.fetch;
+
 describe("ChangePasswordDialog", () => {
   beforeEach(() => {
     globalThis.fetch = mock(() =>
       Promise.resolve(new Response(JSON.stringify({}), { status: 200 })),
     ) as typeof fetch;
+  });
+
+  afterEach(() => {
+    cleanup();
+    globalThis.fetch = originalFetch;
   });
 
   test("renders dialog content when open", () => {

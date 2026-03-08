@@ -175,17 +175,51 @@ describe("ManagedAuthCard", () => {
     });
   });
 
-  test("clears error when switching views", () => {
+  test("shows error when signUp returns error", async () => {
     const client = makeAuthClient();
+    mockSignUp = mock(() => Promise.resolve({ error: { message: "Email already taken" } }));
+    client.signUp.email = mockSignUp as AtlasAuthClient["signUp"]["email"];
     const { container } = renderCard(client);
 
-    // We can't easily trigger an error synchronously, but we can verify the toggle clears state
     // Switch to signup
     fireEvent.click(
       Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("Create one"))!,
     );
-    // No error visible
-    const errorEls = container.querySelectorAll(".text-red-600");
-    expect(errorEls.length).toBe(0);
+
+    const emailInput = container.querySelector('input[type="email"]') as HTMLInputElement;
+    const passwordInput = container.querySelector('input[type="password"]') as HTMLInputElement;
+    fireEvent.change(emailInput, { target: { value: "dup@test.com" } });
+    fireEvent.change(passwordInput, { target: { value: "password123" } });
+
+    const form = container.querySelector("form")!;
+    fireEvent.submit(form);
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("Email already taken");
+    });
+  });
+
+  test("shows network error when signUp throws TypeError", async () => {
+    const client = makeAuthClient();
+    mockSignUp = mock(() => Promise.reject(new TypeError("fetch failed")));
+    client.signUp.email = mockSignUp as AtlasAuthClient["signUp"]["email"];
+    const { container } = renderCard(client);
+
+    // Switch to signup
+    fireEvent.click(
+      Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("Create one"))!,
+    );
+
+    const emailInput = container.querySelector('input[type="email"]') as HTMLInputElement;
+    const passwordInput = container.querySelector('input[type="password"]') as HTMLInputElement;
+    fireEvent.change(emailInput, { target: { value: "test@test.com" } });
+    fireEvent.change(passwordInput, { target: { value: "password123" } });
+
+    const form = container.querySelector("form")!;
+    fireEvent.submit(form);
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("Unable to reach the server");
+    });
   });
 });

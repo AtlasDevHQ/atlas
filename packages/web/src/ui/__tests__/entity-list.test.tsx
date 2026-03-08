@@ -99,11 +99,14 @@ describe("EntityList", () => {
       <EntityList entities={makeEntities()} selectedName="orders" onSelect={() => {}} />,
     );
     const buttons = container.querySelectorAll("button");
+    let found = false;
     for (const btn of buttons) {
       if (btn.textContent?.includes("orders")) {
         expect(btn.className).toContain("bg-accent");
+        found = true;
       }
     }
+    expect(found).toBe(true);
   });
 
   test("searches by description", () => {

@@ -108,10 +108,13 @@ describe("SemanticFileTree", () => {
       />,
     );
     const buttons = container.querySelectorAll("button");
+    let found = false;
     for (const btn of buttons) {
       if (btn.textContent?.includes("orders.yml")) {
         expect(btn.className).toContain("bg-accent");
+        found = true;
       }
     }
+    expect(found).toBe(true);
   });
 });

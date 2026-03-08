@@ -63,4 +63,96 @@ try {
   process.exit(1);
 }
 
-console.log(`Generated API reference docs in ${outputDir}`);
+// --- Write meta.json files for sidebar structure ---
+
+try {
+  // Read tag order (and optional x-displayName overrides) from the OpenAPI spec
+  const openAPISpec = spec as {
+    tags?: Array<{ name: string; description?: string; "x-displayName"?: string }>;
+  };
+  const tags = openAPISpec.tags ?? [];
+
+  if (tags.length === 0) {
+    console.warn(
+      "Warning: OpenAPI spec has no 'tags' array. " +
+        "Sidebar ordering will use filesystem order and auto-generated titles.",
+    );
+  }
+
+  // Discover generated tag directories (fallback if spec has no tags array)
+  const tagDirs = fs
+    .readdirSync(outputDir, { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .map((d) => d.name);
+
+  // Must match fumadocs-openapi's default slugify (s.replace(/\s+/g, "-").toLowerCase())
+  const toSlug = (name: string) =>
+    name.toLowerCase().replace(/\s+/g, "-");
+
+  // Ordered page list: use spec tag order, then append any extras
+  const orderedSlugs = tags.map((t) => toSlug(t.name));
+  const unmatchedTags = orderedSlugs.filter((s) => !tagDirs.includes(s));
+  if (unmatchedTags.length > 0) {
+    console.warn(
+      `Warning: ${unmatchedTags.length} spec tag(s) did not match generated directories: ` +
+        `${unmatchedTags.join(", ")}. These will be excluded from sidebar ordering. ` +
+        `Generated directories: ${tagDirs.join(", ")}`,
+    );
+  }
+
+  const extraTags = tagDirs.filter((d) => !orderedSlugs.includes(d));
+  const pages = [...orderedSlugs.filter((s) => tagDirs.includes(s)), ...extraTags];
+
+  if (pages.length === 0) {
+    console.error(
+      "No API tag directories found in output. The OpenAPI spec may have untagged operations " +
+        "or generateFiles may have changed its output structure. Check: " + outputDir,
+    );
+    process.exit(1);
+  }
+
+  // Root meta.json — makes api-reference a separate sidebar tab (isolated from main docs navigation)
+  const rootMeta = {
+    title: "API Reference",
+    root: true,
+    pages,
+  };
+  fs.writeFileSync(
+    path.join(outputDir, "meta.json"),
+    JSON.stringify(rootMeta, null, 2) + "\n",
+  );
+
+  // Per-tag meta.json — friendly titles
+  const tagTitleMap: Record<string, string> = {};
+  for (const tag of tags) {
+    tagTitleMap[toSlug(tag.name)] = tag["x-displayName"] ?? tag.name;
+  }
+
+  for (const dir of tagDirs) {
+    const tagDir = path.join(outputDir, dir);
+    // Fallback for directories not in spec tags: title-case the slug
+    const title =
+      tagTitleMap[dir] ??
+      dir
+        .split("-")
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+        .join(" ");
+
+    const tagMeta: Record<string, unknown> = { title };
+    fs.writeFileSync(
+      path.join(tagDir, "meta.json"),
+      JSON.stringify(tagMeta, null, 2) + "\n",
+    );
+  }
+
+  console.log(
+    `Generated API reference docs in ${outputDir} ` +
+      `(${tagDirs.length} tag directories, ${pages.length} sidebar entries)`,
+  );
+} catch (err) {
+  console.error(
+    "Failed to generate sidebar meta.json files:",
+    err instanceof Error ? err.message : err,
+  );
+  process.exit(1);
+}

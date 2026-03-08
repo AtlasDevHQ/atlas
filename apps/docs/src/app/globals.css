@@ -1,3 +1,16 @@
 @import "tailwindcss";
 @import "fumadocs-ui/css/neutral.css";
 @import "fumadocs-ui/css/preset.css";
+@import "../../../../brand.css";
+
+:root {
+  --color-fd-primary: var(--atlas-brand);
+  --color-fd-primary-foreground: var(--atlas-brand-foreground);
+  --color-fd-ring: var(--atlas-brand);
+}
+
+.dark {
+  --color-fd-primary: var(--atlas-brand);
+  --color-fd-primary-foreground: var(--atlas-brand-foreground);
+  --color-fd-ring: var(--atlas-brand);
+}

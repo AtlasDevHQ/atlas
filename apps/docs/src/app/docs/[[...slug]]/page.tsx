@@ -7,6 +7,9 @@ import {
 } from "fumadocs-ui/page";
 import { notFound } from "next/navigation";
 import defaultMdxComponents from "fumadocs-ui/mdx";
+import { Tab, Tabs } from "fumadocs-ui/components/tabs";
+import { Step, Steps } from "fumadocs-ui/components/steps";
+import { Accordion, Accordions } from "fumadocs-ui/components/accordion";
 import { LLMCopyButton } from "@/components/llm-copy-button";
 
 export default async function Page(props: {
@@ -26,7 +29,17 @@ export default async function Page(props: {
         <LLMCopyButton url={`${page.url}.mdx`} />
       </div>
       <DocsBody>
-        <MDX components={{ ...defaultMdxComponents }} />
+        <MDX
+          components={{
+            ...defaultMdxComponents,
+            Tab,
+            Tabs,
+            Step,
+            Steps,
+            Accordion,
+            Accordions,
+          }}
+        />
       </DocsBody>
     </DocsPage>
   );

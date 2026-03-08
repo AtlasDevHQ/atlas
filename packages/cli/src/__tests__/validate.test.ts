@@ -347,7 +347,7 @@ describe("checkEntities", () => {
         },
       },
     });
-    const { results, entities } = checkEntities(semanticDir);
+    const { entities } = checkEntities(semanticDir);
     expect(entities.length).toBe(2);
     expect(entities.some((e) => e.table === "products")).toBe(true);
   });

@@ -4,7 +4,7 @@ import { SQLResultCard } from "../components/chat/sql-result-card";
 
 // Mock next/dynamic to render children synchronously (avoids async chunk loading)
 mock.module("next/dynamic", () => ({
-  default: (loader: () => Promise<{ default: unknown }>) => {
+  default: (_loader: () => Promise<{ default: unknown }>) => {
     // Return a placeholder component — we test chart rendering via chart-detection tests
     return function DynamicStub() {
       return <div data-testid="chart-placeholder" />;

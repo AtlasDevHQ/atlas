@@ -8,9 +8,3 @@
   --color-fd-primary-foreground: var(--atlas-brand-foreground);
   --color-fd-ring: var(--atlas-brand);
 }
-
-.dark {
-  --color-fd-primary: var(--atlas-brand);
-  --color-fd-primary-foreground: var(--atlas-brand-foreground);
-  --color-fd-ring: var(--atlas-brand);
-}

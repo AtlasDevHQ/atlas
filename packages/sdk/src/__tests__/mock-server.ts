@@ -569,7 +569,7 @@ export function startMockServer(): MockServer {
 
   return {
     url: `http://localhost:${server.port}`,
-    port: server.port,
+    port: server.port!,
     stop: () => server.stop(true),
   };
 }

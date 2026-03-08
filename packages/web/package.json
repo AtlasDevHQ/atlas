@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "type": "tsc --noEmit",
-    "test": "bun test src/ui/"
+    "test": "bun scripts/test-isolated.ts"
   },
   "exports": {
     "./ui/context": "./src/ui/context.tsx",

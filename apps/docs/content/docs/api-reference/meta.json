@@ -2,6 +2,7 @@
   "title": "API Reference",
   "description": "REST API endpoints and request/response schemas",
   "icon": "Braces",
+  "root": true,
   "pages": [
     "chat",
     "query",

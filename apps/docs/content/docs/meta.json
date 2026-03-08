@@ -1,5 +1,7 @@
 {
   "title": "Docs",
+  "description": "Guides, configuration, and concepts",
+  "icon": "Book",
   "pages": [
     "getting-started",
     "guides",

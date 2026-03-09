@@ -276,7 +276,7 @@ export function createPythonSandboxBackend(): PythonBackend {
     } catch (err) {
       const detail = sandboxErrorDetail(err);
       log.error({ err: detail }, "Failed to set deny-all network policy");
-      try { await sandbox.stop(); } catch { /* best-effort cleanup */ }
+      try { await sandbox.stop(); } catch (stopErr) { log.warn({ err: stopErr instanceof Error ? stopErr.message : String(stopErr) }, "Failed to stop sandbox after network policy error"); }
       throw new Error(
         `Failed to lock down sandbox network: ${safeError(detail)}.`,
         { cause: err },
@@ -290,7 +290,9 @@ export function createPythonSandboxBackend(): PythonBackend {
     const old = sandboxPromise;
     sandboxPromise = null;
     if (old) {
-      old.then(instance => instance.sandbox.stop()).catch(() => {});
+      old.then(instance => instance.sandbox.stop()).catch((err) => {
+        log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to stop old Python sandbox during cleanup");
+      });
     }
   }
 

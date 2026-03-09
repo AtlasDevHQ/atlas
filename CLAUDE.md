@@ -219,10 +219,13 @@ atlas/
 │           └── helpers.ts       # definePlugin() factory + type guards
 │
 ├── apps/
-│   └── www/                     # @atlas/www — Static landing page (useatlas.dev)
-│       ├── serve.ts             # Bun static file server (production runtime)
-│       ├── railway.json         # Railway NIXPACKS deploy config
-│       └── src/app/             # Next.js static export (output: "export")
+│   ├── www/                     # @atlas/www — Static landing page (useatlas.dev)
+│   │   ├── serve.ts             # Bun static file server (production runtime)
+│   │   ├── railway.json         # Railway NIXPACKS deploy config
+│   │   └── src/app/             # Next.js static export (output: "export")
+│   └── docs/                    # @atlas/docs — Documentation site (Fumadocs, docs.useatlas.dev)
+│       ├── source.config.ts     # Fumadocs source config with Orama search
+│       └── src/app/             # MDX pages, OG images, layout
 │
 ├── examples/
 │   ├── docker/                  # Self-hosted Docker deploy + optional nsjail
@@ -234,7 +237,7 @@ atlas/
 │       ├── vercel.json          # Vercel framework + build config
 │       └── src/app/api/         # Catch-all route → @atlas/api (Hono)
 │
-├── deploy/                      # Production deploy configs (Railway: api, web, www, sidecar)
+├── deploy/                      # Production deploy configs (Railway: api, web, www, docs, sidecar)
 ├── docs/                        # Guides (docs/guides/) and design ADRs (docs/design/)
 ├── e2e/                         # End-to-end test suite
 ├── plugins/                     # Atlas plugins directory
@@ -475,6 +478,7 @@ bun run db:reset  # Nukes volume, re-seeds from scratch
 
 Internal DB: `postgresql://atlas:atlas@localhost:5432/atlas`
 Analytics datasource: `postgresql://atlas:atlas@localhost:5432/atlas_demo`
+Sandbox sidecar: `http://localhost:8080` (Python execution isolation)
 
 Demo datasets:
 - **Simple** (`--demo`): 50 companies, ~200 people, 80 accounts — loaded from `data/demo.sql`

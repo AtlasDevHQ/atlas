@@ -70,10 +70,12 @@ describe("sidecar exec", () => {
     expect(result.stderr).toBe("");
     expect(result.exitCode).toBe(0);
 
-    expect(fetchCalls).toHaveLength(1);
-    expect(fetchCalls[0].url).toBe("http://localhost:8080/exec");
+    // Filter out the health check call made during createSidecarBackend init
+    const execCalls = fetchCalls.filter((c) => c.url.endsWith("/exec"));
+    expect(execCalls).toHaveLength(1);
+    expect(execCalls[0].url).toBe("http://localhost:8080/exec");
 
-    const body = JSON.parse(fetchCalls[0].options.body as string);
+    const body = JSON.parse(execCalls[0].options.body as string);
     expect(body.command).toBe("ls");
     expect(body.timeout).toBe(10_000);
   });

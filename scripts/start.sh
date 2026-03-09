@@ -3,9 +3,9 @@
 # Used in Docker production builds where both processes run in one container.
 #
 # Platforms like Railway set PORT for external traffic routing.
-# Next.js inherits PORT (external-facing), while the API server gets a
-# fixed internal port (ATLAS_API_PORT, default 3001) that the Next.js
-# rewrite targets (ATLAS_API_URL defaults to http://localhost:3001).
+# Next.js inherits PORT (external-facing). The API server reads PORT
+# (set here from ATLAS_API_PORT, default 3001) as its listen port —
+# the Next.js rewrite targets this (ATLAS_API_URL defaults to http://localhost:3001).
 set -e
 
 cleanup() {

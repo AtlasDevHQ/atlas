@@ -379,6 +379,7 @@ async function tryLoadConfigFile(
         );
       }
       const raw = mod.default;
+      log.debug({ file: filePath }, "Config file loaded successfully");
       return raw;
     } catch (err) {
       // If the file exists but fails to parse/import, that is a hard error

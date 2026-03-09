@@ -86,6 +86,8 @@ function loadEntitiesFromDir(
   for (const file of files) {
     try {
       const content = fs.readFileSync(path.join(dir, file), "utf-8");
+      // js-yaml v4+ yaml.load() uses DEFAULT_SCHEMA (JSON + core YAML types) which is
+      // safe — it does not instantiate arbitrary JS objects (unlike v3's yaml.load).
       const raw = yaml.load(content);
       const parsed = EntityShape.safeParse(raw);
       if (!parsed.success) {

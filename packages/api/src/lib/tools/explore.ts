@@ -275,10 +275,14 @@ function getExploreBackend(): Promise<ExploreBackend> {
       // Priority 5: just-bash (no process isolation)
       if (process.env.NODE_ENV === "production") {
         log.warn(
-          "Explore tool running without process isolation. " +
+          "SECURITY DEGRADATION: Explore tool running without process isolation (just-bash fallback). " +
+            "In production, this means shell commands execute directly on the host with only OverlayFs " +
+            "read-only protection — no namespace, network, or resource isolation. " +
             "Install nsjail, configure a sidecar (ATLAS_SANDBOX_URL), or deploy on Vercel for sandboxed execution. " +
             "See: https://github.com/google/nsjail",
         );
+      } else {
+        log.debug("Explore tool using just-bash backend (acceptable for development)");
       }
       return createBashBackend(SEMANTIC_ROOT);
     })().catch((err) => {

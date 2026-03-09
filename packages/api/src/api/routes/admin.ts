@@ -873,7 +873,10 @@ admin.post("/me/password", async (c) => {
   }
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const body = await c.req.json().catch(() => null);
+    const body = await c.req.json().catch((err) => {
+      log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in password change request");
+      return null;
+    });
     const currentPassword = body?.currentPassword;
     const newPassword = body?.newPassword;
 
@@ -1072,7 +1075,10 @@ admin.patch("/users/:id/role", async (c) => {
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     const userId = c.req.param("id");
-    const body = await c.req.json().catch(() => null);
+    const body = await c.req.json().catch((err) => {
+      log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in role change request");
+      return null;
+    });
     const newRole = body?.role;
 
     if (!isValidRole(newRole)) {
@@ -1142,7 +1148,10 @@ admin.post("/users/:id/ban", async (c) => {
       return c.json({ error: "forbidden", message: "Cannot ban yourself." }, 403);
     }
 
-    const body = await c.req.json().catch(() => ({}));
+    const body = await c.req.json().catch((err) => {
+      log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in ban user request");
+      return {};
+    });
 
     try {
       await adminApi.banUser({

@@ -37,6 +37,31 @@ export async function createSidecarBackend(
   }
 
   const execUrl = new URL("/exec", baseUrl).toString();
+  const healthUrl = new URL("/health", baseUrl).toString();
+
+  // Lightweight health check on first creation — validates the sidecar is
+  // reachable before we return the backend. This catches misconfigured URLs
+  // and down services early (at backend init) rather than on the first user
+  // command, which produces a better error experience.
+  try {
+    const healthRes = await fetch(healthUrl, {
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!healthRes.ok) {
+      log.warn(
+        { status: healthRes.status, url: healthUrl },
+        "Sidecar health check returned non-OK status — commands may fail",
+      );
+    } else {
+      log.info({ url: baseUrl.origin }, "Sidecar health check passed");
+    }
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    log.warn(
+      { err: detail, url: healthUrl },
+      "Sidecar health check failed on init — sidecar may be starting up or unreachable",
+    );
+  }
 
   return {
     exec: async (command: string): Promise<ExecResult> => {

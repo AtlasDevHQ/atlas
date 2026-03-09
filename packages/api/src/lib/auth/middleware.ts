@@ -156,6 +156,28 @@ export function _setValidatorOverrides(overrides: {
   _byotOverride = overrides.byot ?? null;
 }
 
+/**
+ * Categorize an auth error for diagnostic logging.
+ * Helps operators quickly identify whether a failure is a database issue,
+ * network problem, configuration error, or a programming bug.
+ */
+function categorizeAuthError(err: unknown): string {
+  if (err instanceof TypeError || err instanceof ReferenceError || err instanceof SyntaxError) {
+    return "programming-error";
+  }
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/ECONNREFUSED|ENOTFOUND|ETIMEDOUT|ECONNRESET|fetch failed/i.test(msg)) {
+    return "network-error";
+  }
+  if (/relation.*does not exist|database|SQLITE|pg_|connect|pool/i.test(msg)) {
+    return "database-error";
+  }
+  if (/secret|config|env|missing|undefined|not set/i.test(msg)) {
+    return "config-error";
+  }
+  return "unknown";
+}
+
 /** Authenticate an incoming request based on the detected auth mode. */
 export async function authenticateRequest(req: Request): Promise<AuthResult> {
   const mode = detectAuthMode();
@@ -171,9 +193,11 @@ export async function authenticateRequest(req: Request): Promise<AuthResult> {
       try {
         return await (_managedOverride ?? validateManaged)(req);
       } catch (err) {
+        const category = categorizeAuthError(err);
         log.error(
-          { err: err instanceof Error ? err : new Error(String(err)), mode },
-          "Managed auth error",
+          { err: err instanceof Error ? err : new Error(String(err)), mode, category },
+          "Managed auth error (%s)",
+          category,
         );
         if (err instanceof TypeError || err instanceof ReferenceError || err instanceof SyntaxError) {
           log.error({ err, mode }, "BUG: Unexpected programming error in auth validator");
@@ -190,9 +214,11 @@ export async function authenticateRequest(req: Request): Promise<AuthResult> {
       try {
         return await (_byotOverride ?? validateBYOT)(req);
       } catch (err) {
+        const category = categorizeAuthError(err);
         log.error(
-          { err: err instanceof Error ? err : new Error(String(err)), mode },
-          "BYOT auth error",
+          { err: err instanceof Error ? err : new Error(String(err)), mode, category },
+          "BYOT auth error (%s)",
+          category,
         );
         if (err instanceof TypeError || err instanceof ReferenceError || err instanceof SyntaxError) {
           log.error({ err, mode }, "BUG: Unexpected programming error in auth validator");

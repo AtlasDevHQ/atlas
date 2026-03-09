@@ -53,7 +53,7 @@ function stripSqlComments(sql: string): string {
 
 const FORBIDDEN_PATTERNS = [
   /\b(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|TRUNCATE)\b/i,
-  /\b(GRANT|REVOKE|EXEC|EXECUTE|CALL)\b/i,
+  /\b(GRANT|REVOKE|EXEC|EXECUTE|CALL|KILL)\b/i,
   /\b(COPY|LOAD|VACUUM|REINDEX|OPTIMIZE)\b/i,
   /\bINTO\s+OUTFILE\b/i,
 ];
@@ -196,7 +196,8 @@ export function validateSQL(sql: string, connectionId?: string): { valid: boolea
           error: `Only SELECT statements are allowed, got: ${stmt.type}`,
         };
       }
-      // Collect CTE names so the table whitelist can ignore them
+      // CTE extraction: node-sql-parser doesn't expose .with in its type definitions,
+      // but the property exists at runtime for SELECT statements with CTEs.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       if (Array.isArray((stmt as any).with)) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -452,6 +452,14 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
           "ATLAS_AUTH_ISSUER is required for BYOT auth mode. Set it to your identity provider's issuer URL (e.g. https://your-idp.com/).",
       });
     }
+
+    if (process.env.ATLAS_AUTH_AUDIENCE === "") {
+      const msg =
+        "ATLAS_AUTH_AUDIENCE is set to an empty string — audience validation will be skipped. " +
+        "Remove the variable entirely if audience checking is not needed, or set it to a valid audience value.";
+      if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
+      log.warn(msg);
+    }
   }
 
   // Warn about orphaned auth env vars that suggest misconfiguration

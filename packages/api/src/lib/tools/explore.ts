@@ -108,7 +108,8 @@ function useNsjail(): boolean {
     _nsjailAvailable = isNsjailAvailable();
   } catch (err) {
     if (
-      err instanceof Error &&
+      err != null &&
+      typeof err === "object" &&
       "code" in err &&
       (err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND"
     ) {

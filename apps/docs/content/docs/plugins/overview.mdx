@@ -20,7 +20,7 @@ Atlas plugins extend the agent with new capabilities. Each plugin is a factory f
 bun add @useatlas/clickhouse
 ```
 
-Some plugins have **optional peer dependencies** for their database driver or SDK. Bun will warn you if a peer dependency is missing. Install it separately:
+Some plugins have **optional peer dependencies** for their database driver or SDK. These are loaded lazily at runtime — if a driver is missing, the plugin tells you exactly what to install when it first tries to use it. Install peer dependencies separately:
 
 ```bash
 # Example: ClickHouse plugin needs @clickhouse/client
@@ -63,7 +63,7 @@ Atlas logs each registered plugin at startup. Check the logs to confirm your plu
 |---------|-------|-----|
 | `Plugin config validation failed` | Invalid config passed to the plugin factory | Check the error details — they list which fields failed and why |
 | `requires the X package. Install it with: bun add X` | Missing optional peer dependency | Run the suggested `bun add` command |
-| `Duplicate plugin ID` | Two plugins share the same `id` | Remove the duplicate from `atlas.config.ts` |
+| `is already registered` or `duplicate id` | Two plugins share the same `id` | Remove the duplicate from `atlas.config.ts` |
 | Import error on plugin | Package not installed or wrong export name | Verify `bun add @useatlas/<name>` completed, check the import name in the plugin README |
 
 See the [Plugin Authoring Guide](/plugins/authoring-guide) for a step-by-step tutorial on creating custom plugins.

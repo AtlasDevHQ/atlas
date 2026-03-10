@@ -16,7 +16,24 @@
     },
     {
       "label": "Plugin peer deps use wide ranges for compatibility",
-      "packages": ["@useatlas/plugin-sdk", "@useatlas/clickhouse", "@useatlas/jira"],
+      "packages": [
+        "@useatlas/plugin-sdk",
+        "@useatlas/clickhouse",
+        "@useatlas/snowflake",
+        "@useatlas/duckdb",
+        "@useatlas/mysql",
+        "@useatlas/salesforce",
+        "@useatlas/e2b",
+        "@useatlas/daytona",
+        "@useatlas/nsjail",
+        "@useatlas/sidecar",
+        "@useatlas/vercel-sandbox",
+        "@useatlas/slack",
+        "@useatlas/mcp",
+        "@useatlas/email",
+        "@useatlas/jira",
+        "@useatlas/yaml-context"
+      ],
       "dependencyTypes": ["peer"],
       "isIgnored": true
     },

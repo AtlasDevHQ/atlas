@@ -70,7 +70,8 @@ export function createConnection(config: PluginConfig): PluginDBConnection {
     ({ Pool } = require("pg"));
   } catch (err) {
     const isNotFound =
-      err instanceof Error &&
+      err != null &&
+      typeof err === "object" &&
       "code" in err &&
       (err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND";
     if (isNotFound) {
@@ -417,7 +418,8 @@ try {
   Driver = require("some-driver");
 } catch (err) {
   const isNotFound =
-    err instanceof Error &&
+    err != null &&
+    typeof err === "object" &&
     "code" in err &&
     (err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND";
   if (isNotFound) {

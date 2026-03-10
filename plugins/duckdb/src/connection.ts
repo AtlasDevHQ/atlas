@@ -63,7 +63,8 @@ export function createDuckDBConnection(
           ({ DuckDBInstance } = require("@duckdb/node-api"));
         } catch (err) {
           const isNotFound =
-            err instanceof Error &&
+            err != null &&
+            typeof err === "object" &&
             "code" in err &&
             (err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND";
           if (isNotFound) {

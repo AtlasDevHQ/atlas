@@ -14,9 +14,26 @@ Atlas plugins extend the agent with new capabilities. Each plugin is a factory f
 
 ## Install a Plugin
 
+### 1. Install the package
+
 ```bash
 bun add @useatlas/clickhouse
 ```
+
+Some plugins have **optional peer dependencies** for their database driver or SDK. These are loaded lazily at runtime — if a driver is missing, the plugin tells you exactly what to install when it first tries to use it. Install peer dependencies separately:
+
+```bash
+# Example: ClickHouse plugin needs @clickhouse/client
+bun add @clickhouse/client
+```
+
+<Callout type="info">
+Peer dependencies are optional at install time — the plugin loads them lazily at runtime. If a required driver is missing, you'll get a clear error message telling you exactly what to install (e.g. "ClickHouse support requires the @clickhouse/client package. Install it with: bun add @clickhouse/client").
+</Callout>
+
+### 2. Register in `atlas.config.ts`
+
+Import the plugin factory and add it to the `plugins` array:
 
 ```typescript
 // atlas.config.ts
@@ -29,6 +46,25 @@ export default defineConfig({
   ],
 });
 ```
+
+Plugin config is validated at startup — invalid options (wrong URL format, missing required fields) fail fast with a clear error before the server starts.
+
+### 3. Start the server
+
+```bash
+bun run dev
+```
+
+Atlas logs each registered plugin at startup. Check the logs to confirm your plugin loaded successfully.
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `Plugin config validation failed` | Invalid config passed to the plugin factory | Check the error details — they list which fields failed and why |
+| `requires the X package. Install it with: bun add X` | Missing optional peer dependency | Run the suggested `bun add` command |
+| `is already registered` or `duplicate id` | Two plugins share the same `id` | Remove the duplicate from `atlas.config.ts` |
+| Import error on plugin | Package not installed or wrong export name | Verify `bun add @useatlas/<name>` completed, check the import name in the plugin README |
 
 See the [Plugin Authoring Guide](/plugins/authoring-guide) for a step-by-step tutorial on creating custom plugins.
 

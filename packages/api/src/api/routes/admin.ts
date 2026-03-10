@@ -1161,14 +1161,14 @@ function analyticsDateRange(c: { req: { query(name: string): string | undefined 
 
   const from = c.req.query("from");
   if (from) {
-    if (isNaN(Date.parse(from))) return { error: `Invalid 'from' date: "${from}".` } as const;
+    if (isNaN(Date.parse(from))) return { error: `Invalid 'from' date format. Use ISO 8601 (e.g. 2026-01-01).` } as const;
     conditions.push(`timestamp >= $${idx++}`);
     params.push(from);
   }
 
   const to = c.req.query("to");
   if (to) {
-    if (isNaN(Date.parse(to))) return { error: `Invalid 'to' date: "${to}".` } as const;
+    if (isNaN(Date.parse(to))) return { error: `Invalid 'to' date format. Use ISO 8601 (e.g. 2026-01-01).` } as const;
     conditions.push(`timestamp <= $${idx++}`);
     params.push(to);
   }
@@ -1211,7 +1211,7 @@ admin.get("/audit/analytics/volume", async (c) => {
         })),
       });
     } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Audit analytics volume query failed");
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Audit analytics volume query failed");
       return c.json({ error: "internal_error", message: "Failed to query volume analytics." }, 500);
     }
   });
@@ -1262,7 +1262,7 @@ admin.get("/audit/analytics/slow", async (c) => {
         })),
       });
     } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Audit analytics slow query failed");
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Audit analytics slow query failed");
       return c.json({ error: "internal_error", message: "Failed to query slow analytics." }, 500);
     }
   });
@@ -1313,7 +1313,7 @@ admin.get("/audit/analytics/frequent", async (c) => {
         })),
       });
     } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Audit analytics frequent query failed");
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Audit analytics frequent query failed");
       return c.json({ error: "internal_error", message: "Failed to query frequency analytics." }, 500);
     }
   });
@@ -1359,7 +1359,7 @@ admin.get("/audit/analytics/errors", async (c) => {
         })),
       });
     } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Audit analytics errors query failed");
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Audit analytics errors query failed");
       return c.json({ error: "internal_error", message: "Failed to query error analytics." }, 500);
     }
   });
@@ -1415,7 +1415,7 @@ admin.get("/audit/analytics/users", async (c) => {
         }),
       });
     } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Audit analytics users query failed");
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Audit analytics users query failed");
       return c.json({ error: "internal_error", message: "Failed to query user analytics." }, 500);
     }
   });

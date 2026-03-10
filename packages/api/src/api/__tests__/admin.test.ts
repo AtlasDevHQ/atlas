@@ -950,4 +950,66 @@ describe("Admin routes — audit analytics", () => {
       expect(body.users[1].errorRate).toBe(0);
     });
   });
+
+  // Cross-cutting: auth, errors, date validation
+  describe("shared behavior", () => {
+    it("returns 403 for non-admin users on analytics endpoints", async () => {
+      mockAuthenticateRequest.mockResolvedValue({
+        authenticated: true,
+        mode: "simple-key",
+        user: { id: "user-1", mode: "simple-key", label: "Analyst", role: "analyst" },
+      });
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/volume"));
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.error).toBe("forbidden");
+    });
+
+    it("checks auth before hasInternalDB (returns 401 not 404 for unauth)", async () => {
+      mockHasInternalDB = false;
+      mockAuthenticateRequest.mockResolvedValue({
+        authenticated: false,
+        mode: "simple-key",
+        status: 401,
+        error: "Invalid API key",
+      });
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/volume"));
+      expect(res.status).toBe(401);
+    });
+
+    it("returns 500 when internalQuery throws", async () => {
+      mockInternalQuery.mockRejectedValue(new Error("connection reset"));
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/volume"));
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.error).toBe("internal_error");
+    });
+
+    it("returns 400 for invalid 'to' date", async () => {
+      const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/volume?to=garbage"));
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.error).toBe("invalid_request");
+    });
+
+    it("returns 400 for valid 'from' + invalid 'to'", async () => {
+      const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/volume?from=2026-03-01&to=garbage"));
+      expect(res.status).toBe(400);
+    });
+
+    it("handles 'to'-only date range", async () => {
+      mockInternalQuery.mockResolvedValue([]);
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/volume?to=2026-03-07"));
+      expect(res.status).toBe(200);
+      expect(mockInternalQuery).toHaveBeenCalledTimes(1);
+      const [sql, params] = mockInternalQuery.mock.calls[0];
+      expect(sql).toContain("timestamp <=");
+      expect(sql).not.toContain("timestamp >=");
+      expect(params).toEqual(["2026-03-07"]);
+    });
+  });
 });

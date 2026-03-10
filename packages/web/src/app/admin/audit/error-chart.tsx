@@ -9,11 +9,7 @@ import {
   YAxis,
   Tooltip,
 } from "recharts";
-
-interface ErrorGroup {
-  error: string;
-  count: number;
-}
+import type { ErrorGroup } from "./analytics-panel";
 
 const TOKENS = {
   light: { grid: "#e4e4e7", axis: "#71717a", bg: "#ffffff", border: "#e4e4e7", text: "#27272a" },

@@ -66,66 +66,67 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/plugin-sdk-v')
         run: cd packages/plugin-sdk && bun run build && bun run test && npm publish --access public
 
-      # Plugins — tests run from workspace root so bun resolves workspace:* deps
+      # Plugins — ship raw TypeScript, no build step needed
+      # Tests are already run by CI on every push to main; tags are always cut from main
       # Datasource
-      - name: Test and publish @useatlas/clickhouse
+      - name: Publish @useatlas/clickhouse
         if: startsWith(github.ref, 'refs/tags/clickhouse-v')
-        run: bun test plugins/clickhouse && cd plugins/clickhouse && npm publish --access public
+        run: cd plugins/clickhouse && npm publish --access public
 
-      - name: Test and publish @useatlas/snowflake
+      - name: Publish @useatlas/snowflake
         if: startsWith(github.ref, 'refs/tags/snowflake-v')
-        run: bun test plugins/snowflake && cd plugins/snowflake && npm publish --access public
+        run: cd plugins/snowflake && npm publish --access public
 
-      - name: Test and publish @useatlas/duckdb
+      - name: Publish @useatlas/duckdb
         if: startsWith(github.ref, 'refs/tags/duckdb-v')
-        run: bun test plugins/duckdb && cd plugins/duckdb && npm publish --access public
+        run: cd plugins/duckdb && npm publish --access public
 
-      - name: Test and publish @useatlas/mysql
+      - name: Publish @useatlas/mysql
         if: startsWith(github.ref, 'refs/tags/mysql-v')
-        run: bun test plugins/mysql && cd plugins/mysql && npm publish --access public
+        run: cd plugins/mysql && npm publish --access public
 
-      - name: Test and publish @useatlas/salesforce
+      - name: Publish @useatlas/salesforce
         if: startsWith(github.ref, 'refs/tags/salesforce-v')
-        run: bun test plugins/salesforce && cd plugins/salesforce && npm publish --access public
+        run: cd plugins/salesforce && npm publish --access public
 
       # Sandbox
-      - name: Test and publish @useatlas/e2b
+      - name: Publish @useatlas/e2b
         if: startsWith(github.ref, 'refs/tags/e2b-v')
-        run: bun test plugins/e2b && cd plugins/e2b && npm publish --access public
+        run: cd plugins/e2b && npm publish --access public
 
-      - name: Test and publish @useatlas/daytona
+      - name: Publish @useatlas/daytona
         if: startsWith(github.ref, 'refs/tags/daytona-v')
-        run: bun test plugins/daytona && cd plugins/daytona && npm publish --access public
+        run: cd plugins/daytona && npm publish --access public
 
-      - name: Test and publish @useatlas/nsjail
+      - name: Publish @useatlas/nsjail
         if: startsWith(github.ref, 'refs/tags/nsjail-v')
-        run: bun test plugins/nsjail && cd plugins/nsjail && npm publish --access public
+        run: cd plugins/nsjail && npm publish --access public
 
-      - name: Test and publish @useatlas/sidecar
+      - name: Publish @useatlas/sidecar
         if: startsWith(github.ref, 'refs/tags/sidecar-v')
-        run: bun test plugins/sidecar && cd plugins/sidecar && npm publish --access public
+        run: cd plugins/sidecar && npm publish --access public
 
-      - name: Test and publish @useatlas/vercel-sandbox
+      - name: Publish @useatlas/vercel-sandbox
         if: startsWith(github.ref, 'refs/tags/vercel-sandbox-v')
-        run: bun test plugins/vercel-sandbox && cd plugins/vercel-sandbox && npm publish --access public
+        run: cd plugins/vercel-sandbox && npm publish --access public
 
       # Interaction
-      - name: Test and publish @useatlas/slack
+      - name: Publish @useatlas/slack
         if: startsWith(github.ref, 'refs/tags/slack-v')
-        run: bun test plugins/slack && cd plugins/slack && npm publish --access public
+        run: cd plugins/slack && npm publish --access public
 
       # @useatlas/mcp excluded — depends on unpublished @atlas/mcp (see #128)
 
       # Action
-      - name: Test and publish @useatlas/email
+      - name: Publish @useatlas/email
         if: startsWith(github.ref, 'refs/tags/email-v')
-        run: bun test plugins/email && cd plugins/email && npm publish --access public
+        run: cd plugins/email && npm publish --access public
 
-      - name: Test and publish @useatlas/jira
+      - name: Publish @useatlas/jira
         if: startsWith(github.ref, 'refs/tags/jira-v')
-        run: bun test plugins/jira && cd plugins/jira && npm publish --access public
+        run: cd plugins/jira && npm publish --access public
 
       # Context
-      - name: Test and publish @useatlas/yaml-context
+      - name: Publish @useatlas/yaml-context
         if: startsWith(github.ref, 'refs/tags/yaml-context-v')
-        run: bun test plugins/yaml-context && cd plugins/yaml-context && npm publish --access public
+        run: cd plugins/yaml-context && npm publish --access public

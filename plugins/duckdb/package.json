@@ -1,6 +1,6 @@
 {
   "name": "@useatlas/duckdb",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Atlas DuckDB datasource plugin",
   "type": "module",
   "main": "./src/index.ts",

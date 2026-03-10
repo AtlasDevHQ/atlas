@@ -1,6 +1,6 @@
 {
   "name": "@useatlas/jira",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Atlas Jira action plugin",
   "type": "module",
   "main": "./src/index.ts",

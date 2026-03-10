@@ -4,6 +4,8 @@
  * Mounted at /api/v1/admin. All routes require admin role.
  * Browsing endpoints are read-only; health-check routes (POST) trigger
  * live probes. Connection CRUD routes persist encrypted URLs via encryptUrl/decryptUrl.
+ * User management routes handle roles, bans, and invitations via Better Auth
+ * and the internal DB.
  */
 
 import * as fs from "fs";
@@ -2016,16 +2018,18 @@ function isValidEmail(email: string): boolean {
 }
 
 /**
- * Resolve the base URL for invite links. Priority:
- *  1. BETTER_AUTH_URL (explicit)
- *  2. NEXT_PUBLIC_ATLAS_API_URL (cross-origin frontend)
- *  3. Request Origin header
+ * Resolve the frontend base URL for invite links. Priority:
+ *  1. Request Origin header (browser sends the frontend origin)
+ *  2. ATLAS_CORS_ORIGIN (frontend origin in cross-origin deployments)
+ *  3. Fallback: http://localhost:3000 (local development)
+ *
+ * Deliberately avoids BETTER_AUTH_URL and NEXT_PUBLIC_ATLAS_API_URL
+ * because those point to the API server, not the frontend.
  */
 function resolveBaseUrl(req: Request): string {
   return (
-    process.env.BETTER_AUTH_URL ??
-    process.env.NEXT_PUBLIC_ATLAS_API_URL ??
     req.headers.get("origin") ??
+    process.env.ATLAS_CORS_ORIGIN ??
     "http://localhost:3000"
   );
 }
@@ -2062,32 +2066,30 @@ admin.post("/users/invite", async (c) => {
       return c.json({ error: "invalid_request", message: `Invalid role. Must be one of: ${ATLAS_ROLES.join(", ")}` }, 400);
     }
 
-    // Check if user already exists
+    // Check for existing user and pending invitation in parallel
+    let existing: { id: string }[];
+    let pending: { id: string }[];
     try {
-      const existing = await internalQuery<{ id: string }>(
-        `SELECT id FROM "user" WHERE email = $1 LIMIT 1`,
-        [email],
-      );
-      if (existing.length > 0) {
-        return c.json({ error: "conflict", message: "A user with this email already exists." }, 409);
-      }
+      [existing, pending] = await Promise.all([
+        internalQuery<{ id: string }>(
+          `SELECT id FROM "user" WHERE email = $1 LIMIT 1`,
+          [email],
+        ),
+        internalQuery<{ id: string }>(
+          `SELECT id FROM invitations WHERE email = $1 AND status = 'pending' AND expires_at > now() LIMIT 1`,
+          [email],
+        ),
+      ]);
     } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to check existing user");
-      return c.json({ error: "internal_error", message: "Failed to check existing user." }, 500);
+      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to check existing user/invitation");
+      return c.json({ error: "internal_error", message: "Failed to validate invitation." }, 500);
     }
 
-    // Check for existing pending invitation
-    try {
-      const pending = await internalQuery<{ id: string }>(
-        `SELECT id FROM invitations WHERE email = $1 AND status = 'pending' AND expires_at > now() LIMIT 1`,
-        [email],
-      );
-      if (pending.length > 0) {
-        return c.json({ error: "conflict", message: "A pending invitation for this email already exists." }, 409);
-      }
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to check existing invitation");
-      return c.json({ error: "internal_error", message: "Failed to check existing invitation." }, 500);
+    if (existing.length > 0) {
+      return c.json({ error: "conflict", message: "A user with this email already exists." }, 409);
+    }
+    if (pending.length > 0) {
+      return c.json({ error: "conflict", message: "A pending invitation for this email already exists." }, 409);
     }
 
     // Create invitation
@@ -2103,11 +2105,16 @@ admin.post("/users/invite", async (c) => {
       );
 
       const invitation = rows[0];
+      if (!invitation) {
+        log.error({ email, role, requestId }, "INSERT RETURNING returned no rows");
+        return c.json({ error: "internal_error", message: "Failed to create invitation." }, 500);
+      }
       const baseUrl = resolveBaseUrl(req);
-      const inviteUrl = `${baseUrl}/signup?invite=${token}`;
+      const inviteUrl = `${baseUrl}/?invite=${token}`;
 
       // Attempt email delivery via Resend if configured
       let emailSent = false;
+      let emailError: string | undefined;
       const resendKey = process.env.RESEND_API_KEY;
       if (resendKey) {
         try {
@@ -2127,10 +2134,13 @@ admin.post("/users/invite", async (c) => {
           });
           emailSent = res.ok;
           if (!res.ok) {
-            log.warn({ status: res.status, email }, "Failed to send invite email via Resend");
+            const errorBody = await res.text().catch(() => "");
+            emailError = `Delivery failed (HTTP ${res.status})`;
+            log.error({ status: res.status, email, responseBody: errorBody }, "Failed to send invite email via Resend");
           }
         } catch (err) {
-          log.warn({ err: err instanceof Error ? err.message : String(err), email }, "Resend email delivery failed");
+          emailError = err instanceof Error ? err.message : "Network error";
+          log.error({ err: err instanceof Error ? err.message : String(err), email }, "Resend email delivery failed");
         }
       }
 
@@ -2150,6 +2160,7 @@ admin.post("/users/invite", async (c) => {
         token,
         inviteUrl,
         emailSent,
+        ...(emailError ? { emailError } : {}),
         expiresAt: expiresAt.toISOString(),
         createdAt: invitation.created_at,
       });
@@ -2185,8 +2196,13 @@ admin.get("/users/invitations", async (c) => {
       const params: unknown[] = [];
 
       if (status && validStatuses.includes(status)) {
-        sql += ` WHERE status = $1`;
-        params.push(status);
+        if (status === "expired") {
+          // "expired" is a virtual status — pending invitations past their expiry
+          sql += ` WHERE status = 'pending' AND expires_at <= now()`;
+        } else {
+          sql += ` WHERE status = $1`;
+          params.push(status);
+        }
       }
 
       sql += ` ORDER BY created_at DESC LIMIT 100`;

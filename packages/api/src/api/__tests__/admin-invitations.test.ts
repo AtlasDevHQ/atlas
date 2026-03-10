@@ -179,15 +179,12 @@ describe("Admin routes — user invitations", () => {
 
   describe("POST /users/invite", () => {
     it("creates an invitation with valid email and role", async () => {
-      // First call: check existing user → none found
-      // Second call: check pending invitation → none found
-      // Third call: INSERT → return new invitation
-      let callCount = 0;
-      mockInternalQuery.mockImplementation(async () => {
-        callCount++;
-        if (callCount <= 2) return [];
-        return [{ id: "inv-1", created_at: "2026-01-01T00:00:00Z" }];
-      });
+      // Promise.all: check existing user + pending invitation → both empty
+      // Then INSERT → return new invitation
+      mockInternalQuery
+        .mockResolvedValueOnce([]) // user check
+        .mockResolvedValueOnce([]) // pending check
+        .mockResolvedValueOnce([{ id: "inv-1", created_at: "2026-01-01T00:00:00Z" }]); // INSERT
 
       const res = await app.fetch(
         adminRequest("/api/v1/admin/users/invite", "POST", {
@@ -239,7 +236,10 @@ describe("Admin routes — user invitations", () => {
     });
 
     it("rejects invitation when user already exists", async () => {
-      mockInternalQuery.mockResolvedValueOnce([{ id: "user-existing" }]);
+      // Promise.all: user check returns existing, pending check returns empty
+      mockInternalQuery
+        .mockResolvedValueOnce([{ id: "user-existing" }]) // user check
+        .mockResolvedValueOnce([]); // pending check
 
       const res = await app.fetch(
         adminRequest("/api/v1/admin/users/invite", "POST", {
@@ -253,14 +253,10 @@ describe("Admin routes — user invitations", () => {
     });
 
     it("rejects duplicate pending invitation", async () => {
-      // First call: no existing user
-      // Second call: existing pending invitation
-      let callCount = 0;
-      mockInternalQuery.mockImplementation(async () => {
-        callCount++;
-        if (callCount === 1) return [];
-        return [{ id: "inv-existing" }];
-      });
+      // Promise.all: user check returns empty, pending check returns existing
+      mockInternalQuery
+        .mockResolvedValueOnce([]) // user check
+        .mockResolvedValueOnce([{ id: "inv-existing" }]); // pending check
 
       const res = await app.fetch(
         adminRequest("/api/v1/admin/users/invite", "POST", {
@@ -274,16 +270,14 @@ describe("Admin routes — user invitations", () => {
     });
 
     it("normalizes email to lowercase", async () => {
-      let callCount = 0;
-      mockInternalQuery.mockImplementation(async (_sql: string, params?: unknown[]) => {
-        callCount++;
-        if (callCount <= 2) return [];
-        // Verify normalized email was stored
-        if (callCount === 3 && params) {
-          expect(params[0]).toBe("test@example.com");
-        }
-        return [{ id: "inv-2", created_at: "2026-01-01T00:00:00Z" }];
-      });
+      mockInternalQuery
+        .mockResolvedValueOnce([]) // user check
+        .mockResolvedValueOnce([]) // pending check
+        .mockImplementationOnce(async (_sql: string, params?: unknown[]) => {
+          // Verify normalized email was stored in INSERT
+          if (params) expect(params[0]).toBe("test@example.com");
+          return [{ id: "inv-2", created_at: "2026-01-01T00:00:00Z" }];
+        });
 
       const res = await app.fetch(
         adminRequest("/api/v1/admin/users/invite", "POST", {

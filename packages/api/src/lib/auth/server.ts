@@ -129,25 +129,37 @@ export function getAuthInstance(): AuthInstance {
                 }
               }
 
-              // Check for pending invitation and auto-assign the invited role
+            } catch (err) {
+              log.error({ err }, "Bootstrap admin check failed — defaulting to normal role assignment");
+            }
+
+            // Check for pending invitation and auto-assign the invited role.
+            // Separate try/catch so invitation failures don't mask admin bootstrap errors.
+            try {
               if (hasInternalDB() && user.email) {
-                const invitations = await internalQuery<{ id: string; role: string }>(
-                  `SELECT id, role FROM invitations WHERE email = $1 AND status = 'pending' AND expires_at > now() ORDER BY created_at DESC LIMIT 1`,
+                const invitations = await internalQuery<{ id: string; role: string; token: string }>(
+                  `SELECT id, role, token FROM invitations WHERE email = $1 AND status = 'pending' AND expires_at > now() ORDER BY created_at DESC LIMIT 1`,
                   [user.email.toLowerCase().trim()],
                 );
                 if (invitations.length > 0) {
                   const inv = invitations[0];
                   log.info({ email: user.email, role: inv.role, invitationId: inv.id }, "Invitation match: assigning invited role on signup");
-                  // Mark invitation as accepted (fire-and-forget)
-                  void internalQuery(
-                    `UPDATE invitations SET status = 'accepted', accepted_at = now() WHERE id = $1`,
-                    [inv.id],
-                  ).catch((err) => log.error({ err }, "Failed to mark invitation as accepted"));
+                  try {
+                    await internalQuery(
+                      `UPDATE invitations SET status = 'accepted', accepted_at = now() WHERE id = $1`,
+                      [inv.id],
+                    );
+                  } catch (err) {
+                    log.error(
+                      { err, email: user.email, invitationId: inv.id, role: inv.role },
+                      "Failed to mark invitation as accepted — user will receive invited role but invitation remains pending in admin view",
+                    );
+                  }
                   return { data: { ...user, role: inv.role } };
                 }
               }
             } catch (err) {
-              log.error({ err }, "Bootstrap admin check failed — defaulting to normal role assignment");
+              log.error({ err, email: user.email }, "Invitation lookup failed during signup — user will receive default role");
             }
           },
         },

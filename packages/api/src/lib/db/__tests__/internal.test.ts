@@ -200,7 +200,7 @@ describe("internal DB module", () => {
       _resetPool(pool);
 
       await migrateInternalDB();
-      expect(calls.queries.length).toBe(31);
+      expect(calls.queries.length).toBe(32);
       expect(calls.queries[0].sql).toContain("CREATE TABLE IF NOT EXISTS audit_log");
       expect(calls.queries[1].sql).toContain("idx_audit_log_timestamp");
       expect(calls.queries[2].sql).toContain("idx_audit_log_user_id");
@@ -232,6 +232,7 @@ describe("internal DB module", () => {
       expect(calls.queries[28].sql).toContain("idx_invitations_email");
       expect(calls.queries[29].sql).toContain("idx_invitations_token");
       expect(calls.queries[30].sql).toContain("idx_invitations_status");
+      expect(calls.queries[31].sql).toContain("idx_invitations_pending_email");
     });
 
     it("propagates migration errors", async () => {

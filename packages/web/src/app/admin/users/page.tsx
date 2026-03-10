@@ -153,7 +153,7 @@ export default function UsersPage() {
   const [inviteRole, setInviteRole] = useState<string>("analyst");
   const [inviteLoading, setInviteLoading] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
-  const [inviteResult, setInviteResult] = useState<{ inviteUrl: string; emailSent: boolean } | null>(null);
+  const [inviteResult, setInviteResult] = useState<{ inviteUrl: string; emailSent: boolean; emailError?: string } | null>(null);
   const [copied, setCopied] = useState(false);
 
   // -- Invitations list --
@@ -202,20 +202,28 @@ export default function UsersPage() {
   }, [apiUrl, offset, params.search, params.role, credentials]);
 
   // Fetch invitations
+  const [invitationsError, setInvitationsError] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
     async function fetchInvitations() {
       setInvitationsLoading(true);
+      setInvitationsError(null);
       try {
         const res = await fetch(`${apiUrl}/api/v1/admin/users/invitations`, { credentials });
         if (!res.ok) {
-          if (!cancelled) setInvitations([]);
+          if (!cancelled) {
+            setInvitations([]);
+            setInvitationsError(`Failed to load invitations (HTTP ${res.status})`);
+          }
           return;
         }
         const data = await res.json();
         if (!cancelled) setInvitations(data.invitations ?? []);
-      } catch {
-        if (!cancelled) setInvitations([]);
+      } catch (err) {
+        if (!cancelled) {
+          setInvitations([]);
+          setInvitationsError(err instanceof Error ? err.message : "Failed to load invitations");
+        }
       } finally {
         if (!cancelled) setInvitationsLoading(false);
       }
@@ -304,7 +312,7 @@ export default function UsersPage() {
         setInviteError(data.message ?? `Failed (HTTP ${res.status})`);
         return;
       }
-      setInviteResult({ inviteUrl: data.inviteUrl, emailSent: data.emailSent });
+      setInviteResult({ inviteUrl: data.inviteUrl, emailSent: data.emailSent, emailError: data.emailError });
       setInvitationsVersion((v) => v + 1);
     } catch (err) {
       setInviteError(err instanceof Error ? err.message : "Failed to send invitation");
@@ -314,9 +322,13 @@ export default function UsersPage() {
   }
 
   async function handleCopyLink(url: string) {
-    await navigator.clipboard.writeText(url);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setInviteError("Could not copy to clipboard. Please select and copy the link manually.");
+    }
   }
 
   async function handleRevokeInvitation(id: string) {
@@ -327,8 +339,13 @@ export default function UsersPage() {
       });
       if (res.ok) {
         setInvitationsVersion((v) => v + 1);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setError({ message: data.message ?? `Failed to revoke invitation (HTTP ${res.status})`, status: res.status });
       }
-    } catch { /* swallow — UI will remain stale but not crash */ }
+    } catch (err) {
+      setError({ message: err instanceof Error ? err.message : "Failed to revoke invitation" });
+    }
   }
 
   // Gate: 401/403/404
@@ -571,7 +588,10 @@ export default function UsersPage() {
         )}
 
         {/* Pending Invitations */}
-        {!invitationsLoading && invitations.length > 0 && (
+        {!invitationsLoading && invitationsError && (
+          <ErrorBanner message={invitationsError} onRetry={() => setInvitationsVersion((v) => v + 1)} />
+        )}
+        {!invitationsLoading && !invitationsError && invitations.length > 0 && (
           <div className="space-y-3">
             <div className="flex items-center gap-2">
               <Mail className="size-4 text-muted-foreground" />
@@ -666,8 +686,12 @@ export default function UsersPage() {
                   <div className="flex items-start gap-3 rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950">
                     <Clock className="mt-0.5 size-4 text-amber-600 dark:text-amber-400" />
                     <div className="text-sm">
-                      <p className="font-medium text-amber-700 dark:text-amber-300">No email delivery configured</p>
-                      <p className="text-amber-600 dark:text-amber-400">Share the invite link manually.</p>
+                      <p className="font-medium text-amber-700 dark:text-amber-300">
+                        {inviteResult.emailError ? "Email delivery failed" : "No email delivery configured"}
+                      </p>
+                      <p className="text-amber-600 dark:text-amber-400">
+                        {inviteResult.emailError ?? "Share the invite link manually."}
+                      </p>
                     </div>
                   </div>
                   <div className="space-y-1.5">

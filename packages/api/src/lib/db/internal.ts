@@ -398,6 +398,7 @@ export async function migrateInternalDB(): Promise<void> {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_invitations_email ON invitations(email);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_invitations_token ON invitations(token);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_invitations_status ON invitations(status);`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_invitations_pending_email ON invitations(email) WHERE status = 'pending';`);
 
   log.info("Internal DB migration complete (audit_log, conversations, messages, slack, action_log, scheduled_tasks, connections, invitations)");
 }

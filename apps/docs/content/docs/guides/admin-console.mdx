@@ -22,12 +22,25 @@ When auth mode is `none` (local development), all users have implicit admin acce
 
 **Route:** `/admin`
 
-The dashboard shows deployment health at a glance:
+The dashboard shows deployment health at a glance with two sections:
 
-- **Connections** -- Number of registered datasources
-- **Entities** -- Tables and views in the semantic layer
-- **Plugins** -- Installed plugins and their health status
-- **Overall health** -- Aggregated status (healthy, degraded, unhealthy)
+**Component Health** — Per-component status cards for each subsystem:
+
+- **Datasource** — Connection health and query latency
+- **Internal DB** — Atlas internal Postgres status
+- **LLM Provider** — Provider availability, active model name
+- **Scheduler** — Scheduler engine status (or "Disabled" when off)
+- **Sandbox** — Explore isolation backend in use
+
+Each card shows a status badge (healthy / degraded / down / disabled), latency, and last-checked time. Cards for the LLM provider also display the active model, and the sandbox card shows the backend type (nsjail, sidecar, etc.).
+
+**Resources** — Aggregate counts:
+
+- **Connections** — Number of registered datasources
+- **Entities** — Tables and views in the semantic layer
+- **Plugins** — Installed plugins
+
+Click **Refresh** to re-run all health checks on demand.
 
 ---
 
@@ -38,7 +51,10 @@ The dashboard shows deployment health at a glance:
 Lists all registered datasource connections with their database type, description, health status, and latency.
 
 **Actions:**
-- **Test connection** -- Runs a health check query against the datasource and reports latency and status
+- **Add connection** — Opens a form to register a new datasource (connection ID, database type, connection URL, optional schema and description). You can test the URL before saving
+- **Edit connection** — Update URL, schema, or description for an existing connection (the default connection cannot be edited)
+- **Delete connection** — Remove a connection with a confirmation dialog (the default connection cannot be deleted)
+- **Test connection** — Runs a health check query against the datasource and reports latency and status
 
 ---
 
@@ -112,13 +128,21 @@ Requires `ATLAS_SCHEDULER_ENABLED=true`.
 
 Manages recurring queries:
 
-- **Filter tabs** -- All, Enabled, Disabled
-- **Table** -- Name, question, cron expression, delivery channel, next run time, enabled status
-- **Expandable rows** -- Recent run history with status, timing, and token usage
+- **Filter tabs** — All, Enabled, Disabled
+- **Table** — Name, question, cron expression, delivery channel, next run time, enabled status
+- **Expandable rows** — Recent run history with status, timing, and token usage
 
 **Actions:**
+- **Create task** — Opens a form with:
+  - Task name and natural-language question
+  - Schedule picker with cron presets (e.g. daily at 9 AM, weekly on Monday) or a custom cron expression. Shows a human-readable description and the next 3 run times
+  - Delivery channel (email, Slack, or webhook) with per-channel recipient configuration
+  - Connection selector (default or any registered datasource)
+  - Approval mode (auto, manual, admin-only)
+- **Edit task** — Same form, pre-populated with the existing task configuration. Includes an enable/disable toggle
+- **Delete task** — Remove a task with a confirmation dialog
 - **Toggle enabled/disabled**
-- **Run now** -- Trigger immediate execution
+- **Run now** — Trigger immediate execution
 
 See [Scheduled Tasks](/guides/scheduled-tasks) for setup and configuration.
 
@@ -159,7 +183,12 @@ All admin endpoints are at `/api/v1/admin/` and require the `admin` role. See th
 |--------|------|-------------|
 | `GET` | `/overview` | Dashboard stats |
 | `GET` | `/connections` | List connections |
-| `POST` | `/connections/:id/test` | Test connection health |
+| `POST` | `/connections` | Create connection |
+| `GET` | `/connections/:id` | Get connection detail |
+| `PUT` | `/connections/:id` | Update connection |
+| `DELETE` | `/connections/:id` | Delete connection |
+| `POST` | `/connections/test` | Test a connection URL |
+| `POST` | `/connections/:id/test` | Test existing connection health |
 | `GET` | `/semantic/entities` | List entity summaries |
 | `GET` | `/semantic/entities/:name` | Get entity detail |
 | `GET` | `/semantic/metrics` | List all metrics |

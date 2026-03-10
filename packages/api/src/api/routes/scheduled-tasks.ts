@@ -282,13 +282,17 @@ scheduledTasks.get("/runs", async (c) => {
     const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 100) : 20;
     const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
 
-    const taskId = c.req.query("task_id") || undefined;
+    const taskIdParam = c.req.query("task_id") || undefined;
+    const taskId = taskIdParam && UUID_RE.test(taskIdParam) ? taskIdParam : undefined;
     const statusParam = c.req.query("status");
     const status = statusParam && (RUN_STATUSES as readonly string[]).includes(statusParam)
       ? (statusParam as RunStatus)
       : undefined;
-    const dateFrom = c.req.query("date_from") || undefined;
-    const dateTo = c.req.query("date_to") || undefined;
+    const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+    const dateFromParam = c.req.query("date_from") || undefined;
+    const dateToParam = c.req.query("date_to") || undefined;
+    const dateFrom = dateFromParam && ISO_DATE_RE.test(dateFromParam) ? dateFromParam : undefined;
+    const dateTo = dateToParam && ISO_DATE_RE.test(dateToParam) ? dateToParam : undefined;
 
     const result = await listAllRuns({ taskId, status, dateFrom, dateTo, limit, offset });
     return c.json(result);

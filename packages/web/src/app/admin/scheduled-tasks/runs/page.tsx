@@ -69,6 +69,7 @@ function RunStatusBadge({ status }: { status: string }) {
 function formatDuration(startedAt: string, completedAt: string | null): string {
   if (!completedAt) return "—";
   const ms = new Date(completedAt).getTime() - new Date(startedAt).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return "—";
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
   const mins = Math.floor(ms / 60_000);
@@ -78,6 +79,7 @@ function formatDuration(startedAt: string, completedAt: string | null): string {
 
 function formatTimestamp(dateStr: string): string {
   const date = new Date(dateStr);
+  if (isNaN(date.getTime())) return "—";
   return date.toLocaleString(undefined, {
     month: "short",
     day: "numeric",
@@ -102,6 +104,8 @@ export default function RunHistoryPage() {
 
   // For task filter dropdown
   const [tasks, setTasks] = useState<ScheduledTask[]>([]);
+
+  const [refetchKey, setRefetchKey] = useState(0);
 
   const [{ page, task: taskFilter, status: statusFilter, dateFrom, dateTo, expandedRun }, setParams] =
     useQueryStates(runHistorySearchParams);
@@ -143,7 +147,11 @@ export default function RunHistoryPage() {
           { credentials },
         );
         if (!res.ok) {
-          if (!cancelled) setError({ message: `HTTP ${res.status}`, status: res.status });
+          if (!cancelled) {
+            setError({ message: `HTTP ${res.status}`, status: res.status });
+            setRuns([]);
+            setTotal(0);
+          }
           return;
         }
         const data = await res.json();
@@ -165,7 +173,7 @@ export default function RunHistoryPage() {
     return () => {
       cancelled = true;
     };
-  }, [apiUrl, offset, taskFilter, statusFilter, dateFrom, dateTo, credentials]);
+  }, [apiUrl, offset, taskFilter, statusFilter, dateFrom, dateTo, credentials, refetchKey]);
 
   // Gate: 401/403/404
   if (!loading && error?.status && [401, 403, 404].includes(error.status)) {
@@ -268,7 +276,7 @@ export default function RunHistoryPage() {
       </div>
 
       <div className="flex-1 overflow-auto">
-        {error && <ErrorBanner message={friendlyError(error)} onRetry={() => setError(null)} />}
+        {error && <ErrorBanner message={friendlyError(error)} onRetry={() => setRefetchKey((k) => k + 1)} />}
 
         {loading ? (
           <LoadingState message="Loading run history..." />

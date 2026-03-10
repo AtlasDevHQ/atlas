@@ -14,6 +14,7 @@ import {
   createTaskRun,
   completeTaskRun,
   listTaskRuns,
+  listAllRuns,
   getTasksDueForExecution,
   lockTaskForExecution,
   validateCronExpression,
@@ -468,6 +469,76 @@ describe("scheduled-tasks module", () => {
       enableInternalDB();
       queryThrow = new Error("fail");
       expect(await listTaskRuns("task-123")).toEqual([]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // listAllRuns
+  // -------------------------------------------------------------------------
+
+  describe("listAllRuns()", () => {
+    it("returns runs with task names", async () => {
+      enableInternalDB();
+      setResults(
+        { rows: [{ total: 1 }] },
+        { rows: [{ ...makeRunRow(), task_name: "Daily Report" }] },
+      );
+
+      const result = await listAllRuns();
+      expect(result.total).toBe(1);
+      expect(result.runs).toHaveLength(1);
+      expect(result.runs[0].id).toBe("run-123");
+      expect(result.runs[0].taskName).toBe("Daily Report");
+    });
+
+    it("uses JOIN in both count and data queries", async () => {
+      enableInternalDB();
+      setResults({ rows: [{ total: 0 }] }, { rows: [] });
+
+      await listAllRuns();
+      expect(queryCalls[0].sql).toContain("JOIN scheduled_tasks");
+      expect(queryCalls[1].sql).toContain("JOIN scheduled_tasks");
+    });
+
+    it("builds WHERE clauses with correct param indices for all filters", async () => {
+      enableInternalDB();
+      setResults({ rows: [{ total: 0 }] }, { rows: [] });
+
+      await listAllRuns({
+        taskId: "task-123",
+        status: "failed",
+        dateFrom: "2024-01-01",
+        dateTo: "2024-01-31",
+        limit: 10,
+        offset: 5,
+      });
+
+      // Count query gets 4 filter params
+      expect(queryCalls[0].params).toEqual(["task-123", "failed", "2024-01-01", "2024-01-31"]);
+      // Data query gets 4 filter params + limit + offset
+      expect(queryCalls[1].params).toEqual(["task-123", "failed", "2024-01-01", "2024-01-31", 10, 5]);
+      expect(queryCalls[1].sql).toContain("LIMIT $5 OFFSET $6");
+    });
+
+    it("defaults taskName to Unknown when null", async () => {
+      enableInternalDB();
+      setResults(
+        { rows: [{ total: 1 }] },
+        { rows: [{ ...makeRunRow(), task_name: null }] },
+      );
+
+      const result = await listAllRuns();
+      expect(result.runs[0].taskName).toBe("Unknown");
+    });
+
+    it("returns empty when no DB", async () => {
+      expect(await listAllRuns()).toEqual({ runs: [], total: 0 });
+    });
+
+    it("returns empty on DB error", async () => {
+      enableInternalDB();
+      queryThrow = new Error("connection refused");
+      expect(await listAllRuns()).toEqual({ runs: [], total: 0 });
     });
   });
 

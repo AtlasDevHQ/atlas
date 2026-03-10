@@ -15,6 +15,7 @@ import {
 import type {
   ScheduledTask,
   ScheduledTaskRun,
+  ScheduledTaskRunWithTaskName,
   ScheduledTaskWithRuns,
   DeliveryChannel,
   Recipient,
@@ -26,7 +27,7 @@ import type { ActionApprovalMode } from "@atlas/api/lib/action-types";
 const log = createLogger("scheduled-tasks");
 
 // Re-export types for consumers
-export type { ScheduledTask, ScheduledTaskRun, ScheduledTaskWithRuns };
+export type { ScheduledTask, ScheduledTaskRun, ScheduledTaskRunWithTaskName, ScheduledTaskWithRuns };
 
 // ---------------------------------------------------------------------------
 // Types
@@ -383,11 +384,6 @@ export function completeTaskRun(
   );
 }
 
-/** Cross-task run with the task name denormalized for display. */
-export interface ScheduledTaskRunWithTaskName extends ScheduledTaskRun {
-  taskName: string;
-}
-
 /** List runs across all tasks with optional filters. */
 export async function listAllRuns(opts?: {
   taskId?: string;
@@ -429,7 +425,10 @@ export async function listAllRuns(opts?: {
 
     const [countRows, dataRows] = await Promise.all([
       internalQuery<Record<string, unknown>>(
-        `SELECT COUNT(*)::int AS total FROM scheduled_task_runs r ${where}`,
+        `SELECT COUNT(*)::int AS total
+         FROM scheduled_task_runs r
+         JOIN scheduled_tasks t ON t.id = r.task_id
+         ${where}`,
         params,
       ),
       internalQuery<Record<string, unknown>>(

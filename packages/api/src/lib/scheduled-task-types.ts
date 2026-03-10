@@ -115,6 +115,11 @@ export interface ScheduledTaskRun {
   createdAt: string;
 }
 
+/** Cross-task run with the parent task name joined for display. */
+export interface ScheduledTaskRunWithTaskName extends ScheduledTaskRun {
+  taskName: string;
+}
+
 // ---------------------------------------------------------------------------
 // Runtime type guard
 // ---------------------------------------------------------------------------

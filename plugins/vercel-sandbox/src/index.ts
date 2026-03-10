@@ -413,16 +413,20 @@ export function buildVercelSandboxPlugin(
 
         const latencyMs = Math.round(performance.now() - start);
         if (result === "timeout") {
-          // Best-effort cleanup — sandbox may still be creating if create() is what's slow
-          if (sandbox) {
-            try { await sandbox.stop(); } catch { /* best-effort */ }
+          // Best-effort cleanup — sandbox may still be creating if create() is what's slow.
+          // Cast needed: TS narrows sandbox to null (IIFE ends with sandbox=null) but the
+          // timeout race means the IIFE may not have finished yet.
+          const sb = sandbox as SandboxInstance | null;
+          if (sb) {
+            try { await sb.stop(); } catch { /* best-effort */ }
           }
           return { healthy: false, message: `Health check timed out after ${TIMEOUT}ms`, latencyMs };
         }
         return { ...result, latencyMs };
       } catch (err) {
-        if (sandbox) {
-          try { await sandbox.stop(); } catch { /* best-effort */ }
+        const sb = sandbox as SandboxInstance | null;
+        if (sb) {
+          try { await sb.stop(); } catch { /* best-effort */ }
         }
         return {
           healthy: false,

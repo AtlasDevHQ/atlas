@@ -381,7 +381,26 @@ export async function migrateInternalDB(): Promise<void> {
     );
   `);
 
-  log.info("Internal DB migration complete (audit_log, conversations, messages, slack, action_log, scheduled_tasks, connections)");
+  // User invitations
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS invitations (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      email TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'analyst',
+      token TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL DEFAULT 'pending',
+      invited_by TEXT,
+      expires_at TIMESTAMPTZ NOT NULL,
+      accepted_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_invitations_email ON invitations(email);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_invitations_token ON invitations(token);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_invitations_status ON invitations(status);`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_invitations_pending_email ON invitations(email) WHERE status = 'pending';`);
+
+  log.info("Internal DB migration complete (audit_log, conversations, messages, slack, action_log, scheduled_tasks, connections, invitations)");
 }
 
 /**

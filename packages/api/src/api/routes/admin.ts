@@ -4,6 +4,8 @@
  * Mounted at /api/v1/admin. All routes require admin role.
  * Browsing endpoints are read-only; health-check routes (POST) trigger
  * live probes. Connection CRUD routes persist encrypted URLs via encryptUrl/decryptUrl.
+ * User management routes handle roles, bans, and invitations via Better Auth
+ * and the internal DB.
  */
 
 import * as fs from "fs";
@@ -2000,6 +2002,270 @@ admin.post("/users/:id/revoke", async (c) => {
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to revoke sessions");
       return c.json({ error: "internal_error", message: "Failed to revoke sessions." }, 500);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// User Invitations
+// ---------------------------------------------------------------------------
+
+const INVITE_EXPIRY_DAYS = 7;
+
+/** Basic email format validation (not exhaustive — just enough to catch obvious mistakes). */
+function isValidEmail(email: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+/**
+ * Resolve the frontend base URL for invite links. Priority:
+ *  1. Request Origin header (browser sends the frontend origin)
+ *  2. ATLAS_CORS_ORIGIN (frontend origin in cross-origin deployments)
+ *  3. Fallback: http://localhost:3000 (local development)
+ *
+ * Deliberately avoids BETTER_AUTH_URL and NEXT_PUBLIC_ATLAS_API_URL
+ * because those point to the API server, not the frontend.
+ */
+function resolveBaseUrl(req: Request): string {
+  return (
+    req.headers.get("origin") ??
+    process.env.ATLAS_CORS_ORIGIN ??
+    "http://localhost:3000"
+  );
+}
+
+// POST /users/invite — create an invitation
+admin.post("/users/invite", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  if (!hasInternalDB() || detectAuthMode() !== "managed") {
+    return c.json({ error: "not_available", message: "User invitations require managed auth mode." }, 404);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const body = await c.req.json().catch((err) => {
+      log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in invite request");
+      return null;
+    });
+
+    const email = typeof body?.email === "string" ? body.email.toLowerCase().trim() : "";
+    const role = body?.role;
+
+    if (!email || !isValidEmail(email)) {
+      return c.json({ error: "invalid_request", message: "A valid email address is required." }, 400);
+    }
+
+    if (!isValidRole(role)) {
+      return c.json({ error: "invalid_request", message: `Invalid role. Must be one of: ${ATLAS_ROLES.join(", ")}` }, 400);
+    }
+
+    // Check for existing user and pending invitation in parallel
+    let existing: { id: string }[];
+    let pending: { id: string }[];
+    try {
+      [existing, pending] = await Promise.all([
+        internalQuery<{ id: string }>(
+          `SELECT id FROM "user" WHERE email = $1 LIMIT 1`,
+          [email],
+        ),
+        internalQuery<{ id: string }>(
+          `SELECT id FROM invitations WHERE email = $1 AND status = 'pending' AND expires_at > now() LIMIT 1`,
+          [email],
+        ),
+      ]);
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to check existing user/invitation");
+      return c.json({ error: "internal_error", message: "Failed to validate invitation." }, 500);
+    }
+
+    if (existing.length > 0) {
+      return c.json({ error: "conflict", message: "A user with this email already exists." }, 409);
+    }
+    if (pending.length > 0) {
+      return c.json({ error: "conflict", message: "A pending invitation for this email already exists." }, 409);
+    }
+
+    // Create invitation
+    const token = crypto.randomUUID();
+    const expiresAt = new Date(Date.now() + INVITE_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
+
+    try {
+      const rows = await internalQuery<{ id: string; created_at: string }>(
+        `INSERT INTO invitations (email, role, token, invited_by, expires_at)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id, created_at`,
+        [email, role, token, authResult.user?.id ?? null, expiresAt.toISOString()],
+      );
+
+      const invitation = rows[0];
+      if (!invitation) {
+        log.error({ email, role, requestId }, "INSERT RETURNING returned no rows");
+        return c.json({ error: "internal_error", message: "Failed to create invitation." }, 500);
+      }
+      const baseUrl = resolveBaseUrl(req);
+      const inviteUrl = `${baseUrl}/?invite=${token}`;
+
+      // Attempt email delivery via Resend if configured
+      let emailSent = false;
+      let emailError: string | undefined;
+      const resendKey = process.env.RESEND_API_KEY;
+      if (resendKey) {
+        try {
+          const fromAddr = process.env.ATLAS_EMAIL_FROM ?? "Atlas <noreply@useatlas.dev>";
+          const res = await fetch("https://api.resend.com/emails", {
+            method: "POST",
+            headers: { Authorization: `Bearer ${resendKey}`, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              from: fromAddr,
+              to: [email],
+              subject: "You've been invited to Atlas",
+              html: `<p>You've been invited to join Atlas as <strong>${role}</strong>.</p>
+<p><a href="${inviteUrl}">Accept invitation</a></p>
+<p>This invitation expires on ${expiresAt.toLocaleDateString()}.</p>
+<p>If you didn't expect this invitation, you can safely ignore this email.</p>`,
+            }),
+          });
+          emailSent = res.ok;
+          if (!res.ok) {
+            const errorBody = await res.text().catch(() => "");
+            emailError = `Delivery failed (HTTP ${res.status})`;
+            log.error({ status: res.status, email, responseBody: errorBody }, "Failed to send invite email via Resend");
+          }
+        } catch (err) {
+          emailError = err instanceof Error ? err.message : "Network error";
+          log.error({ err: err instanceof Error ? err.message : String(err), email }, "Resend email delivery failed");
+        }
+      }
+
+      log.info({
+        requestId,
+        invitationId: invitation.id,
+        email,
+        role,
+        emailSent,
+        actorId: authResult.user?.id,
+      }, "User invited");
+
+      return c.json({
+        id: invitation.id,
+        email,
+        role,
+        token,
+        inviteUrl,
+        emailSent,
+        ...(emailError ? { emailError } : {}),
+        expiresAt: expiresAt.toISOString(),
+        createdAt: invitation.created_at,
+      });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to create invitation");
+      return c.json({ error: "internal_error", message: "Failed to create invitation." }, 500);
+    }
+  });
+});
+
+// GET /users/invitations — list invitations
+admin.get("/users/invitations", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  if (!hasInternalDB() || detectAuthMode() !== "managed") {
+    return c.json({ error: "not_available", message: "User invitations require managed auth mode." }, 404);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const status = c.req.query("status");
+    const validStatuses = ["pending", "accepted", "revoked", "expired"];
+
+    try {
+      let sql = `SELECT id, email, role, status, invited_by, expires_at, accepted_at, created_at
+                 FROM invitations`;
+      const params: unknown[] = [];
+
+      if (status && validStatuses.includes(status)) {
+        if (status === "expired") {
+          // "expired" is a virtual status — pending invitations past their expiry
+          sql += ` WHERE status = 'pending' AND expires_at <= now()`;
+        } else {
+          sql += ` WHERE status = $1`;
+          params.push(status);
+        }
+      }
+
+      sql += ` ORDER BY created_at DESC LIMIT 100`;
+
+      const rows = await internalQuery<{
+        id: string;
+        email: string;
+        role: string;
+        status: string;
+        invited_by: string | null;
+        expires_at: string;
+        accepted_at: string | null;
+        created_at: string;
+      }>(sql, params);
+
+      // Mark expired invitations as expired in the response
+      const now = new Date();
+      const invitations = rows.map((inv) => ({
+        ...inv,
+        status: inv.status === "pending" && new Date(inv.expires_at) < now ? "expired" : inv.status,
+      }));
+
+      return c.json({ invitations });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to list invitations");
+      return c.json({ error: "internal_error", message: "Failed to list invitations." }, 500);
+    }
+  });
+});
+
+// DELETE /users/invitations/:id — revoke a pending invitation
+admin.delete("/users/invitations/:id", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  if (!hasInternalDB() || detectAuthMode() !== "managed") {
+    return c.json({ error: "not_available", message: "User invitations require managed auth mode." }, 404);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const invitationId = c.req.param("id");
+
+    try {
+      const result = await internalQuery<{ id: string }>(
+        `UPDATE invitations SET status = 'revoked' WHERE id = $1 AND status = 'pending' RETURNING id`,
+        [invitationId],
+      );
+
+      if (result.length === 0) {
+        return c.json({ error: "not_found", message: "Invitation not found or already resolved." }, 404);
+      }
+
+      log.info({ requestId, invitationId, actorId: authResult.user?.id }, "Invitation revoked");
+      return c.json({ success: true });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), invitationId }, "Failed to revoke invitation");
+      return c.json({ error: "internal_error", message: "Failed to revoke invitation." }, 500);
     }
   });
 });

@@ -180,6 +180,14 @@ Full user management with stats and controls:
 - **Revoke sessions** — Force logout across all devices
 - **Delete** — Permanently remove user and sessions
 
+**Invite users:**
+- **Invite user** button opens a dialog with email input and role selector
+- If `RESEND_API_KEY` is configured, an invitation email is sent automatically
+- If no email delivery is configured, the dialog shows a one-time invite link to copy and share manually
+- Invited users are assigned the selected role automatically on signup
+- **Pending invitations** section shows outstanding invitations with status (pending, accepted, expired, revoked) and expiry date
+- Admins can revoke pending invitations
+
 **Safety guards:**
 - Cannot change your own role
 - Cannot ban or delete yourself
@@ -223,3 +231,6 @@ All admin endpoints are at `/api/v1/admin/` and require the `admin` role. See th
 | `POST` | `/users/:id/unban` | Unban user |
 | `POST` | `/users/:id/revoke` | Revoke sessions |
 | `DELETE` | `/users/:id` | Delete user |
+| `POST` | `/users/invite` | Invite user by email |
+| `GET` | `/users/invitations` | List invitations |
+| `DELETE` | `/users/invitations/:id` | Revoke invitation |

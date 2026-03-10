@@ -50,6 +50,10 @@ if (scopeArgIdx !== -1) {
     console.error("--scope requires a value (e.g. @useatlas).");
     process.exit(1);
   }
+  if (!val.startsWith("@")) {
+    console.error(`Scope must start with @ (e.g. @useatlas). Got: "${val}"`);
+    process.exit(1);
+  }
   scopeFlag = val;
 }
 
@@ -725,6 +729,10 @@ async function main() {
 
   if (positionalArgs[0]) {
     pluginName = positionalArgs[0];
+    if (!/^[a-z0-9._-]+$/i.test(pluginName)) {
+      console.error("Plugin name can only contain letters, numbers, dots, hyphens, and underscores.");
+      process.exit(1);
+    }
     p.log.info(`Plugin name: ${pc.cyan(pluginName)}`);
   } else if (useDefaults) {
     pluginName = "my-atlas-plugin";
@@ -755,7 +763,11 @@ async function main() {
       initialValue: false,
     });
     if (p.isCancel(overwrite) || !overwrite) bail("Directory already exists.");
-    fs.rmSync(targetDir, { recursive: true });
+    try {
+      fs.rmSync(targetDir, { recursive: true });
+    } catch (err) {
+      bail(`Could not remove existing directory ${pluginName}: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   // ── 2. Plugin type ─────────────────────────────────────────────────
@@ -810,38 +822,45 @@ async function main() {
   const s = p.spinner();
   s.start("Creating plugin project...");
 
-  // Create directory structure
-  fs.mkdirSync(path.join(targetDir, "src"), { recursive: true });
-
-  // Write all files
-  fs.writeFileSync(
-    path.join(targetDir, "src", "index.ts"),
-    generatePluginSource(pluginName, pluginType)
-  );
-  fs.writeFileSync(
-    path.join(targetDir, "src", "index.test.ts"),
-    generateTestSource(pluginName, pluginType)
-  );
-  fs.writeFileSync(
-    path.join(targetDir, "package.json"),
-    generatePackageJson(pluginName, pluginType, scope)
-  );
-  fs.writeFileSync(
-    path.join(targetDir, "tsconfig.json"),
-    generateTsconfig()
-  );
-  fs.writeFileSync(
-    path.join(targetDir, "README.md"),
-    generateReadme(pluginName, pluginType, scope)
-  );
-  fs.writeFileSync(
-    path.join(targetDir, "LICENSE"),
-    generateLicense()
-  );
-  fs.writeFileSync(
-    path.join(targetDir, ".gitignore"),
-    generateGitignore()
-  );
+  try {
+    fs.mkdirSync(path.join(targetDir, "src"), { recursive: true });
+    fs.writeFileSync(
+      path.join(targetDir, "src", "index.ts"),
+      generatePluginSource(pluginName, pluginType)
+    );
+    fs.writeFileSync(
+      path.join(targetDir, "src", "index.test.ts"),
+      generateTestSource(pluginName, pluginType)
+    );
+    fs.writeFileSync(
+      path.join(targetDir, "package.json"),
+      generatePackageJson(pluginName, pluginType, scope)
+    );
+    fs.writeFileSync(
+      path.join(targetDir, "tsconfig.json"),
+      generateTsconfig()
+    );
+    fs.writeFileSync(
+      path.join(targetDir, "README.md"),
+      generateReadme(pluginName, pluginType, scope)
+    );
+    fs.writeFileSync(
+      path.join(targetDir, "LICENSE"),
+      generateLicense()
+    );
+    fs.writeFileSync(
+      path.join(targetDir, ".gitignore"),
+      generateGitignore()
+    );
+  } catch (err) {
+    s.stop("Failed to create plugin project.");
+    const detail = err instanceof Error ? err.message : String(err);
+    p.log.error(`Could not write project files: ${detail}`);
+    p.log.warn(
+      `Partial files may exist in ${pc.yellow(pluginName)}/. Remove the directory and try again.`
+    );
+    process.exit(1);
+  }
 
   s.stop("Plugin project created.");
 

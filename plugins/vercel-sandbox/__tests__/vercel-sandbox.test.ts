@@ -230,6 +230,32 @@ describe("sandbox.create / error handling", () => {
     }
   });
 
+  test("exec returns error result when runCommand throws", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const plugin = vercelSandboxPlugin({} as any);
+
+    const tmpDir = `/tmp/vercel-sandbox-test-${Date.now()}`;
+    const { mkdirSync, writeFileSync, rmSync } = await import("fs");
+    mkdirSync(tmpDir, { recursive: true });
+    writeFileSync(`${tmpDir}/test.yml`, "table: test\n");
+
+    try {
+      const backend = await plugin.sandbox.create(tmpDir);
+      // Make runCommand throw (simulating infrastructure error)
+      mockRunCommand.mockImplementation(() =>
+        Promise.reject(new Error("sandbox VM crashed")),
+      );
+      const result = await backend.exec("ls");
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("sandbox VM crashed");
+      expect(result.stdout).toBe("");
+      // Sandbox should NOT be stopped on exec error (close() handles cleanup)
+      expect(mockStop).not.toHaveBeenCalled();
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test("sandbox.create throws when no semantic files found", async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = vercelSandboxPlugin({} as any);

@@ -104,7 +104,7 @@ function collectSemanticFiles(
         try {
           const realPath = fs.realpathSync(localPath);
           if (!realPath.startsWith(localDir)) {
-            (logger ?? console).warn(`[e2b-sandbox] Skipping symlink escaping semantic root: ${localPath} -> ${realPath}`);
+            logger?.warn(`[e2b-sandbox] Skipping symlink escaping semantic root: ${localPath} -> ${realPath}`);
             continue;
           }
           const stat = fs.statSync(localPath);

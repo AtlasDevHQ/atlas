@@ -101,7 +101,14 @@ function collectSemanticFiles(
   const results: { path: string; content: Buffer }[] = [];
 
   function walk(dir: string, relative: string) {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (err) {
+      logger?.warn(`[daytona-sandbox] Skipping unreadable directory ${dir}: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    for (const entry of entries) {
       const localPath = path.join(dir, entry.name);
       const remotePath = `${relative}/${entry.name}`;
 

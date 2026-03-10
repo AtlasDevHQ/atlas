@@ -483,6 +483,15 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
     log.warn(msg);
   }
 
+  // 6.5. Connection encryption key check — only relevant when internal DB stores connection URLs
+  if (process.env.DATABASE_URL && !process.env.ATLAS_ENCRYPTION_KEY && !process.env.BETTER_AUTH_SECRET) {
+    const msg =
+      "No encryption key available for connection URLs. Set ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET " +
+      "to encrypt connection credentials at rest.";
+    if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
+    log.warn(msg);
+  }
+
   // 7. Action framework diagnostics
   if (process.env.ATLAS_ACTIONS_ENABLED === "true") {
     log.info("Action framework enabled");

@@ -186,8 +186,14 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getInternalDB: mock(() => ({})),
   closeInternalDB: mock(async () => {}),
   migrateInternalDB: mock(async () => {}),
+  loadSavedConnections: mock(async () => 0),
   _resetPool: mock(() => {}),
   _resetCircuitBreaker: mock(() => {}),
+  encryptUrl: (url: string) => url,
+  decryptUrl: (url: string) => url,
+  getEncryptionKey: () => null,
+  isPlaintextUrl: (value: string) => /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value),
+  _resetEncryptionKeyCache: mock(() => {}),
 }));
 
 const mockPluginHealthCheck: Mock<() => Promise<unknown>> = mock(() =>

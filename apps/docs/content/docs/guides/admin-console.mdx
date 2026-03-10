@@ -51,7 +51,7 @@ Click **Refresh** to re-run all health checks on demand.
 Lists all registered datasource connections with their database type, description, health status, and latency.
 
 **Actions:**
-- **Add connection** — Opens a form to register a new datasource (connection ID, database type, connection URL, optional schema and description). You can test the URL before saving
+- **Add connection** — Opens a form to register a new datasource (connection ID, database type, connection URL, and description). For PostgreSQL, an optional schema field is also available. You can test the URL before saving
 - **Edit connection** — Update URL, schema, or description for an existing connection (the default connection cannot be edited)
 - **Delete connection** — Remove a connection with a confirmation dialog (the default connection cannot be deleted)
 - **Test connection** — Runs a health check query against the datasource and reports latency and status
@@ -64,8 +64,8 @@ Lists all registered datasource connections with their database type, descriptio
 
 A two-panel browser for exploring the semantic layer:
 
-- **Left sidebar** -- File tree showing entities, metrics, glossary, and catalog
-- **Right panel** -- Detail view with a **Pretty** / **YAML** toggle
+- **Left sidebar** — File tree showing entities, metrics, glossary, and catalog
+- **Right panel** — Detail view with a **Pretty** / **YAML** toggle
 
 In **Pretty** mode, entities show parsed dimensions, joins, measures, and query patterns with formatted tables. In **YAML** mode, the raw YAML source is displayed with syntax highlighting.
 
@@ -85,8 +85,8 @@ Requires an internal database (`DATABASE_URL`). Without it, this page shows a fe
 
 Shows every SQL query executed by the agent with:
 
-- **Stats** -- Total queries, total errors, error rate
-- **Log table** -- Timestamp, user, SQL query, duration, row count, success/failure
+- **Stats** — Total queries, total errors, error rate
+- **Log table** — Timestamp, user, SQL query, duration, row count, success/failure
 
 **Filters:**
 - Date range (from/to)
@@ -106,9 +106,9 @@ Requires `ATLAS_ACTIONS_ENABLED=true`. Without it, this page shows a feature gat
 
 Lists action log entries with status filtering:
 
-- **Tabs** -- Pending, Executed, Denied, Failed, All
-- **Table** -- Timestamp, action type, target, summary, status badge
-- **Expandable rows** -- Full payload, timestamps, error details
+- **Tabs** — Pending, Executed, Denied, Failed, All
+- **Table** — Timestamp, action type, target, summary, status badge
+- **Expandable rows** — Full payload, timestamps, error details
 
 **Actions:**
 - **Approve** pending actions
@@ -158,15 +158,15 @@ Requires managed auth with the Better Auth admin plugin. Not available in simple
 
 Full user management with stats and controls:
 
-- **Stats** -- Total users, admins, analysts, viewers
-- **Search** -- Filter by email
-- **Role filter** -- Filter by role
+- **Stats** — Total users, admins, analysts, viewers
+- **Search** — Filter by email
+- **Role filter** — Filter by role
 
 **Actions (per user):**
-- **Change role** -- Set to viewer, analyst, or admin
-- **Ban/unban** -- Temporarily or permanently ban a user
-- **Revoke sessions** -- Force logout across all devices
-- **Delete** -- Permanently remove user and sessions
+- **Change role** — Set to viewer, analyst, or admin
+- **Ban/unban** — Temporarily or permanently ban a user
+- **Revoke sessions** — Force logout across all devices
+- **Delete** — Permanently remove user and sessions
 
 **Safety guards:**
 - Cannot change your own role

@@ -128,6 +128,24 @@ export function getAuthInstance(): AuthInstance {
                   return { data: { ...user, role: "admin" } };
                 }
               }
+
+              // Check for pending invitation and auto-assign the invited role
+              if (hasInternalDB() && user.email) {
+                const invitations = await internalQuery<{ id: string; role: string }>(
+                  `SELECT id, role FROM invitations WHERE email = $1 AND status = 'pending' AND expires_at > now() ORDER BY created_at DESC LIMIT 1`,
+                  [user.email.toLowerCase().trim()],
+                );
+                if (invitations.length > 0) {
+                  const inv = invitations[0];
+                  log.info({ email: user.email, role: inv.role, invitationId: inv.id }, "Invitation match: assigning invited role on signup");
+                  // Mark invitation as accepted (fire-and-forget)
+                  void internalQuery(
+                    `UPDATE invitations SET status = 'accepted', accepted_at = now() WHERE id = $1`,
+                    [inv.id],
+                  ).catch((err) => log.error({ err }, "Failed to mark invitation as accepted"));
+                  return { data: { ...user, role: inv.role } };
+                }
+              }
             } catch (err) {
               log.error({ err }, "Bootstrap admin check failed — defaulting to normal role assignment");
             }

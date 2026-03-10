@@ -12,6 +12,7 @@ const modulePath = resolve(__dirname, "../connection.ts");
 const mod = await import(`${modulePath}?t=${Date.now()}`);
 const detectDBType = mod.detectDBType as (url?: string) => "postgres" | "mysql";
 const resolveDatasourceUrl = mod.resolveDatasourceUrl as () => string | undefined;
+const ConnectionRegistry = mod.ConnectionRegistry as typeof import("../connection").ConnectionRegistry;
 
 // Env vars touched by tests — save/restore
 const MANAGED_VARS = [
@@ -140,5 +141,44 @@ describe("detectDBType", () => {
     expect(() => detectDBType("file:./data/test.db")).toThrow(
       "Unsupported database URL"
     );
+  });
+});
+
+describe("ConnectionRegistry.has()", () => {
+  it("returns false for unregistered connection", () => {
+    const registry = new ConnectionRegistry();
+    expect(registry.has("nonexistent")).toBe(false);
+    registry._reset();
+  });
+
+  it("returns true for registered connection", () => {
+    const registry = new ConnectionRegistry();
+    registry.registerDirect("test-conn", { query: async () => ({ columns: [], rows: [] }), close: async () => {} }, "postgres");
+    expect(registry.has("test-conn")).toBe(true);
+    registry._reset();
+  });
+});
+
+describe("ConnectionRegistry.unregister()", () => {
+  it("returns false for the default connection", () => {
+    const registry = new ConnectionRegistry();
+    registry.registerDirect("default", { query: async () => ({ columns: [], rows: [] }), close: async () => {} }, "postgres");
+    expect(registry.unregister("default")).toBe(false);
+    expect(registry.has("default")).toBe(true);
+    registry._reset();
+  });
+
+  it("returns false for nonexistent connection", () => {
+    const registry = new ConnectionRegistry();
+    expect(registry.unregister("nonexistent")).toBe(false);
+    registry._reset();
+  });
+
+  it("removes a registered connection and returns true", () => {
+    const registry = new ConnectionRegistry();
+    registry.registerDirect("warehouse", { query: async () => ({ columns: [], rows: [] }), close: async () => {} }, "postgres");
+    expect(registry.unregister("warehouse")).toBe(true);
+    expect(registry.has("warehouse")).toBe(false);
+    registry._reset();
   });
 });

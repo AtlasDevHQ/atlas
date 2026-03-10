@@ -404,6 +404,7 @@ export class ConnectionRegistry {
   }
 
   unregister(id: string): boolean {
+    if (id === "default") return false;
     const entry = this.entries.get(id);
     if (!entry) return false;
     entry.conn.close().catch((err) => {

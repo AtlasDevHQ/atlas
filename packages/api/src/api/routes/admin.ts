@@ -599,6 +599,61 @@ admin.get("/connections", async (c) => {
   });
 });
 
+// POST /connections/test — test a connection URL without persisting
+admin.post("/connections/test", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const body = await c.req.json().catch(() => null);
+    if (!body || typeof body !== "object") {
+      return c.json({ error: "invalid_request", message: "Request body is required." }, 400);
+    }
+
+    const { url, schema } = body as Record<string, unknown>;
+    if (!url || typeof url !== "string") {
+      return c.json({ error: "invalid_request", message: "Connection URL is required." }, 400);
+    }
+
+    let dbType: string;
+    try {
+      dbType = detectDBType(url);
+    } catch (err) {
+      return c.json({ error: "invalid_request", message: err instanceof Error ? err.message : "Unsupported database URL scheme." }, 400);
+    }
+
+    // Register a temporary connection, test it, then always clean up
+    const tempId = `_test_${Date.now()}`;
+    try {
+      connections.register(tempId, {
+        url,
+        description: undefined,
+        schema: typeof schema === "string" ? schema : undefined,
+      });
+      const result = await connections.healthCheck(tempId);
+      return c.json({ status: result.status, latencyMs: result.latencyMs, dbType });
+    } catch (err) {
+      return c.json({
+        error: "connection_failed",
+        message: `Connection test failed: ${err instanceof Error ? err.message : "Unknown error"}`,
+      }, 400);
+    } finally {
+      // _test_ prefix won't match the "default" guard — safe to force-delete
+      const entry = connections.has(tempId);
+      if (entry) {
+        // Use internal delete to bypass the default-connection guard (which won't trigger anyway for _test_ IDs)
+        connections.unregister(tempId);
+      }
+    }
+  });
+});
+
 // POST /connections/:id/test — health check a connection
 admin.post("/connections/:id/test", async (c) => {
   const req = c.req.raw;
@@ -803,20 +858,35 @@ admin.put("/connections/:id", async (c) => {
       }
     } else {
       // Re-register with updated metadata (no URL change — no need to test)
-      connections.register(id, {
-        url: newUrl,
-        description: newDescription ?? undefined,
-        schema: newSchema ?? undefined,
-      });
+      try {
+        connections.register(id, {
+          url: newUrl,
+          description: newDescription ?? undefined,
+          schema: newSchema ?? undefined,
+        });
+      } catch (err) {
+        log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Failed to re-register connection with updated metadata");
+        return c.json({ error: "internal_error", message: "Failed to update connection." }, 500);
+      }
     }
 
-    // Update in DB
+    // Update in DB — rollback registry on failure
     try {
       await internalQuery(
         `UPDATE connections SET url = $1, type = $2, description = $3, schema_name = $4, updated_at = NOW() WHERE id = $5`,
         [newUrl, dbType, newDescription, newSchema, id],
       );
     } catch (err) {
+      // Restore old connection in registry to stay in sync with DB
+      try {
+        connections.register(id, {
+          url: current.url,
+          description: current.description ?? undefined,
+          schema: current.schema_name ?? undefined,
+        });
+      } catch {
+        connections.unregister(id);
+      }
       log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Failed to update connection in DB");
       return c.json({ error: "internal_error", message: "Failed to update connection." }, 500);
     }
@@ -877,8 +947,9 @@ admin.delete("/connections/:id", async (c) => {
           message: `Cannot delete connection "${id}" — it is referenced by ${refCount} scheduled task(s). Remove or update those tasks first.`,
         }, 409);
       }
-    } catch {
-      // scheduled_tasks table might not exist — not a blocker
+    } catch (err) {
+      // scheduled_tasks table might not exist — not a blocker for delete
+      log.debug({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Could not check scheduled task references (table may not exist)");
     }
 
     // Remove from DB and registry

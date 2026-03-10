@@ -332,8 +332,8 @@ export async function loadSavedConnections(): Promise<number> {
     }
     return registered;
   } catch (err) {
-    // Table may not exist yet (pre-migration) — that's fine
-    log.debug(
+    // Table may not exist yet (pre-migration) — that's expected on first boot
+    log.warn(
       { err: err instanceof Error ? err.message : String(err) },
       "Could not load saved connections (table may not exist yet)",
     );

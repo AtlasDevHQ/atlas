@@ -165,40 +165,23 @@ function ConnectionFormDialog({
     setTesting(true);
     setTestResult(null);
     try {
-      if (isEdit) {
-        // For existing connections, use the test endpoint directly
-        const res = await fetch(
-          `${apiUrl}/api/v1/admin/connections/${encodeURIComponent(editId!)}/test`,
-          { method: "POST", credentials }
-        );
-        if (!res.ok) throw new Error(`Test failed (HTTP ${res.status})`);
-        const result = await res.json();
+      // Use the dedicated test endpoint — works for both new and edit flows
+      const res = await fetch(`${apiUrl}/api/v1/admin/connections/test`, {
+        method: "POST",
+        credentials,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url, schema: schema || undefined }),
+      });
+      const data = await res.json().catch(() => ({ message: `HTTP ${res.status}` }));
+      if (res.ok) {
         setTestResult({
-          ok: result.status === "healthy",
-          message: result.status === "healthy"
-            ? `Connected (${result.latencyMs}ms)`
-            : result.message || "Connection unhealthy",
+          ok: data.status === "healthy",
+          message: data.status === "healthy"
+            ? `Connected (${data.latencyMs}ms)`
+            : data.message || "Connection unhealthy",
         });
       } else {
-        // For new connections, create a temp connection to test, then clean up
-        const testId = `_test_${Date.now()}`;
-        const res = await fetch(`${apiUrl}/api/v1/admin/connections`, {
-          method: "POST",
-          credentials,
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: testId, url, schema: schema || undefined }),
-        });
-        if (res.ok) {
-          // Clean up the temp connection
-          await fetch(
-            `${apiUrl}/api/v1/admin/connections/${encodeURIComponent(testId)}`,
-            { method: "DELETE", credentials }
-          ).catch(() => {});
-          setTestResult({ ok: true, message: "Connection successful!" });
-        } else {
-          const data = await res.json().catch(() => ({ message: `HTTP ${res.status}` }));
-          setTestResult({ ok: false, message: data.message || `Test failed (HTTP ${res.status})` });
-        }
+        setTestResult({ ok: false, message: data.message || `Test failed (HTTP ${res.status})` });
       }
     } catch (err) {
       setTestResult({ ok: false, message: err instanceof Error ? err.message : "Network error" });
@@ -216,10 +199,6 @@ function ConnectionFormDialog({
       onError("Connection URL is required.");
       return;
     }
-    if (isEdit && !url && !description && !schema) {
-      // Nothing to change — if no URL provided in edit mode, only update metadata
-    }
-
     setSaving(true);
     try {
       const endpoint = isEdit
@@ -382,7 +361,7 @@ function ConnectionFormDialog({
           <Button
             variant="outline"
             onClick={handleTest}
-            disabled={testing || (!url && !isEdit)}
+            disabled={testing || !url}
           >
             {testing ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
             Test

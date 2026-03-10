@@ -38,8 +38,8 @@ import {
   parseSnowflakeURL,
   extractAccount,
   SNOWFLAKE_FORBIDDEN_PATTERNS,
-} from "../index";
-import { createSnowflakeConnection } from "../connection";
+} from "../src/index";
+import { createSnowflakeConnection } from "../src/connection";
 
 beforeEach(() => {
   mockExecute.mockClear();

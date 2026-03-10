@@ -29,7 +29,7 @@ mock.module("e2b", () => ({
 // ---------------------------------------------------------------------------
 
 import { definePlugin, isSandboxPlugin } from "@useatlas/plugin-sdk";
-import { e2bSandboxPlugin, buildE2BSandboxPlugin } from "../index";
+import { e2bSandboxPlugin, buildE2BSandboxPlugin } from "../src/index";
 
 // Zod defaults make timeoutSec required in the output type but optional at
 // runtime. Tests that rely on defaults use `as any`.

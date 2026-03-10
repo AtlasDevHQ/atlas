@@ -1,22 +1,53 @@
 {
   "name": "@useatlas/mcp",
-  "version": "0.1.0",
-  "private": false,
+  "private": true,
+  "version": "0.0.1",
+  "description": "Atlas MCP interaction plugin — monorepo-only (depends on unpublished @atlas/mcp)",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "files": [
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "test": "bun test __tests__/plugin.test.ts"
   },
-  "dependencies": {
-    "@useatlas/plugin-sdk": "workspace:*"
+  "keywords": [
+    "atlas",
+    "text-to-sql",
+    "plugin",
+    "interaction",
+    "mcp"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AtlasDevHQ/atlas",
+    "directory": "plugins/mcp"
   },
+  "homepage": "https://docs.useatlas.dev",
+  "bugs": {
+    "url": "https://github.com/AtlasDevHQ/atlas/issues"
+  },
+  "license": "MIT",
   "peerDependencies": {
     "@atlas/mcp": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.27.1",
-    "zod": "^4.3.6"
+    "zod": "^4.0.0",
+    "@useatlas/plugin-sdk": ">=0.0.1"
   },
   "devDependencies": {
     "@atlas/mcp": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "hono": "^4.12.3",
-    "zod": "^4.3.6"
+    "zod": "^4.3.6",
+    "@useatlas/plugin-sdk": "workspace:*"
   }
 }

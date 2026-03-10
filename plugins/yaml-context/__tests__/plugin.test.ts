@@ -10,7 +10,7 @@ import {
   readGlossaryTerms,
   readMetricSummaries,
   buildContextString,
-} from "../index";
+} from "../src/index";
 
 // ---------------------------------------------------------------------------
 // Test fixtures — temporary semantic directory

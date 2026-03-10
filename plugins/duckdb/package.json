@@ -1,24 +1,54 @@
 {
   "name": "@useatlas/duckdb",
-  "version": "0.1.0",
-  "private": false,
+  "version": "0.0.1",
+  "description": "Atlas DuckDB datasource plugin",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "files": [
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "test": "bun test __tests__/duckdb.test.ts && bun test __tests__/url-parser.test.ts"
   },
-  "dependencies": {
-    "@useatlas/plugin-sdk": "workspace:*"
+  "keywords": [
+    "atlas",
+    "text-to-sql",
+    "plugin",
+    "datasource",
+    "duckdb"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AtlasDevHQ/atlas",
+    "directory": "plugins/duckdb"
   },
+  "homepage": "https://docs.useatlas.dev",
+  "bugs": {
+    "url": "https://github.com/AtlasDevHQ/atlas/issues"
+  },
+  "license": "MIT",
   "peerDependencies": {
-    "@duckdb/node-api": "^1.4.4-r.1"
+    "@duckdb/node-api": "^1.4.4-r.1",
+    "@useatlas/plugin-sdk": ">=0.0.1"
+  },
+  "devDependencies": {
+    "ai": "^6.0.97",
+    "hono": "^4.12.3",
+    "zod": "^4.3.6",
+    "@useatlas/plugin-sdk": "workspace:*"
   },
   "peerDependenciesMeta": {
     "@duckdb/node-api": {
       "optional": true
     }
-  },
-  "devDependencies": {
-    "ai": "^6.0.97",
-    "hono": "^4.12.3",
-    "zod": "^4.3.6"
   }
 }

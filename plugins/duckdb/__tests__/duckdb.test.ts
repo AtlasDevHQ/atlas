@@ -36,8 +36,8 @@ import {
   buildDuckDBPlugin,
   parseDuckDBUrl,
   DUCKDB_FORBIDDEN_PATTERNS,
-} from "../index";
-import { createDuckDBConnection } from "../connection";
+} from "../src/index";
+import { createDuckDBConnection } from "../src/connection";
 
 beforeEach(() => {
   mockColumnNames.mockClear();

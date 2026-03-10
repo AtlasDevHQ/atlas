@@ -1067,7 +1067,7 @@ async function createSnowflakePool(connectionString: string, max = 1) {
   const snowflake = require("snowflake-sdk") as typeof import("snowflake-sdk");
   snowflake.configure({ logLevel: "ERROR" });
 
-  const { parseSnowflakeURL } = await import("../../../plugins/snowflake/connection");
+  const { parseSnowflakeURL } = await import("../../../plugins/snowflake/src/connection");
   const opts = parseSnowflakeURL(connectionString);
 
   const pool = snowflake.createPool(
@@ -1402,7 +1402,7 @@ function mapSalesforceFieldType(sfType: string): string {
 }
 
 export async function listSalesforceObjects(connectionString: string): Promise<DatabaseObject[]> {
-  const { parseSalesforceURL, createSalesforceConnection } = await import("../../../plugins/salesforce/connection");
+  const { parseSalesforceURL, createSalesforceConnection } = await import("../../../plugins/salesforce/src/connection");
   const config = parseSalesforceURL(connectionString);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const source: any = createSalesforceConnection(config);
@@ -1422,7 +1422,7 @@ export async function profileSalesforce(
   filterTables?: string[],
   prefetchedObjects?: DatabaseObject[],
 ): Promise<TableProfile[]> {
-  const { parseSalesforceURL, createSalesforceConnection } = await import("../../../plugins/salesforce/connection");
+  const { parseSalesforceURL, createSalesforceConnection } = await import("../../../plugins/salesforce/src/connection");
   const config = parseSalesforceURL(connectionString);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const source: any = createSalesforceConnection(config);
@@ -3925,7 +3925,7 @@ async function handleDiff(args: string[]): Promise<void> {
       }
     }
   } else if (dbType === "salesforce") {
-    const { parseSalesforceURL, createSalesforceConnection } = await import("../../../plugins/salesforce/connection");
+    const { parseSalesforceURL, createSalesforceConnection } = await import("../../../plugins/salesforce/src/connection");
     const config = parseSalesforceURL(connStr);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const source: any = createSalesforceConnection(config);
@@ -3985,7 +3985,7 @@ async function handleDiff(args: string[]): Promise<void> {
         profiles = await profileSnowflake(connStr, filterTables);
         break;
       case "duckdb": {
-        const { parseDuckDBUrl } = await import("../../../plugins/duckdb/connection");
+        const { parseDuckDBUrl } = await import("../../../plugins/duckdb/src/connection");
         const duckConfig = parseDuckDBUrl(connStr);
         profiles = await profileDuckDB(duckConfig.path, filterTables);
         break;
@@ -4171,7 +4171,7 @@ async function profileDatasource(opts: ProfileDatasourceOpts): Promise<void> {
     }
   } else if (dbType === "duckdb") {
     try {
-      const { parseDuckDBUrl } = await import("../../../plugins/duckdb/connection");
+      const { parseDuckDBUrl } = await import("../../../plugins/duckdb/src/connection");
       const duckConfig = parseDuckDBUrl(connStr);
       const DuckDBInstance = await loadDuckDB();
       const testInstance = await DuckDBInstance.create(duckConfig.path, { access_mode: "READ_ONLY" });
@@ -4191,7 +4191,7 @@ async function profileDatasource(opts: ProfileDatasourceOpts): Promise<void> {
       process.exit(1);
     }
   } else if (dbType === "salesforce") {
-    const { parseSalesforceURL, createSalesforceConnection } = await import("../../../plugins/salesforce/connection");
+    const { parseSalesforceURL, createSalesforceConnection } = await import("../../../plugins/salesforce/src/connection");
     const config = parseSalesforceURL(connStr);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const source: any = createSalesforceConnection(config);
@@ -4244,7 +4244,7 @@ async function profileDatasource(opts: ProfileDatasourceOpts): Promise<void> {
           allObjects = await listSnowflakeObjects(connStr);
           break;
         case "duckdb": {
-          const { parseDuckDBUrl } = await import("../../../plugins/duckdb/connection");
+          const { parseDuckDBUrl } = await import("../../../plugins/duckdb/src/connection");
           const duckConfig = parseDuckDBUrl(connStr);
           allObjects = await listDuckDBObjects(duckConfig.path);
           break;
@@ -4313,7 +4313,7 @@ async function profileDatasource(opts: ProfileDatasourceOpts): Promise<void> {
       profiles = await profileSnowflake(connStr, selectedTables, prefetchedObjects);
       break;
     case "duckdb": {
-      const { parseDuckDBUrl } = await import("../../../plugins/duckdb/connection");
+      const { parseDuckDBUrl } = await import("../../../plugins/duckdb/src/connection");
       const duckConfig = parseDuckDBUrl(connStr);
       profiles = await profileDuckDB(duckConfig.path, selectedTables, prefetchedObjects);
       break;

@@ -35,7 +35,7 @@ import {
   buildVercelSandboxPlugin,
   sandboxErrorDetail,
   collectSemanticFiles,
-} from "../index";
+} from "../src/index";
 
 // ---------------------------------------------------------------------------
 // Config validation

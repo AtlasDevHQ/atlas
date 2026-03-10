@@ -6,6 +6,26 @@ on:
       - 'create-v*'
       - 'sdk-v*'
       - 'plugin-sdk-v*'
+      # Plugins — datasource
+      - 'clickhouse-v*'
+      - 'snowflake-v*'
+      - 'duckdb-v*'
+      - 'mysql-v*'
+      - 'salesforce-v*'
+      # Plugins — sandbox
+      - 'e2b-v*'
+      - 'daytona-v*'
+      - 'nsjail-v*'
+      - 'sidecar-v*'
+      - 'vercel-sandbox-v*'
+      # Plugins — interaction
+      - 'slack-v*'
+      # mcp-v* excluded — @useatlas/mcp depends on unpublished @atlas/mcp
+      # Plugins — action
+      - 'email-v*'
+      - 'jira-v*'
+      # Plugins — context
+      - 'yaml-context-v*'
 
 permissions:
   id-token: write
@@ -40,3 +60,66 @@ jobs:
       - name: Build, test, and publish @useatlas/plugin-sdk
         if: startsWith(github.ref, 'refs/tags/plugin-sdk-v')
         run: cd packages/plugin-sdk && bun run build && bun run test && npm publish --access public
+
+      # Plugins — datasource
+      - name: Test and publish @useatlas/clickhouse
+        if: startsWith(github.ref, 'refs/tags/clickhouse-v')
+        run: cd plugins/clickhouse && bun run test && npm publish --access public
+
+      - name: Test and publish @useatlas/snowflake
+        if: startsWith(github.ref, 'refs/tags/snowflake-v')
+        run: cd plugins/snowflake && bun run test && npm publish --access public
+
+      - name: Test and publish @useatlas/duckdb
+        if: startsWith(github.ref, 'refs/tags/duckdb-v')
+        run: cd plugins/duckdb && bun run test && npm publish --access public
+
+      - name: Test and publish @useatlas/mysql
+        if: startsWith(github.ref, 'refs/tags/mysql-v')
+        run: cd plugins/mysql && bun run test && npm publish --access public
+
+      - name: Test and publish @useatlas/salesforce
+        if: startsWith(github.ref, 'refs/tags/salesforce-v')
+        run: cd plugins/salesforce && bun run test && npm publish --access public
+
+      # Plugins — sandbox
+      - name: Test and publish @useatlas/e2b
+        if: startsWith(github.ref, 'refs/tags/e2b-v')
+        run: cd plugins/e2b && bun run test && npm publish --access public
+
+      - name: Test and publish @useatlas/daytona
+        if: startsWith(github.ref, 'refs/tags/daytona-v')
+        run: cd plugins/daytona && bun run test && npm publish --access public
+
+      - name: Test and publish @useatlas/nsjail
+        if: startsWith(github.ref, 'refs/tags/nsjail-v')
+        run: cd plugins/nsjail && bun run test && npm publish --access public
+
+      - name: Test and publish @useatlas/sidecar
+        if: startsWith(github.ref, 'refs/tags/sidecar-v')
+        run: cd plugins/sidecar && bun run test && npm publish --access public
+
+      - name: Test and publish @useatlas/vercel-sandbox
+        if: startsWith(github.ref, 'refs/tags/vercel-sandbox-v')
+        run: cd plugins/vercel-sandbox && bun run test && npm publish --access public
+
+      # Plugins — interaction
+      - name: Test and publish @useatlas/slack
+        if: startsWith(github.ref, 'refs/tags/slack-v')
+        run: cd plugins/slack && bun run test && npm publish --access public
+
+      # @useatlas/mcp excluded — depends on unpublished @atlas/mcp (see #128)
+
+      # Plugins — action
+      - name: Test and publish @useatlas/email
+        if: startsWith(github.ref, 'refs/tags/email-v')
+        run: cd plugins/email && bun run test && npm publish --access public
+
+      - name: Test and publish @useatlas/jira
+        if: startsWith(github.ref, 'refs/tags/jira-v')
+        run: cd plugins/jira && bun run test && npm publish --access public
+
+      # Plugins — context
+      - name: Test and publish @useatlas/yaml-context
+        if: startsWith(github.ref, 'refs/tags/yaml-context-v')
+        run: cd plugins/yaml-context && bun run test && npm publish --access public

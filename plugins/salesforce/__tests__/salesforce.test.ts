@@ -69,8 +69,8 @@ import {
   SOQL_FORBIDDEN_PATTERNS,
   SENSITIVE_PATTERNS,
   createQuerySalesforceTool,
-} from "../index";
-import { createSalesforceConnection } from "../connection";
+} from "../src/index";
+import { createSalesforceConnection } from "../src/connection";
 
 const VALID_URL = "salesforce://user:pass@login.salesforce.com?token=TOKEN";
 

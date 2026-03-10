@@ -36,7 +36,7 @@ import {
   ChevronRight,
   Database,
   Globe,
-  FileEdit,
+  FilePenLine,
   Terminal,
   MessageSquare,
   CheckCheck,
@@ -87,8 +87,8 @@ const ACTION_TYPE_ICONS: Record<string, typeof Database> = {
   sql: Database,
   api_call: Globe,
   api: Globe,
-  file_write: FileEdit,
-  file: FileEdit,
+  file_write: FilePenLine,
+  file: FilePenLine,
   shell: Terminal,
   command: Terminal,
 };
@@ -121,6 +121,17 @@ function relativeTime(iso: string): string {
   return RTF.format(Math.round(diffMs / 86400000), "day");
 }
 
+function RelativeTimestamp({ iso, label }: { iso: string; label?: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span>{label ? `${label}: ` : ""}{relativeTime(iso)}</span>
+      </TooltipTrigger>
+      <TooltipContent>{absoluteTimestamp(iso)}</TooltipContent>
+    </Tooltip>
+  );
+}
+
 function ActionTypeIcon({ type }: { type: string }) {
   const Icon = ACTION_TYPE_ICONS[type.toLowerCase()] ?? Zap;
   return <Icon className="size-3.5" />;
@@ -149,8 +160,9 @@ export default function ActionsPage() {
 
   const [refetchKey, setRefetchKey] = useState(0);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [bulkApproving, setBulkApproving] = useState(false);
-  const [bulkDenying, setBulkDenying] = useState(false);
+  const [bulkAction, setBulkAction] = useState<"approve" | "deny" | null>(null);
+
+  const bulkInProgress = bulkAction !== null;
 
   // Clear selection when filter changes
   useEffect(() => {
@@ -200,8 +212,7 @@ export default function ActionsPage() {
   }
 
   const pendingActions = actions.filter((a) => a.status === "pending");
-  const selectableIds = new Set(pendingActions.map((a) => a.id));
-  const allSelectableSelected = selectableIds.size > 0 && [...selectableIds].every((id) => selectedIds.has(id));
+  const allSelectableSelected = pendingActions.length > 0 && pendingActions.every((a) => selectedIds.has(a.id));
   const someSelected = selectedIds.size > 0;
 
   function toggleSelect(id: string) {
@@ -217,7 +228,7 @@ export default function ActionsPage() {
     if (allSelectableSelected) {
       setSelectedIds(new Set());
     } else {
-      setSelectedIds(new Set(selectableIds));
+      setSelectedIds(new Set(pendingActions.map((a) => a.id)));
     }
   }
 
@@ -259,52 +270,49 @@ export default function ActionsPage() {
     }
   }
 
-  async function handleBulkApprove() {
+  async function handleBulkAction(action: "approve" | "deny") {
     if (selectedIds.size === 0) return;
-    setBulkApproving(true);
+    setBulkAction(action);
     setMutationError(null);
     const ids = [...selectedIds];
-    const results = await Promise.allSettled(
-      ids.map((id) =>
-        fetch(`${apiUrl}/api/v1/actions/${id}/approve`, {
-          credentials,
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({}),
-        }).then((res) => {
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        }),
-      ),
-    );
-    const failed = results.filter((r) => r.status === "rejected").length;
-    if (failed > 0) setMutationError(`${failed} of ${ids.length} approvals failed`);
-    setSelectedIds(new Set());
-    setBulkApproving(false);
-    setRefetchKey((k) => k + 1);
-  }
-
-  async function handleBulkDeny() {
-    if (selectedIds.size === 0) return;
-    setBulkDenying(true);
-    setMutationError(null);
-    const ids = [...selectedIds];
-    const results = await Promise.allSettled(
-      ids.map((id) =>
-        fetch(`${apiUrl}/api/v1/actions/${id}/deny`, {
-          credentials,
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ reason: "Bulk denied by admin" }),
-        }).then((res) => {
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        }),
-      ),
-    );
-    const failed = results.filter((r) => r.status === "rejected").length;
-    if (failed > 0) setMutationError(`${failed} of ${ids.length} denials failed`);
-    setSelectedIds(new Set());
-    setBulkDenying(false);
-    setRefetchKey((k) => k + 1);
+    const endpoint = action === "approve" ? "approve" : "deny";
+    const body = action === "approve" ? {} : { reason: "Bulk denied by admin" };
+    const noun = action === "approve" ? "approvals" : "denials";
+    try {
+      const results = await Promise.allSettled(
+        ids.map((id) =>
+          fetch(`${apiUrl}/api/v1/actions/${id}/${endpoint}`, {
+            credentials,
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          }).then((res) => {
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          }),
+        ),
+      );
+      const failedIds = new Set(
+        results
+          .map((r, i) => (r.status === "rejected" ? ids[i] : null))
+          .filter((id): id is string => id !== null),
+      );
+      if (failedIds.size > 0) {
+        const reasons = [...new Set(
+          results
+            .filter((r): r is PromiseRejectedResult => r.status === "rejected")
+            .map((r) => (r.reason instanceof Error ? r.reason.message : "Unknown error")),
+        )];
+        setMutationError(`${failedIds.size} of ${ids.length} ${noun} failed: ${reasons.join(", ")}`);
+        setSelectedIds(failedIds);
+      } else {
+        setSelectedIds(new Set());
+      }
+      setRefetchKey((k) => k + 1);
+    } catch (err) {
+      setMutationError(err instanceof Error ? err.message : `Bulk ${action} failed`);
+    } finally {
+      setBulkAction(null);
+    }
   }
 
   return (
@@ -342,10 +350,10 @@ export default function ActionsPage() {
               <Button
                 size="sm"
                 variant="default"
-                disabled={bulkApproving}
-                onClick={handleBulkApprove}
+                disabled={bulkInProgress}
+                onClick={() => handleBulkAction("approve")}
               >
-                {bulkApproving ? (
+                {bulkAction === "approve" ? (
                   <Loader2 className="mr-1 size-4 animate-spin" />
                 ) : (
                   <CheckCheck className="mr-1 size-4" />
@@ -355,10 +363,10 @@ export default function ActionsPage() {
               <Button
                 size="sm"
                 variant="destructive"
-                disabled={bulkDenying}
-                onClick={handleBulkDeny}
+                disabled={bulkInProgress}
+                onClick={() => handleBulkAction("deny")}
               >
-                {bulkDenying ? (
+                {bulkAction === "deny" ? (
                   <Loader2 className="mr-1 size-4 animate-spin" />
                 ) : (
                   <XCircle className="mr-1 size-4" />
@@ -391,7 +399,7 @@ export default function ActionsPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-10 pl-4">
-                    {selectableIds.size > 0 && (
+                    {pendingActions.length > 0 && (
                       <Checkbox
                         checked={allSelectableSelected}
                         onCheckedChange={toggleSelectAll}
@@ -439,14 +447,7 @@ export default function ActionsPage() {
                           )}
                         </TableCell>
                         <TableCell className="whitespace-nowrap text-sm">
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <span>{relativeTime(action.requested_at)}</span>
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              {absoluteTimestamp(action.requested_at)}
-                            </TooltipContent>
-                          </Tooltip>
+                          <RelativeTimestamp iso={action.requested_at} />
                         </TableCell>
                         <TableCell>
                           <Badge variant="outline" className="gap-1">
@@ -470,7 +471,7 @@ export default function ActionsPage() {
                               <Button
                                 size="sm"
                                 variant="ghost"
-                                disabled={approving.has(action.id)}
+                                disabled={approving.has(action.id) || bulkInProgress}
                                 onClick={() => handleApprove(action.id)}
                               >
                                 {approving.has(action.id) ? (
@@ -482,7 +483,7 @@ export default function ActionsPage() {
                               <Button
                                 size="sm"
                                 variant="ghost"
-                                disabled={denying.has(action.id)}
+                                disabled={denying.has(action.id) || bulkInProgress}
                                 onClick={() => handleDeny(action.id)}
                               >
                                 {denying.has(action.id) ? (
@@ -510,33 +511,12 @@ export default function ActionsPage() {
                                 </pre>
                               </div>
                               <div className="flex flex-wrap gap-x-6 gap-y-1 text-muted-foreground">
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <span>Requested: {relativeTime(action.requested_at)}</span>
-                                  </TooltipTrigger>
-                                  <TooltipContent>
-                                    {absoluteTimestamp(action.requested_at)}
-                                  </TooltipContent>
-                                </Tooltip>
+                                <RelativeTimestamp iso={action.requested_at} label="Requested" />
                                 {action.resolved_at && (
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <span>Resolved: {relativeTime(action.resolved_at)}</span>
-                                    </TooltipTrigger>
-                                    <TooltipContent>
-                                      {absoluteTimestamp(action.resolved_at)}
-                                    </TooltipContent>
-                                  </Tooltip>
+                                  <RelativeTimestamp iso={action.resolved_at} label="Resolved" />
                                 )}
                                 {action.executed_at && (
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <span>Executed: {relativeTime(action.executed_at)}</span>
-                                    </TooltipTrigger>
-                                    <TooltipContent>
-                                      {absoluteTimestamp(action.executed_at)}
-                                    </TooltipContent>
-                                  </Tooltip>
+                                  <RelativeTimestamp iso={action.executed_at} label="Executed" />
                                 )}
                               </div>
                               {action.conversation_id && (
@@ -561,7 +541,7 @@ export default function ActionsPage() {
                                 <div className="flex gap-2 pt-2">
                                   <Button
                                     size="sm"
-                                    disabled={approving.has(action.id)}
+                                    disabled={approving.has(action.id) || bulkInProgress}
                                     onClick={() => handleApprove(action.id)}
                                   >
                                     {approving.has(action.id) ? (
@@ -574,7 +554,7 @@ export default function ActionsPage() {
                                   <Button
                                     size="sm"
                                     variant="destructive"
-                                    disabled={denying.has(action.id)}
+                                    disabled={denying.has(action.id) || bulkInProgress}
                                     onClick={() => handleDeny(action.id)}
                                   >
                                     {denying.has(action.id) ? (

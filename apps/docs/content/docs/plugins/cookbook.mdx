@@ -401,7 +401,7 @@ Log every query with its results and duration:
 
 ```typescript
 import { definePlugin } from "@useatlas/plugin-sdk";
-import type { AtlasPluginContext, PluginLogger } from "@useatlas/plugin-sdk";
+import type { AtlasPluginContext } from "@useatlas/plugin-sdk";
 
 export default definePlugin({
   id: "audit-logger",
@@ -510,7 +510,8 @@ export default definePlugin({
     beforeQuery: [{
       handler: (ctx) => {
         // Simple approach: wrap the original query in a CTE with a filter.
-        // For production use, consider a proper SQL AST rewriter.
+        // WARNING: This uses string interpolation for brevity. In production,
+        // use a SQL AST rewriter or parameterized approach to avoid injection risks.
         const wrapped = `WITH _original AS (${ctx.sql}) SELECT * FROM _original WHERE tenant_id = '${TENANT_ID}'`;
         return { sql: wrapped };
       },
@@ -562,9 +563,9 @@ export default definePlugin({
 });
 ```
 
-### Data Masking in Results
+### Data Masking via `beforeQuery`
 
-Redact sensitive columns in query results before they reach the user:
+Mask sensitive columns by rewriting the SQL to replace them with redacted values at the database level:
 
 ```typescript
 import { definePlugin } from "@useatlas/plugin-sdk";
@@ -577,23 +578,28 @@ export default definePlugin({
   version: "1.0.0",
 
   contextProvider: {
-    async load() { return ""; },
+    async load() {
+      return [
+        "## Data Masking",
+        "The following columns are redacted in query results: email, phone, ssn, credit_card.",
+        "Do not SELECT these columns directly — they will appear as '***REDACTED***'.",
+      ].join("\n");
+    },
   },
 
   hooks: {
-    afterQuery: [{
+    beforeQuery: [{
       handler: (ctx) => {
-        const columnsToMask = ctx.result.columns.filter((c) =>
-          MASKED_COLUMNS.has(c.toLowerCase()),
-        );
-        if (columnsToMask.length === 0) return;
-
-        for (const row of ctx.result.rows) {
-          for (const col of columnsToMask) {
-            if (row[col] != null) {
-              row[col] = "***REDACTED***";
-            }
-          }
+        // Replace masked column references with redacted literals.
+        // This is a simplified regex approach — for production use,
+        // consider a SQL AST rewriter for reliable column detection.
+        let rewritten = ctx.sql;
+        for (const col of MASKED_COLUMNS) {
+          const pattern = new RegExp(`\\b${col}\\b`, "gi");
+          rewritten = rewritten.replace(pattern, `'***REDACTED***' AS ${col}`);
+        }
+        if (rewritten !== ctx.sql) {
+          return { sql: rewritten };
         }
       },
     }],
@@ -601,9 +607,13 @@ export default definePlugin({
 });
 ```
 
-### Request Authentication via `onRequest`
+<Callout type="info">
+This uses `beforeQuery` (a mutable hook) to rewrite SQL before execution, rather than mutating results after the fact. The regex approach is simplified — for production, use a SQL AST parser to reliably detect column references vs string literals.
+</Callout>
 
-Validate custom headers on incoming HTTP requests:
+### Request Observation via `onRequest`
+
+Log or monitor incoming HTTP requests. Note that `onRequest` hooks are observation-only — they cannot block or modify requests:
 
 ```typescript
 import { definePlugin } from "@useatlas/plugin-sdk";
@@ -791,11 +801,15 @@ export const dynamicPlugin = createPlugin<DynamicConfig, AtlasDatasourcePlugin<D
       entities: async (): Promise<PluginEntity[]> => {
         const conn = createConnectionFromUrl(config.url);
         try {
+          // Escape the schema name to prevent injection.
+          // PluginDBConnection.query() doesn't support parameterized queries,
+          // so validate the input or use your driver's parameterized API directly.
+          const safeSchema = config.schema.replace(/'/g, "''");
           const result = await conn.query(
             `SELECT table_name, obj_description((quote_ident(table_schema) || '.' || quote_ident(table_name))::regclass)
                AS description
              FROM information_schema.tables
-             WHERE table_schema = '${config.schema}' AND table_type = 'BASE TABLE'`,
+             WHERE table_schema = '${safeSchema}' AND table_type = 'BASE TABLE'`,
           );
 
           return result.rows.map((row) => ({

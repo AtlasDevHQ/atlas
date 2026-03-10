@@ -239,12 +239,19 @@ export function buildE2BSandboxPlugin(
     async healthCheck(): Promise<PluginHealthResult> {
       const start = performance.now();
       try {
-        const sandbox = await createE2BSandbox(config);
-        await sandbox.kill();
-        return {
-          healthy: true,
-          latencyMs: Math.round(performance.now() - start),
-        };
+        const result = await Promise.race([
+          (async () => {
+            const sandbox = await createE2BSandbox(config);
+            await sandbox.kill();
+            return "ok" as const;
+          })(),
+          new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 30_000)),
+        ]);
+        const latencyMs = Math.round(performance.now() - start);
+        if (result === "timeout") {
+          return { healthy: false, message: "Health check timed out after 30000ms", latencyMs };
+        }
+        return { healthy: true, latencyMs };
       } catch (err) {
         return {
           healthy: false,

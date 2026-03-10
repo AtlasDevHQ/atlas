@@ -272,12 +272,14 @@ export function buildContextYamlPlugin(
     },
 
     async healthCheck(): Promise<PluginHealthResult> {
+      const start = performance.now();
       const entitiesDir = path.join(semanticDir, "entities");
 
       if (!fs.existsSync(semanticDir)) {
         return {
           healthy: false,
           message: `Semantic directory not found: ${semanticDir}`,
+          latencyMs: Math.round(performance.now() - start),
         };
       }
 
@@ -285,6 +287,7 @@ export function buildContextYamlPlugin(
         return {
           healthy: false,
           message: `Entities directory not found: ${entitiesDir}`,
+          latencyMs: Math.round(performance.now() - start),
         };
       }
 
@@ -292,17 +295,20 @@ export function buildContextYamlPlugin(
         const files = fs
           .readdirSync(entitiesDir)
           .filter((f) => f.endsWith(".yml"));
+        const latencyMs = Math.round(performance.now() - start);
         if (files.length === 0) {
           return {
             healthy: false,
             message: "No entity YAML files found in entities directory",
+            latencyMs,
           };
         }
-        return { healthy: true, message: `${files.length} entity file(s) found` };
+        return { healthy: true, message: `${files.length} entity file(s) found`, latencyMs };
       } catch (err) {
         return {
           healthy: false,
           message: err instanceof Error ? err.message : String(err),
+          latencyMs: Math.round(performance.now() - start),
         };
       }
     },

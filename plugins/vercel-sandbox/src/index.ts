@@ -370,41 +370,51 @@ export function buildVercelSandboxPlugin(
 
     async healthCheck(): Promise<PluginHealthResult> {
       const start = performance.now();
+      const TIMEOUT = 30_000;
       let sandbox: SandboxInstance | null = null;
       try {
-        const { Sandbox } = loadSandboxModule();
+        const result = await Promise.race([
+          (async () => {
+            const { Sandbox } = loadSandboxModule();
 
-        const createOpts: Record<string, unknown> = {
-          runtime: "node24",
-          networkPolicy: "deny-all",
-        };
-        if (config.accessToken) {
-          createOpts.accessToken = config.accessToken;
-          createOpts.teamId = config.teamId;
+            const createOpts: Record<string, unknown> = {
+              runtime: "node24",
+              networkPolicy: "deny-all",
+            };
+            if (config.accessToken) {
+              createOpts.accessToken = config.accessToken;
+              createOpts.teamId = config.teamId;
+            }
+
+            sandbox = await Sandbox.create(createOpts);
+            const res = await sandbox.runCommand({
+              cmd: "sh",
+              args: ["-c", "echo vercel-ok"],
+              cwd: "/tmp",
+            });
+            const stdout = await res.stdout();
+            await sandbox.stop();
+            sandbox = null;
+
+            if (res.exitCode === 0 && stdout.includes("vercel-ok")) {
+              return { healthy: true as const };
+            }
+            return {
+              healthy: false as const,
+              message: `Sandbox test command failed (exit ${res.exitCode})`,
+            };
+          })(),
+          new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), TIMEOUT)),
+        ]);
+
+        const latencyMs = Math.round(performance.now() - start);
+        if (result === "timeout") {
+          if (sandbox) {
+            try { await sandbox.stop(); } catch { /* ignore */ }
+          }
+          return { healthy: false, message: `Health check timed out after ${TIMEOUT}ms`, latencyMs };
         }
-
-        sandbox = await Sandbox.create(createOpts);
-        const result = await sandbox.runCommand({
-          cmd: "sh",
-          args: ["-c", "echo vercel-ok"],
-          cwd: "/tmp",
-        });
-        const stdout = await result.stdout();
-        await sandbox.stop();
-        sandbox = null;
-
-        if (result.exitCode === 0 && stdout.includes("vercel-ok")) {
-          return {
-            healthy: true,
-            latencyMs: Math.round(performance.now() - start),
-          };
-        }
-
-        return {
-          healthy: false,
-          message: `Sandbox test command failed (exit ${result.exitCode})`,
-          latencyMs: Math.round(performance.now() - start),
-        };
+        return { ...result, latencyMs };
       } catch (err) {
         if (sandbox) {
           try {

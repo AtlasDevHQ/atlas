@@ -199,10 +199,13 @@ function buildSlackPlugin(
     },
 
     async healthCheck(): Promise<PluginHealthResult> {
+      const start = performance.now();
+
       if (!initialized) {
         return {
           healthy: false,
           message: "Slack plugin not initialized",
+          latencyMs: Math.round(performance.now() - start),
         };
       }
 
@@ -210,10 +213,41 @@ function buildSlackPlugin(
         return {
           healthy: false,
           message: "Missing signing secret",
+          latencyMs: Math.round(performance.now() - start),
         };
       }
 
-      return { healthy: true };
+      // If a bot token is available, verify it against the Slack API
+      const botToken = config.botToken;
+      if (botToken) {
+        try {
+          const response = await fetch("https://slack.com/api/auth.test", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${botToken}`,
+              "Content-Type": "application/x-www-form-urlencoded",
+            },
+            signal: AbortSignal.timeout(5000),
+          });
+          const latencyMs = Math.round(performance.now() - start);
+          if (!response.ok) {
+            return { healthy: false, message: `Slack API returned HTTP ${response.status}`, latencyMs };
+          }
+          const body = await response.json() as { ok: boolean; error?: string };
+          if (!body.ok) {
+            return { healthy: false, message: `Slack auth.test failed: ${body.error ?? "unknown"}`, latencyMs };
+          }
+          return { healthy: true, latencyMs };
+        } catch (err) {
+          return {
+            healthy: false,
+            message: err instanceof Error ? err.message : String(err),
+            latencyMs: Math.round(performance.now() - start),
+          };
+        }
+      }
+
+      return { healthy: true, latencyMs: Math.round(performance.now() - start) };
     },
 
     async teardown() {

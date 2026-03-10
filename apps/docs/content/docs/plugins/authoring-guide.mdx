@@ -744,18 +744,112 @@ Browse the source at [`plugins/`](https://github.com/AtlasDevHQ/atlas/tree/main/
 
 ## Common Patterns
 
-### Health Checks
+### Health Check Contract
 
-Always return `{ healthy, message?, latencyMs? }`, never throw:
+Every plugin's `healthCheck()` must follow these five rules:
+
+1. **Always return** `{ healthy: boolean, message?: string, latencyMs?: number }` — never throw
+2. **Measure latency** — wrap the probe in `performance.now()` and include `latencyMs` in the result (both success and failure paths)
+3. **Catch all errors** — return `{ healthy: false, message: err.message }` on failure; never let exceptions escape
+4. **Minimal probe** — test connectivity only (e.g. `SELECT 1`, ping an endpoint), not full functionality
+5. **Timeout** — probes must have a reasonable timeout (5s default for network calls, 30s for sandbox creation), never hang indefinitely. Use `AbortSignal.timeout()` for fetch-based probes, or `Promise.race` for SDK calls that don't support AbortSignal
+
+Standard pattern for **database** plugins:
 
 ```typescript
 async healthCheck(): Promise<PluginHealthResult> {
+  const start = performance.now();
+  let conn: PluginDBConnection | undefined;
   try {
-    const start = performance.now();
-    await ping();
+    conn = createConnection(config);
+    await conn.query("SELECT 1", 5000); // timeout via query parameter
     return { healthy: true, latencyMs: Math.round(performance.now() - start) };
   } catch (err) {
-    return { healthy: false, message: err instanceof Error ? err.message : String(err) };
+    return {
+      healthy: false,
+      message: err instanceof Error ? err.message : String(err),
+      latencyMs: Math.round(performance.now() - start),
+    };
+  } finally {
+    if (conn) await conn.close();
+  }
+}
+```
+
+Standard pattern for **HTTP API** plugins (email, JIRA, Slack):
+
+```typescript
+async healthCheck(): Promise<PluginHealthResult> {
+  const start = performance.now();
+  try {
+    const response = await fetch("https://api.example.com/health", {
+      headers: { Authorization: `Bearer ${config.apiKey}` },
+      signal: AbortSignal.timeout(5000), // 5s timeout
+    });
+    const latencyMs = Math.round(performance.now() - start);
+    if (response.ok) return { healthy: true, latencyMs };
+    return { healthy: false, message: `API returned ${response.status}`, latencyMs };
+  } catch (err) {
+    return {
+      healthy: false,
+      message: err instanceof Error ? err.message : String(err),
+      latencyMs: Math.round(performance.now() - start),
+    };
+  }
+}
+```
+
+Standard pattern for **sandbox** plugins (where probe operations are slow):
+
+```typescript
+async healthCheck(): Promise<PluginHealthResult> {
+  const start = performance.now();
+  const TIMEOUT = 30_000; // sandbox creation can be slow
+  try {
+    const result = await Promise.race([
+      (async () => {
+        const sandbox = await createSandbox(config);
+        await sandbox.destroy();
+        return "ok" as const;
+      })(),
+      new Promise<"timeout">((resolve) =>
+        setTimeout(() => resolve("timeout"), TIMEOUT),
+      ),
+    ]);
+    const latencyMs = Math.round(performance.now() - start);
+    if (result === "timeout") {
+      return { healthy: false, message: `Timed out after ${TIMEOUT}ms`, latencyMs };
+    }
+    return { healthy: true, latencyMs };
+  } catch (err) {
+    return {
+      healthy: false,
+      message: err instanceof Error ? err.message : String(err),
+      latencyMs: Math.round(performance.now() - start),
+    };
+  }
+}
+```
+
+Standard pattern for **local-only** plugins (filesystem, in-process):
+
+```typescript
+async healthCheck(): Promise<PluginHealthResult> {
+  const start = performance.now();
+  try {
+    // Verify local resources exist
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith(".yml"));
+    const latencyMs = Math.round(performance.now() - start);
+    if (files.length === 0) {
+      return { healthy: false, message: "No entity files found", latencyMs };
+    }
+    return { healthy: true, latencyMs };
+  } catch (err) {
+    return {
+      healthy: false,
+      message: err instanceof Error ? err.message : String(err),
+      latencyMs: Math.round(performance.now() - start),
+    };
   }
 }
 ```

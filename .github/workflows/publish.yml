@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'create-v*'
+      - 'create-plugin-v*'
       - 'sdk-v*'
       - 'plugin-sdk-v*'
       # Plugins — datasource
@@ -52,6 +53,10 @@ jobs:
       - name: Publish @useatlas/create
         if: startsWith(github.ref, 'refs/tags/create-v')
         run: cd create-atlas && npm publish --access public
+
+      - name: Publish @useatlas/create-plugin
+        if: startsWith(github.ref, 'refs/tags/create-plugin-v')
+        run: cd create-atlas-plugin && npm publish --access public
 
       - name: Build, test, and publish @useatlas/sdk
         if: startsWith(github.ref, 'refs/tags/sdk-v')

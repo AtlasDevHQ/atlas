@@ -26,21 +26,32 @@ Step-by-step guide to building an Atlas plugin. We'll build a complete datasourc
 
 ## 1. Scaffold
 
-Use the CLI to generate a plugin skeleton:
+**Standalone plugin** (publishable to npm):
+
+```bash
+bun create @useatlas/plugin my-datasource --type datasource
+```
+
+This creates a standalone `my-datasource/` directory with `package.json`, `tsconfig.json`, `src/index.ts`, tests, README, and LICENSE -- ready to publish.
+
+**In-monorepo plugin** (inside an Atlas project):
 
 ```bash
 bun run atlas -- plugin create my-datasource --type datasource
 ```
 
-This creates `plugins/my-datasource/` with:
+This creates `plugins/my-datasource/` with workspace references.
+
+Both generate the same structure:
 
 ```
-plugins/my-datasource/
+my-datasource/
 ├── src/
 │   ├── index.ts         # Plugin entry point
 │   └── index.test.ts    # Test scaffold
 ├── package.json
-└── tsconfig.json
+├── tsconfig.json
+└── README.md
 ```
 
 Or create the files manually -- the CLI is a convenience, not a requirement.

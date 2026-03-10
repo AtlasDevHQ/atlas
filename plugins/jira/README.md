@@ -4,11 +4,8 @@ Create JIRA tickets from Atlas analysis findings with manual approval.
 
 ## Install
 
-```json
-{
-  "dependencies": { "@useatlas/plugin-sdk": "workspace:*" },
-  "peerDependencies": { "ai": "^6.0.0", "zod": "^4.0.0" }
-}
+```bash
+bun add @useatlas/jira
 ```
 
 ## Usage
@@ -41,5 +38,5 @@ export default defineConfig({
 
 ## Reference
 
-- [Plugin SDK docs](../../packages/plugin-sdk/README.md)
+- [Plugin SDK docs](https://docs.useatlas.dev/plugins/sdk)
 - [Authoring guide](https://docs.useatlas.dev/docs/plugins/authoring-guide)

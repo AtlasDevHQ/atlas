@@ -4,11 +4,8 @@ MySQL datasource plugin using mysql2 pool adapter.
 
 ## Install
 
-```json
-{
-  "dependencies": { "@useatlas/plugin-sdk": "workspace:*" },
-  "peerDependencies": { "mysql2": "^3.18.0" }
-}
+```bash
+bun add @useatlas/mysql mysql2
 ```
 
 ## Usage
@@ -32,5 +29,5 @@ export default defineConfig({
 
 ## Reference
 
-- [Plugin SDK docs](../../packages/plugin-sdk/README.md)
+- [Plugin SDK docs](https://docs.useatlas.dev/plugins/sdk)
 - [Authoring guide](https://docs.useatlas.dev/docs/plugins/authoring-guide)

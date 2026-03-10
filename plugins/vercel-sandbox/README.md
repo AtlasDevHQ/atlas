@@ -4,11 +4,8 @@ Firecracker microVM isolation via @vercel/sandbox with deny-all network policy.
 
 ## Install
 
-```json
-{
-  "dependencies": { "@useatlas/plugin-sdk": "workspace:*" },
-  "peerDependencies": { "@vercel/sandbox": ">=0.1.0" }
-}
+```bash
+bun add @useatlas/vercel-sandbox @vercel/sandbox
 ```
 
 ## Usage
@@ -37,5 +34,5 @@ export default defineConfig({
 
 ## Reference
 
-- [Plugin SDK docs](../../packages/plugin-sdk/README.md)
+- [Plugin SDK docs](https://docs.useatlas.dev/plugins/sdk)
 - [Authoring guide](https://docs.useatlas.dev/docs/plugins/authoring-guide)

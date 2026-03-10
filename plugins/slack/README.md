@@ -4,11 +4,8 @@ Slack interaction plugin with slash commands, threaded conversations, Block Kit 
 
 ## Install
 
-```json
-{
-  "dependencies": { "@useatlas/plugin-sdk": "workspace:*" },
-  "peerDependencies": { "hono": "^4.12.3", "zod": "^4.3.6" }
-}
+```bash
+bun add @useatlas/slack
 ```
 
 ## Usage
@@ -45,5 +42,5 @@ Either `botToken` or `clientId` + `clientSecret` is required.
 
 ## Reference
 
-- [Plugin SDK docs](../../packages/plugin-sdk/README.md)
+- [Plugin SDK docs](https://docs.useatlas.dev/plugins/sdk)
 - [Authoring guide](https://docs.useatlas.dev/docs/plugins/authoring-guide)

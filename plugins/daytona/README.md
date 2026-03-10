@@ -4,11 +4,8 @@ Cloud-hosted sandbox isolation via the Daytona SDK.
 
 ## Install
 
-```json
-{
-  "dependencies": { "@useatlas/plugin-sdk": "workspace:*" },
-  "peerDependencies": { "@daytonaio/sdk": ">=0.1.0" }
-}
+```bash
+bun add @useatlas/daytona @daytonaio/sdk
 ```
 
 ## Usage
@@ -32,5 +29,5 @@ export default defineConfig({
 
 ## Reference
 
-- [Plugin SDK docs](../../packages/plugin-sdk/README.md)
+- [Plugin SDK docs](https://docs.useatlas.dev/plugins/sdk)
 - [Authoring guide](https://docs.useatlas.dev/docs/plugins/authoring-guide)

@@ -6,11 +6,8 @@ Unlike SQL-based datasource plugins, this plugin uses SOQL (Salesforce Object Qu
 
 ## Install
 
-```json
-{
-  "dependencies": { "@useatlas/plugin-sdk": "workspace:*" },
-  "peerDependencies": { "jsforce": "^3.10.14" }
-}
+```bash
+bun add @useatlas/salesforce jsforce
 ```
 
 ## Usage
@@ -69,5 +66,5 @@ salesforcePlugin({
 
 ## Reference
 
-- [Plugin SDK docs](../../packages/plugin-sdk/README.md)
+- [Plugin SDK docs](https://docs.useatlas.dev/plugins/sdk)
 - [Authoring guide](https://docs.useatlas.dev/docs/plugins/authoring-guide)

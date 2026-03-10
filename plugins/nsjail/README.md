@@ -4,10 +4,8 @@ Linux namespace isolation via nsjail for the explore tool. No network, read-only
 
 ## Install
 
-```json
-{
-  "dependencies": { "@useatlas/plugin-sdk": "workspace:*" }
-}
+```bash
+bun add @useatlas/nsjail
 ```
 
 Requires `nsjail` on PATH or configured via `nsjailPath`.
@@ -33,5 +31,5 @@ export default defineConfig({
 
 ## Reference
 
-- [Plugin SDK docs](../../packages/plugin-sdk/README.md)
+- [Plugin SDK docs](https://docs.useatlas.dev/plugins/sdk)
 - [Authoring guide](https://docs.useatlas.dev/docs/plugins/authoring-guide)

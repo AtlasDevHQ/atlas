@@ -4,11 +4,8 @@ E2B Firecracker microVM (managed) sandbox for the explore tool.
 
 ## Install
 
-```json
-{
-  "dependencies": { "@useatlas/plugin-sdk": "workspace:*" },
-  "peerDependencies": { "e2b": ">=1.0.0" }
-}
+```bash
+bun add @useatlas/e2b e2b
 ```
 
 ## Usage
@@ -32,5 +29,5 @@ export default defineConfig({
 
 ## Reference
 
-- [Plugin SDK docs](../../packages/plugin-sdk/README.md)
+- [Plugin SDK docs](https://docs.useatlas.dev/plugins/sdk)
 - [Authoring guide](https://docs.useatlas.dev/docs/plugins/authoring-guide)

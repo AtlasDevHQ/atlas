@@ -4,10 +4,8 @@ HTTP-isolated container sidecar for the explore tool. Communicates with a separa
 
 ## Install
 
-```json
-{
-  "dependencies": { "@useatlas/plugin-sdk": "workspace:*" }
-}
+```bash
+bun add @useatlas/sidecar
 ```
 
 Requires a running sidecar service (see `packages/sandbox-sidecar/`).
@@ -33,5 +31,5 @@ export default defineConfig({
 
 ## Reference
 
-- [Plugin SDK docs](../../packages/plugin-sdk/README.md)
+- [Plugin SDK docs](https://docs.useatlas.dev/plugins/sdk)
 - [Authoring guide](https://docs.useatlas.dev/docs/plugins/authoring-guide)

@@ -4,11 +4,8 @@ ClickHouse datasource plugin using the HTTP transport adapter.
 
 ## Install
 
-```json
-{
-  "dependencies": { "@useatlas/plugin-sdk": "workspace:*" },
-  "peerDependencies": { "@clickhouse/client": ">=1.0.0" }
-}
+```bash
+bun add @useatlas/clickhouse @clickhouse/client
 ```
 
 ## Usage
@@ -31,5 +28,5 @@ export default defineConfig({
 
 ## Reference
 
-- [Plugin SDK docs](../../packages/plugin-sdk/README.md)
+- [Plugin SDK docs](https://docs.useatlas.dev/plugins/sdk)
 - [Authoring guide](https://docs.useatlas.dev/docs/plugins/authoring-guide)

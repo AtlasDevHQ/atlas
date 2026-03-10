@@ -97,19 +97,28 @@ if (config.plugins?.length) {
   };
 
   // Run plugin schema migrations before initialize() so plugins can use
-  // their tables in initialize(). Schema is a static property — no init needed.
-  if (hasInternalDB()) {
-    try {
-      const { runPluginMigrations } = await import("@atlas/api/lib/plugins/migrate");
-      const allPlugins = plugins.getAll();
-      const migrationResult = await runPluginMigrations(getInternalDB(), allPlugins);
-      if (migrationResult.applied.length > 0) {
-        log.info({ applied: migrationResult.applied }, "Plugin schema migrations applied");
+  // their tables in initialize(). Schema is declared at plugin creation
+  // time, so it is readable before initialize() runs.
+  const pluginsWithSchema = plugins.getAll().filter((p) => p.schema != null);
+  if (pluginsWithSchema.length > 0) {
+    if (hasInternalDB()) {
+      try {
+        const { runPluginMigrations } = await import("@atlas/api/lib/plugins/migrate");
+        const migrationResult = await runPluginMigrations(getInternalDB(), plugins.getAll());
+        if (migrationResult.applied.length > 0) {
+          log.info({ applied: migrationResult.applied }, "Plugin schema migrations applied");
+        }
+      } catch (err) {
+        log.error(
+          { err: err instanceof Error ? err : new Error(String(err)) },
+          "Plugin schema migration failed — aborting startup",
+        );
+        process.exit(1);
       }
-    } catch (err) {
+    } else {
       log.error(
-        { err: err instanceof Error ? err : new Error(String(err)) },
-        "Plugin schema migration failed — plugin tables may be missing",
+        { plugins: pluginsWithSchema.map((p) => p.id) },
+        "Plugins declare schema but DATABASE_URL is not set — plugin tables will not be created",
       );
     }
   }

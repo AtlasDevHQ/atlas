@@ -277,7 +277,7 @@ export interface AtlasPluginBase<TConfig = undefined> {
 
   /**
    * Declarative table definitions for the internal database.
-   * Tables are auto-migrated at boot (migration logic in #116).
+   * Tables are auto-migrated at boot (see packages/api/src/lib/plugins/migrate.ts).
    */
   schema?: Record<string, PluginTableDefinition>;
 }

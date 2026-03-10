@@ -293,8 +293,9 @@ async function getExistingColumns(db: MigrateDB, tableName: string): Promise<Set
  * Generate ALTER TABLE ADD COLUMN IF NOT EXISTS statements for fields
  * that exist in the plugin schema but not in the actual database table.
  *
- * Only handles column additions — column removal and type changes are
- * not supported (document as limitation, require manual migration).
+ * Column detection queries `information_schema.columns` in the `public`
+ * schema. Only handles column additions — column removal and type
+ * changes are not supported (require manual migration).
  */
 export async function generateColumnMigrations(
   db: MigrateDB,
@@ -310,12 +311,23 @@ export async function generateColumnMigrations(
 
       // Check if table exists at all — skip if it doesn't (CREATE TABLE will handle it)
       const existing = await getExistingColumns(db, prefixed);
-      if (existing.size === 0) continue;
+      if (existing.size === 0) {
+        log.debug({ table: prefixed, pluginId: plugin.id }, "Table not in information_schema — skipping column migration");
+        continue;
+      }
 
       for (const [fieldName, fieldDef] of Object.entries(tableDef.fields)) {
         if (existing.has(fieldName.toLowerCase())) continue;
 
-        const colDef = fieldToSQL(fieldName, fieldDef);
+        let colDef: string;
+        try {
+          colDef = fieldToSQL(fieldName, fieldDef);
+        } catch (err) {
+          throw new Error(
+            `Plugin "${plugin.id}", table "${prefixed}": ${err instanceof Error ? err.message : String(err)}`,
+            { cause: err },
+          );
+        }
         const sql = `ALTER TABLE "${prefixed}" ADD COLUMN IF NOT EXISTS ${colDef};`;
 
         statements.push({

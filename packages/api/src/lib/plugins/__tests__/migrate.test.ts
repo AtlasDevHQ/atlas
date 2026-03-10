@@ -707,9 +707,8 @@ describe("generateColumnMigrations", () => {
 describe("runPluginMigrations", () => {
   test("runs CREATE TABLE and ALTER TABLE in sequence", async () => {
     const db = makeMockDB({
-      // After CREATE TABLE runs, the table will exist, but since the mock
-      // returns columns based on existingColumns, we simulate a table that
-      // was just created with only auto-columns
+      // Simulate a table that was just created with only auto-columns —
+      // Phase 2 detects the missing user-declared column
       existingColumns: {
         plugin_test_items: ["id", "created_at", "updated_at"],
       },
@@ -729,13 +728,41 @@ describe("runPluginMigrations", () => {
       plugins as Parameters<typeof runPluginMigrations>[1],
     );
 
-    // CREATE TABLE applied + ALTER TABLE ADD COLUMN applied
-    expect(result.applied.length).toBeGreaterThanOrEqual(1);
-    // Should have CREATE TABLE query
+    // Phase 1: CREATE TABLE (1 table) + Phase 2: ALTER TABLE ADD COLUMN (1 column)
+    expect(result.applied).toEqual(["plugin_test_items", "plugin_test_items"]);
+    // Should have both CREATE TABLE and ALTER TABLE queries
     const createQuery = db.queries.find((q) =>
       q.sql.includes("CREATE TABLE") && q.sql.includes("plugin_test_items"),
     );
     expect(createQuery).toBeDefined();
+    const alterQuery = db.queries.find((q) =>
+      q.sql.includes("ALTER TABLE") && q.sql.includes('"name"'),
+    );
+    expect(alterQuery).toBeDefined();
+  });
+
+  test("merges results from both phases correctly", async () => {
+    const db = makeMockDB({
+      existingColumns: {
+        plugin_a_items: ["id", "x", "created_at", "updated_at"],
+        // plugin_b_things doesn't exist — no columns, Phase 2 skips it
+      },
+    });
+    const plugins = [
+      makePlugin("a", { items: { fields: { x: { type: "string" }, y: { type: "number" } } } }),
+      makePlugin("b", { things: { fields: { z: { type: "boolean" } } } }),
+    ];
+
+    const result = await runPluginMigrations(
+      db,
+      plugins as Parameters<typeof runPluginMigrations>[1],
+    );
+
+    // Phase 1: 2 CREATE TABLE statements applied
+    // Phase 2: 1 ALTER TABLE for plugin_a_items.y (x already exists, plugin_b skipped)
+    expect(result.applied).toEqual([
+      "plugin_a_items", "plugin_b_things", "plugin_a_items",
+    ]);
   });
 
   test("handles plugins with no schema", async () => {
@@ -746,8 +773,8 @@ describe("runPluginMigrations", () => {
       db,
       plugins as Parameters<typeof runPluginMigrations>[1],
     );
-    expect(result.applied).toHaveLength(0);
-    expect(result.skipped).toHaveLength(0);
+    expect(result.applied).toEqual([]);
+    expect(result.skipped).toEqual([]);
   });
 
   test("skips column migrations when no new columns needed", async () => {
@@ -776,6 +803,23 @@ describe("runPluginMigrations", () => {
     expect(alterQuery).toBeUndefined();
   });
 
+  test("propagates Phase 1 errors and skips Phase 2", async () => {
+    const db = makeMockDB({ failOnCreate: true });
+    const plugins = [
+      makePlugin("test", {
+        items: { fields: { name: { type: "string" } } },
+      }),
+    ];
+
+    await expect(
+      runPluginMigrations(db, plugins as Parameters<typeof runPluginMigrations>[1]),
+    ).rejects.toThrow(/permission denied/);
+
+    // No ALTER TABLE queries should have been attempted
+    const alterQuery = db.queries.find((q) => q.sql.includes("ALTER TABLE"));
+    expect(alterQuery).toBeUndefined();
+  });
+
   test("idempotent when run twice", async () => {
     const db = makeMockDB({
       existingColumns: {
@@ -799,8 +843,33 @@ describe("runPluginMigrations", () => {
       plugins as Parameters<typeof runPluginMigrations>[1],
     );
 
-    // Second run should skip everything that first run applied
-    // (since mock DB tracks applied migrations)
-    expect(result2.skipped.length).toBeGreaterThanOrEqual(result1.applied.length);
+    // First run applies CREATE TABLE
+    expect(result1.applied).toEqual(["plugin_test_items"]);
+    // Second run skips it (already tracked in plugin_migrations)
+    expect(result2.applied).toEqual([]);
+    expect(result2.skipped).toEqual(["plugin_test_items"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// generateColumnMigrations — error context
+// ---------------------------------------------------------------------------
+
+describe("generateColumnMigrations error context", () => {
+  test("wraps fieldToSQL errors with plugin and table context", async () => {
+    const db = makeMockDB({
+      existingColumns: {
+        plugin_test_items: ["id", "created_at", "updated_at"],
+      },
+    });
+    const plugins = [
+      makePlugin("test", {
+        items: { fields: { "bad name!": { type: "string" } } },
+      }),
+    ];
+
+    await expect(
+      generateColumnMigrations(db, plugins as Parameters<typeof generateColumnMigrations>[1]),
+    ).rejects.toThrow(/Plugin "test", table "plugin_test_items"/);
   });
 });

@@ -638,7 +638,7 @@ The `schema` property is available on all plugin types. It requires `DATABASE_UR
 
 ### How It Works
 
-At server boot, after all plugins are initialized, Atlas runs schema migrations automatically:
+At server boot, before plugins are initialized, Atlas runs schema migrations automatically:
 
 1. **CREATE TABLE** — New tables are created with an auto-generated `id` (UUID), `created_at`, and `updated_at` columns, plus your declared fields
 2. **ALTER TABLE ADD COLUMN** — If you add new fields to a plugin schema in a later version, Atlas detects the missing columns and adds them automatically
@@ -665,6 +665,7 @@ Tables are automatically prefixed with `plugin_{pluginId}_` to avoid collisions 
 - **No column removal** — Removing a field from the schema does not drop the column. Remove columns manually if needed
 - **No type changes** — Changing a field's type (e.g. `string` → `number`) is not handled. Migrate manually with a new column + data copy
 - **No renaming** — Renaming a field creates a new column; the old one remains. Clean up manually
+- **`required` + no `defaultValue` on new columns** — Adding `required: true` without a `defaultValue` to an existing table with rows will fail (`NOT NULL` constraint violation). Always provide a `defaultValue` when adding required fields to a schema that may already have data
 
 ## Datasource Plugin Properties
 

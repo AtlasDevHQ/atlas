@@ -680,14 +680,14 @@ export default function ScheduledTasksPage() {
                   </div>
                 </div>
               )}
-              {previewData.webhook && (
+              {previewData.webhook != null ? (
                 <div>
                   <span className="text-xs font-medium text-muted-foreground">Webhook Payload</span>
                   <pre className="mt-1 max-h-80 overflow-auto rounded-md bg-muted p-3 text-xs whitespace-pre-wrap">
                     {JSON.stringify(previewData.webhook, null, 2)}
                   </pre>
                 </div>
-              )}
+              ) : null}
             </div>
           ) : null}
         </DialogContent>

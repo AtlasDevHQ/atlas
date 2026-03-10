@@ -383,6 +383,78 @@ export function completeTaskRun(
   );
 }
 
+/** Cross-task run with the task name denormalized for display. */
+export interface ScheduledTaskRunWithTaskName extends ScheduledTaskRun {
+  taskName: string;
+}
+
+/** List runs across all tasks with optional filters. */
+export async function listAllRuns(opts?: {
+  taskId?: string;
+  status?: RunStatus;
+  dateFrom?: string;
+  dateTo?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<{ runs: ScheduledTaskRunWithTaskName[]; total: number }> {
+  const empty = { runs: [], total: 0 };
+  if (!hasInternalDB()) return empty;
+
+  const limit = opts?.limit ?? 20;
+  const offset = opts?.offset ?? 0;
+
+  try {
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    let paramIdx = 1;
+
+    if (opts?.taskId) {
+      conditions.push(`r.task_id = $${paramIdx++}`);
+      params.push(opts.taskId);
+    }
+    if (opts?.status) {
+      conditions.push(`r.status = $${paramIdx++}`);
+      params.push(opts.status);
+    }
+    if (opts?.dateFrom) {
+      conditions.push(`r.started_at >= $${paramIdx++}`);
+      params.push(opts.dateFrom);
+    }
+    if (opts?.dateTo) {
+      conditions.push(`r.started_at <= $${paramIdx++}`);
+      params.push(opts.dateTo);
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+    const [countRows, dataRows] = await Promise.all([
+      internalQuery<Record<string, unknown>>(
+        `SELECT COUNT(*)::int AS total FROM scheduled_task_runs r ${where}`,
+        params,
+      ),
+      internalQuery<Record<string, unknown>>(
+        `SELECT r.*, t.name AS task_name
+         FROM scheduled_task_runs r
+         JOIN scheduled_tasks t ON t.id = r.task_id
+         ${where}
+         ORDER BY r.started_at DESC
+         LIMIT $${paramIdx++} OFFSET $${paramIdx++}`,
+        [...params, limit, offset],
+      ),
+    ]);
+
+    const total = (countRows[0]?.total as number) ?? 0;
+    const runs = dataRows.map((row) => ({
+      ...rowToScheduledTaskRun(row),
+      taskName: (row.task_name as string) ?? "Unknown",
+    }));
+    return { runs, total };
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err) }, "listAllRuns failed");
+    return empty;
+  }
+}
+
 export async function listTaskRuns(
   taskId: string,
   opts?: { limit?: number },

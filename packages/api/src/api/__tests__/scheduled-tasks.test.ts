@@ -59,6 +59,9 @@ const mockDeleteScheduledTask = mock((): Promise<unknown> =>
   Promise.resolve({ ok: true }),
 );
 const mockListTaskRuns = mock((): Promise<unknown> => Promise.resolve([]));
+const mockListAllRuns = mock((): Promise<unknown> =>
+  Promise.resolve({ runs: [], total: 0 }),
+);
 const mockValidateCronExpression = mock((): unknown => ({ valid: true }));
 
 mock.module("@atlas/api/lib/scheduled-tasks", () => ({
@@ -68,6 +71,7 @@ mock.module("@atlas/api/lib/scheduled-tasks", () => ({
   updateScheduledTask: mockUpdateScheduledTask,
   deleteScheduledTask: mockDeleteScheduledTask,
   listTaskRuns: mockListTaskRuns,
+  listAllRuns: mockListAllRuns,
   validateCronExpression: mockValidateCronExpression,
 }));
 
@@ -169,6 +173,8 @@ describe("scheduled-tasks routes", () => {
     mockDeleteScheduledTask.mockResolvedValue({ ok: true });
     mockListTaskRuns.mockReset();
     mockListTaskRuns.mockResolvedValue([]);
+    mockListAllRuns.mockReset();
+    mockListAllRuns.mockResolvedValue({ runs: [], total: 0 });
     mockValidateCronExpression.mockReset();
     mockValidateCronExpression.mockReturnValue({ valid: true });
     mockRunTick.mockReset();
@@ -596,6 +602,84 @@ describe("scheduled-tasks routes", () => {
       expect(response.status).toBe(500);
       const body = (await response.json()) as Record<string, unknown>;
       expect(body.error).toBe("db down");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/v1/scheduled-tasks/runs — cross-task run history
+  // -------------------------------------------------------------------------
+
+  describe("GET /api/v1/scheduled-tasks/runs", () => {
+    it("returns 200 with empty runs", async () => {
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/scheduled-tasks/runs"),
+      );
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { runs: unknown[]; total: number };
+      expect(body.runs).toEqual([]);
+      expect(body.total).toBe(0);
+    });
+
+    it("returns 200 with runs when data exists", async () => {
+      mockListAllRuns.mockResolvedValueOnce({
+        runs: [
+          { id: "run-1", taskId: VALID_ID, taskName: "Daily Revenue", status: "success", startedAt: "2026-01-01T00:00:00Z", completedAt: "2026-01-01T00:01:00Z", tokensUsed: 500, error: null, conversationId: null, actionId: null, createdAt: "2026-01-01T00:00:00Z" },
+        ],
+        total: 1,
+      });
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/scheduled-tasks/runs"),
+      );
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { runs: unknown[]; total: number };
+      expect(body.runs).toHaveLength(1);
+      expect(body.total).toBe(1);
+    });
+
+    it("passes query filters to listAllRuns", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/scheduled-tasks/runs?task_id=${VALID_ID}&status=failed&date_from=2026-01-01&date_to=2026-01-31&limit=10&offset=5`),
+      );
+      expect(response.status).toBe(200);
+      expect(mockListAllRuns).toHaveBeenCalledWith({
+        taskId: VALID_ID,
+        status: "failed",
+        dateFrom: "2026-01-01",
+        dateTo: "2026-01-31",
+        limit: 10,
+        offset: 5,
+      });
+    });
+
+    it("ignores invalid status filter", async () => {
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/scheduled-tasks/runs?status=invalid"),
+      );
+      expect(response.status).toBe(200);
+      expect(mockListAllRuns).toHaveBeenCalledWith(
+        expect.objectContaining({ status: undefined }),
+      );
+    });
+
+    it("returns 404 when no internal DB", async () => {
+      delete process.env.DATABASE_URL;
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/scheduled-tasks/runs"),
+      );
+      expect(response.status).toBe(404);
+    });
+
+    it("returns 401 when unauthenticated", async () => {
+      mockAuthenticateRequest.mockResolvedValueOnce({
+        authenticated: false as const,
+        mode: "simple-key" as const,
+        status: 401 as const,
+        error: "API key required",
+      });
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/scheduled-tasks/runs"),
+      );
+      expect(response.status).toBe(401);
     });
   });
 });

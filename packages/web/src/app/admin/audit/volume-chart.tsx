@@ -43,7 +43,7 @@ export default function VolumeChart({ data, dark }: { data: VolumePoint[]; dark:
             fontSize: 12,
             color: t.text,
           }}
-          labelFormatter={formatDay}
+          labelFormatter={(label) => formatDay(String(label))}
         />
         <Legend wrapperStyle={{ fontSize: 12, color: t.axis }} />
         <Line

@@ -24,21 +24,15 @@ A sandboxed `executePython` tool for data analysis — runs Python with import g
 
 Docs site launched at [docs.useatlas.dev](https://docs.useatlas.dev) with reference pages, integration guides, interactive API reference from OpenAPI, OG images, sitemap, and llms.txt. CLI gained `atlas doctor`, `atlas validate`, shell completions, and better first-run errors. Test coverage expanded across web UI, SDK integration, and E2E suites. Added CHANGELOG, CONTRIBUTING guide, issue/PR templates, and unified brand colors.
 
----
+### 0.2.0 — Plugin Ecosystem
 
-## 0.2.0 — Plugin Ecosystem
-
-The current milestone. Making it easy to build, publish, and discover Atlas plugins.
-
-- **Plugin distribution** — Official plugins published to npm under `@useatlas/*` (ClickHouse, Snowflake, DuckDB, Salesforce, Slack, MCP, and more). Install with `bun add` and register in `atlas.config.ts`
-- **Plugin SDK DX** — Testing utilities, scaffold command (`bun create @useatlas/plugin`), and a plugin cookbook in docs
-- **Plugin docs** — Per-plugin reference pages and a plugin listing page on the docs site
+Official plugins published to npm under `@useatlas/*` (ClickHouse, Snowflake, DuckDB, Salesforce, Slack, MCP, and more). Plugin SDK gained testing utilities, a scaffold command (`bun create @useatlas/plugin`), multi-type plugin support, and schema migrations. Docs site added per-plugin reference pages, a filterable plugin directory, a composition guide, and a plugin cookbook.
 
 ---
 
 ## 0.3.0 — Admin Console & Operations
 
-Self-service management and observability.
+The current milestone. Self-service management and observability.
 
 - **Admin console** — Action approval UI, semantic layer editor, connection management, user management, plugin configuration
 - **Observability** — Query analytics dashboard, token usage tracking, OpenTelemetry traces, health dashboard

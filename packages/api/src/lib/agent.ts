@@ -341,7 +341,7 @@ export async function runAgent({
   const providerType = getProviderType();
   // Capture context eagerly — AsyncLocalStorage may have exited by the time onFinish fires
   const userId = getRequestContext()?.user?.id ?? null;
-  const resolvedModelId = model.modelId;
+  const resolvedModelId = typeof model === "string" ? model : model.modelId;
 
   const span = tracer.startSpan("atlas.agent", {
     attributes: { provider: providerType, messageCount: messages.length },

@@ -202,10 +202,21 @@ export function nextRunTimes(expr: string, count: number, from: Date = new Date(
 }
 
 /**
- * Basic validation: 5 space-separated fields, each containing valid cron characters.
+ * Validates a cron expression: 5 space-separated fields with valid characters.
+ * Also rejects step-of-zero which would never match.
  */
 export function isValidCron(expr: string): boolean {
   const parts = expr.trim().split(/\s+/);
   if (parts.length !== 5) return false;
-  return parts.every((p) => /^[0-9*,\-/]+$/.test(p));
+  for (const part of parts) {
+    if (!/^[0-9*,\-/]+$/.test(part)) return false;
+    // Reject step-of-zero in any sub-expression
+    for (const sub of part.split(",")) {
+      if (sub.includes("/")) {
+        const step = parseInt(sub.split("/")[1], 10);
+        if (Number.isNaN(step) || step <= 0) return false;
+      }
+    }
+  }
+  return true;
 }

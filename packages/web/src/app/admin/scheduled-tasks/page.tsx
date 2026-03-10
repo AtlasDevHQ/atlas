@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useState, useCallback } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { useQueryStates } from "nuqs";
 import { scheduledTasksSearchParams } from "./search-params";
 import { useAtlasConfig } from "@/ui/context";
@@ -43,47 +43,11 @@ import {
 } from "lucide-react";
 import { useInProgressSet, type FetchError, friendlyError } from "@/ui/hooks/use-admin-fetch";
 import { TaskFormDialog } from "./task-form-dialog";
-
-// ── Types ─────────────────────────────────────────────────────────
-
-interface Recipient {
-  type: string;
-  value: string;
-}
-
-interface ScheduledTask {
-  id: string;
-  ownerId: string;
-  name: string;
-  question: string;
-  cronExpression: string;
-  deliveryChannel: "email" | "slack" | "webhook";
-  recipients: Recipient[];
-  connectionId: string | null;
-  approvalMode: "auto" | "manual" | "admin-only";
-  enabled: boolean;
-  lastRunAt: string | null;
-  nextRunAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-interface ScheduledTaskRun {
-  id: string;
-  taskId: string;
-  startedAt: string;
-  completedAt: string | null;
-  status: "running" | "success" | "failed" | "skipped";
-  conversationId: string | null;
-  actionId: string | null;
-  error: string | null;
-  tokensUsed: number | null;
-  createdAt: string;
-}
-
-interface TaskDetail extends ScheduledTask {
-  recentRuns: ScheduledTaskRun[];
-}
+import type {
+  ScheduledTask,
+  ScheduledTaskRun,
+  ScheduledTaskWithRuns,
+} from "@/ui/lib/types";
 
 type EnabledFilter = "all" | "true" | "false";
 
@@ -150,7 +114,7 @@ export default function ScheduledTasksPage() {
   const [{ page, enabled: enabledFilter, expanded: expandedId }, setParams] = useQueryStates(scheduledTasksSearchParams);
   const offset = (page - 1) * PAGE_SIZE;
 
-  const [selectedTask, setSelectedTask] = useState<TaskDetail | null>(null);
+  const [selectedTask, setSelectedTask] = useState<ScheduledTaskWithRuns | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
 
@@ -237,98 +201,89 @@ export default function ScheduledTasksPage() {
   }
 
   // ── Fetch detail (with recent runs) ─────────────────────────────
-  const handleRowClick = useCallback(
-    async (taskId: string) => {
-      if (expandedId === taskId) {
-        setParams({ expanded: null });
-        setSelectedTask(null);
-        setDetailError(null);
-        return;
-      }
-      setParams({ expanded: taskId });
+  async function handleRowClick(taskId: string) {
+    if (expandedId === taskId) {
+      setParams({ expanded: null });
       setSelectedTask(null);
       setDetailError(null);
-      setDetailLoading(true);
-      try {
-        const res = await fetch(
-          `${apiUrl}/api/v1/scheduled-tasks/${encodeURIComponent(taskId)}`,
-          { credentials },
-        );
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data: TaskDetail = await res.json();
-        setSelectedTask(data);
-      } catch (err) {
-        setDetailError(
-          `Failed to load task details: ${err instanceof Error ? err.message : "Network error"}`
-        );
-      } finally {
-        setDetailLoading(false);
-      }
-    },
-    [apiUrl, expandedId, credentials, setParams],
-  );
+      return;
+    }
+    setParams({ expanded: taskId });
+    setSelectedTask(null);
+    setDetailError(null);
+    setDetailLoading(true);
+    try {
+      const res = await fetch(
+        `${apiUrl}/api/v1/scheduled-tasks/${encodeURIComponent(taskId)}`,
+        { credentials },
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data: ScheduledTaskWithRuns = await res.json();
+      setSelectedTask(data);
+    } catch (err) {
+      setDetailError(
+        `Failed to load task details: ${err instanceof Error ? err.message : "Network error"}`
+      );
+    } finally {
+      setDetailLoading(false);
+    }
+  }
 
   // ── Toggle enabled ──────────────────────────────────────────────
-  const handleToggle = useCallback(
-    async (task: ScheduledTask, e: React.MouseEvent) => {
-      e.stopPropagation();
-      if (toggling.has(task.id)) return;
-      toggling.start(task.id);
-      setMutationError(null);
-      try {
-        const res = await fetch(
-          `${apiUrl}/api/v1/scheduled-tasks/${encodeURIComponent(task.id)}`,
-          {
-            credentials,
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ enabled: !task.enabled }),
-          },
-        );
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const updated: ScheduledTask = await res.json();
-        setTasks((prev) =>
-          prev.map((t) => (t.id === updated.id ? updated : t)),
-        );
-      } catch (err) {
-        setMutationError(
-          `Toggle failed: ${err instanceof Error ? err.message : "Network error"}`
-        );
-      } finally {
-        toggling.stop(task.id);
-      }
-    },
-    [apiUrl, toggling, credentials],
-  );
+  async function handleToggle(task: ScheduledTask, e: React.MouseEvent) {
+    e.stopPropagation();
+    if (toggling.has(task.id)) return;
+    toggling.start(task.id);
+    setMutationError(null);
+    try {
+      const res = await fetch(
+        `${apiUrl}/api/v1/scheduled-tasks/${encodeURIComponent(task.id)}`,
+        {
+          credentials,
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled: !task.enabled }),
+        },
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const updated: ScheduledTask = await res.json();
+      setTasks((prev) =>
+        prev.map((t) => (t.id === updated.id ? updated : t)),
+      );
+    } catch (err) {
+      setMutationError(
+        `Toggle failed: ${err instanceof Error ? err.message : "Network error"}`
+      );
+    } finally {
+      toggling.stop(task.id);
+    }
+  }
 
   // ── Run now ─────────────────────────────────────────────────────
-  const handleRunNow = useCallback(
-    async (taskId: string, e: React.MouseEvent) => {
-      e.stopPropagation();
-      if (triggering.has(taskId)) return;
-      triggering.start(taskId);
-      setMutationError(null);
-      try {
-        const res = await fetch(
-          `${apiUrl}/api/v1/scheduled-tasks/${encodeURIComponent(taskId)}/run`,
-          {
-            credentials,
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: "{}",
-          },
-        );
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      } catch (err) {
-        setMutationError(
-          `Run failed: ${err instanceof Error ? err.message : "Network error"}`
-        );
-      } finally {
-        triggering.stop(taskId);
-      }
-    },
-    [apiUrl, triggering, credentials],
-  );
+  async function handleRunNow(taskId: string, e: React.MouseEvent) {
+    e.stopPropagation();
+    if (triggering.has(taskId)) return;
+    triggering.start(taskId);
+    setMutationError(null);
+    try {
+      const res = await fetch(
+        `${apiUrl}/api/v1/scheduled-tasks/${encodeURIComponent(taskId)}/run`,
+        {
+          credentials,
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        },
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      setMutationError(
+        `Run failed: ${err instanceof Error ? err.message : "Network error"}`
+      );
+    } finally {
+      triggering.stop(taskId);
+    }
+  }
 
   // ── Delete task ──────────────────────────────────────────────────
   async function handleDelete(task: ScheduledTask) {

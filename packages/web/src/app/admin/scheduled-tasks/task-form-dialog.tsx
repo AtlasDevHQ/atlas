@@ -31,27 +31,13 @@ import {
   isValidCron,
 } from "./cron-helpers";
 
+import type {
+  ScheduledTask,
+  DeliveryChannel,
+  ApprovalMode,
+} from "@/ui/lib/types";
+
 // ── Types ─────────────────────────────────────────────────────────────
-
-type DeliveryChannel = "email" | "slack" | "webhook";
-type ApprovalMode = "auto" | "manual" | "admin-only";
-
-interface Recipient {
-  type: string;
-  value: string;
-}
-
-interface ScheduledTask {
-  id: string;
-  name: string;
-  question: string;
-  cronExpression: string;
-  deliveryChannel: DeliveryChannel;
-  recipients: Recipient[];
-  connectionId: string | null;
-  approvalMode: ApprovalMode;
-  enabled: boolean;
-}
 
 interface ConnectionInfo {
   id: string;
@@ -98,36 +84,57 @@ function defaultFormState(): FormState {
   };
 }
 
-function formStateFromTask(task: ScheduledTask): FormState {
-  const state = defaultFormState();
-  state.name = task.name;
-  state.question = task.question;
-  state.cronExpression = task.cronExpression;
-  state.cronPreset = presetFromCron(task.cronExpression);
-  state.deliveryChannel = task.deliveryChannel;
-  state.approvalMode = task.approvalMode;
-  state.connectionId = task.connectionId ?? "default";
-  state.enabled = task.enabled;
+function parseRecipients(task: ScheduledTask) {
+  const emailAddresses: string[] = [];
+  let slackChannel = "";
+  let slackTeamId = "";
+  let webhookUrl = "";
+  let webhookHeaders: Array<{ key: string; value: string }> = [];
+  let recognized = 0;
 
-  // Map recipients back to form fields
   for (const r of task.recipients) {
     const raw = r as Record<string, unknown>;
     if (raw.type === "email" && typeof raw.address === "string") {
-      state.emailAddresses.push(raw.address);
+      emailAddresses.push(raw.address);
+      recognized++;
     } else if (raw.type === "slack") {
-      if (typeof raw.channel === "string") state.slackChannel = raw.channel;
-      if (typeof raw.teamId === "string") state.slackTeamId = raw.teamId;
+      if (typeof raw.channel === "string") slackChannel = raw.channel;
+      if (typeof raw.teamId === "string") slackTeamId = raw.teamId;
+      recognized++;
     } else if (raw.type === "webhook") {
-      if (typeof raw.url === "string") state.webhookUrl = raw.url;
+      if (typeof raw.url === "string") webhookUrl = raw.url;
       if (raw.headers && typeof raw.headers === "object") {
-        state.webhookHeaders = Object.entries(raw.headers as Record<string, string>).map(
+        webhookHeaders = Object.entries(raw.headers as Record<string, string>).map(
           ([key, value]) => ({ key, value }),
         );
       }
+      recognized++;
     }
   }
 
-  return state;
+  if (recognized < task.recipients.length) {
+    console.warn(
+      `[TaskFormDialog] ${task.recipients.length - recognized} recipient(s) could not be mapped for task ${task.id}`,
+    );
+  }
+
+  return { emailAddresses, slackChannel, slackTeamId, webhookUrl, webhookHeaders };
+}
+
+function formStateFromTask(task: ScheduledTask): FormState {
+  const recipients = parseRecipients(task);
+  return {
+    ...defaultFormState(),
+    name: task.name,
+    question: task.question,
+    cronExpression: task.cronExpression,
+    cronPreset: presetFromCron(task.cronExpression),
+    deliveryChannel: task.deliveryChannel,
+    approvalMode: task.approvalMode,
+    connectionId: task.connectionId ?? "default",
+    enabled: task.enabled,
+    ...recipients,
+  };
 }
 
 // ── Component ─────────────────────────────────────────────────────────

@@ -325,6 +325,8 @@ export function applyCacheControl(
  * @param tools - Optional custom {@link ToolRegistry}. Defaults to
  *   {@link defaultRegistry} (explore + executeSQL). The loop terminates
  *   when the step limit (25) is reached or the model stops issuing tool calls.
+ * @param conversationId - Optional conversation ID for token usage tracking.
+ *   When provided, the recorded token usage row links to this conversation.
  */
 export async function runAgent({
   messages,

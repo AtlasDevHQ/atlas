@@ -90,11 +90,19 @@ export function sandboxErrorDetail(err: unknown): string {
 export function collectSemanticFiles(
   localDir: string,
   sandboxDir: string,
+  logger?: { warn(msg: string): void },
 ): { path: string; content: Buffer }[] {
   const results: { path: string; content: Buffer }[] = [];
 
   function walk(dir: string, relative: string) {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (err) {
+      logger?.warn(`[vercel-sandbox] Skipping unreadable directory ${dir}: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    for (const entry of entries) {
       const localPath = path.join(dir, entry.name);
       const remotePath = `${relative}/${entry.name}`;
 
@@ -102,7 +110,7 @@ export function collectSemanticFiles(
         try {
           const realPath = fs.realpathSync(localPath);
           if (!realPath.startsWith(localDir)) {
-            // Symlink escapes semantic root — skip for safety
+            logger?.warn(`[vercel-sandbox] Skipping symlink escaping semantic root: ${localPath} -> ${realPath}`);
             continue;
           }
           const stat = fs.statSync(localPath);
@@ -114,8 +122,8 @@ export function collectSemanticFiles(
               content: fs.readFileSync(localPath),
             });
           }
-        } catch {
-          // Unreadable symlink — skip
+        } catch (err) {
+          logger?.warn(`[vercel-sandbox] Skipping unreadable symlink ${localPath}: ${err instanceof Error ? err.message : String(err)}`);
         }
       } else if (entry.isDirectory()) {
         walk(localPath, remotePath);
@@ -125,8 +133,8 @@ export function collectSemanticFiles(
             path: remotePath,
             content: fs.readFileSync(localPath),
           });
-        } catch {
-          // Unreadable file — skip
+        } catch (err) {
+          logger?.warn(`[vercel-sandbox] Skipping unreadable file ${localPath}: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
     }
@@ -202,6 +210,7 @@ interface SandboxConstructor {
 async function createVercelExploreBackend(
   semanticRoot: string,
   config: VercelSandboxConfig,
+  log?: { warn(msg: string): void },
 ): Promise<PluginExploreBackend> {
   // 1. Load the optional dependency
   const { Sandbox } = loadSandboxModule();
@@ -232,7 +241,7 @@ async function createVercelExploreBackend(
     // 3. Collect semantic layer files
     let files: { path: string; content: Buffer }[];
     try {
-      files = collectSemanticFiles(semanticRoot, SANDBOX_SEMANTIC_REL);
+      files = collectSemanticFiles(semanticRoot, SANDBOX_SEMANTIC_REL, log);
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       throw new Error(
@@ -310,17 +319,12 @@ async function createVercelExploreBackend(
           exitCode: result.exitCode,
         };
       } catch (err) {
-        const detail = sandboxErrorDetail(err);
-        // Stop the broken sandbox — it cannot be reused
-        try {
-          await sandbox.stop();
-        } catch {
-          // Swallow stop errors during cleanup
-        }
-        throw new Error(
-          `Sandbox infrastructure error: ${detail}`,
-          { cause: err },
-        );
+        log?.warn(`[vercel-sandbox] Sandbox exec error: ${err instanceof Error ? err.message : String(err)}`);
+        return {
+          stdout: "",
+          stderr: err instanceof Error ? err.message : String(err),
+          exitCode: 1,
+        };
       }
     },
     close: async () => {
@@ -340,6 +344,8 @@ async function createVercelExploreBackend(
 export function buildVercelSandboxPlugin(
   config: VercelSandboxConfig,
 ): AtlasSandboxPlugin<VercelSandboxConfig> {
+  let log: { warn(msg: string): void } | undefined;
+
   return {
     id: "vercel-sandbox",
     types: ["sandbox"] as const,
@@ -349,7 +355,7 @@ export function buildVercelSandboxPlugin(
 
     sandbox: {
       async create(semanticRoot: string): Promise<PluginExploreBackend> {
-        return createVercelExploreBackend(semanticRoot, config);
+        return createVercelExploreBackend(semanticRoot, config, log);
       },
       priority: 100,
     },
@@ -365,6 +371,7 @@ export function buildVercelSandboxPlugin(
     },
 
     async initialize(ctx) {
+      log = ctx.logger;
       const mode = config.accessToken ? "access token" : "auto-detected OIDC";
       ctx.logger.info(`Vercel sandbox plugin initialized (auth: ${mode})`);
     },

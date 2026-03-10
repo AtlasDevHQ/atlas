@@ -92,7 +92,8 @@ function collectSemanticFiles(
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
+    } catch (err) {
+      logger?.warn(`[e2b-sandbox] Skipping unreadable directory ${dir}: ${err instanceof Error ? err.message : String(err)}`);
       return;
     }
     for (const entry of entries) {
@@ -103,7 +104,7 @@ function collectSemanticFiles(
         try {
           const realPath = fs.realpathSync(localPath);
           if (!realPath.startsWith(localDir)) {
-            (logger ?? console).warn(`[e2b-sandbox] Skipping symlink escaping semantic root: ${localPath} -> ${realPath}`);
+            logger?.warn(`[e2b-sandbox] Skipping symlink escaping semantic root: ${localPath} -> ${realPath}`);
             continue;
           }
           const stat = fs.statSync(localPath);
@@ -115,7 +116,8 @@ function collectSemanticFiles(
               data: fs.readFileSync(localPath, "utf-8"),
             });
           }
-        } catch {
+        } catch (err) {
+          logger?.warn(`[e2b-sandbox] Skipping unreadable symlink ${localPath}: ${err instanceof Error ? err.message : String(err)}`);
           continue;
         }
       } else if (entry.isDirectory()) {
@@ -126,7 +128,8 @@ function collectSemanticFiles(
             path: remotePath,
             data: fs.readFileSync(localPath, "utf-8"),
           });
-        } catch {
+        } catch (err) {
+          logger?.warn(`[e2b-sandbox] Skipping unreadable file ${localPath}: ${err instanceof Error ? err.message : String(err)}`);
           continue;
         }
       }

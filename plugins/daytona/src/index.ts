@@ -96,11 +96,19 @@ function createDaytonaClient(DaytonaClass: any, config: DaytonaSandboxConfig): a
 function collectSemanticFiles(
   localDir: string,
   sandboxDir: string,
+  logger?: { warn(msg: string): void },
 ): { path: string; content: Buffer }[] {
   const results: { path: string; content: Buffer }[] = [];
 
   function walk(dir: string, relative: string) {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (err) {
+      logger?.warn(`[daytona-sandbox] Skipping unreadable directory ${dir}: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    for (const entry of entries) {
       const localPath = path.join(dir, entry.name);
       const remotePath = `${relative}/${entry.name}`;
 
@@ -108,7 +116,8 @@ function collectSemanticFiles(
         try {
           const realPath = fs.realpathSync(localPath);
           if (!realPath.startsWith(localDir)) {
-            continue; // Skip symlinks escaping semantic root
+            logger?.warn(`[daytona-sandbox] Skipping symlink escaping semantic root: ${localPath} -> ${realPath}`);
+            continue;
           }
           const stat = fs.statSync(localPath);
           if (stat.isDirectory()) {
@@ -119,8 +128,9 @@ function collectSemanticFiles(
               content: fs.readFileSync(localPath),
             });
           }
-        } catch {
-          continue; // Skip unreadable symlinks
+        } catch (err) {
+          logger?.warn(`[daytona-sandbox] Skipping unreadable symlink ${localPath}: ${err instanceof Error ? err.message : String(err)}`);
+          continue;
         }
       } else if (entry.isDirectory()) {
         walk(localPath, remotePath);
@@ -130,8 +140,8 @@ function collectSemanticFiles(
             path: remotePath,
             content: fs.readFileSync(localPath),
           });
-        } catch {
-          // Skip unreadable files
+        } catch (err) {
+          logger?.warn(`[daytona-sandbox] Skipping unreadable file ${localPath}: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
     }
@@ -177,7 +187,7 @@ export function buildDaytonaSandboxPlugin(
 
         // Collect and upload semantic layer files
         try {
-          const files = collectSemanticFiles(semanticRoot, "semantic");
+          const files = collectSemanticFiles(semanticRoot, "semantic", log);
 
           if (files.length === 0) {
             throw new Error(

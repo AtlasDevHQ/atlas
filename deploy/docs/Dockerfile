@@ -15,10 +15,13 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 
-COPY --from=builder --chown=1001:1000 /app/.next/standalone ./
-COPY --from=builder --chown=1001:1000 /app/.next/static ./.next/static
+RUN addgroup --system --gid 1001 atlas && \
+    adduser --system --uid 1001 --ingroup atlas atlas
 
-USER 1001
+COPY --from=builder --chown=atlas:atlas /app/.next/standalone ./
+COPY --from=builder --chown=atlas:atlas /app/.next/static ./.next/static
+
+USER atlas
 EXPOSE 3003
 ENV PORT=3003
 ENV HOSTNAME="0.0.0.0"

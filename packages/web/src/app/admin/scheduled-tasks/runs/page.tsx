@@ -28,12 +28,21 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   History,
   ChevronDown,
   ChevronRight,
   ExternalLink,
   ArrowLeft,
   Loader2,
+  CheckCircle2,
+  XCircle,
+  Clock,
 } from "lucide-react";
 import type { FetchError } from "@/ui/hooks/use-admin-fetch";
 import { friendlyError } from "@/ui/hooks/use-admin-fetch";
@@ -64,6 +73,51 @@ function RunStatusBadge({ status }: { status: string }) {
     default:
       return <Badge variant="outline">{status}</Badge>;
   }
+}
+
+function DeliveryStatusBadge({ status, error }: { status: string | null; error: string | null }) {
+  if (!status) return <span className="text-xs text-muted-foreground">—</span>;
+
+  const badge = (() => {
+    switch (status) {
+      case "sent":
+        return (
+          <Badge variant="secondary" className="gap-1 bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400">
+            <CheckCircle2 className="size-3" />
+            sent
+          </Badge>
+        );
+      case "failed":
+        return (
+          <Badge variant="destructive" className="gap-1">
+            <XCircle className="size-3" />
+            failed
+          </Badge>
+        );
+      default:
+        return (
+          <Badge variant="outline" className="gap-1">
+            <Clock className="size-3" />
+            pending
+          </Badge>
+        );
+    }
+  })();
+
+  if (status === "failed" && error) {
+    return (
+      <TooltipProvider>
+        <Tooltip>
+          <TooltipTrigger asChild>{badge}</TooltipTrigger>
+          <TooltipContent side="top" className="max-w-xs">
+            <p className="text-xs">{error}</p>
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+    );
+  }
+
+  return badge;
 }
 
 function formatDuration(startedAt: string, completedAt: string | null): string {
@@ -290,6 +344,7 @@ export default function RunHistoryPage() {
                   <TableHead className="w-8" />
                   <TableHead>Task</TableHead>
                   <TableHead>Status</TableHead>
+                  <TableHead>Delivery</TableHead>
                   <TableHead>Started</TableHead>
                   <TableHead>Duration</TableHead>
                   <TableHead>Tokens</TableHead>
@@ -318,6 +373,12 @@ export default function RunHistoryPage() {
                         <TableCell>
                           <RunStatusBadge status={run.status} />
                         </TableCell>
+                        <TableCell>
+                          <DeliveryStatusBadge
+                            status={run.deliveryStatus}
+                            error={run.deliveryError}
+                          />
+                        </TableCell>
                         <TableCell className="text-xs text-muted-foreground">
                           {formatTimestamp(run.startedAt)}
                         </TableCell>
@@ -337,7 +398,7 @@ export default function RunHistoryPage() {
 
                       {isExpanded && (
                         <TableRow>
-                          <TableCell colSpan={7} className="bg-muted/30 p-4">
+                          <TableCell colSpan={8} className="bg-muted/30 p-4">
                             <div className="space-y-3 text-sm">
                               <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
                                 <div>
@@ -369,6 +430,17 @@ export default function RunHistoryPage() {
                                   <p>{run.tokensUsed?.toLocaleString() ?? "—"}</p>
                                 </div>
                               </div>
+
+                              {run.deliveryError && (
+                                <div>
+                                  <span className="text-xs font-medium text-muted-foreground">
+                                    Delivery error
+                                  </span>
+                                  <pre className="mt-1 max-h-40 overflow-auto rounded-md bg-muted p-3 text-xs whitespace-pre-wrap">
+                                    {run.deliveryError}
+                                  </pre>
+                                </div>
+                              )}
 
                               {run.error && (
                                 <div>

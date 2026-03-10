@@ -184,8 +184,32 @@ Each tick cycle:
 
 - **Task timeout** -- Run marked as `failed` with timeout error
 - **Agent error** -- Run marked as `failed`, error logged
-- **Partial delivery failure** -- If 1 of 3 recipients fails, the run is still `success`. Delivery failures are logged separately
+- **Partial delivery failure** -- If 1 of 3 recipients fails, the run is still `success`. Delivery failures are tracked separately via `deliveryStatus`
 - **Lock contention** -- Second instance skips the task (atomic locking)
+
+### Delivery Status Tracking
+
+Each run tracks delivery outcome independently from agent execution status:
+
+| `deliveryStatus` | Meaning |
+|-------------------|---------|
+| `pending` | Delivery in progress or not yet attempted |
+| `sent` | All recipients received the delivery successfully |
+| `failed` | One or more deliveries failed (see `deliveryError` for details) |
+
+The delivery status appears in run history and the admin UI. Runs that completed before this feature was added will show a `null` delivery status.
+
+### Delivery Preview
+
+Preview what a delivery will look like before the task runs. The preview endpoint generates sample output using mock data:
+
+```bash
+curl -X POST http://localhost:3001/api/v1/scheduled-tasks/:id/preview \
+  -H "Authorization: Bearer <key>" \
+  -H "Content-Type: application/json"
+```
+
+Returns the formatted output for the task's configured channel (email HTML, Slack blocks, or webhook JSON payload). The admin UI includes a "Preview" button on each task row that opens the formatted preview in a dialog.
 
 ---
 
@@ -201,6 +225,7 @@ All routes require authentication and are available at `/api/v1/scheduled-tasks`
 | `PUT` | `/:id` | Update task fields |
 | `DELETE` | `/:id` | Disable task (soft delete for audit trail) |
 | `POST` | `/:id/run` | Trigger immediate execution |
+| `POST` | `/:id/preview` | Preview delivery output (dry-run with mock data) |
 | `GET` | `/:id/runs` | List past runs |
 | `POST` | `/tick` | Serverless tick (webhook/vercel backends) |
 

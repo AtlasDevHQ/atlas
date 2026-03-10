@@ -469,6 +469,42 @@ scheduledTasks.post("/:id/run", async (c) => {
 });
 
 // ---------------------------------------------------------------------------
+// POST /:id/preview — dry-run delivery format with mock data
+// ---------------------------------------------------------------------------
+
+scheduledTasks.post("/:id/preview", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database." }, 404);
+  }
+
+  const preamble = await authPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  const id = c.req.param("id");
+  if (!UUID_RE.test(id)) {
+    return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const task = await getScheduledTask(id, authResult.user?.id);
+    if (!task.ok) {
+      const fail = crudFailResponse(task.reason);
+      return c.json(fail.body, fail.status);
+    }
+
+    const { generateDeliveryPreview } = await import("@atlas/api/lib/scheduler/preview");
+    const preview = generateDeliveryPreview(task.data);
+    return c.json(preview);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // GET /:id/runs — list past runs
 // ---------------------------------------------------------------------------
 

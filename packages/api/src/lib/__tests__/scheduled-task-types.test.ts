@@ -115,6 +115,8 @@ describe("scheduled-task-types", () => {
         actionId: null,
         error: null,
         tokensUsed: 1500,
+        deliveryStatus: "sent",
+        deliveryError: null,
         createdAt: "2024-01-01T09:00:00Z",
       };
       expect(run.status).toBe("success");

@@ -368,6 +368,9 @@ export async function migrateInternalDB(): Promise<void> {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_task ON scheduled_task_runs(task_id);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_status ON scheduled_task_runs(status);`);
 
+  // Delivery status tracking for scheduled task runs
+  await pool.query(`ALTER TABLE scheduled_task_runs ADD COLUMN IF NOT EXISTS delivery_status TEXT, ADD COLUMN IF NOT EXISTS delivery_error TEXT;`);
+
   // Admin-managed connections (url column stores AES-256-GCM encrypted ciphertext; see encryptUrl/decryptUrl)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS connections (

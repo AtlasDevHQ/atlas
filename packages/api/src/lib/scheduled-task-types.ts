@@ -19,6 +19,9 @@ export type DeliveryChannel = (typeof DELIVERY_CHANNELS)[number];
 export const RUN_STATUSES = ["running", "success", "failed", "skipped"] as const;
 export type RunStatus = (typeof RUN_STATUSES)[number];
 
+export const DELIVERY_STATUSES = ["pending", "sent", "failed"] as const;
+export type DeliveryStatus = (typeof DELIVERY_STATUSES)[number];
+
 // ---------------------------------------------------------------------------
 // Recipient discriminated union
 // ---------------------------------------------------------------------------
@@ -73,6 +76,8 @@ export interface ScheduledTaskRunRow {
   action_id: string | null;
   error: string | null;
   tokens_used: number | null;
+  delivery_status: string | null;
+  delivery_error: string | null;
   created_at: string;
 }
 
@@ -112,6 +117,8 @@ export interface ScheduledTaskRun {
   actionId: string | null;
   error: string | null;
   tokensUsed: number | null;
+  deliveryStatus: DeliveryStatus | null;
+  deliveryError: string | null;
   createdAt: string;
 }
 

@@ -7,7 +7,7 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
-import { getScheduledTask } from "@atlas/api/lib/scheduled-tasks";
+import { getScheduledTask, updateRunDeliveryStatus } from "@atlas/api/lib/scheduled-tasks";
 import { executeAgentQuery } from "@atlas/api/lib/agent-query";
 import { deliverResult } from "./delivery";
 
@@ -54,6 +54,9 @@ export async function executeScheduledTask(
     clearTimeout(timer!);
   }
 
+  // Mark delivery as pending before attempting
+  updateRunDeliveryStatus(runId, "pending");
+
   // Deliver results to configured channels (best-effort)
   const delivery = await deliverResult(task, agentResult);
 
@@ -62,6 +65,18 @@ export async function executeScheduledTask(
       { taskId, runId, ...delivery },
       "Partial delivery failure — some recipients did not receive results",
     );
+  }
+
+  // Record delivery outcome
+  if (delivery.attempted === 0) {
+    // No recipients configured — no delivery attempted, leave as pending
+  } else if (delivery.failed === 0) {
+    updateRunDeliveryStatus(runId, "sent");
+  } else {
+    const errorMsg = delivery.succeeded > 0
+      ? `Partial failure: ${delivery.failed}/${delivery.attempted} deliveries failed`
+      : `All ${delivery.failed} deliveries failed`;
+    updateRunDeliveryStatus(runId, "failed", errorMsg);
   }
 
   return {

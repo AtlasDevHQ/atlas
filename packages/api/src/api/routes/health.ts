@@ -26,9 +26,27 @@ const log = createLogger("health");
 
 const CheckStatusSchema = z.enum(["ok", "error", "not_configured"]);
 
+const ComponentStatusSchema = z.enum(["healthy", "degraded", "down", "disabled"]);
+
+const ComponentHealthSchema = z.object({
+  status: ComponentStatusSchema,
+  latencyMs: z.number().int().nonnegative().optional(),
+  lastCheckedAt: z.string(),
+  message: z.string().optional(),
+  model: z.string().optional(),
+  backend: z.string().optional(),
+});
+
 export const HealthResponseSchema = z.object({
   status: z.enum(["ok", "degraded", "error"]),
   warnings: z.array(z.string()).optional(),
+  components: z.object({
+    datasource: ComponentHealthSchema,
+    internalDb: ComponentHealthSchema,
+    provider: ComponentHealthSchema,
+    scheduler: ComponentHealthSchema,
+    sandbox: ComponentHealthSchema,
+  }),
   checks: z.object({
     datasource: z.object({
       status: CheckStatusSchema,
@@ -228,9 +246,56 @@ health.get("/", async (c) => {
       );
     }
 
+    // Build components section for the health dashboard
+    const now = new Date().toISOString();
+    const schedulerEnabled = process.env.ATLAS_SCHEDULER_ENABLED === "true";
+
+    const components = {
+      datasource: {
+        status: dsNotConfigured
+          ? ("disabled" as const)
+          : hasDsError
+            ? ("down" as const)
+            : ("healthy" as const),
+        ...(dsLatencyMs !== undefined && { latencyMs: dsLatencyMs }),
+        lastCheckedAt: now,
+        ...(hasDsError && {
+          message: dsProbeError ?? dsDiagnostic?.code ?? "DB_UNREACHABLE",
+        }),
+      },
+      internalDb: {
+        status: !process.env.DATABASE_URL
+          ? ("disabled" as const)
+          : hasInternalDbError
+            ? ("down" as const)
+            : ("healthy" as const),
+        ...(internalLatencyMs !== undefined && { latencyMs: internalLatencyMs }),
+        lastCheckedAt: now,
+        ...(hasInternalDbError && {
+          message: internalProbeError ?? "INTERNAL_DB_UNREACHABLE",
+        }),
+      },
+      provider: {
+        status: hasKeyError ? ("down" as const) : ("healthy" as const),
+        model: process.env.ATLAS_MODEL ?? "(default)",
+        lastCheckedAt: now,
+        ...(hasKeyError && { message: "MISSING_API_KEY" }),
+      },
+      scheduler: {
+        status: schedulerEnabled ? ("healthy" as const) : ("disabled" as const),
+        lastCheckedAt: now,
+      },
+      sandbox: {
+        status: ("healthy" as const),
+        backend: exploreBackend,
+        lastCheckedAt: now,
+      },
+    };
+
     const response = {
       status,
       ...(warnings.length > 0 && { warnings }),
+      components,
       checks: {
         datasource: dsNotConfigured
           ? { status: "not_configured" as const }

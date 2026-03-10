@@ -1,88 +1,39 @@
 ---
-title: Plugin Overview
-description: Extend Atlas with datasource, context, interaction, action, and sandbox plugins.
+title: Plugin Directory
+description: Browse all official Atlas plugins — datasources, sandboxes, interactions, actions, and context providers.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
+import { PluginDirectory } from "@/components/plugin-directory";
 
 Atlas plugins extend the agent with new capabilities. Each plugin is a factory function registered in `atlas.config.ts`. The Plugin SDK (`@useatlas/plugin-sdk`) provides type definitions and helpers for all five plugin types.
 
-## Available Plugins
+## Official Plugins
 
-Atlas ships with 15 reference plugins covering all five types:
+<PluginDirectory />
 
-### Datasource Plugins
-
-Connect additional databases and APIs as query targets. See [Datasource Plugins](/plugins/datasources) for the full list.
-
-| Plugin | Package | Connects to |
-|--------|---------|-------------|
-| [ClickHouse](/plugins/datasources/clickhouse) | `@useatlas/clickhouse` | ClickHouse analytics database |
-| [DuckDB](/plugins/datasources/duckdb) | `@useatlas/duckdb` | DuckDB embedded analytics |
-| [MySQL](/plugins/datasources/mysql) | `@useatlas/mysql` | MySQL / MariaDB |
-| [Snowflake](/plugins/datasources/snowflake) | `@useatlas/snowflake` | Snowflake Data Cloud |
-| [Salesforce](/plugins/datasources/salesforce) | `@useatlas/salesforce` | Salesforce CRM (SOQL) |
-
-### Sandbox Plugins
-
-Provide isolation backends for the explore and Python tools. See [Sandbox Plugins](/plugins/sandboxes) for the full list.
-
-| Plugin | Package | Isolation Type | Priority |
-|--------|---------|---------------|----------|
-| [Vercel](/plugins/sandboxes/vercel-sandbox) | `@useatlas/vercel-sandbox` | Firecracker microVM (Vercel) | 100 |
-| [E2B](/plugins/sandboxes/e2b) | `@useatlas/e2b` | Firecracker microVM | 90 |
-| [Daytona](/plugins/sandboxes/daytona) | `@useatlas/daytona` | Managed cloud sandbox | 85 |
-| [nsjail](/plugins/sandboxes/nsjail) | `@useatlas/nsjail` | Linux namespace sandbox | 75 |
-| [Sidecar](/plugins/sandboxes/sidecar) | `@useatlas/sidecar` | HTTP-isolated container | 50 |
-
-### Interaction Plugins
-
-Add new surfaces for users to interact with Atlas. See [Interaction Plugins](/plugins/interactions).
-
-| Plugin | Package | Surface |
-|--------|---------|---------|
-| [MCP](/plugins/interactions/mcp) | `@useatlas/mcp` | Model Context Protocol (stdio/SSE) |
-| [Slack](/plugins/interactions/slack) | `@useatlas/slack` | Slack bot (commands, threads, OAuth) |
-
-### Action Plugins
-
-Let the agent perform write operations with approval controls. See [Action Plugins](/plugins/actions).
-
-| Plugin | Package | Action |
-|--------|---------|--------|
-| [Email](/plugins/actions/email) | `@useatlas/email` | Send email reports via Resend |
-| [JIRA](/plugins/actions/jira) | `@useatlas/jira` | Create JIRA tickets |
-
-### Context Plugins
-
-Inject additional knowledge into the agent's system prompt. See [Context Plugins](/plugins/context).
-
-| Plugin | Package | Source |
-|--------|---------|--------|
-| [YAML Context](/plugins/context/yaml-context) | `@useatlas/yaml-context` | Semantic layer (entities, glossary, metrics) |
-
-## Quick Start
-
-Install the Plugin SDK and register plugins in your config:
+## Install a Plugin
 
 ```bash
-bun add @useatlas/plugin-sdk
+bun add @useatlas/clickhouse
 ```
 
 ```typescript
 // atlas.config.ts
 import { defineConfig } from "@atlas/api/lib/config";
 import { clickhousePlugin } from "@useatlas/clickhouse";
-import { e2bSandboxPlugin } from "@useatlas/e2b";
 
 export default defineConfig({
   plugins: [
     clickhousePlugin({ url: process.env.CLICKHOUSE_URL! }),
-    e2bSandboxPlugin({ apiKey: process.env.E2B_API_KEY! }),
   ],
 });
 ```
 
-## Building Your Own
-
 See the [Plugin Authoring Guide](/plugins/authoring-guide) for a step-by-step tutorial on creating custom plugins.
+
+## Community Plugins
+
+<Callout type="info">
+Community plugins are coming soon. If you've built a plugin you'd like to share, [open a pull request](https://github.com/AtlasDevHQ/atlas/pulls) or [start a discussion](https://github.com/AtlasDevHQ/atlas/discussions) on GitHub.
+</Callout>

@@ -200,7 +200,7 @@ describe("internal DB module", () => {
       _resetPool(pool);
 
       await migrateInternalDB();
-      expect(calls.queries.length).toBe(32);
+      expect(calls.queries.length).toBe(35);
       expect(calls.queries[0].sql).toContain("CREATE TABLE IF NOT EXISTS audit_log");
       expect(calls.queries[1].sql).toContain("idx_audit_log_timestamp");
       expect(calls.queries[2].sql).toContain("idx_audit_log_user_id");
@@ -228,11 +228,14 @@ describe("internal DB module", () => {
       expect(calls.queries[24].sql).toContain("idx_scheduled_task_runs_task");
       expect(calls.queries[25].sql).toContain("idx_scheduled_task_runs_status");
       expect(calls.queries[26].sql).toContain("CREATE TABLE IF NOT EXISTS connections");
-      expect(calls.queries[27].sql).toContain("CREATE TABLE IF NOT EXISTS invitations");
-      expect(calls.queries[28].sql).toContain("idx_invitations_email");
-      expect(calls.queries[29].sql).toContain("idx_invitations_token");
-      expect(calls.queries[30].sql).toContain("idx_invitations_status");
-      expect(calls.queries[31].sql).toContain("idx_invitations_pending_email");
+      expect(calls.queries[27].sql).toContain("CREATE TABLE IF NOT EXISTS token_usage");
+      expect(calls.queries[28].sql).toContain("idx_token_usage_user_id");
+      expect(calls.queries[29].sql).toContain("idx_token_usage_created_at");
+      expect(calls.queries[30].sql).toContain("CREATE TABLE IF NOT EXISTS invitations");
+      expect(calls.queries[31].sql).toContain("idx_invitations_email");
+      expect(calls.queries[32].sql).toContain("idx_invitations_token");
+      expect(calls.queries[33].sql).toContain("idx_invitations_status");
+      expect(calls.queries[34].sql).toContain("idx_invitations_pending_email");
     });
 
     it("propagates migration errors", async () => {

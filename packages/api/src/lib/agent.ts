@@ -20,7 +20,8 @@ import { getContextFragments, getDialectHints } from "./plugins/tools";
 import { connections, detectDBType, type ConnectionMetadata, type DBType } from "./db/connection";
 import { getCrossSourceJoins, type CrossSourceJoin } from "./semantic";
 import { getSemanticIndex } from "./semantic-index";
-import { createLogger } from "./logger";
+import { createLogger, getRequestContext } from "./logger";
+import { hasInternalDB, internalExecute } from "./db/internal";
 import { trace, SpanStatusCode } from "@opentelemetry/api";
 
 const log = createLogger("agent");
@@ -324,16 +325,23 @@ export function applyCacheControl(
  * @param tools - Optional custom {@link ToolRegistry}. Defaults to
  *   {@link defaultRegistry} (explore + executeSQL). The loop terminates
  *   when the step limit (25) is reached or the model stops issuing tool calls.
+ * @param conversationId - Optional conversation ID for token usage tracking.
+ *   When provided, the recorded token usage row links to this conversation.
  */
 export async function runAgent({
   messages,
   tools: toolRegistry = defaultRegistry,
+  conversationId,
 }: {
   messages: UIMessage[];
   tools?: ToolRegistry;
+  conversationId?: string;
 }) {
   const model = getModel();
   const providerType = getProviderType();
+  // Capture context eagerly — AsyncLocalStorage may have exited by the time onFinish fires
+  const userId = getRequestContext()?.user?.id ?? null;
+  const resolvedModelId = model.modelId;
 
   const span = tracer.startSpan("atlas.agent", {
     attributes: { provider: providerType, messageCount: messages.length },
@@ -411,6 +419,27 @@ export async function runAgent({
           totalOutputTokens: totalUsage?.outputTokens ?? 0,
         });
         endSpan(SpanStatusCode.OK);
+
+        // Persist token usage to internal DB (fire-and-forget).
+        // Shares the internalExecute circuit breaker with audit writes.
+        if (hasInternalDB() && totalUsage) {
+          try {
+            internalExecute(
+              `INSERT INTO token_usage (user_id, conversation_id, prompt_tokens, completion_tokens, model, provider)
+               VALUES ($1, $2, $3, $4, $5, $6)`,
+              [
+                userId,
+                conversationId ?? null,
+                totalUsage.inputTokens ?? 0,
+                totalUsage.outputTokens ?? 0,
+                resolvedModelId,
+                providerType,
+              ],
+            );
+          } catch (err) {
+            log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to persist token usage");
+          }
+        }
       },
     });
   } catch (err) {

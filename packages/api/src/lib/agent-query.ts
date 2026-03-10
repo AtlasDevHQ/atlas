@@ -36,7 +36,7 @@ export interface AgentQueryResult {
 export async function executeAgentQuery(
   question: string,
   requestId?: string,
-  options?: { priorMessages?: Array<{ role: "user" | "assistant"; content: string }> },
+  options?: { priorMessages?: Array<{ role: "user" | "assistant"; content: string }>; conversationId?: string },
 ): Promise<AgentQueryResult> {
   const id = requestId ?? crypto.randomUUID();
 
@@ -76,6 +76,7 @@ export async function executeAgentQuery(
     const result = await runAgent({
       messages,
       ...(toolRegistry && { tools: toolRegistry }),
+      ...(options?.conversationId && { conversationId: options.conversationId }),
     });
 
     const [text, steps, totalUsage] = await Promise.all([

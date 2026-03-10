@@ -2270,4 +2270,199 @@ admin.delete("/users/invitations/:id", async (c) => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Token usage analytics
+// ---------------------------------------------------------------------------
+
+/** Parse and validate ISO date strings for token usage queries. */
+function parseDateRange(from?: string, to?: string): { fromDate: string; toDate: string } | { error: string } {
+  if (from && isNaN(Date.parse(from))) {
+    return { error: `Invalid 'from' date format: "${from}". Use ISO 8601 (e.g. 2026-01-01).` };
+  }
+  if (to && isNaN(Date.parse(to))) {
+    return { error: `Invalid 'to' date format: "${to}". Use ISO 8601 (e.g. 2026-01-01).` };
+  }
+  const now = new Date();
+  const defaultFrom = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const fromDate = from || defaultFrom.toISOString();
+  const toDate = to || now.toISOString();
+  return { fromDate, toDate };
+}
+
+// GET /tokens/summary — total tokens by period with prompt/completion breakdown
+admin.get("/tokens/summary", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Token usage tracking requires an internal database (DATABASE_URL)." }, 404);
+  }
+
+  const range = parseDateRange(
+    c.req.query("from"),
+    c.req.query("to"),
+  );
+  if ("error" in range) {
+    return c.json({ error: "invalid_request", message: range.error }, 400);
+  }
+  const { fromDate, toDate } = range;
+
+  try {
+    const rows = await internalQuery<{
+      total_prompt: string;
+      total_completion: string;
+      total_requests: string;
+    }>(
+      `SELECT
+         COALESCE(SUM(prompt_tokens), 0) AS total_prompt,
+         COALESCE(SUM(completion_tokens), 0) AS total_completion,
+         COUNT(*) AS total_requests
+       FROM token_usage
+       WHERE created_at >= $1 AND created_at <= $2`,
+      [fromDate, toDate],
+    );
+
+    const row = rows[0];
+    return c.json({
+      totalPromptTokens: parseInt(row?.total_prompt ?? "0", 10),
+      totalCompletionTokens: parseInt(row?.total_completion ?? "0", 10),
+      totalTokens: parseInt(row?.total_prompt ?? "0", 10) + parseInt(row?.total_completion ?? "0", 10),
+      totalRequests: parseInt(row?.total_requests ?? "0", 10),
+      from: fromDate,
+      to: toDate,
+    });
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to fetch token summary");
+    return c.json({ error: "internal_error", message: "Failed to fetch token usage summary." }, 500);
+  }
+});
+
+// GET /tokens/by-user — top N users by token consumption
+admin.get("/tokens/by-user", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Token usage tracking requires an internal database (DATABASE_URL)." }, 404);
+  }
+
+  const range = parseDateRange(
+    c.req.query("from"),
+    c.req.query("to"),
+  );
+  if ("error" in range) {
+    return c.json({ error: "invalid_request", message: range.error }, 400);
+  }
+  const { fromDate, toDate } = range;
+  const parsedLimit = parseInt(c.req.query("limit") ?? "20", 10);
+  const limit = Number.isFinite(parsedLimit) ? Math.min(Math.max(parsedLimit, 1), 100) : 20;
+
+  try {
+    const rows = await internalQuery<{
+      user_id: string;
+      total_prompt: string;
+      total_completion: string;
+      total_tokens: string;
+      request_count: string;
+    }>(
+      `SELECT
+         COALESCE(user_id, 'anonymous') AS user_id,
+         SUM(prompt_tokens) AS total_prompt,
+         SUM(completion_tokens) AS total_completion,
+         SUM(prompt_tokens + completion_tokens) AS total_tokens,
+         COUNT(*) AS request_count
+       FROM token_usage
+       WHERE created_at >= $1 AND created_at <= $2
+       GROUP BY user_id
+       ORDER BY total_tokens DESC
+       LIMIT $3`,
+      [fromDate, toDate, limit],
+    );
+
+    return c.json({
+      users: rows.map((r) => ({
+        userId: r.user_id,
+        promptTokens: parseInt(r.total_prompt, 10),
+        completionTokens: parseInt(r.total_completion, 10),
+        totalTokens: parseInt(r.total_tokens, 10),
+        requestCount: parseInt(r.request_count, 10),
+      })),
+      from: fromDate,
+      to: toDate,
+    });
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to fetch token usage by user");
+    return c.json({ error: "internal_error", message: "Failed to fetch token usage by user." }, 500);
+  }
+});
+
+// GET /tokens/trends — time-series data for charting
+admin.get("/tokens/trends", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Token usage tracking requires an internal database (DATABASE_URL)." }, 404);
+  }
+
+  const range = parseDateRange(
+    c.req.query("from"),
+    c.req.query("to"),
+  );
+  if ("error" in range) {
+    return c.json({ error: "invalid_request", message: range.error }, 400);
+  }
+  const { fromDate, toDate } = range;
+
+  try {
+    const rows = await internalQuery<{
+      day: string;
+      prompt_tokens: string;
+      completion_tokens: string;
+      request_count: string;
+    }>(
+      `SELECT
+         DATE(created_at) AS day,
+         SUM(prompt_tokens) AS prompt_tokens,
+         SUM(completion_tokens) AS completion_tokens,
+         COUNT(*) AS request_count
+       FROM token_usage
+       WHERE created_at >= $1 AND created_at <= $2
+       GROUP BY DATE(created_at)
+       ORDER BY day ASC`,
+      [fromDate, toDate],
+    );
+
+    return c.json({
+      trends: rows.map((r) => ({
+        day: r.day,
+        promptTokens: parseInt(r.prompt_tokens, 10),
+        completionTokens: parseInt(r.completion_tokens, 10),
+        totalTokens: parseInt(r.prompt_tokens, 10) + parseInt(r.completion_tokens, 10),
+        requestCount: parseInt(r.request_count, 10),
+      })),
+      from: fromDate,
+      to: toDate,
+    });
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to fetch token trends");
+    return c.json({ error: "internal_error", message: "Failed to fetch token usage trends." }, 500);
+  }
+});
+
 export { admin };

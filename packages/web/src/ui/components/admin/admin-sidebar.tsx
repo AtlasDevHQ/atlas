@@ -11,6 +11,7 @@ import {
   Puzzle,
   CalendarClock,
   Zap,
+  Coins,
   ArrowLeft,
 } from "lucide-react";
 import {
@@ -35,6 +36,7 @@ const navItems = [
   { href: "/admin/users", label: "Users", icon: Users },
   { href: "/admin/plugins", label: "Plugins", icon: Puzzle },
   { href: "/admin/scheduled-tasks", label: "Scheduled Tasks", icon: CalendarClock },
+  { href: "/admin/token-usage", label: "Token Usage", icon: Coins },
   { href: "/admin/actions", label: "Actions", icon: Zap },
 ];
 

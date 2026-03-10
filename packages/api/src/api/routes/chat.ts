@@ -230,7 +230,7 @@ chat.post("/", async (c) => {
           toolRegistry.freeze();
         }
 
-        const result = await runAgent({ messages, ...(toolRegistry && { tools: toolRegistry }) });
+        const result = await runAgent({ messages, ...(toolRegistry && { tools: toolRegistry }), conversationId });
         const streamResponse = result.toUIMessageStreamResponse();
 
         // Set conversation ID header so the client can track continuity

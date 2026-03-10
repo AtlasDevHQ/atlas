@@ -214,8 +214,15 @@ export interface UpdateScheduledTaskInput {
 // Admin types — shared enums
 // ---------------------------------------------------------------------------
 
-export type DBType = "postgres" | "mysql" | "clickhouse" | "snowflake" | "duckdb" | "salesforce";
-export type HealthStatus = "healthy" | "degraded" | "unhealthy";
+export type {
+  DBType,
+  HealthStatus,
+  ConnectionHealth,
+  ConnectionInfo,
+  ConnectionDetail,
+} from "@atlas/api/lib/connection-types";
+import type { ConnectionHealth, ConnectionInfo } from "@atlas/api/lib/connection-types";
+
 export type PluginType = "datasource" | "context" | "interaction" | "action" | "sandbox";
 export type PluginStatus = "registered" | "initializing" | "healthy" | "unhealthy" | "teardown";
 export type AuthMode = "none" | "simple-key" | "managed" | "byot";
@@ -256,19 +263,8 @@ export interface SemanticStats {
   };
 }
 
-export interface ConnectionHealthCheck {
-  status: HealthStatus;
-  latencyMs: number;
-  message?: string;
-  checkedAt: string;
-}
-
-export interface ConnectionInfo {
-  id: string;
-  dbType: DBType;
-  description?: string;
-  health?: ConnectionHealthCheck;
-}
+/** @deprecated Use `ConnectionHealth` instead. */
+export type ConnectionHealthCheck = ConnectionHealth;
 
 export interface AuditLogEntry {
   id: string;
@@ -678,9 +674,9 @@ export function createAtlasClient(options: AtlasClientOptions) {
       },
 
       /** Test a specific connection's health. */
-      async testConnection(id: string): Promise<ConnectionHealthCheck> {
+      async testConnection(id: string): Promise<ConnectionHealth> {
         const res = await post(`/api/v1/admin/connections/${encodeURIComponent(id)}/test`, {});
-        return unwrap<ConnectionHealthCheck>(res);
+        return unwrap<ConnectionHealth>(res);
       },
 
       /** Query audit log (paginated, filterable). */

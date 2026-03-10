@@ -192,13 +192,25 @@ function getExploreBackend(): Promise<ExploreBackend> {
           const { plugins } = await import("@atlas/api/lib/plugins/registry");
           const { wireSandboxPlugins } = await import("@atlas/api/lib/plugins/wiring");
           const result = await wireSandboxPlugins(plugins, SEMANTIC_ROOT);
+          if (result.failed.length > 0) {
+            log.warn(
+              { failed: result.failed, selectedPlugin: result.pluginId },
+              "Some sandbox plugins failed during create()",
+            );
+          }
           if (result.backend) {
             _activeSandboxPluginId = result.pluginId;
             return result.backend as ExploreBackend;
           }
         } catch (err) {
           const detail = err instanceof Error ? err.message : String(err);
-          log.debug({ err: detail }, "Plugin registry not available for sandbox check");
+          const isModuleError = err != null && typeof err === "object" && "code" in err
+            && (err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND";
+          if (isModuleError) {
+            log.debug({ err: detail }, "Plugin modules not available — skipping sandbox plugins");
+          } else {
+            log.error({ err: detail }, "Unexpected error during sandbox plugin wiring");
+          }
         }
       }
 

@@ -780,4 +780,20 @@ describe("wireSandboxPlugins", () => {
 
     expect(receivedRoot).toBe("/my/custom/semantic");
   });
+
+  test("rejects backend missing exec method from create()", async () => {
+    registry.register(makeSandboxPlugin("bad-backend", {
+      createFn: async () => ({} as SandboxExecBackend),
+    }));
+    registry.register(makeSandboxPlugin("good-backend", { priority: 40 }));
+    await registry.initializeAll(minimalCtx);
+
+    const result = await wireSandboxPlugins(registry, "/semantic");
+
+    // bad-backend has default priority (60) > good-backend (40), tried first but rejected
+    expect(result.pluginId).toBe("good-backend");
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0].pluginId).toBe("bad-backend");
+    expect(result.failed[0].error).toContain("missing exec method");
+  });
 });

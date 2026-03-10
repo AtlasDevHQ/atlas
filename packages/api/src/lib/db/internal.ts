@@ -381,6 +381,22 @@ export async function migrateInternalDB(): Promise<void> {
     );
   `);
 
+  // Token usage tracking
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS token_usage (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id TEXT,
+      conversation_id TEXT,
+      prompt_tokens INTEGER NOT NULL DEFAULT 0,
+      completion_tokens INTEGER NOT NULL DEFAULT 0,
+      model TEXT,
+      provider TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_token_usage_user_id ON token_usage(user_id);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_token_usage_created_at ON token_usage(created_at);`);
+
   // User invitations
   await pool.query(`
     CREATE TABLE IF NOT EXISTS invitations (
@@ -400,7 +416,7 @@ export async function migrateInternalDB(): Promise<void> {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_invitations_status ON invitations(status);`);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_invitations_pending_email ON invitations(email) WHERE status = 'pending';`);
 
-  log.info("Internal DB migration complete (audit_log, conversations, messages, slack, action_log, scheduled_tasks, connections, invitations)");
+  log.info("Internal DB migration complete (audit_log, conversations, messages, slack, action_log, scheduled_tasks, connections, token_usage, invitations)");
 }
 
 /**

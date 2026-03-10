@@ -20,7 +20,8 @@ import { getContextFragments, getDialectHints } from "./plugins/tools";
 import { connections, detectDBType, type ConnectionMetadata, type DBType } from "./db/connection";
 import { getCrossSourceJoins, type CrossSourceJoin } from "./semantic";
 import { getSemanticIndex } from "./semantic-index";
-import { createLogger } from "./logger";
+import { createLogger, getRequestContext } from "./logger";
+import { hasInternalDB, internalExecute } from "./db/internal";
 import { trace, SpanStatusCode } from "@opentelemetry/api";
 
 const log = createLogger("agent");
@@ -328,9 +329,11 @@ export function applyCacheControl(
 export async function runAgent({
   messages,
   tools: toolRegistry = defaultRegistry,
+  conversationId,
 }: {
   messages: UIMessage[];
   tools?: ToolRegistry;
+  conversationId?: string;
 }) {
   const model = getModel();
   const providerType = getProviderType();
@@ -411,6 +414,23 @@ export async function runAgent({
           totalOutputTokens: totalUsage?.outputTokens ?? 0,
         });
         endSpan(SpanStatusCode.OK);
+
+        // Persist token usage to internal DB (fire-and-forget)
+        if (hasInternalDB() && totalUsage) {
+          const ctx = getRequestContext();
+          internalExecute(
+            `INSERT INTO token_usage (user_id, conversation_id, prompt_tokens, completion_tokens, model, provider)
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [
+              ctx?.user?.id ?? null,
+              conversationId ?? null,
+              totalUsage.inputTokens ?? 0,
+              totalUsage.outputTokens ?? 0,
+              process.env.ATLAS_MODEL ?? null,
+              providerType,
+            ],
+          );
+        }
       },
     });
   } catch (err) {

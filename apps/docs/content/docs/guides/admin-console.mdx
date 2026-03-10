@@ -160,6 +160,27 @@ See [Scheduled Tasks](/guides/scheduled-tasks) for setup and configuration.
 
 ---
 
+## Token Usage
+
+**Route:** `/admin/token-usage`
+
+<Callout type="info">
+Requires an internal database (`DATABASE_URL`). Without it, this page shows a feature gate message.
+</Callout>
+
+Tracks LLM token consumption across all agent interactions:
+
+- **Summary cards** — Total tokens, prompt tokens, completion tokens, total requests (with per-request averages)
+- **Token usage over time** — Area chart showing prompt and completion tokens per day
+- **Top users** — Table ranking users by total token consumption with prompt/completion breakdown
+
+**Filters:**
+- Date range (from/to) — defaults to last 30 days
+
+Token data is recorded automatically for every agent interaction (chat and query endpoints). When no internal database is configured, token usage is logged via pino only.
+
+---
+
 ## User Management
 
 **Route:** `/admin/users`
@@ -222,6 +243,9 @@ All admin endpoints are at `/api/v1/admin/` and require the `admin` role. See th
 | `GET` | `/audit/analytics/frequent` | Most frequent queries |
 | `GET` | `/audit/analytics/errors` | Error breakdown |
 | `GET` | `/audit/analytics/users` | Per-user activity |
+| `GET` | `/tokens/summary` | Token usage summary |
+| `GET` | `/tokens/by-user` | Top users by token consumption |
+| `GET` | `/tokens/trends` | Daily token usage time series |
 | `GET` | `/plugins` | List plugins |
 | `POST` | `/plugins/:id/health` | Plugin health check |
 | `GET` | `/users` | List users |

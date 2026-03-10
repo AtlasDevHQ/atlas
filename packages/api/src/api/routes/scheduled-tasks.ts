@@ -498,9 +498,14 @@ scheduledTasks.post("/:id/preview", async (c) => {
       return c.json(fail.body, fail.status);
     }
 
-    const { generateDeliveryPreview } = await import("@atlas/api/lib/scheduler/preview");
-    const preview = generateDeliveryPreview(task.data);
-    return c.json(preview);
+    try {
+      const { generateDeliveryPreview } = await import("@atlas/api/lib/scheduler/preview");
+      const preview = generateDeliveryPreview(task.data);
+      return c.json(preview);
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err.message : String(err), taskId: id }, "Preview generation failed");
+      return c.json({ error: "internal_error", message: "Failed to generate delivery preview." }, 500);
+    }
   });
 });
 

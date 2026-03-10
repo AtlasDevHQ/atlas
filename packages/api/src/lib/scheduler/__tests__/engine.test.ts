@@ -20,10 +20,31 @@ mock.module("@atlas/api/lib/scheduled-tasks", () => ({
   completeTaskRun: mockCompleteTaskRun,
   getScheduledTask: mockGetScheduledTask,
   computeNextRun: mockComputeNextRun,
+  updateRunDeliveryStatus: mock(() => {}),
+  validateCronExpression: mock(() => ({ valid: true })),
+  listScheduledTasks: mock(() => Promise.resolve({ tasks: [], total: 0 })),
+  updateScheduledTask: mock(() => Promise.resolve({ ok: true })),
+  deleteScheduledTask: mock(() => Promise.resolve({ ok: true })),
+  listTaskRuns: mock(() => Promise.resolve([])),
+  listAllRuns: mock(() => Promise.resolve({ runs: [], total: 0 })),
+  _resetScheduledTasksForTest: mock(() => {}),
 }));
 
 mock.module("@atlas/api/lib/db/internal", () => ({
   internalExecute: mock(() => {}),
+  internalQuery: mock(() => Promise.resolve([])),
+  hasInternalDB: mock(() => true),
+  getInternalDB: mock(() => ({ query: mock(() => Promise.resolve({ rows: [] })), end: mock(() => Promise.resolve()), on: mock(() => {}) })),
+  closeInternalDB: mock(() => Promise.resolve()),
+  _resetPool: mock(() => {}),
+  _resetCircuitBreaker: mock(() => {}),
+  migrateInternalDB: mock(() => Promise.resolve()),
+  loadSavedConnections: mock(() => Promise.resolve(0)),
+  encryptUrl: mock((s: string) => s),
+  decryptUrl: mock((s: string) => s),
+  isPlaintextUrl: mock(() => true),
+  getEncryptionKey: mock(() => null),
+  _resetEncryptionKeyCache: mock(() => {}),
 }));
 
 const mockExecuteResult = {

@@ -19,6 +19,8 @@ export interface DeliveryPreview {
   slack?: { text: string; blocks: unknown[] };
   /** For webhook: the full JSON payload */
   webhook?: unknown;
+  /** Fallback message when channel is unrecognized */
+  fallbackMessage?: string;
 }
 
 const MOCK_RESULT: AgentQueryResult = {
@@ -42,9 +44,10 @@ const MOCK_RESULT: AgentQueryResult = {
 };
 
 export function generateDeliveryPreview(task: ScheduledTask): DeliveryPreview {
-  const preview: DeliveryPreview = { channel: task.deliveryChannel };
+  const channel = task.deliveryChannel;
+  const preview: DeliveryPreview = { channel };
 
-  switch (task.deliveryChannel) {
+  switch (channel) {
     case "email": {
       const { subject, body } = formatEmailReport(task, MOCK_RESULT);
       preview.email = { subject, body };
@@ -58,6 +61,10 @@ export function generateDeliveryPreview(task: ScheduledTask): DeliveryPreview {
     case "webhook": {
       preview.webhook = formatWebhookPayload(task, MOCK_RESULT);
       break;
+    }
+    default: {
+      const _exhaustive: never = channel;
+      preview.fallbackMessage = `Unsupported delivery channel: ${_exhaustive}`;
     }
   }
 

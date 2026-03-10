@@ -1,9 +1,11 @@
 /**
  * Scheduled task executor — bridges the scheduler to executeAgentQuery().
  *
- * Fetches the task, runs the agent, delivers results, and returns execution
- * metadata. The executor does NOT update the run record — callers (engine.ts)
- * own run completion to avoid double-writes.
+ * Fetches the task, runs the agent, delivers results, records delivery status,
+ * and returns execution metadata. The executor does NOT update the run record
+ * (status/completedAt) — callers (engine.ts) own run completion to avoid
+ * double-writes. Delivery status is written here because only the executor
+ * knows the delivery outcome.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -54,29 +56,30 @@ export async function executeScheduledTask(
     clearTimeout(timer!);
   }
 
-  // Mark delivery as pending before attempting
-  updateRunDeliveryStatus(runId, "pending");
-
-  // Deliver results to configured channels (best-effort)
+  // Only attempt delivery when recipients are configured
   const delivery = await deliverResult(task, agentResult);
 
-  if (delivery.failed > 0) {
-    log.warn(
-      { taskId, runId, ...delivery },
-      "Partial delivery failure — some recipients did not receive results",
-    );
-  }
-
-  // Record delivery outcome
   if (delivery.attempted === 0) {
-    // No recipients configured — no delivery attempted, leave as pending
-  } else if (delivery.failed === 0) {
-    updateRunDeliveryStatus(runId, "sent");
+    // No recipients configured — skip delivery status entirely (leave null)
   } else {
-    const errorMsg = delivery.succeeded > 0
-      ? `Partial failure: ${delivery.failed}/${delivery.attempted} deliveries failed`
-      : `All ${delivery.failed} deliveries failed`;
-    updateRunDeliveryStatus(runId, "failed", errorMsg);
+    // Mark delivery as pending, then update with outcome
+    updateRunDeliveryStatus(runId, "pending");
+
+    if (delivery.failed > 0) {
+      log.warn(
+        { taskId, runId, ...delivery },
+        "Partial delivery failure — some recipients did not receive results",
+      );
+    }
+
+    if (delivery.failed === 0) {
+      updateRunDeliveryStatus(runId, "sent");
+    } else {
+      const errorMsg = delivery.succeeded > 0
+        ? `Partial failure: ${delivery.failed}/${delivery.attempted} deliveries failed`
+        : `All ${delivery.failed} deliveries failed`;
+      updateRunDeliveryStatus(runId, "failed", errorMsg);
+    }
   }
 
   return {

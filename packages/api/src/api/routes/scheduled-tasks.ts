@@ -22,10 +22,11 @@ import {
   updateScheduledTask,
   deleteScheduledTask,
   listTaskRuns,
+  listAllRuns,
   validateCronExpression,
   type CrudFailReason,
 } from "@atlas/api/lib/scheduled-tasks";
-import { DELIVERY_CHANNELS } from "@atlas/api/lib/scheduled-task-types";
+import { DELIVERY_CHANNELS, RUN_STATUSES, type RunStatus } from "@atlas/api/lib/scheduled-task-types";
 import { ACTION_APPROVAL_MODES } from "@atlas/api/lib/action-types";
 
 const log = createLogger("scheduled-tasks-routes");
@@ -255,6 +256,47 @@ scheduledTasks.post("/tick", async (c) => {
     log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Tick execution failed");
     return c.json({ error: "internal_error", message: "Tick execution failed." }, 500);
   }
+});
+
+// ---------------------------------------------------------------------------
+// GET /runs — cross-task run history
+// ---------------------------------------------------------------------------
+
+scheduledTasks.get("/runs", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database." }, 404);
+  }
+
+  const preamble = await authPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const rawLimit = parseInt(c.req.query("limit") ?? "20", 10);
+    const rawOffset = parseInt(c.req.query("offset") ?? "0", 10);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 100) : 20;
+    const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
+
+    const taskIdParam = c.req.query("task_id") || undefined;
+    const taskId = taskIdParam && UUID_RE.test(taskIdParam) ? taskIdParam : undefined;
+    const statusParam = c.req.query("status");
+    const status = statusParam && (RUN_STATUSES as readonly string[]).includes(statusParam)
+      ? (statusParam as RunStatus)
+      : undefined;
+    const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+    const dateFromParam = c.req.query("date_from") || undefined;
+    const dateToParam = c.req.query("date_to") || undefined;
+    const dateFrom = dateFromParam && ISO_DATE_RE.test(dateFromParam) ? dateFromParam : undefined;
+    const dateTo = dateToParam && ISO_DATE_RE.test(dateToParam) ? dateToParam : undefined;
+
+    const result = await listAllRuns({ taskId, status, dateFrom, dateTo, limit, offset });
+    return c.json(result);
+  });
 });
 
 // ---------------------------------------------------------------------------

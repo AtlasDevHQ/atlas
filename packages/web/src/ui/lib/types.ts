@@ -82,6 +82,10 @@ export interface ScheduledTaskWithRuns extends ScheduledTask {
   recentRuns: ScheduledTaskRun[];
 }
 
+export interface ScheduledTaskRunWithTaskName extends ScheduledTaskRun {
+  taskName: string;
+}
+
 // --- Error types (from @atlas/api/lib/errors) ---
 
 export const CHAT_ERROR_CODES = [

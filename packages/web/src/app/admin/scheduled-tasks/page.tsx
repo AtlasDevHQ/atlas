@@ -1,6 +1,7 @@
 "use client";
 
 import { Fragment, useEffect, useState } from "react";
+import Link from "next/link";
 import { useQueryStates } from "nuqs";
 import { scheduledTasksSearchParams } from "./search-params";
 import { useAtlasConfig } from "@/ui/context";
@@ -40,6 +41,7 @@ import {
   Plus,
   Pencil,
   Trash2,
+  History,
 } from "lucide-react";
 import { useInProgressSet, type FetchError, friendlyError } from "@/ui/hooks/use-admin-fetch";
 import { TaskFormDialog } from "./task-form-dialog";
@@ -327,10 +329,18 @@ export default function ScheduledTasksPage() {
             Manage recurring queries and delivery schedules
           </p>
         </div>
-        <Button size="sm" onClick={openCreate}>
-          <Plus className="mr-1 size-4" />
-          Create task
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" asChild>
+            <Link href="/admin/scheduled-tasks/runs">
+              <History className="mr-1 size-4" />
+              Run History
+            </Link>
+          </Button>
+          <Button size="sm" onClick={openCreate}>
+            <Plus className="mr-1 size-4" />
+            Create task
+          </Button>
+        </div>
       </div>
 
       <div className="flex items-center gap-2 border-b px-6 py-3">

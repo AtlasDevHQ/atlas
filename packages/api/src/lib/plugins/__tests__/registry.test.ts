@@ -307,6 +307,33 @@ describe("PluginRegistry", () => {
     });
   });
 
+  // --- getAll ---
+
+  describe("getAll", () => {
+    test("returns all plugins regardless of status", async () => {
+      registry.register(makePlugin({ id: "healthy1", types: ["datasource"] }));
+      registry.register(makePlugin({
+        id: "unhealthy1",
+        types: ["context"],
+        initialize: async () => { throw new Error("fail"); },
+      }));
+      registry.register(makePlugin({ id: "healthy2", types: ["action"] }));
+      await registry.initializeAll(minimalCtx);
+
+      const all = registry.getAll();
+      expect(all.map((p) => p.id)).toEqual(["healthy1", "unhealthy1", "healthy2"]);
+      expect(all).toHaveLength(3);
+    });
+
+    test("returns plugins in registration order", () => {
+      registry.register(makePlugin({ id: "c" }));
+      registry.register(makePlugin({ id: "a" }));
+      registry.register(makePlugin({ id: "b" }));
+
+      expect(registry.getAll().map((p) => p.id)).toEqual(["c", "a", "b"]);
+    });
+  });
+
   // --- getStatus ---
 
   describe("getStatus", () => {

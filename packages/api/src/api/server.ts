@@ -96,6 +96,33 @@ if (config.plugins?.length) {
     config: config as unknown as Record<string, unknown>,
   };
 
+  // Run plugin schema migrations before initialize() so plugins can use
+  // their tables in initialize(). Schema is declared at plugin creation
+  // time, so it is readable before initialize() runs.
+  const pluginsWithSchema = plugins.getAll().filter((p) => p.schema != null);
+  if (pluginsWithSchema.length > 0) {
+    if (hasInternalDB()) {
+      try {
+        const { runPluginMigrations } = await import("@atlas/api/lib/plugins/migrate");
+        const migrationResult = await runPluginMigrations(getInternalDB(), plugins.getAll());
+        if (migrationResult.applied.length > 0) {
+          log.info({ applied: migrationResult.applied }, "Plugin schema migrations applied");
+        }
+      } catch (err) {
+        log.error(
+          { err: err instanceof Error ? err : new Error(String(err)) },
+          "Plugin schema migration failed — aborting startup",
+        );
+        process.exit(1);
+      }
+    } else {
+      log.error(
+        { plugins: pluginsWithSchema.map((p) => p.id) },
+        "Plugins declare schema but DATABASE_URL is not set — plugin tables will not be created",
+      );
+    }
+  }
+
   const { succeeded, failed } = await plugins.initializeAll(pluginContext);
   if (failed.length > 0) {
     log.error({ succeeded, failed }, `Plugin initialization completed with ${failed.length} failure(s)`);

@@ -198,6 +198,11 @@ export class PluginRegistry {
       .map((e) => e.plugin);
   }
 
+  /** Return all registered plugins regardless of status (for schema migrations at boot). */
+  getAll(): PluginLike[] {
+    return this.entries.map((e) => e.plugin);
+  }
+
   /** Return all healthy plugins regardless of type (for cross-cutting hooks). */
   getAllHealthy(): PluginLike[] {
     return this.entries

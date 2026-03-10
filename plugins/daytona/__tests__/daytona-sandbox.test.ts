@@ -46,7 +46,7 @@ mock.module("@daytonaio/sdk", () => ({
 
 // Import AFTER mock is in place
 const { daytonaSandboxPlugin, buildDaytonaSandboxPlugin } = await import(
-  "../index"
+  "../src/index"
 );
 
 // ---------------------------------------------------------------------------

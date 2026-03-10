@@ -220,17 +220,16 @@
     },
     "plugins/clickhouse": {
       "name": "@useatlas/clickhouse",
-      "version": "0.1.0",
-      "dependencies": {
-        "@useatlas/plugin-sdk": "workspace:*",
-      },
+      "version": "0.0.1",
       "devDependencies": {
+        "@useatlas/plugin-sdk": "workspace:*",
         "ai": "^6.0.97",
         "hono": "^4.12.3",
         "zod": "^4.3.6",
       },
       "peerDependencies": {
         "@clickhouse/client": ">=1.0.0",
+        "@useatlas/plugin-sdk": ">=0.0.1",
       },
       "optionalPeers": [
         "@clickhouse/client",
@@ -238,17 +237,16 @@
     },
     "plugins/daytona": {
       "name": "@useatlas/daytona",
-      "version": "0.1.0",
-      "dependencies": {
-        "@useatlas/plugin-sdk": "workspace:*",
-      },
+      "version": "0.0.1",
       "devDependencies": {
+        "@useatlas/plugin-sdk": "workspace:*",
         "ai": "^6.0.97",
         "hono": "^4.12.3",
         "zod": "^4.3.6",
       },
       "peerDependencies": {
         "@daytonaio/sdk": ">=0.1.0",
+        "@useatlas/plugin-sdk": ">=0.0.1",
       },
       "optionalPeers": [
         "@daytonaio/sdk",
@@ -256,17 +254,16 @@
     },
     "plugins/duckdb": {
       "name": "@useatlas/duckdb",
-      "version": "0.1.0",
-      "dependencies": {
-        "@useatlas/plugin-sdk": "workspace:*",
-      },
+      "version": "0.0.1",
       "devDependencies": {
+        "@useatlas/plugin-sdk": "workspace:*",
         "ai": "^6.0.97",
         "hono": "^4.12.3",
         "zod": "^4.3.6",
       },
       "peerDependencies": {
         "@duckdb/node-api": "^1.4.4-r.1",
+        "@useatlas/plugin-sdk": ">=0.0.1",
       },
       "optionalPeers": [
         "@duckdb/node-api",
@@ -274,16 +271,15 @@
     },
     "plugins/e2b": {
       "name": "@useatlas/e2b",
-      "version": "0.1.0",
-      "dependencies": {
-        "@useatlas/plugin-sdk": "workspace:*",
-      },
+      "version": "0.0.1",
       "devDependencies": {
+        "@useatlas/plugin-sdk": "workspace:*",
         "ai": "^6.0.97",
         "hono": "^4.12.3",
         "zod": "^4.3.6",
       },
       "peerDependencies": {
+        "@useatlas/plugin-sdk": ">=0.0.1",
         "e2b": ">=1.0.0",
       },
       "optionalPeers": [
@@ -292,64 +288,60 @@
     },
     "plugins/email": {
       "name": "@useatlas/email",
-      "version": "0.1.0",
-      "dependencies": {
-        "@useatlas/plugin-sdk": "workspace:*",
-      },
+      "version": "0.0.1",
       "devDependencies": {
+        "@useatlas/plugin-sdk": "workspace:*",
         "ai": "^6.0.97",
         "zod": "^4.3.6",
       },
       "peerDependencies": {
+        "@useatlas/plugin-sdk": ">=0.0.1",
         "ai": "^6.0.97",
         "zod": "^4.3.6",
       },
     },
     "plugins/jira": {
       "name": "@useatlas/jira",
-      "version": "0.1.0",
-      "dependencies": {
-        "@useatlas/plugin-sdk": "workspace:*",
-      },
+      "version": "0.0.1",
       "devDependencies": {
+        "@useatlas/plugin-sdk": "workspace:*",
         "ai": "^6.0.97",
         "zod": "^4.3.6",
       },
       "peerDependencies": {
+        "@useatlas/plugin-sdk": ">=0.0.1",
         "ai": "^6.0.0",
         "zod": "^4.0.0",
       },
     },
     "plugins/mcp": {
       "name": "@useatlas/mcp",
-      "version": "0.1.0",
-      "dependencies": {
-        "@useatlas/plugin-sdk": "workspace:*",
-      },
+      "version": "0.0.1",
       "devDependencies": {
         "@atlas/mcp": "workspace:*",
         "@modelcontextprotocol/sdk": "^1.27.1",
+        "@useatlas/plugin-sdk": "workspace:*",
         "hono": "^4.12.3",
         "zod": "^4.3.6",
       },
       "peerDependencies": {
         "@atlas/mcp": "workspace:*",
         "@modelcontextprotocol/sdk": "^1.27.1",
+        "@useatlas/plugin-sdk": ">=0.0.1",
         "zod": "^4.3.6",
       },
     },
     "plugins/mysql": {
       "name": "@useatlas/mysql",
-      "version": "0.1.0",
-      "dependencies": {
-        "@useatlas/plugin-sdk": "workspace:*",
-      },
+      "version": "0.0.1",
       "devDependencies": {
+        "@useatlas/plugin-sdk": "workspace:*",
         "ai": "^6.0.97",
         "hono": "^4.12.3",
         "zod": "^4.3.6",
       },
       "peerDependencies": {
+        "@useatlas/plugin-sdk": ">=0.0.1",
         "mysql2": "^3.18.0",
       },
       "optionalPeers": [
@@ -358,28 +350,28 @@
     },
     "plugins/nsjail": {
       "name": "@useatlas/nsjail",
-      "version": "0.1.0",
-      "dependencies": {
-        "@useatlas/plugin-sdk": "workspace:*",
-      },
+      "version": "0.0.1",
       "devDependencies": {
-        "ai": "^6.0.97",
-        "hono": "^4.12.3",
-        "zod": "^4.3.6",
-      },
-    },
-    "plugins/salesforce": {
-      "name": "@useatlas/salesforce",
-      "version": "0.1.0",
-      "dependencies": {
         "@useatlas/plugin-sdk": "workspace:*",
-      },
-      "devDependencies": {
         "ai": "^6.0.97",
         "hono": "^4.12.3",
         "zod": "^4.3.6",
       },
       "peerDependencies": {
+        "@useatlas/plugin-sdk": ">=0.0.1",
+      },
+    },
+    "plugins/salesforce": {
+      "name": "@useatlas/salesforce",
+      "version": "0.0.1",
+      "devDependencies": {
+        "@useatlas/plugin-sdk": "workspace:*",
+        "ai": "^6.0.97",
+        "hono": "^4.12.3",
+        "zod": "^4.3.6",
+      },
+      "peerDependencies": {
+        "@useatlas/plugin-sdk": ">=0.0.1",
         "jsforce": "^3.10.14",
       },
       "optionalPeers": [
@@ -388,43 +380,42 @@
     },
     "plugins/sidecar": {
       "name": "@useatlas/sidecar",
-      "version": "0.1.0",
-      "dependencies": {
-        "@useatlas/plugin-sdk": "workspace:*",
-      },
+      "version": "0.0.1",
       "devDependencies": {
+        "@useatlas/plugin-sdk": "workspace:*",
         "ai": "^6.0.97",
         "hono": "^4.12.3",
         "zod": "^4.3.6",
       },
+      "peerDependencies": {
+        "@useatlas/plugin-sdk": ">=0.0.1",
+      },
     },
     "plugins/slack": {
       "name": "@useatlas/slack",
-      "version": "0.1.0",
-      "dependencies": {
-        "@useatlas/plugin-sdk": "workspace:*",
-      },
+      "version": "0.0.1",
       "devDependencies": {
+        "@useatlas/plugin-sdk": "workspace:*",
         "hono": "^4.12.3",
         "zod": "^4.3.6",
       },
       "peerDependencies": {
+        "@useatlas/plugin-sdk": ">=0.0.1",
         "hono": "^4.12.3",
         "zod": "^4.3.6",
       },
     },
     "plugins/snowflake": {
       "name": "@useatlas/snowflake",
-      "version": "0.1.0",
-      "dependencies": {
-        "@useatlas/plugin-sdk": "workspace:*",
-      },
+      "version": "0.0.1",
       "devDependencies": {
+        "@useatlas/plugin-sdk": "workspace:*",
         "ai": "^6.0.97",
         "hono": "^4.12.3",
         "zod": "^4.3.6",
       },
       "peerDependencies": {
+        "@useatlas/plugin-sdk": ">=0.0.1",
         "snowflake-sdk": "^2.3.4",
       },
       "optionalPeers": [
@@ -433,16 +424,15 @@
     },
     "plugins/vercel-sandbox": {
       "name": "@useatlas/vercel-sandbox",
-      "version": "0.1.0",
-      "dependencies": {
-        "@useatlas/plugin-sdk": "workspace:*",
-      },
+      "version": "0.0.1",
       "devDependencies": {
+        "@useatlas/plugin-sdk": "workspace:*",
         "ai": "^6.0.97",
         "hono": "^4.12.3",
         "zod": "^4.3.6",
       },
       "peerDependencies": {
+        "@useatlas/plugin-sdk": ">=0.0.1",
         "@vercel/sandbox": ">=0.1.0",
       },
       "optionalPeers": [
@@ -451,13 +441,16 @@
     },
     "plugins/yaml-context": {
       "name": "@useatlas/yaml-context",
-      "version": "0.1.0",
+      "version": "0.0.1",
       "dependencies": {
-        "@useatlas/plugin-sdk": "workspace:*",
         "js-yaml": "^4.1.1",
       },
       "devDependencies": {
         "@types/js-yaml": "^4.0.9",
+        "@useatlas/plugin-sdk": "workspace:*",
+      },
+      "peerDependencies": {
+        "@useatlas/plugin-sdk": ">=0.0.1",
       },
     },
   },

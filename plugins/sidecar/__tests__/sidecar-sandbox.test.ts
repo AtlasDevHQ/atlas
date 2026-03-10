@@ -3,7 +3,7 @@ import { definePlugin, isSandboxPlugin } from "@useatlas/plugin-sdk";
 import {
   sidecarSandboxPlugin,
   buildSidecarSandboxPlugin,
-} from "../index";
+} from "../src/index";
 
 // Zod defaults make timeoutMs required in the output type
 // but optional at runtime. Tests that rely on defaults use `as any`.

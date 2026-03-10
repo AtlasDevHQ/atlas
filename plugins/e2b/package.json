@@ -1,24 +1,54 @@
 {
   "name": "@useatlas/e2b",
-  "version": "0.1.0",
-  "private": false,
+  "version": "0.0.1",
+  "description": "Atlas E2B sandbox plugin",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "files": [
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "test": "bun test __tests__/e2b-sandbox.test.ts"
   },
-  "dependencies": {
-    "@useatlas/plugin-sdk": "workspace:*"
+  "keywords": [
+    "atlas",
+    "text-to-sql",
+    "plugin",
+    "sandbox",
+    "e2b"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AtlasDevHQ/atlas",
+    "directory": "plugins/e2b"
   },
+  "homepage": "https://docs.useatlas.dev",
+  "bugs": {
+    "url": "https://github.com/AtlasDevHQ/atlas/issues"
+  },
+  "license": "MIT",
   "peerDependencies": {
-    "e2b": ">=1.0.0"
+    "e2b": ">=1.0.0",
+    "@useatlas/plugin-sdk": ">=0.0.1"
+  },
+  "devDependencies": {
+    "ai": "^6.0.97",
+    "hono": "^4.12.3",
+    "zod": "^4.3.6",
+    "@useatlas/plugin-sdk": "workspace:*"
   },
   "peerDependenciesMeta": {
     "e2b": {
       "optional": true
     }
-  },
-  "devDependencies": {
-    "ai": "^6.0.97",
-    "hono": "^4.12.3",
-    "zod": "^4.3.6"
   }
 }

@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { parseDuckDBUrl } from "../connection";
+import { parseDuckDBUrl } from "../src/connection";
 
 describe("parseDuckDBUrl", () => {
   test("parses duckdb:// as in-memory", () => {

@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { definePlugin, isActionPlugin } from "@useatlas/plugin-sdk";
-import { emailPlugin } from "../index";
-import { extractEmailDomain, validateAllowedDomains, executeEmailSend } from "../tool";
+import { emailPlugin } from "../src/index";
+import { extractEmailDomain, validateAllowedDomains, executeEmailSend } from "../src/tool";
 
 // ---------------------------------------------------------------------------
 // Valid config fixture

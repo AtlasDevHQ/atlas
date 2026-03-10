@@ -1,24 +1,54 @@
 {
   "name": "@useatlas/vercel-sandbox",
-  "version": "0.1.0",
-  "private": false,
+  "version": "0.0.1",
+  "description": "Atlas Vercel sandbox plugin",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "files": [
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "test": "bun test __tests__/vercel-sandbox.test.ts"
   },
-  "dependencies": {
-    "@useatlas/plugin-sdk": "workspace:*"
+  "keywords": [
+    "atlas",
+    "text-to-sql",
+    "plugin",
+    "sandbox",
+    "vercel-sandbox"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AtlasDevHQ/atlas",
+    "directory": "plugins/vercel-sandbox"
   },
+  "homepage": "https://docs.useatlas.dev",
+  "bugs": {
+    "url": "https://github.com/AtlasDevHQ/atlas/issues"
+  },
+  "license": "MIT",
   "peerDependencies": {
-    "@vercel/sandbox": ">=0.1.0"
+    "@vercel/sandbox": ">=0.1.0",
+    "@useatlas/plugin-sdk": ">=0.0.1"
+  },
+  "devDependencies": {
+    "ai": "^6.0.97",
+    "hono": "^4.12.3",
+    "zod": "^4.3.6",
+    "@useatlas/plugin-sdk": "workspace:*"
   },
   "peerDependenciesMeta": {
     "@vercel/sandbox": {
       "optional": true
     }
-  },
-  "devDependencies": {
-    "ai": "^6.0.97",
-    "hono": "^4.12.3",
-    "zod": "^4.3.6"
   }
 }

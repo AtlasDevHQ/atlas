@@ -4,7 +4,7 @@ import {
   nsjailSandboxPlugin,
   buildNsjailSandboxPlugin,
   findNsjailBinary,
-} from "../index";
+} from "../src/index";
 import type { AtlasSandboxPlugin } from "@useatlas/plugin-sdk";
 
 // Zod defaults make timeLimitSec/memoryLimitMb required in the output type

@@ -29,8 +29,8 @@ import {
   mysqlPlugin,
   buildMySQLPlugin,
   extractHost,
-} from "../index";
-import { createMySQLConnection } from "../connection";
+} from "../src/index";
+import { createMySQLConnection } from "../src/connection";
 
 beforeEach(() => {
   mockExecute.mockClear();

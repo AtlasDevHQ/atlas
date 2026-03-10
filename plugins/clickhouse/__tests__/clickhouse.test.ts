@@ -28,8 +28,8 @@ import {
   rewriteClickHouseUrl,
   extractHost,
   CLICKHOUSE_FORBIDDEN_PATTERNS,
-} from "../index";
-import { createClickHouseConnection } from "../connection";
+} from "../src/index";
+import { createClickHouseConnection } from "../src/connection";
 
 beforeEach(() => {
   mockQuery.mockClear();

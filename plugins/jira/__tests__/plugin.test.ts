@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { definePlugin, isActionPlugin } from "@useatlas/plugin-sdk";
-import { jiraPlugin } from "../index";
-import { textToADF, executeJiraCreate } from "../tool";
+import { jiraPlugin } from "../src/index";
+import { textToADF, executeJiraCreate } from "../src/tool";
 
 // ---------------------------------------------------------------------------
 // Valid config fixture

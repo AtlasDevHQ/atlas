@@ -210,13 +210,10 @@ function ConnectionFormDialog({
       if (!isEdit) {
         body.id = id;
         body.url = url;
-      } else if (url) {
-        body.url = url;
-      }
-      if (description) body.description = description;
-      if (schema) body.schema = schema;
-      // For edit, send empty string to clear schema/description
-      if (isEdit) {
+        if (description) body.description = description;
+        if (schema) body.schema = schema;
+      } else {
+        if (url) body.url = url;
         body.description = description;
         body.schema = schema || undefined;
       }

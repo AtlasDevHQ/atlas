@@ -847,8 +847,8 @@ admin.put("/connections/:id", async (c) => {
             description: current.description ?? undefined,
             schema: current.schema_name ?? undefined,
           });
-        } catch {
-          // If restoring also fails, unregister to avoid a broken state
+        } catch (restoreErr) {
+          log.error({ connectionId: id, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) }, "Failed to restore previous connection after update failure — connection unregistered");
           connections.unregister(id);
         }
         return c.json({
@@ -992,14 +992,18 @@ admin.get("/connections/:id", async (c) => {
     let schema: string | null = null;
     let managed = false;
     if (hasInternalDB()) {
-      const rows = await internalQuery<{ url: string; schema_name: string | null }>(
-        "SELECT url, schema_name FROM connections WHERE id = $1",
-        [id],
-      );
-      if (rows.length > 0) {
-        maskedUrl = maskConnectionUrl(rows[0].url);
-        schema = rows[0].schema_name;
-        managed = true;
+      try {
+        const rows = await internalQuery<{ url: string; schema_name: string | null }>(
+          "SELECT url, schema_name FROM connections WHERE id = $1",
+          [id],
+        );
+        if (rows.length > 0) {
+          maskedUrl = maskConnectionUrl(rows[0].url);
+          schema = rows[0].schema_name;
+          managed = true;
+        }
+      } catch (err) {
+        log.warn({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to fetch connection details from internal DB");
       }
     }
 

@@ -33,14 +33,20 @@ export async function migrateAuthTables(): Promise<void> {
   // Internal DB migration (audit_log) — runs regardless of auth mode
   if (hasInternalDB()) {
     try {
-      const { migrateInternalDB, loadSavedConnections } = await import("@atlas/api/lib/db/internal");
+      const { migrateInternalDB } = await import("@atlas/api/lib/db/internal");
       await migrateInternalDB();
-      // Load admin-managed connections after migration ensures the table exists
-      await loadSavedConnections();
     } catch (err) {
       log.error({ err }, "Internal DB migration failed");
       _migrationError = "Connected to the internal database but migration failed. Check database permissions (CREATE TABLE, CREATE INDEX).";
       // Don't block server start — audit will fall back to pino-only
+    }
+
+    // Load admin-managed connections (separate from migration so failures don't conflate)
+    try {
+      const { loadSavedConnections } = await import("@atlas/api/lib/db/internal");
+      await loadSavedConnections();
+    } catch (err) {
+      log.error({ err }, "Failed to load saved connections at startup — admin-managed connections unavailable");
     }
   }
 

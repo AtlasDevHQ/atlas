@@ -815,7 +815,15 @@ admin.put("/connections/:id", async (c) => {
 
     const { url, description, schema } = body as Record<string, unknown>;
     const current = existing[0];
-    const currentUrl = decryptUrl(current.url);
+
+    let currentUrl: string;
+    try {
+      currentUrl = decryptUrl(current.url);
+    } catch (err) {
+      log.error({ connectionId: id, err: err instanceof Error ? err.message : String(err) }, "Failed to decrypt stored connection URL");
+      return c.json({ error: "decryption_failed", message: "Stored connection URL could not be decrypted. The encryption key may have changed." }, 500);
+    }
+
     const newUrl = typeof url === "string" ? url : currentUrl;
     const newDescription = typeof description === "string" ? description : current.description;
     const newSchema = typeof schema === "string" ? (schema || null) : current.schema_name;

@@ -19,6 +19,7 @@ import {
   decryptUrl,
   getEncryptionKey,
   isPlaintextUrl,
+  _resetEncryptionKeyCache,
 } from "../internal";
 import { connections } from "../connection";
 
@@ -454,11 +455,12 @@ describe("connection URL encryption", () => {
   const origAuthSecret = process.env.BETTER_AUTH_SECRET;
 
   afterEach(() => {
-    // Restore env vars
+    // Restore env vars and reset cached key
     if (origEncKey !== undefined) process.env.ATLAS_ENCRYPTION_KEY = origEncKey;
     else delete process.env.ATLAS_ENCRYPTION_KEY;
     if (origAuthSecret !== undefined) process.env.BETTER_AUTH_SECRET = origAuthSecret;
     else delete process.env.BETTER_AUTH_SECRET;
+    _resetEncryptionKeyCache();
   });
 
   describe("getEncryptionKey()", () => {
@@ -620,6 +622,12 @@ describe("connection URL encryption", () => {
 
       process.env.ATLAS_ENCRYPTION_KEY = "key-two-for-encryption-testing!!";
       expect(() => decryptUrl(encrypted)).toThrow("Failed to decrypt connection URL");
+    });
+
+    it("throws on non-base64 3-part string that is not a URL", () => {
+      process.env.ATLAS_ENCRYPTION_KEY = "test-key-for-corruption-testing!";
+      // 3 colon-separated parts but not valid encrypted data
+      expect(() => decryptUrl("foo:bar:baz")).toThrow("Failed to decrypt connection URL");
     });
   });
 

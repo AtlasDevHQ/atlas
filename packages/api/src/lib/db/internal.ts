@@ -19,15 +19,26 @@ const ENCRYPTION_ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 12; // 96-bit IV recommended for GCM
 const AUTH_TAG_LENGTH = 16;
 
+let _cachedKey: { raw: string; key: Buffer } | null = null;
+
 /**
  * Returns the 32-byte encryption key derived from ATLAS_ENCRYPTION_KEY
  * (takes precedence) or BETTER_AUTH_SECRET. Returns null if neither is set.
+ * Result is cached to avoid re-deriving on every call.
  */
 export function getEncryptionKey(): Buffer | null {
   const raw = process.env.ATLAS_ENCRYPTION_KEY ?? process.env.BETTER_AUTH_SECRET;
   if (!raw) return null;
+  if (_cachedKey && _cachedKey.raw === raw) return _cachedKey.key;
   // Derive a fixed 32-byte key via SHA-256 so any-length secret works
-  return crypto.createHash("sha256").update(raw).digest();
+  const key = crypto.createHash("sha256").update(raw).digest();
+  _cachedKey = { raw, key };
+  return key;
+}
+
+/** @internal Reset cached encryption key — for testing only. */
+export function _resetEncryptionKeyCache(): void {
+  _cachedKey = null;
 }
 
 /**
@@ -44,16 +55,18 @@ export function encryptUrl(plaintext: string): string {
   const encrypted = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
   const authTag = cipher.getAuthTag();
 
+  // `:` is safe as delimiter — base64 alphabet is A-Za-z0-9+/= (no colon)
   return `${iv.toString("base64")}:${authTag.toString("base64")}:${encrypted.toString("base64")}`;
 }
 
 /**
  * Decrypts a connection URL encrypted by `encryptUrl()`.
- * If the value looks like plaintext (starts with a URL scheme or lacks the
- * `iv:authTag:ciphertext` format), returns it as-is for backward compatibility.
+ * Plaintext detection (two checks):
+ *   1. Starts with a URL scheme (`postgresql://`, `mysql://`, etc.) → plaintext
+ *   2. Not exactly 3 colon-separated parts (`iv:authTag:ciphertext`) → plaintext
+ * Returns plaintext values as-is for backward compatibility with pre-encryption data.
  */
 export function decryptUrl(stored: string): string {
-  // Plaintext detection: URL schemes or missing `:` separators
   if (isPlaintextUrl(stored)) return stored;
 
   const key = getEncryptionKey();

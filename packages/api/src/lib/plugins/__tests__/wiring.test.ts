@@ -1,7 +1,8 @@
 import { describe, test, expect, beforeEach, mock } from "bun:test";
 import { PluginRegistry } from "../registry";
 import type { PluginLike, PluginContextLike } from "../registry";
-import { wireDatasourcePlugins, wireActionPlugins, wireInteractionPlugins, wireContextPlugins } from "../wiring";
+import { wireDatasourcePlugins, wireActionPlugins, wireInteractionPlugins, wireContextPlugins, wireSandboxPlugins } from "../wiring";
+import type { SandboxExecBackend } from "../wiring";
 
 const minimalCtx: PluginContextLike = {
   db: null,
@@ -622,5 +623,177 @@ describe("wireContextPlugins", () => {
 
     expect(result.fragments).toEqual([]);
     expect(result.failed).toEqual([]);
+  });
+});
+
+// --- wireSandboxPlugins ---
+
+function makeMockBackend(tag: string): SandboxExecBackend {
+  return {
+    exec: async (command: string) => ({
+      stdout: `[${tag}] ${command}`,
+      stderr: "",
+      exitCode: 0,
+    }),
+  };
+}
+
+function makeSandboxPlugin(
+  id: string,
+  opts?: { priority?: number; createFn?: (root: string) => Promise<SandboxExecBackend> | SandboxExecBackend; unhealthy?: boolean },
+): PluginLike {
+  return {
+    id,
+    types: ["sandbox"],
+    version: "1.0.0",
+    sandbox: {
+      create: opts?.createFn ?? (async () => makeMockBackend(id)),
+      ...(opts?.priority !== undefined ? { priority: opts.priority } : {}),
+    },
+    ...(opts?.unhealthy
+      ? { initialize: async () => { throw new Error("fail"); } }
+      : {}),
+  };
+}
+
+describe("wireSandboxPlugins", () => {
+  let registry: PluginRegistry;
+
+  beforeEach(() => {
+    registry = new PluginRegistry();
+  });
+
+  test("returns backend from a single sandbox plugin", async () => {
+    registry.register(makeSandboxPlugin("my-sandbox"));
+    await registry.initializeAll(minimalCtx);
+
+    const result = await wireSandboxPlugins(registry, "/semantic");
+
+    expect(result.backend).not.toBeNull();
+    expect(result.pluginId).toBe("my-sandbox");
+    expect(result.failed).toEqual([]);
+  });
+
+  test("selects highest-priority plugin", async () => {
+    registry.register(makeSandboxPlugin("low", { priority: 40 }));
+    registry.register(makeSandboxPlugin("high", { priority: 90 }));
+    await registry.initializeAll(minimalCtx);
+
+    const result = await wireSandboxPlugins(registry, "/semantic");
+
+    expect(result.pluginId).toBe("high");
+    const output = await result.backend!.exec("ls");
+    expect(output.stdout).toContain("[high]");
+  });
+
+  test("uses default priority (60) when omitted", async () => {
+    registry.register(makeSandboxPlugin("explicit-low", { priority: 50 }));
+    registry.register(makeSandboxPlugin("default-priority")); // no priority → 60
+    await registry.initializeAll(minimalCtx);
+
+    const result = await wireSandboxPlugins(registry, "/semantic");
+
+    expect(result.pluginId).toBe("default-priority");
+  });
+
+  test("falls through to next plugin when create() throws", async () => {
+    registry.register(makeSandboxPlugin("broken", {
+      priority: 90,
+      createFn: async () => { throw new Error("init failed"); },
+    }));
+    registry.register(makeSandboxPlugin("working", { priority: 50 }));
+    await registry.initializeAll(minimalCtx);
+
+    const result = await wireSandboxPlugins(registry, "/semantic");
+
+    expect(result.pluginId).toBe("working");
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0].pluginId).toBe("broken");
+    expect(result.failed[0].error).toBe("init failed");
+  });
+
+  test("returns null when all plugins fail", async () => {
+    registry.register(makeSandboxPlugin("broken-1", {
+      createFn: async () => { throw new Error("fail 1"); },
+    }));
+    registry.register(makeSandboxPlugin("broken-2", {
+      createFn: async () => { throw new Error("fail 2"); },
+    }));
+    await registry.initializeAll(minimalCtx);
+
+    const result = await wireSandboxPlugins(registry, "/semantic");
+
+    expect(result.backend).toBeNull();
+    expect(result.pluginId).toBeNull();
+    expect(result.failed).toHaveLength(2);
+  });
+
+  test("returns null when no sandbox plugins registered", async () => {
+    await registry.initializeAll(minimalCtx);
+
+    const result = await wireSandboxPlugins(registry, "/semantic");
+
+    expect(result.backend).toBeNull();
+    expect(result.pluginId).toBeNull();
+    expect(result.failed).toEqual([]);
+  });
+
+  test("skips unhealthy sandbox plugins", async () => {
+    registry.register(makeSandboxPlugin("healthy"));
+    registry.register(makeSandboxPlugin("unhealthy", { unhealthy: true }));
+    await registry.initializeAll(minimalCtx);
+
+    const result = await wireSandboxPlugins(registry, "/semantic");
+
+    expect(result.pluginId).toBe("healthy");
+    expect(result.failed).toEqual([]);
+  });
+
+  test("skips sandbox plugins missing sandbox.create()", async () => {
+    const noCreate: PluginLike = {
+      id: "no-create",
+      types: ["sandbox"],
+      version: "1.0.0",
+      // No sandbox property
+    };
+    registry.register(noCreate);
+    await registry.initializeAll(minimalCtx);
+
+    const result = await wireSandboxPlugins(registry, "/semantic");
+
+    expect(result.backend).toBeNull();
+    expect(result.pluginId).toBeNull();
+    expect(result.failed).toEqual([]);
+  });
+
+  test("passes semanticRoot to sandbox.create()", async () => {
+    let receivedRoot: string | undefined;
+    registry.register(makeSandboxPlugin("root-check", {
+      createFn: async (root: string) => {
+        receivedRoot = root;
+        return makeMockBackend("root-check");
+      },
+    }));
+    await registry.initializeAll(minimalCtx);
+
+    await wireSandboxPlugins(registry, "/my/custom/semantic");
+
+    expect(receivedRoot).toBe("/my/custom/semantic");
+  });
+
+  test("rejects backend missing exec method from create()", async () => {
+    registry.register(makeSandboxPlugin("bad-backend", {
+      createFn: async () => ({} as SandboxExecBackend),
+    }));
+    registry.register(makeSandboxPlugin("good-backend", { priority: 40 }));
+    await registry.initializeAll(minimalCtx);
+
+    const result = await wireSandboxPlugins(registry, "/semantic");
+
+    // bad-backend has default priority (60) > good-backend (40), tried first but rejected
+    expect(result.pluginId).toBe("good-backend");
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0].pluginId).toBe("bad-backend");
+    expect(result.failed[0].error).toContain("missing exec method");
   });
 });

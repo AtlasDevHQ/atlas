@@ -260,6 +260,109 @@ export async function wireInteractionPlugins(
   return { wired, failed };
 }
 
+// ---------------------------------------------------------------------------
+// Sandbox plugins
+// ---------------------------------------------------------------------------
+
+/**
+ * Duplicated from @useatlas/plugin-sdk/types to avoid runtime SDK dependency.
+ * Keep in sync — explore-sdk-compat.test.ts verifies structural equivalence.
+ */
+const SANDBOX_DEFAULT_PRIORITY = 60;
+
+/**
+ * Minimal interface for a sandbox execution backend.
+ * Structurally identical to ExploreBackend in explore.ts — duplicated here
+ * to avoid a circular dependency (explore.ts imports from wiring.ts).
+ * Changes to either interface should be mirrored.
+ */
+export interface SandboxExecBackend {
+  exec(command: string): Promise<{ stdout: string; stderr: string; exitCode: number }>;
+  close?(): Promise<void>;
+}
+
+interface SandboxShape {
+  sandbox: {
+    create(root: string): Promise<SandboxExecBackend> | SandboxExecBackend;
+    priority?: number;
+  };
+}
+
+function hasSandbox(p: PluginLike): p is PluginLike & SandboxShape {
+  return (
+    p.types.includes("sandbox") &&
+    typeof (p as Record<string, unknown>).sandbox === "object" &&
+    (p as Record<string, unknown>).sandbox !== null &&
+    typeof ((p as Record<string, unknown>).sandbox as Record<string, unknown>)?.create === "function"
+  );
+}
+
+/**
+ * Discover sandbox plugins, sort by priority (highest first), and try to
+ * create a backend from each until one succeeds.
+ *
+ * Unlike other wire functions, sandbox plugins are not registered into a
+ * global registry — the caller receives a single backend instance directly.
+ *
+ * NOTE: In practice, called lazily from getExploreBackend() on the first
+ * explore command (not at startup), because the explore backend is cached
+ * as a singleton and depends on runtime environment detection.
+ */
+export async function wireSandboxPlugins(
+  pluginRegistry: PluginRegistry,
+  semanticRoot: string,
+): Promise<{
+  backend: SandboxExecBackend | null;
+  pluginId: string | null;
+  failed: Array<{ pluginId: string; error: string }>;
+}> {
+  const sandboxPlugins = pluginRegistry.getByType("sandbox");
+  const failed: Array<{ pluginId: string; error: string }> = [];
+
+  if (sandboxPlugins.length === 0) {
+    return { backend: null, pluginId: null, failed };
+  }
+
+  // Filter to valid sandbox plugins, sort by priority descending
+  const valid = sandboxPlugins.filter(hasSandbox);
+  if (valid.length === 0) {
+    for (const sp of sandboxPlugins) {
+      log.warn({ pluginId: sp.id }, "Sandbox plugin missing sandbox.create() — skipped");
+    }
+    return { backend: null, pluginId: null, failed };
+  }
+
+  const sorted = [...valid].sort((a, b) => {
+    const pa = a.sandbox.priority ?? SANDBOX_DEFAULT_PRIORITY;
+    const pb = b.sandbox.priority ?? SANDBOX_DEFAULT_PRIORITY;
+    return pb - pa;
+  });
+
+  for (const sp of sorted) {
+    try {
+      const backend = await sp.sandbox.create(semanticRoot);
+      if (!backend || typeof backend.exec !== "function") {
+        const msg = "create() returned invalid backend (missing exec method)";
+        failed.push({ pluginId: sp.id, error: msg });
+        log.error({ pluginId: sp.id }, msg);
+        continue;
+      }
+      log.info({ pluginId: sp.id }, "Using sandbox plugin for explore backend");
+      return { backend, pluginId: sp.id, failed };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      failed.push({ pluginId: sp.id, error: msg });
+      log.error(
+        { pluginId: sp.id, err: err instanceof Error ? err : new Error(String(err)) },
+        "Sandbox plugin create() failed, trying next",
+      );
+    }
+  }
+
+  log.error({ count: sorted.length }, "All sandbox plugins failed to create a backend");
+  return { backend: null, pluginId: null, failed };
+}
+
 /**
  * For each healthy context plugin, call `contextProvider.load()` and collect
  * the returned text fragments. Fragments are injected into the agent system

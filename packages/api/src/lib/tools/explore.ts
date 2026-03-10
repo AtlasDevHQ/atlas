@@ -19,9 +19,6 @@ import * as path from "path";
 import { createLogger } from "@atlas/api/lib/logger";
 import { withSpan } from "@atlas/api/lib/tracing";
 
-/** Must match SANDBOX_DEFAULT_PRIORITY in @useatlas/plugin-sdk/types. */
-const SANDBOX_DEFAULT_PRIORITY = 60;
-
 const log = createLogger("explore");
 
 const SEMANTIC_ROOT = path.resolve(process.cwd(), "semantic");
@@ -191,35 +188,29 @@ function getExploreBackend(): Promise<ExploreBackend> {
       // Priority 0: Sandbox plugins (sorted by priority, highest first)
       // Skipped when ATLAS_SANDBOX=nsjail — operator explicitly wants nsjail only
       if (process.env.ATLAS_SANDBOX !== "nsjail") {
-        let sandboxPlugins: Array<{ id: string; [k: string]: unknown }> = [];
         try {
           const { plugins } = await import("@atlas/api/lib/plugins/registry");
-          sandboxPlugins = plugins.getByType("sandbox");
+          const { wireSandboxPlugins } = await import("@atlas/api/lib/plugins/wiring");
+          const result = await wireSandboxPlugins(plugins, SEMANTIC_ROOT);
+          if (result.failed.length > 0) {
+            log.warn(
+              { failed: result.failed, selectedPlugin: result.pluginId },
+              "Some sandbox plugins failed during create()",
+            );
+          }
+          if (result.backend) {
+            _activeSandboxPluginId = result.pluginId;
+            return result.backend as ExploreBackend;
+          }
         } catch (err) {
           const detail = err instanceof Error ? err.message : String(err);
-          log.debug({ err: detail }, "Plugin registry not available for sandbox check");
-        }
-
-        if (sandboxPlugins.length > 0) {
-          type SandboxShape = { sandbox: { create(root: string): Promise<ExploreBackend> | ExploreBackend; priority?: number } };
-          const sorted = [...sandboxPlugins].sort((a, b) => {
-            const pa = (a as unknown as SandboxShape).sandbox.priority ?? SANDBOX_DEFAULT_PRIORITY;
-            const pb = (b as unknown as SandboxShape).sandbox.priority ?? SANDBOX_DEFAULT_PRIORITY;
-            return pb - pa;
-          });
-          for (const sp of sorted) {
-            const sandbox = (sp as unknown as SandboxShape).sandbox;
-            try {
-              const backend = await sandbox.create(SEMANTIC_ROOT);
-              _activeSandboxPluginId = sp.id;
-              log.info({ pluginId: sp.id }, "Using sandbox plugin for explore backend");
-              return backend;
-            } catch (err) {
-              const detail = err instanceof Error ? err.message : String(err);
-              log.error({ pluginId: sp.id, err: detail }, "Sandbox plugin create() failed, trying next");
-            }
+          const isModuleError = err != null && typeof err === "object" && "code" in err
+            && (err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND";
+          if (isModuleError) {
+            log.debug({ err: detail }, "Plugin modules not available — skipping sandbox plugins");
+          } else {
+            log.error({ err: detail }, "Unexpected error during sandbox plugin wiring");
           }
-          log.error({ count: sorted.length }, "All sandbox plugins failed to create a backend");
         }
       }
 

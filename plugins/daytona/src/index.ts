@@ -276,16 +276,31 @@ export function buildDaytonaSandboxPlugin(
     async healthCheck(): Promise<PluginHealthResult> {
       const start = performance.now();
       const TIMEOUT = 30_000;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let sandbox: any = null;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let daytonaRef: any = null;
+      let timer: ReturnType<typeof setTimeout>;
+
+      const cleanupSandbox = async () => {
+        if (sandbox && daytonaRef) {
+          try {
+            await daytonaRef.delete(sandbox);
+          } catch (e) {
+            (log ?? console).warn(`[daytona-sandbox] Failed to clean up health-check sandbox: ${e instanceof Error ? e.message : String(e)}`);
+          }
+          sandbox = null;
+        }
+      };
+
       try {
         const result = await Promise.race([
           (async () => {
             const DaytonaClass = loadDaytonaSdk();
-            const daytona = createDaytonaClient(DaytonaClass, config);
+            daytonaRef = createDaytonaClient(DaytonaClass, config);
 
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            let sandbox: any;
             try {
-              sandbox = await daytona.create();
+              sandbox = await daytonaRef.create();
             } catch (err) {
               return {
                 healthy: false as const,
@@ -310,22 +325,22 @@ export function buildDaytonaSandboxPlugin(
                 message: `Health check command failed (exit ${response.exitCode})`,
               };
             } finally {
-              try {
-                await daytona.delete(sandbox);
-              } catch {
-                // Swallow cleanup errors
-              }
+              await cleanupSandbox();
             }
           })(),
-          new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), TIMEOUT)),
-        ]);
+          new Promise<"timeout">((resolve) => {
+            timer = setTimeout(() => resolve("timeout"), TIMEOUT);
+          }),
+        ]).finally(() => clearTimeout(timer!));
 
         const latencyMs = Math.round(performance.now() - start);
         if (result === "timeout") {
+          await cleanupSandbox();
           return { healthy: false, message: `Health check timed out after ${TIMEOUT}ms`, latencyMs };
         }
         return { ...result, latencyMs };
       } catch (err) {
+        await cleanupSandbox();
         return {
           healthy: false,
           message: err instanceof Error ? err.message : String(err),

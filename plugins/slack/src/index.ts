@@ -217,7 +217,9 @@ function buildSlackPlugin(
         };
       }
 
-      // If a bot token is available, verify it against the Slack API
+      // If a bot token is available, verify it against the Slack API.
+      // Slack returns HTTP 200 for most errors (with { ok: false } in body),
+      // so the body.ok check below is the primary validation.
       const botToken = config.botToken;
       if (botToken) {
         try {
@@ -229,11 +231,18 @@ function buildSlackPlugin(
             },
             signal: AbortSignal.timeout(5000),
           });
-          const latencyMs = Math.round(performance.now() - start);
           if (!response.ok) {
+            const latencyMs = Math.round(performance.now() - start);
             return { healthy: false, message: `Slack API returned HTTP ${response.status}`, latencyMs };
           }
-          const body = await response.json() as { ok: boolean; error?: string };
+          let body: { ok: boolean; error?: string };
+          try {
+            body = await response.json() as { ok: boolean; error?: string };
+          } catch {
+            const latencyMs = Math.round(performance.now() - start);
+            return { healthy: false, message: `Slack API returned non-JSON response (HTTP ${response.status})`, latencyMs };
+          }
+          const latencyMs = Math.round(performance.now() - start);
           if (!body.ok) {
             return { healthy: false, message: `Slack auth.test failed: ${body.error ?? "unknown"}`, latencyMs };
           }

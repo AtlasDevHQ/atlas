@@ -238,21 +238,34 @@ export function buildE2BSandboxPlugin(
 
     async healthCheck(): Promise<PluginHealthResult> {
       const start = performance.now();
+      const TIMEOUT = 30_000;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let sandbox: any = null;
+      let timer: ReturnType<typeof setTimeout>;
       try {
         const result = await Promise.race([
           (async () => {
-            const sandbox = await createE2BSandbox(config);
+            sandbox = await createE2BSandbox(config);
             await sandbox.kill();
+            sandbox = null;
             return "ok" as const;
           })(),
-          new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 30_000)),
-        ]);
+          new Promise<"timeout">((resolve) => {
+            timer = setTimeout(() => resolve("timeout"), TIMEOUT);
+          }),
+        ]).finally(() => clearTimeout(timer!));
         const latencyMs = Math.round(performance.now() - start);
         if (result === "timeout") {
-          return { healthy: false, message: "Health check timed out after 30000ms", latencyMs };
+          if (sandbox) {
+            try { await sandbox.kill(); } catch { /* best-effort cleanup */ }
+          }
+          return { healthy: false, message: `Health check timed out after ${TIMEOUT}ms`, latencyMs };
         }
         return { healthy: true, latencyMs };
       } catch (err) {
+        if (sandbox) {
+          try { await sandbox.kill(); } catch { /* best-effort cleanup */ }
+        }
         return {
           healthy: false,
           message: err instanceof Error ? err.message : String(err),

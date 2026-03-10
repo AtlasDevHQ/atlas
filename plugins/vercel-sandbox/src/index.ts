@@ -372,6 +372,7 @@ export function buildVercelSandboxPlugin(
       const start = performance.now();
       const TIMEOUT = 30_000;
       let sandbox: SandboxInstance | null = null;
+      let timer: ReturnType<typeof setTimeout>;
       try {
         const result = await Promise.race([
           (async () => {
@@ -404,24 +405,23 @@ export function buildVercelSandboxPlugin(
               message: `Sandbox test command failed (exit ${res.exitCode})`,
             };
           })(),
-          new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), TIMEOUT)),
-        ]);
+          new Promise<"timeout">((resolve) => {
+            timer = setTimeout(() => resolve("timeout"), TIMEOUT);
+          }),
+        ]).finally(() => clearTimeout(timer!));
 
         const latencyMs = Math.round(performance.now() - start);
         if (result === "timeout") {
+          // Best-effort cleanup — sandbox may still be creating if create() is what's slow
           if (sandbox) {
-            try { await sandbox.stop(); } catch { /* ignore */ }
+            try { await sandbox.stop(); } catch { /* best-effort */ }
           }
           return { healthy: false, message: `Health check timed out after ${TIMEOUT}ms`, latencyMs };
         }
         return { ...result, latencyMs };
       } catch (err) {
         if (sandbox) {
-          try {
-            await sandbox.stop();
-          } catch {
-            // Ignore cleanup errors
-          }
+          try { await sandbox.stop(); } catch { /* best-effort */ }
         }
         return {
           healthy: false,

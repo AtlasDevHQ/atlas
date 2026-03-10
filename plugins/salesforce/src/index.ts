@@ -145,10 +145,13 @@ export function buildSalesforcePlugin(
       const start = performance.now();
       try {
         const conn = getOrCreateConnection();
+        let timer: ReturnType<typeof setTimeout>;
         const result = await Promise.race([
           conn.listObjects().then(() => "ok" as const),
-          new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 5000)),
-        ]);
+          new Promise<"timeout">((resolve) => {
+            timer = setTimeout(() => resolve("timeout"), 5000);
+          }),
+        ]).finally(() => clearTimeout(timer!));
         const latencyMs = Math.round(performance.now() - start);
         if (result === "timeout") {
           return { healthy: false, message: "Health check timed out after 5000ms", latencyMs };

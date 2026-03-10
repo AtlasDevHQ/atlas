@@ -746,13 +746,13 @@ Browse the source at [`plugins/`](https://github.com/AtlasDevHQ/atlas/tree/main/
 
 ### Health Check Contract
 
-Every plugin's `healthCheck()` must follow these five rules:
+When implementing `healthCheck()`, follow these five rules:
 
 1. **Always return** `{ healthy: boolean, message?: string, latencyMs?: number }` — never throw
 2. **Measure latency** — wrap the probe in `performance.now()` and include `latencyMs` in the result (both success and failure paths)
-3. **Catch all errors** — return `{ healthy: false, message: err.message }` on failure; never let exceptions escape
+3. **Catch all errors** — return `{ healthy: false, message: err instanceof Error ? err.message : String(err) }` on failure; never let exceptions escape
 4. **Minimal probe** — test connectivity only (e.g. `SELECT 1`, ping an endpoint), not full functionality
-5. **Timeout** — probes must have a reasonable timeout (5s default for network calls, 30s for sandbox creation), never hang indefinitely. Use `AbortSignal.timeout()` for fetch-based probes, or `Promise.race` for SDK calls that don't support AbortSignal
+5. **Timeout** — probes must have a reasonable timeout (5s default for network calls, 30s for sandbox creation), never hang indefinitely. Use `AbortSignal.timeout()` for fetch-based probes, `Promise.race` for SDK calls that don't support AbortSignal, or the `timeoutMs` parameter on `conn.query()` for database plugins
 
 Standard pattern for **database** plugins:
 
@@ -776,7 +776,7 @@ async healthCheck(): Promise<PluginHealthResult> {
 }
 ```
 
-Standard pattern for **HTTP API** plugins (email, JIRA, Slack):
+Standard pattern for **HTTP API** plugins (email, JIRA):
 
 ```typescript
 async healthCheck(): Promise<PluginHealthResult> {
@@ -805,23 +805,33 @@ Standard pattern for **sandbox** plugins (where probe operations are slow):
 async healthCheck(): Promise<PluginHealthResult> {
   const start = performance.now();
   const TIMEOUT = 30_000; // sandbox creation can be slow
+  let sandbox: SandboxInstance | null = null; // hoist for cleanup on timeout
+  let timer: ReturnType<typeof setTimeout>;
   try {
     const result = await Promise.race([
       (async () => {
-        const sandbox = await createSandbox(config);
-        await sandbox.destroy();
+        sandbox = await createSandbox(config); // your SDK's create method
+        await sandbox.close(); // cleanup method varies by SDK (kill, stop, delete, etc.)
+        sandbox = null;
         return "ok" as const;
       })(),
-      new Promise<"timeout">((resolve) =>
-        setTimeout(() => resolve("timeout"), TIMEOUT),
-      ),
-    ]);
+      new Promise<"timeout">((resolve) => {
+        timer = setTimeout(() => resolve("timeout"), TIMEOUT);
+      }),
+    ]).finally(() => clearTimeout(timer!)); // always clean up the timer
     const latencyMs = Math.round(performance.now() - start);
     if (result === "timeout") {
+      // Best-effort cleanup — sandbox may still be creating
+      if (sandbox) {
+        try { await sandbox.close(); } catch { /* best-effort */ }
+      }
       return { healthy: false, message: `Timed out after ${TIMEOUT}ms`, latencyMs };
     }
     return { healthy: true, latencyMs };
   } catch (err) {
+    if (sandbox) {
+      try { await sandbox.close(); } catch { /* best-effort */ }
+    }
     return {
       healthy: false,
       message: err instanceof Error ? err.message : String(err),

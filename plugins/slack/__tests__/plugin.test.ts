@@ -288,10 +288,18 @@ describe("slackPlugin — lifecycle", () => {
   test("healthCheck returns healthy after init", async () => {
     const plugin = slackPlugin(createMockConfig());
     const { ctx } = createMockCtx();
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (() =>
+      Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 }))
+    ) as unknown as typeof globalThis.fetch;
 
-    await plugin.initialize!(ctx as never);
-    const result = await plugin.healthCheck!();
-    expect(result.healthy).toBe(true);
+    try {
+      await plugin.initialize!(ctx as never);
+      const result = await plugin.healthCheck!();
+      expect(result.healthy).toBe(true);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
   });
 
   test("healthCheck returns unhealthy after teardown", async () => {
@@ -321,17 +329,25 @@ describe("slackPlugin — lifecycle", () => {
   test("full lifecycle: init → health → teardown", async () => {
     const plugin = slackPlugin(createMockConfig());
     const { ctx } = createMockCtx();
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (() =>
+      Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 }))
+    ) as unknown as typeof globalThis.fetch;
 
-    const before = await plugin.healthCheck!();
-    expect(before.healthy).toBe(false);
+    try {
+      const before = await plugin.healthCheck!();
+      expect(before.healthy).toBe(false);
 
-    await plugin.initialize!(ctx as never);
-    const during = await plugin.healthCheck!();
-    expect(during.healthy).toBe(true);
+      await plugin.initialize!(ctx as never);
+      const during = await plugin.healthCheck!();
+      expect(during.healthy).toBe(true);
 
-    await plugin.teardown!();
-    const after = await plugin.healthCheck!();
-    expect(after.healthy).toBe(false);
+      await plugin.teardown!();
+      const after = await plugin.healthCheck!();
+      expect(after.healthy).toBe(false);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
   });
 
   test("initialize logs single-workspace mode", async () => {

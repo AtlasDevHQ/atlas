@@ -1,6 +1,6 @@
 {
   "name": "@useatlas/sidecar",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Atlas sidecar sandbox plugin",
   "type": "module",
   "main": "./src/index.ts",

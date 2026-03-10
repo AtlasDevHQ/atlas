@@ -1,6 +1,6 @@
 {
   "name": "@useatlas/slack",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Atlas Slack interaction plugin",
   "type": "module",
   "main": "./src/index.ts",

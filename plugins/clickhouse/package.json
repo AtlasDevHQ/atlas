@@ -1,6 +1,6 @@
 {
   "name": "@useatlas/clickhouse",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Atlas ClickHouse datasource plugin",
   "type": "module",
   "main": "./src/index.ts",

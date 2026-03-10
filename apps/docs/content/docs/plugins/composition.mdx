@@ -69,6 +69,8 @@ When multiple sandbox plugins are registered, Atlas selects the one with the hig
 | Sidecar | 50 | `ATLAS_SANDBOX_URL` set |
 | just-bash | 0 | Fallback (dev only) |
 
+The priority values for built-in backends are reference numbers from the SDK -- they establish where plugin priorities sit relative to the built-in chain. Built-in backends are selected via a fixed precedence order, not numeric comparison. Plugin backends use `priority` for sorting among themselves.
+
 Sandbox plugins default to priority 60 (between nsjail and sidecar). Override `priority` to control placement:
 
 ```typescript
@@ -101,8 +103,8 @@ The selection runs in `getExploreBackend()` in `packages/api/src/lib/tools/explo
 1. All healthy sandbox plugins are collected from the registry
 2. Sorted by `priority` descending (highest first)
 3. Each is tried in order -- `sandbox.create(semanticRoot)` is called
-4. The first one that succeeds becomes the active backend (cached for the process lifetime)
-5. If all plugins fail, Atlas falls through to the built-in detection chain (Vercel > nsjail > sidecar > just-bash)
+4. The first one that succeeds becomes the active backend (cached for the process lifetime, unless invalidated by an infrastructure error)
+5. If all plugins fail, Atlas falls through to the built-in detection chain (Vercel > nsjail explicit > sidecar > nsjail auto-detect > just-bash)
 
 <Callout type="warn">
 When `ATLAS_SANDBOX=nsjail` is explicitly set, sandbox plugins are **skipped entirely**. The operator is explicitly requesting nsjail -- plugin backends won't override that.
@@ -149,7 +151,7 @@ The rules:
 - **Return a mutation object** (e.g., `{ sql: "..." }` or `{ command: "..." }`) to rewrite the value for downstream hooks
 - **Return `void`/`undefined`** to pass through without changes
 - **Throw an error** to reject the operation entirely -- the chain stops and the query/command is denied
-- **Type mismatch** in the mutation is caught and logged -- the mutation is silently ignored
+- **Type mismatch** in the mutation is caught and logged as an error -- the mutation is ignored and the previous value is preserved
 - Only **healthy** plugins participate -- unhealthy plugins are skipped
 
 ```typescript

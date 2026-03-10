@@ -114,12 +114,13 @@ Requires `ATLAS_ACTIONS_ENABLED=true`. Without it, this page shows a feature gat
 Lists action log entries with status filtering:
 
 - **Tabs** — Pending, Executed, Denied, Failed, All
-- **Table** — Timestamp, action type, target, summary, status badge
-- **Expandable rows** — Full payload, timestamps, error details
+- **Table** — Relative timestamps (hover for absolute), action type with icon badge, target, summary, status badge
+- **Expandable rows** — Full payload, timestamps, error details, and a link to the originating conversation (when available)
+- **Empty states** — Context-aware messages per filter tab
 
 **Actions:**
-- **Approve** pending actions
-- **Deny** pending actions with a reason
+- **Approve** / **Deny** individual pending actions
+- **Bulk approve / deny** — Select multiple pending actions with checkboxes and approve or deny them in one operation. A "select all" toggle selects every pending action in the current view
 
 See [Actions Framework](/guides/actions) for details on approval modes.
 

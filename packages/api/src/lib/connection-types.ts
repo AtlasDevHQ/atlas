@@ -6,7 +6,7 @@
  * are separate — JSON serialization converts Date to string automatically.
  */
 
-/** Known database types supported by Atlas (core + plugins). */
+/** Known database types for UI dropdowns and wire format validation. Plugins may register additional dbType values not listed here. */
 export const DB_TYPES = [
   { value: "postgres", label: "PostgreSQL" },
   { value: "mysql", label: "MySQL" },
@@ -16,7 +16,7 @@ export const DB_TYPES = [
   { value: "salesforce", label: "Salesforce" },
 ] as const;
 
-/** Database type — derived from DB_TYPES. */
+/** Database type — closed union derived from DB_TYPES. The backend's internal DBType in connection.ts is wider to accommodate plugin-registered databases. */
 export type DBType = (typeof DB_TYPES)[number]["value"];
 
 /** Health check status for a connection. */
@@ -34,13 +34,14 @@ export interface ConnectionHealth {
 export interface ConnectionInfo {
   id: string;
   dbType: DBType;
-  description?: string;
+  description?: string | null;
   health?: ConnectionHealth;
 }
 
-/** Wire format for a single connection detail (admin GET /connections/:id). */
+/** Wire format for a single connection detail response. */
 export interface ConnectionDetail {
   id: string;
+  /** Broader than DBType — includes fallback "unknown" when metadata is unavailable. */
   dbType: string;
   description: string | null;
   health: ConnectionHealth | null;

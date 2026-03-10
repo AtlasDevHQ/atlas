@@ -214,14 +214,37 @@ export interface UpdateScheduledTaskInput {
 // Admin types — shared enums
 // ---------------------------------------------------------------------------
 
-export type {
-  DBType,
-  HealthStatus,
-  ConnectionHealth,
-  ConnectionInfo,
-  ConnectionDetail,
-} from "@atlas/api/lib/connection-types";
-import type { ConnectionHealth, ConnectionInfo } from "@atlas/api/lib/connection-types";
+/**
+ * Inlined from `@atlas/api/lib/connection-types` to avoid a runtime dependency.
+ * Keep in sync — `packages/sdk/src/__tests__/type-compat.test.ts` enforces this
+ * via compile-time assignability checks.
+ */
+export type DBType = "postgres" | "mysql" | "clickhouse" | "snowflake" | "duckdb" | "salesforce";
+export type HealthStatus = "healthy" | "degraded" | "unhealthy";
+
+export interface ConnectionHealth {
+  status: HealthStatus;
+  latencyMs: number;
+  message?: string;
+  checkedAt: string;
+}
+
+export interface ConnectionInfo {
+  id: string;
+  dbType: DBType;
+  description?: string | null;
+  health?: ConnectionHealth;
+}
+
+export interface ConnectionDetail {
+  id: string;
+  dbType: string;
+  description: string | null;
+  health: ConnectionHealth | null;
+  maskedUrl: string | null;
+  schema: string | null;
+  managed: boolean;
+}
 
 export type PluginType = "datasource" | "context" | "interaction" | "action" | "sandbox";
 export type PluginStatus = "registered" | "initializing" | "healthy" | "unhealthy" | "teardown";

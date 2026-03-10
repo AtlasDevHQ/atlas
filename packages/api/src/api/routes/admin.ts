@@ -18,7 +18,7 @@ import {
   getClientIP,
 } from "@atlas/api/lib/auth/middleware";
 import { connections, detectDBType } from "@atlas/api/lib/db/connection";
-import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { hasInternalDB, internalQuery, encryptUrl, decryptUrl } from "@atlas/api/lib/db/internal";
 import { maskConnectionUrl } from "@atlas/api/lib/security";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import { plugins } from "@atlas/api/lib/plugins/registry";
@@ -752,7 +752,7 @@ admin.post("/connections", async (c) => {
     try {
       await internalQuery(
         `INSERT INTO connections (id, url, type, description, schema_name) VALUES ($1, $2, $3, $4, $5)`,
-        [id, url, dbType, typeof description === "string" ? description : null, typeof schema === "string" ? schema : null],
+        [id, encryptUrl(url as string), dbType, typeof description === "string" ? description : null, typeof schema === "string" ? schema : null],
       );
     } catch (err) {
       connections.unregister(id as string);
@@ -815,10 +815,11 @@ admin.put("/connections/:id", async (c) => {
 
     const { url, description, schema } = body as Record<string, unknown>;
     const current = existing[0];
-    const newUrl = typeof url === "string" ? url : current.url;
+    const currentUrl = decryptUrl(current.url);
+    const newUrl = typeof url === "string" ? url : currentUrl;
     const newDescription = typeof description === "string" ? description : current.description;
     const newSchema = typeof schema === "string" ? (schema || null) : current.schema_name;
-    const urlChanged = typeof url === "string" && url !== current.url;
+    const urlChanged = typeof url === "string" && url !== currentUrl;
 
     // Validate new URL scheme if changed
     let dbType = current.type;
@@ -843,7 +844,7 @@ admin.put("/connections/:id", async (c) => {
         // Restore old connection
         try {
           connections.register(id, {
-            url: current.url,
+            url: currentUrl,
             description: current.description ?? undefined,
             schema: current.schema_name ?? undefined,
           });
@@ -874,13 +875,13 @@ admin.put("/connections/:id", async (c) => {
     try {
       await internalQuery(
         `UPDATE connections SET url = $1, type = $2, description = $3, schema_name = $4, updated_at = NOW() WHERE id = $5`,
-        [newUrl, dbType, newDescription, newSchema, id],
+        [encryptUrl(newUrl), dbType, newDescription, newSchema, id],
       );
     } catch (err) {
       // Restore old connection in registry to stay in sync with DB
       try {
         connections.register(id, {
-          url: current.url,
+          url: currentUrl,
           description: current.description ?? undefined,
           schema: current.schema_name ?? undefined,
         });
@@ -998,7 +999,7 @@ admin.get("/connections/:id", async (c) => {
           [id],
         );
         if (rows.length > 0) {
-          maskedUrl = maskConnectionUrl(rows[0].url);
+          maskedUrl = maskConnectionUrl(decryptUrl(rows[0].url));
           schema = rows[0].schema_name;
           managed = true;
         }

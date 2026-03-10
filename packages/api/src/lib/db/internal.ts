@@ -6,9 +6,87 @@
  * Configured via DATABASE_URL.
  */
 
+import * as crypto from "crypto";
 import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("internal-db");
+
+// ---------------------------------------------------------------------------
+// Connection URL encryption (AES-256-GCM)
+// ---------------------------------------------------------------------------
+
+const ENCRYPTION_ALGORITHM = "aes-256-gcm";
+const IV_LENGTH = 12; // 96-bit IV recommended for GCM
+const AUTH_TAG_LENGTH = 16;
+
+/**
+ * Returns the 32-byte encryption key derived from ATLAS_ENCRYPTION_KEY
+ * (takes precedence) or BETTER_AUTH_SECRET. Returns null if neither is set.
+ */
+export function getEncryptionKey(): Buffer | null {
+  const raw = process.env.ATLAS_ENCRYPTION_KEY ?? process.env.BETTER_AUTH_SECRET;
+  if (!raw) return null;
+  // Derive a fixed 32-byte key via SHA-256 so any-length secret works
+  return crypto.createHash("sha256").update(raw).digest();
+}
+
+/**
+ * Encrypts a connection URL using AES-256-GCM.
+ * Returns `iv:authTag:ciphertext` (all base64). Returns the plaintext
+ * unchanged if no encryption key is available.
+ */
+export function encryptUrl(plaintext: string): string {
+  const key = getEncryptionKey();
+  if (!key) return plaintext;
+
+  const iv = crypto.randomBytes(IV_LENGTH);
+  const cipher = crypto.createCipheriv(ENCRYPTION_ALGORITHM, key, iv, { authTagLength: AUTH_TAG_LENGTH });
+  const encrypted = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+
+  return `${iv.toString("base64")}:${authTag.toString("base64")}:${encrypted.toString("base64")}`;
+}
+
+/**
+ * Decrypts a connection URL encrypted by `encryptUrl()`.
+ * If the value looks like plaintext (starts with a URL scheme or lacks the
+ * `iv:authTag:ciphertext` format), returns it as-is for backward compatibility.
+ */
+export function decryptUrl(stored: string): string {
+  // Plaintext detection: URL schemes or missing `:` separators
+  if (isPlaintextUrl(stored)) return stored;
+
+  const key = getEncryptionKey();
+  if (!key) {
+    log.warn("Encrypted connection URL found but no encryption key is available — returning as-is");
+    return stored;
+  }
+
+  const parts = stored.split(":");
+  if (parts.length !== 3) return stored; // Not in our format — treat as plaintext
+
+  try {
+    const iv = Buffer.from(parts[0], "base64");
+    const authTag = Buffer.from(parts[1], "base64");
+    const ciphertext = Buffer.from(parts[2], "base64");
+
+    const decipher = crypto.createDecipheriv(ENCRYPTION_ALGORITHM, key, iv, { authTagLength: AUTH_TAG_LENGTH });
+    decipher.setAuthTag(authTag);
+    const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    return decrypted.toString("utf8");
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err) },
+      "Failed to decrypt connection URL — data may be corrupted or key may have changed",
+    );
+    throw new Error("Failed to decrypt connection URL");
+  }
+}
+
+/** Returns true if the stored value looks like a plaintext URL (not encrypted). */
+export function isPlaintextUrl(value: string): boolean {
+  return /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value);
+}
 
 /** Typed interface for the internal pg.Pool — avoids importing pg at module level. */
 export interface InternalPool {
@@ -313,8 +391,9 @@ export async function loadSavedConnections(): Promise<number> {
     let registered = 0;
     for (const row of rows) {
       try {
+        const url = decryptUrl(row.url);
         connections.register(row.id, {
-          url: row.url,
+          url,
           description: row.description ?? undefined,
           schema: row.schema_name ?? undefined,
         });

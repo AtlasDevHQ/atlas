@@ -86,10 +86,10 @@ The public roadmap is a prose summary (no checkboxes). Keep it in sync with the 
 - Open issues whose work is fully shipped (all items done, PR merged) -> close with comment
 - **Issues missing labels** -> every issue needs a type label AND area label(s):
   - Type (exactly one): `bug`, `feature`, `refactor`, `chore`, `docs`
-  - Area (one or more): `area: api`, `area: web`, `area: cli`, `area: plugins`, `area: sandbox`, `area: deploy`, `area: ci`, `area: sdk`, `area: mcp`, `area: starter`
+  - Area (one or more): `area: api`, `area: web`, `area: cli`, `area: plugins`, `area: sandbox`, `area: deploy`, `area: ci`, `area: sdk`, `area: mcp`, `area: starter`, `area: docs`, `area: testing`
 - **Issues missing milestone** -> assign to the appropriate milestone:
-  - 0.1.0 — Documentation & DX
-  - 0.2.0 — Plugin Ecosystem
+  - 0.1.0 — Documentation & DX (CLOSED)
+  - 0.2.0 — Plugin Ecosystem (CLOSED)
   - 0.3.0 — Admin & Operations
   - 0.4.0 — UI & Collaboration
   - 0.5.0 — Enterprise

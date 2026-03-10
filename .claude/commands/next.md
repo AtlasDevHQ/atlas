@@ -97,8 +97,10 @@ IMPORTANT — Update the project board as you work:
 2. Move to "In Progress" when starting:
    gh project item-edit --project-id PVT_kwDOD8aze84BRASF --id <ITEM_ID> --field-id PVTSSF_lADOD8aze84BRASFzg-9gBo --single-select-option-id 47fc9ee4
 
-3. When done, create a PR linked to #N (use "Closes #N" in the PR body), then move to "Done":
-   gh project item-edit --project-id PVT_kwDOD8aze84BRASF --id <ITEM_ID> --field-id PVTSSF_lADOD8aze84BRASFzg-9gBo --single-select-option-id 98236657
+3. When done, create a PR linked to #N (use "Closes #N" in the PR body), then move to "In Review":
+   gh project item-edit --project-id PVT_kwDOD8aze84BRASF --id <ITEM_ID> --field-id PVTSSF_lADOD8aze84BRASFzg-9gBo --single-select-option-id df73e18b
+
+   The issue will auto-close when the PR merges. Run /tidy afterward to reconcile the board.
 ]
 ```
 
@@ -118,12 +120,12 @@ IMPORTANT — Update the project board as you work:
 
 **Label reference:**
 - Type: `bug`, `feature`, `refactor`, `chore`, `docs`
-- Area: `area: api`, `area: web`, `area: cli`, `area: plugins`, `area: sandbox`, `area: deploy`, `area: ci`, `area: sdk`, `area: mcp`, `area: starter`
+- Area: `area: api`, `area: web`, `area: cli`, `area: plugins`, `area: sandbox`, `area: deploy`, `area: ci`, `area: sdk`, `area: mcp`, `area: starter`, `area: docs`, `area: testing`
 - Community: `good first issue`, `help wanted`
 
 **Milestone reference:**
-- 0.1.0 — Documentation & DX
-- 0.2.0 — Plugin Ecosystem
+- 0.1.0 — Documentation & DX (CLOSED)
+- 0.2.0 — Plugin Ecosystem (CLOSED)
 - 0.3.0 — Admin & Operations
 - 0.4.0 — UI & Collaboration
 - 0.5.0 — Enterprise

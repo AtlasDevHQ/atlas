@@ -35,7 +35,13 @@ Run these in parallel:
    gh run list -R AtlasDevHQ/atlas --branch main --limit 3 --json status,conclusion,name,createdAt,databaseId
    ```
 
-4. Recent commits on main (to correlate with deploys):
+4. Railway deploy statuses on the latest commit (catches per-service deploy failures that live health checks miss — Railway keeps the previous deployment running when a new build fails):
+   ```bash
+   # Railway reports via commit statuses API (not check runs). Dedupe to latest per service:
+   gh api repos/AtlasDevHQ/atlas/commits/$(git rev-parse HEAD)/statuses --jq '[.[] | {context, state, description}] | group_by(.context) | map(.[0]) | .[] | "\(.context): \(.state) — \(.description)"' 2>/dev/null
+   ```
+
+5. Recent commits on main (to correlate with deploys):
    ```
    git log --oneline -10 --format="%h %s (%cr)"
    ```
@@ -95,10 +101,12 @@ CI: last run <status> (<time>)
 Last push: <commit hash> <message> (<time>)
 ```
 
-If everything is healthy, stop here.
+**IMPORTANT:** A service can show "healthy" via curl (live endpoint) but have a **failed deploy** in the commit check runs. This happens because Railway keeps the previous deployment running when a new build/deploy fails. Always cross-reference the commit check runs — if a check shows `conclusion: "failure"`, the latest code is NOT deployed even if the endpoint is up.
 
-If anything is unhealthy, include:
-- Error details from logs
+If everything is healthy AND all commit checks passed, stop here.
+
+If anything is unhealthy or a commit check failed, include:
+- Error details from logs or check run status
 - Likely root cause
 - Suggested fix
 

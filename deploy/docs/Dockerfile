@@ -15,8 +15,8 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 
-RUN addgroup --system --gid 1001 atlas && \
-    adduser --system --uid 1001 --ingroup atlas atlas
+RUN groupadd --system --gid 1001 atlas && \
+    useradd --system --uid 1001 --gid atlas atlas
 
 COPY --from=builder --chown=atlas:atlas /app/.next/standalone ./
 COPY --from=builder --chown=atlas:atlas /app/.next/static ./.next/static

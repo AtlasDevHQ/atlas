@@ -1,0 +1,997 @@
+---
+title: Plugin Cookbook
+description: Common real-world patterns and recipes for Atlas plugins — caching, error handling, hooks, credentials, and advanced techniques.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Recipes for real-world plugin scenarios. The [Authoring Guide](/plugins/authoring-guide) covers how to build a plugin; this page covers how to handle the messy parts.
+
+## Caching Strategies
+
+### In-Memory Cache with TTL
+
+Context plugins call `load()` on every agent invocation. Hitting an external API or database each time is wasteful. Cache the result with a TTL:
+
+```typescript
+import { definePlugin } from "@useatlas/plugin-sdk";
+
+export default definePlugin({
+  id: "cached-context",
+  types: ["context"],
+  version: "1.0.0",
+
+  contextProvider: {
+    _cache: null as string | null,
+    _cacheExpiry: 0,
+    _ttlMs: 5 * 60 * 1000, // 5 minutes
+
+    async load() {
+      if (this._cache && Date.now() < this._cacheExpiry) {
+        return this._cache;
+      }
+
+      // Fetch from your source — API, database, filesystem, etc.
+      const response = await fetch("https://internal.example.com/glossary");
+      const terms = (await response.json()) as { term: string; definition: string }[];
+      const markdown = terms.map((t) => `- **${t.term}**: ${t.definition}`).join("\n");
+
+      this._cache = `## Company Glossary\n\n${markdown}`;
+      this._cacheExpiry = Date.now() + this._ttlMs;
+      return this._cache;
+    },
+
+    async refresh() {
+      this._cache = null;
+      this._cacheExpiry = 0;
+    },
+  },
+});
+```
+
+Key points:
+
+- **`refresh()`** is called when the semantic layer reloads or via the admin UI. It clears the cache so the next `load()` fetches fresh data.
+- Keep the TTL short enough to pick up changes, long enough to avoid hammering your source. 5 minutes is a good default.
+- For size-bounded caches (e.g. many keys), use a `Map` with LRU eviction instead of a single string.
+
+### LRU Cache for Multiple Keys
+
+When a context plugin serves different content based on runtime conditions (e.g. per-datasource context), use a bounded map:
+
+```typescript
+import { definePlugin } from "@useatlas/plugin-sdk";
+
+const MAX_CACHE_ENTRIES = 50;
+
+function lruSet(cache: Map<string, string>, key: string, value: string) {
+  if (cache.size >= MAX_CACHE_ENTRIES) {
+    // Map iteration order is insertion order — delete the oldest
+    const oldest = cache.keys().next().value!;
+    cache.delete(oldest);
+  }
+  cache.set(key, value);
+}
+
+export default definePlugin({
+  id: "multi-source-context",
+  types: ["context"],
+  version: "1.0.0",
+
+  contextProvider: {
+    _cache: new Map<string, string>(),
+
+    async load() {
+      // In practice, the key might come from a config value or environment
+      const key = "default";
+      const cached = this._cache.get(key);
+      if (cached) return cached;
+
+      const result = await fetchContextForSource(key);
+      lruSet(this._cache, key, result);
+      return result;
+    },
+
+    async refresh() {
+      this._cache.clear();
+    },
+  },
+});
+
+async function fetchContextForSource(source: string): Promise<string> {
+  // Your fetching logic here
+  return `Context for ${source}`;
+}
+```
+
+## Error Handling
+
+### Fatal vs Degraded: `initialize()` vs `healthCheck()`
+
+The plugin lifecycle has two distinct error surfaces. Getting them right is the difference between a plugin that blocks startup when misconfigured and one that gracefully degrades when an external service is down.
+
+**Throw from `initialize()`** when the plugin *cannot possibly work* — missing credentials, invalid config, unreachable required service. This blocks server startup, which is what you want: fail fast before serving traffic.
+
+```typescript
+import { definePlugin } from "@useatlas/plugin-sdk";
+
+export default definePlugin({
+  id: "strict-context",
+  types: ["context"],
+  version: "1.0.0",
+
+  contextProvider: {
+    async load() { return ""; },
+  },
+
+  async initialize(ctx) {
+    // Fatal: the API key is structurally required
+    const apiKey = ctx.config["MY_API_KEY"] as string | undefined;
+    if (!apiKey) {
+      throw new Error("MY_API_KEY is required — set it in atlas.config.ts");
+    }
+
+    // Fatal: verify the service is reachable at boot
+    const response = await fetch("https://api.example.com/health", {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) {
+      throw new Error(`API health check failed: ${response.status}`);
+    }
+
+    ctx.logger.info("Plugin initialized, API reachable");
+  },
+});
+```
+
+**Return `{ healthy: false }` from `healthCheck()`** for runtime degradation — the plugin initialized fine but the external service went down, latency spiked, or a transient error occurred. Atlas keeps running; the health endpoint reports the degradation.
+
+```typescript
+import type { PluginHealthResult } from "@useatlas/plugin-sdk";
+
+async healthCheck(): Promise<PluginHealthResult> {
+  const start = performance.now();
+  try {
+    const response = await fetch("https://api.example.com/health", {
+      signal: AbortSignal.timeout(5_000),
+    });
+    const latencyMs = Math.round(performance.now() - start);
+
+    if (!response.ok) {
+      return { healthy: false, message: `API returned ${response.status}`, latencyMs };
+    }
+    return { healthy: true, latencyMs };
+  } catch (err) {
+    return {
+      healthy: false,
+      message: err instanceof Error ? err.message : String(err),
+      latencyMs: Math.round(performance.now() - start),
+    };
+  }
+}
+```
+
+<Callout type="warn">
+Never throw from `healthCheck()` or `teardown()`. These methods must always return a result. Throwing from health checks crashes the health probe; throwing from teardown prevents other plugins from cleaning up.
+</Callout>
+
+### Retry with Backoff
+
+For datasource plugins that connect to flaky services, add retry logic to the connection factory:
+
+```typescript
+import type { PluginDBConnection, PluginQueryResult } from "@useatlas/plugin-sdk";
+
+function withRetry(
+  conn: PluginDBConnection,
+  maxRetries = 3,
+  baseDelayMs = 500,
+): PluginDBConnection {
+  return {
+    async query(sql: string, timeoutMs?: number): Promise<PluginQueryResult> {
+      let lastError: unknown;
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+          return await conn.query(sql, timeoutMs);
+        } catch (err) {
+          lastError = err;
+          if (attempt < maxRetries) {
+            const delay = baseDelayMs * 2 ** attempt;
+            await new Promise((resolve) => setTimeout(resolve, delay));
+          }
+        }
+      }
+      throw lastError;
+    },
+
+    close: () => conn.close(),
+  };
+}
+```
+
+Use it in your connection factory:
+
+```typescript
+connection: {
+  create: () => withRetry(createMyConnection(config), 3, 500),
+  dbType: "postgres",
+},
+```
+
+## Credential Management
+
+### Config-Driven Credentials
+
+Always pass credentials through plugin config, not by reading `process.env` inside the plugin. This makes dependencies explicit and testable:
+
+```typescript
+// atlas.config.ts — credentials are explicit, visible in one place
+import { defineConfig } from "@atlas/api/lib/config";
+import { myPlugin } from "./plugins/my-plugin";
+
+export default defineConfig({
+  plugins: [
+    myPlugin({
+      apiKey: process.env.MY_API_KEY!,
+      apiSecret: process.env.MY_API_SECRET!,
+    }),
+  ],
+});
+```
+
+<Callout type="warn">
+Never commit credentials to version control. Use environment variables in `atlas.config.ts` and add `.env` to `.gitignore`.
+</Callout>
+
+### Multi-Credential Plugins (OAuth Refresh)
+
+Some plugins need to manage rotating credentials — e.g. OAuth tokens with refresh flows. Keep the token state internal and refresh transparently:
+
+```typescript
+import { z } from "zod";
+import { createPlugin } from "@useatlas/plugin-sdk";
+import type { AtlasContextPlugin, PluginHealthResult } from "@useatlas/plugin-sdk";
+
+const configSchema = z.object({
+  clientId: z.string().min(1),
+  clientSecret: z.string().min(1),
+  refreshToken: z.string().min(1),
+  tokenUrl: z.string().url(),
+});
+
+type OAuthConfig = z.infer<typeof configSchema>;
+
+interface TokenState {
+  accessToken: string;
+  expiresAt: number;
+}
+
+async function refreshAccessToken(config: OAuthConfig): Promise<TokenState> {
+  const response = await fetch(config.tokenUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      client_id: config.clientId,
+      client_secret: config.clientSecret,
+      refresh_token: config.refreshToken,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Token refresh failed: ${response.status}`);
+  }
+
+  const data = (await response.json()) as { access_token: string; expires_in: number };
+  return {
+    accessToken: data.access_token,
+    expiresAt: Date.now() + data.expires_in * 1000 - 60_000, // 1 min buffer
+  };
+}
+
+export const oauthContextPlugin = createPlugin<OAuthConfig, AtlasContextPlugin<OAuthConfig>>({
+  configSchema,
+
+  create(config) {
+    let tokenState: TokenState | null = null;
+
+    async function getToken(): Promise<string> {
+      if (!tokenState || Date.now() >= tokenState.expiresAt) {
+        tokenState = await refreshAccessToken(config);
+      }
+      return tokenState.accessToken;
+    }
+
+    return {
+      id: "oauth-context",
+      types: ["context"] as const,
+      version: "1.0.0",
+      config,
+
+      contextProvider: {
+        async load() {
+          const token = await getToken();
+          const response = await fetch("https://api.example.com/context", {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          return response.text();
+        },
+
+        async refresh() {
+          // Force token refresh on next load
+          tokenState = null;
+        },
+      },
+
+      async initialize(ctx) {
+        // Verify credentials work at boot
+        try {
+          tokenState = await refreshAccessToken(config);
+          ctx.logger.info("OAuth credentials verified");
+        } catch (err) {
+          throw new Error(
+            `OAuth initialization failed: ${err instanceof Error ? err.message : err}`,
+          );
+        }
+      },
+
+      async healthCheck(): Promise<PluginHealthResult> {
+        try {
+          await getToken();
+          return { healthy: true };
+        } catch (err) {
+          return {
+            healthy: false,
+            message: err instanceof Error ? err.message : String(err),
+          };
+        }
+      },
+    };
+  },
+});
+```
+
+### Credential Rotation Without Restart
+
+For credentials that rotate externally (e.g. vault-managed secrets), read the current value on each use rather than capturing it at startup:
+
+```typescript
+import { definePlugin } from "@useatlas/plugin-sdk";
+
+export default definePlugin({
+  id: "vault-context",
+  types: ["context"],
+  version: "1.0.0",
+
+  contextProvider: {
+    async load() {
+      // Read the current secret value each time — supports external rotation
+      const apiKey = process.env.VAULT_MANAGED_API_KEY;
+      if (!apiKey) return "";
+
+      const response = await fetch("https://api.example.com/data", {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      return response.text();
+    },
+  },
+
+  async initialize(ctx) {
+    // Verify the env var exists at boot, but don't capture the value
+    if (!process.env.VAULT_MANAGED_API_KEY) {
+      throw new Error("VAULT_MANAGED_API_KEY must be set");
+    }
+    ctx.logger.info("Vault-managed credential detected");
+  },
+});
+```
+
+<Callout type="info">
+This is the one exception to the "config-driven credentials" rule. When an external secret manager rotates the value, reading `process.env` at call time ensures you always use the latest credential. Document this pattern clearly so operators know the env var must be set.
+</Callout>
+
+## Hook Recipes
+
+Hooks intercept agent lifecycle events. Define them on any plugin type via the `hooks` property. Each hook entry has an optional `matcher` (return `true` to run) and a `handler`.
+
+### Audit Logging via `afterQuery`
+
+Log every query with its results and duration:
+
+```typescript
+import { definePlugin } from "@useatlas/plugin-sdk";
+import type { AtlasPluginContext } from "@useatlas/plugin-sdk";
+
+export default definePlugin({
+  id: "audit-logger",
+  types: ["context"],
+  version: "1.0.0",
+
+  contextProvider: {
+    async load() { return ""; },
+  },
+
+  hooks: {
+    afterQuery: [{
+      handler: (ctx) => {
+        // ctx: { sql, connectionId?, result, durationMs }
+        console.log(JSON.stringify({
+          event: "query_executed",
+          sql: ctx.sql,
+          connectionId: ctx.connectionId,
+          rowCount: ctx.result.rows.length,
+          durationMs: ctx.durationMs,
+          timestamp: new Date().toISOString(),
+        }));
+      },
+    }],
+  },
+});
+```
+
+For persistent audit logging, write to the internal database:
+
+```typescript
+import { definePlugin } from "@useatlas/plugin-sdk";
+import type { AtlasPluginContext } from "@useatlas/plugin-sdk";
+
+let db: AtlasPluginContext["db"] = null;
+
+export default definePlugin({
+  id: "db-audit-logger",
+  types: ["context"],
+  version: "1.0.0",
+
+  contextProvider: {
+    async load() { return ""; },
+  },
+
+  schema: {
+    plugin_query_audit: {
+      fields: {
+        sql: { type: "string", required: true },
+        connection_id: { type: "string" },
+        row_count: { type: "number", required: true },
+        duration_ms: { type: "number", required: true },
+        executed_at: { type: "date", required: true },
+      },
+    },
+  },
+
+  async initialize(ctx) {
+    db = ctx.db;
+    if (!db) {
+      ctx.logger.warn("No internal DB — audit logs will be skipped");
+    }
+  },
+
+  hooks: {
+    afterQuery: [{
+      handler: async (ctx) => {
+        if (!db) return;
+        await db.execute(
+          `INSERT INTO plugin_query_audit (sql, connection_id, row_count, duration_ms, executed_at)
+           VALUES ($1, $2, $3, $4, NOW())`,
+          [ctx.sql, ctx.connectionId ?? null, ctx.result.rows.length, ctx.durationMs],
+        );
+      },
+    }],
+  },
+});
+```
+
+### Query Rewriting via `beforeQuery` (Tenant Isolation)
+
+Inject a `WHERE` clause to scope queries to the current tenant. `beforeQuery` handlers can return `{ sql }` to rewrite the query or throw to reject it:
+
+```typescript
+import { definePlugin } from "@useatlas/plugin-sdk";
+
+const TENANT_ID = process.env.ATLAS_TENANT_ID;
+
+export default definePlugin({
+  id: "tenant-filter",
+  types: ["context"],
+  version: "1.0.0",
+
+  contextProvider: {
+    async load() { return ""; },
+  },
+
+  async initialize(ctx) {
+    if (!TENANT_ID) {
+      throw new Error("ATLAS_TENANT_ID is required for tenant isolation");
+    }
+    ctx.logger.info(`Tenant isolation active for tenant: ${TENANT_ID}`);
+  },
+
+  hooks: {
+    beforeQuery: [{
+      handler: (ctx) => {
+        // Simple approach: wrap the original query in a CTE with a filter.
+        // WARNING: This uses string interpolation for brevity. In production,
+        // use a SQL AST rewriter or parameterized approach to avoid injection risks.
+        const wrapped = `WITH _original AS (${ctx.sql}) SELECT * FROM _original WHERE tenant_id = '${TENANT_ID}'`;
+        return { sql: wrapped };
+      },
+    }],
+  },
+});
+```
+
+<Callout type="warn">
+The CTE-wrapping approach shown above is a simplified example. For production tenant isolation, use Atlas's built-in RLS support (`ATLAS_RLS_ENABLED`, `ATLAS_RLS_COLUMN`, `ATLAS_RLS_CLAIM`) which injects `WHERE` clauses at the validation layer — after all plugin hooks, so plugins cannot strip the filter.
+</Callout>
+
+### Rate Limiting
+
+Track query counts per time window and reject queries that exceed the limit:
+
+```typescript
+import { definePlugin } from "@useatlas/plugin-sdk";
+
+const WINDOW_MS = 60_000; // 1 minute
+const MAX_QUERIES = 100;
+
+const queryLog: number[] = [];
+
+export default definePlugin({
+  id: "rate-limiter",
+  types: ["context"],
+  version: "1.0.0",
+
+  contextProvider: {
+    async load() { return ""; },
+  },
+
+  hooks: {
+    beforeQuery: [{
+      handler: () => {
+        const now = Date.now();
+        // Remove entries outside the window
+        while (queryLog.length > 0 && queryLog[0]! < now - WINDOW_MS) {
+          queryLog.shift();
+        }
+        if (queryLog.length >= MAX_QUERIES) {
+          throw new Error(`Rate limit exceeded: ${MAX_QUERIES} queries per minute`);
+        }
+        queryLog.push(now);
+      },
+    }],
+  },
+});
+```
+
+### Data Masking via `beforeQuery`
+
+Mask sensitive columns by rewriting the SQL to replace them with redacted values at the database level:
+
+```typescript
+import { definePlugin } from "@useatlas/plugin-sdk";
+
+const MASKED_COLUMNS = new Set(["email", "phone", "ssn", "credit_card"]);
+
+export default definePlugin({
+  id: "data-masker",
+  types: ["context"],
+  version: "1.0.0",
+
+  contextProvider: {
+    async load() {
+      return [
+        "## Data Masking",
+        "The following columns are redacted in query results: email, phone, ssn, credit_card.",
+        "Do not SELECT these columns directly — they will appear as '***REDACTED***'.",
+      ].join("\n");
+    },
+  },
+
+  hooks: {
+    beforeQuery: [{
+      handler: (ctx) => {
+        // Replace masked column references with redacted literals.
+        // This is a simplified regex approach — for production use,
+        // consider a SQL AST rewriter for reliable column detection.
+        let rewritten = ctx.sql;
+        for (const col of MASKED_COLUMNS) {
+          const pattern = new RegExp(`\\b${col}\\b`, "gi");
+          rewritten = rewritten.replace(pattern, `'***REDACTED***' AS ${col}`);
+        }
+        if (rewritten !== ctx.sql) {
+          return { sql: rewritten };
+        }
+      },
+    }],
+  },
+});
+```
+
+<Callout type="info">
+This uses `beforeQuery` (a mutable hook) to rewrite SQL before execution, rather than mutating results after the fact. The regex approach is simplified — for production, use a SQL AST parser to reliably detect column references vs string literals.
+</Callout>
+
+### Request Observation via `onRequest`
+
+Log or monitor incoming HTTP requests. Note that `onRequest` hooks are observation-only — they cannot block or modify requests:
+
+```typescript
+import { definePlugin } from "@useatlas/plugin-sdk";
+
+export default definePlugin({
+  id: "custom-auth-check",
+  types: ["context"],
+  version: "1.0.0",
+
+  contextProvider: {
+    async load() { return ""; },
+  },
+
+  hooks: {
+    onRequest: [{
+      matcher: (ctx) => ctx.path.startsWith("/api/"),
+      handler: (ctx) => {
+        const apiKey = ctx.headers["x-custom-api-key"];
+        if (!apiKey) {
+          // onRequest hooks are observation-only — log the event
+          console.warn(`Missing X-Custom-API-Key on ${ctx.method} ${ctx.path}`);
+        }
+      },
+    }],
+  },
+});
+```
+
+## Advanced Patterns
+
+### Registering Custom Tools
+
+Plugins can add tools to the agent via `ctx.tools.register()` in `initialize()`. The tool becomes available to the agent alongside the built-in `explore` and `executeSQL` tools:
+
+```typescript
+import { z } from "zod";
+import { tool } from "ai";
+import { definePlugin } from "@useatlas/plugin-sdk";
+
+export default definePlugin({
+  id: "inventory-lookup",
+  types: ["context"],
+  version: "1.0.0",
+
+  contextProvider: {
+    async load() {
+      return "## Inventory Tool\nUse `lookupInventory` to check stock levels by SKU.";
+    },
+  },
+
+  async initialize(ctx) {
+    ctx.tools.register({
+      name: "lookupInventory",
+      description: "Check current inventory levels for a product SKU",
+      tool: tool({
+        description: "Look up current inventory by SKU",
+        inputSchema: z.object({
+          sku: z.string().describe("Product SKU code"),
+        }),
+        execute: async ({ sku }) => {
+          const response = await fetch(
+            `https://inventory.internal/api/stock/${encodeURIComponent(sku)}`,
+          );
+          if (!response.ok) return { error: `SKU not found: ${sku}` };
+          return response.json();
+        },
+      }),
+    });
+
+    ctx.logger.info("Inventory lookup tool registered");
+  },
+});
+```
+
+The context plugin's `load()` returns prompt guidance so the agent knows when and how to use the tool. The tool itself is registered via the tool registry during initialization.
+
+### Using the Internal Database
+
+Plugins can read and write to the Atlas internal database (`DATABASE_URL`) via `ctx.db`. This is useful for persistent state — settings, caches, plugin-specific data:
+
+```typescript
+import { definePlugin } from "@useatlas/plugin-sdk";
+import type { AtlasPluginContext, PluginHealthResult } from "@useatlas/plugin-sdk";
+
+let db: AtlasPluginContext["db"] = null;
+
+export default definePlugin({
+  id: "query-cache",
+  types: ["context"],
+  version: "1.0.0",
+
+  schema: {
+    plugin_query_cache: {
+      fields: {
+        query_hash: { type: "string", required: true, unique: true },
+        result_json: { type: "string", required: true },
+        cached_at: { type: "date", required: true },
+      },
+    },
+  },
+
+  contextProvider: {
+    async load() { return ""; },
+  },
+
+  async initialize(ctx) {
+    db = ctx.db;
+    if (!db) {
+      ctx.logger.warn("No internal DB — query cache disabled");
+      return;
+    }
+    ctx.logger.info("Query cache plugin initialized");
+  },
+
+  hooks: {
+    beforeQuery: [{
+      handler: async (ctx) => {
+        if (!db) return;
+
+        // Simple hash — Bun-specific. For portability, use:
+        // crypto.createHash("sha256").update(ctx.sql).digest("hex")
+        const hash = Bun.hash(ctx.sql).toString(36);
+        const result = await db.query(
+          "SELECT result_json FROM plugin_query_cache WHERE query_hash = $1",
+          [hash],
+        );
+        if (result.rows.length > 0) {
+          // Cache hit — could be used for analytics, but can't short-circuit the query
+          // (beforeQuery can only rewrite or reject, not return cached results)
+        }
+      },
+    }],
+
+    afterQuery: [{
+      handler: async (ctx) => {
+        if (!db) return;
+        const hash = Bun.hash(ctx.sql).toString(36); // Bun-specific (see note above)
+        await db.execute(
+          `INSERT INTO plugin_query_cache (query_hash, result_json, cached_at)
+           VALUES ($1, $2, NOW())
+           ON CONFLICT (query_hash) DO UPDATE SET result_json = $2, cached_at = NOW()`,
+          [hash, JSON.stringify(ctx.result)],
+        );
+      },
+    }],
+  },
+});
+```
+
+<Callout type="info">
+`ctx.db` is `null` when `DATABASE_URL` is not set. Always check for `null` before using it — Atlas works without an internal database.
+</Callout>
+
+### Dynamic Entity Factories
+
+Datasource plugins can discover entities at boot time instead of hardcoding them. Use an async factory function for `entities`:
+
+```typescript
+import { z } from "zod";
+import { createPlugin } from "@useatlas/plugin-sdk";
+import type { AtlasDatasourcePlugin, PluginEntity } from "@useatlas/plugin-sdk";
+
+const configSchema = z.object({
+  url: z.string().url(),
+  schema: z.string().default("public"),
+});
+
+type DynamicConfig = z.infer<typeof configSchema>;
+
+export const dynamicPlugin = createPlugin<DynamicConfig, AtlasDatasourcePlugin<DynamicConfig>>({
+  configSchema,
+
+  create(config) {
+    return {
+      id: "dynamic-datasource",
+      types: ["datasource"] as const,
+      version: "1.0.0",
+      config,
+
+      connection: {
+        create: () => createConnectionFromUrl(config.url),
+        dbType: "postgres",
+      },
+
+      // Async factory — called once at boot, entities merged into the whitelist
+      entities: async (): Promise<PluginEntity[]> => {
+        const conn = createConnectionFromUrl(config.url);
+        try {
+          // Escape the schema name to prevent injection.
+          // PluginDBConnection.query() doesn't support parameterized queries,
+          // so validate the input or use your driver's parameterized API directly.
+          const safeSchema = config.schema.replace(/'/g, "''");
+          const result = await conn.query(
+            `SELECT table_name, obj_description((quote_ident(table_schema) || '.' || quote_ident(table_name))::regclass)
+               AS description
+             FROM information_schema.tables
+             WHERE table_schema = '${safeSchema}' AND table_type = 'BASE TABLE'`,
+          );
+
+          return result.rows.map((row) => ({
+            name: row.table_name as string,
+            yaml: [
+              `table: ${row.table_name}`,
+              `description: ${(row.description as string) || "Auto-discovered table"}`,
+              "dimensions: {}",
+            ].join("\n"),
+          }));
+        } finally {
+          await conn.close();
+        }
+      },
+    };
+  },
+});
+
+function createConnectionFromUrl(url: string) {
+  // Your connection factory here
+  throw new Error("Not implemented — replace with your driver");
+}
+```
+
+### Multi-Type Plugins
+
+A single plugin can implement multiple types. For example, a plugin that provides both a datasource connection and context guidance:
+
+```typescript
+import { z } from "zod";
+import { createPlugin } from "@useatlas/plugin-sdk";
+import type {
+  AtlasDatasourcePlugin,
+  AtlasContextPlugin,
+  PluginHealthResult,
+} from "@useatlas/plugin-sdk";
+
+const configSchema = z.object({
+  url: z.string().url(),
+  dialect: z.string().default("Use APPROX_COUNT_DISTINCT for cardinality estimates."),
+});
+
+type Config = z.infer<typeof configSchema>;
+
+// Intersection type for multi-type plugins
+type DatasourceAndContext = AtlasDatasourcePlugin<Config> & AtlasContextPlugin<Config>;
+
+export const multiPlugin = createPlugin<Config, DatasourceAndContext>({
+  configSchema,
+
+  create(config) {
+    return {
+      id: "multi-type-example",
+      types: ["datasource", "context"] as const,
+      version: "1.0.0",
+      config,
+
+      // Datasource facet
+      connection: {
+        create: () => createMyConnection(config.url),
+        dbType: "postgres",
+      },
+      dialect: config.dialect,
+
+      // Context facet
+      contextProvider: {
+        async load() {
+          return `## Dialect Notes\n\n${config.dialect}`;
+        },
+      },
+
+      async healthCheck(): Promise<PluginHealthResult> {
+        try {
+          const conn = createMyConnection(config.url);
+          await conn.query("SELECT 1", 5000);
+          await conn.close();
+          return { healthy: true };
+        } catch (err) {
+          return {
+            healthy: false,
+            message: err instanceof Error ? err.message : String(err),
+          };
+        }
+      },
+    };
+  },
+});
+
+function createMyConnection(url: string) {
+  throw new Error("Not implemented — replace with your driver");
+}
+```
+
+### Multi-Tenant Plugins
+
+Serve different configurations per tenant by keying on a runtime identifier (e.g. an environment variable or request header):
+
+```typescript
+import { z } from "zod";
+import { createPlugin } from "@useatlas/plugin-sdk";
+import type { AtlasDatasourcePlugin, PluginDBConnection } from "@useatlas/plugin-sdk";
+
+const configSchema = z.object({
+  tenants: z.record(
+    z.string(), // tenant ID
+    z.object({
+      url: z.string().url(),
+      schema: z.string().default("public"),
+    }),
+  ),
+  defaultTenant: z.string(),
+});
+
+type MultiTenantConfig = z.infer<typeof configSchema>;
+
+export const multiTenantPlugin = createPlugin<
+  MultiTenantConfig,
+  AtlasDatasourcePlugin<MultiTenantConfig>
+>({
+  configSchema,
+
+  create(config) {
+    const connectionPool = new Map<string, PluginDBConnection>();
+
+    function getConnectionForTenant(tenantId: string): PluginDBConnection {
+      const tenantConfig = config.tenants[tenantId];
+      if (!tenantConfig) {
+        throw new Error(`Unknown tenant: ${tenantId}`);
+      }
+
+      let conn = connectionPool.get(tenantId);
+      if (!conn) {
+        conn = createTenantConnection(tenantConfig.url, tenantConfig.schema);
+        connectionPool.set(tenantId, conn);
+      }
+      return conn;
+    }
+
+    return {
+      id: "multi-tenant-datasource",
+      types: ["datasource"] as const,
+      version: "1.0.0",
+      config,
+
+      connection: {
+        create: () => getConnectionForTenant(config.defaultTenant),
+        dbType: "postgres",
+      },
+
+      async initialize(ctx) {
+        const tenantIds = Object.keys(config.tenants);
+        ctx.logger.info(
+          `Multi-tenant plugin initialized with ${tenantIds.length} tenant(s): ${tenantIds.join(", ")}`,
+        );
+      },
+
+      async teardown() {
+        const closes = [...connectionPool.values()].map((c) => c.close());
+        await Promise.all(closes);
+        connectionPool.clear();
+      },
+    };
+  },
+});
+
+function createTenantConnection(url: string, schema: string): PluginDBConnection {
+  throw new Error("Not implemented — replace with your driver");
+}
+```
+
+Register with per-tenant connection strings:
+
+```typescript
+// atlas.config.ts
+plugins: [
+  multiTenantPlugin({
+    defaultTenant: "acme",
+    tenants: {
+      acme: { url: process.env.ACME_DB_URL!, schema: "acme" },
+      globex: { url: process.env.GLOBEX_DB_URL!, schema: "globex" },
+    },
+  }),
+],
+```

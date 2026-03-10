@@ -25,6 +25,12 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { EmptyState } from "@/ui/components/admin/empty-state";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
@@ -42,8 +48,10 @@ import {
   Pencil,
   Trash2,
   History,
+  Eye,
 } from "lucide-react";
 import { useInProgressSet, type FetchError, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { DeliveryStatusBadge } from "@/ui/components/admin/delivery-status-badge";
 import { TaskFormDialog } from "./task-form-dialog";
 import type {
   ScheduledTask,
@@ -132,6 +140,12 @@ export default function ScheduledTasksPage() {
   const [deleteTarget, setDeleteTarget] = useState<ScheduledTask | null>(null);
   const deleting = useInProgressSet();
 
+  // ── Preview state ─────────────────────────────────────────────
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewData, setPreviewData] = useState<{ channel: string; email?: { subject: string; body: string }; slack?: { text: string; blocks: unknown[] }; webhook?: unknown } | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+
   function openCreate() {
     setEditingTask(null);
     setFormOpen(true);
@@ -145,6 +159,28 @@ export default function ScheduledTasksPage() {
 
   function handleFormSuccess() {
     setRefetchKey((k) => k + 1);
+  }
+
+  // ── Preview delivery ──────────────────────────────────────────
+  async function handlePreview(taskId: string, e: React.MouseEvent) {
+    e.stopPropagation();
+    setPreviewData(null);
+    setPreviewError(null);
+    setPreviewLoading(true);
+    setPreviewOpen(true);
+    try {
+      const res = await fetch(
+        `${apiUrl}/api/v1/scheduled-tasks/${encodeURIComponent(taskId)}/preview`,
+        { credentials, method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setPreviewData(data);
+    } catch (err) {
+      setPreviewError(err instanceof Error ? err.message : "Failed to generate preview");
+    } finally {
+      setPreviewLoading(false);
+    }
   }
 
   // ── Fetch task list ──────────────────────────────────────────────
@@ -463,6 +499,15 @@ export default function ScheduledTasksPage() {
                               size="icon"
                               variant="ghost"
                               className="size-8"
+                              title="Preview delivery"
+                              onClick={(e) => handlePreview(task.id, e)}
+                            >
+                              <Eye className="size-3" />
+                            </Button>
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="size-8"
                               onClick={(e) => openEdit(task, e)}
                             >
                               <Pencil className="size-3" />
@@ -500,6 +545,7 @@ export default function ScheduledTasksPage() {
                                 <TableHeader>
                                   <TableRow>
                                     <TableHead>Status</TableHead>
+                                    <TableHead>Delivery</TableHead>
                                     <TableHead>Started</TableHead>
                                     <TableHead>Completed</TableHead>
                                     <TableHead>Tokens</TableHead>
@@ -511,6 +557,12 @@ export default function ScheduledTasksPage() {
                                     <TableRow key={run.id}>
                                       <TableCell>
                                         <RunStatusBadge status={run.status} />
+                                      </TableCell>
+                                      <TableCell>
+                                        <DeliveryStatusBadge
+                                          status={run.deliveryStatus}
+                                          error={run.deliveryError}
+                                        />
                                       </TableCell>
                                       <TableCell className="text-xs text-muted-foreground">
                                         {formatRelativeDate(run.startedAt)}
@@ -580,6 +632,66 @@ export default function ScheduledTasksPage() {
         credentials={credentials}
         onSuccess={handleFormSuccess}
       />
+
+      <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
+        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Delivery Preview</DialogTitle>
+          </DialogHeader>
+          {previewLoading ? (
+            <div className="flex items-center gap-2 py-8 justify-center text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" />
+              Generating preview...
+            </div>
+          ) : previewError ? (
+            <p className="text-sm text-destructive py-4">{previewError}</p>
+          ) : previewData ? (
+            <div className="space-y-4">
+              <Badge variant="outline" className="capitalize">{previewData.channel}</Badge>
+              {previewData.email && (
+                <div className="space-y-2">
+                  <div>
+                    <span className="text-xs font-medium text-muted-foreground">Subject</span>
+                    <p className="text-sm font-medium">{previewData.email.subject}</p>
+                  </div>
+                  <div>
+                    <span className="text-xs font-medium text-muted-foreground">Body</span>
+                    <iframe
+                      sandbox=""
+                      srcDoc={previewData.email.body}
+                      className="mt-1 w-full rounded-md border"
+                      style={{ minHeight: 200 }}
+                      title="Email preview"
+                    />
+                  </div>
+                </div>
+              )}
+              {previewData.slack && (
+                <div className="space-y-2">
+                  <div>
+                    <span className="text-xs font-medium text-muted-foreground">Text</span>
+                    <p className="text-sm">{previewData.slack.text}</p>
+                  </div>
+                  <div>
+                    <span className="text-xs font-medium text-muted-foreground">Blocks</span>
+                    <pre className="mt-1 max-h-60 overflow-auto rounded-md bg-muted p-3 text-xs whitespace-pre-wrap">
+                      {JSON.stringify(previewData.slack.blocks, null, 2)}
+                    </pre>
+                  </div>
+                </div>
+              )}
+              {previewData.webhook && (
+                <div>
+                  <span className="text-xs font-medium text-muted-foreground">Webhook Payload</span>
+                  <pre className="mt-1 max-h-80 overflow-auto rounded-md bg-muted p-3 text-xs whitespace-pre-wrap">
+                    {JSON.stringify(previewData.webhook, null, 2)}
+                  </pre>
+                </div>
+              )}
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
 
       <AlertDialog open={deleteTarget !== null} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>
         <AlertDialogContent>

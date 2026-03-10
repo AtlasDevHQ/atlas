@@ -37,6 +37,7 @@ import {
 } from "lucide-react";
 import type { FetchError } from "@/ui/hooks/use-admin-fetch";
 import { friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { DeliveryStatusBadge } from "@/ui/components/admin/delivery-status-badge";
 import type { ScheduledTask, ScheduledTaskRunWithTaskName } from "@/ui/lib/types";
 
 // ── Helpers ───────────────────────────────────────────────────────
@@ -290,6 +291,7 @@ export default function RunHistoryPage() {
                   <TableHead className="w-8" />
                   <TableHead>Task</TableHead>
                   <TableHead>Status</TableHead>
+                  <TableHead>Delivery</TableHead>
                   <TableHead>Started</TableHead>
                   <TableHead>Duration</TableHead>
                   <TableHead>Tokens</TableHead>
@@ -318,6 +320,12 @@ export default function RunHistoryPage() {
                         <TableCell>
                           <RunStatusBadge status={run.status} />
                         </TableCell>
+                        <TableCell>
+                          <DeliveryStatusBadge
+                            status={run.deliveryStatus}
+                            error={run.deliveryError}
+                          />
+                        </TableCell>
                         <TableCell className="text-xs text-muted-foreground">
                           {formatTimestamp(run.startedAt)}
                         </TableCell>
@@ -337,7 +345,7 @@ export default function RunHistoryPage() {
 
                       {isExpanded && (
                         <TableRow>
-                          <TableCell colSpan={7} className="bg-muted/30 p-4">
+                          <TableCell colSpan={8} className="bg-muted/30 p-4">
                             <div className="space-y-3 text-sm">
                               <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
                                 <div>
@@ -369,6 +377,17 @@ export default function RunHistoryPage() {
                                   <p>{run.tokensUsed?.toLocaleString() ?? "—"}</p>
                                 </div>
                               </div>
+
+                              {run.deliveryError && (
+                                <div>
+                                  <span className="text-xs font-medium text-muted-foreground">
+                                    Delivery error
+                                  </span>
+                                  <pre className="mt-1 max-h-40 overflow-auto rounded-md bg-muted p-3 text-xs whitespace-pre-wrap">
+                                    {run.deliveryError}
+                                  </pre>
+                                </div>
+                              )}
 
                               {run.error && (
                                 <div>

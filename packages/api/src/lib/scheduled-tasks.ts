@@ -18,9 +18,11 @@ import type {
   ScheduledTaskRunWithTaskName,
   ScheduledTaskWithRuns,
   DeliveryChannel,
+  DeliveryStatus,
   Recipient,
   RunStatus,
 } from "@atlas/api/lib/scheduled-task-types";
+import { DELIVERY_STATUSES } from "@atlas/api/lib/scheduled-task-types";
 import { isRecipient } from "@atlas/api/lib/scheduled-task-types";
 import type { ActionApprovalMode } from "@atlas/api/lib/action-types";
 
@@ -78,6 +80,12 @@ function rowToScheduledTask(r: Record<string, unknown>): ScheduledTask {
 }
 
 function rowToScheduledTaskRun(r: Record<string, unknown>): ScheduledTaskRun {
+  const rawDeliveryStatus = r.delivery_status as string | null | undefined;
+  const deliveryStatus: DeliveryStatus | null =
+    rawDeliveryStatus && (DELIVERY_STATUSES as readonly string[]).includes(rawDeliveryStatus)
+      ? (rawDeliveryStatus as DeliveryStatus)
+      : null;
+
   return {
     id: r.id as string,
     taskId: r.task_id as string,
@@ -88,6 +96,8 @@ function rowToScheduledTaskRun(r: Record<string, unknown>): ScheduledTaskRun {
     actionId: (r.action_id as string) ?? null,
     error: (r.error as string) ?? null,
     tokensUsed: typeof r.tokens_used === "number" ? r.tokens_used : null,
+    deliveryStatus,
+    deliveryError: (r.delivery_error as string) ?? null,
     createdAt: String(r.created_at),
   };
 }
@@ -363,6 +373,19 @@ export async function createTaskRun(taskId: string): Promise<string | null> {
     log.error({ err: err instanceof Error ? err.message : String(err), taskId }, "createTaskRun failed");
     return null;
   }
+}
+
+/** Update delivery status on a run record. Fire-and-forget. */
+export function updateRunDeliveryStatus(
+  runId: string,
+  status: DeliveryStatus,
+  error?: string,
+): void {
+  if (!hasInternalDB()) return;
+  internalExecute(
+    `UPDATE scheduled_task_runs SET delivery_status = $1, delivery_error = $2 WHERE id = $3`,
+    [status, error ?? null, runId],
+  );
 }
 
 /** Update a run record on completion. Fire-and-forget. */

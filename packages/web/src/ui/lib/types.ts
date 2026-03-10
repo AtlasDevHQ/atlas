@@ -41,6 +41,7 @@ export interface ConversationWithMessages extends Conversation {
 // --- Scheduled task types (from @atlas/api/lib/scheduled-task-types) ---
 
 export type DeliveryChannel = "email" | "slack" | "webhook";
+export type DeliveryStatus = "pending" | "sent" | "failed";
 export type ApprovalMode = "auto" | "manual" | "admin-only";
 
 export interface ScheduledTask {
@@ -75,6 +76,8 @@ export interface ScheduledTaskRun {
   actionId: string | null;
   error: string | null;
   tokensUsed: number | null;
+  deliveryStatus: DeliveryStatus | null;
+  deliveryError: string | null;
   createdAt: string;
 }
 

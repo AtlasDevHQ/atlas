@@ -1,6 +1,6 @@
 {
   "name": "@useatlas/snowflake",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "description": "Atlas Snowflake datasource plugin",
   "type": "module",
   "main": "./src/index.ts",

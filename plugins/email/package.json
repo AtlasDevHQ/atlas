@@ -1,6 +1,6 @@
 {
   "name": "@useatlas/email",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "Atlas email action plugin",
   "type": "module",
   "main": "./src/index.ts",

@@ -1,6 +1,6 @@
 {
   "name": "@useatlas/yaml-context",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "description": "Atlas YAML context plugin",
   "type": "module",
   "main": "./src/index.ts",

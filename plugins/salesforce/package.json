@@ -1,6 +1,6 @@
 {
   "name": "@useatlas/salesforce",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "description": "Atlas Salesforce datasource plugin",
   "type": "module",
   "main": "./src/index.ts",

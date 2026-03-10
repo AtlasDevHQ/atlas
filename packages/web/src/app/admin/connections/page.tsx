@@ -53,7 +53,7 @@ import {
   type ConnectionHealth,
   type ConnectionInfo,
   type ConnectionDetail,
-} from "@atlas/api/lib/connection-types";
+} from "@/ui/lib/types";
 
 // ── Helpers ───────────────────────────────────────────────────────
 

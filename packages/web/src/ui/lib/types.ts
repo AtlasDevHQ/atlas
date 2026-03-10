@@ -89,6 +89,45 @@ export interface ScheduledTaskRunWithTaskName extends ScheduledTaskRun {
   taskName: string;
 }
 
+// --- Connection types (from @atlas/api/lib/connection-types) ---
+
+export const DB_TYPES = [
+  { value: "postgres", label: "PostgreSQL" },
+  { value: "mysql", label: "MySQL" },
+  { value: "clickhouse", label: "ClickHouse" },
+  { value: "snowflake", label: "Snowflake" },
+  { value: "duckdb", label: "DuckDB" },
+  { value: "salesforce", label: "Salesforce" },
+] as const;
+
+export type DBType = (typeof DB_TYPES)[number]["value"];
+
+export type HealthStatus = "healthy" | "degraded" | "unhealthy";
+
+export interface ConnectionHealth {
+  status: HealthStatus;
+  latencyMs: number;
+  message?: string;
+  checkedAt: string;
+}
+
+export interface ConnectionInfo {
+  id: string;
+  dbType: DBType;
+  description?: string | null;
+  health?: ConnectionHealth;
+}
+
+export interface ConnectionDetail {
+  id: string;
+  dbType: string;
+  description: string | null;
+  health: ConnectionHealth | null;
+  maskedUrl: string | null;
+  schema: string | null;
+  managed: boolean;
+}
+
 // --- Error types (from @atlas/api/lib/errors) ---
 
 export const CHAT_ERROR_CODES = [

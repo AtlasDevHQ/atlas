@@ -12,9 +12,11 @@ import {
   internalQuery,
   internalExecute,
   migrateInternalDB,
+  loadSavedConnections,
   _resetPool,
   _resetCircuitBreaker,
 } from "../internal";
+import { connections } from "../connection";
 
 /** Creates a mock pool that tracks query/end calls. */
 function createMockPool() {
@@ -193,7 +195,7 @@ describe("internal DB module", () => {
       _resetPool(pool);
 
       await migrateInternalDB();
-      expect(calls.queries.length).toBe(26);
+      expect(calls.queries.length).toBe(27);
       expect(calls.queries[0].sql).toContain("CREATE TABLE IF NOT EXISTS audit_log");
       expect(calls.queries[1].sql).toContain("idx_audit_log_timestamp");
       expect(calls.queries[2].sql).toContain("idx_audit_log_user_id");
@@ -220,6 +222,7 @@ describe("internal DB module", () => {
       expect(calls.queries[23].sql).toContain("CREATE TABLE IF NOT EXISTS scheduled_task_runs");
       expect(calls.queries[24].sql).toContain("idx_scheduled_task_runs_task");
       expect(calls.queries[25].sql).toContain("idx_scheduled_task_runs_status");
+      expect(calls.queries[26].sql).toContain("CREATE TABLE IF NOT EXISTS connections");
     });
 
     it("propagates migration errors", async () => {
@@ -258,6 +261,62 @@ describe("internal DB module", () => {
       _resetPool(pool2);
       expect(getInternalDB()).toBe(pool2);
       expect(pool2).not.toBe(pool1);
+    });
+  });
+
+  describe("loadSavedConnections()", () => {
+    afterEach(() => {
+      connections._reset();
+    });
+
+    it("returns 0 when DATABASE_URL is not set", async () => {
+      delete process.env.DATABASE_URL;
+      expect(await loadSavedConnections()).toBe(0);
+    });
+
+    it("loads connections from the DB and registers them", async () => {
+      process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+      const { pool } = createMockPool();
+      pool._setResult({
+        rows: [
+          { id: "warehouse", url: "postgresql://host/wh", type: "postgres", description: "Warehouse", schema_name: "analytics" },
+          { id: "reporting", url: "postgresql://host/rp", type: "postgres", description: null, schema_name: null },
+        ],
+      });
+      _resetPool(pool);
+
+      const count = await loadSavedConnections();
+      expect(count).toBe(2);
+      expect(connections.has("warehouse")).toBe(true);
+      expect(connections.has("reporting")).toBe(true);
+    });
+
+    it("skips individual connection failures without aborting", async () => {
+      process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+      const { pool } = createMockPool();
+      // Second row has an invalid URL scheme which will throw in register
+      pool._setResult({
+        rows: [
+          { id: "good", url: "postgresql://host/db", type: "postgres", description: null, schema_name: null },
+          { id: "bad", url: "badscheme://host/db", type: "unknown", description: null, schema_name: null },
+        ],
+      });
+      _resetPool(pool);
+
+      const count = await loadSavedConnections();
+      expect(count).toBe(1);
+      expect(connections.has("good")).toBe(true);
+      expect(connections.has("bad")).toBe(false);
+    });
+
+    it("returns 0 when query throws (table not exist)", async () => {
+      process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+      const { pool } = createMockPool();
+      pool._setError(new Error("relation \"connections\" does not exist"));
+      _resetPool(pool);
+
+      const count = await loadSavedConnections();
+      expect(count).toBe(0);
     });
   });
 

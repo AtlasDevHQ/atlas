@@ -274,5 +274,69 @@ export async function migrateInternalDB(): Promise<void> {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_task ON scheduled_task_runs(task_id);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_status ON scheduled_task_runs(status);`);
 
-  log.info("Internal DB migration complete (audit_log, conversations, messages, slack, action_log, scheduled_tasks)");
+  // Admin-managed connections
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS connections (
+      id TEXT PRIMARY KEY,
+      url TEXT NOT NULL,
+      type TEXT NOT NULL,
+      description TEXT,
+      schema_name TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `);
+
+  log.info("Internal DB migration complete (audit_log, conversations, messages, slack, action_log, scheduled_tasks, connections)");
+}
+
+/**
+ * Load admin-managed connections from the internal DB and register them
+ * in the ConnectionRegistry. Idempotent — safe to call at startup.
+ * Silently skips if no internal DB or the connections table doesn't exist yet.
+ */
+export async function loadSavedConnections(): Promise<number> {
+  if (!hasInternalDB()) return 0;
+
+  // Lazy-import to avoid circular dependency at module level
+  const { connections } = await import("@atlas/api/lib/db/connection");
+
+  try {
+    const rows = await internalQuery<{
+      id: string;
+      url: string;
+      type: string;
+      description: string | null;
+      schema_name: string | null;
+    }>("SELECT id, url, type, description, schema_name FROM connections");
+
+    let registered = 0;
+    for (const row of rows) {
+      try {
+        connections.register(row.id, {
+          url: row.url,
+          description: row.description ?? undefined,
+          schema: row.schema_name ?? undefined,
+        });
+        registered++;
+      } catch (err) {
+        log.warn(
+          { connectionId: row.id, err: err instanceof Error ? err.message : String(err) },
+          "Failed to register saved connection — skipping",
+        );
+      }
+    }
+
+    if (registered > 0) {
+      log.info({ count: registered }, "Loaded saved connections from internal DB");
+    }
+    return registered;
+  } catch (err) {
+    // Table may not exist yet (pre-migration) — that's expected on first boot
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "Could not load saved connections (table may not exist yet)",
+    );
+    return 0;
+  }
 }

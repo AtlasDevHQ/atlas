@@ -17,8 +17,10 @@ import {
   checkRateLimit,
   getClientIP,
 } from "@atlas/api/lib/auth/middleware";
-import { connections } from "@atlas/api/lib/db/connection";
+import { connections, detectDBType } from "@atlas/api/lib/db/connection";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { maskConnectionUrl } from "@atlas/api/lib/security";
+import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import { plugins } from "@atlas/api/lib/plugins/registry";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import type { AtlasRole } from "@atlas/api/lib/auth/types";
@@ -597,6 +599,61 @@ admin.get("/connections", async (c) => {
   });
 });
 
+// POST /connections/test — test a connection URL without persisting
+admin.post("/connections/test", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const body = await c.req.json().catch(() => null);
+    if (!body || typeof body !== "object") {
+      return c.json({ error: "invalid_request", message: "Request body is required." }, 400);
+    }
+
+    const { url, schema } = body as Record<string, unknown>;
+    if (!url || typeof url !== "string") {
+      return c.json({ error: "invalid_request", message: "Connection URL is required." }, 400);
+    }
+
+    let dbType: string;
+    try {
+      dbType = detectDBType(url);
+    } catch (err) {
+      return c.json({ error: "invalid_request", message: err instanceof Error ? err.message : "Unsupported database URL scheme." }, 400);
+    }
+
+    // Register a temporary connection, test it, then always clean up
+    const tempId = `_test_${Date.now()}`;
+    try {
+      connections.register(tempId, {
+        url,
+        description: undefined,
+        schema: typeof schema === "string" ? schema : undefined,
+      });
+      const result = await connections.healthCheck(tempId);
+      return c.json({ status: result.status, latencyMs: result.latencyMs, dbType });
+    } catch (err) {
+      return c.json({
+        error: "connection_failed",
+        message: `Connection test failed: ${err instanceof Error ? err.message : "Unknown error"}`,
+      }, 400);
+    } finally {
+      // _test_ prefix won't match the "default" guard — safe to force-delete
+      const entry = connections.has(tempId);
+      if (entry) {
+        // Use internal delete to bypass the default-connection guard (which won't trigger anyway for _test_ IDs)
+        connections.unregister(tempId);
+      }
+    }
+  });
+});
+
 // POST /connections/:id/test — health check a connection
 admin.post("/connections/:id/test", async (c) => {
   const req = c.req.raw;
@@ -621,6 +678,344 @@ admin.post("/connections/:id/test", async (c) => {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Health check failed");
       return c.json({ error: "internal_error", message: "Health check failed." }, 500);
     }
+  });
+});
+
+// POST /connections — create a new connection
+admin.post("/connections", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Connection management requires an internal database (DATABASE_URL)." }, 404);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const body = await c.req.json().catch((err) => {
+      log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in create connection request");
+      return null;
+    });
+
+    if (!body || typeof body !== "object") {
+      return c.json({ error: "invalid_request", message: "Request body is required." }, 400);
+    }
+
+    const { id, url, description, schema } = body as Record<string, unknown>;
+
+    if (!id || typeof id !== "string" || !/^[a-z][a-z0-9_-]*$/.test(id)) {
+      return c.json({ error: "invalid_request", message: "Connection ID must be lowercase alphanumeric with hyphens/underscores (e.g. 'warehouse')." }, 400);
+    }
+    if (id === "default") {
+      return c.json({ error: "invalid_request", message: "Cannot create a connection with ID 'default'. The default connection is managed via ATLAS_DATASOURCE_URL." }, 400);
+    }
+    if (!url || typeof url !== "string") {
+      return c.json({ error: "invalid_request", message: "Connection URL is required." }, 400);
+    }
+
+    // Detect database type (validates URL scheme)
+    let dbType: string;
+    try {
+      dbType = detectDBType(url as string);
+    } catch (err) {
+      return c.json({ error: "invalid_request", message: err instanceof Error ? err.message : "Unsupported database URL scheme." }, 400);
+    }
+
+    // Check for duplicate
+    if (connections.has(id as string)) {
+      return c.json({ error: "conflict", message: `Connection "${id}" already exists.` }, 409);
+    }
+
+    // Test the connection before saving
+    try {
+      connections.register(id as string, {
+        url: url as string,
+        description: typeof description === "string" ? description : undefined,
+        schema: typeof schema === "string" ? schema : undefined,
+      });
+      await connections.healthCheck(id as string);
+    } catch (err) {
+      // Rollback the registration if the health check fails
+      connections.unregister(id as string);
+      return c.json({
+        error: "connection_failed",
+        message: `Connection test failed: ${err instanceof Error ? err.message : "Unknown error"}. Fix the URL and try again.`,
+      }, 400);
+    }
+
+    // Persist to internal DB
+    try {
+      await internalQuery(
+        `INSERT INTO connections (id, url, type, description, schema_name) VALUES ($1, $2, $3, $4, $5)`,
+        [id, url, dbType, typeof description === "string" ? description : null, typeof schema === "string" ? schema : null],
+      );
+    } catch (err) {
+      connections.unregister(id as string);
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Failed to persist connection");
+      return c.json({ error: "internal_error", message: "Failed to save connection." }, 500);
+    }
+
+    // Rebuild whitelist for new connection
+    _resetWhitelists();
+
+    log.info({ requestId, connectionId: id, dbType, actorId: authResult.user?.id }, "Connection created");
+    return c.json({
+      id,
+      dbType,
+      description: typeof description === "string" ? description : null,
+      maskedUrl: maskConnectionUrl(url as string),
+    }, 201);
+  });
+});
+
+// PUT /connections/:id — update connection config
+admin.put("/connections/:id", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Connection management requires an internal database (DATABASE_URL)." }, 404);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const id = c.req.param("id");
+
+    if (id === "default") {
+      return c.json({ error: "forbidden", message: "Cannot modify the default connection. Update ATLAS_DATASOURCE_URL instead." }, 403);
+    }
+
+    // Check it exists in the DB (admin-managed), not just in the registry
+    const existing = await internalQuery<{ id: string; url: string; type: string; description: string | null; schema_name: string | null }>(
+      "SELECT id, url, type, description, schema_name FROM connections WHERE id = $1",
+      [id],
+    );
+    if (existing.length === 0) {
+      return c.json({ error: "not_found", message: `Connection "${id}" not found or is not admin-managed.` }, 404);
+    }
+
+    const body = await c.req.json().catch((err) => {
+      log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in update connection request");
+      return null;
+    });
+
+    if (!body || typeof body !== "object") {
+      return c.json({ error: "invalid_request", message: "Request body is required." }, 400);
+    }
+
+    const { url, description, schema } = body as Record<string, unknown>;
+    const current = existing[0];
+    const newUrl = typeof url === "string" ? url : current.url;
+    const newDescription = typeof description === "string" ? description : current.description;
+    const newSchema = typeof schema === "string" ? (schema || null) : current.schema_name;
+    const urlChanged = typeof url === "string" && url !== current.url;
+
+    // Validate new URL scheme if changed
+    let dbType = current.type;
+    if (urlChanged) {
+      try {
+        dbType = detectDBType(newUrl);
+      } catch (err) {
+        return c.json({ error: "invalid_request", message: err instanceof Error ? err.message : "Unsupported database URL scheme." }, 400);
+      }
+    }
+
+    // Re-test if URL changed
+    if (urlChanged) {
+      try {
+        connections.register(id, {
+          url: newUrl,
+          description: newDescription ?? undefined,
+          schema: newSchema ?? undefined,
+        });
+        await connections.healthCheck(id);
+      } catch (err) {
+        // Restore old connection
+        try {
+          connections.register(id, {
+            url: current.url,
+            description: current.description ?? undefined,
+            schema: current.schema_name ?? undefined,
+          });
+        } catch (restoreErr) {
+          log.error({ connectionId: id, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) }, "Failed to restore previous connection after update failure — connection unregistered");
+          connections.unregister(id);
+        }
+        return c.json({
+          error: "connection_failed",
+          message: `Connection test failed: ${err instanceof Error ? err.message : "Unknown error"}. Fix the URL and try again.`,
+        }, 400);
+      }
+    } else {
+      // Re-register with updated metadata (no URL change — no need to test)
+      try {
+        connections.register(id, {
+          url: newUrl,
+          description: newDescription ?? undefined,
+          schema: newSchema ?? undefined,
+        });
+      } catch (err) {
+        log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Failed to re-register connection with updated metadata");
+        return c.json({ error: "internal_error", message: "Failed to update connection." }, 500);
+      }
+    }
+
+    // Update in DB — rollback registry on failure
+    try {
+      await internalQuery(
+        `UPDATE connections SET url = $1, type = $2, description = $3, schema_name = $4, updated_at = NOW() WHERE id = $5`,
+        [newUrl, dbType, newDescription, newSchema, id],
+      );
+    } catch (err) {
+      // Restore old connection in registry to stay in sync with DB
+      try {
+        connections.register(id, {
+          url: current.url,
+          description: current.description ?? undefined,
+          schema: current.schema_name ?? undefined,
+        });
+      } catch {
+        connections.unregister(id);
+      }
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Failed to update connection in DB");
+      return c.json({ error: "internal_error", message: "Failed to update connection." }, 500);
+    }
+
+    _resetWhitelists();
+
+    log.info({ requestId, connectionId: id, urlChanged, actorId: authResult.user?.id }, "Connection updated");
+    return c.json({
+      id,
+      dbType,
+      description: newDescription,
+      maskedUrl: maskConnectionUrl(newUrl),
+    });
+  });
+});
+
+// DELETE /connections/:id — remove connection
+admin.delete("/connections/:id", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Connection management requires an internal database (DATABASE_URL)." }, 404);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const id = c.req.param("id");
+
+    if (id === "default") {
+      return c.json({ error: "forbidden", message: "Cannot delete the default connection." }, 403);
+    }
+
+    // Must exist in the DB (admin-managed)
+    const existing = await internalQuery<{ id: string }>(
+      "SELECT id FROM connections WHERE id = $1",
+      [id],
+    );
+    if (existing.length === 0) {
+      return c.json({ error: "not_found", message: `Connection "${id}" not found or is not admin-managed.` }, 404);
+    }
+
+    // Check for scheduled tasks referencing this connection
+    try {
+      const refs = await internalQuery<{ count: string }>(
+        "SELECT COUNT(*) as count FROM scheduled_tasks WHERE connection_id = $1",
+        [id],
+      );
+      const refCount = parseInt(String(refs[0]?.count ?? "0"), 10);
+      if (refCount > 0) {
+        return c.json({
+          error: "conflict",
+          message: `Cannot delete connection "${id}" — it is referenced by ${refCount} scheduled task(s). Remove or update those tasks first.`,
+        }, 409);
+      }
+    } catch (err) {
+      // scheduled_tasks table might not exist — not a blocker for delete
+      log.debug({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Could not check scheduled task references (table may not exist)");
+    }
+
+    // Remove from DB and registry
+    try {
+      await internalQuery("DELETE FROM connections WHERE id = $1", [id]);
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Failed to delete connection from DB");
+      return c.json({ error: "internal_error", message: "Failed to delete connection." }, 500);
+    }
+
+    connections.unregister(id);
+
+    log.info({ requestId, connectionId: id, actorId: authResult.user?.id }, "Connection deleted");
+    return c.json({ success: true });
+  });
+});
+
+// GET /connections/:id — get connection detail (including masked URL)
+admin.get("/connections/:id", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const id = c.req.param("id");
+
+    if (!connections.has(id)) {
+      return c.json({ error: "not_found", message: `Connection "${id}" not found.` }, 404);
+    }
+
+    const meta = connections.describe().find((m) => m.id === id);
+
+    // If admin-managed, include masked URL and schema from DB
+    let maskedUrl: string | null = null;
+    let schema: string | null = null;
+    let managed = false;
+    if (hasInternalDB()) {
+      try {
+        const rows = await internalQuery<{ url: string; schema_name: string | null }>(
+          "SELECT url, schema_name FROM connections WHERE id = $1",
+          [id],
+        );
+        if (rows.length > 0) {
+          maskedUrl = maskConnectionUrl(rows[0].url);
+          schema = rows[0].schema_name;
+          managed = true;
+        }
+      } catch (err) {
+        log.warn({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to fetch connection details from internal DB");
+      }
+    }
+
+    return c.json({
+      id,
+      dbType: meta?.dbType ?? "unknown",
+      description: meta?.description ?? null,
+      health: meta?.health ?? null,
+      maskedUrl,
+      schema,
+      managed,
+    });
   });
 });
 

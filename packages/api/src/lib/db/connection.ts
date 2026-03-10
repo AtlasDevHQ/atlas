@@ -399,6 +399,22 @@ export class ConnectionRegistry {
     }
   }
 
+  has(id: string): boolean {
+    return this.entries.has(id);
+  }
+
+  unregister(id: string): boolean {
+    if (id === "default") return false;
+    const entry = this.entries.get(id);
+    if (!entry) return false;
+    entry.conn.close().catch((err) => {
+      log.warn({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to close connection during unregister");
+    });
+    this.entries.delete(id);
+    _resetWhitelists();
+    return true;
+  }
+
   get(id: string): DBConnection {
     const entry = this.entries.get(id);
     if (!entry) {

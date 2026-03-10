@@ -733,7 +733,8 @@ export default definePlugin({
       handler: async (ctx) => {
         if (!db) return;
 
-        // Check cache (simple hash — use a proper hash in production)
+        // Simple hash — Bun-specific. For portability, use:
+        // crypto.createHash("sha256").update(ctx.sql).digest("hex")
         const hash = Bun.hash(ctx.sql).toString(36);
         const result = await db.query(
           "SELECT result_json FROM plugin_query_cache WHERE query_hash = $1",
@@ -749,7 +750,7 @@ export default definePlugin({
     afterQuery: [{
       handler: async (ctx) => {
         if (!db) return;
-        const hash = Bun.hash(ctx.sql).toString(36);
+        const hash = Bun.hash(ctx.sql).toString(36); // Bun-specific (see note above)
         await db.execute(
           `INSERT INTO plugin_query_cache (query_hash, result_json, cached_at)
            VALUES ($1, $2, NOW())

@@ -337,6 +337,9 @@ export async function runAgent({
 }) {
   const model = getModel();
   const providerType = getProviderType();
+  // Capture context eagerly — AsyncLocalStorage may have exited by the time onFinish fires
+  const userId = getRequestContext()?.user?.id ?? null;
+  const resolvedModelId = model.modelId;
 
   const span = tracer.startSpan("atlas.agent", {
     attributes: { provider: providerType, messageCount: messages.length },
@@ -415,21 +418,25 @@ export async function runAgent({
         });
         endSpan(SpanStatusCode.OK);
 
-        // Persist token usage to internal DB (fire-and-forget)
+        // Persist token usage to internal DB (fire-and-forget).
+        // Shares the internalExecute circuit breaker with audit writes.
         if (hasInternalDB() && totalUsage) {
-          const ctx = getRequestContext();
-          internalExecute(
-            `INSERT INTO token_usage (user_id, conversation_id, prompt_tokens, completion_tokens, model, provider)
-             VALUES ($1, $2, $3, $4, $5, $6)`,
-            [
-              ctx?.user?.id ?? null,
-              conversationId ?? null,
-              totalUsage.inputTokens ?? 0,
-              totalUsage.outputTokens ?? 0,
-              process.env.ATLAS_MODEL ?? null,
-              providerType,
-            ],
-          );
+          try {
+            internalExecute(
+              `INSERT INTO token_usage (user_id, conversation_id, prompt_tokens, completion_tokens, model, provider)
+               VALUES ($1, $2, $3, $4, $5, $6)`,
+              [
+                userId,
+                conversationId ?? null,
+                totalUsage.inputTokens ?? 0,
+                totalUsage.outputTokens ?? 0,
+                resolvedModelId,
+                providerType,
+              ],
+            );
+          } catch (err) {
+            log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to persist token usage");
+          }
         }
       },
     });

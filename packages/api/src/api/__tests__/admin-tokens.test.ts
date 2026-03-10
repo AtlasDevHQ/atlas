@@ -243,6 +243,23 @@ describe("admin token usage routes", () => {
       expect(body.from).toBe("2026-01-01");
       expect(body.to).toBe("2026-03-01");
     });
+
+    it("returns 400 for invalid date format", async () => {
+      const res = await app.fetch(adminRequest("/api/v1/admin/tokens/summary?from=not-a-date"));
+      expect(res.status).toBe(400);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const body = await res.json() as any;
+      expect(body.error).toBe("invalid_request");
+    });
+
+    it("returns 500 when DB query fails", async () => {
+      mockInternalQuery.mockImplementation(() => Promise.reject(new Error("connection refused")));
+      const res = await app.fetch(adminRequest("/api/v1/admin/tokens/summary"));
+      expect(res.status).toBe(500);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const body = await res.json() as any;
+      expect(body.error).toBe("internal_error");
+    });
   });
 
   describe("GET /tokens/by-user", () => {

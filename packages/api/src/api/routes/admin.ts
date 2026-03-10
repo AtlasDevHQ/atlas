@@ -2275,7 +2275,13 @@ admin.delete("/users/invitations/:id", async (c) => {
 // ---------------------------------------------------------------------------
 
 /** Parse and validate ISO date strings for token usage queries. */
-function parseDateRange(from?: string, to?: string): { fromDate: string; toDate: string } {
+function parseDateRange(from?: string, to?: string): { fromDate: string; toDate: string } | { error: string } {
+  if (from && isNaN(Date.parse(from))) {
+    return { error: `Invalid 'from' date format: "${from}". Use ISO 8601 (e.g. 2026-01-01).` };
+  }
+  if (to && isNaN(Date.parse(to))) {
+    return { error: `Invalid 'to' date format: "${to}". Use ISO 8601 (e.g. 2026-01-01).` };
+  }
   const now = new Date();
   const defaultFrom = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
   const fromDate = from || defaultFrom.toISOString();
@@ -2297,10 +2303,14 @@ admin.get("/tokens/summary", async (c) => {
     return c.json({ error: "not_available", message: "Token usage tracking requires an internal database (DATABASE_URL)." }, 404);
   }
 
-  const { fromDate, toDate } = parseDateRange(
+  const range = parseDateRange(
     c.req.query("from"),
     c.req.query("to"),
   );
+  if ("error" in range) {
+    return c.json({ error: "invalid_request", message: range.error }, 400);
+  }
+  const { fromDate, toDate } = range;
 
   try {
     const rows = await internalQuery<{
@@ -2346,11 +2356,16 @@ admin.get("/tokens/by-user", async (c) => {
     return c.json({ error: "not_available", message: "Token usage tracking requires an internal database (DATABASE_URL)." }, 404);
   }
 
-  const { fromDate, toDate } = parseDateRange(
+  const range = parseDateRange(
     c.req.query("from"),
     c.req.query("to"),
   );
-  const limit = Math.min(parseInt(c.req.query("limit") ?? "20", 10), 100);
+  if ("error" in range) {
+    return c.json({ error: "invalid_request", message: range.error }, 400);
+  }
+  const { fromDate, toDate } = range;
+  const parsedLimit = parseInt(c.req.query("limit") ?? "20", 10);
+  const limit = Number.isFinite(parsedLimit) ? Math.min(Math.max(parsedLimit, 1), 100) : 20;
 
   try {
     const rows = await internalQuery<{
@@ -2405,10 +2420,14 @@ admin.get("/tokens/trends", async (c) => {
     return c.json({ error: "not_available", message: "Token usage tracking requires an internal database (DATABASE_URL)." }, 404);
   }
 
-  const { fromDate, toDate } = parseDateRange(
+  const range = parseDateRange(
     c.req.query("from"),
     c.req.query("to"),
   );
+  if ("error" in range) {
+    return c.json({ error: "invalid_request", message: range.error }, 400);
+  }
+  const { fromDate, toDate } = range;
 
   try {
     const rows = await internalQuery<{

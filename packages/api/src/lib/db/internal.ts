@@ -22,9 +22,9 @@ const AUTH_TAG_LENGTH = 16;
 let _cachedKey: { raw: string; key: Buffer } | null = null;
 
 /**
- * Returns the 32-byte encryption key derived from ATLAS_ENCRYPTION_KEY
- * (takes precedence) or BETTER_AUTH_SECRET. Returns null if neither is set.
- * Result is cached to avoid re-deriving on every call.
+ * Returns the 32-byte encryption key derived via SHA-256 from
+ * ATLAS_ENCRYPTION_KEY (takes precedence) or BETTER_AUTH_SECRET.
+ * Returns null if neither is set. Result is cached.
  */
 export function getEncryptionKey(): Buffer | null {
   const raw = process.env.ATLAS_ENCRYPTION_KEY ?? process.env.BETTER_AUTH_SECRET;
@@ -71,12 +71,15 @@ export function decryptUrl(stored: string): string {
 
   const key = getEncryptionKey();
   if (!key) {
-    log.warn("Encrypted connection URL found but no encryption key is available — returning as-is");
-    return stored;
+    log.error("Encrypted connection URL found but no encryption key is available — set ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET");
+    throw new Error("Cannot decrypt connection URL: no encryption key available");
   }
 
   const parts = stored.split(":");
-  if (parts.length !== 3) return stored; // Not in our format — treat as plaintext
+  if (parts.length !== 3) {
+    log.error({ partCount: parts.length }, "Stored connection URL is not plaintext and does not match encrypted format (expected 3 colon-separated parts)");
+    throw new Error("Failed to decrypt connection URL: unrecognized format");
+  }
 
   try {
     const iv = Buffer.from(parts[0], "base64");
@@ -96,7 +99,7 @@ export function decryptUrl(stored: string): string {
   }
 }
 
-/** Returns true if the stored value looks like a plaintext URL (not encrypted). */
+/** Returns true if the stored value looks like a plaintext URL (any URI scheme, not just database schemes). */
 export function isPlaintextUrl(value: string): boolean {
   return /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value);
 }
@@ -230,7 +233,7 @@ export function _resetCircuitBreaker(): void {
   _droppedCount = 0;
 }
 
-/** Idempotent migration: creates audit_log, conversations, and messages tables. */
+/** Idempotent migration: creates all Atlas internal tables and indexes. */
 export async function migrateInternalDB(): Promise<void> {
   const pool = getInternalDB();
   await pool.query(`
@@ -365,7 +368,7 @@ export async function migrateInternalDB(): Promise<void> {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_task ON scheduled_task_runs(task_id);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_status ON scheduled_task_runs(status);`);
 
-  // Admin-managed connections
+  // Admin-managed connections (url column stores AES-256-GCM encrypted ciphertext; see encryptUrl/decryptUrl)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS connections (
       id TEXT PRIMARY KEY,

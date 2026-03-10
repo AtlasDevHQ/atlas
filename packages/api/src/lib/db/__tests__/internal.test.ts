@@ -548,6 +548,13 @@ describe("connection URL encryption", () => {
       expect(decryptUrl(encrypted)).toBe(url);
     });
 
+    it("handles URLs with special characters in password", () => {
+      process.env.ATLAS_ENCRYPTION_KEY = "test-key-for-round-trip-testing!";
+      const url = "postgresql://user:p%40ss+word/with=equals@host:5432/db?sslmode=require&options=-c%20search_path%3Dpublic";
+      const encrypted = encryptUrl(url);
+      expect(decryptUrl(encrypted)).toBe(url);
+    });
+
     it("produces different ciphertexts for the same input (random IV)", () => {
       process.env.ATLAS_ENCRYPTION_KEY = "test-key-for-round-trip-testing!";
       const url = "postgresql://user:pass@host/db";
@@ -588,18 +595,17 @@ describe("connection URL encryption", () => {
       expect(decryptUrl(url)).toBe(url);
     });
 
-    it("decryptUrl returns encrypted data as-is with warning when no key", () => {
+    it("decryptUrl throws when encountering encrypted data without a key", () => {
       // Encrypt with a key first
       process.env.ATLAS_ENCRYPTION_KEY = "temp-key-for-this-test!!!!!!!!!!!";
       const url = "postgresql://user:pass@host/db";
       const encrypted = encryptUrl(url);
 
-      // Now remove the key — decryptUrl should return the encrypted string as-is
+      // Now remove the key — decryptUrl should throw, not return garbage
       delete process.env.ATLAS_ENCRYPTION_KEY;
       delete process.env.BETTER_AUTH_SECRET;
-      // The encrypted value doesn't look like a URL, so it will try to decrypt
-      // but has no key — should log a warning and return as-is
-      expect(decryptUrl(encrypted)).toBe(encrypted);
+      _resetEncryptionKeyCache();
+      expect(() => decryptUrl(encrypted)).toThrow("Cannot decrypt connection URL: no encryption key available");
     });
   });
 
@@ -628,6 +634,23 @@ describe("connection URL encryption", () => {
       process.env.ATLAS_ENCRYPTION_KEY = "test-key-for-corruption-testing!";
       // 3 colon-separated parts but not valid encrypted data
       expect(() => decryptUrl("foo:bar:baz")).toThrow("Failed to decrypt connection URL");
+    });
+
+    it("throws on tampered auth tag", () => {
+      process.env.ATLAS_ENCRYPTION_KEY = "test-key-for-corruption-testing!";
+      const url = "postgresql://user:pass@host/db";
+      const encrypted = encryptUrl(url);
+      const parts = encrypted.split(":");
+      // Tamper with the auth tag (part[1])
+      parts[1] = "AAAA" + parts[1].slice(4);
+      const tampered = parts.join(":");
+      expect(() => decryptUrl(tampered)).toThrow("Failed to decrypt connection URL");
+    });
+
+    it("throws on non-3-part format when value is not a URL", () => {
+      process.env.ATLAS_ENCRYPTION_KEY = "test-key-for-corruption-testing!";
+      // 2 parts — not a URL, not 3-part encrypted format
+      expect(() => decryptUrl("some:garbage")).toThrow("unrecognized format");
     });
   });
 
@@ -664,6 +687,37 @@ describe("connection URL encryption", () => {
       const count = await loadSavedConnections();
       expect(count).toBe(1);
       expect(connections.has("warehouse")).toBe(true);
+    });
+
+    it("skips connections with undecryptable URLs without blocking others", async () => {
+      process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+      process.env.ATLAS_ENCRYPTION_KEY = "test-key-for-load-connections!!!";
+
+      const goodUrl = "postgresql://admin:secret@warehouse.example.com:5432/wh";
+      const goodEncrypted = encryptUrl(goodUrl);
+
+      // Encrypted with a different key — will fail to decrypt
+      process.env.ATLAS_ENCRYPTION_KEY = "different-key-that-wont-work!!!!";
+      _resetEncryptionKeyCache();
+      const badEncrypted = encryptUrl("postgresql://host/bad");
+
+      // Restore the original key
+      process.env.ATLAS_ENCRYPTION_KEY = "test-key-for-load-connections!!!";
+      _resetEncryptionKeyCache();
+
+      const { pool } = createMockPool();
+      pool._setResult({
+        rows: [
+          { id: "good-conn", url: goodEncrypted, type: "postgres", description: null, schema_name: null },
+          { id: "bad-conn", url: badEncrypted, type: "postgres", description: null, schema_name: null },
+        ],
+      });
+      _resetPool(pool);
+
+      const count = await loadSavedConnections();
+      expect(count).toBe(1);
+      expect(connections.has("good-conn")).toBe(true);
+      expect(connections.has("bad-conn")).toBe(false);
     });
 
     it("handles plaintext URLs (migration path) during load", async () => {

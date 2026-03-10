@@ -3,7 +3,7 @@
  *
  * Mounted at /api/v1/admin. All routes require admin role.
  * Browsing endpoints are read-only; health-check routes (POST) trigger
- * live probes and update cached health status.
+ * live probes. Connection CRUD routes persist encrypted URLs via encryptUrl/decryptUrl.
  */
 
 import * as fs from "fs";
@@ -748,11 +748,20 @@ admin.post("/connections", async (c) => {
       }, 400);
     }
 
-    // Persist to internal DB
+    // Encrypt and persist to internal DB
+    let encryptedUrl: string;
+    try {
+      encryptedUrl = encryptUrl(url as string);
+    } catch (err) {
+      connections.unregister(id as string);
+      log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to encrypt connection URL");
+      return c.json({ error: "encryption_failed", message: "Failed to encrypt connection URL. Check ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET." }, 500);
+    }
+
     try {
       await internalQuery(
         `INSERT INTO connections (id, url, type, description, schema_name) VALUES ($1, $2, $3, $4, $5)`,
-        [id, encryptUrl(url as string), dbType, typeof description === "string" ? description : null, typeof schema === "string" ? schema : null],
+        [id, encryptedUrl, dbType, typeof description === "string" ? description : null, typeof schema === "string" ? schema : null],
       );
     } catch (err) {
       connections.unregister(id as string);
@@ -879,11 +888,29 @@ admin.put("/connections/:id", async (c) => {
       }
     }
 
-    // Update in DB — rollback registry on failure
+    // Encrypt and update in DB — rollback registry on failure
+    let encryptedNewUrl: string;
+    try {
+      encryptedNewUrl = encryptUrl(newUrl);
+    } catch (err) {
+      // Restore previous connection in registry
+      try {
+        connections.register(id, {
+          url: currentUrl,
+          description: current.description ?? undefined,
+          schema: current.schema_name ?? undefined,
+        });
+      } catch {
+        connections.unregister(id);
+      }
+      log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to encrypt connection URL");
+      return c.json({ error: "encryption_failed", message: "Failed to encrypt connection URL. Check ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET." }, 500);
+    }
+
     try {
       await internalQuery(
         `UPDATE connections SET url = $1, type = $2, description = $3, schema_name = $4, updated_at = NOW() WHERE id = $5`,
-        [encryptUrl(newUrl), dbType, newDescription, newSchema, id],
+        [encryptedNewUrl, dbType, newDescription, newSchema, id],
       );
     } catch (err) {
       // Restore old connection in registry to stay in sync with DB
@@ -893,7 +920,8 @@ admin.put("/connections/:id", async (c) => {
           description: current.description ?? undefined,
           schema: current.schema_name ?? undefined,
         });
-      } catch {
+      } catch (restoreErr) {
+        log.error({ connectionId: id, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) }, "Failed to restore previous connection after DB update failure — connection unregistered");
         connections.unregister(id);
       }
       log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Failed to update connection in DB");
@@ -1007,9 +1035,14 @@ admin.get("/connections/:id", async (c) => {
           [id],
         );
         if (rows.length > 0) {
-          maskedUrl = maskConnectionUrl(decryptUrl(rows[0].url));
-          schema = rows[0].schema_name;
           managed = true;
+          schema = rows[0].schema_name;
+          try {
+            maskedUrl = maskConnectionUrl(decryptUrl(rows[0].url));
+          } catch (decryptErr) {
+            log.error({ connectionId: id, err: decryptErr instanceof Error ? decryptErr.message : String(decryptErr) }, "Failed to decrypt stored connection URL");
+            maskedUrl = "[encrypted — decryption failed]";
+          }
         }
       } catch (err) {
         log.warn({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to fetch connection details from internal DB");

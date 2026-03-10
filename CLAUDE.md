@@ -428,7 +428,8 @@ export default defineConfig({
 | `ATLAS_ADMIN_EMAIL` | — | First managed-auth admin email. If set, this user gets `admin` role on signup and on migration. If unset, the first user to sign up gets admin automatically |
 | `ATLAS_API_KEY` | — | Simple API key auth — requires `Authorization: Bearer <key>` |
 | `ATLAS_API_KEY_ROLE` | `analyst` | Role for simple-key auth mode (viewer/analyst/admin) |
-| `BETTER_AUTH_SECRET` | — | Managed auth (Better Auth) — min 32 chars |
+| `ATLAS_ENCRYPTION_KEY` | — | AES-256-GCM key for encrypting connection URLs at rest. Falls back to `BETTER_AUTH_SECRET` if unset. Any length (SHA-256 derived) |
+| `BETTER_AUTH_SECRET` | — | Managed auth (Better Auth) — min 32 chars. Also used as fallback encryption key for connection URLs |
 | `BETTER_AUTH_URL` | auto-detect | Base URL for Better Auth |
 | `BETTER_AUTH_TRUSTED_ORIGINS` | — | Comma-separated CSRF-allowed origins |
 | `ATLAS_AUTH_JWKS_URL` | — | BYOT mode — JWKS endpoint URL for JWT verification |

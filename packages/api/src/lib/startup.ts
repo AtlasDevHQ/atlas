@@ -483,7 +483,7 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
     log.warn(msg);
   }
 
-  // 6.5. Connection encryption key check
+  // 6.5. Connection encryption key check — only relevant when internal DB stores connection URLs
   if (process.env.DATABASE_URL && !process.env.ATLAS_ENCRYPTION_KEY && !process.env.BETTER_AUTH_SECRET) {
     const msg =
       "No encryption key available for connection URLs. Set ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET " +

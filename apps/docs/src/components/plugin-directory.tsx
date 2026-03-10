@@ -118,7 +118,7 @@ const plugins: Plugin[] = [
     type: "interaction",
     package: "@useatlas/mcp",
     description:
-      "Model Context Protocol server — expose Atlas tools to Claude Desktop, Cursor, etc.",
+      "Model Context Protocol server — expose Atlas tools to Claude Desktop, Cursor, etc. Monorepo-only (not yet published to npm).",
   },
   {
     name: "Slack",

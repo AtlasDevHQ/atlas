@@ -10,6 +10,37 @@ Public semver releases will start fresh when the API stabilizes — see
 
 ## [Unreleased]
 
+## 0.2.0 — Plugin Ecosystem (2026-03-10)
+
+### Added
+
+- Plugin scaffold CLI — `bun create @useatlas/plugin my-plugin` generates a complete plugin with tests, README, and `atlas.config.ts` wiring ([#140](https://github.com/AtlasDevHQ/atlas/pull/140))
+- Plugin schema migrations — plugins can declare SQL migrations that run at startup against the internal database ([#141](https://github.com/AtlasDevHQ/atlas/pull/141))
+- Multi-type plugin support — single plugin factory can provide multiple types (e.g., datasource + interaction + action) ([#122](https://github.com/AtlasDevHQ/atlas/pull/122))
+- Plugin testing utilities in SDK — `createMockContext()`, `createMockConnection()`, lifecycle test helpers ([#119](https://github.com/AtlasDevHQ/atlas/pull/119))
+- Interactive plugin directory page on docs site with type filtering ([#126](https://github.com/AtlasDevHQ/atlas/pull/126))
+- Per-plugin docs pages for all 15 official plugins ([#123](https://github.com/AtlasDevHQ/atlas/pull/123))
+- Plugin composition guide — ordering, priority, multi-plugin patterns ([#132](https://github.com/AtlasDevHQ/atlas/pull/132))
+- Plugin cookbook — real-world patterns and recipes ([#127](https://github.com/AtlasDevHQ/atlas/pull/127))
+- `wireSandboxPlugins()` helper for consistent sandbox wiring ([#138](https://github.com/AtlasDevHQ/atlas/pull/138))
+
+### Changed
+
+- Rename all plugins from `@atlas/plugin-*` to `@useatlas/*` scope ([#120](https://github.com/AtlasDevHQ/atlas/pull/120))
+- Publish 18 packages to npm under `@useatlas` scope with OIDC trusted publisher
+- Standardize `healthCheck()` across all 15 plugins — consistent error reporting, lazy peer dep loading ([#133](https://github.com/AtlasDevHQ/atlas/pull/133))
+- Prepare all 15 plugins for npm publish — add `package.json` metadata, `files`, `exports`, `repository` ([#129](https://github.com/AtlasDevHQ/atlas/pull/129))
+
+### Fixed
+
+- Sandbox plugin error handling — consistent exec error propagation ([#137](https://github.com/AtlasDevHQ/atlas/pull/137))
+- Bun `MODULE_NOT_FOUND` detection for lazy peer dep loading ([#134](https://github.com/AtlasDevHQ/atlas/pull/134))
+- `tsgo` type errors in snowflake, vercel-sandbox, yaml-context plugins ([#139](https://github.com/AtlasDevHQ/atlas/issues/139))
+- JIRA plugin test failures after multi-type migration ([#125](https://github.com/AtlasDevHQ/atlas/issues/125))
+- Skip redundant plugin tests in publish workflow — CI already tests on every push ([c4dbea2](https://github.com/AtlasDevHQ/atlas/commit/c4dbea2))
+
+## 0.1.0 — Documentation & DX (2026-03-08)
+
 ### Added
 
 - `atlas doctor` CLI command — validate environment, connectivity, and configuration ([#68](https://github.com/AtlasDevHQ/atlas/pull/68))
@@ -18,6 +49,10 @@ Public semver releases will start fresh when the API stabilizes — see
 - Docs site scaffolded with Fumadocs — 13 MDX pages, Orama search, Railway deploy config ([#72](https://github.com/AtlasDevHQ/atlas/pull/72))
 - `atlas validate` CLI command — offline config and semantic layer YAML validation ([#71](https://github.com/AtlasDevHQ/atlas/pull/71))
 - SDK integration tests — 41 tests against mock Hono server covering full `@useatlas/sdk` API surface ([#70](https://github.com/AtlasDevHQ/atlas/pull/70))
+
+## 0.0.x — Pre-release
+
+### Added
 
 - `executePython` tool with import guard and just-bash backend ([#46](https://github.com/AtlasDevHQ/atlas/pull/46))
 - Wire executePython results into chat UI ([#48](https://github.com/AtlasDevHQ/atlas/pull/48))

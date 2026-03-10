@@ -1150,6 +1150,278 @@ admin.get("/audit/stats", async (c) => {
 });
 
 // ---------------------------------------------------------------------------
+// Audit analytics routes
+// ---------------------------------------------------------------------------
+
+/** Build WHERE clause from optional `from` and `to` query params. */
+function analyticsDateRange(c: { req: { query(name: string): string | undefined } }) {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  let idx = 1;
+
+  const from = c.req.query("from");
+  if (from) {
+    if (isNaN(Date.parse(from))) return { error: `Invalid 'from' date format. Use ISO 8601 (e.g. 2026-01-01).` } as const;
+    conditions.push(`timestamp >= $${idx++}`);
+    params.push(from);
+  }
+
+  const to = c.req.query("to");
+  if (to) {
+    if (isNaN(Date.parse(to))) return { error: `Invalid 'to' date format. Use ISO 8601 (e.g. 2026-01-01).` } as const;
+    conditions.push(`timestamp <= $${idx++}`);
+    params.push(to);
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  return { where, params, nextIdx: idx } as const;
+}
+
+// GET /audit/analytics/volume — queries per day over date range
+admin.get("/audit/analytics/volume", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const range = analyticsDateRange(c);
+    if ("error" in range) return c.json({ error: "invalid_request", message: range.error }, 400);
+
+    try {
+      const rows = await internalQuery<{ day: string; count: string; errors: string }>(
+        `SELECT DATE(timestamp) as day, COUNT(*) as count, COUNT(*) FILTER (WHERE NOT success) as errors
+         FROM audit_log ${range.where}
+         GROUP BY DATE(timestamp) ORDER BY day`,
+        range.params,
+      );
+      return c.json({
+        volume: rows.map((r) => ({
+          day: r.day,
+          count: parseInt(String(r.count), 10),
+          errors: parseInt(String(r.errors), 10),
+        })),
+      });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Audit analytics volume query failed");
+      return c.json({ error: "internal_error", message: "Failed to query volume analytics." }, 500);
+    }
+  });
+});
+
+// GET /audit/analytics/slow — top 20 queries by average duration
+admin.get("/audit/analytics/slow", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const range = analyticsDateRange(c);
+    if ("error" in range) return c.json({ error: "invalid_request", message: range.error }, 400);
+
+    try {
+      const rows = await internalQuery<{
+        query: string;
+        avg_duration: string;
+        max_duration: string;
+        count: string;
+      }>(
+        `SELECT LEFT(sql, 200) as query,
+                ROUND(AVG(duration_ms)) as avg_duration,
+                MAX(duration_ms) as max_duration,
+                COUNT(*) as count
+         FROM audit_log ${range.where}
+         GROUP BY LEFT(sql, 200)
+         ORDER BY AVG(duration_ms) DESC
+         LIMIT 20`,
+        range.params,
+      );
+      return c.json({
+        queries: rows.map((r) => ({
+          query: r.query,
+          avgDuration: parseInt(String(r.avg_duration), 10),
+          maxDuration: parseInt(String(r.max_duration), 10),
+          count: parseInt(String(r.count), 10),
+        })),
+      });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Audit analytics slow query failed");
+      return c.json({ error: "internal_error", message: "Failed to query slow analytics." }, 500);
+    }
+  });
+});
+
+// GET /audit/analytics/frequent — top 20 queries by execution count
+admin.get("/audit/analytics/frequent", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const range = analyticsDateRange(c);
+    if ("error" in range) return c.json({ error: "invalid_request", message: range.error }, 400);
+
+    try {
+      const rows = await internalQuery<{
+        query: string;
+        count: string;
+        avg_duration: string;
+        error_count: string;
+      }>(
+        `SELECT LEFT(sql, 200) as query,
+                COUNT(*) as count,
+                ROUND(AVG(duration_ms)) as avg_duration,
+                COUNT(*) FILTER (WHERE NOT success) as error_count
+         FROM audit_log ${range.where}
+         GROUP BY LEFT(sql, 200)
+         ORDER BY COUNT(*) DESC
+         LIMIT 20`,
+        range.params,
+      );
+      return c.json({
+        queries: rows.map((r) => ({
+          query: r.query,
+          count: parseInt(String(r.count), 10),
+          avgDuration: parseInt(String(r.avg_duration), 10),
+          errorCount: parseInt(String(r.error_count), 10),
+        })),
+      });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Audit analytics frequent query failed");
+      return c.json({ error: "internal_error", message: "Failed to query frequency analytics." }, 500);
+    }
+  });
+});
+
+// GET /audit/analytics/errors — error count grouped by error message pattern
+admin.get("/audit/analytics/errors", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const range = analyticsDateRange(c);
+    if ("error" in range) return c.json({ error: "invalid_request", message: range.error }, 400);
+
+    const errorCondition = range.where
+      ? `${range.where} AND NOT success`
+      : "WHERE NOT success";
+
+    try {
+      const rows = await internalQuery<{ error: string; count: string }>(
+        `SELECT COALESCE(LEFT(error, 150), 'Unknown error') as error,
+                COUNT(*) as count
+         FROM audit_log ${errorCondition}
+         GROUP BY COALESCE(LEFT(error, 150), 'Unknown error')
+         ORDER BY COUNT(*) DESC
+         LIMIT 20`,
+        range.params,
+      );
+      return c.json({
+        errors: rows.map((r) => ({
+          error: r.error,
+          count: parseInt(String(r.count), 10),
+        })),
+      });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Audit analytics errors query failed");
+      return c.json({ error: "internal_error", message: "Failed to query error analytics." }, 500);
+    }
+  });
+});
+
+// GET /audit/analytics/users — per-user stats
+admin.get("/audit/analytics/users", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const range = analyticsDateRange(c);
+    if ("error" in range) return c.json({ error: "invalid_request", message: range.error }, 400);
+
+    try {
+      const rows = await internalQuery<{
+        user_id: string;
+        count: string;
+        avg_duration: string;
+        error_count: string;
+      }>(
+        `SELECT COALESCE(user_id, 'anonymous') as user_id,
+                COUNT(*) as count,
+                ROUND(AVG(duration_ms)) as avg_duration,
+                COUNT(*) FILTER (WHERE NOT success) as error_count
+         FROM audit_log ${range.where}
+         GROUP BY COALESCE(user_id, 'anonymous')
+         ORDER BY COUNT(*) DESC
+         LIMIT 50`,
+        range.params,
+      );
+      return c.json({
+        users: rows.map((r) => {
+          const count = parseInt(String(r.count), 10);
+          const errorCount = parseInt(String(r.error_count), 10);
+          return {
+            userId: r.user_id,
+            count,
+            avgDuration: parseInt(String(r.avg_duration), 10),
+            errorCount,
+            errorRate: count > 0 ? errorCount / count : 0,
+          };
+        }),
+      });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Audit analytics users query failed");
+      return c.json({ error: "internal_error", message: "Failed to query user analytics." }, 500);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Plugin routes
 // ---------------------------------------------------------------------------
 

@@ -818,3 +818,198 @@ describe("POST /api/v1/admin/plugins/:id/health", () => {
     expect(body.status).toBe("registered");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Audit analytics
+// ---------------------------------------------------------------------------
+
+describe("Admin routes — audit analytics", () => {
+  beforeEach(() => {
+    setAdmin();
+    mockHasInternalDB = true;
+    mockInternalQuery.mockReset();
+  });
+
+  // Volume
+  describe("GET /audit/analytics/volume", () => {
+    it("returns daily volume data", async () => {
+      mockInternalQuery.mockResolvedValue([
+        { day: "2026-03-01", count: "10", errors: "2" },
+        { day: "2026-03-02", count: "15", errors: "0" },
+      ]);
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/volume"));
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { volume: { day: string; count: number; errors: number }[] };
+      expect(body.volume).toHaveLength(2);
+      expect(body.volume[0].count).toBe(10);
+      expect(body.volume[0].errors).toBe(2);
+      expect(body.volume[1].count).toBe(15);
+    });
+
+    it("passes date range params to query", async () => {
+      mockInternalQuery.mockResolvedValue([]);
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/volume?from=2026-03-01&to=2026-03-07"));
+      expect(res.status).toBe(200);
+      expect(mockInternalQuery).toHaveBeenCalledTimes(1);
+      const [sql, params] = mockInternalQuery.mock.calls[0];
+      expect(sql).toContain("timestamp >=");
+      expect(sql).toContain("timestamp <=");
+      expect(params).toEqual(["2026-03-01", "2026-03-07"]);
+    });
+
+    it("returns 400 for invalid date", async () => {
+      const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/volume?from=not-a-date"));
+      expect(res.status).toBe(400);
+    });
+
+    it("returns 404 when no internal DB", async () => {
+      mockHasInternalDB = false;
+      const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/volume"));
+      expect(res.status).toBe(404);
+    });
+  });
+
+  // Slow queries
+  describe("GET /audit/analytics/slow", () => {
+    it("returns top slow queries", async () => {
+      mockInternalQuery.mockResolvedValue([
+        { query: "SELECT * FROM big_table", avg_duration: "1500", max_duration: "3000", count: "5" },
+      ]);
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/slow"));
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { queries: { query: string; avgDuration: number; maxDuration: number; count: number }[] };
+      expect(body.queries).toHaveLength(1);
+      expect(body.queries[0].avgDuration).toBe(1500);
+      expect(body.queries[0].maxDuration).toBe(3000);
+      expect(body.queries[0].count).toBe(5);
+    });
+  });
+
+  // Frequent queries
+  describe("GET /audit/analytics/frequent", () => {
+    it("returns top frequent queries", async () => {
+      mockInternalQuery.mockResolvedValue([
+        { query: "SELECT 1", count: "100", avg_duration: "5", error_count: "3" },
+      ]);
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/frequent"));
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { queries: { query: string; count: number; avgDuration: number; errorCount: number }[] };
+      expect(body.queries).toHaveLength(1);
+      expect(body.queries[0].count).toBe(100);
+      expect(body.queries[0].errorCount).toBe(3);
+    });
+  });
+
+  // Errors
+  describe("GET /audit/analytics/errors", () => {
+    it("returns error breakdown", async () => {
+      mockInternalQuery.mockResolvedValue([
+        { error: "relation does not exist", count: "8" },
+        { error: "permission denied", count: "3" },
+      ]);
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/errors"));
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { errors: { error: string; count: number }[] };
+      expect(body.errors).toHaveLength(2);
+      expect(body.errors[0].count).toBe(8);
+      expect(body.errors[1].error).toBe("permission denied");
+    });
+
+    it("combines date range with error filter", async () => {
+      mockInternalQuery.mockResolvedValue([]);
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/errors?from=2026-03-01"));
+      expect(res.status).toBe(200);
+      expect(mockInternalQuery).toHaveBeenCalledTimes(1);
+      const [sql] = mockInternalQuery.mock.calls[0];
+      expect(sql).toContain("timestamp >=");
+      expect(sql).toContain("NOT success");
+    });
+  });
+
+  // Users
+  describe("GET /audit/analytics/users", () => {
+    it("returns per-user stats with error rate", async () => {
+      mockInternalQuery.mockResolvedValue([
+        { user_id: "user-1", count: "50", avg_duration: "120", error_count: "5" },
+        { user_id: "user-2", count: "20", avg_duration: "80", error_count: "0" },
+      ]);
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/users"));
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { users: { userId: string; count: number; avgDuration: number; errorCount: number; errorRate: number }[] };
+      expect(body.users).toHaveLength(2);
+      expect(body.users[0].userId).toBe("user-1");
+      expect(body.users[0].count).toBe(50);
+      expect(body.users[0].errorRate).toBe(0.1);
+      expect(body.users[1].errorRate).toBe(0);
+    });
+  });
+
+  // Cross-cutting: auth, errors, date validation
+  describe("shared behavior", () => {
+    it("returns 403 for non-admin users on analytics endpoints", async () => {
+      mockAuthenticateRequest.mockResolvedValue({
+        authenticated: true,
+        mode: "simple-key",
+        user: { id: "user-1", mode: "simple-key", label: "Analyst", role: "analyst" },
+      });
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/volume"));
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.error).toBe("forbidden");
+    });
+
+    it("checks auth before hasInternalDB (returns 401 not 404 for unauth)", async () => {
+      mockHasInternalDB = false;
+      mockAuthenticateRequest.mockResolvedValue({
+        authenticated: false,
+        mode: "simple-key",
+        status: 401,
+        error: "Invalid API key",
+      });
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/volume"));
+      expect(res.status).toBe(401);
+    });
+
+    it("returns 500 when internalQuery throws", async () => {
+      mockInternalQuery.mockRejectedValue(new Error("connection reset"));
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/volume"));
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.error).toBe("internal_error");
+    });
+
+    it("returns 400 for invalid 'to' date", async () => {
+      const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/volume?to=garbage"));
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.error).toBe("invalid_request");
+    });
+
+    it("returns 400 for valid 'from' + invalid 'to'", async () => {
+      const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/volume?from=2026-03-01&to=garbage"));
+      expect(res.status).toBe(400);
+    });
+
+    it("handles 'to'-only date range", async () => {
+      mockInternalQuery.mockResolvedValue([]);
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/volume?to=2026-03-07"));
+      expect(res.status).toBe(200);
+      expect(mockInternalQuery).toHaveBeenCalledTimes(1);
+      const [sql, params] = mockInternalQuery.mock.calls[0];
+      expect(sql).toContain("timestamp <=");
+      expect(sql).not.toContain("timestamp >=");
+      expect(params).toEqual(["2026-03-07"]);
+    });
+  });
+});

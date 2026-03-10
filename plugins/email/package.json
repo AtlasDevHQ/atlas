@@ -37,8 +37,8 @@
   },
   "license": "MIT",
   "peerDependencies": {
-    "ai": "^6.0.97",
-    "zod": "^4.3.6",
+    "ai": "^6.0.0",
+    "zod": "^4.0.0",
     "@useatlas/plugin-sdk": ">=0.0.1"
   },
   "devDependencies": {

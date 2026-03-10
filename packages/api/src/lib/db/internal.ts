@@ -95,7 +95,7 @@ export function decryptUrl(stored: string): string {
       { err: err instanceof Error ? err.message : String(err) },
       "Failed to decrypt connection URL — data may be corrupted or key may have changed",
     );
-    throw new Error("Failed to decrypt connection URL");
+    throw new Error("Failed to decrypt connection URL", { cause: err });
   }
 }
 

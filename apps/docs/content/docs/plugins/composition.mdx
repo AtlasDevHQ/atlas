@@ -1,0 +1,298 @@
+---
+title: Plugin Composition
+description: How multiple plugins interact when registered together — ordering, priority, hooks, and constraints.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+When you register multiple plugins in `atlas.config.ts`, Atlas wires them into the runtime in a specific order with clear rules for priority, chaining, and conflict resolution. This page covers how plugins compose.
+
+## Multiple Datasource Plugins
+
+Each datasource plugin gets a unique connection registered under its plugin `id`. The default connection from `ATLAS_DATASOURCE_URL` coexists alongside plugin connections -- they don't replace it.
+
+```typescript
+// atlas.config.ts
+import { defineConfig } from "@atlas/api/lib/config";
+import { clickhousePlugin } from "@useatlas/clickhouse";
+import { snowflakePlugin } from "@useatlas/snowflake";
+
+export default defineConfig({
+  datasources: {
+    default: { url: process.env.ATLAS_DATASOURCE_URL! },
+  },
+  plugins: [
+    clickhousePlugin({ url: process.env.CLICKHOUSE_URL! }),
+    snowflakePlugin({
+      account: process.env.SNOWFLAKE_ACCOUNT!,
+      username: process.env.SNOWFLAKE_USER!,
+      password: process.env.SNOWFLAKE_PASSWORD!,
+    }),
+  ],
+});
+```
+
+At boot, `wireDatasourcePlugins` iterates over all healthy datasource plugins and calls `connection.create()` on each. The returned connection is registered in the `ConnectionRegistry` under the plugin's `id`:
+
+| Connection ID | Source |
+|---------------|--------|
+| `"default"` | `ATLAS_DATASOURCE_URL` env var |
+| `"clickhouse"` | ClickHouse plugin (plugin id) |
+| `"snowflake"` | Snowflake plugin (plugin id) |
+
+The agent uses `connectionId` when calling `executeSQL` to route queries to the right database. Plugin-provided entities (via the `entities` property) are merged into the table whitelist scoped to their connection -- so a ClickHouse table can't be queried through the Snowflake connection.
+
+If a datasource plugin provides a `dialect` string, it's injected into the agent's system prompt as dialect-specific guidance (e.g., "Use `SAFE_DIVIDE` instead of `/` for BigQuery").
+
+### Failure isolation
+
+If one datasource plugin fails to connect, only that plugin is marked unhealthy. The others continue working:
+
+```
+[INFO]  plugins:wiring  Datasource plugin wired  pluginId="clickhouse"
+[ERROR] plugins:wiring  Failed to wire datasource plugin  pluginId="snowflake" err="Connection refused"
+```
+
+The agent can still query the default connection and ClickHouse. Snowflake queries will fail with a clear error.
+
+## Sandbox Plugin Priority
+
+When multiple sandbox plugins are registered, Atlas selects the one with the highest `priority` value. Higher numbers win.
+
+### Built-in priority scale
+
+| Backend | Priority | Selection |
+|---------|----------|-----------|
+| Vercel Sandbox | 100 | `ATLAS_RUNTIME=vercel` |
+| nsjail | 75 | `ATLAS_SANDBOX=nsjail` or auto-detected on PATH |
+| **Plugin default** | **60** | `SANDBOX_DEFAULT_PRIORITY` from the SDK |
+| Sidecar | 50 | `ATLAS_SANDBOX_URL` set |
+| just-bash | 0 | Fallback (dev only) |
+
+The priority values for built-in backends are reference numbers from the SDK -- they establish where plugin priorities sit relative to the built-in chain. Built-in backends are selected via a fixed precedence order, not numeric comparison. Plugin backends use `priority` for sorting among themselves.
+
+Sandbox plugins default to priority 60 (between nsjail and sidecar). Override `priority` to control placement:
+
+```typescript
+import { definePlugin, SANDBOX_DEFAULT_PRIORITY } from "@useatlas/plugin-sdk";
+
+export default definePlugin({
+  id: "e2b-sandbox",
+  types: ["sandbox"],
+  version: "1.0.0",
+
+  sandbox: {
+    priority: 90, // Higher than nsjail (75), lower than Vercel (100)
+    async create(semanticRoot) {
+      // Return an ExploreBackend implementation
+      return {
+        async exec(command) {
+          // Execute in E2B sandbox...
+          return { stdout: "", stderr: "", exitCode: 0 };
+        },
+      };
+    },
+  },
+});
+```
+
+### Selection logic
+
+The selection runs in `getExploreBackend()` in `packages/api/src/lib/tools/explore.ts`:
+
+1. All healthy sandbox plugins are collected from the registry
+2. Sorted by `priority` descending (highest first)
+3. Each is tried in order -- `sandbox.create(semanticRoot)` is called
+4. The first one that succeeds becomes the active backend (cached for the process lifetime, unless invalidated by an infrastructure error)
+5. If all plugins fail, Atlas falls through to the built-in detection chain (Vercel > nsjail explicit > sidecar > nsjail auto-detect > just-bash)
+
+<Callout type="warn">
+When `ATLAS_SANDBOX=nsjail` is explicitly set, sandbox plugins are **skipped entirely**. The operator is explicitly requesting nsjail -- plugin backends won't override that.
+</Callout>
+
+### Two sandbox plugins
+
+```typescript
+// atlas.config.ts
+import { defineConfig } from "@atlas/api/lib/config";
+import { e2bPlugin } from "@useatlas/e2b";
+import { daytonaPlugin } from "@useatlas/daytona";
+
+export default defineConfig({
+  plugins: [
+    e2bPlugin({ apiKey: process.env.E2B_API_KEY!, priority: 90 }),
+    daytonaPlugin({ endpoint: process.env.DAYTONA_URL!, priority: 80 }),
+  ],
+});
+```
+
+Atlas tries E2B first (priority 90). If `create()` throws, it tries Daytona (priority 80). If both fail, the built-in chain takes over.
+
+## Hook Execution Order
+
+Hooks fire in **plugin registration order** -- the order of the `plugins: []` array in `atlas.config.ts`. This applies to all hook types: `beforeQuery`, `afterQuery`, `beforeExplore`, `afterExplore`, `onRequest`, `onResponse`.
+
+### Mutable hooks chain
+
+`beforeQuery` and `beforeExplore` are **mutable** hooks. Each handler receives the context with the latest mutated value, and can return a mutation to pass forward:
+
+```
+Plugin A beforeQuery → { sql: "SELECT * FROM orders" }
+    ↓ returns { sql: "SELECT * FROM orders WHERE tenant_id = 42" }
+Plugin B beforeQuery → { sql: "SELECT * FROM orders WHERE tenant_id = 42" }
+    ↓ returns void (no mutation)
+Plugin C beforeQuery → { sql: "SELECT * FROM orders WHERE tenant_id = 42" }
+    ↓ returns { sql: "SELECT * FROM orders WHERE tenant_id = 42 LIMIT 100" }
+Final SQL: "SELECT * FROM orders WHERE tenant_id = 42 LIMIT 100"
+```
+
+The rules:
+
+- **Return a mutation object** (e.g., `{ sql: "..." }` or `{ command: "..." }`) to rewrite the value for downstream hooks
+- **Return `void`/`undefined`** to pass through without changes
+- **Throw an error** to reject the operation entirely -- the chain stops and the query/command is denied
+- **Type mismatch** in the mutation is caught and logged as an error -- the mutation is ignored and the previous value is preserved
+- Only **healthy** plugins participate -- unhealthy plugins are skipped
+
+```typescript
+import { definePlugin } from "@useatlas/plugin-sdk";
+
+export default definePlugin({
+  id: "tenant-filter",
+  types: ["context"],
+  version: "1.0.0",
+  contextProvider: {
+    async load() { return ""; },
+  },
+
+  hooks: {
+    beforeQuery: [
+      {
+        // Optional matcher -- skip queries that already have a WHERE clause
+        matcher: (ctx) => !ctx.sql.toLowerCase().includes("where"),
+        handler: (ctx) => {
+          return { sql: `${ctx.sql} WHERE tenant_id = 42` };
+        },
+      },
+    ],
+  },
+});
+```
+
+### Observation hooks continue on error
+
+`afterQuery`, `afterExplore`, `onRequest`, and `onResponse` are **observation-only** hooks. Return values are discarded. If one handler throws, the error is caught and logged -- execution continues to the next handler:
+
+```
+Plugin A afterQuery → logs to analytics ✓
+Plugin B afterQuery → throws Error("logging service down") → caught, logged, continues
+Plugin C afterQuery → writes audit record ✓
+```
+
+This means observation hooks are safe for monitoring, logging, and analytics. A single plugin failure won't block the others.
+
+### Matcher filtering
+
+Every hook entry supports an optional `matcher` function. When present, the handler only fires if `matcher` returns `true`:
+
+```typescript
+hooks: {
+  beforeQuery: [
+    {
+      matcher: (ctx) => ctx.connectionId === "warehouse",
+      handler: (ctx) => {
+        // Only runs for queries targeting the "warehouse" connection
+        return { sql: ctx.sql.replace(/SELECT \*/, "SELECT TOP 1000 *") };
+      },
+    },
+  ],
+  afterQuery: [
+    {
+      matcher: (ctx) => ctx.durationMs > 5000,
+      handler: (ctx) => {
+        console.warn(`Slow query (${ctx.durationMs}ms): ${ctx.sql}`);
+      },
+    },
+  ],
+},
+```
+
+If a matcher itself throws, the error is caught and logged, and that hook entry is skipped (not treated as a rejection).
+
+## Plugin Type Constraints
+
+### Multiple plugins of the same type
+
+You can register multiple plugins of the same type. This is the normal case for datasource plugins (connect to multiple databases) and context plugins (inject multiple context fragments):
+
+```typescript
+export default defineConfig({
+  plugins: [
+    clickhousePlugin({ url: process.env.CLICKHOUSE_URL! }),
+    snowflakePlugin({ account: "...", username: "...", password: "..." }),
+    companyGlossaryPlugin(),
+    teamContextPlugin({ teamId: "engineering" }),
+  ],
+});
+```
+
+### Plugin IDs must be unique
+
+Every plugin must have a unique `id`. Duplicate IDs throw at two levels:
+
+1. **Config validation** -- `validatePlugins()` in `config.ts` checks for duplicates before the server starts:
+   ```
+   Error: plugin "my-plugin" (index 2) has duplicate id "my-plugin" (first seen at index 0)
+   ```
+
+2. **Registry registration** -- `PluginRegistry.register()` throws if the ID is already registered:
+   ```
+   Error: Plugin "my-plugin" is already registered
+   ```
+
+If you need two instances of the same plugin (e.g., two ClickHouse clusters), use different IDs:
+
+```typescript
+export default defineConfig({
+  plugins: [
+    clickhousePlugin({ id: "clickhouse-prod", url: process.env.CH_PROD_URL! }),
+    clickhousePlugin({ id: "clickhouse-staging", url: process.env.CH_STAGING_URL! }),
+  ],
+});
+```
+
+<Callout type="info">
+The plugin's `id` becomes the `connectionId` for datasource plugins. When the agent calls `executeSQL`, it targets a specific connection by ID.
+</Callout>
+
+### Multi-type plugins
+
+A single plugin can implement multiple types by listing them in the `types` array:
+
+```typescript
+export default definePlugin({
+  id: "salesforce",
+  types: ["datasource", "action"],
+  version: "1.0.0",
+  connection: { /* ... */ },
+  actions: [ /* ... */ ],
+});
+```
+
+The plugin participates in wiring for each type it implements. A plugin with `types: ["datasource", "action"]` goes through both `wireDatasourcePlugins` and `wireActionPlugins`.
+
+## Lifecycle Summary
+
+Understanding the full lifecycle helps when debugging composition issues:
+
+| Phase | Order | Behavior |
+|-------|-------|----------|
+| **Registration** | Array order | `plugins.register()` -- duplicate IDs throw |
+| **Initialization** | Array order | `plugin.initialize(ctx)` -- failures set "unhealthy", don't crash |
+| **Wiring** | By type | Datasources, actions, interactions, context -- each type wired separately |
+| **Hook dispatch** | Array order | Healthy plugins only, matchers applied per-entry |
+| **Teardown** | **Reverse** order (LIFO) | `plugin.teardown()` -- errors logged, teardown continues |
+
+<Callout type="warn">
+**Registration order matters for hooks.** If Plugin A must see the original SQL before Plugin B rewrites it, register A before B in the `plugins` array. Teardown runs in reverse -- the last plugin registered is torn down first.
+</Callout>

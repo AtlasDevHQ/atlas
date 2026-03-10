@@ -256,12 +256,11 @@ export function buildNsjailSandboxPlugin(
     },
 
     async healthCheck(): Promise<PluginHealthResult> {
+      const start = performance.now();
       const nsjailPath = findNsjailBinary(config.nsjailPath);
       if (!nsjailPath) {
-        return { healthy: false, message: "nsjail binary not found" };
+        return { healthy: false, message: "nsjail binary not found", latencyMs: Math.round(performance.now() - start) };
       }
-
-      const start = performance.now();
       try {
         const args = buildNsjailArgs(nsjailPath, "/tmp", "echo nsjail-ok", config);
         const proc = Bun.spawn(args, {

@@ -275,51 +275,72 @@ export function buildDaytonaSandboxPlugin(
     // Avoid calling at high frequency to minimize API costs.
     async healthCheck(): Promise<PluginHealthResult> {
       const start = performance.now();
-      try {
-        const DaytonaClass = loadDaytonaSdk();
+      const TIMEOUT = 30_000;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let sandbox: any = null;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let daytonaRef: any = null;
+      let timer: ReturnType<typeof setTimeout>;
 
-        const daytona = createDaytonaClient(DaytonaClass, config);
-
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        let sandbox: any;
-        try {
-          sandbox = await daytona.create();
-        } catch (err) {
-          return {
-            healthy: false,
-            message: `Failed to create sandbox: ${err instanceof Error ? err.message : String(err)}`,
-            latencyMs: Math.round(performance.now() - start),
-          };
-        }
-
-        try {
-          const response = await sandbox.process.executeCommand(
-            "echo daytona-ok",
-            "/home/daytona",
-            undefined,
-            config.timeoutSec,
-          );
-
-          if (response.exitCode === 0 && (response.result ?? "").includes("daytona-ok")) {
-            return {
-              healthy: true,
-              latencyMs: Math.round(performance.now() - start),
-            };
-          }
-
-          return {
-            healthy: false,
-            message: `Health check command failed (exit ${response.exitCode})`,
-            latencyMs: Math.round(performance.now() - start),
-          };
-        } finally {
+      const cleanupSandbox = async () => {
+        if (sandbox && daytonaRef) {
           try {
-            await daytona.delete(sandbox);
-          } catch {
-            // Swallow cleanup errors
+            await daytonaRef.delete(sandbox);
+          } catch (e) {
+            (log ?? console).warn(`[daytona-sandbox] Failed to clean up health-check sandbox: ${e instanceof Error ? e.message : String(e)}`);
           }
+          sandbox = null;
         }
+      };
+
+      try {
+        const result = await Promise.race([
+          (async () => {
+            const DaytonaClass = loadDaytonaSdk();
+            daytonaRef = createDaytonaClient(DaytonaClass, config);
+
+            try {
+              sandbox = await daytonaRef.create();
+            } catch (err) {
+              return {
+                healthy: false as const,
+                message: `Failed to create sandbox: ${err instanceof Error ? err.message : String(err)}`,
+              };
+            }
+
+            try {
+              const response = await sandbox.process.executeCommand(
+                "echo daytona-ok",
+                "/home/daytona",
+                undefined,
+                config.timeoutSec,
+              );
+
+              if (response.exitCode === 0 && (response.result ?? "").includes("daytona-ok")) {
+                return { healthy: true as const };
+              }
+
+              return {
+                healthy: false as const,
+                message: `Health check command failed (exit ${response.exitCode})`,
+              };
+            } finally {
+              await cleanupSandbox();
+            }
+          })(),
+          new Promise<"timeout">((resolve) => {
+            timer = setTimeout(() => resolve("timeout"), TIMEOUT);
+          }),
+        ]).finally(() => clearTimeout(timer!));
+
+        const latencyMs = Math.round(performance.now() - start);
+        if (result === "timeout") {
+          await cleanupSandbox();
+          return { healthy: false, message: `Health check timed out after ${TIMEOUT}ms`, latencyMs };
+        }
+        return { ...result, latencyMs };
       } catch (err) {
+        await cleanupSandbox();
         return {
           healthy: false,
           message: err instanceof Error ? err.message : String(err),

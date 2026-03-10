@@ -102,20 +102,20 @@ export const jiraPlugin = createPlugin<JiraPluginConfig, AtlasActionPlugin<JiraP
       },
 
       async healthCheck() {
+        const start = performance.now();
         const auth = Buffer.from(`${config.email}:${config.apiToken}`).toString("base64");
         const url = `${config.host.replace(/\/$/, "")}/rest/api/3/myself`;
 
         try {
-          const start = Date.now();
           const response = await fetch(url, {
             method: "GET",
             headers: {
               Authorization: `Basic ${auth}`,
               Accept: "application/json",
             },
-            signal: AbortSignal.timeout(10_000),
+            signal: AbortSignal.timeout(5000),
           });
-          const latencyMs = Date.now() - start;
+          const latencyMs = Math.round(performance.now() - start);
 
           if (response.ok) {
             return { healthy: true, latencyMs };
@@ -130,6 +130,7 @@ export const jiraPlugin = createPlugin<JiraPluginConfig, AtlasActionPlugin<JiraP
           return {
             healthy: false,
             message: err instanceof Error ? err.message : String(err),
+            latencyMs: Math.round(performance.now() - start),
           };
         }
       },

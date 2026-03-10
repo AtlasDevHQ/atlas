@@ -93,14 +93,14 @@ export const emailPlugin = createPlugin<EmailPluginConfig, AtlasActionPlugin<Ema
       },
 
       async healthCheck() {
+        const start = performance.now();
         try {
-          const start = Date.now();
           const response = await fetch("https://api.resend.com/domains", {
             method: "GET",
             headers: { Authorization: `Bearer ${config.resendApiKey}` },
-            signal: AbortSignal.timeout(10_000),
+            signal: AbortSignal.timeout(5000),
           });
-          const latencyMs = Date.now() - start;
+          const latencyMs = Math.round(performance.now() - start);
 
           if (response.ok) {
             return { healthy: true, latencyMs };
@@ -114,6 +114,7 @@ export const emailPlugin = createPlugin<EmailPluginConfig, AtlasActionPlugin<Ema
           return {
             healthy: false,
             message: err instanceof Error ? err.message : String(err),
+            latencyMs: Math.round(performance.now() - start),
           };
         }
       },

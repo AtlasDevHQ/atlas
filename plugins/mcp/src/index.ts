@@ -104,19 +104,22 @@ export function buildMcpPlugin(
     },
 
     async healthCheck(): Promise<PluginHealthResult> {
+      const start = performance.now();
       if (!connected) {
         return {
           healthy: false,
           message: "MCP server not initialized or not connected",
+          latencyMs: Math.round(performance.now() - start),
         };
       }
       if (config.transport === "sse" && !sseHandle) {
         return {
           healthy: false,
           message: "SSE handle missing — server may have crashed",
+          latencyMs: Math.round(performance.now() - start),
         };
       }
-      return { healthy: true };
+      return { healthy: true, latencyMs: Math.round(performance.now() - start) };
     },
 
     async teardown() {

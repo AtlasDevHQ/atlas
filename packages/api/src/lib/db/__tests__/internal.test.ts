@@ -193,7 +193,7 @@ describe("internal DB module", () => {
       _resetPool(pool);
 
       await migrateInternalDB();
-      expect(calls.queries.length).toBe(26);
+      expect(calls.queries.length).toBe(27);
       expect(calls.queries[0].sql).toContain("CREATE TABLE IF NOT EXISTS audit_log");
       expect(calls.queries[1].sql).toContain("idx_audit_log_timestamp");
       expect(calls.queries[2].sql).toContain("idx_audit_log_user_id");
@@ -220,6 +220,7 @@ describe("internal DB module", () => {
       expect(calls.queries[23].sql).toContain("CREATE TABLE IF NOT EXISTS scheduled_task_runs");
       expect(calls.queries[24].sql).toContain("idx_scheduled_task_runs_task");
       expect(calls.queries[25].sql).toContain("idx_scheduled_task_runs_status");
+      expect(calls.queries[26].sql).toContain("CREATE TABLE IF NOT EXISTS connections");
     });
 
     it("propagates migration errors", async () => {

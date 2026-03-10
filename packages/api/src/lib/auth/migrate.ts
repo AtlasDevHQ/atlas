@@ -33,8 +33,10 @@ export async function migrateAuthTables(): Promise<void> {
   // Internal DB migration (audit_log) — runs regardless of auth mode
   if (hasInternalDB()) {
     try {
-      const { migrateInternalDB } = await import("@atlas/api/lib/db/internal");
+      const { migrateInternalDB, loadSavedConnections } = await import("@atlas/api/lib/db/internal");
       await migrateInternalDB();
+      // Load admin-managed connections after migration ensures the table exists
+      await loadSavedConnections();
     } catch (err) {
       log.error({ err }, "Internal DB migration failed");
       _migrationError = "Connected to the internal database but migration failed. Check database permissions (CREATE TABLE, CREATE INDEX).";

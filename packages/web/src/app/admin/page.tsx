@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Database,
   Cable,
@@ -64,7 +64,9 @@ const COMPONENT_META: Record<
 };
 
 function formatRelativeTime(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
+  const date = new Date(iso);
+  if (isNaN(date.getTime())) return "unknown";
+  const diff = Date.now() - date.getTime();
   if (diff < 1000) return "just now";
   const seconds = Math.floor(diff / 1000);
   if (seconds < 60) return `${seconds}s ago`;
@@ -80,6 +82,14 @@ function mapOverallStatus(
   if (apiStatus === "degraded") return "degraded";
   if (apiStatus === "error") return "down";
   return "unknown";
+}
+
+async function safeJson(response: Response): Promise<Record<string, unknown> | null> {
+  try {
+    return await response.json();
+  } catch {
+    return null;
+  }
 }
 
 function ComponentCard({
@@ -121,11 +131,9 @@ function ComponentCard({
               Backend: {component.backend}
             </p>
           )}
-          {component.lastCheckedAt && (
-            <p className="text-xs text-muted-foreground">
-              Checked {formatRelativeTime(component.lastCheckedAt)}
-            </p>
-          )}
+          <p className="text-xs text-muted-foreground">
+            Checked {formatRelativeTime(component.lastCheckedAt)}
+          </p>
           {component.message && (
             <p className="text-xs text-red-600 dark:text-red-400">
               {component.message}
@@ -143,69 +151,95 @@ export default function AdminOverview() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const cancelledRef = useRef(false);
 
-  const fetchOpts: RequestInit = {
-    credentials: isCrossOrigin ? "include" : "same-origin",
-  };
+  async function fetchOverview() {
+    const fetchOpts: RequestInit = {
+      credentials: isCrossOrigin ? "include" : "same-origin",
+    };
 
-  const fetchOverview = useCallback(async () => {
-    const [adminResult, healthResult] = await Promise.allSettled([
-      fetch(`${apiUrl}/api/v1/admin/overview`, fetchOpts),
-      fetch(`${apiUrl}/api/health`, fetchOpts),
-    ]);
+    try {
+      const [adminResult, healthResult] = await Promise.allSettled([
+        fetch(`${apiUrl}/api/v1/admin/overview`, fetchOpts),
+        fetch(`${apiUrl}/api/health`, fetchOpts),
+      ]);
 
-    const healthOk =
-      healthResult.status === "fulfilled" && healthResult.value.ok;
-    const healthJson = healthOk ? await healthResult.value.json() : null;
-    const components: HealthComponents | null =
-      healthJson?.components ?? null;
+      if (cancelledRef.current) return;
 
-    if (adminResult.status === "fulfilled" && adminResult.value.ok) {
-      const admin = await adminResult.value.json();
-      setData({
-        connections: admin.connections ?? 0,
-        entities: admin.entities ?? 0,
-        plugins: admin.plugins ?? 0,
-        health: mapOverallStatus(healthJson?.status),
-        components,
-      });
-      setError(null);
-      return;
+      const healthOk =
+        healthResult.status === "fulfilled" && healthResult.value.ok;
+      const healthJson = healthOk
+        ? await safeJson(healthResult.value)
+        : null;
+      const components: HealthComponents | null =
+        (healthJson?.components as HealthComponents) ?? null;
+
+      if (cancelledRef.current) return;
+
+      if (adminResult.status === "fulfilled" && adminResult.value.ok) {
+        const admin = await safeJson(adminResult.value);
+        if (cancelledRef.current) return;
+        if (admin) {
+          setData({
+            connections: (admin.connections as number) ?? 0,
+            entities: (admin.entities as number) ?? 0,
+            plugins: (admin.plugins as number) ?? 0,
+            health: mapOverallStatus(healthJson?.status as string),
+            components,
+          });
+          setError(null);
+          return;
+        }
+      }
+
+      if (healthOk) {
+        setData({
+          connections:
+            (healthJson?.checks as Record<string, Record<string, unknown>>)
+              ?.datasource?.status === "ok"
+              ? 1
+              : 0,
+          entities: FALLBACK.entities,
+          plugins: FALLBACK.plugins,
+          health: mapOverallStatus(healthJson?.status as string),
+          components,
+        });
+        setError(null);
+        return;
+      }
+
+      setData({ ...FALLBACK, health: "down" });
+      setError(
+        "Could not reach the API server. Check that your API is running.",
+      );
+    } catch {
+      if (!cancelledRef.current) {
+        setData({ ...FALLBACK, health: "down" });
+        setError(
+          "Could not reach the API server. Check that your API is running.",
+        );
+      }
     }
-
-    if (healthOk) {
-      setData({
-        connections: healthJson?.checks?.datasource?.status === "ok" ? 1 : 0,
-        entities: FALLBACK.entities,
-        plugins: FALLBACK.plugins,
-        health: mapOverallStatus(healthJson?.status),
-        components,
-      });
-      setError(null);
-      return;
-    }
-
-    setData({ ...FALLBACK, health: "down" });
-    setError(
-      "Could not reach the API server. Check that your API is running.",
-    );
-  }, [apiUrl, isCrossOrigin]);
+  }
 
   useEffect(() => {
-    let cancelled = false;
+    cancelledRef.current = false;
     setLoading(true);
     fetchOverview().finally(() => {
-      if (!cancelled) setLoading(false);
+      if (!cancelledRef.current) setLoading(false);
     });
     return () => {
-      cancelled = true;
+      cancelledRef.current = true;
     };
-  }, [fetchOverview]);
+  }, [apiUrl, isCrossOrigin]);
 
   async function handleRefresh() {
     setRefreshing(true);
     try {
       await fetchOverview();
+    } catch {
+      setData({ ...FALLBACK, health: "down" });
+      setError("Refresh failed. Check that your API server is running.");
     } finally {
       setRefreshing(false);
     }
@@ -250,13 +284,16 @@ export default function AdminOverview() {
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
             {(
               Object.keys(COMPONENT_META) as Array<keyof HealthComponents>
-            ).map((key) => (
-              <ComponentCard
-                key={key}
-                name={key}
-                component={data.components![key]}
-              />
-            ))}
+            ).map((key) => {
+              const components = data.components!;
+              return (
+                <ComponentCard
+                  key={key}
+                  name={key}
+                  component={components[key]}
+                />
+              );
+            })}
           </div>
         </div>
       )}

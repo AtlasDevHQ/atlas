@@ -1,8 +1,10 @@
 /**
  * Health check route — public, no auth.
  *
- * Probes datasource, internal DB, semantic layer, explore backend,
- * and auth mode.
+ * Probes datasource and internal DB. Reports config-derived status of
+ * LLM provider, semantic layer, explore backend, auth mode, scheduler,
+ * and Slack. Returns both a flat `checks` object (legacy) and a
+ * structured `components` object for the admin dashboard.
  */
 
 import { Hono } from "hono";
@@ -46,7 +48,7 @@ export const HealthResponseSchema = z.object({
     provider: ComponentHealthSchema,
     scheduler: ComponentHealthSchema,
     sandbox: ComponentHealthSchema,
-  }),
+  }).optional(),
   checks: z.object({
     datasource: z.object({
       status: CheckStatusSchema,
@@ -281,14 +283,17 @@ health.get("/", async (c) => {
         lastCheckedAt: now,
         ...(hasKeyError && { message: "MISSING_API_KEY" }),
       },
+      // Config-level status only — does not probe the scheduler engine at runtime
       scheduler: {
-        status: schedulerEnabled ? ("healthy" as const) : ("disabled" as const),
+        status: schedulerEnabled ? "healthy" as const : "disabled" as const,
         lastCheckedAt: now,
       },
+      // just-bash means no isolation — report degraded so operators know
       sandbox: {
-        status: ("healthy" as const),
+        status: exploreBackend === "just-bash" ? "degraded" as const : "healthy" as const,
         backend: exploreBackend,
         lastCheckedAt: now,
+        ...(exploreBackend === "just-bash" && { message: "No sandbox isolation — using just-bash fallback" }),
       },
     };
 

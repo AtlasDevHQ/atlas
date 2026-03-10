@@ -331,30 +331,30 @@ export default function ScheduledTasksPage() {
   );
 
   // ── Delete task ──────────────────────────────────────────────────
-  const handleDelete = useCallback(
-    async (task: ScheduledTask) => {
-      if (deleting.has(task.id)) return;
-      deleting.start(task.id);
-      setMutationError(null);
-      try {
-        const res = await fetch(
-          `${apiUrl}/api/v1/scheduled-tasks/${encodeURIComponent(task.id)}`,
-          { credentials, method: "DELETE" },
-        );
-        if (!res.ok && res.status !== 204) throw new Error(`HTTP ${res.status}`);
-        setDeleteTarget(null);
-        setRefetchKey((k) => k + 1);
-      } catch (err) {
-        setMutationError(
-          `Delete failed: ${err instanceof Error ? err.message : "Network error"}`
-        );
-        setDeleteTarget(null);
-      } finally {
-        deleting.stop(task.id);
+  async function handleDelete(task: ScheduledTask) {
+    if (deleting.has(task.id)) return;
+    deleting.start(task.id);
+    setMutationError(null);
+    try {
+      const res = await fetch(
+        `${apiUrl}/api/v1/scheduled-tasks/${encodeURIComponent(task.id)}`,
+        { credentials, method: "DELETE" },
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.message ?? `HTTP ${res.status}`);
       }
-    },
-    [apiUrl, deleting, credentials],
-  );
+      setDeleteTarget(null);
+      setRefetchKey((k) => k + 1);
+    } catch (err) {
+      setMutationError(
+        `Delete failed: ${err instanceof Error ? err.message : "Network error"}`
+      );
+      setDeleteTarget(null);
+    } finally {
+      deleting.stop(task.id);
+    }
+  }
 
   // ── Filter change resets pagination ─────────────────────────────
   function changeFilter(filter: EnabledFilter) {

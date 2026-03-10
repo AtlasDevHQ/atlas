@@ -40,8 +40,16 @@ function pad(n: number): string {
 
 function formatTime(hour: number, minute: number): string {
   const ampm = hour >= 12 ? "PM" : "AM";
-  const h = hour === 0 ? 12 : hour > 12 ? hour - 12 : hour;
+  let h = hour % 12;
+  if (h === 0) h = 12;
   return `${h}:${pad(minute)} ${ampm} UTC`;
+}
+
+function ordinalSuffix(n: number): string {
+  if (n === 1 || n === 21 || n === 31) return "st";
+  if (n === 2 || n === 22) return "nd";
+  if (n === 3 || n === 23) return "rd";
+  return "th";
 }
 
 export function describeCron(expr: string): string {
@@ -55,10 +63,13 @@ export function describeCron(expr: string): string {
     return "Every minute";
   }
 
-  const minute = minField === "*" ? null : parseInt(minField, 10);
-  const hour = hourField === "*" ? null : parseInt(hourField, 10);
+  // Fields with commas, ranges, or steps can't be summarized by a single parseInt —
+  // fall back to "Custom schedule" rather than producing a misleading partial description.
+  const isSimple = (f: string) => f === "*" || /^\d+$/.test(f);
+  const minute = minField === "*" ? null : isSimple(minField) ? parseInt(minField, 10) : NaN;
+  const hour = hourField === "*" ? null : isSimple(hourField) ? parseInt(hourField, 10) : NaN;
 
-  if (Number.isNaN(minute ?? 0) || Number.isNaN(hour ?? 0)) {
+  if ((minute !== null && Number.isNaN(minute)) || (hour !== null && Number.isNaN(hour))) {
     return "Custom schedule";
   }
 
@@ -90,8 +101,7 @@ export function describeCron(expr: string): string {
   if (minute !== null && hour !== null && domField !== "*" && monField === "*" && dowField === "*") {
     const dom = parseInt(domField, 10);
     if (!Number.isNaN(dom)) {
-      const suffix = dom === 1 || dom === 21 || dom === 31 ? "st" : dom === 2 || dom === 22 ? "nd" : dom === 3 || dom === 23 ? "rd" : "th";
-      return `${timeStr} on the ${dom}${suffix} of every month`;
+      return `${timeStr} on the ${dom}${ordinalSuffix(dom)} of every month`;
     }
   }
 

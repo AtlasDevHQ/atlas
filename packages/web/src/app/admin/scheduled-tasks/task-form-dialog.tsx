@@ -154,6 +154,7 @@ export function TaskFormDialog({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [connections, setConnections] = useState<ConnectionInfo[]>([]);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
 
   // Reset form when dialog opens
   useEffect(() => {
@@ -168,16 +169,20 @@ export function TaskFormDialog({
     if (!open) return;
     let cancelled = false;
     async function fetchConnections() {
+      setConnectionError(null);
       try {
         const res = await fetch(`${apiUrl}/api/v1/admin/connections`, { credentials });
-        if (res.ok) {
-          const data = await res.json();
-          if (!cancelled && Array.isArray(data.connections)) {
-            setConnections(data.connections);
-          }
+        if (!res.ok) {
+          if (!cancelled) setConnectionError(`Could not load connections (HTTP ${res.status})`);
+          return;
         }
-      } catch {
-        // Silently fail — "default" is always available
+        const data = await res.json();
+        if (!cancelled && Array.isArray(data.connections)) {
+          setConnections(data.connections);
+        }
+      } catch (err) {
+        console.warn("[TaskFormDialog] Failed to fetch connections:", err);
+        if (!cancelled) setConnectionError("Could not load connections");
       }
     }
     fetchConnections();
@@ -192,10 +197,11 @@ export function TaskFormDialog({
 
   function handlePresetChange(preset: string) {
     const match = CRON_PRESETS.find((p) => p.value === preset);
-    updateField("cronPreset", preset);
-    if (match && match.cron) {
-      updateField("cronExpression", match.cron);
-    }
+    setForm((prev) => ({
+      ...prev,
+      cronPreset: preset,
+      ...(match?.cron ? { cronExpression: match.cron } : {}),
+    }));
   }
 
   // ── Email helpers ───────────────────────────────────────────────────
@@ -251,9 +257,11 @@ export function TaskFormDialog({
         return form.emailAddresses.map((address) => ({ type: "email" as const, address }));
       case "slack": {
         if (!form.slackChannel) return [];
-        const r: Record<string, string> = { type: "slack", channel: form.slackChannel };
-        if (form.slackTeamId) r.teamId = form.slackTeamId;
-        return [r];
+        return [{
+          type: "slack" as const,
+          channel: form.slackChannel,
+          ...(form.slackTeamId ? { teamId: form.slackTeamId } : {}),
+        }];
       }
       case "webhook": {
         if (!form.webhookUrl) return [];
@@ -275,12 +283,22 @@ export function TaskFormDialog({
     if (!form.cronExpression.trim()) { setError("Cron expression is required"); return; }
     if (!isValidCron(form.cronExpression)) { setError("Invalid cron expression format"); return; }
 
+    const recipients = buildRecipients();
+    if (recipients.length === 0) {
+      switch (form.deliveryChannel) {
+        case "email": setError("At least one email recipient is required"); break;
+        case "slack": setError("Slack channel is required"); break;
+        case "webhook": setError("Webhook URL is required"); break;
+      }
+      return;
+    }
+
     const body = {
       name: form.name.trim(),
       question: form.question.trim(),
       cronExpression: form.cronExpression.trim(),
       deliveryChannel: form.deliveryChannel,
-      recipients: buildRecipients(),
+      recipients,
       connectionId: form.connectionId === "default" ? null : form.connectionId,
       approvalMode: form.approvalMode,
       ...(isEdit ? { enabled: form.enabled } : {}),
@@ -376,14 +394,13 @@ export function TaskFormDialog({
               className="font-mono text-sm"
               value={form.cronExpression}
               onChange={(e) => {
-                updateField("cronExpression", e.target.value);
-                updateField("cronPreset", "custom");
+                setForm((prev) => ({ ...prev, cronExpression: e.target.value, cronPreset: "custom" }));
               }}
             />
             {form.cronExpression && (
               <div className="space-y-1">
                 <p className="text-xs text-muted-foreground">{cronDescription}</p>
-                {nextRuns.length > 0 && (
+                {nextRuns.length > 0 ? (
                   <div className="flex flex-wrap items-center gap-1">
                     <Clock className="size-3 text-muted-foreground" />
                     {nextRuns.map((d, i) => (
@@ -398,7 +415,11 @@ export function TaskFormDialog({
                       </Badge>
                     ))}
                   </div>
-                )}
+                ) : cronValid ? (
+                  <p className="text-xs text-destructive">
+                    This expression does not match any dates in the next year.
+                  </p>
+                ) : null}
               </div>
             )}
           </div>
@@ -537,6 +558,9 @@ export function TaskFormDialog({
                   ))}
               </SelectContent>
             </Select>
+            {connectionError && (
+              <p className="text-xs text-muted-foreground">{connectionError}</p>
+            )}
           </div>
 
           {/* Approval mode */}

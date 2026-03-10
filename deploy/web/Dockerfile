@@ -35,6 +35,7 @@ COPY plugins/slack/package.json plugins/slack/package.json
 COPY plugins/snowflake/package.json plugins/snowflake/package.json
 COPY plugins/salesforce/package.json plugins/salesforce/package.json
 COPY plugins/vercel-sandbox/package.json plugins/vercel-sandbox/package.json
+COPY create-atlas-plugin/package.json create-atlas-plugin/package.json
 RUN bun ci --ignore-scripts
 
 # --- builder ---

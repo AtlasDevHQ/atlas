@@ -1,8 +1,10 @@
 /**
  * Health check route — public, no auth.
  *
- * Probes datasource, internal DB, semantic layer, explore backend,
- * and auth mode.
+ * Probes datasource and internal DB. Reports config-derived status of
+ * LLM provider, semantic layer, explore backend, auth mode, scheduler,
+ * and Slack. Returns both a flat `checks` object (legacy) and a
+ * structured `components` object for the admin dashboard.
  */
 
 import { Hono } from "hono";
@@ -26,9 +28,27 @@ const log = createLogger("health");
 
 const CheckStatusSchema = z.enum(["ok", "error", "not_configured"]);
 
+const ComponentStatusSchema = z.enum(["healthy", "degraded", "down", "disabled"]);
+
+const ComponentHealthSchema = z.object({
+  status: ComponentStatusSchema,
+  latencyMs: z.number().int().nonnegative().optional(),
+  lastCheckedAt: z.string(),
+  message: z.string().optional(),
+  model: z.string().optional(),
+  backend: z.string().optional(),
+});
+
 export const HealthResponseSchema = z.object({
   status: z.enum(["ok", "degraded", "error"]),
   warnings: z.array(z.string()).optional(),
+  components: z.object({
+    datasource: ComponentHealthSchema,
+    internalDb: ComponentHealthSchema,
+    provider: ComponentHealthSchema,
+    scheduler: ComponentHealthSchema,
+    sandbox: ComponentHealthSchema,
+  }).optional(),
   checks: z.object({
     datasource: z.object({
       status: CheckStatusSchema,
@@ -228,9 +248,59 @@ health.get("/", async (c) => {
       );
     }
 
+    // Build components section for the health dashboard
+    const now = new Date().toISOString();
+    const schedulerEnabled = process.env.ATLAS_SCHEDULER_ENABLED === "true";
+
+    const components = {
+      datasource: {
+        status: dsNotConfigured
+          ? ("disabled" as const)
+          : hasDsError
+            ? ("down" as const)
+            : ("healthy" as const),
+        ...(dsLatencyMs !== undefined && { latencyMs: dsLatencyMs }),
+        lastCheckedAt: now,
+        ...(hasDsError && {
+          message: dsProbeError ?? dsDiagnostic?.code ?? "DB_UNREACHABLE",
+        }),
+      },
+      internalDb: {
+        status: !process.env.DATABASE_URL
+          ? ("disabled" as const)
+          : hasInternalDbError
+            ? ("down" as const)
+            : ("healthy" as const),
+        ...(internalLatencyMs !== undefined && { latencyMs: internalLatencyMs }),
+        lastCheckedAt: now,
+        ...(hasInternalDbError && {
+          message: internalProbeError ?? "INTERNAL_DB_UNREACHABLE",
+        }),
+      },
+      provider: {
+        status: hasKeyError ? ("down" as const) : ("healthy" as const),
+        model: process.env.ATLAS_MODEL ?? "(default)",
+        lastCheckedAt: now,
+        ...(hasKeyError && { message: "MISSING_API_KEY" }),
+      },
+      // Config-level status only — does not probe the scheduler engine at runtime
+      scheduler: {
+        status: schedulerEnabled ? "healthy" as const : "disabled" as const,
+        lastCheckedAt: now,
+      },
+      // just-bash means no isolation — report degraded so operators know
+      sandbox: {
+        status: exploreBackend === "just-bash" ? "degraded" as const : "healthy" as const,
+        backend: exploreBackend,
+        lastCheckedAt: now,
+        ...(exploreBackend === "just-bash" && { message: "No sandbox isolation — using just-bash fallback" }),
+      },
+    };
+
     const response = {
       status,
       ...(warnings.length > 0 && { warnings }),
+      components,
       checks: {
         datasource: dsNotConfigured
           ? { status: "not_configured" as const }

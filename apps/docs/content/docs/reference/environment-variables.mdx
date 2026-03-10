@@ -80,7 +80,8 @@ See [Authentication](/deployment/authentication) for full setup guides.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `BETTER_AUTH_SECRET` | — | Session signing secret. Min 32 chars, cryptographically random. Requires `DATABASE_URL` |
+| `BETTER_AUTH_SECRET` | — | Session signing secret. Min 32 chars, cryptographically random. Requires `DATABASE_URL`. Also used to encrypt connection URLs at rest (unless `ATLAS_ENCRYPTION_KEY` is set) |
+| `ATLAS_ENCRYPTION_KEY` | — | Dedicated encryption key for connection URLs at rest. Takes precedence over `BETTER_AUTH_SECRET` |
 | `BETTER_AUTH_URL` | Auto-detected | Base URL for auth endpoints. Auto-detected on Vercel; set explicitly for Railway/Docker |
 | `BETTER_AUTH_TRUSTED_ORIGINS` | — | Comma-separated CSRF-allowed origins |
 | `ATLAS_ADMIN_EMAIL` | — | User matching this email gets `admin` role on signup. If unset, first signup gets admin |

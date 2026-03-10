@@ -24,10 +24,12 @@ When auth mode is `none` (local development), all users have implicit admin acce
 
 The dashboard shows deployment health at a glance:
 
-- **Connections** -- Number of registered datasources
-- **Entities** -- Tables and views in the semantic layer
-- **Plugins** -- Installed plugins and their health status
-- **Overall health** -- Aggregated status (healthy, degraded, unhealthy)
+- **Connections** — Number of registered datasources
+- **Entities** — Tables and views in the semantic layer
+- **Plugins** — Installed plugins and their health status
+- **Overall health** — Aggregated status (healthy, degraded, unhealthy)
+
+**Component health checks** show live status for each subsystem — Datasource, Internal DB, LLM Provider, Scheduler, and Sandbox — with latency, last-checked timestamp, and model/backend details where applicable.
 
 ---
 
@@ -37,8 +39,15 @@ The dashboard shows deployment health at a glance:
 
 Lists all registered datasource connections with their database type, description, health status, and latency.
 
+<Callout type="info">
+Connection URLs are encrypted at rest when `BETTER_AUTH_SECRET` or `ATLAS_ENCRYPTION_KEY` is set.
+</Callout>
+
 **Actions:**
-- **Test connection** -- Runs a health check query against the datasource and reports latency and status
+- **Add connection** — Create a new datasource with URL, database type, and optional description. For PostgreSQL, an optional schema field is also available. The URL field supports a show/hide toggle for credential safety
+- **Edit connection** — Update an existing connection's URL, type, or description
+- **Delete connection** — Remove a connection (with confirmation dialog). The default connection cannot be deleted
+- **Test connection** — Runs a health check query against the datasource and reports latency and status
 
 ---
 
@@ -48,8 +57,8 @@ Lists all registered datasource connections with their database type, descriptio
 
 A two-panel browser for exploring the semantic layer:
 
-- **Left sidebar** -- File tree showing entities, metrics, glossary, and catalog
-- **Right panel** -- Detail view with a **Pretty** / **YAML** toggle
+- **Left sidebar** — File tree showing entities, metrics, glossary, and catalog
+- **Right panel** — Detail view with a **Pretty** / **YAML** toggle
 
 In **Pretty** mode, entities show parsed dimensions, joins, measures, and query patterns with formatted tables. In **YAML** mode, the raw YAML source is displayed with syntax highlighting.
 
@@ -67,16 +76,30 @@ See [Semantic Layer](/getting-started/semantic-layer) for the YAML format refere
 Requires an internal database (`DATABASE_URL`). Without it, this page shows a feature gate message.
 </Callout>
 
+Two tabs: **Log** and **Analytics**.
+
+### Log
+
 Shows every SQL query executed by the agent with:
 
-- **Stats** -- Total queries, total errors, error rate
-- **Log table** -- Timestamp, user, SQL query, duration, row count, success/failure
+- **Stats** — Total queries, total errors, error rate
+- **Log table** — Timestamp, user, SQL query, duration, row count, success/failure
 
 **Filters:**
 - Date range (from/to)
 - User ID
 - Errors only toggle
 - Pagination
+
+### Analytics
+
+Charts and tables for query performance insights:
+
+- **Query volume** — Line chart showing queries and errors per day over the selected date range
+- **Slowest queries** — Top 20 queries ranked by average duration, with max duration and execution count
+- **Most frequent queries** — Top 20 queries ranked by execution count, with average duration and error count
+- **Error breakdown** — Bar chart grouping errors by message pattern
+- **Per-user activity** — Table showing query count, average duration, and error rate per user
 
 ---
 
@@ -90,9 +113,9 @@ Requires `ATLAS_ACTIONS_ENABLED=true`. Without it, this page shows a feature gat
 
 Lists action log entries with status filtering:
 
-- **Tabs** -- Pending, Executed, Denied, Failed, All
-- **Table** -- Timestamp, action type, target, summary, status badge
-- **Expandable rows** -- Full payload, timestamps, error details
+- **Tabs** — Pending, Executed, Denied, Failed, All
+- **Table** — Timestamp, action type, target, summary, status badge
+- **Expandable rows** — Full payload, timestamps, error details
 
 **Actions:**
 - **Approve** pending actions
@@ -112,13 +135,15 @@ Requires `ATLAS_SCHEDULER_ENABLED=true`.
 
 Manages recurring queries:
 
-- **Filter tabs** -- All, Enabled, Disabled
-- **Table** -- Name, question, cron expression, delivery channel, next run time, enabled status
-- **Expandable rows** -- Recent run history with status, timing, and token usage
+- **Filter tabs** — All, Enabled, Disabled
+- **Table** — Name, question, cron expression, delivery channel, next run time, enabled status
+- **Expandable rows** — Recent run history with status, timing, and token usage
 
 **Actions:**
+- **Create task** — Form dialog with task name, natural language question, cron schedule (presets or custom expression with human-readable preview and next-run times), delivery channel (email, Slack, webhook), approval mode, and connection selector
+- **Edit task** — Same form, pre-populated with existing values
 - **Toggle enabled/disabled**
-- **Run now** -- Trigger immediate execution
+- **Run now** — Trigger immediate execution
 
 See [Scheduled Tasks](/guides/scheduled-tasks) for setup and configuration.
 
@@ -134,15 +159,15 @@ Requires managed auth with the Better Auth admin plugin. Not available in simple
 
 Full user management with stats and controls:
 
-- **Stats** -- Total users, admins, analysts, viewers
-- **Search** -- Filter by email
-- **Role filter** -- Filter by role
+- **Stats** — Total users, admins, analysts, viewers
+- **Search** — Filter by email
+- **Role filter** — Filter by role
 
 **Actions (per user):**
-- **Change role** -- Set to viewer, analyst, or admin
-- **Ban/unban** -- Temporarily or permanently ban a user
-- **Revoke sessions** -- Force logout across all devices
-- **Delete** -- Permanently remove user and sessions
+- **Change role** — Set to viewer, analyst, or admin
+- **Ban/unban** — Temporarily or permanently ban a user
+- **Revoke sessions** — Force logout across all devices
+- **Delete** — Permanently remove user and sessions
 
 **Safety guards:**
 - Cannot change your own role
@@ -157,9 +182,14 @@ All admin endpoints are at `/api/v1/admin/` and require the `admin` role. See th
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/overview` | Dashboard stats |
+| `GET` | `/overview` | Dashboard stats + component health |
 | `GET` | `/connections` | List connections |
-| `POST` | `/connections/:id/test` | Test connection health |
+| `GET` | `/connections/:id` | Get connection detail |
+| `POST` | `/connections` | Create connection |
+| `PUT` | `/connections/:id` | Update connection |
+| `DELETE` | `/connections/:id` | Delete connection |
+| `POST` | `/connections/test` | Test connection by URL |
+| `POST` | `/connections/:id/test` | Test saved connection |
 | `GET` | `/semantic/entities` | List entity summaries |
 | `GET` | `/semantic/entities/:name` | Get entity detail |
 | `GET` | `/semantic/metrics` | List all metrics |
@@ -168,6 +198,11 @@ All admin endpoints are at `/api/v1/admin/` and require the `admin` role. See th
 | `GET` | `/semantic/stats` | Semantic coverage stats |
 | `GET` | `/audit` | Query audit log |
 | `GET` | `/audit/stats` | Audit aggregates |
+| `GET` | `/audit/analytics/volume` | Query volume per day |
+| `GET` | `/audit/analytics/slow` | Slowest queries |
+| `GET` | `/audit/analytics/frequent` | Most frequent queries |
+| `GET` | `/audit/analytics/errors` | Error breakdown |
+| `GET` | `/audit/analytics/users` | Per-user activity |
 | `GET` | `/plugins` | List plugins |
 | `POST` | `/plugins/:id/health` | Plugin health check |
 | `GET` | `/users` | List users |

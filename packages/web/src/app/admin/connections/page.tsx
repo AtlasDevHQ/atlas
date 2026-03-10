@@ -48,46 +48,12 @@ import { Cable, Loader2, Plus, Pencil, Trash2, Eye, EyeOff } from "lucide-react"
 import { useAdminFetch, useInProgressSet, friendlyError } from "@/ui/hooks/use-admin-fetch";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
-
-// ── Types ─────────────────────────────────────────────────────────
-
-interface ConnectionHealth {
-  status: "healthy" | "degraded" | "unhealthy";
-  latencyMs: number;
-  message?: string;
-  checkedAt: string;
-}
-
-interface ConnectionMetadata {
-  id: string;
-  dbType:
-    | "postgres"
-    | "mysql"
-    | "clickhouse"
-    | "snowflake"
-    | "duckdb"
-    | "salesforce";
-  description?: string;
-  health?: ConnectionHealth;
-}
-
-interface ConnectionDetail {
-  id: string;
-  dbType: string;
-  description: string | null;
-  maskedUrl: string | null;
-  schema: string | null;
-  managed: boolean;
-}
-
-const DB_TYPES = [
-  { value: "postgres", label: "PostgreSQL" },
-  { value: "mysql", label: "MySQL" },
-  { value: "clickhouse", label: "ClickHouse" },
-  { value: "snowflake", label: "Snowflake" },
-  { value: "duckdb", label: "DuckDB" },
-  { value: "salesforce", label: "Salesforce" },
-] as const;
+import {
+  DB_TYPES,
+  type ConnectionHealth,
+  type ConnectionInfo,
+  type ConnectionDetail,
+} from "@atlas/api/lib/connection-types";
 
 // ── Helpers ───────────────────────────────────────────────────────
 
@@ -464,12 +430,12 @@ export default function ConnectionsPage() {
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
 
-  const { data: connections, loading, error, refetch } = useAdminFetch<ConnectionMetadata[]>(
+  const { data: connections, loading, error, refetch } = useAdminFetch<ConnectionInfo[]>(
     "/api/v1/admin/connections",
-    { transform: (json) => (json as { connections?: ConnectionMetadata[] }).connections ?? [] },
+    { transform: (json) => (json as { connections?: ConnectionInfo[] }).connections ?? [] },
   );
 
-  const [localConnections, setLocalConnections] = useState<ConnectionMetadata[] | null>(null);
+  const [localConnections, setLocalConnections] = useState<ConnectionInfo[] | null>(null);
   const displayConnections = localConnections ?? connections ?? [];
 
   if (connections && localConnections !== null && connections !== localConnections) {

@@ -14,6 +14,7 @@
     "./ui/components/atlas-chat": "./src/ui/components/atlas-chat.tsx"
   },
   "dependencies": {
+    "@atlas/api": "workspace:*",
     "@ai-sdk/react": "^3.0.99",
     "@better-auth/api-key": "^1.5.1",
     "@opentelemetry/api": "^1.9.0",

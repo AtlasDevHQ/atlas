@@ -17,6 +17,9 @@
 
 import { createLogger } from "@atlas/api/lib/logger";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
+import type { HealthStatus } from "@atlas/api/lib/connection-types";
+
+export type { HealthStatus } from "@atlas/api/lib/connection-types";
 
 const log = createLogger("db");
 
@@ -49,8 +52,6 @@ export interface DBConnection {
 }
 
 export type DBType = "postgres" | "mysql" | (string & {});
-
-export type HealthStatus = "healthy" | "degraded" | "unhealthy";
 
 export interface HealthCheckResult {
   status: HealthStatus;

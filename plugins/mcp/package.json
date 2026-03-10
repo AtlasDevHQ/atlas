@@ -1,7 +1,8 @@
 {
   "name": "@useatlas/mcp",
+  "private": true,
   "version": "0.0.1",
-  "description": "Atlas MCP interaction plugin",
+  "description": "Atlas MCP interaction plugin — monorepo-only (depends on unpublished @atlas/mcp)",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",

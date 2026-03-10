@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useState, useCallback } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { useQueryStates } from "nuqs";
 import { scheduledTasksSearchParams } from "./search-params";
 import { useAtlasConfig } from "@/ui/context";
@@ -14,6 +14,16 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { EmptyState } from "@/ui/components/admin/empty-state";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
@@ -27,49 +37,17 @@ import {
   Loader2,
   ChevronDown,
   ChevronRight,
+  Plus,
+  Pencil,
+  Trash2,
 } from "lucide-react";
 import { useInProgressSet, type FetchError, friendlyError } from "@/ui/hooks/use-admin-fetch";
-
-// ── Types ─────────────────────────────────────────────────────────
-
-interface Recipient {
-  type: string;
-  value: string;
-}
-
-interface ScheduledTask {
-  id: string;
-  ownerId: string;
-  name: string;
-  question: string;
-  cronExpression: string;
-  deliveryChannel: "email" | "slack" | "webhook";
-  recipients: Recipient[];
-  connectionId: string | null;
-  approvalMode: "auto" | "manual" | "admin-only";
-  enabled: boolean;
-  lastRunAt: string | null;
-  nextRunAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-interface ScheduledTaskRun {
-  id: string;
-  taskId: string;
-  startedAt: string;
-  completedAt: string | null;
-  status: "running" | "success" | "failed" | "skipped";
-  conversationId: string | null;
-  actionId: string | null;
-  error: string | null;
-  tokensUsed: number | null;
-  createdAt: string;
-}
-
-interface TaskDetail extends ScheduledTask {
-  recentRuns: ScheduledTaskRun[];
-}
+import { TaskFormDialog } from "./task-form-dialog";
+import type {
+  ScheduledTask,
+  ScheduledTaskRun,
+  ScheduledTaskWithRuns,
+} from "@/ui/lib/types";
 
 type EnabledFilter = "all" | "true" | "false";
 
@@ -136,12 +114,36 @@ export default function ScheduledTasksPage() {
   const [{ page, enabled: enabledFilter, expanded: expandedId }, setParams] = useQueryStates(scheduledTasksSearchParams);
   const offset = (page - 1) * PAGE_SIZE;
 
-  const [selectedTask, setSelectedTask] = useState<TaskDetail | null>(null);
+  const [selectedTask, setSelectedTask] = useState<ScheduledTaskWithRuns | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
 
   const toggling = useInProgressSet();
   const triggering = useInProgressSet();
+
+  // ── Form dialog state ──────────────────────────────────────────
+  const [formOpen, setFormOpen] = useState(false);
+  const [editingTask, setEditingTask] = useState<ScheduledTask | null>(null);
+  const [refetchKey, setRefetchKey] = useState(0);
+
+  // ── Delete confirmation state ──────────────────────────────────
+  const [deleteTarget, setDeleteTarget] = useState<ScheduledTask | null>(null);
+  const deleting = useInProgressSet();
+
+  function openCreate() {
+    setEditingTask(null);
+    setFormOpen(true);
+  }
+
+  function openEdit(task: ScheduledTask, e: React.MouseEvent) {
+    e.stopPropagation();
+    setEditingTask(task);
+    setFormOpen(true);
+  }
+
+  function handleFormSuccess() {
+    setRefetchKey((k) => k + 1);
+  }
 
   // ── Fetch task list ──────────────────────────────────────────────
   useEffect(() => {
@@ -183,7 +185,7 @@ export default function ScheduledTasksPage() {
     return () => {
       cancelled = true;
     };
-  }, [apiUrl, offset, enabledFilter, credentials]);
+  }, [apiUrl, offset, enabledFilter, credentials, refetchKey]);
 
   // Gate: 401/403/404
   if (!loading && error?.status && [401, 403, 404].includes(error.status)) {
@@ -199,98 +201,115 @@ export default function ScheduledTasksPage() {
   }
 
   // ── Fetch detail (with recent runs) ─────────────────────────────
-  const handleRowClick = useCallback(
-    async (taskId: string) => {
-      if (expandedId === taskId) {
-        setParams({ expanded: null });
-        setSelectedTask(null);
-        setDetailError(null);
-        return;
-      }
-      setParams({ expanded: taskId });
+  async function handleRowClick(taskId: string) {
+    if (expandedId === taskId) {
+      setParams({ expanded: null });
       setSelectedTask(null);
       setDetailError(null);
-      setDetailLoading(true);
-      try {
-        const res = await fetch(
-          `${apiUrl}/api/v1/scheduled-tasks/${encodeURIComponent(taskId)}`,
-          { credentials },
-        );
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data: TaskDetail = await res.json();
-        setSelectedTask(data);
-      } catch (err) {
-        setDetailError(
-          `Failed to load task details: ${err instanceof Error ? err.message : "Network error"}`
-        );
-      } finally {
-        setDetailLoading(false);
-      }
-    },
-    [apiUrl, expandedId, credentials, setParams],
-  );
+      return;
+    }
+    setParams({ expanded: taskId });
+    setSelectedTask(null);
+    setDetailError(null);
+    setDetailLoading(true);
+    try {
+      const res = await fetch(
+        `${apiUrl}/api/v1/scheduled-tasks/${encodeURIComponent(taskId)}`,
+        { credentials },
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data: ScheduledTaskWithRuns = await res.json();
+      setSelectedTask(data);
+    } catch (err) {
+      setDetailError(
+        `Failed to load task details: ${err instanceof Error ? err.message : "Network error"}`
+      );
+    } finally {
+      setDetailLoading(false);
+    }
+  }
 
   // ── Toggle enabled ──────────────────────────────────────────────
-  const handleToggle = useCallback(
-    async (task: ScheduledTask, e: React.MouseEvent) => {
-      e.stopPropagation();
-      if (toggling.has(task.id)) return;
-      toggling.start(task.id);
-      setMutationError(null);
-      try {
-        const res = await fetch(
-          `${apiUrl}/api/v1/scheduled-tasks/${encodeURIComponent(task.id)}`,
-          {
-            credentials,
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ enabled: !task.enabled }),
-          },
-        );
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const updated: ScheduledTask = await res.json();
-        setTasks((prev) =>
-          prev.map((t) => (t.id === updated.id ? updated : t)),
-        );
-      } catch (err) {
-        setMutationError(
-          `Toggle failed: ${err instanceof Error ? err.message : "Network error"}`
-        );
-      } finally {
-        toggling.stop(task.id);
-      }
-    },
-    [apiUrl, toggling, credentials],
-  );
+  async function handleToggle(task: ScheduledTask, e: React.MouseEvent) {
+    e.stopPropagation();
+    if (toggling.has(task.id)) return;
+    toggling.start(task.id);
+    setMutationError(null);
+    try {
+      const res = await fetch(
+        `${apiUrl}/api/v1/scheduled-tasks/${encodeURIComponent(task.id)}`,
+        {
+          credentials,
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled: !task.enabled }),
+        },
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const updated: ScheduledTask = await res.json();
+      setTasks((prev) =>
+        prev.map((t) => (t.id === updated.id ? updated : t)),
+      );
+    } catch (err) {
+      setMutationError(
+        `Toggle failed: ${err instanceof Error ? err.message : "Network error"}`
+      );
+    } finally {
+      toggling.stop(task.id);
+    }
+  }
 
   // ── Run now ─────────────────────────────────────────────────────
-  const handleRunNow = useCallback(
-    async (taskId: string, e: React.MouseEvent) => {
-      e.stopPropagation();
-      if (triggering.has(taskId)) return;
-      triggering.start(taskId);
-      setMutationError(null);
-      try {
-        const res = await fetch(
-          `${apiUrl}/api/v1/scheduled-tasks/${encodeURIComponent(taskId)}/run`,
-          {
-            credentials,
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: "{}",
-          },
-        );
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      } catch (err) {
-        setMutationError(
-          `Run failed: ${err instanceof Error ? err.message : "Network error"}`
-        );
-      } finally {
-        triggering.stop(taskId);
+  async function handleRunNow(taskId: string, e: React.MouseEvent) {
+    e.stopPropagation();
+    if (triggering.has(taskId)) return;
+    triggering.start(taskId);
+    setMutationError(null);
+    try {
+      const res = await fetch(
+        `${apiUrl}/api/v1/scheduled-tasks/${encodeURIComponent(taskId)}/run`,
+        {
+          credentials,
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        },
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      setMutationError(
+        `Run failed: ${err instanceof Error ? err.message : "Network error"}`
+      );
+    } finally {
+      triggering.stop(taskId);
+    }
+  }
+
+  // ── Delete task ──────────────────────────────────────────────────
+  async function handleDelete(task: ScheduledTask) {
+    if (deleting.has(task.id)) return;
+    deleting.start(task.id);
+    setMutationError(null);
+    try {
+      const res = await fetch(
+        `${apiUrl}/api/v1/scheduled-tasks/${encodeURIComponent(task.id)}`,
+        { credentials, method: "DELETE" },
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.message ?? `HTTP ${res.status}`);
       }
-    },
-    [apiUrl, triggering, credentials],
-  );
+      setDeleteTarget(null);
+      setRefetchKey((k) => k + 1);
+    } catch (err) {
+      setMutationError(
+        `Delete failed: ${err instanceof Error ? err.message : "Network error"}`
+      );
+      setDeleteTarget(null);
+    } finally {
+      deleting.stop(task.id);
+    }
+  }
 
   // ── Filter change resets pagination ─────────────────────────────
   function changeFilter(filter: EnabledFilter) {
@@ -301,11 +320,17 @@ export default function ScheduledTasksPage() {
   // ── Render ──────────────────────────────────────────────────────
   return (
     <div className="flex h-[calc(100dvh-3rem)] flex-col">
-      <div className="border-b px-6 py-4">
-        <h1 className="text-2xl font-bold tracking-tight">Scheduled Tasks</h1>
-        <p className="text-sm text-muted-foreground">
-          Manage recurring queries and delivery schedules
-        </p>
+      <div className="flex items-start justify-between border-b px-6 py-4">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Scheduled Tasks</h1>
+          <p className="text-sm text-muted-foreground">
+            Manage recurring queries and delivery schedules
+          </p>
+        </div>
+        <Button size="sm" onClick={openCreate}>
+          <Plus className="mr-1 size-4" />
+          Create task
+        </Button>
       </div>
 
       <div className="flex items-center gap-2 border-b px-6 py-3">
@@ -350,7 +375,7 @@ export default function ScheduledTasksPage() {
                   <TableHead>Channel</TableHead>
                   <TableHead>Next Run</TableHead>
                   <TableHead>Enabled</TableHead>
-                  <TableHead className="w-24" />
+                  <TableHead className="w-36" />
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -408,21 +433,42 @@ export default function ScheduledTasksPage() {
                           </Button>
                         </TableCell>
                         <TableCell>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            disabled={triggering.has(task.id)}
-                            onClick={(e) => handleRunNow(task.id, e)}
-                          >
-                            {triggering.has(task.id) ? (
-                              <Loader2 className="size-3 animate-spin" />
-                            ) : (
-                              <>
-                                <Play className="mr-1 size-3" />
-                                Run
-                              </>
-                            )}
-                          </Button>
+                          <div className="flex items-center gap-1">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              disabled={triggering.has(task.id)}
+                              onClick={(e) => handleRunNow(task.id, e)}
+                            >
+                              {triggering.has(task.id) ? (
+                                <Loader2 className="size-3 animate-spin" />
+                              ) : (
+                                <>
+                                  <Play className="mr-1 size-3" />
+                                  Run
+                                </>
+                              )}
+                            </Button>
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="size-8"
+                              onClick={(e) => openEdit(task, e)}
+                            >
+                              <Pencil className="size-3" />
+                            </Button>
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="size-8 text-destructive hover:text-destructive"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setDeleteTarget(task);
+                              }}
+                            >
+                              <Trash2 className="size-3" />
+                            </Button>
+                          </div>
                         </TableCell>
                       </TableRow>
 
@@ -515,6 +561,39 @@ export default function ScheduledTasksPage() {
           </>
         ) : null}
       </div>
+
+      <TaskFormDialog
+        open={formOpen}
+        onOpenChange={setFormOpen}
+        task={editingTask}
+        apiUrl={apiUrl}
+        credentials={credentials}
+        onSuccess={handleFormSuccess}
+      />
+
+      <AlertDialog open={deleteTarget !== null} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete task</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete &ldquo;{deleteTarget?.name}&rdquo;? This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={deleteTarget ? deleting.has(deleteTarget.id) : false}
+              onClick={() => deleteTarget && handleDelete(deleteTarget)}
+            >
+              {deleteTarget && deleting.has(deleteTarget.id) ? (
+                <Loader2 className="mr-2 size-4 animate-spin" />
+              ) : null}
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

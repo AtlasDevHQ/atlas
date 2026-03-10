@@ -636,6 +636,36 @@ export default definePlugin({
 
 The `schema` property is available on all plugin types. It requires `DATABASE_URL` to be set (the internal Postgres database). Use `ctx.db` in `initialize()` or hooks to query your plugin's tables.
 
+### How It Works
+
+At server boot, after all plugins are initialized, Atlas runs schema migrations automatically:
+
+1. **CREATE TABLE** — New tables are created with an auto-generated `id` (UUID), `created_at`, and `updated_at` columns, plus your declared fields
+2. **ALTER TABLE ADD COLUMN** — If you add new fields to a plugin schema in a later version, Atlas detects the missing columns and adds them automatically
+
+All migrations are tracked in a `plugin_migrations` table for idempotency — re-running is always safe.
+
+### Supported Field Types
+
+| Plugin Type | PostgreSQL Type |
+|-------------|----------------|
+| `string` | `TEXT` |
+| `number` | `INTEGER` |
+| `boolean` | `BOOLEAN` |
+| `date` | `TIMESTAMPTZ` |
+
+### Table Naming
+
+Tables are automatically prefixed with `plugin_{pluginId}_` to avoid collisions with Atlas internal tables and other plugins. For example, a plugin with `id: "jira"` declaring a table `tickets` gets `plugin_jira_tickets`.
+
+### Limitations
+
+- **PostgreSQL only** — Schema migrations require the internal PostgreSQL database (`DATABASE_URL`)
+- **Column additions only** — New fields added to a schema are handled automatically via `ALTER TABLE ADD COLUMN`
+- **No column removal** — Removing a field from the schema does not drop the column. Remove columns manually if needed
+- **No type changes** — Changing a field's type (e.g. `string` → `number`) is not handled. Migrate manually with a new column + data copy
+- **No renaming** — Renaming a field creates a new column; the old one remains. Clean up manually
+
 ## Datasource Plugin Properties
 
 Beyond the basics shown in [step 4](#4-plugin-object), datasource plugins support several additional properties.

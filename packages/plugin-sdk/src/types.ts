@@ -221,7 +221,7 @@ export interface PluginHooks {
 }
 
 // ---------------------------------------------------------------------------
-// Schema type — declarative table definitions (migration deferred to #116)
+// Schema type — declarative table definitions (see packages/api/src/lib/plugins/migrate.ts)
 // ---------------------------------------------------------------------------
 
 export interface PluginFieldDefinition {

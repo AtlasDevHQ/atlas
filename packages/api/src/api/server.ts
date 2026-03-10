@@ -96,6 +96,24 @@ if (config.plugins?.length) {
     config: config as unknown as Record<string, unknown>,
   };
 
+  // Run plugin schema migrations before initialize() so plugins can use
+  // their tables in initialize(). Schema is a static property — no init needed.
+  if (hasInternalDB()) {
+    try {
+      const { runPluginMigrations } = await import("@atlas/api/lib/plugins/migrate");
+      const allPlugins = plugins.getAll();
+      const migrationResult = await runPluginMigrations(getInternalDB(), allPlugins);
+      if (migrationResult.applied.length > 0) {
+        log.info({ applied: migrationResult.applied }, "Plugin schema migrations applied");
+      }
+    } catch (err) {
+      log.error(
+        { err: err instanceof Error ? err : new Error(String(err)) },
+        "Plugin schema migration failed — plugin tables may be missing",
+      );
+    }
+  }
+
   const { succeeded, failed } = await plugins.initializeAll(pluginContext);
   if (failed.length > 0) {
     log.error({ succeeded, failed }, `Plugin initialization completed with ${failed.length} failure(s)`);

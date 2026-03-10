@@ -274,6 +274,97 @@ export async function applyMigrations(
 }
 
 // ---------------------------------------------------------------------------
+// Column migrations (ALTER TABLE ADD COLUMN)
+// ---------------------------------------------------------------------------
+
+/**
+ * Query the actual columns for a given table from information_schema.
+ * Returns a Set of lowercase column names.
+ */
+async function getExistingColumns(db: MigrateDB, tableName: string): Promise<Set<string>> {
+  const result = await db.query(
+    "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1",
+    [tableName],
+  );
+  return new Set(result.rows.map((r) => String(r.column_name).toLowerCase()));
+}
+
+/**
+ * Generate ALTER TABLE ADD COLUMN IF NOT EXISTS statements for fields
+ * that exist in the plugin schema but not in the actual database table.
+ *
+ * Only handles column additions — column removal and type changes are
+ * not supported (document as limitation, require manual migration).
+ */
+export async function generateColumnMigrations(
+  db: MigrateDB,
+  plugins: PluginWithSchema[],
+): Promise<MigrationStatement[]> {
+  const statements: MigrationStatement[] = [];
+
+  for (const plugin of plugins) {
+    if (!plugin.schema) continue;
+
+    for (const [tableName, tableDef] of Object.entries(plugin.schema)) {
+      const prefixed = prefixTableName(plugin.id, tableName);
+
+      // Check if table exists at all — skip if it doesn't (CREATE TABLE will handle it)
+      const existing = await getExistingColumns(db, prefixed);
+      if (existing.size === 0) continue;
+
+      for (const [fieldName, fieldDef] of Object.entries(tableDef.fields)) {
+        if (existing.has(fieldName.toLowerCase())) continue;
+
+        const colDef = fieldToSQL(fieldName, fieldDef);
+        const sql = `ALTER TABLE "${prefixed}" ADD COLUMN IF NOT EXISTS ${colDef};`;
+
+        statements.push({
+          pluginId: plugin.id,
+          tableName,
+          prefixedName: prefixed,
+          sql,
+          hash: hashSQL(sql),
+        });
+      }
+    }
+  }
+
+  return statements;
+}
+
+// ---------------------------------------------------------------------------
+// High-level orchestrator
+// ---------------------------------------------------------------------------
+
+/**
+ * Run all plugin schema migrations: CREATE TABLE for new tables, then
+ * ALTER TABLE ADD COLUMN for new fields on existing tables.
+ *
+ * Idempotent — safe to call on every startup.
+ */
+export async function runPluginMigrations(
+  db: MigrateDB,
+  plugins: PluginWithSchema[],
+): Promise<{ applied: string[]; skipped: string[] }> {
+  // Phase 1: CREATE TABLE
+  const createStatements = generateMigrationSQL(plugins);
+  const createResult = await applyMigrations(db, createStatements);
+
+  // Phase 2: ALTER TABLE ADD COLUMN (for tables that already existed or were just created)
+  const columnStatements = await generateColumnMigrations(db, plugins);
+  if (columnStatements.length === 0) {
+    return createResult;
+  }
+
+  const columnResult = await applyMigrations(db, columnStatements);
+
+  return {
+    applied: [...createResult.applied, ...columnResult.applied],
+    skipped: [...createResult.skipped, ...columnResult.skipped],
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Diff: compare declared schema vs actual tables
 // ---------------------------------------------------------------------------
 

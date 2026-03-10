@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import type { LucideIcon } from "lucide-react";
 import {
   Database,
   Shield,
@@ -21,63 +22,58 @@ type PluginType =
 
 interface Plugin {
   name: string;
-  slug: string;
+  href: string;
   type: PluginType;
   package: string;
   description: string;
-  peerDeps?: string;
 }
 
 const plugins: Plugin[] = [
   // Datasources
   {
     name: "ClickHouse",
-    slug: "/plugins/datasources/clickhouse",
+    href: "/plugins/datasources/clickhouse",
     type: "datasource",
     package: "@useatlas/clickhouse",
     description:
       "Column-oriented analytics database via HTTP transport with readonly enforcement.",
-    peerDeps: "@clickhouse/client",
   },
   {
     name: "DuckDB",
-    slug: "/plugins/datasources/duckdb",
+    href: "/plugins/datasources/duckdb",
     type: "datasource",
     package: "@useatlas/duckdb",
     description:
       "Embedded analytics engine — file-based or in-memory, zero network overhead.",
-    peerDeps: "@duckdb/node-api",
   },
   {
     name: "MySQL",
-    slug: "/plugins/datasources/mysql",
+    href: "/plugins/datasources/mysql",
     type: "datasource",
     package: "@useatlas/mysql",
     description:
       "MySQL and MariaDB via connection pool with read-only session enforcement.",
-    peerDeps: "mysql2",
   },
   {
     name: "Snowflake",
-    slug: "/plugins/datasources/snowflake",
+    href: "/plugins/datasources/snowflake",
     type: "datasource",
     package: "@useatlas/snowflake",
-    description: "Snowflake Data Cloud with SDK pool management and warehouse routing.",
-    peerDeps: "snowflake-sdk",
+    description:
+      "Snowflake Data Cloud via SDK connection pool with warehouse and role configuration.",
   },
   {
     name: "Salesforce",
-    slug: "/plugins/datasources/salesforce",
+    href: "/plugins/datasources/salesforce",
     type: "datasource",
     package: "@useatlas/salesforce",
     description:
       "Salesforce CRM via SOQL — query Salesforce objects like database tables.",
-    peerDeps: "jsforce",
   },
   // Sandboxes
   {
     name: "Vercel Sandbox",
-    slug: "/plugins/sandboxes/vercel-sandbox",
+    href: "/plugins/sandboxes/vercel-sandbox",
     type: "sandbox",
     package: "@useatlas/vercel-sandbox",
     description:
@@ -85,23 +81,23 @@ const plugins: Plugin[] = [
   },
   {
     name: "E2B",
-    slug: "/plugins/sandboxes/e2b",
+    href: "/plugins/sandboxes/e2b",
     type: "sandbox",
     package: "@useatlas/e2b",
     description:
-      "Cloud-hosted Firecracker microVM sandbox with Python and system tool support.",
+      "Cloud-hosted Firecracker microVM — ephemeral sandbox with network and filesystem isolation.",
   },
   {
     name: "Daytona",
-    slug: "/plugins/sandboxes/daytona",
+    href: "/plugins/sandboxes/daytona",
     type: "sandbox",
     package: "@useatlas/daytona",
     description:
-      "Managed cloud sandbox with persistent workspaces and full Linux environments.",
+      "Managed cloud sandbox with ephemeral workspaces and full Linux environments.",
   },
   {
     name: "nsjail",
-    slug: "/plugins/sandboxes/nsjail",
+    href: "/plugins/sandboxes/nsjail",
     type: "sandbox",
     package: "@useatlas/nsjail",
     description:
@@ -109,7 +105,7 @@ const plugins: Plugin[] = [
   },
   {
     name: "Sidecar",
-    slug: "/plugins/sandboxes/sidecar",
+    href: "/plugins/sandboxes/sidecar",
     type: "sandbox",
     package: "@useatlas/sidecar",
     description:
@@ -118,7 +114,7 @@ const plugins: Plugin[] = [
   // Interactions
   {
     name: "MCP",
-    slug: "/plugins/interactions/mcp",
+    href: "/plugins/interactions/mcp",
     type: "interaction",
     package: "@useatlas/mcp",
     description:
@@ -126,7 +122,7 @@ const plugins: Plugin[] = [
   },
   {
     name: "Slack",
-    slug: "/plugins/interactions/slack",
+    href: "/plugins/interactions/slack",
     type: "interaction",
     package: "@useatlas/slack",
     description:
@@ -135,7 +131,7 @@ const plugins: Plugin[] = [
   // Actions
   {
     name: "Email",
-    slug: "/plugins/actions/email",
+    href: "/plugins/actions/email",
     type: "action",
     package: "@useatlas/email",
     description:
@@ -143,7 +139,7 @@ const plugins: Plugin[] = [
   },
   {
     name: "JIRA",
-    slug: "/plugins/actions/jira",
+    href: "/plugins/actions/jira",
     type: "action",
     package: "@useatlas/jira",
     description:
@@ -152,7 +148,7 @@ const plugins: Plugin[] = [
   // Context
   {
     name: "YAML Context",
-    slug: "/plugins/context/yaml-context",
+    href: "/plugins/context/yaml-context",
     type: "context",
     package: "@useatlas/yaml-context",
     description:
@@ -162,7 +158,7 @@ const plugins: Plugin[] = [
 
 const typeConfig: Record<
   PluginType,
-  { label: string; color: string; bgColor: string; icon: typeof Database }
+  { label: string; color: string; bgColor: string; icon: LucideIcon }
 > = {
   datasource: {
     label: "Datasource",
@@ -236,7 +232,7 @@ function TypeBadge({ type }: { type: PluginType }) {
     <span
       className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium ${config.bgColor} ${config.color}`}
     >
-      <Icon className="h-3 w-3" />
+      <Icon className="h-3 w-3" aria-hidden="true" />
       {config.label}
     </span>
   );
@@ -245,7 +241,7 @@ function TypeBadge({ type }: { type: PluginType }) {
 function PluginCard({ plugin }: { plugin: Plugin }) {
   return (
     <Link
-      href={plugin.slug}
+      href={plugin.href}
       className="group flex flex-col rounded-lg border border-fd-border bg-fd-card p-4 transition-colors hover:border-fd-primary/50 hover:bg-fd-accent/50"
     >
       <div className="mb-2 flex items-start justify-between gap-2">
@@ -253,7 +249,7 @@ function PluginCard({ plugin }: { plugin: Plugin }) {
           {plugin.name}
         </h3>
         <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-green-200 bg-green-50 px-1.5 py-0.5 text-[10px] font-medium text-green-700 dark:border-green-800 dark:bg-green-950/50 dark:text-green-400">
-          <Check className="h-2.5 w-2.5" />
+          <Check className="h-2.5 w-2.5" aria-hidden="true" />
           Official
         </span>
       </div>
@@ -262,7 +258,7 @@ function PluginCard({ plugin }: { plugin: Plugin }) {
         {plugin.description}
       </p>
       <div className="mt-3 flex items-center gap-1.5 text-fd-muted-foreground">
-        <Package className="h-3.5 w-3.5 shrink-0" />
+        <Package className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
         <code className="text-xs">{plugin.package}</code>
       </div>
     </Link>
@@ -278,11 +274,12 @@ export function PluginDirectory() {
   return (
     <div>
       {/* Filter tabs */}
-      <div className="mb-6 flex flex-wrap gap-2">
+      <div className="mb-6 flex flex-wrap gap-2" role="group" aria-label="Filter by plugin type">
         {filterTabs.map((tab) => (
           <button
             key={tab.key}
             onClick={() => setFilter(tab.key)}
+            aria-pressed={filter === tab.key}
             className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm font-medium transition-colors ${
               filter === tab.key
                 ? "border-fd-primary bg-fd-primary text-fd-primary-foreground"

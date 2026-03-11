@@ -158,7 +158,8 @@ function BarChartView({
   const valKeys = rec.valueColumns.map((c) => c.header);
 
   return (
-    <ResponsiveContainer width="100%" height={300}>
+    <div className="aspect-[4/3] sm:aspect-[16/9]">
+    <ResponsiveContainer width="100%" height="100%">
       <BarChart data={data} margin={{ top: 8, right: 8, bottom: 40, left: 8 }}>
         <CartesianGrid strokeDasharray="3 3" stroke={t.grid} />
         <XAxis
@@ -184,6 +185,7 @@ function BarChartView({
         ))}
       </BarChart>
     </ResponsiveContainer>
+    </div>
   );
 }
 
@@ -202,7 +204,8 @@ function LineChartView({
   const valKeys = rec.valueColumns.map((c) => c.header);
 
   return (
-    <ResponsiveContainer width="100%" height={300}>
+    <div className="aspect-[4/3] sm:aspect-[16/9]">
+    <ResponsiveContainer width="100%" height="100%">
       <LineChart data={data} margin={{ top: 8, right: 8, bottom: 40, left: 8 }}>
         <CartesianGrid strokeDasharray="3 3" stroke={t.grid} />
         <XAxis
@@ -231,6 +234,7 @@ function LineChartView({
         ))}
       </LineChart>
     </ResponsiveContainer>
+    </div>
   );
 }
 
@@ -253,14 +257,15 @@ function PieChartView({
   const hasNegative = data.some(d => typeof d[valKey] === "number" && (d[valKey] as number) < 0);
   if (total <= 0 || hasNegative) {
     return (
-      <div className="flex h-[300px] items-center justify-center text-xs text-zinc-400">
+      <div className="flex aspect-[4/3] items-center justify-center text-xs text-zinc-400 sm:aspect-[16/9]">
         Pie chart is not suitable for this data.
       </div>
     );
   }
 
   return (
-    <ResponsiveContainer width="100%" height={300}>
+    <div className="aspect-[4/3] sm:aspect-[16/9]">
+    <ResponsiveContainer width="100%" height="100%">
       <PieChart>
         <Pie
           data={data}
@@ -283,6 +288,7 @@ function PieChartView({
         <Tooltip content={<ChartTooltip dark={dark} />} />
       </PieChart>
     </ResponsiveContainer>
+    </div>
   );
 }
 

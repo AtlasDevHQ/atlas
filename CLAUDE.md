@@ -26,7 +26,7 @@ Guidance for Claude Code when working in this repository.
 - [ ] **Tailwind CSS 4** — Via `@tailwindcss/postcss`, not v3
 - [ ] **shadcn/ui v2** — Component library for `@atlas/web`. New-york style, neutral base, Lucide icons. **Always use shadcn/ui primitives** for UI elements (buttons, toggles, cards, dialogs, etc.) — never hand-roll equivalent components. If a needed primitive isn't installed yet, add it: `npx shadcn@latest add <component>` from `packages/web/`. Config at `packages/web/components.json`. Uses `cn()` from `@/lib/utils` for class merging
 - [ ] **Server external packages** — `pg`, `mysql2`, `@clickhouse/client`, `@duckdb/node-api`, `snowflake-sdk`, `jsforce`, `just-bash`, `pino`, and `pino-pretty` must stay in `serverExternalPackages` in the `create-atlas` template — they use native bindings or worker threads incompatible with Next.js bundling
-- [ ] **Frontend is a pure HTTP client** — `@atlas/web` depends on `@atlas/api` for shared types only — the frontend talks to the API over HTTP (same-origin rewrite or cross-origin fetch). The `nextjs-standalone` example embeds `@atlas/api` server-side via a Next.js catch-all route; the React client still communicates over HTTP
+- [ ] **Frontend is a pure HTTP client** — `@atlas/web` does NOT depend on `@atlas/api` — the frontend talks to the API over HTTP (same-origin rewrite or cross-origin fetch). Shared types are duplicated in `packages/web/src/ui/lib/types.ts`. The `nextjs-standalone` example embeds `@atlas/api` server-side via a Next.js catch-all route; the React client still communicates over HTTP
 - [ ] **nuqs for URL state** — Use [nuqs](https://nuqs.47ng.com/) for any state that belongs in the URL (pagination, filters, selected items, view modes). Define parsers in a `search-params.ts` file next to the page, use `useQueryStates` in client components. Transient UI state (loading, open dropdowns, form drafts) stays as `useState`. `NuqsAdapter` is in the root layout
 - [ ] **React Compiler handles memoization** — Do not add `useMemo`, `useCallback`, or `React.memo` for performance. The React Compiler (enabled in `next.config.ts`) auto-memoizes. Only use `useMemo` when a stable reference is required for correctness (e.g. TanStack Table controlled state). Only use `React.memo` with a custom comparator when skipping renders based on semantic equality (e.g. completed tool parts)
 - [ ] **No async waterfalls** — Use `Promise.all([a(), b()])` for independent awaits, not sequential `await a(); await b();`. Start promises early, await late
@@ -248,9 +248,10 @@ atlas/
 │   └── metrics/*.yml
 ├── scripts/                     # db-up.sh, start.sh
 ├── create-atlas/                # Scaffolding CLI (bun create atlas-agent)
+├── create-atlas-plugin/         # Plugin scaffolding CLI (bun create @useatlas/plugin)
 ├── package.json                 # Root workspace config
 ├── tsconfig.json                # Base config, extended by packages
-└── docker-compose.yml           # Local dev Postgres (bun run db:up)
+└── docker-compose.yml           # Local dev Postgres + sandbox sidecar (bun run db:up)
 ```
 
 **Import conventions:**
@@ -292,6 +293,10 @@ Error boundary catches provider/DB errors → structured JSON response
 - `GET /api/v1/conversations` — List conversations (paginated, auth-scoped)
 - `GET /api/v1/conversations/:id` — Get conversation with messages
 - `DELETE /api/v1/conversations/:id` — Delete conversation
+- `/api/v1/actions/*` — Action approval workflow (list, approve, reject)
+- `/api/v1/admin/*` — Admin console API (connections, users, plugins, settings, analytics, health)
+- `/api/v1/scheduled-tasks/*` — Scheduled task CRUD, run history, delivery channels
+- `GET /api/openapi.json` — OpenAPI spec
 - `POST /api/slack/commands` — Slack slash command handler (`/atlas`)
 - `POST /api/slack/events` — Slack Events API (thread follow-ups, url_verification)
 - `GET /api/slack/install` — Slack OAuth install redirect
@@ -312,7 +317,7 @@ Error boundary catches provider/DB errors → structured JSON response
 5. **Auto LIMIT** — Appended to every query (default 1000)
 6. **Statement timeout** — Configurable per-query deadline
 
-~103 unit tests cover the validation pipeline — see `packages/api/src/lib/tools/__tests__/sql.test.ts`.
+~103 unit tests cover the core validation pipeline — see `packages/api/src/lib/tools/__tests__/sql.test.ts`. Additional DB-specific validation tests live in each plugin's test directory.
 
 ### Database Layer
 
@@ -562,7 +567,7 @@ The `create-atlas/` package provides `bun create atlas-agent my-app`:
 
 Key files not obvious from the monorepo tree above. For standard paths, follow the package structure in the Architecture section.
 
-**Core agent pipeline** — `packages/api/src/lib/`: `agent.ts` (loop), `agent-query.ts` (shared JSON+Slack execution), `providers.ts` (LLM factory), `semantic.ts` (whitelist builder), `startup.ts` (env validation), `security.ts` (scrubbing), `config.ts` (declarative config), `conversations.ts` (persistence)
+**Core agent pipeline** — `packages/api/src/lib/`: `agent.ts` (loop), `agent-query.ts` (shared JSON+Slack execution), `providers.ts` (LLM factory), `semantic.ts` (whitelist builder), `startup.ts` (env validation), `security.ts` (scrubbing), `config.ts` (declarative config), `conversations.ts` (persistence), `settings.ts` (admin settings CRUD)
 
 **Tools** — `packages/api/src/lib/tools/`: `sql.ts` (validation+execution), `explore.ts` (reader+backend selection), `explore-nsjail.ts`, `explore-sandbox.ts` (Vercel), `explore-sidecar.ts`, `registry.ts`
 
@@ -570,11 +575,11 @@ Key files not obvious from the monorepo tree above. For standard paths, follow t
 
 **DB** — `packages/api/src/lib/db/`: `connection.ts` (ConnectionRegistry), `internal.ts` (Atlas's own Postgres)
 
-**Routes** — `packages/api/src/api/`: `index.ts` (Hono app), `server.ts` (standalone entry), `routes/` (chat, health, auth, query, conversations, slack)
+**Routes** — `packages/api/src/api/`: `index.ts` (Hono app), `server.ts` (standalone entry), `routes/` (chat, health, auth, query, conversations, slack, actions, admin, scheduled-tasks, openapi)
 
 **Shared types** — `packages/api/src/lib/`: `auth/types.ts`, `errors.ts`, `action-types.ts`, `conversation-types.ts`, `sidecar-types.ts`, `scheduled-task-types.ts`
 
-**Scheduler** — `packages/api/src/lib/scheduler/`: `engine.ts` (tick loop, singleton), `executor.ts` (bridges to executeAgentQuery), `delivery.ts` (channel dispatch), `format-email.ts`, `format-slack.ts`, `format-webhook.ts`, `index.ts` (barrel). CRUD: `packages/api/src/lib/scheduled-tasks.ts`. Routes: `packages/api/src/api/routes/scheduled-tasks.ts`
+**Scheduler** — `packages/api/src/lib/scheduler/`: `engine.ts` (tick loop, singleton), `executor.ts` (bridges to executeAgentQuery), `delivery.ts` (channel dispatch), `format-email.ts`, `format-slack.ts`, `format-webhook.ts`, `preview.ts` (dry-run preview), `index.ts` (barrel). CRUD: `packages/api/src/lib/scheduled-tasks.ts`. Routes: `packages/api/src/api/routes/scheduled-tasks.ts`
 
 **UI** — `packages/web/src/ui/`: `context.tsx` (provider), `components/atlas-chat.tsx` (orchestrator), `components/chat/*.tsx`, `components/chart/chart-detection.ts`, `hooks/use-conversations.ts`
 

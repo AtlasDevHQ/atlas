@@ -35,9 +35,9 @@ export function getRequestContext(): RequestContext | undefined {
 
 const isDev = process.env.NODE_ENV !== "production";
 
-// Redaction covers top-level fields and one-level nested (*.field) plus
-// array element access ([*].field). fast-redact does not support ** glob
-// wildcards, so deeper nesting would require additional explicit paths.
+// Redaction covers top-level fields, one-level nested (*.field), array
+// element access ([*].field), and known deep structures. fast-redact does
+// not support ** glob wildcards, so deep paths must be listed explicitly.
 export const redactPaths = [
   "connectionString",
   "databaseUrl",
@@ -45,18 +45,30 @@ export const redactPaths = [
   "password",
   "secret",
   "authorization",
+  "url",
   "*.connectionString",
   "*.databaseUrl",
   "*.apiKey",
   "*.password",
   "*.secret",
   "*.authorization",
+  "*.url",
   "[*].connectionString",
   "[*].databaseUrl",
   "[*].apiKey",
   "[*].password",
   "[*].secret",
   "[*].authorization",
+  "[*].url",
+  // Deep structures: datasource config, connection registry, plugin config
+  "datasources.*.url",
+  "datasources.*.connectionString",
+  "datasources.*.password",
+  "config.datasources.*.url",
+  "config.datasources.*.connectionString",
+  "connection.url",
+  "connection.connectionString",
+  "connection.password",
 ];
 
 const rootLogger = pino({

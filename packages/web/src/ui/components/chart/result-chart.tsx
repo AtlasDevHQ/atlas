@@ -7,6 +7,11 @@ import {
   Bar,
   LineChart,
   Line,
+  AreaChart,
+  Area,
+  ScatterChart,
+  Scatter,
+  ZAxis,
   PieChart,
   Pie,
   Cell,
@@ -287,10 +292,173 @@ function PieChartView({
 }
 
 /* ------------------------------------------------------------------ */
+/*  Area chart                                                           */
+/* ------------------------------------------------------------------ */
+
+function AreaChartView({
+  data,
+  rec,
+  dark,
+}: {
+  data: RechartsRow[];
+  rec: ChartRecommendation;
+  dark: boolean;
+}) {
+  const colors = getColors(dark);
+  const t = themeTokens(dark);
+  const catKey = rec.categoryColumn.header;
+  const valKeys = rec.valueColumns.map((c) => c.header);
+
+  return (
+    <ResponsiveContainer width="100%" height={300}>
+      <AreaChart data={data} margin={{ top: 8, right: 8, bottom: 40, left: 8 }}>
+        <defs>
+          {valKeys.map((key, i) => (
+            <linearGradient key={key} id={`area-gradient-${i}`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="5%" stopColor={colors[i % colors.length]} stopOpacity={0.3} />
+              <stop offset="95%" stopColor={colors[i % colors.length]} stopOpacity={0.05} />
+            </linearGradient>
+          ))}
+        </defs>
+        <CartesianGrid strokeDasharray="3 3" stroke={t.grid} />
+        <XAxis
+          dataKey={catKey}
+          tick={{ fill: t.axis, fontSize: 11 }}
+          tickFormatter={(v: string) => truncateLabel(v)}
+          angle={-45}
+          textAnchor="end"
+          height={60}
+        />
+        <YAxis tick={{ fill: t.axis, fontSize: 11 }} tickFormatter={formatNumber} />
+        <Tooltip content={<ChartTooltip dark={dark} />} />
+        {valKeys.length > 1 && (
+          <Legend wrapperStyle={{ fontSize: 12, color: t.legendText }} />
+        )}
+        {valKeys.map((key, i) => (
+          <Area
+            key={key}
+            type="monotone"
+            dataKey={key}
+            stroke={colors[i % colors.length]}
+            strokeWidth={2}
+            fill={`url(#area-gradient-${i})`}
+          />
+        ))}
+      </AreaChart>
+    </ResponsiveContainer>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Stacked bar chart                                                    */
+/* ------------------------------------------------------------------ */
+
+function StackedBarChartView({
+  data,
+  rec,
+  dark,
+}: {
+  data: RechartsRow[];
+  rec: ChartRecommendation;
+  dark: boolean;
+}) {
+  const colors = getColors(dark);
+  const t = themeTokens(dark);
+  const catKey = rec.categoryColumn.header;
+  const valKeys = rec.valueColumns.map((c) => c.header);
+
+  return (
+    <ResponsiveContainer width="100%" height={300}>
+      <BarChart data={data} margin={{ top: 8, right: 8, bottom: 40, left: 8 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke={t.grid} />
+        <XAxis
+          dataKey={catKey}
+          tick={{ fill: t.axis, fontSize: 11 }}
+          tickFormatter={(v: string) => truncateLabel(v)}
+          angle={-45}
+          textAnchor="end"
+          height={60}
+        />
+        <YAxis tick={{ fill: t.axis, fontSize: 11 }} tickFormatter={formatNumber} />
+        <Tooltip content={<ChartTooltip dark={dark} />} />
+        <Legend wrapperStyle={{ fontSize: 12, color: t.legendText }} />
+        {valKeys.map((key, i) => (
+          <Bar
+            key={key}
+            dataKey={key}
+            stackId="a"
+            fill={colors[i % colors.length]}
+            radius={i === valKeys.length - 1 ? [4, 4, 0, 0] : undefined}
+          />
+        ))}
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Scatter chart                                                        */
+/* ------------------------------------------------------------------ */
+
+function ScatterChartView({
+  data,
+  rec,
+  dark,
+}: {
+  data: RechartsRow[];
+  rec: ChartRecommendation;
+  dark: boolean;
+}) {
+  const colors = getColors(dark);
+  const t = themeTokens(dark);
+  const xKey = rec.categoryColumn.header;
+  const yKey = rec.valueColumns[0].header;
+  const zKey = rec.valueColumns.length > 1 ? rec.valueColumns[1].header : undefined;
+
+  return (
+    <ResponsiveContainer width="100%" height={300}>
+      <ScatterChart margin={{ top: 8, right: 8, bottom: 40, left: 8 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke={t.grid} />
+        <XAxis
+          dataKey={xKey}
+          type="number"
+          name={xKey}
+          tick={{ fill: t.axis, fontSize: 11 }}
+          tickFormatter={formatNumber}
+        />
+        <YAxis
+          dataKey={yKey}
+          type="number"
+          name={yKey}
+          tick={{ fill: t.axis, fontSize: 11 }}
+          tickFormatter={formatNumber}
+        />
+        {zKey && <ZAxis dataKey={zKey} type="number" name={zKey} range={[40, 400]} />}
+        <Tooltip
+          content={<ChartTooltip dark={dark} />}
+          cursor={{ strokeDasharray: "3 3" }}
+        />
+        <Scatter
+          data={data}
+          fill={colors[0]}
+        />
+      </ScatterChart>
+    </ResponsiveContainer>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Chart type selector                                                 */
 /* ------------------------------------------------------------------ */
 
-const CHART_LABELS: Record<ChartType, string> = { bar: "Bar", line: "Line", pie: "Pie" };
+const CHART_LABELS: Record<ChartType, string> = {
+  bar: "Bar",
+  line: "Line",
+  pie: "Pie",
+  area: "Area",
+  "stacked-bar": "Stacked",
+  scatter: "Scatter",
+};
 
 function ChartTypeSelector({
   recommendations,
@@ -377,6 +545,9 @@ export function ResultChart({
         <div className="p-2">
           {currentType === "bar" ? <BarChartView data={chartData} rec={currentRec} dark={dark} />
             : currentType === "line" ? <LineChartView data={chartData} rec={currentRec} dark={dark} />
+            : currentType === "area" ? <AreaChartView data={chartData} rec={currentRec} dark={dark} />
+            : currentType === "stacked-bar" ? <StackedBarChartView data={chartData} rec={currentRec} dark={dark} />
+            : currentType === "scatter" ? <ScatterChartView data={chartData} rec={currentRec} dark={dark} />
             : <PieChartView data={chartData} rec={currentRec} dark={dark} />}
         </div>
       </ChartErrorBoundary>

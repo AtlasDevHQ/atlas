@@ -9,7 +9,7 @@ export type ClassifiedColumn = {
   uniqueCount: number;
 };
 
-export type ChartType = "bar" | "line" | "pie";
+export type ChartType = "bar" | "line" | "pie" | "area" | "stacked-bar" | "scatter";
 
 export type ChartRecommendation = {
   type: ChartType;
@@ -156,6 +156,26 @@ export function detectCharts(headers: string[], rows: string[][]): ChartDetectio
     });
   }
 
+  // Area: alternative to line for date + numeric (volume/magnitude over time)
+  if (dateColumns.length >= 1 && numericColumns.length >= 1) {
+    recommendations.push({
+      type: "area",
+      categoryColumn: dateColumns[0],
+      valueColumns: numericColumns as [ClassifiedColumn, ...ClassifiedColumn[]],
+      reason: `Volume over time: ${numericColumns.map((c) => c.header).join(", ")} by ${dateColumns[0].header}`,
+    });
+  }
+
+  // Stacked bar: categorical + multiple numeric columns (part-to-whole comparison)
+  if (categoricalColumns.length >= 1 && numericColumns.length >= 2) {
+    recommendations.push({
+      type: "stacked-bar",
+      categoryColumn: categoricalColumns[0],
+      valueColumns: numericColumns as [ClassifiedColumn, ...ClassifiedColumn[]],
+      reason: `Stacked: ${numericColumns.map((c) => c.header).join(", ")} by ${categoricalColumns[0].header}`,
+    });
+  }
+
   // Bar: categorical + numeric
   if (categoricalColumns.length >= 1 && numericColumns.length >= 1) {
     recommendations.push({
@@ -179,8 +199,22 @@ export function detectCharts(headers: string[], rows: string[][]): ChartDetectio
     }
   }
 
+  // Scatter: 2+ numeric columns (correlation analysis)
+  if (numericColumns.length >= 2) {
+    const [xCol, yCol, ...rest] = numericColumns;
+    const scatterValues = rest.length > 0
+      ? [yCol, ...rest] as [ClassifiedColumn, ...ClassifiedColumn[]]
+      : [yCol] as [ClassifiedColumn, ...ClassifiedColumn[]];
+    recommendations.push({
+      type: "scatter",
+      categoryColumn: xCol,
+      valueColumns: scatterValues,
+      reason: `Correlation: ${xCol.header} vs ${yCol.header}${rest.length > 0 ? ` (size: ${rest[0].header})` : ""}`,
+    });
+  }
+
   // Fallback: when all columns are numeric, treat first as category axis (often an index or bucket label)
-  if (recommendations.length === 0 && numericColumns.length >= 2) {
+  if (!recommendations.some((r) => r.type === "bar") && numericColumns.length >= 2) {
     const first = columns[0];
     const rest = numericColumns.filter((c) => c.index !== first.index);
     if (rest.length >= 1) {
@@ -236,9 +270,21 @@ export function transformData(
   const catHeader = recommendation.categoryColumn.header;
   const valIdxs = recommendation.valueColumns.map((c) => c.index);
 
-  // Cap rows for bar charts with many categories
+  // Scatter: both axes are numeric — categoryColumn is x, first valueColumn is y, optional z for size
+  if (recommendation.type === "scatter") {
+    return rows.map((row) => {
+      const record: RechartsRow = {};
+      record[catHeader] = parseNumericValue(row[catIdx] ?? "0");
+      for (const vc of recommendation.valueColumns) {
+        record[vc.header] = parseNumericValue(row[vc.index] ?? "0");
+      }
+      return record;
+    });
+  }
+
+  // Cap rows for bar/stacked-bar charts with many categories
   let effectiveRows = rows;
-  if (recommendation.type === "bar" && rows.length > 30) {
+  if ((recommendation.type === "bar" || recommendation.type === "stacked-bar") && rows.length > 30) {
     // Sort by first value column descending, take top 20
     const valIdx = valIdxs[0];
     effectiveRows = [...rows]

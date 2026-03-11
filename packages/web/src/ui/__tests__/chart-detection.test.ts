@@ -171,8 +171,88 @@ describe("detectCharts", () => {
     const result = detectCharts(headers, rows);
     expect(result.chartable).toBe(true);
     if (!result.chartable) return;
-    expect(result.recommendations[0].type).toBe("bar");
-    expect(result.recommendations[0].reason).toContain("Fallback");
+    const types = result.recommendations.map((r) => r.type);
+    // Scatter is recommended for 2+ numerics; bar is fallback
+    expect(types).toContain("scatter");
+    expect(types).toContain("bar");
+  });
+
+  test("area chart: recommended as alternative to line for date + numeric", () => {
+    const headers = ["date", "revenue"];
+    const rows = Array.from({ length: 12 }, (_, i) => [
+      `2024-${String(i + 1).padStart(2, "0")}-01`,
+      String(1000 + i * 100),
+    ]);
+    const result = detectCharts(headers, rows);
+    expect(result.chartable).toBe(true);
+    if (!result.chartable) return;
+    const types = result.recommendations.map((r) => r.type);
+    expect(types).toContain("line");
+    expect(types).toContain("area");
+  });
+
+  test("stacked bar: recommended for categorical + multiple numeric columns", () => {
+    const headers = ["region", "revenue", "cost", "profit"];
+    const rows = [
+      ["East", "500", "200", "300"],
+      ["West", "600", "250", "350"],
+      ["North", "400", "180", "220"],
+      ["South", "550", "230", "320"],
+    ];
+    const result = detectCharts(headers, rows);
+    expect(result.chartable).toBe(true);
+    if (!result.chartable) return;
+    const types = result.recommendations.map((r) => r.type);
+    expect(types).toContain("stacked-bar");
+    expect(types).toContain("bar");
+  });
+
+  test("stacked bar: NOT recommended for categorical + single numeric", () => {
+    const headers = ["region", "revenue"];
+    const rows = [
+      ["East", "500"],
+      ["West", "600"],
+      ["North", "400"],
+    ];
+    const result = detectCharts(headers, rows);
+    expect(result.chartable).toBe(true);
+    if (!result.chartable) return;
+    const types = result.recommendations.map((r) => r.type);
+    expect(types).not.toContain("stacked-bar");
+  });
+
+  test("scatter: recommended for 2+ numeric columns", () => {
+    const headers = ["weight", "height", "bmi"];
+    const rows = [
+      ["70", "175", "22.9"],
+      ["85", "180", "26.2"],
+      ["60", "160", "23.4"],
+      ["90", "185", "26.3"],
+    ];
+    const result = detectCharts(headers, rows);
+    expect(result.chartable).toBe(true);
+    if (!result.chartable) return;
+    const types = result.recommendations.map((r) => r.type);
+    expect(types).toContain("scatter");
+    const scatterRec = result.recommendations.find((r) => r.type === "scatter")!;
+    expect(scatterRec.categoryColumn.header).toBe("weight");
+    expect(scatterRec.valueColumns[0].header).toBe("height");
+    expect(scatterRec.reason).toContain("size: bmi");
+  });
+
+  test("scatter: 2 numeric columns, no size encoding", () => {
+    const headers = ["x", "y"];
+    const rows = [
+      ["10", "20"],
+      ["30", "40"],
+      ["50", "60"],
+    ];
+    const result = detectCharts(headers, rows);
+    expect(result.chartable).toBe(true);
+    if (!result.chartable) return;
+    const scatterRec = result.recommendations.find((r) => r.type === "scatter")!;
+    expect(scatterRec.valueColumns).toHaveLength(1);
+    expect(scatterRec.reason).not.toContain("size:");
   });
 
   test("date + categorical + numeric → line and bar recommendations", () => {
@@ -361,6 +441,50 @@ describe("transformData", () => {
     expect(data[0].value).toBe(500);
     expect(data[1].value).toBe(45);
     expect(data[2].value).toBe(1000);
+  });
+
+  test("scatter chart transforms both axes as numeric", () => {
+    const xCol: ClassifiedColumn = { index: 0, header: "weight", type: "numeric", uniqueCount: 4 };
+    const yCol: ClassifiedColumn = { index: 1, header: "height", type: "numeric", uniqueCount: 4 };
+    const recommendation: ChartRecommendation = {
+      type: "scatter",
+      categoryColumn: xCol,
+      valueColumns: [yCol],
+      reason: "test",
+    };
+
+    const rows = [
+      ["70", "175"],
+      ["85", "180"],
+      ["60", "160"],
+    ];
+
+    const data = transformData(rows, recommendation);
+    expect(data).toHaveLength(3);
+    expect(data[0].weight).toBe(70);
+    expect(data[0].height).toBe(175);
+    expect(typeof data[0].weight).toBe("number");
+  });
+
+  test("stacked-bar chart caps rows like bar", () => {
+    const catCol: ClassifiedColumn = { index: 0, header: "name", type: "categorical", uniqueCount: 50 };
+    const val1: ClassifiedColumn = { index: 1, header: "a", type: "numeric", uniqueCount: 50 };
+    const val2: ClassifiedColumn = { index: 2, header: "b", type: "numeric", uniqueCount: 50 };
+    const recommendation: ChartRecommendation = {
+      type: "stacked-bar",
+      categoryColumn: catCol,
+      valueColumns: [val1, val2],
+      reason: "test",
+    };
+
+    const rows = Array.from({ length: 50 }, (_, i) => [
+      `Item_${i + 1}`,
+      String(i + 1),
+      String(100 - i),
+    ]);
+
+    const data = transformData(rows, recommendation);
+    expect(data).toHaveLength(20);
   });
 
   test("short rows (ragged CSV) — missing values default to 0", () => {

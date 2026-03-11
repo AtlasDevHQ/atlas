@@ -427,10 +427,10 @@ export async function runAgent({
           "agent finished",
         );
         span.setAttributes({
-          finishReason: finishReason ?? "",
-          totalSteps: steps.length,
-          totalInputTokens: totalUsage?.inputTokens ?? 0,
-          totalOutputTokens: totalUsage?.outputTokens ?? 0,
+          "atlas.finish_reason": finishReason ?? "",
+          "atlas.total_steps": steps.length,
+          "atlas.total_input_tokens": totalUsage?.inputTokens ?? 0,
+          "atlas.total_output_tokens": totalUsage?.outputTokens ?? 0,
         });
         endSpan(SpanStatusCode.OK);
 

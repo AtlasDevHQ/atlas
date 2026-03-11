@@ -40,10 +40,10 @@ HTTP Request (http.request)
 | Span Name | Attributes | Description |
 |-----------|------------|-------------|
 | `http.request` | `http.method`, `http.target`, `http.status_code` | Root span per API request (Hono middleware) |
-| `atlas.agent` | `atlas.provider`, `atlas.model`, `atlas.message_count`, `finishReason`, `totalSteps`, `totalInputTokens`, `totalOutputTokens` | Full agent loop (one per `streamText` call) |
+| `atlas.agent` | `atlas.provider`, `atlas.model`, `atlas.message_count`, `atlas.finish_reason`, `atlas.total_steps`, `atlas.total_input_tokens`, `atlas.total_output_tokens` | Full agent loop (one per `streamText` call) |
 | `atlas.sql.execute` | `db.system`, `atlas.connection_id`, `atlas.row_count`, `atlas.column_count` | SQL query execution. SQL content is **not** included for security |
 | `atlas.explore` | `atlas.command` (truncated), `atlas.backend` | Semantic layer file exploration (ls, cat, grep, find) |
-| `atlas.python.execute` | `python.backend` | Python code execution in sandbox |
+| `atlas.python.execute` | `code.length` | Python code execution in sandbox |
 
 Each span records success/failure status and captures exceptions on error, making it straightforward to trace agent step failures back to specific tool calls.
 
@@ -64,7 +64,7 @@ docker run -d --name jaeger \
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 ```
 
-Open `http://localhost:16686` to view traces. Search for service `atlas`.
+Open `http://localhost:16686` to view traces. Search for service `atlas-api` (API server) or `atlas` (web frontend).
 
 #### Grafana Tempo
 

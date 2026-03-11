@@ -6,7 +6,7 @@
  * returns no-op tracers — zero overhead.
  *
  * Import this module once during server startup:
- *   if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) await import("./telemetry");
+ *   if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) await import("@atlas/api/lib/telemetry");
  */
 
 const { NodeSDK } = await import("@opentelemetry/sdk-node");
@@ -30,11 +30,11 @@ const traceExporter = new OTLPTraceExporter({
 const sdk = new NodeSDK({ resource, traceExporter });
 sdk.start();
 
-process.on("SIGTERM", () => {
-  sdk.shutdown().catch((err) => {
-    console.error(
-      "[atlas-api] OTel SDK shutdown failed:",
-      err instanceof Error ? err.message : String(err),
-    );
-  });
-});
+/**
+ * Flush pending spans and shut down the SDK.
+ * Called from the server's graceful shutdown sequence — not a standalone
+ * SIGTERM handler, to avoid racing with process.exit().
+ */
+export async function shutdownTelemetry(): Promise<void> {
+  await sdk.shutdown();
+}

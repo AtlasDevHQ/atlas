@@ -31,7 +31,12 @@ export async function withSpan<T>(
     try {
       const result = await fn();
       if (setResultAttributes) {
-        span.setAttributes(setResultAttributes(result));
+        try {
+          const attrs = setResultAttributes(result);
+          if (attrs) span.setAttributes(attrs);
+        } catch {
+          // Callback bug must not invalidate a successful operation.
+        }
       }
       span.setStatus({ code: SpanStatusCode.OK });
       return result;

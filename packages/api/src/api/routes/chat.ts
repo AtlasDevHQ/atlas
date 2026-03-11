@@ -233,6 +233,11 @@ chat.post("/", async (c) => {
         const result = await runAgent({ messages, ...(toolRegistry && { tools: toolRegistry }), conversationId });
         const streamResponse = result.toUIMessageStreamResponse();
 
+        // Prevent proxy buffering (Next.js rewrites, nginx, etc.) so chunks
+        // reach the client immediately for real-time streaming.
+        streamResponse.headers.set("X-Accel-Buffering", "no");
+        streamResponse.headers.set("Cache-Control", "no-cache, no-transform");
+
         // Set conversation ID header so the client can track continuity
         if (conversationId) {
           streamResponse.headers.set("x-conversation-id", conversationId);

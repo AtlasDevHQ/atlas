@@ -44,10 +44,15 @@ function addUsage(accumulator: TokenUsage, usage: Partial<TokenUsage>): void {
  * ```yaml ... ``` code blocks.
  */
 function extractYamlBlock(text: string): string {
-  const match = text.match(/```yaml\s*\n([\s\S]*?)```/);
+  // Match ```yaml or ```yml fenced blocks
+  const match = text.match(/```ya?ml[ \t]*\r?\n([\s\S]*?)```/);
   if (match) return match[1].trim();
 
-  // Fallback: try to parse the whole response as YAML
+  // Fallback: try a generic fenced block (``` without language tag)
+  const generic = text.match(/```\s*\r?\n([\s\S]*?)```/);
+  if (generic) return generic[1].trim();
+
+  // Last resort: try to parse the whole response as YAML
   console.warn("    Note: LLM response did not contain a ```yaml block, attempting to parse raw response");
   return text.trim();
 }

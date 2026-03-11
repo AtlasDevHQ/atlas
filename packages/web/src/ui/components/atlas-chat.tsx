@@ -26,6 +26,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { parseSuggestions } from "../lib/helpers";
 
 const API_KEY_STORAGE_KEY = "atlas-api-key";
@@ -421,7 +422,8 @@ export function AtlasChat() {
                   </div>
                 )}
 
-                <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto pb-4">
+                <ScrollArea viewportRef={scrollRef} className="min-h-0 flex-1">
+                <div className="space-y-4 pb-4 pr-3">
                   {messages.length === 0 && !error && (
                     <div className="flex h-full flex-col items-center justify-center gap-6">
                       <div className="text-center">
@@ -519,6 +521,7 @@ export function AtlasChat() {
 
                   {isLoading && messages.length > 0 && <TypingIndicator />}
                 </div>
+                </ScrollArea>
 
                 {error && <ErrorBanner error={error} authMode={authMode} />}
 

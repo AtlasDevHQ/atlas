@@ -2,6 +2,7 @@
 
 import { memo, useContext, useState, useEffect, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { DarkModeContext } from "../../hooks/use-dark-mode";
 
 /* ------------------------------------------------------------------ */
@@ -83,6 +84,28 @@ const mdComponents = {
       {children}
     </blockquote>
   ),
+  table: ({ children }: { children?: ReactNode }) => (
+    <div className="my-3 overflow-x-auto rounded-lg border border-zinc-200 dark:border-zinc-700">
+      <table className="min-w-full text-sm">{children}</table>
+    </div>
+  ),
+  thead: ({ children }: { children?: ReactNode }) => (
+    <thead className="border-b border-zinc-200 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800/50">
+      {children}
+    </thead>
+  ),
+  tbody: ({ children }: { children?: ReactNode }) => (
+    <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">{children}</tbody>
+  ),
+  tr: ({ children }: { children?: ReactNode }) => <tr>{children}</tr>,
+  th: ({ children }: { children?: ReactNode }) => (
+    <th className="px-3 py-2 text-left text-xs font-medium text-zinc-600 dark:text-zinc-300">
+      {children}
+    </th>
+  ),
+  td: ({ children }: { children?: ReactNode }) => (
+    <td className="px-3 py-2 text-zinc-700 dark:text-zinc-300">{children}</td>
+  ),
   pre: ({ children }: { children?: ReactNode }) => <>{children}</>,
 };
 
@@ -90,6 +113,7 @@ export const Markdown = memo(function Markdown({ content }: { content: string })
   const dark = useContext(DarkModeContext);
   return (
     <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
       components={{
         ...mdComponents,
         code({ className, children, ...props }) {

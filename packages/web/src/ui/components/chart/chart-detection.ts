@@ -262,6 +262,12 @@ function parseNumericValue(raw: string): number {
   return isFinite(num) ? num : 0;
 }
 
+function isFiniteNumeric(raw: string): boolean {
+  const cleaned = raw.replace(/[$%,\s]/g, "");
+  if (cleaned === "" || cleaned === "-") return false;
+  return isFinite(Number(cleaned));
+}
+
 export function transformData(
   rows: string[][],
   recommendation: ChartRecommendation,
@@ -271,14 +277,19 @@ export function transformData(
   const valIdxs = recommendation.valueColumns.map((c) => c.index);
 
   // Scatter: both axes are numeric — categoryColumn is x, first valueColumn is y, optional z for size
+  // Filter out rows where x or y are non-numeric to avoid misleading zero-origin clusters
   if (recommendation.type === "scatter") {
-    return rows.map((row) => {
+    const yIdx = recommendation.valueColumns[0].index;
+    return rows.flatMap((row) => {
+      const rawX = row[catIdx] ?? "";
+      const rawY = row[yIdx] ?? "";
+      if (!isFiniteNumeric(rawX) || !isFiniteNumeric(rawY)) return [];
       const record: RechartsRow = {};
-      record[catHeader] = parseNumericValue(row[catIdx] ?? "0");
+      record[catHeader] = parseNumericValue(rawX);
       for (const vc of recommendation.valueColumns) {
         record[vc.header] = parseNumericValue(row[vc.index] ?? "0");
       }
-      return record;
+      return [record];
     });
   }
 

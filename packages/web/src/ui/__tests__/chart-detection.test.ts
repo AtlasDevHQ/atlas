@@ -240,6 +240,36 @@ describe("detectCharts", () => {
     expect(scatterRec.reason).toContain("size: bmi");
   });
 
+  test("line is primary recommendation over area for time-series data", () => {
+    const headers = ["date", "revenue"];
+    const rows = Array.from({ length: 12 }, (_, i) => [
+      `2024-${String(i + 1).padStart(2, "0")}-01`,
+      String(1000 + i * 100),
+    ]);
+    const result = detectCharts(headers, rows);
+    expect(result.chartable).toBe(true);
+    if (!result.chartable) return;
+    expect(result.recommendations[0].type).toBe("line");
+    const areaIdx = result.recommendations.findIndex((r) => r.type === "area");
+    expect(areaIdx).toBeGreaterThan(0);
+  });
+
+  test("fallback bar not added when categorical bar already exists", () => {
+    const headers = ["region", "revenue", "cost"];
+    const rows = [
+      ["East", "500", "200"],
+      ["West", "600", "250"],
+      ["North", "400", "180"],
+    ];
+    const result = detectCharts(headers, rows);
+    expect(result.chartable).toBe(true);
+    if (!result.chartable) return;
+    const barRecs = result.recommendations.filter((r) => r.type === "bar");
+    // Only one bar — categorical bar, no fallback duplicate
+    expect(barRecs).toHaveLength(1);
+    expect(barRecs[0].reason).toContain("Comparison");
+  });
+
   test("scatter: 2 numeric columns, no size encoding", () => {
     const headers = ["x", "y"];
     const rows = [
@@ -464,6 +494,29 @@ describe("transformData", () => {
     expect(data[0].weight).toBe(70);
     expect(data[0].height).toBe(175);
     expect(typeof data[0].weight).toBe("number");
+  });
+
+  test("scatter chart filters out non-numeric rows", () => {
+    const xCol: ClassifiedColumn = { index: 0, header: "weight", type: "numeric", uniqueCount: 4 };
+    const yCol: ClassifiedColumn = { index: 1, header: "height", type: "numeric", uniqueCount: 4 };
+    const recommendation: ChartRecommendation = {
+      type: "scatter",
+      categoryColumn: xCol,
+      valueColumns: [yCol],
+      reason: "test",
+    };
+
+    const rows = [
+      ["70", "175"],
+      ["N/A", "180"],
+      ["60", "unknown"],
+      ["90", "185"],
+    ];
+
+    const data = transformData(rows, recommendation);
+    expect(data).toHaveLength(2);
+    expect(data[0].weight).toBe(70);
+    expect(data[1].weight).toBe(90);
   });
 
   test("stacked-bar chart caps rows like bar", () => {

@@ -382,12 +382,21 @@ export function SchemaExplorer({
   // Fetch entity list when the sheet opens (or when API config changes)
   useEffect(() => {
     if (!open) return;
+
+    // Reset to list view on every open — prevents stale detail view on reopen
+    setSelectedName(null);
+    setSelectedEntity(null);
+    setDetailError(null);
+    abortRef.current?.abort();
+
     setLoading(true);
     setError(null);
 
+    const controller = new AbortController();
     fetch(`${apiUrl}/api/v1/semantic/entities`, {
       headers: getHeaders(),
       credentials: getCredentials(),
+      signal: controller.signal,
     })
       .then(async (r) => {
         if (!r.ok) throw new Error(await parseErrorResponse(r));
@@ -398,10 +407,13 @@ export function SchemaExplorer({
         setEntities(list);
       })
       .catch((err) => {
+        if (err instanceof DOMException && err.name === "AbortError") return;
         console.warn("Schema explorer: failed to fetch entities:", err);
         setError(err instanceof Error ? err.message : "Failed to load schema");
       })
       .finally(() => setLoading(false));
+
+    return () => controller.abort();
   }, [open, apiUrl, getHeaders, getCredentials]);
 
   function handleSelectEntity(name: string) {

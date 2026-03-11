@@ -37,11 +37,10 @@ test.describe("Admin Console", () => {
     const testBtn = page.locator('button:has-text("Test")').first();
     await testBtn.click();
 
-    // Wait for the test to complete and verify success
+    // Wait for the test to complete — HealthBadge updates to "Healthy" in the same row
     await expect(testBtn).toBeEnabled({ timeout: 15_000 });
-    await expect(
-      page.locator("text=Connected").or(page.locator('[class*="text-green"]')).first(),
-    ).toBeVisible({ timeout: 5_000 });
+    const row = page.locator("tr", { has: page.locator("td", { hasText: "default" }) }).first();
+    await expect(row.getByText("Healthy")).toBeVisible({ timeout: 10_000 });
   });
 
   test("semantic layer page loads with entities", async ({ page }) => {

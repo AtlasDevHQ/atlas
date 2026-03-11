@@ -357,7 +357,7 @@ export default function Home() {
               ),
               title: "Slack",
               description:
-                "Slash commands, threaded follow-ups, and action approvals\u200a\u2014\u200aright where your team works.",
+                "Slash commands, threaded follow-ups, and action approvals. Right where your team works.",
             },
             {
               icon: (
@@ -422,7 +422,7 @@ export default function Home() {
         </h2>
         <p className="mb-8 max-w-xl text-zinc-400">
           Drop Atlas into any frontend. The chat UI is a pure HTTP
-          client\u200a\u2014\u200ano server dependency.
+          client. No server dependency.
         </p>
         <div className="flex flex-wrap gap-2.5">
           {[

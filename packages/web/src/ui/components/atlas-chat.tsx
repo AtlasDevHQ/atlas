@@ -17,7 +17,8 @@ import { STARTER_PROMPTS } from "./chat/starter-prompts";
 import { FollowUpChips } from "./chat/follow-up-chips";
 import { ConversationSidebar } from "./conversations/conversation-sidebar";
 import { ChangePasswordDialog } from "./admin/change-password-dialog";
-import { Sun, Moon, Monitor, Star } from "lucide-react";
+import { Sun, Moon, Monitor, Star, TableProperties } from "lucide-react";
+import { SchemaExplorer } from "./schema-explorer/schema-explorer";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -130,6 +131,7 @@ export function AtlasChat() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [loadingConversation, setLoadingConversation] = useState(false);
   const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
+  const [schemaExplorerOpen, setSchemaExplorerOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const managedSession = authClient.useSession();
@@ -372,6 +374,15 @@ export function AtlasChat() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-11 sm:size-8 text-zinc-500 dark:text-zinc-400"
+                    onClick={() => setSchemaExplorerOpen(true)}
+                    aria-label="Open schema explorer"
+                  >
+                    <TableProperties className="size-4" />
+                  </Button>
                   <ThemeToggle />
                   {isSignedIn && (
                     <>
@@ -538,6 +549,13 @@ export function AtlasChat() {
           </div>
         </main>
       </div>
+      <SchemaExplorer
+        open={schemaExplorerOpen}
+        onOpenChange={setSchemaExplorerOpen}
+        onInsertQuery={(text) => setInput(text)}
+        getHeaders={getHeaders}
+        getCredentials={getCredentials}
+      />
       <ChangePasswordDialog
         open={passwordChangeRequired}
         onComplete={() => setPasswordChangeRequired(false)}

@@ -171,6 +171,20 @@ export function parseSuggestions(content: string): { text: string; suggestions: 
   return { text, suggestions: suggestions.slice(0, 5) };
 }
 
+/**
+ * Normalize a record-or-array field from the API into a flat array.
+ * When the data is a Record, the key is merged in under `keyName`.
+ * Used by both admin entity-detail and schema explorer components.
+ */
+export function normalizeList<T>(
+  data: Record<string, T> | T[] | undefined,
+  keyName: string,
+): (T & Record<string, unknown>)[] {
+  if (!data) return [];
+  if (Array.isArray(data)) return data as (T & Record<string, unknown>)[];
+  return Object.entries(data).map(([key, value]) => ({ ...value, [keyName]: key }));
+}
+
 /** Format a cell value: null as em-dash, numbers with locale formatting, else stringified. */
 export function formatCell(value: unknown): string {
   if (value == null) return "\u2014";

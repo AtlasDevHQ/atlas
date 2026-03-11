@@ -12,59 +12,10 @@ import {
 } from "@/components/ui/table";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import type { Dimension, Join, Measure, QueryPattern, EntityData } from "@/ui/lib/types";
+import { normalizeList } from "@/ui/lib/helpers";
 
-export interface Dimension {
-  name: string;
-  type: string;
-  description?: string;
-  sample_values?: string[];
-  primary_key?: boolean;
-  foreign_key?: boolean;
-}
-
-export interface Join {
-  to: string;
-  description?: string;
-  relationship?: string;
-  on?: string;
-}
-
-export interface Measure {
-  name: string;
-  sql: string;
-  type?: string;
-  description?: string;
-}
-
-export interface QueryPattern {
-  name: string;
-  description: string;
-  sql: string;
-}
-
-export interface EntityData {
-  name: string;
-  table: string;
-  description: string;
-  type?: "table" | "view";
-  dimensions: Record<string, Dimension> | Dimension[];
-  joins?: Join[] | Record<string, Join>;
-  measures?: Record<string, Measure> | Measure[];
-  query_patterns?: Record<string, QueryPattern> | QueryPattern[];
-}
-
-/**
- * Normalize a record-or-array field from the API into a flat array.
- * When the data is a Record, the key is merged in under `keyName`.
- */
-function normalizeList<T>(
-  data: Record<string, T> | T[] | undefined,
-  keyName: string,
-): (T & Record<string, unknown>)[] {
-  if (!data) return [];
-  if (Array.isArray(data)) return data as (T & Record<string, unknown>)[];
-  return Object.entries(data).map(([key, value]) => ({ ...value, [keyName]: key }));
-}
+export type { EntityData };
 
 export function EntityDetail({ entity }: { entity: EntityData }) {
   const dimensions = normalizeList(entity.dimensions, "name") as Dimension[];

@@ -92,6 +92,54 @@ export function downloadCSV(csv: string, filename = "atlas-results.csv") {
   }
 }
 
+/** Trigger an Excel (.xlsx) download in the browser. Dynamically imports xlsx to avoid bundle bloat. */
+export async function downloadExcel(
+  columns: string[],
+  rows: Record<string, unknown>[],
+  filename = "atlas-results.xlsx",
+) {
+  let url: string | null = null;
+  try {
+    const XLSX = await import("xlsx");
+    const data = rows.map((row) => {
+      const obj: Record<string, unknown> = {};
+      for (const col of columns) {
+        const v = row[col];
+        if (v == null) {
+          obj[col] = "";
+        } else if (typeof v === "number" || typeof v === "boolean") {
+          obj[col] = v;
+        } else if (typeof v === "string" && !isNaN(Date.parse(v)) && /^\d{4}-\d{2}-\d{2}/.test(v)) {
+          obj[col] = new Date(v);
+        } else {
+          obj[col] = String(v);
+        }
+      }
+      return obj;
+    });
+    const ws = XLSX.utils.json_to_sheet(data, { header: columns });
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Results");
+    const wbOut = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+    const blob = new Blob([wbOut], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+  } catch (err) {
+    console.error("Excel download failed:", err);
+    window.alert("Excel download failed");
+  } finally {
+    if (url) {
+      const blobUrl = url;
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 10_000);
+    }
+  }
+}
+
 /** Format a cell value: null as em-dash, numbers with locale formatting, else stringified. */
 export function formatCell(value: unknown): string {
   if (value == null) return "\u2014";

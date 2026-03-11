@@ -134,8 +134,15 @@ describe("SQLResultCard", () => {
   test("Download CSV button appears for data", () => {
     const { container } = render(<SQLResultCard part={makePart()} />);
     const buttons = Array.from(container.querySelectorAll("button"));
-    const downloadBtn = buttons.find((b) => b.textContent === "Download CSV");
-    expect(downloadBtn).not.toBeUndefined();
+    const csvBtn = buttons.find((b) => b.textContent?.includes("CSV"));
+    expect(csvBtn).not.toBeUndefined();
+  });
+
+  test("Download Excel button appears for data", () => {
+    const { container } = render(<SQLResultCard part={makePart()} />);
+    const buttons = Array.from(container.querySelectorAll("button"));
+    const excelBtn = buttons.find((b) => b.textContent?.includes("Excel"));
+    expect(excelBtn).not.toBeUndefined();
   });
 
   test("renders data table with correct columns", () => {

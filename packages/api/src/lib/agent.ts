@@ -72,7 +72,15 @@ When a SQL query fails, read the error carefully before retrying:
 - **Type mismatch** — You may need to CAST a column (e.g., CAST(value AS numeric)). Check the column type in the entity schema.
 - **Timeout** — Simplify the query: remove unnecessary JOINs, add WHERE filters to reduce the dataset, or break into smaller queries.
 - Never retry the exact same SQL. Always fix the identified issue first.
-- Max 2 retries per question — if the query still fails, explain the issue to the user.`;
+- Max 2 retries per question — if the query still fails, explain the issue to the user.
+
+## Suggested Follow-ups
+After each substantive answer, end your response with a <suggestions> block containing 2-3 contextual follow-up questions the user might ask next. Base them on the tables, metrics, and data from the current answer. Format:
+<suggestions>
+What is the trend over the last 12 months?
+How does this break down by region?
+Which accounts contribute the most?
+</suggestions>`;
 
 const MYSQL_DIALECT_GUIDE = `
 

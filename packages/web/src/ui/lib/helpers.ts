@@ -153,6 +153,24 @@ export async function downloadExcel(
   }
 }
 
+const SUGGESTIONS_RE = /<suggestions>\s*([\s\S]*?)\s*<\/suggestions>/g;
+
+/** Extract follow-up suggestions from assistant message content and return the cleaned text + suggestions.
+ *  All `<suggestions>` blocks are stripped; suggestions from all blocks are merged. */
+export function parseSuggestions(content: string): { text: string; suggestions: string[] } {
+  const suggestions: string[] = [];
+  let match;
+  while ((match = SUGGESTIONS_RE.exec(content)) !== null) {
+    const lines = match[1].split("\n").map((l) => l.trim()).filter(Boolean);
+    suggestions.push(...lines);
+  }
+  SUGGESTIONS_RE.lastIndex = 0;
+  if (suggestions.length === 0) return { text: content, suggestions: [] };
+  const text = content.replace(SUGGESTIONS_RE, "").trimEnd();
+  SUGGESTIONS_RE.lastIndex = 0;
+  return { text, suggestions: suggestions.slice(0, 5) };
+}
+
 /** Format a cell value: null as em-dash, numbers with locale formatting, else stringified. */
 export function formatCell(value: unknown): string {
   if (value == null) return "\u2014";

@@ -14,6 +14,7 @@ import { TypingIndicator } from "./chat/typing-indicator";
 import { ToolPart } from "./chat/tool-part";
 import { Markdown } from "./chat/markdown";
 import { STARTER_PROMPTS } from "./chat/starter-prompts";
+import { FollowUpChips } from "./chat/follow-up-chips";
 import { ConversationSidebar } from "./conversations/conversation-sidebar";
 import { ChangePasswordDialog } from "./admin/change-password-dialog";
 import { Sun, Moon, Monitor } from "lucide-react";
@@ -24,6 +25,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
+import { parseSuggestions } from "../lib/helpers";
 
 const API_KEY_STORAGE_KEY = "atlas-api-key";
 
@@ -387,7 +389,7 @@ export function AtlasChat() {
                     </div>
                   )}
 
-                  {messages.map((m) => {
+                  {messages.map((m, msgIndex) => {
                     if (m.role === "user") {
                       return (
                         <div key={m.id} className="flex justify-end">
@@ -404,14 +406,28 @@ export function AtlasChat() {
                       );
                     }
 
+                    const isLastAssistant =
+                      m.role === "assistant" &&
+                      msgIndex === messages.length - 1;
+
+                    // Extract suggestions from the last text part that contains them
+                    const lastTextWithSuggestions = m.parts
+                      ?.filter((p): p is typeof p & { type: "text"; text: string } => p.type === "text" && !!p.text.trim())
+                      .findLast((p) => parseSuggestions(p.text).suggestions.length > 0);
+                    const suggestions = lastTextWithSuggestions
+                      ? parseSuggestions(lastTextWithSuggestions.text).suggestions
+                      : [];
+
                     return (
                       <div key={m.id} className="space-y-2">
                         {m.parts?.map((part, i) => {
                           if (part.type === "text" && part.text.trim()) {
+                            const displayText = parseSuggestions(part.text).text;
+                            if (!displayText.trim()) return null;
                             return (
                               <div key={i} className="max-w-[90%]">
                                 <div className="rounded-xl bg-zinc-100 px-4 py-3 text-sm text-zinc-800 dark:bg-zinc-800 dark:text-zinc-200">
-                                  <Markdown content={part.text} />
+                                  <Markdown content={displayText} />
                                 </div>
                               </div>
                             );
@@ -425,6 +441,12 @@ export function AtlasChat() {
                           }
                           return null;
                         })}
+                        {isLastAssistant && !isLoading && (
+                          <FollowUpChips
+                            suggestions={suggestions}
+                            onSelect={handleSend}
+                          />
+                        )}
                       </div>
                     );
                   })}

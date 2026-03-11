@@ -93,6 +93,8 @@ function SaveButton({
     setPending(true);
     try {
       await onStar(conversationId, !isStarred);
+    } catch (err) {
+      console.warn("Failed to update star:", err);
     } finally {
       setPending(false);
     }
@@ -303,6 +305,10 @@ export function AtlasChat() {
         setHealthWarning("Could not load conversation. It may have been deleted.");
         setTimeout(() => setHealthWarning(""), 5000);
       }
+    } catch (err) {
+      console.warn("Failed to load conversation:", err);
+      setHealthWarning("Failed to load conversation. Please try again.");
+      setTimeout(() => setHealthWarning(""), 5000);
     } finally {
       setLoadingConversation(false);
     }

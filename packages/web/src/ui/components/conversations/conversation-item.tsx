@@ -49,10 +49,15 @@ export function ConversationItem({
           onCancel={() => setConfirmDelete(false)}
           onConfirm={async () => {
             setDeleting(true);
-            const success = await onDelete();
-            setDeleting(false);
-            if (success) {
-              setConfirmDelete(false);
+            try {
+              const success = await onDelete();
+              if (success) {
+                setConfirmDelete(false);
+              }
+            } catch (err) {
+              console.warn("Failed to delete conversation:", err);
+            } finally {
+              setDeleting(false);
             }
           }}
         />
@@ -93,8 +98,13 @@ export function ConversationItem({
             e.stopPropagation();
             if (starPending) return;
             setStarPending(true);
-            await onStar(!conversation.starred);
-            setStarPending(false);
+            try {
+              await onStar(!conversation.starred);
+            } catch (err) {
+              console.warn("Failed to update star:", err);
+            } finally {
+              setStarPending(false);
+            }
           }}
           disabled={starPending}
           className={`size-8 transition-all ${

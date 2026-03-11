@@ -234,17 +234,9 @@ export function parseChatError(error: Error, authMode: AuthMode): ChatErrorInfo 
   }
 }
 
-// --- Schema explorer types (from public semantic API) ---
+// --- Entity sub-types (shared between admin entity-detail and schema explorer) ---
 
-export interface SemanticEntitySummary {
-  table: string;
-  description: string;
-  columnCount: number;
-  joinCount: number;
-  type: string | null;
-}
-
-export interface SemanticDimension {
+export interface Dimension {
   name: string;
   type: string;
   description?: string;
@@ -253,32 +245,55 @@ export interface SemanticDimension {
   foreign_key?: boolean;
 }
 
-export interface SemanticJoin {
+export interface Join {
   to: string;
   description?: string;
   relationship?: string;
   on?: string;
 }
 
-export interface SemanticMeasure {
+export interface Measure {
   name: string;
   sql: string;
   type?: string;
   description?: string;
 }
 
-export interface SemanticQueryPattern {
+export interface QueryPattern {
   name: string;
   description: string;
   sql: string;
+}
+
+// --- Schema explorer types (from public semantic API) ---
+
+export interface SemanticEntitySummary {
+  table: string;
+  description: string;
+  columnCount: number;
+  joinCount: number;
+  type: "table" | "view" | null;
 }
 
 export interface SemanticEntityDetail {
   table: string;
   description: string;
   type?: "table" | "view";
-  dimensions: Record<string, SemanticDimension> | SemanticDimension[];
-  joins?: SemanticJoin[] | Record<string, SemanticJoin>;
-  measures?: Record<string, SemanticMeasure> | SemanticMeasure[];
-  query_patterns?: Record<string, SemanticQueryPattern> | SemanticQueryPattern[];
+  dimensions: Record<string, Dimension> | Dimension[];
+  joins?: Join[] | Record<string, Join>;
+  measures?: Record<string, Measure> | Measure[];
+  query_patterns?: Record<string, QueryPattern> | QueryPattern[];
+}
+
+// --- Admin entity detail type ---
+
+export interface EntityData {
+  name: string;
+  table: string;
+  description: string;
+  type?: "table" | "view";
+  dimensions: Record<string, Dimension> | Dimension[];
+  joins?: Join[] | Record<string, Join>;
+  measures?: Record<string, Measure> | Measure[];
+  query_patterns?: Record<string, QueryPattern> | QueryPattern[];
 }

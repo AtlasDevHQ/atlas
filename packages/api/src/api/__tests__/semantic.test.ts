@@ -1,8 +1,8 @@
 /**
  * Tests for public semantic API routes.
  *
- * Mirrors the structure of admin.test.ts semantic tests but verifies
- * that endpoints work with standard (non-admin) auth.
+ * Mirrors the entity-related semantic tests from admin.test.ts (the public
+ * API exposes entities only, not metrics/glossary/catalog/stats).
  * Uses a real temp directory with fixture YAML files.
  */
 
@@ -67,6 +67,15 @@ dimensions:
     type: integer
   total:
     type: numeric
+`,
+  );
+
+  // Broken YAML file for error handling test
+  fs.writeFileSync(
+    path.join(tmpRoot, "entities", "broken.yml"),
+    `table: broken
+description: This file has invalid YAML below
+dimensions: [invalid: yaml: structure
 `,
   );
 }
@@ -224,6 +233,7 @@ function setUnauthenticated(): void {
     status: 401,
     error: "Invalid API key",
   });
+  mockCheckRateLimit.mockReturnValue({ allowed: true });
 }
 
 // --- Cleanup ---
@@ -241,9 +251,15 @@ describe("Public semantic routes — auth", () => {
     mockCheckRateLimit.mockReset();
   });
 
-  it("returns 401 when unauthenticated", async () => {
+  it("returns 401 when unauthenticated on list endpoint", async () => {
     setUnauthenticated();
     const res = await app.fetch(apiRequest("/api/v1/semantic/entities"));
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 401 when unauthenticated on detail endpoint", async () => {
+    setUnauthenticated();
+    const res = await app.fetch(apiRequest("/api/v1/semantic/entities/companies"));
     expect(res.status).toBe(401);
   });
 
@@ -253,17 +269,30 @@ describe("Public semantic routes — auth", () => {
     expect(res.status).toBe(200);
   });
 
-  it("enforces rate limiting", async () => {
+  it("enforces rate limiting with Retry-After header", async () => {
     setAuthenticated();
     mockCheckRateLimit.mockReturnValue({ allowed: false, retryAfterMs: 30000 });
     const res = await app.fetch(apiRequest("/api/v1/semantic/entities"));
     expect(res.status).toBe(429);
+    expect(res.headers.get("Retry-After")).toBe("30");
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("rate_limited");
+  });
+
+  it("returns 500 when authenticateRequest throws", async () => {
+    mockAuthenticateRequest.mockRejectedValue(new Error("DB crashed"));
+    mockCheckRateLimit.mockReturnValue({ allowed: true });
+    const res = await app.fetch(apiRequest("/api/v1/semantic/entities"));
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("auth_error");
   });
 });
 
 describe("GET /api/v1/semantic/entities", () => {
   beforeEach(() => {
     mockAuthenticateRequest.mockReset();
+    mockCheckRateLimit.mockReset();
     setAuthenticated();
   });
 
@@ -272,14 +301,16 @@ describe("GET /api/v1/semantic/entities", () => {
     expect(res.status).toBe(200);
 
     const body = (await res.json()) as { entities: Array<Record<string, unknown>> };
-    expect(body.entities.length).toBe(2);
+    // broken.yml fails to parse, so only companies + orders
+    const validEntities = body.entities.filter((e) => e.table !== "broken");
+    expect(validEntities.length).toBe(2);
 
-    const companies = body.entities.find((e) => e.table === "companies");
+    const companies = validEntities.find((e) => e.table === "companies");
     expect(companies).toBeDefined();
     expect(companies!.columnCount).toBe(3);
     expect(companies!.joinCount).toBe(1);
 
-    const orders = body.entities.find((e) => e.table === "orders");
+    const orders = validEntities.find((e) => e.table === "orders");
     expect(orders).toBeDefined();
   });
 
@@ -290,11 +321,23 @@ describe("GET /api/v1/semantic/entities", () => {
     const orders = body.entities.find((e) => e.table === "orders");
     expect(orders!.type).toBe("table");
   });
+
+  it("excludes admin-only fields (measureCount, connection, source)", async () => {
+    const res = await app.fetch(apiRequest("/api/v1/semantic/entities"));
+    const body = (await res.json()) as { entities: Array<Record<string, unknown>> };
+
+    const companies = body.entities.find((e) => e.table === "companies");
+    expect(companies).toBeDefined();
+    expect(companies!.measureCount).toBeUndefined();
+    expect(companies!.connection).toBeUndefined();
+    expect(companies!.source).toBeUndefined();
+  });
 });
 
 describe("GET /api/v1/semantic/entities/:name", () => {
   beforeEach(() => {
     mockAuthenticateRequest.mockReset();
+    mockCheckRateLimit.mockReset();
     setAuthenticated();
   });
 
@@ -318,10 +361,11 @@ describe("GET /api/v1/semantic/entities/:name", () => {
   it("returns 400 for path traversal attempts", async () => {
     const traversalNames = [
       "../../etc/passwd",
-      "..%2F..%2Fetc%2Fpasswd",
+      "..%2F..%2Fetc%2Fpasswd", // double-encoded to test that scenario
       "../.env",
       "foo/bar",
       "foo\\bar",
+      "companies\0.yml", // null byte injection
     ];
     for (const name of traversalNames) {
       const res = await app.fetch(apiRequest(`/api/v1/semantic/entities/${encodeURIComponent(name)}`));
@@ -335,5 +379,13 @@ describe("GET /api/v1/semantic/entities/:name", () => {
 
     const body = (await res.json()) as { entity: Record<string, unknown> };
     expect(body.entity.table).toBe("orders");
+  });
+
+  it("returns 500 for malformed YAML", async () => {
+    const res = await app.fetch(apiRequest("/api/v1/semantic/entities/broken"));
+    expect(res.status).toBe(500);
+
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("internal_error");
   });
 });

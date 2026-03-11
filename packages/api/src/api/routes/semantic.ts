@@ -3,14 +3,10 @@
  *
  * Mounted at /api/v1/semantic. Available to all authenticated users (not admin-gated).
  * Provides read-only access to entity metadata, enabling the schema explorer UI.
- *
- * These mirror a subset of the admin semantic endpoints but with standard auth.
- * Only entities present in the semantic layer (respecting the table whitelist) are returned.
+ * Returns all entities defined in the semantic layer YAML files on disk.
  */
 
-import * as fs from "fs";
 import * as path from "path";
-import * as yaml from "js-yaml";
 import { Hono } from "hono";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
@@ -19,24 +15,27 @@ import {
   checkRateLimit,
   getClientIP,
 } from "@atlas/api/lib/auth/middleware";
+import {
+  getSemanticRoot,
+  isValidEntityName,
+  readYamlFile,
+  discoverEntities,
+  findEntityFile,
+} from "@atlas/api/lib/semantic-files";
 
 const log = createLogger("semantic-routes");
 
 export const semantic = new Hono();
 
 // ---------------------------------------------------------------------------
-// Semantic layer root — resolves the semantic/ directory at cwd.
-// ---------------------------------------------------------------------------
-
-/** @internal Exported for testing only. */
-export function getSemanticRoot(): string {
-  return process.env.ATLAS_SEMANTIC_ROOT ?? path.resolve(process.cwd(), "semantic");
-}
-
-// ---------------------------------------------------------------------------
 // Auth preamble — standard auth (no admin role required).
 // ---------------------------------------------------------------------------
 
+/**
+ * Authenticate the request and check rate limits. Returns
+ * `{ error, status, headers? }` on failure (401/403/429/500)
+ * or `{ authResult }` on success.
+ */
 async function authPreamble(req: Request, requestId: string) {
   let authResult: AuthResult;
   try {
@@ -69,122 +68,10 @@ async function authPreamble(req: Request, requestId: string) {
 }
 
 // ---------------------------------------------------------------------------
-// Path traversal guard
-// ---------------------------------------------------------------------------
-
-function isValidEntityName(name: string): boolean {
-  return !!(
-    name &&
-    !name.includes("/") &&
-    !name.includes("\\") &&
-    !name.includes("..") &&
-    !name.includes("\0")
-  );
-}
-
-// ---------------------------------------------------------------------------
-// YAML reading helpers
-// ---------------------------------------------------------------------------
-
-interface EntitySummary {
-  table: string;
-  description: string;
-  columnCount: number;
-  joinCount: number;
-  type: string | null;
-}
-
-function readYamlFile(filePath: string): unknown {
-  const content = fs.readFileSync(filePath, "utf-8");
-  return yaml.load(content);
-}
-
-function discoverEntities(root: string): EntitySummary[] {
-  const entities: EntitySummary[] = [];
-
-  const defaultDir = path.join(root, "entities");
-  if (fs.existsSync(defaultDir)) {
-    loadEntitiesFromDir(defaultDir, entities);
-  }
-
-  const RESERVED_DIRS = new Set(["entities", "metrics"]);
-  if (fs.existsSync(root)) {
-    try {
-      const entries = fs.readdirSync(root, { withFileTypes: true });
-      for (const entry of entries) {
-        if (!entry.isDirectory() || RESERVED_DIRS.has(entry.name)) continue;
-        const subEntities = path.join(root, entry.name, "entities");
-        if (fs.existsSync(subEntities)) {
-          loadEntitiesFromDir(subEntities, entities);
-        }
-      }
-    } catch (err) {
-      log.warn({ err: err instanceof Error ? err : new Error(String(err)), root }, "Failed to scan semantic root");
-    }
-  }
-
-  return entities;
-}
-
-function loadEntitiesFromDir(dir: string, out: EntitySummary[]): void {
-  let files: string[];
-  try {
-    files = fs.readdirSync(dir).filter((f) => f.endsWith(".yml"));
-  } catch (err) {
-    log.warn({ err: err instanceof Error ? err : new Error(String(err)), dir }, "Failed to read entities directory");
-    return;
-  }
-
-  for (const file of files) {
-    try {
-      const raw = readYamlFile(path.join(dir, file)) as Record<string, unknown>;
-      if (!raw || typeof raw !== "object" || !raw.table) continue;
-
-      const dimensions = raw.dimensions && typeof raw.dimensions === "object"
-        ? Object.keys(raw.dimensions)
-        : [];
-      const joins = Array.isArray(raw.joins) ? raw.joins : (raw.joins && typeof raw.joins === "object" ? Object.keys(raw.joins) : []);
-
-      out.push({
-        table: String(raw.table),
-        description: typeof raw.description === "string" ? raw.description : "",
-        columnCount: dimensions.length,
-        joinCount: Array.isArray(joins) ? joins.length : 0,
-        type: typeof raw.type === "string" ? raw.type : null,
-      });
-    } catch (err) {
-      log.warn({ err: err instanceof Error ? err : new Error(String(err)), file, dir }, "Failed to parse entity YAML");
-    }
-  }
-}
-
-function findEntityFile(root: string, name: string): string | null {
-  const defaultDir = path.join(root, "entities");
-  const defaultFile = path.join(defaultDir, `${name}.yml`);
-  if (fs.existsSync(defaultFile)) return defaultFile;
-
-  const RESERVED_DIRS = new Set(["entities", "metrics"]);
-  if (fs.existsSync(root)) {
-    try {
-      const entries = fs.readdirSync(root, { withFileTypes: true });
-      for (const entry of entries) {
-        if (!entry.isDirectory() || RESERVED_DIRS.has(entry.name)) continue;
-        const subFile = path.join(root, entry.name, "entities", `${name}.yml`);
-        if (fs.existsSync(subFile)) return subFile;
-      }
-    } catch (err) {
-      log.warn({ err: err instanceof Error ? err : new Error(String(err)), root, name }, "Failed to scan subdirectories");
-    }
-  }
-
-  return null;
-}
-
-// ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
 
-// GET /entities — list all entities
+// GET /entities — list all entities (public summary: drops measureCount, connection, source)
 semantic.get("/entities", async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
@@ -197,8 +84,16 @@ semantic.get("/entities", async (c) => {
 
   return withRequestContext({ requestId, user: authResult.user }, () => {
     const root = getSemanticRoot();
-    const entities = discoverEntities(root);
-    return c.json({ entities });
+    try {
+      const all = discoverEntities(root);
+      const entities = all.map(({ table, description, columnCount, joinCount, type }) => ({
+        table, description, columnCount, joinCount, type,
+      }));
+      return c.json({ entities });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), root }, "Failed to discover entities");
+      return c.json({ error: "internal_error", message: "Failed to load entity list." }, 500);
+    }
   });
 });
 

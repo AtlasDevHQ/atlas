@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useAtlasConfig } from "../../context";
 import {
   Sheet,
@@ -36,11 +36,12 @@ import {
 import type {
   SemanticEntitySummary,
   SemanticEntityDetail,
-  SemanticDimension,
-  SemanticJoin,
-  SemanticMeasure,
-  SemanticQueryPattern,
+  Dimension,
+  Join,
+  Measure,
+  QueryPattern,
 } from "../../lib/types";
+import { normalizeList } from "../../lib/helpers";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -48,13 +49,13 @@ import type {
 
 type TypeFilter = "all" | "table" | "view";
 
-function normalizeList<T>(
-  data: Record<string, T> | T[] | undefined,
-  keyName: string,
-): (T & Record<string, unknown>)[] {
-  if (!data) return [];
-  if (Array.isArray(data)) return data as (T & Record<string, unknown>)[];
-  return Object.entries(data).map(([key, value]) => ({ ...value, [keyName]: key }));
+/** Parse a server error response, extracting the message field if present. */
+async function parseErrorResponse(r: Response): Promise<string> {
+  try {
+    const body = await r.json();
+    if (typeof body?.message === "string") return body.message;
+  } catch { /* response may not be JSON */ }
+  return `HTTP ${r.status}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -189,10 +190,10 @@ function EntityDetailView({
   onNavigateEntity: (name: string) => void;
   onInsertQuery: (description: string) => void;
 }) {
-  const dimensions = normalizeList(entity.dimensions, "name") as SemanticDimension[];
-  const joins = normalizeList(entity.joins, "to") as SemanticJoin[];
-  const measures = normalizeList(entity.measures, "name") as SemanticMeasure[];
-  const patterns = normalizeList(entity.query_patterns, "name") as SemanticQueryPattern[];
+  const dimensions = normalizeList(entity.dimensions, "name") as Dimension[];
+  const joins = normalizeList(entity.joins, "to") as Join[];
+  const measures = normalizeList(entity.measures, "name") as Measure[];
+  const patterns = normalizeList(entity.query_patterns, "name") as QueryPattern[];
 
   return (
     <div className="flex h-full flex-col">
@@ -373,10 +374,12 @@ export function SchemaExplorer({
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
+  const abortRef = useRef<AbortController | null>(null);
 
-  // Fetch entity list when opened
+  // Fetch entity list when the sheet opens (or when API config changes)
   useEffect(() => {
     if (!open) return;
     setLoading(true);
@@ -386,8 +389,8 @@ export function SchemaExplorer({
       headers: getHeaders(),
       credentials: getCredentials(),
     })
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      .then(async (r) => {
+        if (!r.ok) throw new Error(await parseErrorResponse(r));
         return r.json();
       })
       .then((data) => {
@@ -395,40 +398,52 @@ export function SchemaExplorer({
         setEntities(list);
       })
       .catch((err) => {
+        console.warn("Schema explorer: failed to fetch entities:", err);
         setError(err instanceof Error ? err.message : "Failed to load schema");
       })
       .finally(() => setLoading(false));
   }, [open, apiUrl, getHeaders, getCredentials]);
 
-  const handleSelectEntity = useCallback((name: string) => {
+  function handleSelectEntity(name: string) {
+    // Cancel any in-flight detail request
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setSelectedName(name);
     setSelectedEntity(null);
+    setDetailError(null);
 
     fetch(`${apiUrl}/api/v1/semantic/entities/${encodeURIComponent(name)}`, {
       headers: getHeaders(),
       credentials: getCredentials(),
+      signal: controller.signal,
     })
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      .then(async (r) => {
+        if (!r.ok) throw new Error(await parseErrorResponse(r));
         return r.json();
       })
       .then((data) => {
         setSelectedEntity(data?.entity ?? data);
       })
       .catch((err) => {
-        setError(err instanceof Error ? err.message : "Failed to load entity");
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        console.warn("Schema explorer: failed to load entity:", err);
+        setDetailError(err instanceof Error ? err.message : "Failed to load entity");
       });
-  }, [apiUrl, getHeaders, getCredentials]);
+  }
 
-  const handleBack = useCallback(() => {
+  function handleBack() {
+    abortRef.current?.abort();
     setSelectedName(null);
     setSelectedEntity(null);
-  }, []);
+    setDetailError(null);
+  }
 
-  const handleInsertQuery = useCallback((description: string) => {
+  function handleInsertQuery(description: string) {
     onInsertQuery(description);
     onOpenChange(false);
-  }, [onInsertQuery, onOpenChange]);
+  }
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -452,7 +467,14 @@ export function SchemaExplorer({
               <p className="text-center text-xs text-red-500">{error}</p>
             </div>
           ) : selectedName ? (
-            selectedEntity ? (
+            detailError ? (
+              <div className="flex h-full flex-col items-center justify-center gap-2 px-4">
+                <p className="text-center text-xs text-red-500">{detailError}</p>
+                <Button variant="ghost" size="sm" onClick={handleBack} className="text-xs">
+                  <ArrowLeft className="mr-1 size-3" /> Back to list
+                </Button>
+              </div>
+            ) : selectedEntity ? (
               <EntityDetailView
                 entity={selectedEntity}
                 onBack={handleBack}

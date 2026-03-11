@@ -8,16 +8,18 @@ export async function askQuestion(page: Page, question: string) {
   // Click the "Ask" button specifically (not any other submit button like password change)
   await page.locator("button", { hasText: "Ask" }).click();
 
-  // Wait for streaming to complete. The input is disabled while streaming
-  // (isLoading = status === "streaming" || status === "submitted"), so we wait
-  // for the input to become enabled again. Note: the Ask *button* stays disabled
-  // after streaming because the input is empty — so we check the input instead.
+  // Verify streaming started — input becomes disabled while the agent is working
+  await expect(input).toBeDisabled({ timeout: 10_000 });
+
+  // Wait for streaming to complete. The input is disabled while streaming, so we
+  // wait for it to become re-enabled. We check the input (not the Ask button)
+  // because the button remains disabled when the input is empty.
   await expect(input).toBeEnabled({ timeout: 180_000 });
 }
 
 /** Wait for a SQL result card to appear in the conversation. */
 export async function waitForSQLResult(page: Page) {
-  // SQL result cards have a blue "SQL" badge
+  // SQL result cards have a blue "SQL" badge (bg-blue-100 class — update if theme changes)
   await page.locator(".bg-blue-100", { hasText: "SQL" }).first().waitFor({ timeout: 60_000 });
 }
 

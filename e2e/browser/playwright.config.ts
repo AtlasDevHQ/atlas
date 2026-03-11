@@ -9,7 +9,7 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
-  // Limit workers to avoid overwhelming the LLM API with concurrent chat requests
+  // Limit workers — LLM-tagged tests can overwhelm the API with concurrent requests
   workers: process.env.CI ? 1 : 3,
   reporter: process.env.CI ? "github" : "list",
   timeout: 30_000,
@@ -36,7 +36,7 @@ export default defineConfig({
       dependencies: ["setup"],
       testIgnore: /production\.spec\.ts/,
     },
-    // Production smoke tests (no auth, different base URL)
+    // Production smoke tests (no auth, uses absolute URLs from env vars)
     {
       name: "production",
       use: { ...devices["Desktop Chrome"] },

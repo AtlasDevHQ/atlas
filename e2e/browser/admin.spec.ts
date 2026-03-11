@@ -7,7 +7,6 @@ test.describe("Admin Console", () => {
     await expect(page.locator("h1", { hasText: "Overview" })).toBeVisible({ timeout: 15_000 });
     await expect(page.locator("text=Monitor your Atlas deployment")).toBeVisible();
 
-    // Refresh button
     await expect(page.locator('button:has-text("Refresh")')).toBeVisible();
 
     // Resources section
@@ -25,13 +24,8 @@ test.describe("Admin Console", () => {
 
     await expect(page.locator("h1", { hasText: "Connections" })).toBeVisible({ timeout: 15_000 });
 
-    // The default connection in the table
     await expect(page.locator("td", { hasText: "default" }).first()).toBeVisible({ timeout: 10_000 });
-
-    // Test button
     await expect(page.locator('button:has-text("Test")').first()).toBeVisible();
-
-    // "Add Connection" button
     await expect(page.locator('button:has-text("Add Connection")')).toBeVisible();
   });
 
@@ -43,8 +37,11 @@ test.describe("Admin Console", () => {
     const testBtn = page.locator('button:has-text("Test")').first();
     await testBtn.click();
 
-    // Wait for the test to complete — button re-enables
+    // Wait for the test to complete and verify success
     await expect(testBtn).toBeEnabled({ timeout: 15_000 });
+    await expect(
+      page.locator("text=Connected").or(page.locator('[class*="text-green"]')).first(),
+    ).toBeVisible({ timeout: 5_000 });
   });
 
   test("semantic layer page loads with entities", async ({ page }) => {
@@ -67,7 +64,7 @@ test.describe("Admin Console", () => {
     await expect(page.getByRole("radio", { name: "Pretty" })).toBeVisible({ timeout: 10_000 });
   });
 
-  test("audit log page loads with table and pagination", async ({ page }) => {
+  test("audit log page loads with log tab", async ({ page }) => {
     await page.goto("/admin/audit");
 
     await expect(page.locator("h1", { hasText: "Audit Log" })).toBeVisible({ timeout: 15_000 });
@@ -83,7 +80,6 @@ test.describe("Admin Console", () => {
 
     await expect(page.locator('button:has-text("Invite user")')).toBeVisible();
 
-    // Admin user should be in the table
     await expect(page.locator("td", { hasText: "admin@atlas.dev" }).first()).toBeVisible({ timeout: 10_000 });
   });
 

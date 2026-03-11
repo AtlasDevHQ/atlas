@@ -9,7 +9,6 @@ const STORAGE_STATE = path.join(__dirname, "storage-state.json");
 setup("authenticate as admin", async ({ page }) => {
   await page.goto("/");
 
-  // Wait for login form
   const emailInput = page.locator('input[type="email"]');
   await emailInput.waitFor({ timeout: 15_000 });
 
@@ -19,19 +18,23 @@ setup("authenticate as admin", async ({ page }) => {
     await page.locator('input[type="password"]').fill(password);
     await page.locator('button[type="submit"]').click();
 
-    // Wait for either: chat UI loads, or error appears
+    // Wait for either: chat UI loads, or error appears (locator.or avoids dangling promises)
     const chatInput = page.locator('input[placeholder="Ask a question about your data..."]');
     const errorMsg = page.locator("text=Invalid email or password");
+    const outcome = chatInput.or(errorMsg);
 
-    const result = await Promise.race([
-      chatInput.waitFor({ timeout: 10_000 }).then(() => "chat" as const),
-      errorMsg.waitFor({ timeout: 10_000 }).then(() => "error" as const),
-    ]).catch(() => "timeout" as const);
+    try {
+      await outcome.waitFor({ timeout: 10_000 });
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("Timeout")) {
+        return false;
+      }
+      throw err;
+    }
 
-    return result === "chat";
+    return await chatInput.isVisible();
   }
 
-  // Try e2e password first (already changed from a previous run)
   let loggedIn = await tryLogin(E2E_PASSWORD);
 
   if (!loggedIn) {
@@ -42,7 +45,11 @@ setup("authenticate as admin", async ({ page }) => {
   }
 
   if (!loggedIn) {
-    throw new Error("Could not login with either e2e or default password");
+    throw new Error(
+      `Could not login with either e2e or default password. ` +
+      `Admin email: ${ADMIN_EMAIL}. ` +
+      `Ensure the dev server is running and the account exists.`,
+    );
   }
 
   // Handle password change dialog if it appears (only on first login with default password)
@@ -59,6 +66,5 @@ setup("authenticate as admin", async ({ page }) => {
     await expect(changePasswordTitle).toBeHidden({ timeout: 10_000 });
   }
 
-  // Save storage state
   await page.context().storageState({ path: STORAGE_STATE });
 });

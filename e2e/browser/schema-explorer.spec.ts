@@ -29,9 +29,6 @@ test.describe("Schema Explorer", () => {
     const sheet = page.locator('[data-slot="sheet-content"]');
     await sheet.locator("text=Schema Explorer").waitFor({ timeout: 10_000 });
 
-    // Count entities before filtering
-    const entityButtons = sheet.locator("button").filter({ hasText: /^\s*(companies|people|accounts)\s*$/ });
-
     const searchInput = sheet.locator('input[placeholder="Search tables..."]');
     // Use a nonsense term that matches nothing
     await searchInput.fill("zzzzz_no_match");
@@ -41,8 +38,7 @@ test.describe("Schema Explorer", () => {
 
     // Clear and verify all entities return
     await searchInput.clear();
-    await page.waitForTimeout(500);
-    await expect(sheet.locator("text=companies").first()).toBeVisible();
+    await expect(sheet.locator("text=companies").first()).toBeVisible({ timeout: 5_000 });
   });
 
   test("clear search shows all entities", async ({ page }) => {
@@ -53,15 +49,11 @@ test.describe("Schema Explorer", () => {
 
     const searchInput = sheet.locator('input[placeholder="Search tables..."]');
 
-    // Filter
     await searchInput.fill("accounts");
-    await page.waitForTimeout(500);
+    await expect(sheet.locator("text=accounts").first()).toBeVisible({ timeout: 5_000 });
 
-    // Clear
     await searchInput.clear();
-    await page.waitForTimeout(500);
 
-    // All 3 entities should be visible
     await expect(sheet.locator("text=companies").first()).toBeVisible();
     await expect(sheet.locator("text=people").first()).toBeVisible();
     await expect(sheet.locator("text=accounts").first()).toBeVisible();

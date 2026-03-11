@@ -56,23 +56,18 @@ test.describe("Conversations @llm", () => {
     // Ask a question to create a conversation
     await askQuestion(page, "how many companies are there?");
 
-    // Save button should appear after the response
     const saveBtn = page.locator('button[aria-label="Save conversation"]');
-    if (await saveBtn.isVisible({ timeout: 5_000 }).catch(() => false)) {
-      await saveBtn.click();
+    await expect(saveBtn).toBeVisible({ timeout: 10_000 });
+    await saveBtn.click();
 
-      // Should now show "Unsave conversation"
-      await expect(page.locator('button[aria-label="Unsave conversation"]')).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('button[aria-label="Unsave conversation"]')).toBeVisible({ timeout: 5_000 });
 
-      // Check the "Saved" filter shows the conversation
-      await page.getByRole("radio", { name: "Saved" }).click();
+    // Check the "Saved" filter shows the conversation
+    await page.getByRole("radio", { name: "Saved" }).click();
+    await expect(page.getByText(/compan/i).first()).toBeVisible({ timeout: 5_000 });
 
-      // Should have at least one item with "compan" in title
-      await expect(page.getByText(/compan/i).first()).toBeVisible({ timeout: 5_000 });
-
-      // Switch back to "All"
-      await page.getByRole("radio", { name: "All" }).click();
-    }
+    // Switch back to "All"
+    await page.getByRole("radio", { name: "All" }).click();
   });
 
   test("delete a conversation shows confirmation and removes it", async ({ page }) => {
@@ -100,8 +95,7 @@ test.describe("Conversations @llm", () => {
     // After deletion, the inline "Delete?" confirmation should disappear
     await expect(page.getByText("Delete?")).toBeHidden({ timeout: 5_000 });
 
-    // The starter "What would you like to know?" prompt should appear (new chat state)
-    // or the conversation should no longer be highlighted in the sidebar
-    await page.waitForTimeout(1_000);
+    // The deleted conversation should no longer appear in the sidebar
+    await expect(page.getByText(/average revenue/i)).toBeHidden({ timeout: 5_000 });
   });
 });

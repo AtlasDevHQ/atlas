@@ -20,7 +20,7 @@ bun run test:browser:fast
 
 3. Report the results — how many passed/failed, and any failures with their spec file and test name.
 
-4. If any tests fail, read the failure screenshot at `test-results/*/test-failed-1.png` and diagnose the issue. Common problems:
+4. If any tests fail, read the failure screenshot at `e2e/browser/test-results/*/test-failed-1.png` and diagnose the issue. Common problems:
    - **Strict mode violations**: selector matches multiple elements — scope with `[data-slot=...]` or use `.first()`/`.nth()`
    - **Timeout**: dev server slow or page not loading — check server logs
    - **Element not found**: UI changed — update the selector in the spec file

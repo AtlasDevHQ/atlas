@@ -4,7 +4,7 @@ const ADMIN_EMAIL = process.env.ATLAS_ADMIN_EMAIL ?? "admin@atlas.dev";
 // After global setup, the password may have been changed from the default
 const ADMIN_PASSWORD = process.env.ATLAS_ADMIN_PASSWORD ?? "atlas-e2e-test!";
 
-/** Login helper — fills email/password and submits, then handles password change dialog if shown. */
+/** Login helper — fills email/password and submits. */
 async function login(page: import("@playwright/test").Page, email: string, password: string) {
   const emailInput = page.locator('input[type="email"]');
   await emailInput.waitFor({ timeout: 15_000 });
@@ -19,10 +19,9 @@ async function waitForChatUI(page: import("@playwright/test").Page) {
   // Dismiss password change dialog if it appears (shouldn't after setup, but just in case)
   const changeDialog = page.locator("text=Change your password");
   if (await changeDialog.isVisible({ timeout: 2_000 }).catch(() => false)) {
-    const newPw = "atlas-e2e-auth-test!";
-    await page.locator('input[placeholder="At least 8 characters"]').fill(newPw);
+    await page.locator('input[placeholder="At least 8 characters"]').fill(ADMIN_PASSWORD);
     const passwordInputs = page.locator('form input[type="password"]');
-    await passwordInputs.nth(2).fill(newPw);
+    await passwordInputs.nth(2).fill(ADMIN_PASSWORD);
     await page.locator('button:has-text("Change password")').click();
     await expect(changeDialog).toBeHidden({ timeout: 10_000 });
   }
@@ -46,9 +45,8 @@ test.describe("Auth Flows", () => {
     await page.goto("/");
     await login(page, ADMIN_EMAIL, "wrong-password-123");
 
-    // Error message should appear
     await expect(
-      page.locator(".text-red-600, .text-red-400, .text-destructive, [class*='text-red']").first(),
+      page.getByText(/invalid|incorrect/i).first(),
     ).toBeVisible({ timeout: 10_000 });
   });
 

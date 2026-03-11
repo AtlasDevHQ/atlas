@@ -23,7 +23,6 @@ test.describe("Chat — Charts @llm", () => {
     await askQuestion(page, "accounts created per month");
     await waitForSQLResult(page);
 
-    // Recharts wrapper should be visible
     await expect(page.locator(".recharts-wrapper").first()).toBeVisible({ timeout: 10_000 });
   });
 
@@ -31,7 +30,6 @@ test.describe("Chat — Charts @llm", () => {
     await askQuestion(page, "show me plan distribution");
     await waitForSQLResult(page);
 
-    // Recharts wrapper should be visible
     await expect(page.locator(".recharts-wrapper").first()).toBeVisible({ timeout: 10_000 });
   });
 

@@ -11,26 +11,26 @@ const PROD_DOCS_URL = process.env.PROD_DOCS_URL ?? "https://docs.useatlas.dev";
 test.describe("Production Smoke Tests", () => {
   test("landing page loads", async ({ page }) => {
     const response = await page.goto(PROD_WWW_URL);
-    expect(response?.status()).toBeLessThan(400);
+    expect(response).not.toBeNull();
+    expect(response!.status()).toBeLessThan(400);
 
-    // Should have some content (the Atlas branding)
-    await expect(page.locator("body")).not.toBeEmpty();
+    await expect(page.locator("text=Atlas")).toBeVisible({ timeout: 10_000 });
   });
 
   test("docs site loads", async ({ page }) => {
     const response = await page.goto(PROD_DOCS_URL);
-    expect(response?.status()).toBeLessThan(400);
+    expect(response).not.toBeNull();
+    expect(response!.status()).toBeLessThan(400);
 
-    // Docs should have navigation or content
-    await expect(page.locator("body")).not.toBeEmpty();
+    await expect(page.locator("nav").first()).toBeVisible({ timeout: 10_000 });
   });
 
   test("app shows login page", async ({ page }) => {
     const response = await page.goto(PROD_APP_URL);
-    expect(response?.status()).toBeLessThan(400);
+    expect(response).not.toBeNull();
+    expect(response!.status()).toBeLessThan(400);
 
-    // Should show login form or the Atlas UI
-    await expect(page.locator("body")).not.toBeEmpty();
+    await expect(page.locator('input[type="email"]')).toBeVisible({ timeout: 10_000 });
   });
 
   test("API health endpoint returns ok", async ({ request }) => {

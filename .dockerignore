@@ -8,6 +8,5 @@ node_modules
 e2e/
 create-atlas/
 docs/
-deploy/
 .claude/
 .github/

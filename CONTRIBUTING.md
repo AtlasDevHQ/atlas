@@ -14,9 +14,10 @@ you need to get started.
 git clone https://github.com/AtlasDevHQ/atlas.git
 cd atlas
 bun install
+bun run db:up          # Start Postgres + sandbox sidecar
 cp .env.example .env   # Set your LLM provider key
 bun run atlas -- init  # Profile the database and generate semantic layer
-bun run dev:local      # Start containers (Postgres + sandbox sidecar) + dev servers
+bun run dev            # Start API (:3001) + web (:3000)
 ```
 
 Default dev credentials: **admin@atlas.dev / atlas-dev**

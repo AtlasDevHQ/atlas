@@ -37,9 +37,10 @@ Clone the repo and pick a database:
 
 ```bash
 bun install
+bun run db:up                         # Start Postgres + sandbox sidecar
 cp .env.example .env                  # Set ATLAS_PROVIDER + API key
 bun run atlas -- init                 # Profile DB and generate semantic layer
-bun run dev:local                     # Start containers + dev servers → http://localhost:3000
+bun run dev                           # http://localhost:3000
 ```
 
 ## How It Works

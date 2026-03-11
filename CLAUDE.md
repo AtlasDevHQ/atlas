@@ -122,7 +122,7 @@ bun run mcp                           # Start MCP server on stdio (same as atlas
 bun run dev:mcp                       # Start MCP server with hot reload
 ```
 
-**Quick start:** `bun install` → `cp .env.example .env` (set your LLM provider key) → `bun run atlas -- init` → `bun run dev:local`. The `.env` comes pre-configured with Docker Postgres URLs, sandbox sidecar, and managed auth. On first boot a dev admin account is seeded: **admin@atlas.dev / atlas-dev**.
+**Quick start:** `bun install` → `cp .env.example .env` (set your LLM provider key) → `bun run db:up` → `bun run atlas -- init` → `bun run dev`. The `.env` comes pre-configured with Docker Postgres URLs, sandbox sidecar, and managed auth. On first boot a dev admin account is seeded: **admin@atlas.dev / atlas-dev**.
 
 | Script | URL |
 |--------|-----|

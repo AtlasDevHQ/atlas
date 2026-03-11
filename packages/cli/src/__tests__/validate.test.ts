@@ -616,6 +616,44 @@ describe("checkCrossReferences", () => {
     expect(errors[0].detail).toContain("missing_table");
   });
 
+  test("resolves array-style joins with target_entity (profiler-generated)", () => {
+    const entities = [
+      {
+        file: "entities/people.yml",
+        table: "people",
+        dimensions: { id: { type: "integer" } },
+        joins: [
+          { target_entity: "Companies", relationship: "many_to_one", join_columns: { from: "company_id", to: "id" } },
+        ],
+      },
+      {
+        file: "entities/companies.yml",
+        table: "companies",
+        dimensions: { id: { type: "integer" } },
+      },
+    ];
+    const results = checkCrossReferences(entities, []);
+    const errors = results.filter((r) => r.status === "fail");
+    expect(errors.length).toBe(0);
+  });
+
+  test("array-style join with missing target_entity reports error", () => {
+    const entities = [
+      {
+        file: "entities/people.yml",
+        table: "people",
+        dimensions: { id: { type: "integer" } },
+        joins: [
+          { target_entity: "MissingTable", relationship: "many_to_one", join_columns: { from: "company_id", to: "id" } },
+        ],
+      },
+    ];
+    const results = checkCrossReferences(entities, []);
+    const errors = results.filter((r) => r.status === "fail");
+    expect(errors.length).toBe(1);
+    expect(errors[0].detail).toContain("missing_table");
+  });
+
   test("handles schema-qualified table names in joins", () => {
     const entities = [
       {

@@ -585,19 +585,27 @@ export function checkCrossReferences(
   for (const entity of entities) {
     if (!entity.joins) continue;
 
-    for (const [joinKey, joinVal] of Object.entries(entity.joins)) {
-      // Join keys in entity YAMLs can be the target table name directly
-      // or an object with target_table/to
+    // Joins can be an array (profiler-generated) or an object (hand-written)
+    const joinEntries: Array<[string, unknown]> = Array.isArray(entity.joins)
+      ? entity.joins.map((v: unknown, i: number) => [String(i), v] as [string, unknown])
+      : Object.entries(entity.joins);
+
+    for (const [joinKey, joinVal] of joinEntries) {
       let targetTable: string | undefined;
 
       if (joinVal && typeof joinVal === "object") {
         const j = joinVal as Record<string, unknown>;
         if (typeof j.target_table === "string") targetTable = j.target_table;
-        else if (typeof j.to === "string") targetTable = j.to;
+        else if (typeof j.target_entity === "string") {
+          // target_entity is PascalCase — convert to snake_case table name
+          targetTable = j.target_entity.replace(/([a-z])([A-Z])/g, "$1_$2").toLowerCase();
+        } else if (typeof j.to === "string") targetTable = j.to;
       }
 
-      // The join key itself is often the target table name (convention: joins.other_table)
-      const target = targetTable ?? joinKey;
+      // For object-style joins, the key itself is often the target table name
+      const target = targetTable ?? (Array.isArray(entity.joins) ? undefined : joinKey);
+      if (!target) continue; // Array join with no resolvable target — skip
+
       const targetLower = target.toLowerCase();
       referencedTables.add(targetLower);
 

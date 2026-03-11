@@ -22,3 +22,5 @@ create-atlas/templates/*/src/global.d.ts
 create-atlas/templates/*/src/types/
 dist/
 routeTree.gen.ts
+e2e/browser/storage-state.json
+e2e/browser/test-results/

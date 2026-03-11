@@ -37,6 +37,10 @@
     "smoke": "bash scripts/smoke.sh",
     "smoke:scaffold": "bash create-atlas/smoke-test.sh",
     "smoke:remote": "bun run atlas -- smoke",
+    "test:browser": "bun x playwright test --config e2e/browser/playwright.config.ts",
+    "test:browser:fast": "bun x playwright test --config e2e/browser/playwright.config.ts --grep-invert @llm",
+    "test:browser:llm": "bun x playwright test --config e2e/browser/playwright.config.ts --grep @llm --workers 1",
+    "test:browser:prod": "bun x playwright test --config e2e/browser/playwright.config.ts --project production",
     "deps:lint": "bun x syncpack lint",
     "deps:fix": "bun x syncpack fix",
     "deps:update": "bun update && bun x syncpack fix"
@@ -50,6 +54,7 @@
     "@eslint/js": "^10.0.1",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "@next/eslint-plugin-next": "^16.1.6",
+    "@playwright/test": "^1.58.2",
     "@types/bun": "^1.3.9",
     "@types/node": "^25.3.2",
     "@typescript/native-preview": "^7.0.0-dev.20260226.1",

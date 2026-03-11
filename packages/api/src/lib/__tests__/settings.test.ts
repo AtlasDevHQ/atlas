@@ -12,6 +12,7 @@ import {
   getAllSettingOverrides,
   loadSettings,
   getSettingsForAdmin,
+  getSettingsRegistry,
   _resetSettingsCache,
 } from "../settings";
 
@@ -294,6 +295,96 @@ describe("settings module", () => {
       expect(apiKey!.secret).toBe(true);
 
       delete process.env.ANTHROPIC_API_KEY;
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // requiresRestart metadata
+  // ---------------------------------------------------------------------------
+
+  describe("requiresRestart metadata", () => {
+    it("hot-reloadable settings do not have requiresRestart", () => {
+      const registry = getSettingsRegistry();
+      const hotReloadable = ["ATLAS_ROW_LIMIT", "ATLAS_QUERY_TIMEOUT", "ATLAS_RATE_LIMIT_RPM"];
+      for (const key of hotReloadable) {
+        const def = registry.find((s) => s.key === key);
+        expect(def).toBeDefined();
+        expect(def!.requiresRestart).toBeFalsy();
+      }
+    });
+
+    it("restart-required settings have requiresRestart: true", () => {
+      const registry = getSettingsRegistry();
+      const restartRequired = [
+        "ATLAS_PROVIDER", "ATLAS_MODEL", "ATLAS_LOG_LEVEL",
+        "ATLAS_CORS_ORIGIN", "ATLAS_TABLE_WHITELIST",
+        "ATLAS_RLS_ENABLED", "ATLAS_RLS_COLUMN", "ATLAS_RLS_CLAIM",
+      ];
+      for (const key of restartRequired) {
+        const def = registry.find((s) => s.key === key);
+        expect(def).toBeDefined();
+        expect(def!.requiresRestart).toBe(true);
+      }
+    });
+
+    it("getSettingsForAdmin includes requiresRestart in output", () => {
+      const settings = getSettingsForAdmin();
+      const rowLimit = settings.find((s) => s.key === "ATLAS_ROW_LIMIT");
+      expect(rowLimit!.requiresRestart).toBeFalsy();
+
+      const provider = settings.find((s) => s.key === "ATLAS_PROVIDER");
+      expect(provider!.requiresRestart).toBe(true);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // getSetting is used by runtime consumers (sql.ts, middleware.ts)
+  // ---------------------------------------------------------------------------
+
+  describe("runtime consumer wiring", () => {
+    it("ATLAS_ROW_LIMIT resolves DB override for runtime consumers", async () => {
+      enableInternalDB();
+      setResults({
+        rows: [
+          { key: "ATLAS_ROW_LIMIT", value: "50", updated_at: "2026-01-01", updated_by: "admin" },
+        ],
+      });
+      await loadSettings();
+
+      // Simulates what sql.ts does: getSetting("ATLAS_ROW_LIMIT")
+      expect(getSetting("ATLAS_ROW_LIMIT")).toBe("50");
+    });
+
+    it("ATLAS_QUERY_TIMEOUT resolves DB override for runtime consumers", async () => {
+      enableInternalDB();
+      setResults({
+        rows: [
+          { key: "ATLAS_QUERY_TIMEOUT", value: "5000", updated_at: "2026-01-01", updated_by: "admin" },
+        ],
+      });
+      await loadSettings();
+
+      expect(getSetting("ATLAS_QUERY_TIMEOUT")).toBe("5000");
+    });
+
+    it("ATLAS_RATE_LIMIT_RPM resolves DB override for runtime consumers", async () => {
+      enableInternalDB();
+      setResults({
+        rows: [
+          { key: "ATLAS_RATE_LIMIT_RPM", value: "10", updated_at: "2026-01-01", updated_by: "admin" },
+        ],
+      });
+      await loadSettings();
+
+      expect(getSetting("ATLAS_RATE_LIMIT_RPM")).toBe("10");
+    });
+
+    it("setSetting updates cache so runtime consumers see change immediately", async () => {
+      enableInternalDB();
+      setResults({ rows: [] }); // upsert
+
+      await setSetting("ATLAS_ROW_LIMIT", "77", "admin");
+      expect(getSetting("ATLAS_ROW_LIMIT")).toBe("77");
     });
   });
 });

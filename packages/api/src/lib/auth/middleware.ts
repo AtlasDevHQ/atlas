@@ -14,6 +14,7 @@ import { validateApiKey } from "@atlas/api/lib/auth/simple-key";
 import { validateManaged } from "@atlas/api/lib/auth/managed";
 import { validateBYOT } from "@atlas/api/lib/auth/byot";
 import { createLogger } from "@atlas/api/lib/logger";
+import { getSetting } from "@atlas/api/lib/settings";
 
 const log = createLogger("auth");
 
@@ -29,7 +30,7 @@ const windows = new Map<string, number[]>();
 let warnedInvalidRpm = false;
 
 function getRpmLimit(): number {
-  const raw = process.env.ATLAS_RATE_LIMIT_RPM;
+  const raw = getSetting("ATLAS_RATE_LIMIT_RPM");
   if (raw === undefined || raw === "") return 0; // disabled
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 0) {

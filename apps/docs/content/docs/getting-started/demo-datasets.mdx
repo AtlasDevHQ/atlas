@@ -69,8 +69,8 @@ bun run db:up
 # Load cybersec demo and generate semantic layer
 bun run atlas -- init --demo cybersec
 
-# Start Atlas
-bun run dev:local
+# Start Atlas (containers already running from db:up)
+bun run dev
 ```
 
 To reset and reload from scratch:
@@ -193,8 +193,8 @@ bun run db:up
 # Load e-commerce demo and generate semantic layer
 bun run atlas -- init --demo ecommerce
 
-# Start Atlas
-bun run dev:local
+# Start Atlas (containers already running from db:up)
+bun run dev
 ```
 
 To reset and reload from scratch:

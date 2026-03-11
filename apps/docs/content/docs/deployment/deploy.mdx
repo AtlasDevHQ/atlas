@@ -225,7 +225,7 @@ Atlas auto-detects the best available sandbox for the explore tool, using a six-
 | 2 | Self-hosted Docker | nsjail explicit (`ATLAS_SANDBOX=nsjail`) | Kernel-level |
 | 3 | Railway | Sidecar service (`ATLAS_SANDBOX_URL`) | Container-level |
 | 4 | Self-hosted | nsjail auto-detect (binary on PATH) | Kernel-level |
-| 5 | Local dev | just-bash + OverlayFS | Path-traversal protection |
+| 5 | Local dev | Sidecar container (Docker Compose) | Container-level |
 
 **Deploying for your own team?** Any tier is fine — you're protecting against prompt injection edge cases, not hostile tenants. **Multi-tenant?** Use Vercel or nsjail for real process isolation.
 

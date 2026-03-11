@@ -93,6 +93,8 @@ function SaveButton({
     setPending(true);
     try {
       await onStar(conversationId, !isStarred);
+    } catch (err) {
+      console.warn("Failed to update star:", err);
     } finally {
       setPending(false);
     }

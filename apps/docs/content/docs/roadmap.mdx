@@ -34,22 +34,52 @@ Self-service management and observability for the admin console. Connection CRUD
 
 ---
 
-## 0.4.0 — UI & Collaboration
+## 0.4.0 — Chat Experience
 
-The current milestone. Better chat experience and semantic layer tooling.
+The current milestone. Polish the end-user chat experience.
 
-- **Chat experience** — Theming (dark/light mode, custom brand colors), embeddable widget, conversation sharing, suggested follow-ups, saved queries
-- **Semantic layer UX** — Visual schema explorer, semantic layer diff in UI, guided setup wizard
+- **Chat polish** — Dark/light mode toggle with CSS variable theming, suggested follow-up questions, data export (CSV/Excel), mobile-responsive layout, saved queries
+- **Discovery** — Visual schema explorer for analysts, expanded chart types (area, stacked bar, scatter)
 
 ---
 
-## 0.5.0 — Enterprise
+## 0.5.0 — Governance & Sharing
 
-Multi-tenancy, SSO, and compliance.
+Access control, audit improvements, and collaboration features for production teams.
 
-- **Multi-tenancy** — Advanced RLS policies, tenant-scoped semantic layers, audit log UI
-- **SSO** — SAML provider support, SCIM provisioning, session management
-- **Compliance** — Query audit trails with data classification, PII detection and column masking
+- **Access control** — Advanced RLS policies (multi-column, array claims), session management, OIDC/OAuth provider docs
+- **Audit** — Audit log export and search, data classification tags on query trails
+- **Collaboration** — Conversation sharing with permission controls, semantic layer diff in admin console
+
+---
+
+## 0.6.0 — Embeddable & Integrations
+
+Atlas as drop-in analytics infrastructure for other products.
+
+- **Embedding** — Embeddable widget (`<script>` tag + React component), SDK streaming API
+- **Integrations** — Microsoft Teams plugin, generic webhook plugin for Zapier/Make/n8n, email digest subscriptions
+- **Data protection** — PII detection and column masking via plugin hooks
+
+---
+
+## 0.7.0 — Performance & Scale
+
+Handle larger semantic layers, more concurrent users, and bigger result sets.
+
+- **Caching** — Query result caching with configurable TTL, semantic layer indexing
+- **Infrastructure** — Connection pool improvements, streaming Python output, tenant-scoped semantic layers
+- **Datasources** — BigQuery plugin
+
+---
+
+## 0.8.0 — Intelligence & Learning
+
+An agent that gets smarter over time.
+
+- **Knowledge** — Curated prompt library per industry, query suggestion engine from usage history
+- **Advanced** — Self-hosted model benchmarks, notebook-style interface, multi-agent collaboration
+- **Enterprise auth** — SAML and SCIM support
 
 ---
 

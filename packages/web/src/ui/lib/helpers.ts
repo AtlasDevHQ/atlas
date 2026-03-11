@@ -92,28 +92,40 @@ export function downloadCSV(csv: string, filename = "atlas-results.csv") {
   }
 }
 
+/** Strict ISO date pattern: YYYY-MM-DD with optional time component. */
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?)?$/;
+
+/** Coerce a cell value to a typed Excel cell: numbers/booleans pass through, ISO dates become Date objects, null becomes empty string. Exported for testing. */
+export function coerceExcelCell(v: unknown): unknown {
+  if (v == null) return "";
+  if (typeof v === "number" || typeof v === "boolean") return v;
+  if (typeof v === "string" && ISO_DATE_RE.test(v) && !isNaN(Date.parse(v))) {
+    return new Date(v);
+  }
+  return String(v);
+}
+
 /** Trigger an Excel (.xlsx) download in the browser. Dynamically imports xlsx to avoid bundle bloat. */
 export async function downloadExcel(
   columns: string[],
   rows: Record<string, unknown>[],
   filename = "atlas-results.xlsx",
 ) {
+  let XLSX: typeof import("xlsx");
+  try {
+    XLSX = await import("xlsx");
+  } catch (err) {
+    console.error("Failed to load xlsx library:", err);
+    window.alert("Excel export is unavailable. The spreadsheet library failed to load.");
+    return;
+  }
+
   let url: string | null = null;
   try {
-    const XLSX = await import("xlsx");
     const data = rows.map((row) => {
       const obj: Record<string, unknown> = {};
       for (const col of columns) {
-        const v = row[col];
-        if (v == null) {
-          obj[col] = "";
-        } else if (typeof v === "number" || typeof v === "boolean") {
-          obj[col] = v;
-        } else if (typeof v === "string" && !isNaN(Date.parse(v)) && /^\d{4}-\d{2}-\d{2}/.test(v)) {
-          obj[col] = new Date(v);
-        } else {
-          obj[col] = String(v);
-        }
+        obj[col] = coerceExcelCell(row[col]);
       }
       return obj;
     });
@@ -131,7 +143,8 @@ export async function downloadExcel(
     a.click();
   } catch (err) {
     console.error("Excel download failed:", err);
-    window.alert("Excel download failed");
+    const detail = err instanceof Error ? err.message : "Unknown error";
+    window.alert(`Excel download failed: ${detail}\n\nYou can try the CSV download as an alternative.`);
   } finally {
     if (url) {
       const blobUrl = url;

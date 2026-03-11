@@ -145,6 +145,21 @@ describe("SQLResultCard", () => {
     expect(excelBtn).not.toBeUndefined();
   });
 
+  test("Download buttons are hidden when result has 0 rows", () => {
+    const { container } = render(
+      <SQLResultCard
+        part={makePart({
+          output: { success: true, columns: ["id"], rows: [] },
+        })}
+      />,
+    );
+    const buttons = Array.from(container.querySelectorAll("button"));
+    const csvBtn = buttons.find((b) => b.textContent?.includes("CSV"));
+    const excelBtn = buttons.find((b) => b.textContent?.includes("Excel"));
+    expect(csvBtn).toBeUndefined();
+    expect(excelBtn).toBeUndefined();
+  });
+
   test("renders data table with correct columns", () => {
     const { container } = render(<SQLResultCard part={makePart()} />);
     const ths = container.querySelectorAll("th");

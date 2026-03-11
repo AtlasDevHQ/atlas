@@ -6,6 +6,7 @@ import {
   getToolArgs,
   getToolResult,
   isToolComplete,
+  coerceExcelCell,
 } from "../lib/helpers";
 
 /* ------------------------------------------------------------------ */
@@ -106,6 +107,72 @@ describe("toCsvString", () => {
     const parsed = parseCSV(csv);
     expect(parsed.headers).toEqual(cols);
     expect(parsed.rows).toEqual([["1", "Acme"], ["2", "Beta"]]);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  coerceExcelCell                                                     */
+/* ------------------------------------------------------------------ */
+
+describe("coerceExcelCell", () => {
+  test("null and undefined become empty string", () => {
+    expect(coerceExcelCell(null)).toBe("");
+    expect(coerceExcelCell(undefined)).toBe("");
+  });
+
+  test("numbers pass through as-is", () => {
+    expect(coerceExcelCell(42)).toBe(42);
+    expect(coerceExcelCell(3.14)).toBe(3.14);
+    expect(coerceExcelCell(0)).toBe(0);
+    expect(coerceExcelCell(-100)).toBe(-100);
+  });
+
+  test("booleans pass through as-is", () => {
+    expect(coerceExcelCell(true)).toBe(true);
+    expect(coerceExcelCell(false)).toBe(false);
+  });
+
+  test("ISO date-only strings become Date objects", () => {
+    const result = coerceExcelCell("2024-01-15");
+    expect(result).toBeInstanceOf(Date);
+    expect((result as Date).toISOString()).toContain("2024-01-15");
+  });
+
+  test("ISO datetime strings become Date objects", () => {
+    const result = coerceExcelCell("2024-06-15T10:30:00Z");
+    expect(result).toBeInstanceOf(Date);
+  });
+
+  test("ISO datetime with offset becomes Date", () => {
+    const result = coerceExcelCell("2024-06-15T10:30:00+05:00");
+    expect(result).toBeInstanceOf(Date);
+  });
+
+  test("ISO datetime with milliseconds becomes Date", () => {
+    const result = coerceExcelCell("2024-06-15T10:30:00.123Z");
+    expect(result).toBeInstanceOf(Date);
+  });
+
+  test("date-prefixed non-date strings stay as strings", () => {
+    expect(coerceExcelCell("2024-01-15-batch-A")).toBe("2024-01-15-batch-A");
+    expect(coerceExcelCell("2024-01-15 some random text")).toBe("2024-01-15 some random text");
+  });
+
+  test("plain strings pass through as strings", () => {
+    expect(coerceExcelCell("hello")).toBe("hello");
+    expect(coerceExcelCell("")).toBe("");
+  });
+
+  test("numeric strings stay as strings", () => {
+    expect(coerceExcelCell("12345")).toBe("12345");
+  });
+
+  test("objects become stringified", () => {
+    expect(coerceExcelCell({ a: 1 })).toBe("[object Object]");
+  });
+
+  test("arrays become stringified", () => {
+    expect(coerceExcelCell([1, 2, 3])).toBe("1,2,3");
   });
 });
 

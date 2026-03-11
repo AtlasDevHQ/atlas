@@ -8,6 +8,7 @@ set -euo pipefail
 #   bash e2e/scripts/run.sh --tier core        # Core surfaces only (needs Docker)
 #   bash e2e/scripts/run.sh --tier query       # Query surface only (needs Docker + ANTHROPIC_API_KEY)
 #   bash e2e/scripts/run.sh --tier scaffold    # Scaffold only (no Docker needed)
+#   bash e2e/scripts/run.sh --tier docker      # Docker runtime tests (builds + runs container)
 #   bash e2e/scripts/run.sh --surface auth     # Run a specific surface (needs Docker)
 #   bash e2e/scripts/run.sh --all              # Run all surfaces including query
 #   bash e2e/scripts/run.sh --no-docker ...    # Skip Docker lifecycle (CI: services already provisioned)
@@ -31,9 +32,9 @@ while [ $# -gt 0 ]; do
         exit 1
       fi
       case "$1" in
-        core|query|scaffold) TIER="$1" ;;
+        core|query|scaffold|docker) TIER="$1" ;;
         *)
-          echo "ERROR: Unknown tier '$1'. Must be: core, query, scaffold" >&2
+          echo "ERROR: Unknown tier '$1'. Must be: core, query, scaffold, docker" >&2
           exit 1
           ;;
       esac
@@ -65,10 +66,12 @@ done
 CORE_SURFACES=(helpers health auth auth-managed conversations slack actions mcp scheduler agent-multistep error-scenarios)
 QUERY_SURFACES=(query)
 SCAFFOLD_SURFACES=(scaffold)
+DOCKER_SURFACES=(docker)
 
 # --- Determine if Docker is needed ---
+# Docker tier manages its own container lifecycle — skip the E2E compose services
 NEEDS_DOCKER=true
-if [ "$TIER" = "scaffold" ] || [ "$NO_DOCKER" = true ]; then
+if [ "$TIER" = "scaffold" ] || [ "$TIER" = "docker" ] || [ "$NO_DOCKER" = true ]; then
   NEEDS_DOCKER=false
 fi
 
@@ -151,6 +154,7 @@ elif [ -n "$TIER" ]; then
     core)     run_surfaces "${CORE_SURFACES[@]}" ;;
     query)    run_surfaces "${QUERY_SURFACES[@]}" ;;
     scaffold) run_surfaces "${SCAFFOLD_SURFACES[@]}" ;;
+    docker)   run_surfaces "${DOCKER_SURFACES[@]}" ;;
   esac
 else
   # Default: core + scaffold (skip query)

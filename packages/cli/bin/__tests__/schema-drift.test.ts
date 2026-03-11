@@ -382,6 +382,45 @@ describe("computeDiff", () => {
     expect(diff.removedTables).toEqual(["customers", "orders"]);
     expect(diff.tableDiffs).toEqual([]);
   });
+
+  test("ignores dimension_table vs fact_table type difference (semantic classification)", () => {
+    const dbSnap: EntitySnapshot = {
+      table: "companies",
+      columns: new Map([["id", "number"]]),
+      foreignKeys: new Set(),
+      objectType: "fact_table",
+    };
+    const ymlSnap: EntitySnapshot = {
+      table: "companies",
+      columns: new Map([["id", "number"]]),
+      foreignKeys: new Set(),
+      objectType: "dimension_table",
+    };
+    const db = new Map([["companies", dbSnap]]);
+    const yml = new Map([["companies", ymlSnap]]);
+    const diff = computeDiff(db, yml);
+    expect(diff.tableDiffs).toEqual([]);
+  });
+
+  test("still flags real type changes (table vs view)", () => {
+    const dbSnap: EntitySnapshot = {
+      table: "orders",
+      columns: new Map([["id", "number"]]),
+      foreignKeys: new Set(),
+      objectType: "view",
+    };
+    const ymlSnap: EntitySnapshot = {
+      table: "orders",
+      columns: new Map([["id", "number"]]),
+      foreignKeys: new Set(),
+      objectType: "fact_table",
+    };
+    const db = new Map([["orders", dbSnap]]);
+    const yml = new Map([["orders", ymlSnap]]);
+    const diff = computeDiff(db, yml);
+    expect(diff.tableDiffs).toHaveLength(1);
+    expect(diff.tableDiffs[0].metadataChanges).toContain("type changed: fact_table → view");
+  });
 });
 
 // --- formatDiff ---

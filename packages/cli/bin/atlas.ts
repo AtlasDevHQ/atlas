@@ -2916,7 +2916,13 @@ export function computeDiff(
 
     // Metadata differences
     const metadataChanges: string[] = [];
-    if (db.objectType && yml.objectType && db.objectType !== yml.objectType) {
+    // Only flag type changes that indicate real schema drift (e.g. table↔view).
+    // Semantic classifications like dimension_table vs fact_table are enrichment
+    // metadata — the profiler always assigns "fact_table" to non-views, so comparing
+    // it against enriched YAML produces false positives.
+    const semanticTypes = new Set(["fact_table", "dimension_table"]);
+    if (db.objectType && yml.objectType && db.objectType !== yml.objectType
+      && !(semanticTypes.has(db.objectType) && semanticTypes.has(yml.objectType))) {
       metadataChanges.push(`type changed: ${yml.objectType} → ${db.objectType}`);
     }
     if (db.partitionStrategy !== yml.partitionStrategy) {
@@ -4379,6 +4385,15 @@ async function profileDatasource(opts: ProfileDatasourceOpts): Promise<void> {
   fs.mkdirSync(entitiesOutDir, { recursive: true });
   fs.mkdirSync(metricsOutDir, { recursive: true });
 
+  // Clean stale entity/metric files from previous runs
+  for (const dir of [entitiesOutDir, metricsOutDir]) {
+    for (const file of fs.readdirSync(dir)) {
+      if (file.endsWith(".yml") || file.endsWith(".yaml")) {
+        fs.unlinkSync(path.join(dir, file));
+      }
+    }
+  }
+
   // Generate entity YAMLs
   console.log(`\nGenerating semantic layer...\n`);
 
@@ -4810,6 +4825,15 @@ async function main() {
     // Write semantic layer
     fs.mkdirSync(entitiesOutDir, { recursive: true });
     fs.mkdirSync(metricsOutDir, { recursive: true });
+
+    // Clean stale entity/metric files from previous runs
+    for (const dir of [entitiesOutDir, metricsOutDir]) {
+      for (const file of fs.readdirSync(dir)) {
+        if (file.endsWith(".yml") || file.endsWith(".yaml")) {
+          fs.unlinkSync(path.join(dir, file));
+        }
+      }
+    }
 
     console.log(`\nGenerating semantic layer...\n`);
 

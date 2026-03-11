@@ -86,29 +86,34 @@ function SaveButton({
   conversations: { id: string; starred: boolean }[];
   onStar: (id: string, starred: boolean) => Promise<boolean>;
 }) {
-  const convo = conversations.find((c) => c.id === conversationId);
-  const isStarred = convo?.starred ?? false;
+  const isStarred = conversations.find((c) => c.id === conversationId)?.starred ?? false;
   const [pending, setPending] = useState(false);
 
+  async function handleToggle() {
+    setPending(true);
+    try {
+      await onStar(conversationId, !isStarred);
+    } finally {
+      setPending(false);
+    }
+  }
+
   return (
-    <button
-      onClick={async () => {
-        if (pending) return;
-        setPending(true);
-        await onStar(conversationId, !isStarred);
-        setPending(false);
-      }}
+    <Button
+      variant="ghost"
+      size="xs"
+      onClick={handleToggle}
       disabled={pending}
-      className={`flex items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors ${
+      className={
         isStarred
           ? "text-amber-500 hover:text-amber-600 dark:text-amber-400 dark:hover:text-amber-300"
           : "text-zinc-400 hover:text-amber-500 dark:text-zinc-500 dark:hover:text-amber-400"
-      } ${pending ? "opacity-50" : ""}`}
+      }
       aria-label={isStarred ? "Unsave conversation" : "Save conversation"}
     >
       <Star className="h-3.5 w-3.5" fill={isStarred ? "currentColor" : "none"} />
       <span>{isStarred ? "Saved" : "Save"}</span>
-    </button>
+    </Button>
   );
 }
 
@@ -478,12 +483,10 @@ export function AtlasChat() {
                         })}
                         {isLastAssistant && !isLoading && (
                           <>
-                            <div className="flex items-center gap-2">
-                              <FollowUpChips
-                                suggestions={suggestions}
-                                onSelect={handleSend}
-                              />
-                            </div>
+                            <FollowUpChips
+                              suggestions={suggestions}
+                              onSelect={handleSend}
+                            />
                             {conversationId && convos.available && (
                               <SaveButton
                                 conversationId={conversationId}

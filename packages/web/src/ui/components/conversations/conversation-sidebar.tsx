@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import { Star } from "lucide-react";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { Badge } from "@/components/ui/badge";
 import type { Conversation } from "../../lib/types";
 import { ConversationList } from "./conversation-list";
 
@@ -29,10 +31,8 @@ export function ConversationSidebar({
   onMobileClose: () => void;
 }) {
   const [filter, setFilter] = useState<SidebarFilter>("all");
-  const starredCount = conversations.filter((c) => c.starred).length;
-  const filteredConversations = filter === "saved"
-    ? conversations.filter((c) => c.starred)
-    : conversations;
+  const starredConversations = conversations.filter((c) => c.starred);
+  const filteredConversations = filter === "saved" ? starredConversations : conversations;
 
   const sidebar = (
     <div className="flex h-full flex-col border-r border-zinc-200 bg-zinc-50/50 dark:border-zinc-800 dark:bg-zinc-950/50">
@@ -46,37 +46,27 @@ export function ConversationSidebar({
         </button>
       </div>
 
-      <div className="flex gap-1 border-b border-zinc-200 px-3 py-2 dark:border-zinc-800">
-        <button
-          onClick={() => setFilter("all")}
-          className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-            filter === "all"
-              ? "bg-zinc-200 text-zinc-800 dark:bg-zinc-700 dark:text-zinc-200"
-              : "text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-300"
-          }`}
+      <div className="border-b border-zinc-200 px-3 py-2 dark:border-zinc-800">
+        <ToggleGroup
+          type="single"
+          size="sm"
+          value={filter}
+          onValueChange={(val) => { if (val) setFilter(val as SidebarFilter); }}
+          className="gap-1"
         >
-          All
-        </button>
-        <button
-          onClick={() => setFilter("saved")}
-          className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-            filter === "saved"
-              ? "bg-zinc-200 text-zinc-800 dark:bg-zinc-700 dark:text-zinc-200"
-              : "text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-300"
-          }`}
-        >
-          <Star className="h-3 w-3" fill={filter === "saved" ? "currentColor" : "none"} />
-          Saved
-          {starredCount > 0 && (
-            <span className={`rounded-full px-1.5 text-[10px] font-semibold leading-4 ${
-              filter === "saved"
-                ? "bg-zinc-300 text-zinc-700 dark:bg-zinc-600 dark:text-zinc-200"
-                : "bg-zinc-200 text-zinc-500 dark:bg-zinc-700 dark:text-zinc-400"
-            }`}>
-              {starredCount}
-            </span>
-          )}
-        </button>
+          <ToggleGroupItem value="all" className="px-2.5 text-xs">
+            All
+          </ToggleGroupItem>
+          <ToggleGroupItem value="saved" className="gap-1.5 px-2.5 text-xs">
+            <Star className="h-3 w-3" fill={filter === "saved" ? "currentColor" : "none"} />
+            Saved
+            {starredConversations.length > 0 && (
+              <Badge variant="secondary" className="h-4 px-1.5 text-[10px] font-semibold">
+                {starredConversations.length}
+              </Badge>
+            )}
+          </ToggleGroupItem>
+        </ToggleGroup>
       </div>
 
       <div className="flex-1 overflow-y-auto p-2">

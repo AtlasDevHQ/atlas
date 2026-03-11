@@ -28,22 +28,21 @@ export function ConversationList({
     );
   }
 
-  // When sections are disabled (e.g. "Saved" filter), show a flat list
+  function renderItems(items: Conversation[]) {
+    return items.map((c) => (
+      <ConversationItem
+        key={c.id}
+        conversation={c}
+        isActive={c.id === selectedId}
+        onSelect={() => onSelect(c.id)}
+        onDelete={() => onDelete(c.id)}
+        onStar={(s) => onStar(c.id, s)}
+      />
+    ));
+  }
+
   if (!showSections) {
-    return (
-      <div className="space-y-1">
-        {conversations.map((c) => (
-          <ConversationItem
-            key={c.id}
-            conversation={c}
-            isActive={c.id === selectedId}
-            onSelect={() => onSelect(c.id)}
-            onDelete={() => onDelete(c.id)}
-            onStar={(s) => onStar(c.id, s)}
-          />
-        ))}
-      </div>
-    );
+    return <div className="space-y-1">{renderItems(conversations)}</div>;
   }
 
   const starred = conversations.filter((c) => c.starred);
@@ -56,16 +55,7 @@ export function ConversationList({
           <div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
             Starred
           </div>
-          {starred.map((c) => (
-            <ConversationItem
-              key={c.id}
-              conversation={c}
-              isActive={c.id === selectedId}
-              onSelect={() => onSelect(c.id)}
-              onDelete={() => onDelete(c.id)}
-              onStar={(s) => onStar(c.id, s)}
-            />
-          ))}
+          {renderItems(starred)}
           {unstarred.length > 0 && (
             <div className="px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
               Recent
@@ -73,16 +63,7 @@ export function ConversationList({
           )}
         </>
       )}
-      {unstarred.map((c) => (
-        <ConversationItem
-          key={c.id}
-          conversation={c}
-          isActive={c.id === selectedId}
-          onSelect={() => onSelect(c.id)}
-          onDelete={() => onDelete(c.id)}
-          onStar={(s) => onStar(c.id, s)}
-        />
-      ))}
+      {renderItems(unstarred)}
     </div>
   );
 }

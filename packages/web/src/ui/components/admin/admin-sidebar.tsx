@@ -12,6 +12,7 @@ import {
   CalendarClock,
   Zap,
   Coins,
+  Settings,
   ArrowLeft,
 } from "lucide-react";
 import {
@@ -38,6 +39,7 @@ const navItems = [
   { href: "/admin/scheduled-tasks", label: "Scheduled Tasks", icon: CalendarClock },
   { href: "/admin/token-usage", label: "Token Usage", icon: Coins },
   { href: "/admin/actions", label: "Actions", icon: Zap },
+  { href: "/admin/settings", label: "Settings", icon: Settings },
 ];
 
 export function AdminSidebar() {

@@ -35,6 +35,9 @@ CREATE TABLE IF NOT EXISTS accounts (
   contract_end DATE
 );
 
+-- Ensure idempotent seeding (safe to re-run without doubling rows)
+TRUNCATE TABLE accounts, people, companies RESTART IDENTITY CASCADE;
+
 -- Seed data: 50 companies
 INSERT INTO companies (name, industry, employee_count, founded_year, country, revenue, valuation) VALUES
   ('Acme Corp', 'Technology', 450, 2010, 'US', 85000000, 340000000),

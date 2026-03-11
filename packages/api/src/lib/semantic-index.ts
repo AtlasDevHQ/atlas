@@ -32,6 +32,7 @@ interface EntityDimension {
   description?: string;
   sample_values?: unknown[];
   primary_key?: boolean;
+  virtual?: boolean;
 }
 
 interface EntityMeasure {
@@ -235,13 +236,29 @@ function formatEntity(
   if (full) {
     // Full mode: list all columns with types
     if (entity.dimensions && entity.dimensions.length > 0) {
-      lines.push("Columns:");
-      for (const dim of entity.dimensions) {
-        const name = dim.name ?? dim.sql ?? "?";
-        const type = dim.type ?? "unknown";
-        const pk = dim.primary_key ? " PK" : "";
-        const desc = dim.description ? ` — ${dim.description}` : "";
-        lines.push(`  - ${name} (${type}${pk})${desc}`);
+      const realCols = entity.dimensions.filter((d) => !d.virtual);
+      const virtualCols = entity.dimensions.filter((d) => d.virtual);
+
+      if (realCols.length > 0) {
+        lines.push("Columns:");
+        for (const dim of realCols) {
+          const name = dim.name ?? dim.sql ?? "?";
+          const type = dim.type ?? "unknown";
+          const pk = dim.primary_key ? " PK" : "";
+          const desc = dim.description ? ` — ${dim.description}` : "";
+          lines.push(`  - ${name} (${type}${pk})${desc}`);
+        }
+      }
+
+      if (virtualCols.length > 0) {
+        lines.push("Virtual columns (NOT real columns — use the SQL expression inline):");
+        for (const dim of virtualCols) {
+          const name = dim.name ?? "?";
+          const type = dim.type ?? "unknown";
+          const desc = dim.description ? ` — ${dim.description}` : "";
+          const sql = dim.sql ? ` sql: ${dim.sql.replace(/\n/g, " ")}` : "";
+          lines.push(`  - ${name} (${type})${desc}${sql}`);
+        }
       }
     }
 

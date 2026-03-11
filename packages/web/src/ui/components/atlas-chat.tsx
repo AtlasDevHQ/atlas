@@ -5,8 +5,7 @@ import { DefaultChatTransport, isToolUIPart } from "ai";
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { AUTH_MODES, type AuthMode } from "../lib/types";
 import { useAtlasConfig, ActionAuthProvider } from "../context";
-import { DarkModeContext } from "../hooks/use-dark-mode";
-import { useDarkMode } from "../hooks/use-dark-mode";
+import { DarkModeContext, useDarkMode, useThemeMode, setTheme, applyBrandColor, type ThemeMode } from "../hooks/use-dark-mode";
 import { useConversations } from "../hooks/use-conversations";
 import { ErrorBanner } from "./chat/error-banner";
 import { ApiKeyBar } from "./chat/api-key-bar";
@@ -17,6 +16,14 @@ import { Markdown } from "./chat/markdown";
 import { STARTER_PROMPTS } from "./chat/starter-prompts";
 import { ConversationSidebar } from "./conversations/conversation-sidebar";
 import { ChangePasswordDialog } from "./admin/change-password-dialog";
+import { Sun, Moon, Monitor } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Button } from "@/components/ui/button";
 
 const API_KEY_STORAGE_KEY = "atlas-api-key";
 
@@ -33,6 +40,40 @@ const AtlasLogo = (
     <circle cx="128" cy="28" r="16" fill="currentColor"/>
   </svg>
 );
+
+const THEME_OPTIONS = [
+  { value: "light", label: "Light", icon: Sun },
+  { value: "dark", label: "Dark", icon: Moon },
+  { value: "system", label: "System", icon: Monitor },
+] as const satisfies readonly { value: ThemeMode; label: string; icon: typeof Sun }[];
+
+function ThemeToggle() {
+  const mode = useThemeMode();
+  const CurrentIcon = mode === "dark" ? Moon : mode === "light" ? Sun : Monitor;
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="icon" className="size-8 text-zinc-500 dark:text-zinc-400">
+          <CurrentIcon className="size-4" />
+          <span className="sr-only">Toggle theme</span>
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        {THEME_OPTIONS.map(({ value, label, icon: Icon }) => (
+          <DropdownMenuItem
+            key={value}
+            onClick={() => setTheme(value)}
+            className={mode === value ? "bg-accent" : ""}
+          >
+            <Icon className="mr-2 size-4" />
+            {label}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
 
 export function AtlasChat() {
   const { apiUrl, isCrossOrigin, authClient } = useAtlasConfig();
@@ -103,6 +144,10 @@ export function AtlasChat() {
         const mode = data?.checks?.auth?.mode;
         if (typeof mode === "string" && AUTH_MODES.includes(mode as AuthMode)) {
           setAuthMode(mode as AuthMode);
+        }
+        // Apply admin-configured brand color
+        if (typeof data?.brandColor === "string") {
+          applyBrandColor(data.brandColor);
         }
       } catch (err) {
         console.warn("Health endpoint unavailable:", err);
@@ -278,25 +323,28 @@ export function AtlasChat() {
                     </div>
                   </div>
                 </div>
-                {isSignedIn && (
-                  <div className="flex items-center gap-3">
-                    <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                      {managedSession.data?.user?.email}
-                    </span>
-                    <button
-                      onClick={() => {
-                        authClient.signOut().catch((err: unknown) => {
-                          console.error("Sign out failed:", err);
-                          setHealthWarning("Sign out failed. Please try again.");
-                          setTimeout(() => setHealthWarning(""), 5000);
-                        });
-                      }}
-                      className="rounded border border-zinc-200 px-2 py-1 text-xs text-zinc-500 transition-colors hover:border-zinc-400 hover:text-zinc-800 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
-                    >
-                      Sign out
-                    </button>
-                  </div>
-                )}
+                <div className="flex items-center gap-2">
+                  <ThemeToggle />
+                  {isSignedIn && (
+                    <>
+                      <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                        {managedSession.data?.user?.email}
+                      </span>
+                      <button
+                        onClick={() => {
+                          authClient.signOut().catch((err: unknown) => {
+                            console.error("Sign out failed:", err);
+                            setHealthWarning("Sign out failed. Please try again.");
+                            setTimeout(() => setHealthWarning(""), 5000);
+                          });
+                        }}
+                        className="rounded border border-zinc-200 px-2 py-1 text-xs text-zinc-500 transition-colors hover:border-zinc-400 hover:text-zinc-800 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
+                      >
+                        Sign out
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
             </header>
 

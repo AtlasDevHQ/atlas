@@ -31,7 +31,7 @@ interface EntityInfo {
   file: string;
   table: string;
   dimensions: Record<string, unknown>;
-  joins?: Record<string, unknown>;
+  joins?: Record<string, unknown> | unknown[];
   connection?: string;
 }
 

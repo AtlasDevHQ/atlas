@@ -156,6 +156,17 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
   },
 
+  // Appearance
+  {
+    key: "ATLAS_BRAND_COLOR",
+    section: "Appearance",
+    label: "Brand Color",
+    description: "Primary brand color in oklch format (used for theme tokens)",
+    type: "string",
+    default: "oklch(0.759 0.148 167.71)",
+    envVar: "ATLAS_BRAND_COLOR",
+  },
+
   // Secrets (read-only)
   {
     key: "ANTHROPIC_API_KEY",

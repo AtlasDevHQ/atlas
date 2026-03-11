@@ -27,7 +27,7 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
-import { Settings, Pencil, RotateCcw, Loader2, Info, Lock, RefreshCw } from "lucide-react";
+import { Settings, Pencil, RotateCcw, Loader2, Info, Lock, RefreshCw, Palette } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -272,6 +272,156 @@ function SettingRow({
   );
 }
 
+// ── Brand Color Card ──────────────────────────────────────────────
+
+const DEFAULT_BRAND_COLOR = "oklch(0.759 0.148 167.71)";
+
+/** Apply --atlas-brand on :root so theme tokens update without reload. */
+function applyBrandColor(color: string) {
+  if (typeof document === "undefined") return;
+  document.documentElement.style.setProperty("--atlas-brand", color);
+}
+
+function BrandColorCard({
+  setting,
+  manageable,
+  apiUrl,
+  credentials,
+  onSaved,
+}: {
+  setting: SettingWithValue | undefined;
+  manageable: boolean;
+  apiUrl: string;
+  credentials: RequestCredentials;
+  onSaved: () => void;
+}) {
+  const currentValue = setting?.currentValue ?? DEFAULT_BRAND_COLOR;
+  const [value, setValue] = useState(currentValue);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Sync local state when API data changes
+  const settingValue = setting?.currentValue;
+  const [prevSettingValue, setPrevSettingValue] = useState(settingValue);
+  if (settingValue !== prevSettingValue) {
+    setPrevSettingValue(settingValue);
+    setValue(settingValue ?? DEFAULT_BRAND_COLOR);
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `${apiUrl}/api/v1/admin/settings/${encodeURIComponent("ATLAS_BRAND_COLOR")}`,
+        {
+          method: "PUT",
+          credentials,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ value }),
+        },
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.message ?? `HTTP ${res.status}`);
+      }
+      applyBrandColor(value);
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleReset() {
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `${apiUrl}/api/v1/admin/settings/${encodeURIComponent("ATLAS_BRAND_COLOR")}`,
+        { method: "DELETE", credentials },
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.message ?? `HTTP ${res.status}`);
+      }
+      setValue(DEFAULT_BRAND_COLOR);
+      applyBrandColor(DEFAULT_BRAND_COLOR);
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to reset");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card className="shadow-none">
+      <CardHeader className="pb-2">
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Palette className="size-4" />
+          Brand Color
+        </CardTitle>
+        <CardDescription>
+          Primary brand color used for theme tokens (primary, ring, sidebar). Changes apply immediately.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex items-center gap-4">
+          <div
+            className="size-10 rounded-md border"
+            style={{ backgroundColor: value }}
+          />
+          <div className="flex-1">
+            <Input
+              value={value}
+              onChange={(e) => {
+                setValue(e.target.value);
+                applyBrandColor(e.target.value);
+              }}
+              placeholder={DEFAULT_BRAND_COLOR}
+              disabled={!manageable}
+              className="font-mono text-sm"
+            />
+          </div>
+        </div>
+
+        {setting?.source === "override" && (
+          <p className="text-xs text-muted-foreground">
+            Default: <code className="rounded bg-muted px-1">{DEFAULT_BRAND_COLOR}</code>
+          </p>
+        )}
+
+        {error && (
+          <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {error}
+          </div>
+        )}
+
+        {manageable && (
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              onClick={handleSave}
+              disabled={saving || value === currentValue}
+            >
+              {saving && <Loader2 className="mr-1 size-3 animate-spin" />}
+              Save
+            </Button>
+            {setting?.source === "override" && (
+              <Button variant="outline" size="sm" onClick={handleReset} disabled={saving}>
+                <RotateCcw className="mr-1 size-3" />
+                Reset to default
+              </Button>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 // ── Main Page ─────────────────────────────────────────────────────
 
 export default function SettingsPage() {
@@ -304,9 +454,11 @@ export default function SettingsPage() {
     );
   }
 
-  // Group settings by section
+  // Pull out brand color for dedicated card; group rest by section
+  const brandColorSetting = settings.find((s) => s.key === "ATLAS_BRAND_COLOR");
   const sections = new Map<string, SettingWithValue[]>();
   for (const s of settings) {
+    if (s.key === "ATLAS_BRAND_COLOR") continue;
     const list = sections.get(s.section) ?? [];
     list.push(s);
     sections.set(s.section, list);
@@ -375,6 +527,13 @@ export default function SettingsPage() {
           <LoadingState message="Loading settings..." />
         ) : settings.length > 0 ? (
           <div className="space-y-6">
+            <BrandColorCard
+              setting={brandColorSetting}
+              manageable={manageable}
+              apiUrl={apiUrl}
+              credentials={credentials}
+              onSaved={refetch}
+            />
             {Array.from(sections.entries()).map(([section, items]) => (
               <Card key={section} className="shadow-none">
                 <CardHeader className="pb-2">

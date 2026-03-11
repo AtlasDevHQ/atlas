@@ -19,6 +19,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { getExploreBackendType, getActiveSandboxPluginId } from "@atlas/api/lib/tools/explore";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { SENSITIVE_PATTERNS } from "@atlas/api/lib/security";
+import { getSetting } from "@atlas/api/lib/settings";
 
 const log = createLogger("health");
 
@@ -297,9 +298,13 @@ health.get("/", async (c) => {
       },
     };
 
+    // Brand color for frontend theming (public, no auth required)
+    const brandColor = getSetting("ATLAS_BRAND_COLOR");
+
     const response = {
       status,
       ...(warnings.length > 0 && { warnings }),
+      ...(brandColor && { brandColor }),
       components,
       checks: {
         datasource: dsNotConfigured

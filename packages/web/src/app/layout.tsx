@@ -15,8 +15,10 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
-        {/* Inline script to set dark class before first paint — prevents flash */}
-        <script dangerouslySetInnerHTML={{ __html: `try{if(window.matchMedia("(prefers-color-scheme:dark)").matches)document.documentElement.classList.add("dark")}catch(e){}` }} />
+        {/* Inline script to set dark class before first paint — prevents flash.
+            Reads atlas-theme from localStorage: "dark" → always dark, "light" → always light,
+            "system" or missing → follows prefers-color-scheme. */}
+        <script dangerouslySetInnerHTML={{ __html: `try{var t=localStorage.getItem("atlas-theme");var d=t==="dark"||(t!=="light"&&window.matchMedia("(prefers-color-scheme:dark)").matches);if(d)document.documentElement.classList.add("dark")}catch(e){}` }} />
       </head>
       <body className="bg-white text-zinc-900 antialiased dark:bg-zinc-950 dark:text-zinc-100">
         <NuqsAdapter>{children}</NuqsAdapter>

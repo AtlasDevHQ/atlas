@@ -17,11 +17,11 @@ const jetbrainsMono = JetBrains_Mono({
 export const metadata: Metadata = {
   title: "Atlas — Ask your data anything",
   description:
-    "Deploy-anywhere text-to-SQL agent. Connect your database, auto-generate a semantic layer, and query your data in natural language.",
+    "Deploy-anywhere text-to-SQL agent. Connect any database, auto-generate a semantic layer, and query your data in natural language. 6 databases, 15 plugins, admin console, Slack, MCP, and more.",
   openGraph: {
     title: "Atlas — Ask your data anything",
     description:
-      "Deploy-anywhere text-to-SQL agent. Connect your database, auto-generate a semantic layer, and query your data in natural language.",
+      "Deploy-anywhere text-to-SQL agent. Connect any database, auto-generate a semantic layer, and query your data in natural language. 6 databases, 15 plugins, admin console, Slack, MCP, and more.",
     url: "https://useatlas.dev",
     siteName: "Atlas",
     type: "website",

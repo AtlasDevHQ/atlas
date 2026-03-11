@@ -61,7 +61,7 @@ export default function Home() {
             </span>
           </h1>
           <p className="animate-fade-in-up delay-300 mt-6 max-w-xl text-lg leading-relaxed text-zinc-400">
-            Connect your database, auto-generate a semantic layer, and query
+            Connect any database, auto-generate a semantic layer, and query
             your data in plain English. Atlas validates every query, enforces
             read-only access, and deploys anywhere.
           </p>
@@ -171,6 +171,66 @@ export default function Home() {
               description:
                 "Docker, Railway, or Vercel. Ship a full-stack app or a headless API. One command to scaffold: bun create atlas-agent.",
             },
+            {
+              icon: (
+                <svg
+                  className="h-5 w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={1.5}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M14.25 6.087c0-.355.186-.676.401-.959.221-.29.349-.634.349-1.003 0-1.036-1.007-1.875-2.25-1.875s-2.25.84-2.25 1.875c0 .369.128.713.349 1.003.215.283.401.604.401.959v0a.64.64 0 01-.657.643 48.39 48.39 0 01-4.163-.3c.186 1.613.293 3.25.315 4.907a.656.656 0 01-.658.663v0c-.355 0-.676-.186-.959-.401a1.647 1.647 0 00-1.003-.349c-1.036 0-1.875 1.007-1.875 2.25s.84 2.25 1.875 2.25c.369 0 .713-.128 1.003-.349.283-.215.604-.401.959-.401v0c.31 0 .555.26.532.57a48.039 48.039 0 01-.642 5.056c1.518.19 3.058.309 4.616.354a.64.64 0 00.657-.643v0c0-.355-.186-.676-.401-.959a1.647 1.647 0 01-.349-1.003c0-1.035 1.008-1.875 2.25-1.875 1.243 0 2.25.84 2.25 1.875 0 .369-.128.713-.349 1.003-.215.283-.4.604-.4.959v0c0 .333.277.599.61.58a48.1 48.1 0 005.427-.63 48.05 48.05 0 00.582-4.717.532.532 0 00-.533-.57v0c-.355 0-.676.186-.959.401-.29.221-.634.349-1.003.349-1.035 0-1.875-1.007-1.875-2.25s.84-2.25 1.875-2.25c.37 0 .713.128 1.003.349.283.215.604.401.96.401v0a.656.656 0 00.658-.663 48.422 48.422 0 00-.37-5.36c-1.886.342-3.81.574-5.766.689a.578.578 0 01-.61-.58v0z"
+                  />
+                </svg>
+              ),
+              title: "Plugin Ecosystem",
+              description:
+                "15 plugins across 5 types. Datasource, sandbox, interaction, action, and context. Build your own with bun create @useatlas/plugin.",
+            },
+            {
+              icon: (
+                <svg
+                  className="h-5 w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={1.5}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M10.5 6h9.75M10.5 6a1.5 1.5 0 11-3 0m3 0a1.5 1.5 0 10-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-9.75 0h9.75"
+                  />
+                </svg>
+              ),
+              title: "Admin Console",
+              description:
+                "Monitor connections, manage users, browse your semantic layer, track queries, and configure settings. Everything from one dashboard.",
+            },
+            {
+              icon: (
+                <svg
+                  className="h-5 w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={1.5}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
+                </svg>
+              ),
+              title: "Scheduled Reports",
+              description:
+                "Cron-based recurring queries delivered to email, Slack, or webhooks. Set it and forget it.",
+            },
           ].map((feature, i) => (
             <div key={i} className="bg-zinc-950 p-8 md:p-10">
               <div className="mb-4 flex h-9 w-9 items-center justify-center rounded-lg border border-zinc-800 text-brand">
@@ -198,7 +258,7 @@ export default function Home() {
               step: "01",
               title: "Connect your database",
               description:
-                "Point Atlas at any PostgreSQL or MySQL database. Read-only access enforced at every layer.",
+                "Point Atlas at any PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, or Salesforce database. Read-only access enforced at every layer.",
               code: "ATLAS_DATASOURCE_URL=postgresql://...",
             },
             {
@@ -241,22 +301,172 @@ export default function Home() {
         <div className="h-px bg-gradient-to-r from-transparent via-zinc-800 to-transparent" />
       </div>
 
+      {/* Databases */}
+      <section className="mx-auto max-w-5xl px-6 py-20 md:py-28">
+        <h2 className="mb-4 font-mono text-xs tracking-widest text-brand/80 uppercase">
+          Databases
+        </h2>
+        <p className="mb-10 max-w-xl text-zinc-400">
+          Connect to the databases you already use. Native adapters with
+          read-only enforcement, connection pooling, and schema-aware profiling.
+        </p>
+        <div className="flex flex-wrap gap-3">
+          {[
+            "PostgreSQL",
+            "MySQL",
+            "ClickHouse",
+            "Snowflake",
+            "DuckDB",
+            "Salesforce",
+          ].map((db) => (
+            <div
+              key={db}
+              className="flex items-center gap-2.5 rounded-full border border-zinc-800/60 bg-zinc-900/30 px-4 py-2"
+            >
+              <span className="h-1.5 w-1.5 rounded-full bg-brand/60" />
+              <span className="font-mono text-xs font-medium text-zinc-300">
+                {db}
+              </span>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* Integrations */}
+      <section className="mx-auto max-w-5xl px-6 pb-20 md:pb-28">
+        <h2 className="mb-4 font-mono text-xs tracking-widest text-brand/80 uppercase">
+          Integrations
+        </h2>
+        <div className="grid gap-px overflow-hidden rounded-xl border border-zinc-800/60 bg-zinc-800/40 md:grid-cols-3">
+          {[
+            {
+              icon: (
+                <svg
+                  className="h-5 w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={1.5}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M20.25 8.511c.884.284 1.5 1.128 1.5 2.097v4.286c0 1.136-.847 2.1-1.98 2.193-.34.027-.68.052-1.02.072v3.091l-3-3c-1.354 0-2.694-.055-4.02-.163a2.115 2.115 0 01-.825-.242m9.345-8.334a2.126 2.126 0 00-.476-.095 48.64 48.64 0 00-8.048 0c-1.131.094-1.976 1.057-1.976 2.192v4.286c0 .837.46 1.58 1.155 1.951m9.345-8.334V6.637c0-1.621-1.152-3.026-2.76-3.235A48.455 48.455 0 0011.25 3c-2.115 0-4.198.137-6.24.402-1.608.209-2.76 1.614-2.76 3.235v6.226c0 1.621 1.152 3.026 2.76 3.235.577.075 1.157.14 1.74.194V21l4.155-4.155"
+                  />
+                </svg>
+              ),
+              title: "Slack",
+              description:
+                "Slash commands, threaded follow-ups, and action approvals\u200a\u2014\u200aright where your team works.",
+            },
+            {
+              icon: (
+                <svg
+                  className="h-5 w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={1.5}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244"
+                  />
+                </svg>
+              ),
+              title: "MCP Server",
+              description:
+                "Use Atlas as a tool in Claude Desktop, Cursor, or any MCP-compatible client.",
+            },
+            {
+              icon: (
+                <svg
+                  className="h-5 w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={1.5}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M17.25 6.75L22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3l-4.5 16.5"
+                  />
+                </svg>
+              ),
+              title: "TypeScript SDK",
+              description:
+                "createAtlasClient() for programmatic access. Query, chat, and manage conversations.",
+            },
+          ].map((item, i) => (
+            <div key={i} className="bg-zinc-950 p-8 md:p-10">
+              <div className="mb-4 flex h-9 w-9 items-center justify-center rounded-lg border border-zinc-800 text-brand">
+                {item.icon}
+              </div>
+              <h3 className="mb-2 font-mono text-sm font-medium tracking-wide text-zinc-100">
+                {item.title}
+              </h3>
+              <p className="text-sm leading-relaxed text-zinc-500">
+                {item.description}
+              </p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* Embed anywhere */}
+      <section className="mx-auto max-w-5xl px-6 pb-20 md:pb-28">
+        <h2 className="mb-4 font-mono text-xs tracking-widest text-brand/80 uppercase">
+          Embed anywhere
+        </h2>
+        <p className="mb-8 max-w-xl text-zinc-400">
+          Drop Atlas into any frontend. The chat UI is a pure HTTP
+          client\u200a\u2014\u200ano server dependency.
+        </p>
+        <div className="flex flex-wrap gap-2.5">
+          {[
+            "React / Vite",
+            "Next.js",
+            "Nuxt",
+            "SvelteKit",
+            "TanStack Start",
+            "Bring your own",
+          ].map((fw) => (
+            <span
+              key={fw}
+              className="rounded-md border border-zinc-800/50 bg-zinc-900/20 px-3 py-1.5 font-mono text-xs text-zinc-500"
+            >
+              {fw}
+            </span>
+          ))}
+        </div>
+      </section>
+
+      {/* Divider */}
+      <div className="mx-auto max-w-5xl px-6">
+        <div className="h-px bg-gradient-to-r from-transparent via-zinc-800 to-transparent" />
+      </div>
+
       {/* Security */}
       <section className="mx-auto max-w-5xl px-6 py-20 md:py-28">
         <h2 className="mb-4 font-mono text-xs tracking-widest text-brand/80 uppercase">
           Security
         </h2>
         <p className="mb-10 max-w-xl text-zinc-400">
-          Every query runs through a 4-layer validation pipeline. No data ever
+          Every query runs through a 7-layer validation pipeline. No data ever
           leaves your infrastructure.
         </p>
-        <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
           {[
             "Read-only queries",
             "AST validation",
             "Table whitelisting",
             "Sandboxed execution",
             "Statement timeouts",
+            "Row-level security",
+            "Encrypted credentials",
+            "Audit logging",
           ].map((item) => (
             <div
               key={item}

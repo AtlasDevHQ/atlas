@@ -347,6 +347,16 @@ export default function SettingsPage() {
           </div>
         )}
 
+        {manageable && !loading && !error && (
+          <div className="mb-6 flex items-start gap-2 rounded-md border border-blue-500/30 bg-blue-500/5 px-4 py-3">
+            <Info className="mt-0.5 size-4 shrink-0 text-blue-600 dark:text-blue-400" />
+            <p className="text-sm text-blue-700 dark:text-blue-300">
+              Setting overrides are saved to the database. Changes to most settings
+              take effect after a server restart.
+            </p>
+          </div>
+        )}
+
         {loading ? (
           <LoadingState message="Loading settings..." />
         ) : settings.length > 0 ? (

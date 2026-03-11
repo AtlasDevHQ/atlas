@@ -163,6 +163,13 @@ describe("settings module", () => {
       );
     });
 
+    it("throws for unknown keys", async () => {
+      enableInternalDB();
+      await expect(setSetting("NONEXISTENT_KEY", "value")).rejects.toThrow(
+        "Unknown setting key",
+      );
+    });
+
     it("upserts into DB and updates cache", async () => {
       enableInternalDB();
       setResults({ rows: [] }); // for the upsert query

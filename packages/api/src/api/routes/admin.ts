@@ -2787,13 +2787,16 @@ admin.put("/settings/:key", async (c) => {
 
     // Type-specific validation
     if (def.type === "number") {
+      if (value === "") {
+        return c.json({ error: "invalid_request", message: `"${key}" cannot be empty. Use DELETE to revert to default.` }, 400);
+      }
       const num = Number(value);
-      if (value !== "" && !Number.isFinite(num)) {
+      if (!Number.isFinite(num)) {
         return c.json({ error: "invalid_request", message: `"${key}" must be a valid number.` }, 400);
       }
     }
     if (def.type === "boolean") {
-      if (!["true", "false", ""].includes(value)) {
+      if (!["true", "false"].includes(value)) {
         return c.json({ error: "invalid_request", message: `"${key}" must be "true" or "false".` }, 400);
       }
     }
@@ -2847,7 +2850,7 @@ admin.delete("/settings/:key", async (c) => {
     }
 
     try {
-      await deleteSetting(key);
+      await deleteSetting(key, authResult.user?.id);
       log.info({ requestId, key, actorId: authResult.user?.id }, "Setting override removed via admin API");
       return c.json({ success: true, key });
     } catch (err) {

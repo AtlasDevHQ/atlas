@@ -190,12 +190,12 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
 // ---------------------------------------------------------------------------
 
 const _cache = new Map<string, { value: string; updated_at: string; updated_by: string | null }>();
-let _cacheLoaded = false;
+
+const SETTINGS_KEYS = new Set(SETTINGS_REGISTRY.map((s) => s.key));
 
 /** @internal Reset cache — for testing only. */
 export function _resetSettingsCache(): void {
   _cache.clear();
-  _cacheLoaded = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -207,10 +207,7 @@ export function _resetSettingsCache(): void {
  * Call once at startup. No-op when no internal DB.
  */
 export async function loadSettings(): Promise<number> {
-  if (!hasInternalDB()) {
-    _cacheLoaded = true;
-    return 0;
-  }
+  if (!hasInternalDB()) return 0;
 
   try {
     const rows = await internalQuery<Record<string, unknown> & SettingRow>(
@@ -225,18 +222,20 @@ export async function loadSettings(): Promise<number> {
         updated_by: row.updated_by,
       });
     }
-    _cacheLoaded = true;
 
     if (rows.length > 0) {
       log.info({ count: rows.length }, "Loaded settings from internal DB");
     }
     return rows.length;
   } catch (err) {
-    log.warn(
-      { err: err instanceof Error ? err.message : String(err) },
-      "Could not load settings (table may not exist yet)",
-    );
-    _cacheLoaded = true;
+    const msg = err instanceof Error ? err.message : String(err);
+    // "42P01" = relation does not exist — expected on first boot before migration
+    const isTableMissing = msg.includes("does not exist") || msg.includes("42P01");
+    if (isTableMissing) {
+      log.warn({ err: msg }, "Settings table does not exist yet — using env vars only");
+    } else {
+      log.error({ err: msg }, "Failed to load settings from internal DB — using env vars only");
+    }
     return 0;
   }
 }
@@ -266,6 +265,9 @@ export async function setSetting(key: string, value: string, userId?: string): P
   if (!hasInternalDB()) {
     throw new Error("Internal database required to persist settings overrides");
   }
+  if (!SETTINGS_KEYS.has(key)) {
+    throw new Error(`Unknown setting key: "${key}"`);
+  }
 
   await internalQuery(
     `INSERT INTO settings (key, value, updated_at, updated_by)
@@ -287,7 +289,7 @@ export async function setSetting(key: string, value: string, userId?: string): P
  * Delete a settings override, reverting to env var / default.
  * Throws if no internal DB is available.
  */
-export async function deleteSetting(key: string): Promise<void> {
+export async function deleteSetting(key: string, userId?: string): Promise<void> {
   if (!hasInternalDB()) {
     throw new Error("Internal database required to manage settings overrides");
   }
@@ -295,7 +297,7 @@ export async function deleteSetting(key: string): Promise<void> {
   await internalQuery("DELETE FROM settings WHERE key = $1", [key]);
   _cache.delete(key);
 
-  log.info({ key }, "Setting override removed");
+  log.info({ key, actorId: userId }, "Setting override removed");
 }
 
 /**
@@ -304,17 +306,9 @@ export async function deleteSetting(key: string): Promise<void> {
 export async function getAllSettingOverrides(): Promise<SettingRow[]> {
   if (!hasInternalDB()) return [];
 
-  try {
-    return await internalQuery<Record<string, unknown> & SettingRow>(
-      "SELECT key, value, updated_at::text, updated_by FROM settings ORDER BY key",
-    );
-  } catch (err) {
-    log.warn(
-      { err: err instanceof Error ? err.message : String(err) },
-      "Failed to load settings from internal DB",
-    );
-    return [];
-  }
+  return await internalQuery<Record<string, unknown> & SettingRow>(
+    "SELECT key, value, updated_at::text, updated_by FROM settings ORDER BY key",
+  );
 }
 
 // ---------------------------------------------------------------------------

@@ -92,6 +92,67 @@ export function downloadCSV(csv: string, filename = "atlas-results.csv") {
   }
 }
 
+/** Strict ISO date pattern: YYYY-MM-DD with optional time component. */
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?)?$/;
+
+/** Coerce a cell value to a typed Excel cell: numbers/booleans pass through, ISO dates become Date objects, null becomes empty string. Exported for testing. */
+export function coerceExcelCell(v: unknown): unknown {
+  if (v == null) return "";
+  if (typeof v === "number" || typeof v === "boolean") return v;
+  if (typeof v === "string" && ISO_DATE_RE.test(v) && !isNaN(Date.parse(v))) {
+    return new Date(v);
+  }
+  return String(v);
+}
+
+/** Trigger an Excel (.xlsx) download in the browser. Dynamically imports xlsx to avoid bundle bloat. */
+export async function downloadExcel(
+  columns: string[],
+  rows: Record<string, unknown>[],
+  filename = "atlas-results.xlsx",
+) {
+  let XLSX: typeof import("xlsx");
+  try {
+    XLSX = await import("xlsx");
+  } catch (err) {
+    console.error("Failed to load xlsx library:", err);
+    window.alert("Excel export is unavailable. The spreadsheet library failed to load.");
+    return;
+  }
+
+  let url: string | null = null;
+  try {
+    const data = rows.map((row) => {
+      const obj: Record<string, unknown> = {};
+      for (const col of columns) {
+        obj[col] = coerceExcelCell(row[col]);
+      }
+      return obj;
+    });
+    const ws = XLSX.utils.json_to_sheet(data, { header: columns });
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Results");
+    const wbOut = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+    const blob = new Blob([wbOut], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+  } catch (err) {
+    console.error("Excel download failed:", err);
+    const detail = err instanceof Error ? err.message : "Unknown error";
+    window.alert(`Excel download failed: ${detail}\n\nYou can try the CSV download as an alternative.`);
+  } finally {
+    if (url) {
+      const blobUrl = url;
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 10_000);
+    }
+  }
+}
+
 /** Format a cell value: null as em-dash, numbers with locale formatting, else stringified. */
 export function formatCell(value: unknown): string {
   if (value == null) return "\u2014";

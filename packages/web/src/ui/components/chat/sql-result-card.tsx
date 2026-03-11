@@ -1,7 +1,8 @@
 "use client";
 
 import { useContext, useMemo, useState } from "react";
-import { getToolArgs, getToolResult, isToolComplete, downloadCSV, toCsvString } from "../../lib/helpers";
+import { getToolArgs, getToolResult, isToolComplete, downloadCSV, downloadExcel, toCsvString } from "../../lib/helpers";
+import { FileDown, FileSpreadsheet } from "lucide-react";
 import { DarkModeContext } from "../../hooks/use-dark-mode";
 import { detectCharts } from "../chart/chart-detection";
 import dynamic from "next/dynamic";
@@ -131,9 +132,19 @@ export function SQLResultCard({ part }: { part: unknown }) {
             {hasData && (
               <button
                 onClick={() => downloadCSV(toCsvString(columns, rows))}
-                className="rounded border border-zinc-200 px-2 py-1 text-xs text-zinc-500 transition-colors hover:border-zinc-400 hover:text-zinc-800 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
+                className="inline-flex items-center gap-1.5 rounded border border-zinc-200 px-2 py-1 text-xs text-zinc-500 transition-colors hover:border-zinc-400 hover:text-zinc-800 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
               >
-                Download CSV
+                <FileDown className="size-3" />
+                CSV
+              </button>
+            )}
+            {hasData && (
+              <button
+                onClick={() => { downloadExcel(columns, rows).catch(() => {}); }}
+                className="inline-flex items-center gap-1.5 rounded border border-zinc-200 px-2 py-1 text-xs text-zinc-500 transition-colors hover:border-zinc-400 hover:text-zinc-800 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
+              >
+                <FileSpreadsheet className="size-3" />
+                Excel
               </button>
             )}
           </div>

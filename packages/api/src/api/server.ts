@@ -210,6 +210,11 @@ await migrateAuthTables().catch((err) => {
   log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Boot migration failed");
 });
 
+// Load settings overrides from internal DB into in-process cache.
+// loadSettings() handles errors internally (logs + falls back to env vars).
+import { loadSettings } from "@atlas/api/lib/settings";
+await loadSettings();
+
 // Start scheduler if configured with "bun" backend
 if (config.scheduler?.backend === "bun") {
   const { getScheduler } = await import("@atlas/api/lib/scheduler/engine");

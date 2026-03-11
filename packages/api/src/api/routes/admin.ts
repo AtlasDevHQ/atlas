@@ -27,6 +27,12 @@ import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import { plugins } from "@atlas/api/lib/plugins/registry";
 import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
 import { savePluginEnabled, savePluginConfig, getPluginConfig } from "@atlas/api/lib/plugins/settings";
+import {
+  getSettingsForAdmin,
+  getSettingsRegistry,
+  setSetting,
+  deleteSetting,
+} from "@atlas/api/lib/settings";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import type { AtlasRole } from "@atlas/api/lib/auth/types";
 import { ATLAS_ROLES } from "@atlas/api/lib/auth/types";
@@ -2709,6 +2715,149 @@ admin.get("/tokens/trends", async (c) => {
     log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to fetch token trends");
     return c.json({ error: "internal_error", message: "Failed to fetch token usage trends." }, 500);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Settings routes
+// ---------------------------------------------------------------------------
+
+// GET /settings — all known settings with current values and sources
+admin.get("/settings", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  return withRequestContext({ requestId, user: authResult.user }, () => {
+    const settings = getSettingsForAdmin();
+    const manageable = hasInternalDB();
+    return c.json({ settings, manageable });
+  });
+});
+
+// PUT /settings/:key — set or update a settings override
+admin.put("/settings/:key", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  if (!hasInternalDB()) {
+    return c.json(
+      { error: "not_available", message: "Settings overrides require an internal database (DATABASE_URL)." },
+      404,
+    );
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const key = c.req.param("key");
+
+    // Validate that the key is in the registry
+    const registry = getSettingsRegistry();
+    const def = registry.find((s) => s.key === key);
+    if (!def) {
+      return c.json({ error: "invalid_request", message: `Unknown setting: "${key}".` }, 400);
+    }
+
+    // Secret settings are read-only
+    if (def.secret) {
+      return c.json({ error: "forbidden", message: "Secret settings cannot be modified from the UI." }, 403);
+    }
+
+    let body: { value?: unknown };
+    try {
+      body = (await c.req.json()) as { value?: unknown };
+    } catch {
+      return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+    }
+
+    if (body.value === undefined || body.value === null) {
+      return c.json({ error: "invalid_request", message: "Missing 'value' in request body." }, 400);
+    }
+
+    const value = String(body.value);
+
+    // Type-specific validation
+    if (def.type === "number") {
+      if (value === "") {
+        return c.json({ error: "invalid_request", message: `"${key}" cannot be empty. Use DELETE to revert to default.` }, 400);
+      }
+      const num = Number(value);
+      if (!Number.isFinite(num) || num < 0) {
+        return c.json({ error: "invalid_request", message: `"${key}" must be a non-negative number.` }, 400);
+      }
+    }
+    if (def.type === "boolean") {
+      if (!["true", "false"].includes(value)) {
+        return c.json({ error: "invalid_request", message: `"${key}" must be "true" or "false".` }, 400);
+      }
+    }
+    if (def.type === "select" && def.options) {
+      if (value !== "" && !def.options.includes(value)) {
+        return c.json({ error: "invalid_request", message: `"${key}" must be one of: ${def.options.join(", ")}.` }, 400);
+      }
+    }
+
+    try {
+      await setSetting(key, value, authResult.user?.id);
+      log.info({ requestId, key, actorId: authResult.user?.id }, "Setting override saved via admin API");
+      return c.json({ success: true, key, value });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), key }, "Failed to save setting");
+      return c.json({ error: "internal_error", message: "Failed to save setting." }, 500);
+    }
+  });
+});
+
+// DELETE /settings/:key — remove override, revert to env var / default
+admin.delete("/settings/:key", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  if (!hasInternalDB()) {
+    return c.json(
+      { error: "not_available", message: "Settings overrides require an internal database (DATABASE_URL)." },
+      404,
+    );
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const key = c.req.param("key");
+
+    // Validate that the key is in the registry
+    const registry = getSettingsRegistry();
+    const def = registry.find((s) => s.key === key);
+    if (!def) {
+      return c.json({ error: "invalid_request", message: `Unknown setting: "${key}".` }, 400);
+    }
+
+    if (def.secret) {
+      return c.json({ error: "forbidden", message: "Secret settings cannot be modified from the UI." }, 403);
+    }
+
+    try {
+      await deleteSetting(key, authResult.user?.id);
+      log.info({ requestId, key, actorId: authResult.user?.id }, "Setting override removed via admin API");
+      return c.json({ success: true, key });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), key }, "Failed to delete setting");
+      return c.json({ error: "internal_error", message: "Failed to delete setting." }, 500);
+    }
+  });
 });
 
 export { admin };

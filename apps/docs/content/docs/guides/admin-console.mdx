@@ -203,6 +203,43 @@ Plugin enable/disable state and config overrides are stored in the internal data
 
 ---
 
+## Settings
+
+**Route:** `/admin/settings`
+
+Manage application configuration from the UI. Settings follow a three-tier resolution: **DB override > env var > default**.
+
+- **Grouped sections** — Query Limits, Rate Limiting, Security, Agent, Secrets
+- **Source badges** — Each setting shows where its current value comes from:
+  - **override** (blue) — value saved in the internal database
+  - **env** (green) — value from an environment variable
+  - **default** (gray) — built-in default
+- **Edit** — Override any non-secret setting. Changes are saved to the internal database and take effect immediately
+- **Reset** — Remove a DB override to revert to the environment variable or default value
+- **Secrets** — Sensitive settings (API keys, database URLs) are masked and read-only. Manage these via environment variables
+
+<Callout type="info">
+Settings overrides require an internal database (`DATABASE_URL`). Without it, the settings page is read-only — all values come from environment variables.
+</Callout>
+
+**Available settings:**
+
+| Section | Setting | Description |
+|---------|---------|-------------|
+| Query Limits | `ATLAS_ROW_LIMIT` | Maximum rows returned per query (default: 1000) |
+| Query Limits | `ATLAS_QUERY_TIMEOUT` | Query timeout in ms (default: 30000) |
+| Rate Limiting | `ATLAS_RATE_LIMIT_RPM` | Max requests per minute per user |
+| Security | `ATLAS_RLS_ENABLED` | Enable row-level security |
+| Security | `ATLAS_RLS_COLUMN` | Column name for RLS filtering |
+| Security | `ATLAS_RLS_CLAIM` | JWT claim path for RLS value |
+| Security | `ATLAS_TABLE_WHITELIST` | Only allow semantic layer tables (default: true) |
+| Security | `ATLAS_CORS_ORIGIN` | Allowed CORS origin (default: *) |
+| Agent | `ATLAS_PROVIDER` | LLM provider selection |
+| Agent | `ATLAS_MODEL` | Model ID override |
+| Agent | `ATLAS_LOG_LEVEL` | Application log level |
+
+---
+
 ## User Management
 
 **Route:** `/admin/users`
@@ -268,6 +305,9 @@ All admin endpoints are at `/api/v1/admin/` and require the `admin` role. See th
 | `GET` | `/tokens/summary` | Token usage summary |
 | `GET` | `/tokens/by-user` | Top users by token consumption |
 | `GET` | `/tokens/trends` | Daily token usage time series |
+| `GET` | `/settings` | List all settings with values and sources |
+| `PUT` | `/settings/:key` | Set or update a settings override |
+| `DELETE` | `/settings/:key` | Remove override (revert to env/default) |
 | `GET` | `/plugins` | List plugins |
 | `POST` | `/plugins/:id/health` | Plugin health check |
 | `POST` | `/plugins/:id/enable` | Enable a plugin |

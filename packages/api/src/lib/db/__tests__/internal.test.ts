@@ -200,7 +200,7 @@ describe("internal DB module", () => {
       _resetPool(pool);
 
       await migrateInternalDB();
-      expect(calls.queries.length).toBe(37);
+      expect(calls.queries.length).toBe(38);
       expect(calls.queries[0].sql).toContain("CREATE TABLE IF NOT EXISTS audit_log");
       expect(calls.queries[1].sql).toContain("idx_audit_log_timestamp");
       expect(calls.queries[2].sql).toContain("idx_audit_log_user_id");

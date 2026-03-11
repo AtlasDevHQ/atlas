@@ -204,4 +204,4 @@ These env vars can also be set via `atlas.config.ts` under `actions.defaults`. S
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ATLAS_LOG_LEVEL` | `info` | Pino log level: `trace`, `debug`, `info`, `warn`, `error`, `fatal` |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OpenTelemetry collector endpoint. When set, Atlas emits trace spans for agent steps via `@opentelemetry/api` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OpenTelemetry collector endpoint (e.g. `http://localhost:4318`). When set, the API server (`atlas-api`) and web frontend (`atlas`) emit distributed trace spans for HTTP requests, agent steps, SQL queries, and explore commands |

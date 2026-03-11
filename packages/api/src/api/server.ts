@@ -11,6 +11,19 @@
  * env-var behavior is preserved.
  */
 
+// Initialize OpenTelemetry SDK before other imports that may create spans.
+// No-op when OTEL_EXPORTER_OTLP_ENDPOINT is not set — @opentelemetry/api
+// returns no-op tracers (zero overhead).
+if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
+  await import("@atlas/api/lib/telemetry").catch((err) => {
+    console.error(
+      "[atlas-api] Failed to initialize OpenTelemetry:",
+      err instanceof Error ? err.message : String(err),
+      "— tracing disabled for this process",
+    );
+  });
+}
+
 import { app } from "./index";
 import { createLogger } from "@atlas/api/lib/logger";
 import { initializeConfig } from "@atlas/api/lib/config";

@@ -25,4 +25,32 @@ describe("tracing", () => {
     });
     expect(result).toBe("async-result");
   });
+
+  test("withSpan calls setResultAttributes on success", async () => {
+    const result = await withSpan(
+      "test.attrs",
+      { initial: "value" },
+      async () => ({ rows: [1, 2, 3], columns: ["a", "b"] }),
+      (r) => ({ "row_count": r.rows.length, "col_count": r.columns.length }),
+    );
+    expect(result).toEqual({ rows: [1, 2, 3], columns: ["a", "b"] });
+  });
+
+  test("withSpan does not call setResultAttributes on error", async () => {
+    let called = false;
+    await expect(
+      withSpan(
+        "test.attrs.error",
+        {},
+        async () => { throw new Error("boom"); },
+        () => { called = true; return {}; },
+      ),
+    ).rejects.toThrow("boom");
+    expect(called).toBe(false);
+  });
+
+  test("withSpan works without setResultAttributes (backward compat)", async () => {
+    const result = await withSpan("test.compat", {}, async () => "ok");
+    expect(result).toBe("ok");
+  });
 });

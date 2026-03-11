@@ -141,7 +141,7 @@ export function SQLResultCard({ part }: { part: unknown }) {
             )}
             {hasData && (
               <button
-                onClick={() => { downloadExcel(columns, rows).catch(() => {}); }}
+                onClick={() => { downloadExcel(columns, rows).catch((err) => { console.warn("Excel download failed:", err); }); }}
                 className="inline-flex items-center gap-1.5 rounded border border-zinc-200 px-2 py-1.5 text-xs text-zinc-500 transition-colors hover:border-zinc-400 hover:text-zinc-800 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
                 title="Download Excel"
               >

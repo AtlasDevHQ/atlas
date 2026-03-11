@@ -60,7 +60,7 @@ export function DataTable({
 
   return (
     <div className="relative rounded-lg border border-zinc-200 dark:border-zinc-700">
-      <div className="overflow-x-auto [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-zinc-300 dark:[&::-webkit-scrollbar-thumb]:bg-zinc-600" style={{ WebkitOverflowScrolling: "touch" }}>
+      <div className="overflow-x-auto [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-zinc-300 dark:[&::-webkit-scrollbar-thumb]:bg-zinc-600">
       <table className="min-w-full text-xs">
         <thead>
           <tr className="border-b border-zinc-200 bg-zinc-100/80 dark:border-zinc-700 dark:bg-zinc-800/80">
@@ -93,12 +93,12 @@ export function DataTable({
           ))}
         </tbody>
       </table>
+      </div>
       {hasMore && (
         <div className="border-t border-zinc-200 px-3 py-1.5 text-xs text-zinc-500 dark:border-zinc-700">
           Showing {maxRows} of {rows.length} rows
         </div>
       )}
-      </div>
     </div>
   );
 }

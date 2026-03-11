@@ -352,7 +352,7 @@ export function AtlasChat() {
         )}
 
         <main className="flex flex-1 flex-col overflow-hidden">
-          <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col p-4">
+          <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col overflow-hidden p-4">
             <header className="mb-4 flex-none border-b border-zinc-100 pb-3 dark:border-zinc-800">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">

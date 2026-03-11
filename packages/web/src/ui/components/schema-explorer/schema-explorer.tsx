@@ -126,8 +126,7 @@ function EntityList({
 
       <Separator />
 
-      <ScrollArea className="flex-1">
-        <div className="p-2">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden p-2">
           {filtered.length === 0 ? (
             <p className="px-2 py-8 text-center text-xs text-zinc-400 dark:text-zinc-500">
               {search ? "No matching entities" : "No entities found"}
@@ -137,7 +136,7 @@ function EntityList({
               <button
                 key={entity.table}
                 onClick={() => onSelect(entity.table)}
-                className="flex w-full items-start gap-2 rounded-md px-2 py-2 text-left transition-colors hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                className="flex w-full min-w-0 items-start gap-2 overflow-hidden rounded-md px-2 py-2 text-left transition-colors hover:bg-zinc-100 dark:hover:bg-zinc-800"
               >
                 {entity.type === "view" ? (
                   <Eye className="mt-0.5 size-3.5 shrink-0 text-zinc-400" />
@@ -169,8 +168,7 @@ function EntityList({
               </button>
             ))
           )}
-        </div>
-      </ScrollArea>
+      </div>
     </div>
   );
 }
@@ -226,13 +224,13 @@ function EntityDetailView({
               Columns ({dimensions.length})
             </h4>
             <div className="rounded-md border">
-              <Table>
+              <Table className="table-fixed">
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="h-7 text-[10px]">Name</TableHead>
-                    <TableHead className="h-7 text-[10px]">Type</TableHead>
-                    <TableHead className="h-7 text-[10px] hidden sm:table-cell">Description</TableHead>
-                    <TableHead className="h-7 text-[10px] hidden sm:table-cell">Samples</TableHead>
+                    <TableHead className="h-7 w-[30%] text-[10px]">Name</TableHead>
+                    <TableHead className="h-7 w-[15%] text-[10px]">Type</TableHead>
+                    <TableHead className="h-7 w-[35%] text-[10px] hidden sm:table-cell">Description</TableHead>
+                    <TableHead className="h-7 w-[20%] text-[10px] hidden sm:table-cell">Samples</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -240,14 +238,14 @@ function EntityDetailView({
                     <TableRow key={dim.name}>
                       <TableCell className="py-1.5 font-mono text-[11px]">
                         <span className="flex items-center gap-1">
-                          {dim.name}
+                          <span className="truncate">{dim.name}</span>
                           {dim.primary_key && (
-                            <Badge className="bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400 text-[9px] px-1 py-0">
+                            <Badge className="shrink-0 bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400 text-[9px] px-1 py-0">
                               PK
                             </Badge>
                           )}
                           {dim.foreign_key && (
-                            <Badge className="bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400 text-[9px] px-1 py-0">
+                            <Badge className="shrink-0 bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400 text-[9px] px-1 py-0">
                               FK
                             </Badge>
                           )}
@@ -259,12 +257,14 @@ function EntityDetailView({
                         </Badge>
                       </TableCell>
                       <TableCell className="hidden py-1.5 text-[11px] text-zinc-500 sm:table-cell">
-                        {dim.description || "—"}
+                        <span className="line-clamp-2">{dim.description || "—"}</span>
                       </TableCell>
                       <TableCell className="hidden py-1.5 text-[11px] text-zinc-400 sm:table-cell">
-                        {dim.sample_values?.length
-                          ? dim.sample_values.slice(0, 3).join(", ")
-                          : "—"}
+                        <span className="line-clamp-1">
+                          {dim.sample_values?.length
+                            ? dim.sample_values.slice(0, 3).join(", ")
+                            : "—"}
+                        </span>
                       </TableCell>
                     </TableRow>
                   ))}
@@ -459,7 +459,7 @@ export function SchemaExplorer({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="flex w-full flex-col p-0 sm:max-w-md">
+      <SheetContent side="right" className="flex w-full flex-col p-0 sm:max-w-xl">
         <SheetHeader className="px-4 pt-4">
           <SheetTitle className="flex items-center gap-2 text-base">
             <TableProperties className="size-4" />

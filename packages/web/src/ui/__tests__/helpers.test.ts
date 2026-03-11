@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   parseCSV,
+  parseSuggestions,
   toCsvString,
   formatCell,
   getToolArgs,
@@ -212,6 +213,43 @@ describe("formatCell", () => {
 
   test("zero is formatted as '0'", () => {
     expect(formatCell(0)).toBe("0");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  parseSuggestions                                                     */
+/* ------------------------------------------------------------------ */
+
+describe("parseSuggestions", () => {
+  test("extracts suggestions and strips the block from text", () => {
+    const content = `Here is the answer.\n\n<suggestions>\nWhat is the trend?\nHow does this break down?\nWhich accounts matter most?\n</suggestions>`;
+    const result = parseSuggestions(content);
+    expect(result.text).toBe("Here is the answer.");
+    expect(result.suggestions).toEqual([
+      "What is the trend?",
+      "How does this break down?",
+      "Which accounts matter most?",
+    ]);
+  });
+
+  test("returns empty suggestions when no block present", () => {
+    const content = "Just a normal response.";
+    const result = parseSuggestions(content);
+    expect(result.text).toBe("Just a normal response.");
+    expect(result.suggestions).toEqual([]);
+  });
+
+  test("handles extra whitespace inside suggestions block", () => {
+    const content = `Answer.\n\n<suggestions>\n  Spaced question?  \n\n  Another one?  \n</suggestions>`;
+    const result = parseSuggestions(content);
+    expect(result.suggestions).toEqual(["Spaced question?", "Another one?"]);
+  });
+
+  test("strips block even when inline with text", () => {
+    const content = `Some text before <suggestions>\nQ1?\nQ2?\n</suggestions> and after`;
+    const result = parseSuggestions(content);
+    expect(result.text).toBe("Some text before  and after");
+    expect(result.suggestions).toEqual(["Q1?", "Q2?"]);
   });
 });
 

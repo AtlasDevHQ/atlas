@@ -153,6 +153,20 @@ export async function downloadExcel(
   }
 }
 
+const SUGGESTIONS_RE = /<suggestions>\s*([\s\S]*?)\s*<\/suggestions>/;
+
+/** Extract follow-up suggestions from assistant message content and return the cleaned text + suggestions. */
+export function parseSuggestions(content: string): { text: string; suggestions: string[] } {
+  const match = SUGGESTIONS_RE.exec(content);
+  if (!match) return { text: content, suggestions: [] };
+  const suggestions = match[1]
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const text = content.replace(SUGGESTIONS_RE, "").trimEnd();
+  return { text, suggestions };
+}
+
 /** Format a cell value: null as em-dash, numbers with locale formatting, else stringified. */
 export function formatCell(value: unknown): string {
   if (value == null) return "\u2014";

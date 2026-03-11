@@ -24,6 +24,21 @@ export type PluginType = "datasource" | "context" | "interaction" | "action" | "
 export type PluginStatus = "registered" | "initializing" | "healthy" | "unhealthy" | "teardown";
 
 /**
+ * Serializable config field description for admin UI form generation.
+ * Structural mirror of ConfigSchemaField from `@useatlas/plugin-sdk`.
+ */
+export interface ConfigSchemaField {
+  key: string;
+  type: "string" | "number" | "boolean" | "select";
+  label?: string;
+  description?: string;
+  required?: boolean;
+  secret?: boolean;
+  options?: string[];
+  default?: unknown;
+}
+
+/**
  * Structural plugin context (mirrors AtlasPluginContext from the SDK).
  * Built at boot time from Atlas internals, passed to initialize().
  */
@@ -45,9 +60,11 @@ export interface PluginLike {
   readonly types: readonly PluginType[];
   readonly version: string;
   readonly name?: string;
+  readonly config?: unknown;
   initialize?(ctx: PluginContextLike): Promise<void>;
   healthCheck?(): Promise<PluginHealthResult>;
   teardown?(): Promise<void>;
+  getConfigSchema?(): ConfigSchemaField[];
   // Additional properties from specific plugin types are accessed via
   // type-narrowing in wiring.ts using structural checks.
   readonly [key: string]: unknown;
@@ -56,6 +73,7 @@ export interface PluginLike {
 interface PluginEntry {
   plugin: PluginLike;
   status: PluginStatus;
+  enabled: boolean;
 }
 
 export interface PluginDescription {
@@ -64,6 +82,7 @@ export interface PluginDescription {
   version: string;
   name: string;
   status: PluginStatus;
+  enabled: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -83,7 +102,7 @@ export class PluginRegistry {
       throw new Error(`Plugin "${plugin.id}" is already registered`);
     }
     this.idSet.add(plugin.id);
-    this.entries.push({ plugin, status: "registered" });
+    this.entries.push({ plugin, status: "registered", enabled: true });
     log.info({ pluginId: plugin.id, types: plugin.types }, "Plugin registered");
   }
 
@@ -191,22 +210,22 @@ export class PluginRegistry {
     return this.entries.find((e) => e.plugin.id === id)?.status;
   }
 
-  /** Return plugins whose types array includes the given type and are currently healthy. */
+  /** Return plugins whose types array includes the given type, are enabled, and are currently healthy. */
   getByType(type: PluginType): PluginLike[] {
     return this.entries
-      .filter((e) => e.plugin.types.includes(type) && e.status === "healthy")
+      .filter((e) => e.enabled && e.plugin.types.includes(type) && e.status === "healthy")
       .map((e) => e.plugin);
   }
 
-  /** Return all registered plugins regardless of status (for schema migrations at boot). */
+  /** Return all registered plugins regardless of status or enabled state (for schema migrations at boot). */
   getAll(): PluginLike[] {
     return this.entries.map((e) => e.plugin);
   }
 
-  /** Return all healthy plugins regardless of type (for cross-cutting hooks). */
+  /** Return all healthy and enabled plugins regardless of type (for cross-cutting hooks). */
   getAllHealthy(): PluginLike[] {
     return this.entries
-      .filter((e) => e.status === "healthy")
+      .filter((e) => e.enabled && e.status === "healthy")
       .map((e) => e.plugin);
   }
 
@@ -218,7 +237,40 @@ export class PluginRegistry {
       version: e.plugin.version,
       name: e.plugin.name ?? e.plugin.id,
       status: e.status,
+      enabled: e.enabled,
     }));
+  }
+
+  /** Enable a plugin so it participates in agent execution. */
+  enable(id: string): boolean {
+    const entry = this.entries.find((e) => e.plugin.id === id);
+    if (!entry) return false;
+    if (entry.status === "teardown") {
+      log.warn({ pluginId: id }, "Cannot enable plugin in teardown state");
+      return false;
+    }
+    entry.enabled = true;
+    log.info({ pluginId: id }, "Plugin enabled");
+    return true;
+  }
+
+  /** Disable a plugin so it is skipped during agent execution. */
+  disable(id: string): boolean {
+    const entry = this.entries.find((e) => e.plugin.id === id);
+    if (!entry) return false;
+    if (entry.status === "teardown") {
+      log.warn({ pluginId: id }, "Cannot disable plugin in teardown state");
+      return false;
+    }
+    entry.enabled = false;
+    log.info({ pluginId: id }, "Plugin disabled");
+    return true;
+  }
+
+  /** Check whether a plugin is currently enabled. */
+  isEnabled(id: string): boolean {
+    const entry = this.entries.find((e) => e.plugin.id === id);
+    return entry?.enabled ?? false;
   }
 
   get size(): number {

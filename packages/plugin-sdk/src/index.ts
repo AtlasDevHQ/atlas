@@ -37,6 +37,7 @@ export type {
   PluginExploreBackend,
   AtlasSandboxPlugin,
   ActionApprovalMode,
+  ConfigSchemaField,
   AtlasPlugin,
   $InferServerPlugin,
 } from "./types";

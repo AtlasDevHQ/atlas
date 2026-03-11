@@ -419,7 +419,17 @@ export async function migrateInternalDB(): Promise<void> {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_invitations_status ON invitations(status);`);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_invitations_pending_email ON invitations(email) WHERE status = 'pending';`);
 
-  log.info("Internal DB migration complete (audit_log, conversations, messages, slack, action_log, scheduled_tasks, connections, token_usage, invitations)");
+  // Plugin settings (admin-managed enable/disable + config overrides)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS plugin_settings (
+      plugin_id TEXT PRIMARY KEY,
+      enabled BOOLEAN NOT NULL DEFAULT true,
+      config JSONB,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+
+  log.info("Internal DB migration complete (audit_log, conversations, messages, slack, action_log, scheduled_tasks, connections, token_usage, invitations, plugin_settings)");
 }
 
 /**

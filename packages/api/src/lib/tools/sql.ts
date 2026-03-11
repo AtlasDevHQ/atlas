@@ -263,14 +263,36 @@ export function validateSQL(sql: string, connectionId?: string): { valid: boolea
   return { valid: true };
 }
 
-/** Read row limit from settings (hot-reloadable via admin UI). */
+let lastWarnedRowLimit: string | undefined;
+
+/** Read row limit from settings cache (DB override > env var > default). Called per-query so admin changes take effect without restart. */
 function getRowLimit(): number {
-  return parseInt(getSetting("ATLAS_ROW_LIMIT") ?? "1000", 10);
+  const raw = getSetting("ATLAS_ROW_LIMIT") ?? "1000";
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n <= 0) {
+    if (raw !== lastWarnedRowLimit) {
+      log.warn({ value: raw }, "Invalid ATLAS_ROW_LIMIT value; using default 1000");
+      lastWarnedRowLimit = raw;
+    }
+    return 1000;
+  }
+  return n;
 }
 
-/** Read query timeout from settings (hot-reloadable via admin UI). */
+let lastWarnedQueryTimeout: string | undefined;
+
+/** Read query timeout from settings cache (DB override > env var > default). Called per-query so admin changes take effect without restart. */
 function getQueryTimeout(): number {
-  return parseInt(getSetting("ATLAS_QUERY_TIMEOUT") ?? "30000", 10);
+  const raw = getSetting("ATLAS_QUERY_TIMEOUT") ?? "30000";
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n <= 0) {
+    if (raw !== lastWarnedQueryTimeout) {
+      log.warn({ value: raw }, "Invalid ATLAS_QUERY_TIMEOUT value; using default 30000ms");
+      lastWarnedQueryTimeout = raw;
+    }
+    return 30000;
+  }
+  return n;
 }
 
 export const executeSQL = tool({

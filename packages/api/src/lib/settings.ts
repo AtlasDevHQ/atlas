@@ -27,7 +27,7 @@ export interface SettingDefinition {
   default?: string;
   secret?: boolean;
   envVar: string;
-  /** When true, the server must be restarted for changes to take effect. */
+  /** When true, the server must be restarted for changes to take effect. When absent or false, changes are picked up at runtime via getSetting() on the next request. */
   requiresRestart?: boolean;
 }
 

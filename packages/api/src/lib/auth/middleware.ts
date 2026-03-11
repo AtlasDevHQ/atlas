@@ -27,16 +27,16 @@ const WINDOW_MS = 60_000; // 60 seconds
 /** Map of rate-limit key → array of request timestamps (ms). */
 const windows = new Map<string, number[]>();
 
-let warnedInvalidRpm = false;
+let lastWarnedRpmValue: string | undefined;
 
 function getRpmLimit(): number {
   const raw = getSetting("ATLAS_RATE_LIMIT_RPM");
   if (raw === undefined || raw === "") return 0; // disabled
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 0) {
-    if (!warnedInvalidRpm) {
+    if (raw !== lastWarnedRpmValue) {
       log.warn({ value: raw }, "Invalid ATLAS_RATE_LIMIT_RPM; rate limiting disabled");
-      warnedInvalidRpm = true;
+      lastWarnedRpmValue = raw;
     }
     return 0;
   }
@@ -109,7 +109,7 @@ export function checkRateLimit(key: string): {
 /** Clear all rate limit state. For tests. */
 export function resetRateLimits(): void {
   windows.clear();
-  warnedInvalidRpm = false;
+  lastWarnedRpmValue = undefined;
 }
 
 /** Periodic cleanup — evict keys with no recent timestamps. */

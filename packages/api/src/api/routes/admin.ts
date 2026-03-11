@@ -2774,7 +2774,7 @@ admin.put("/settings/:key", async (c) => {
 
     let body: { value?: unknown };
     try {
-      body = (await req.json()) as { value?: unknown };
+      body = (await c.req.json()) as { value?: unknown };
     } catch {
       return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
     }
@@ -2791,8 +2791,8 @@ admin.put("/settings/:key", async (c) => {
         return c.json({ error: "invalid_request", message: `"${key}" cannot be empty. Use DELETE to revert to default.` }, 400);
       }
       const num = Number(value);
-      if (!Number.isFinite(num)) {
-        return c.json({ error: "invalid_request", message: `"${key}" must be a valid number.` }, 400);
+      if (!Number.isFinite(num) || num < 0) {
+        return c.json({ error: "invalid_request", message: `"${key}" must be a non-negative number.` }, 400);
       }
     }
     if (def.type === "boolean") {

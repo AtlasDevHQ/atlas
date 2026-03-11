@@ -398,6 +398,15 @@ describe("admin settings routes", () => {
       expect(res.status).toBe(400);
     });
 
+    it("rejects negative numbers", async () => {
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "-5" }),
+      });
+      expect(res.status).toBe(400);
+    });
+
     it("validates select type options", async () => {
       const res = await request("/api/v1/admin/settings/ATLAS_PROVIDER", {
         method: "PUT",

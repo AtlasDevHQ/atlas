@@ -31,7 +31,7 @@ import { Settings, Pencil, RotateCcw, Loader2, Info, Lock } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────
 
-interface SettingDefinition {
+interface SettingWithValue {
   key: string;
   section: string;
   label: string;
@@ -46,7 +46,7 @@ interface SettingDefinition {
 }
 
 interface SettingsResponse {
-  settings: SettingDefinition[];
+  settings: SettingWithValue[];
   manageable: boolean;
 }
 
@@ -84,7 +84,7 @@ function EditDialog({
   apiUrl,
   credentials,
 }: {
-  setting: SettingDefinition;
+  setting: SettingWithValue;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSaved: () => void;
@@ -206,7 +206,7 @@ function SettingRow({
   onReset,
   resetting,
 }: {
-  setting: SettingDefinition;
+  setting: SettingWithValue;
   manageable: boolean;
   onEdit: () => void;
   onReset: () => void;
@@ -266,7 +266,7 @@ function SettingRow({
 export default function SettingsPage() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
-  const [editSetting, setEditSetting] = useState<SettingDefinition | null>(null);
+  const [editSetting, setEditSetting] = useState<SettingWithValue | null>(null);
   const [resettingKey, setResettingKey] = useState<string | null>(null);
   const [mutationError, setMutationError] = useState<string | null>(null);
 
@@ -294,7 +294,7 @@ export default function SettingsPage() {
   }
 
   // Group settings by section
-  const sections = new Map<string, SettingDefinition[]>();
+  const sections = new Map<string, SettingWithValue[]>();
   for (const s of settings) {
     const list = sections.get(s.section) ?? [];
     list.push(s);

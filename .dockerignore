@@ -1,5 +1,12 @@
 node_modules
-.next
+**/.next
 .git
 .env
 .env.*
+
+# Large directories no Dockerfile needs
+e2e/
+create-atlas/
+docs/
+.claude/
+.github/

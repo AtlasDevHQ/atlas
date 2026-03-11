@@ -75,7 +75,8 @@ When the internal architecture is solid (post-v1.0), Atlas will be published as 
 ```bash
 # Dev
 bun install              # Install dependencies
-bun run dev              # Start Hono API (:3001) + Next.js (:3000)
+bun run dev:local        # Ensure containers (Postgres + sidecar) are up, then start dev servers
+bun run dev              # Start Hono API (:3001) + Next.js (:3000) — assumes containers are running
 bun run dev:api          # Standalone Hono API on :3001
 bun run dev:web          # Standalone Next.js on :3000
 bun run dev:www          # Landing page on :3002
@@ -93,8 +94,8 @@ bun run deps:fix         # Auto-fix version drift across workspaces
 bun run deps:update      # Update all deps + sync versions
 
 # Database
-bun run db:up            # Start local Postgres (Docker, auto-seeds demo data)
-bun run db:down          # Stop local Postgres
+bun run db:up            # Start local Postgres + sandbox sidecar (Docker)
+bun run db:down          # Stop containers
 bun run db:reset         # Nuke volume + restart (fresh seed)
 
 # Semantic layer
@@ -121,7 +122,7 @@ bun run mcp                           # Start MCP server on stdio (same as atlas
 bun run dev:mcp                       # Start MCP server with hot reload
 ```
 
-**Quick start:** `bun install` → `bun run db:up` → `cp .env.example .env` (set your LLM provider key) → `bun run atlas -- init` → `bun run dev`. The `.env` comes pre-configured with Docker Postgres URLs and managed auth. On first boot a dev admin account is seeded: **admin@atlas.dev / atlas-dev**.
+**Quick start:** `bun install` → `cp .env.example .env` (set your LLM provider key) → `bun run db:up` → `bun run atlas -- init` → `bun run dev`. The `.env` comes pre-configured with Docker Postgres URLs, sandbox sidecar, and managed auth. On first boot a dev admin account is seeded: **admin@atlas.dev / atlas-dev**.
 
 | Script | URL |
 |--------|-----|
@@ -474,17 +475,17 @@ export default defineConfig({
 | `SLACK_CLIENT_ID` | — | Multi-workspace Slack OAuth app client ID |
 | `SLACK_CLIENT_SECRET` | — | Multi-workspace Slack OAuth app client secret |
 
-### Local Postgres (Docker)
+### Local Dev Containers (Docker)
 
 ```bash
-bun run db:up     # Starts postgres:16-alpine with two databases (atlas + atlas_demo)
-bun run db:down   # Stops container
+bun run db:up     # Starts Postgres + sandbox sidecar, waits for both
+bun run db:down   # Stops containers
 bun run db:reset  # Nukes volume, re-seeds from scratch
 ```
 
 Internal DB: `postgresql://atlas:atlas@localhost:5432/atlas`
 Analytics datasource: `postgresql://atlas:atlas@localhost:5432/atlas_demo`
-Sandbox sidecar: `http://localhost:8080` (Python execution isolation)
+Sandbox sidecar: `http://localhost:8080` (explore tool + Python execution isolation)
 
 Demo datasets:
 - **Simple** (`--demo`): 50 companies, ~200 people, 80 accounts — loaded from `data/demo.sql`

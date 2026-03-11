@@ -124,8 +124,11 @@ export default defineConfig({
 | **Railway** | No | Required\* | Sidecar (priority 3) |
 | **Self-hosted Docker** | With capabilities | Optional | nsjail (priority 2) |
 | **Self-hosted VM** | Yes | Optional | nsjail (priority 2) |
+| **Local dev** | Varies | Default\*\* | Sidecar (priority 3) |
 
 \*On Railway, nsjail is unavailable (no `CAP_SYS_ADMIN` / user namespaces). Without the sidecar, the explore tool falls back to just-bash (no secret isolation, no Python support). The sidecar is effectively **required** for production isolation on Railway.
+
+\*\*`bun run db:up` starts a sidecar container alongside Postgres. `.env.example` enables `ATLAS_SANDBOX_URL=http://localhost:8080` by default, so local dev matches production isolation out of the box.
 
 ## Sidecar Service Design
 

@@ -46,7 +46,7 @@ Use this decision tree to pick the right sandbox for your deployment:
 2. **Want managed cloud isolation with no infrastructure?** Use [E2B](/plugins/sandboxes/e2b) or [Daytona](/plugins/sandboxes/daytona). Both provide ephemeral VMs/sandboxes via a managed API.
 3. **Self-hosting on Linux with root access?** Use [nsjail](/plugins/sandboxes/nsjail) -- strong namespace isolation with no external dependencies beyond the nsjail binary.
 4. **Self-hosting on Docker/Railway without root?** Use [Sidecar](/plugins/sandboxes/sidecar) -- deploy the sidecar container alongside the API. No special kernel capabilities needed.
-5. **Local development?** The built-in `just-bash` fallback (priority 0) works for development.
+5. **Local development?** `bun run db:up` starts a sidecar container alongside Postgres -- no plugin needed.
 
 ## Combining Multiple Sandboxes
 

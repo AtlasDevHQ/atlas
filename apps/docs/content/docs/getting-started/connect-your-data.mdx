@@ -420,7 +420,7 @@ The health response includes:
 }
 ```
 
-> The `sources` field appears when at least one datasource is registered in the ConnectionRegistry. The `explore` field reflects the active sandbox backend (nsjail, sidecar, vercel-sandbox, plugin, or just-bash for local dev).
+> The `sources` field appears when at least one datasource is registered in the ConnectionRegistry. The `explore` field reflects the active sandbox backend (sidecar, nsjail, vercel-sandbox, plugin, or just-bash as fallback).
 
 If `datasource.status` is `"error"`, check your `ATLAS_DATASOURCE_URL`, network access, and user permissions.
 

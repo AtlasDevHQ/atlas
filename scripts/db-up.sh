@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if ! docker compose up -d postgres; then
-  echo "Error: Failed to start Postgres container." >&2
-  echo "Check that Docker is running and port 5432 is free." >&2
+# Start all services: Postgres + sandbox sidecar
+if ! docker compose up -d; then
+  echo "Error: Failed to start containers." >&2
+  echo "Check that Docker is running and ports 5432/8080 are free." >&2
   exit 1
 fi
+
+# --- Wait for Postgres ---
 
 echo "Waiting for Postgres..."
 pg_ready=false
@@ -43,3 +46,23 @@ if ! echo "$psql_out" | grep -q 1; then
   echo "" >&2
   exit 1
 fi
+
+# --- Wait for sandbox sidecar ---
+
+echo "Waiting for sandbox sidecar..."
+sidecar_ready=false
+for i in $(seq 1 30); do
+  if curl -sf http://localhost:8080/health > /dev/null 2>&1; then
+    sidecar_ready=true
+    break
+  fi
+  sleep 1
+done
+
+if [ "$sidecar_ready" = false ]; then
+  echo "Error: Sandbox sidecar not ready after 30s." >&2
+  echo "Check 'docker compose logs sandbox' for details." >&2
+  exit 1
+fi
+
+echo "Sandbox sidecar is ready."

@@ -135,7 +135,8 @@ Atlas runs agent-generated commands (filesystem exploration, future code executi
 | 1 | Vercel Sandbox | Vercel | Firecracker microVM (hardware-level). No network, ephemeral filesystem |
 | 2 | nsjail | Self-hosted Docker/VM | Linux namespaces. No network, read-only mount, separate PID/user space |
 | 3 | Sidecar service | Railway | Separate container with no secrets. Process-level isolation via private networking |
-| 4 | just-bash | Everywhere (fallback) | In-memory OverlayFS + path-traversal protection. No process isolation |
+| 4 | Sidecar (local) | Local dev (Docker Compose) | Same as tier 3 — sidecar container started by `bun run db:up` |
+| 5 | just-bash | Fallback | In-memory OverlayFS + path-traversal protection. No process isolation |
 
 ### What's right for you?
 

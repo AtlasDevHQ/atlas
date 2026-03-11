@@ -1,11 +1,12 @@
 # Local dev: Postgres + sandbox sidecar.
 #   atlas       — Atlas internal DB (auth, audit, settings)
 #   atlas_demo  — Demo analytics datasource (disposable, re-seedable)
+#   sandbox     — Isolated container for explore tool (shell + Python execution)
 #
 # .env should have:
 #   DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas
 #   ATLAS_DATASOURCE_URL=postgresql://atlas:atlas@localhost:5432/atlas_demo
-#   ATLAS_SANDBOX_URL=http://localhost:8080  (for Python execution)
+#   ATLAS_SANDBOX_URL=http://localhost:8080
 
 services:
   postgres:

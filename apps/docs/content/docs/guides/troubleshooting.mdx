@@ -166,7 +166,7 @@ Check `ATLAS_LOG_LEVEL=debug` for the full SQL that was rejected.
 nsjail is not on `PATH` and `ATLAS_NSJAIL_PATH` is not set.
 
 - **Docker:** Build with the nsjail stage (see `examples/docker/Dockerfile`)
-- **Local dev:** nsjail is optional -- the `just-bash` fallback works for development
+- **Local dev:** nsjail is not needed -- `bun run db:up` starts a sidecar container that provides production-like isolation
 - **Explicit mode:** If `ATLAS_SANDBOX=nsjail` is set, nsjail must be available (hard fail)
 
 ### "Sidecar unreachable"
@@ -178,7 +178,7 @@ When `ATLAS_SANDBOX_URL` is set, Atlas expects the sidecar service to be running
 curl http://localhost:8080/health
 ```
 
-Verify the sidecar container is running and the URL is correct.
+Verify the sidecar container is running (`docker compose ps sandbox`) and the URL is correct. Run `bun run db:up` to start both Postgres and the sidecar.
 
 ### "Permission denied" in nsjail
 

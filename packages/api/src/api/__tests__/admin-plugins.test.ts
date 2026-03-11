@@ -168,11 +168,21 @@ mock.module("@atlas/api/lib/plugins/registry", () => ({
   PluginRegistry: class {},
 }));
 
+const mockSavePluginEnabled: Mock<(id: string, enabled: boolean) => Promise<void>> = mock(
+  () => Promise.resolve(),
+);
+const mockSavePluginConfig: Mock<(id: string, config: Record<string, unknown>) => Promise<void>> = mock(
+  () => Promise.resolve(),
+);
+const mockGetPluginConfig: Mock<(id: string) => Promise<Record<string, unknown> | null>> = mock(
+  () => Promise.resolve(null),
+);
+
 mock.module("@atlas/api/lib/plugins/settings", () => ({
   loadPluginSettings: mock(async () => 0),
-  savePluginEnabled: mockInternalQuery,
-  savePluginConfig: mockInternalQuery,
-  getPluginConfig: mock(async () => null),
+  savePluginEnabled: mockSavePluginEnabled,
+  savePluginConfig: mockSavePluginConfig,
+  getPluginConfig: mockGetPluginConfig,
   getAllPluginSettings: mock(async () => []),
 }));
 
@@ -269,6 +279,9 @@ beforeEach(() => {
   mockHasInternalDB = true;
   mockPluginEnabled = true;
   mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+  mockSavePluginEnabled.mockImplementation(() => Promise.resolve());
+  mockSavePluginConfig.mockImplementation(() => Promise.resolve());
+  mockGetPluginConfig.mockImplementation(() => Promise.resolve(null));
 });
 
 // ---------------------------------------------------------------------------
@@ -294,7 +307,7 @@ describe("GET /api/v1/admin/plugins", () => {
 });
 
 describe("POST /api/v1/admin/plugins/:id/enable", () => {
-  it("enables a plugin", async () => {
+  it("enables a plugin and persists state", async () => {
     mockPluginEnabled = false;
     const res = await request("/api/v1/admin/plugins/test-plugin/enable", {
       method: "POST",
@@ -303,6 +316,10 @@ describe("POST /api/v1/admin/plugins/:id/enable", () => {
     const body = await json(res);
     expect(body.enabled).toBe(true);
     expect(body.id).toBe("test-plugin");
+    expect(body.persisted).toBe(true);
+    expect(body.warning).toBeUndefined();
+    // Verify persistence was called
+    expect(mockSavePluginEnabled).toHaveBeenCalledWith("test-plugin", true);
   });
 
   it("returns 404 for unknown plugin", async () => {
@@ -328,7 +345,7 @@ describe("POST /api/v1/admin/plugins/:id/enable", () => {
 });
 
 describe("POST /api/v1/admin/plugins/:id/disable", () => {
-  it("disables a plugin", async () => {
+  it("disables a plugin and persists state", async () => {
     const res = await request("/api/v1/admin/plugins/test-plugin/disable", {
       method: "POST",
     });
@@ -336,6 +353,9 @@ describe("POST /api/v1/admin/plugins/:id/disable", () => {
     const body = await json(res);
     expect(body.enabled).toBe(false);
     expect(body.id).toBe("test-plugin");
+    expect(body.persisted).toBe(true);
+    // Verify persistence was called
+    expect(mockSavePluginEnabled).toHaveBeenCalledWith("test-plugin", false);
   });
 
   it("returns 404 for unknown plugin", async () => {
@@ -355,8 +375,8 @@ describe("GET /api/v1/admin/plugins/:id/schema", () => {
     expect(body.schema.length).toBe(3);
     expect(body.hasSchema).toBe(true);
     expect(body.manageable).toBe(true);
-    // Secret field should be masked
-    expect(body.values.apiKey).toBe("sk-***");
+    // Secret field should be masked with fixed placeholder (no prefix leak)
+    expect(body.values.apiKey).toBe("••••••••");
     // Non-secret fields should be visible
     expect(body.values.region).toBe("us-east");
     expect(body.values.debug).toBe(false);
@@ -378,7 +398,7 @@ describe("GET /api/v1/admin/plugins/:id/schema", () => {
 });
 
 describe("PUT /api/v1/admin/plugins/:id/config", () => {
-  it("saves valid config", async () => {
+  it("saves valid config and calls savePluginConfig", async () => {
     const res = await request("/api/v1/admin/plugins/test-plugin/config", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -387,6 +407,9 @@ describe("PUT /api/v1/admin/plugins/:id/config", () => {
     expect(res.status).toBe(200);
     const body = await json(res);
     expect(body.message).toContain("saved");
+    // Verify persistence was called with the right plugin id
+    expect(mockSavePluginConfig).toHaveBeenCalledTimes(1);
+    expect(mockSavePluginConfig.mock.calls[0][0]).toBe("test-plugin");
   });
 
   it("rejects missing required fields", async () => {
@@ -445,5 +468,58 @@ describe("PUT /api/v1/admin/plugins/:id/config", () => {
       body: "not json",
     });
     expect(res.status).toBe(400);
+  });
+
+  it("strips extra keys not in schema", async () => {
+    mockSavePluginConfig.mockClear();
+    const res = await request("/api/v1/admin/plugins/test-plugin/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apiKey: "key", region: "us-east", extraField: "malicious" }),
+    });
+    expect(res.status).toBe(200);
+    // Verify the saved config does not include extraField
+    const savedConfig = mockSavePluginConfig.mock.calls[0][1] as Record<string, unknown>;
+    expect(savedConfig).not.toHaveProperty("extraField");
+    expect(savedConfig).toHaveProperty("apiKey", "key");
+  });
+
+  it("restores masked secret values from originals", async () => {
+    mockSavePluginConfig.mockClear();
+    const res = await request("/api/v1/admin/plugins/test-plugin/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apiKey: "••••••••", region: "eu-west" }),
+    });
+    expect(res.status).toBe(200);
+    // The masked value should be replaced with the original secret from plugin config
+    const savedConfig = mockSavePluginConfig.mock.calls[0][1] as Record<string, unknown>;
+    expect(savedConfig.apiKey).toBe("sk-secret-123");
+  });
+});
+
+describe("POST /api/v1/admin/plugins/:id/enable — persistence warnings", () => {
+  it("returns warning when internal DB is unavailable", async () => {
+    mockHasInternalDB = false;
+    const res = await request("/api/v1/admin/plugins/test-plugin/enable", {
+      method: "POST",
+    });
+    expect(res.status).toBe(200);
+    const body = await json(res);
+    expect(body.enabled).toBe(true);
+    expect(body.persisted).toBe(false);
+    expect(body.warning).toBeString();
+  });
+
+  it("returns warning when persistence fails", async () => {
+    mockSavePluginEnabled.mockImplementation(() => Promise.reject(new Error("DB error")));
+    const res = await request("/api/v1/admin/plugins/test-plugin/enable", {
+      method: "POST",
+    });
+    expect(res.status).toBe(200);
+    const body = await json(res);
+    expect(body.enabled).toBe(true);
+    expect(body.persisted).toBe(false);
+    expect(body.warning).toContain("could not be persisted");
   });
 });

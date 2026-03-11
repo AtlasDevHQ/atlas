@@ -105,7 +105,10 @@ function ConfigDialog({
         `${apiUrl}/api/v1/admin/plugins/${encodeURIComponent(plugin.id)}/schema`,
         { credentials },
       );
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => null);
+        throw new Error(errBody?.message ?? `HTTP ${res.status}`);
+      }
       const data: PluginSchemaResponse = await res.json();
       setSchema(data.schema);
       setValues(data.values);

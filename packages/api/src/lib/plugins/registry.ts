@@ -245,6 +245,10 @@ export class PluginRegistry {
   enable(id: string): boolean {
     const entry = this.entries.find((e) => e.plugin.id === id);
     if (!entry) return false;
+    if (entry.status === "teardown") {
+      log.warn({ pluginId: id }, "Cannot enable plugin in teardown state");
+      return false;
+    }
     entry.enabled = true;
     log.info({ pluginId: id }, "Plugin enabled");
     return true;
@@ -254,6 +258,10 @@ export class PluginRegistry {
   disable(id: string): boolean {
     const entry = this.entries.find((e) => e.plugin.id === id);
     if (!entry) return false;
+    if (entry.status === "teardown") {
+      log.warn({ pluginId: id }, "Cannot disable plugin in teardown state");
+      return false;
+    }
     entry.enabled = false;
     log.info({ pluginId: id }, "Plugin disabled");
     return true;

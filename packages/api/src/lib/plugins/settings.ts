@@ -108,7 +108,11 @@ export async function getPluginConfig(
       [pluginId],
     );
     return rows[0]?.config ?? null;
-  } catch {
+  } catch (err) {
+    log.warn(
+      { pluginId, err: err instanceof Error ? err.message : String(err) },
+      "Failed to load plugin config from internal DB",
+    );
     return null;
   }
 }
@@ -133,7 +137,11 @@ export async function getAllPluginSettings(): Promise<PluginSettings[]> {
       config: r.config,
       updatedAt: r.updated_at,
     }));
-  } catch {
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "Failed to load all plugin settings from internal DB",
+    );
     return [];
   }
 }

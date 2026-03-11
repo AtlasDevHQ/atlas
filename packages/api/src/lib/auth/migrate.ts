@@ -48,6 +48,15 @@ export async function migrateAuthTables(): Promise<void> {
     } catch (err) {
       log.error({ err }, "Failed to load saved connections at startup — admin-managed connections unavailable");
     }
+
+    // Load plugin settings (enabled/disabled state from DB)
+    try {
+      const { loadPluginSettings } = await import("@atlas/api/lib/plugins/settings");
+      const { plugins } = await import("@atlas/api/lib/plugins/registry");
+      await loadPluginSettings(plugins);
+    } catch (err) {
+      log.error({ err }, "Failed to load plugin settings at startup — all plugins default to enabled");
+    }
   }
 
   // Better Auth migration — only in managed mode

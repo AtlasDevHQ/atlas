@@ -4,6 +4,7 @@
  * Mounted at /api/v1/admin. All routes require admin role.
  * Browsing endpoints are read-only; health-check routes (POST) trigger
  * live probes. Connection CRUD routes persist encrypted URLs via encryptUrl/decryptUrl.
+ * Plugin management routes handle enable/disable, config schema, and config updates.
  * User management routes handle roles, bans, and invitations via Better Auth
  * and the internal DB.
  */
@@ -1549,15 +1550,21 @@ admin.post("/plugins/:id/enable", async (c) => {
 
     plugins.enable(id);
 
+    let persisted = false;
+    let warning: string | undefined;
     if (hasInternalDB()) {
       try {
         await savePluginEnabled(id, true);
+        persisted = true;
       } catch (err) {
         log.error({ err: err instanceof Error ? err : new Error(String(err)), pluginId: id }, "Failed to persist plugin enabled state");
+        warning = "Plugin enabled in memory but could not be persisted. State will reset on restart.";
       }
+    } else {
+      warning = "No internal database — state will reset on restart.";
     }
 
-    return c.json({ id, enabled: true, status: plugins.getStatus(id) });
+    return c.json({ id, enabled: true, status: plugins.getStatus(id), persisted, warning });
   });
 });
 
@@ -1581,15 +1588,21 @@ admin.post("/plugins/:id/disable", async (c) => {
 
     plugins.disable(id);
 
+    let persisted = false;
+    let warning: string | undefined;
     if (hasInternalDB()) {
       try {
         await savePluginEnabled(id, false);
+        persisted = true;
       } catch (err) {
         log.error({ err: err instanceof Error ? err : new Error(String(err)), pluginId: id }, "Failed to persist plugin disabled state");
+        warning = "Plugin disabled in memory but could not be persisted. State will reset on restart.";
       }
+    } else {
+      warning = "No internal database — state will reset on restart.";
     }
 
-    return c.json({ id, enabled: false, status: plugins.getStatus(id) });
+    return c.json({ id, enabled: false, status: plugins.getStatus(id), persisted, warning });
   });
 });
 
@@ -1622,12 +1635,13 @@ admin.get("/plugins/:id/schema", async (c) => {
     const dbOverrides = await getPluginConfig(id);
     const merged = { ...pluginConfig, ...dbOverrides };
 
-    // Mask secret values
+    // Mask secret values — use fixed placeholder to avoid leaking prefixes
+    const MASKED_PLACEHOLDER = "••••••••";
     const maskedValues: Record<string, unknown> = {};
     const secretKeys = new Set(schema.filter((f) => f.secret).map((f) => f.key));
     for (const [key, value] of Object.entries(merged)) {
       if (secretKeys.has(key) && typeof value === "string" && value.length > 0) {
-        maskedValues[key] = value.slice(0, 3) + "***";
+        maskedValues[key] = MASKED_PLACEHOLDER;
       } else {
         maskedValues[key] = value;
       }
@@ -1680,12 +1694,29 @@ admin.put("/plugins/:id/config", async (c) => {
     }
 
     // Validate against schema if plugin provides one
+    const MASKED_PLACEHOLDER = "••••••••";
     if (typeof plugin.getConfigSchema === "function") {
       const schema = plugin.getConfigSchema();
+      const schemaKeys = new Set(schema.map((f) => f.key));
       const errors: string[] = [];
+
+      // Restore masked secret values from original config
+      const pluginConfig = plugin.config != null && typeof plugin.config === "object"
+        ? (plugin.config as Record<string, unknown>)
+        : {};
+      const dbOverrides = await getPluginConfig(id);
+      const originals = { ...pluginConfig, ...dbOverrides };
 
       for (const field of schema) {
         const value = body[field.key];
+
+        // If a secret field has the masked placeholder, restore the original value
+        if (field.secret && value === MASKED_PLACEHOLDER) {
+          if (originals[field.key] !== undefined) {
+            body[field.key] = originals[field.key];
+          }
+          continue;
+        }
 
         if (field.required && (value === undefined || value === null || value === "")) {
           errors.push(`"${field.key}" is required.`);
@@ -1718,6 +1749,13 @@ admin.put("/plugins/:id/config", async (c) => {
           message: "Config validation failed.",
           details: errors,
         }, 400);
+      }
+
+      // Strip keys not in the schema to prevent saving unvalidated data
+      for (const key of Object.keys(body)) {
+        if (!schemaKeys.has(key)) {
+          delete body[key];
+        }
       }
     }
 

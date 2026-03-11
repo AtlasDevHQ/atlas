@@ -5,7 +5,7 @@ import { DefaultChatTransport, isToolUIPart } from "ai";
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { AUTH_MODES, type AuthMode } from "../lib/types";
 import { useAtlasConfig, ActionAuthProvider } from "../context";
-import { DarkModeContext, useDarkMode, useThemeMode, setTheme, type ThemeMode } from "../hooks/use-dark-mode";
+import { DarkModeContext, useDarkMode, useThemeMode, setTheme, applyBrandColor, type ThemeMode } from "../hooks/use-dark-mode";
 import { useConversations } from "../hooks/use-conversations";
 import { ErrorBanner } from "./chat/error-banner";
 import { ApiKeyBar } from "./chat/api-key-bar";
@@ -41,11 +41,11 @@ const AtlasLogo = (
   </svg>
 );
 
-const THEME_OPTIONS: { value: ThemeMode; label: string; icon: typeof Sun }[] = [
+const THEME_OPTIONS = [
   { value: "light", label: "Light", icon: Sun },
   { value: "dark", label: "Dark", icon: Moon },
   { value: "system", label: "System", icon: Monitor },
-];
+] as const satisfies readonly { value: ThemeMode; label: string; icon: typeof Sun }[];
 
 function ThemeToggle() {
   const mode = useThemeMode();
@@ -147,7 +147,7 @@ export function AtlasChat() {
         }
         // Apply admin-configured brand color
         if (typeof data?.brandColor === "string") {
-          document.documentElement.style.setProperty("--atlas-brand", data.brandColor);
+          applyBrandColor(data.brandColor);
         }
       } catch (err) {
         console.warn("Health endpoint unavailable:", err);

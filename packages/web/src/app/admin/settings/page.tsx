@@ -28,6 +28,7 @@ import { LoadingState } from "@/ui/components/admin/loading-state";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
 import { Settings, Pencil, RotateCcw, Loader2, Info, Lock, RefreshCw, Palette } from "lucide-react";
+import { DEFAULT_BRAND_COLOR, OKLCH_RE, applyBrandColor } from "@/ui/hooks/use-dark-mode";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -274,14 +275,6 @@ function SettingRow({
 
 // ── Brand Color Card ──────────────────────────────────────────────
 
-const DEFAULT_BRAND_COLOR = "oklch(0.759 0.148 167.71)";
-
-/** Apply --atlas-brand on :root so theme tokens update without reload. */
-function applyBrandColor(color: string) {
-  if (typeof document === "undefined") return;
-  document.documentElement.style.setProperty("--atlas-brand", color);
-}
-
 function BrandColorCard({
   setting,
   manageable,
@@ -299,6 +292,7 @@ function BrandColorCard({
   const [value, setValue] = useState(currentValue);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const isValidOklch = OKLCH_RE.test(value.trim());
 
   // Sync local state when API data changes
   const settingValue = setting?.currentValue;
@@ -387,6 +381,12 @@ function BrandColorCard({
           </div>
         </div>
 
+        {value && !isValidOklch && (
+          <p className="text-xs text-amber-600 dark:text-amber-400">
+            Value does not appear to be in oklch format. Expected: <code className="rounded bg-muted px-1">oklch(L C H)</code>
+          </p>
+        )}
+
         {setting?.source === "override" && (
           <p className="text-xs text-muted-foreground">
             Default: <code className="rounded bg-muted px-1">{DEFAULT_BRAND_COLOR}</code>
@@ -404,7 +404,7 @@ function BrandColorCard({
             <Button
               size="sm"
               onClick={handleSave}
-              disabled={saving || value === currentValue}
+              disabled={saving || value === currentValue || !isValidOklch}
             >
               {saving && <Loader2 className="mr-1 size-3 animate-spin" />}
               Save

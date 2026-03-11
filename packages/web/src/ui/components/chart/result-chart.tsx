@@ -158,32 +158,34 @@ function BarChartView({
   const valKeys = rec.valueColumns.map((c) => c.header);
 
   return (
-    <ResponsiveContainer width="100%" height={300}>
-      <BarChart data={data} margin={{ top: 8, right: 8, bottom: 40, left: 8 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke={t.grid} />
-        <XAxis
-          dataKey={catKey}
-          tick={{ fill: t.axis, fontSize: 11 }}
-          tickFormatter={(v: string) => truncateLabel(v)}
-          angle={-45}
-          textAnchor="end"
-          height={60}
-        />
-        <YAxis tick={{ fill: t.axis, fontSize: 11 }} tickFormatter={formatNumber} />
-        <Tooltip content={<ChartTooltip dark={dark} />} />
-        {valKeys.length > 1 && (
-          <Legend wrapperStyle={{ fontSize: 12, color: t.legendText }} />
-        )}
-        {valKeys.map((key, i) => (
-          <Bar
-            key={key}
-            dataKey={key}
-            fill={colors[i % colors.length]}
-            radius={[4, 4, 0, 0]}
+    <div className="aspect-[4/3] sm:aspect-[16/9]">
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={data} margin={{ top: 8, right: 8, bottom: 40, left: 8 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke={t.grid} />
+          <XAxis
+            dataKey={catKey}
+            tick={{ fill: t.axis, fontSize: 11 }}
+            tickFormatter={(v: string) => truncateLabel(v)}
+            angle={-45}
+            textAnchor="end"
+            height={60}
           />
-        ))}
-      </BarChart>
-    </ResponsiveContainer>
+          <YAxis tick={{ fill: t.axis, fontSize: 11 }} tickFormatter={formatNumber} />
+          <Tooltip content={<ChartTooltip dark={dark} />} />
+          {valKeys.length > 1 && (
+            <Legend wrapperStyle={{ fontSize: 12, color: t.legendText }} />
+          )}
+          {valKeys.map((key, i) => (
+            <Bar
+              key={key}
+              dataKey={key}
+              fill={colors[i % colors.length]}
+              radius={[4, 4, 0, 0]}
+            />
+          ))}
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
 
@@ -202,35 +204,37 @@ function LineChartView({
   const valKeys = rec.valueColumns.map((c) => c.header);
 
   return (
-    <ResponsiveContainer width="100%" height={300}>
-      <LineChart data={data} margin={{ top: 8, right: 8, bottom: 40, left: 8 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke={t.grid} />
-        <XAxis
-          dataKey={catKey}
-          tick={{ fill: t.axis, fontSize: 11 }}
-          tickFormatter={(v: string) => truncateLabel(v)}
-          angle={-45}
-          textAnchor="end"
-          height={60}
-        />
-        <YAxis tick={{ fill: t.axis, fontSize: 11 }} tickFormatter={formatNumber} />
-        <Tooltip content={<ChartTooltip dark={dark} />} />
-        {valKeys.length > 1 && (
-          <Legend wrapperStyle={{ fontSize: 12, color: t.legendText }} />
-        )}
-        {valKeys.map((key, i) => (
-          <Line
-            key={key}
-            type="monotone"
-            dataKey={key}
-            stroke={colors[i % colors.length]}
-            strokeWidth={2}
-            dot={{ r: 3, fill: colors[i % colors.length] }}
-            activeDot={{ r: 5 }}
+    <div className="aspect-[4/3] sm:aspect-[16/9]">
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={data} margin={{ top: 8, right: 8, bottom: 40, left: 8 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke={t.grid} />
+          <XAxis
+            dataKey={catKey}
+            tick={{ fill: t.axis, fontSize: 11 }}
+            tickFormatter={(v: string) => truncateLabel(v)}
+            angle={-45}
+            textAnchor="end"
+            height={60}
           />
-        ))}
-      </LineChart>
-    </ResponsiveContainer>
+          <YAxis tick={{ fill: t.axis, fontSize: 11 }} tickFormatter={formatNumber} />
+          <Tooltip content={<ChartTooltip dark={dark} />} />
+          {valKeys.length > 1 && (
+            <Legend wrapperStyle={{ fontSize: 12, color: t.legendText }} />
+          )}
+          {valKeys.map((key, i) => (
+            <Line
+              key={key}
+              type="monotone"
+              dataKey={key}
+              stroke={colors[i % colors.length]}
+              strokeWidth={2}
+              dot={{ r: 3, fill: colors[i % colors.length] }}
+              activeDot={{ r: 5 }}
+            />
+          ))}
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
 
@@ -253,36 +257,38 @@ function PieChartView({
   const hasNegative = data.some(d => typeof d[valKey] === "number" && (d[valKey] as number) < 0);
   if (total <= 0 || hasNegative) {
     return (
-      <div className="flex h-[300px] items-center justify-center text-xs text-zinc-400">
+      <div className="flex aspect-[4/3] items-center justify-center text-xs text-zinc-400 sm:aspect-[16/9]">
         Pie chart is not suitable for this data.
       </div>
     );
   }
 
   return (
-    <ResponsiveContainer width="100%" height={300}>
-      <PieChart>
-        <Pie
-          data={data}
-          dataKey={valKey}
-          nameKey={catKey}
-          cx="50%"
-          cy="50%"
-          innerRadius={40}
-          outerRadius={100}
-          label={({ name, value }: { name?: string; value?: number }) =>
-            `${truncateLabel(String(name ?? ""), 10)} ${total > 0 && value != null ? ((value / total) * 100).toFixed(0) : 0}%`
-          }
-          labelLine={{ stroke: t.axis }}
-          fontSize={11}
-        >
-          {data.map((_, i) => (
-            <Cell key={i} fill={colors[i % colors.length]} />
-          ))}
-        </Pie>
-        <Tooltip content={<ChartTooltip dark={dark} />} />
-      </PieChart>
-    </ResponsiveContainer>
+    <div className="aspect-[4/3] sm:aspect-[16/9]">
+      <ResponsiveContainer width="100%" height="100%">
+        <PieChart>
+          <Pie
+            data={data}
+            dataKey={valKey}
+            nameKey={catKey}
+            cx="50%"
+            cy="50%"
+            innerRadius={40}
+            outerRadius={100}
+            label={({ name, value }: { name?: string; value?: number }) =>
+              `${truncateLabel(String(name ?? ""), 10)} ${total > 0 && value != null ? ((value / total) * 100).toFixed(0) : 0}%`
+            }
+            labelLine={{ stroke: t.axis }}
+            fontSize={11}
+          >
+            {data.map((_, i) => (
+              <Cell key={i} fill={colors[i % colors.length]} />
+            ))}
+          </Pie>
+          <Tooltip content={<ChartTooltip dark={dark} />} />
+        </PieChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
 

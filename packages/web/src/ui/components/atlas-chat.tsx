@@ -56,7 +56,7 @@ function ThemeToggle() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon" className="size-8 text-zinc-500 dark:text-zinc-400">
+        <Button variant="ghost" size="icon" className="size-11 sm:size-8 text-zinc-500 dark:text-zinc-400">
           <CurrentIcon className="size-4" />
           <span className="sr-only">Toggle theme</span>
         </Button>
@@ -181,8 +181,8 @@ export function AtlasChat() {
         if (!res.ok) return;
         const data = await res.json();
         if (data.passwordChangeRequired) setPasswordChangeRequired(true);
-      } catch {
-        // Non-critical — skip silently
+      } catch (err) {
+        console.warn("Failed to check password status:", err);
       }
     }
     checkPasswordStatus();
@@ -311,7 +311,7 @@ export function AtlasChat() {
                   {convos.available && (
                     <button
                       onClick={() => setMobileMenuOpen(true)}
-                      className="rounded p-1 text-zinc-400 hover:text-zinc-700 md:hidden dark:hover:text-zinc-200"
+                      className="flex size-11 items-center justify-center rounded text-zinc-400 hover:text-zinc-700 md:hidden dark:hover:text-zinc-200"
                       aria-label="Open conversation history"
                     >
                       {MenuIcon}
@@ -329,7 +329,7 @@ export function AtlasChat() {
                   <ThemeToggle />
                   {isSignedIn && (
                     <>
-                      <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                      <span className="hidden text-xs text-zinc-500 sm:inline dark:text-zinc-400">
                         {managedSession.data?.user?.email}
                       </span>
                       <button
@@ -340,7 +340,7 @@ export function AtlasChat() {
                             setTimeout(() => setHealthWarning(""), 5000);
                           });
                         }}
-                        className="rounded border border-zinc-200 px-2 py-1 text-xs text-zinc-500 transition-colors hover:border-zinc-400 hover:text-zinc-800 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
+                        className="rounded border border-zinc-200 px-3 py-2 text-xs text-zinc-500 transition-colors hover:border-zinc-400 hover:text-zinc-800 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
                       >
                         Sign out
                       </button>
@@ -375,7 +375,7 @@ export function AtlasChat() {
                           Ask a question about your data to get started
                         </p>
                       </div>
-                      <div className="grid w-full max-w-lg grid-cols-2 gap-2">
+                      <div className="grid w-full max-w-lg grid-cols-1 gap-2 sm:grid-cols-2">
                         {STARTER_PROMPTS.map((prompt) => (
                           <button
                             key={prompt}
@@ -467,13 +467,13 @@ export function AtlasChat() {
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     placeholder="Ask a question about your data..."
-                    className="flex-1 rounded-lg border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-900 placeholder-zinc-400 outline-none focus:border-blue-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder-zinc-600"
+                    className="min-w-0 flex-1 rounded-lg border border-zinc-200 bg-zinc-50 px-4 py-3 text-base text-zinc-900 placeholder-zinc-400 outline-none focus:border-blue-500 sm:text-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder-zinc-600"
                     disabled={isLoading}
                   />
                   <button
                     type="submit"
                     disabled={isLoading || !input.trim()}
-                    className="rounded-lg bg-blue-600 px-5 py-3 text-sm font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-40"
+                    className="shrink-0 rounded-lg bg-blue-600 px-5 py-3 text-sm font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-40"
                   >
                     Ask
                   </button>

@@ -71,7 +71,7 @@ export function ConversationItem({
           onSelect();
         }
       }}
-      className={`group flex w-full cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors ${
+      className={`group flex w-full cursor-pointer items-center gap-2 rounded-lg px-3 py-2.5 text-left text-sm transition-colors ${
         isActive
           ? "bg-blue-50 text-blue-700 dark:bg-blue-600/10 dark:text-blue-400"
           : "text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
@@ -97,7 +97,7 @@ export function ConversationItem({
             setStarPending(false);
           }}
           disabled={starPending}
-          className={`h-6 w-6 transition-all ${
+          className={`size-8 transition-all ${
             conversation.starred
               ? "text-amber-400 opacity-100 hover:text-amber-500 dark:text-amber-400 dark:hover:text-amber-300"
               : "text-zinc-400 opacity-0 hover:text-amber-400 group-hover:opacity-100 dark:hover:text-amber-400"
@@ -114,7 +114,7 @@ export function ConversationItem({
             setConfirmDelete(true);
           }}
           disabled={deleting}
-          className="h-6 w-6 shrink-0 text-zinc-400 opacity-0 transition-all hover:bg-red-50 hover:text-red-500 group-hover:opacity-100 dark:hover:bg-red-950/20 dark:hover:text-red-400"
+          className="size-8 shrink-0 text-zinc-400 opacity-0 transition-all hover:bg-red-50 hover:text-red-500 group-hover:opacity-100 dark:hover:bg-red-950/20 dark:hover:text-red-400"
           aria-label="Delete conversation"
         >
           <Trash2 className="h-3.5 w-3.5" />

@@ -94,7 +94,7 @@ export function SQLResultCard({ part }: { part: unknown }) {
                 <button
                   key={mode}
                   onClick={() => setViewMode(mode)}
-                  className={`rounded px-2 py-0.5 text-xs font-medium transition-colors ${
+                  className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
                     viewMode === mode
                       ? "bg-zinc-200 text-zinc-800 dark:bg-zinc-700 dark:text-zinc-200"
                       : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200"
@@ -120,11 +120,11 @@ export function SQLResultCard({ part }: { part: unknown }) {
             </div>
           )}
 
-          <div className="flex items-center gap-2 px-3 py-2">
+          <div className="flex flex-wrap items-center gap-2 px-3 py-2">
             {sql && (
               <button
                 onClick={() => setSqlOpen(!sqlOpen)}
-                className="rounded border border-zinc-200 px-2 py-1 text-xs text-zinc-500 transition-colors hover:border-zinc-400 hover:text-zinc-800 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
+                className="rounded border border-zinc-200 px-2 py-1.5 text-xs text-zinc-500 transition-colors hover:border-zinc-400 hover:text-zinc-800 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
               >
                 {sqlOpen ? "Hide SQL" : "Show SQL"}
               </button>
@@ -132,19 +132,21 @@ export function SQLResultCard({ part }: { part: unknown }) {
             {hasData && (
               <button
                 onClick={() => downloadCSV(toCsvString(columns, rows))}
-                className="inline-flex items-center gap-1.5 rounded border border-zinc-200 px-2 py-1 text-xs text-zinc-500 transition-colors hover:border-zinc-400 hover:text-zinc-800 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
+                className="inline-flex items-center gap-1.5 rounded border border-zinc-200 px-2 py-1.5 text-xs text-zinc-500 transition-colors hover:border-zinc-400 hover:text-zinc-800 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
+                title="Download CSV"
               >
-                <FileDown className="size-3" />
-                CSV
+                <FileDown className="size-3.5" />
+                <span className="hidden sm:inline">CSV</span>
               </button>
             )}
             {hasData && (
               <button
-                onClick={() => { downloadExcel(columns, rows).catch(() => {}); }}
-                className="inline-flex items-center gap-1.5 rounded border border-zinc-200 px-2 py-1 text-xs text-zinc-500 transition-colors hover:border-zinc-400 hover:text-zinc-800 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
+                onClick={() => { downloadExcel(columns, rows).catch((err) => { console.warn("Excel download failed:", err); }); }}
+                className="inline-flex items-center gap-1.5 rounded border border-zinc-200 px-2 py-1.5 text-xs text-zinc-500 transition-colors hover:border-zinc-400 hover:text-zinc-800 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
+                title="Download Excel"
               >
-                <FileSpreadsheet className="size-3" />
-                Excel
+                <FileSpreadsheet className="size-3.5" />
+                <span className="hidden sm:inline">Excel</span>
               </button>
             )}
           </div>

@@ -233,3 +233,52 @@ export function parseChatError(error: Error, authMode: AuthMode): ChatErrorInfo 
       return { title: serverMessage ?? "Something went wrong. Please try again." };
   }
 }
+
+// --- Schema explorer types (from public semantic API) ---
+
+export interface SemanticEntitySummary {
+  table: string;
+  description: string;
+  columnCount: number;
+  joinCount: number;
+  type: string | null;
+}
+
+export interface SemanticDimension {
+  name: string;
+  type: string;
+  description?: string;
+  sample_values?: string[];
+  primary_key?: boolean;
+  foreign_key?: boolean;
+}
+
+export interface SemanticJoin {
+  to: string;
+  description?: string;
+  relationship?: string;
+  on?: string;
+}
+
+export interface SemanticMeasure {
+  name: string;
+  sql: string;
+  type?: string;
+  description?: string;
+}
+
+export interface SemanticQueryPattern {
+  name: string;
+  description: string;
+  sql: string;
+}
+
+export interface SemanticEntityDetail {
+  table: string;
+  description: string;
+  type?: "table" | "view";
+  dimensions: Record<string, SemanticDimension> | SemanticDimension[];
+  joins?: SemanticJoin[] | Record<string, SemanticJoin>;
+  measures?: Record<string, SemanticMeasure> | SemanticMeasure[];
+  query_patterns?: Record<string, SemanticQueryPattern> | SemanticQueryPattern[];
+}

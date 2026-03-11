@@ -23,6 +23,7 @@ import { auth } from "./routes/auth";
 import { query } from "./routes/query";
 import { openapi } from "./routes/openapi";
 import { conversations } from "./routes/conversations";
+import { semantic } from "./routes/semantic";
 
 const log = createLogger("api");
 const tracer = trace.getTracer("atlas");
@@ -99,6 +100,7 @@ app.route("/api/auth", auth);
 app.route("/api/v1/query", query);
 app.route("/api/v1/openapi.json", openapi);
 app.route("/api/v1/conversations", conversations);
+app.route("/api/v1/semantic", semantic);
 
 // Action routes — lazy import, only loaded if ATLAS_ACTIONS_ENABLED is set.
 if (process.env.ATLAS_ACTIONS_ENABLED === "true") {

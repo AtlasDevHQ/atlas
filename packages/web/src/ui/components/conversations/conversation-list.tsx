@@ -9,17 +9,39 @@ export function ConversationList({
   onSelect,
   onDelete,
   onStar,
+  showSections = true,
+  emptyMessage,
 }: {
   conversations: Conversation[];
   selectedId: string | null;
   onSelect: (id: string) => void;
   onDelete: (id: string) => Promise<boolean>;
   onStar: (id: string, starred: boolean) => Promise<boolean>;
+  showSections?: boolean;
+  emptyMessage?: string;
 }) {
   if (conversations.length === 0) {
     return (
       <div className="px-3 py-6 text-center text-xs text-zinc-400 dark:text-zinc-500">
-        No conversations yet
+        {emptyMessage ?? "No conversations yet"}
+      </div>
+    );
+  }
+
+  // When sections are disabled (e.g. "Saved" filter), show a flat list
+  if (!showSections) {
+    return (
+      <div className="space-y-1">
+        {conversations.map((c) => (
+          <ConversationItem
+            key={c.id}
+            conversation={c}
+            isActive={c.id === selectedId}
+            onSelect={() => onSelect(c.id)}
+            onDelete={() => onDelete(c.id)}
+            onStar={(s) => onStar(c.id, s)}
+          />
+        ))}
       </div>
     );
   }

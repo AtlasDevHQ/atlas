@@ -17,7 +17,7 @@ import { STARTER_PROMPTS } from "./chat/starter-prompts";
 import { FollowUpChips } from "./chat/follow-up-chips";
 import { ConversationSidebar } from "./conversations/conversation-sidebar";
 import { ChangePasswordDialog } from "./admin/change-password-dialog";
-import { Sun, Moon, Monitor } from "lucide-react";
+import { Sun, Moon, Monitor, Star } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -74,6 +74,41 @@ function ThemeToggle() {
         ))}
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+function SaveButton({
+  conversationId,
+  conversations,
+  onStar,
+}: {
+  conversationId: string;
+  conversations: { id: string; starred: boolean }[];
+  onStar: (id: string, starred: boolean) => Promise<boolean>;
+}) {
+  const convo = conversations.find((c) => c.id === conversationId);
+  const isStarred = convo?.starred ?? false;
+  const [pending, setPending] = useState(false);
+
+  return (
+    <button
+      onClick={async () => {
+        if (pending) return;
+        setPending(true);
+        await onStar(conversationId, !isStarred);
+        setPending(false);
+      }}
+      disabled={pending}
+      className={`flex items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors ${
+        isStarred
+          ? "text-amber-500 hover:text-amber-600 dark:text-amber-400 dark:hover:text-amber-300"
+          : "text-zinc-400 hover:text-amber-500 dark:text-zinc-500 dark:hover:text-amber-400"
+      } ${pending ? "opacity-50" : ""}`}
+      aria-label={isStarred ? "Unsave conversation" : "Save conversation"}
+    >
+      <Star className="h-3.5 w-3.5" fill={isStarred ? "currentColor" : "none"} />
+      <span>{isStarred ? "Saved" : "Save"}</span>
+    </button>
   );
 }
 
@@ -442,10 +477,21 @@ export function AtlasChat() {
                           return null;
                         })}
                         {isLastAssistant && !isLoading && (
-                          <FollowUpChips
-                            suggestions={suggestions}
-                            onSelect={handleSend}
-                          />
+                          <>
+                            <div className="flex items-center gap-2">
+                              <FollowUpChips
+                                suggestions={suggestions}
+                                onSelect={handleSend}
+                              />
+                            </div>
+                            {conversationId && convos.available && (
+                              <SaveButton
+                                conversationId={conversationId}
+                                conversations={convos.conversations}
+                                onStar={convos.starConversation}
+                              />
+                            )}
+                          </>
                         )}
                       </div>
                     );

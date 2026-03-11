@@ -19,19 +19,31 @@ Set `OTEL_EXPORTER_OTLP_ENDPOINT` to your collector's OTLP HTTP endpoint:
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 ```
 
-Atlas initializes the OpenTelemetry Node.js SDK on startup, registering a trace exporter that sends spans to `{OTEL_EXPORTER_OTLP_ENDPOINT}/v1/traces`. The service is identified as `atlas` with the version from `package.json`.
+The API server initializes the OpenTelemetry Node.js SDK on startup, registering a trace exporter that sends spans to `{OTEL_EXPORTER_OTLP_ENDPOINT}/v1/traces`. The API is identified as `atlas-api`; the web frontend as `atlas`. Both use the package version from `package.json`.
 
-When the environment variable is absent, no SDK is initialized and all trace calls are no-ops.
+When the environment variable is absent, no SDK is initialized and all trace calls are no-ops — zero overhead.
 
 ### What Gets Traced
 
-Atlas wraps the following operations in OpenTelemetry spans via the `withSpan` helper:
+Atlas creates spans at each layer of the request lifecycle, forming a proper parent-child hierarchy:
+
+```
+HTTP Request (http.request)
+  └── Agent Loop (atlas.agent)
+      ├── Step 1
+      │   ├── atlas.explore
+      │   └── atlas.explore
+      └── Step 2
+          └── atlas.sql.execute
+```
 
 | Span Name | Attributes | Description |
 |-----------|------------|-------------|
-| `atlas.sql.execute` | `db.system`, `db.statement` (truncated), `db.connection_id` | SQL query execution against the analytics datasource |
-| `atlas.explore.execute` | `explore.command`, `explore.backend` | Semantic layer file exploration (ls, cat, grep, find) |
-| `atlas.python.execute` | `python.backend` | Python code execution in sandbox |
+| `http.request` | `http.method`, `http.target`, `http.status_code` | Root span per API request (Hono middleware) |
+| `atlas.agent` | `atlas.provider`, `atlas.model`, `atlas.message_count`, `atlas.finish_reason`, `atlas.total_steps`, `atlas.total_input_tokens`, `atlas.total_output_tokens` | Full agent loop (one per `streamText` call) |
+| `atlas.sql.execute` | `db.system`, `atlas.connection_id`, `atlas.row_count`, `atlas.column_count` | SQL query execution. SQL content is **not** included for security |
+| `atlas.explore` | `atlas.command` (truncated), `atlas.backend` | Semantic layer file exploration (ls, cat, grep, find) |
+| `atlas.python.execute` | `code.length` | Python code execution in sandbox |
 
 Each span records success/failure status and captures exceptions on error, making it straightforward to trace agent step failures back to specific tool calls.
 
@@ -52,7 +64,7 @@ docker run -d --name jaeger \
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 ```
 
-Open `http://localhost:16686` to view traces. Search for service `atlas`.
+Open `http://localhost:16686` to view traces. Search for service `atlas-api` (API server) or `atlas` (web frontend).
 
 #### Grafana Tempo
 

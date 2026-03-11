@@ -22,7 +22,11 @@ import { getCrossSourceJoins, type CrossSourceJoin } from "./semantic";
 import { getSemanticIndex } from "./semantic-index";
 import { createLogger, getRequestContext } from "./logger";
 import { hasInternalDB, internalExecute } from "./db/internal";
-import { trace, SpanStatusCode } from "@opentelemetry/api";
+import {
+  trace,
+  SpanStatusCode,
+  context as otelContext,
+} from "@opentelemetry/api";
 
 const log = createLogger("agent");
 const tracer = trace.getTracer("atlas");
@@ -344,8 +348,15 @@ export async function runAgent({
   const resolvedModelId = typeof model === "string" ? model : model.modelId;
 
   const span = tracer.startSpan("atlas.agent", {
-    attributes: { provider: providerType, messageCount: messages.length },
+    attributes: {
+      "atlas.provider": providerType,
+      "atlas.model": resolvedModelId,
+      "atlas.message_count": messages.length,
+    },
   });
+  // Make the agent span the active context so tool spans (withSpan in
+  // sql.ts, explore.ts) become children in the trace hierarchy.
+  const agentCtx = trace.setSpan(otelContext.active(), span);
 
   let spanEnded = false;
   function endSpan(code: SpanStatusCode, message?: string) {
@@ -355,12 +366,15 @@ export async function runAgent({
     span.end();
   }
 
+  // Resolve async work before entering otelContext.with() (sync callback).
+  const modelMessages = await convertToModelMessages(messages);
+
   let result;
   try {
-    result = streamText({
+    result = otelContext.with(agentCtx, () => streamText({
       model,
       system: buildSystemParam(providerType, toolRegistry),
-      messages: await convertToModelMessages(messages),
+      messages: modelMessages,
       tools: toolRegistry.getAll(),
       temperature: 0.2,
       maxOutputTokens: 4096,
@@ -413,10 +427,10 @@ export async function runAgent({
           "agent finished",
         );
         span.setAttributes({
-          finishReason: finishReason ?? "",
-          totalSteps: steps.length,
-          totalInputTokens: totalUsage?.inputTokens ?? 0,
-          totalOutputTokens: totalUsage?.outputTokens ?? 0,
+          "atlas.finish_reason": finishReason ?? "",
+          "atlas.total_steps": steps.length,
+          "atlas.total_input_tokens": totalUsage?.inputTokens ?? 0,
+          "atlas.total_output_tokens": totalUsage?.outputTokens ?? 0,
         });
         endSpan(SpanStatusCode.OK);
 
@@ -441,7 +455,7 @@ export async function runAgent({
           }
         }
       },
-    });
+    }));
   } catch (err) {
     endSpan(
       SpanStatusCode.ERROR,

@@ -11,6 +11,11 @@
 
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import {
+  trace,
+  SpanStatusCode,
+  context as otelContext,
+} from "@opentelemetry/api";
 import { createLogger } from "@atlas/api/lib/logger";
 import { chat } from "./routes/chat";
 import { health } from "./routes/health";
@@ -20,7 +25,42 @@ import { openapi } from "./routes/openapi";
 import { conversations } from "./routes/conversations";
 
 const log = createLogger("api");
+const tracer = trace.getTracer("atlas");
 const app = new Hono();
+
+// OTel tracing — root span per HTTP request. No-op when SDK is not initialized.
+// Must be the first middleware so all downstream operations are children.
+app.use("/api/*", async (c, next) => {
+  const span = tracer.startSpan("http.request", {
+    attributes: {
+      "http.method": c.req.method,
+      "http.target": c.req.path,
+    },
+  });
+  const ctx = trace.setSpan(otelContext.active(), span);
+  try {
+    await otelContext.with(ctx, () => next());
+    span.setAttributes({ "http.status_code": c.res.status });
+    span.setStatus({
+      code: c.res.status < 400 ? SpanStatusCode.OK : SpanStatusCode.ERROR,
+    });
+  } catch (err) {
+    try {
+      span.setStatus({
+        code: SpanStatusCode.ERROR,
+        message: err instanceof Error ? err.message : String(err),
+      });
+      span.recordException(
+        err instanceof Error ? err : new Error(String(err)),
+      );
+    } catch {
+      // OTel span operations must never replace the original error.
+    }
+    throw err;
+  } finally {
+    try { span.end(); } catch { /* span lifecycle must not crash the request */ }
+  }
+});
 
 // CORS — configurable origin for cross-origin frontend deployments.
 // Default "*" is fine for API key / BYOT auth (header-based).

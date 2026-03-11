@@ -11,6 +11,25 @@
  * env-var behavior is preserved.
  */
 
+// Initialize OpenTelemetry SDK before other imports that may create spans.
+// No-op when OTEL_EXPORTER_OTLP_ENDPOINT is not set — @opentelemetry/api
+// returns no-op tracers (zero overhead).
+// Uses console.error (not pino) because the structured logger has not been
+// created yet and importing it here could create premature spans.
+let _shutdownTelemetry: (() => Promise<void>) | null = null;
+if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
+  try {
+    const { shutdownTelemetry } = await import("@atlas/api/lib/telemetry");
+    _shutdownTelemetry = shutdownTelemetry;
+  } catch (err) {
+    console.error(
+      "[atlas-api] Failed to initialize OpenTelemetry:",
+      err instanceof Error ? err.message : String(err),
+      "— tracing disabled for this process",
+    );
+  }
+}
+
 import { app } from "./index";
 import { createLogger } from "@atlas/api/lib/logger";
 import { initializeConfig } from "@atlas/api/lib/config";
@@ -233,6 +252,15 @@ async function shutdown(signal: string) {
     await closeInternalDB();
   } catch (err) {
     log.error({ err: err instanceof Error ? err.message : String(err) }, "Failed to close internal DB");
+  }
+
+  // Flush pending OTel spans before exit so final traces are not lost.
+  if (_shutdownTelemetry) {
+    try {
+      await _shutdownTelemetry();
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err.message : String(err) }, "Failed to shut down OTel SDK");
+    }
   }
 
   log.info("Shutdown complete");

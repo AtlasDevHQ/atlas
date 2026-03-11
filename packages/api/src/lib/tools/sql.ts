@@ -595,15 +595,20 @@ Rules:
 
     // Includes connection acquisition time; the OTel span inside withSpan
     // covers only the actual query execution against the database.
+    // SQL content is NOT included in span attributes for security.
     const start = performance.now();
     try {
       const result = await withSpan(
         "atlas.sql.execute",
         {
           "db.system": dbType,
-          "db.statement": querySql.slice(0, 200),
+          "atlas.connection_id": connId,
         },
         () => db.query(querySql, QUERY_TIMEOUT),
+        (r) => ({
+          "atlas.row_count": r.rows.length,
+          "atlas.column_count": r.columns.length,
+        }),
       );
       const durationMs = Math.round(performance.now() - start);
       const truncated = result.rows.length >= ROW_LIMIT;

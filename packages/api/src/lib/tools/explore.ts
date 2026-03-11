@@ -348,7 +348,10 @@ Always start by listing the root directory to see what sources are available.`,
       const start = performance.now();
       const result = await withSpan(
         "atlas.explore",
-        { command: execCommand.slice(0, 200) },
+        {
+          "atlas.command": execCommand.slice(0, 200),
+          "atlas.backend": getExploreBackendType(),
+        },
         () => backend.exec(execCommand),
       );
       const durationMs = Math.round(performance.now() - start);

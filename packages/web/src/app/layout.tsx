@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { NuqsAdapter } from "nuqs/adapters/next/app";
-import { buildThemeInitScript } from "@/ui/hooks/use-dark-mode";
+import { buildThemeInitScript } from "@/ui/hooks/theme-init-script";
 import "./globals.css";
 
 export const metadata: Metadata = {

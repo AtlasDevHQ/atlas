@@ -6,9 +6,11 @@ import { createContext, useSyncExternalStore } from "react";
 // Theme types & constants
 // ---------------------------------------------------------------------------
 
+import { THEME_STORAGE_KEY } from "./theme-init-script";
+
 export type ThemeMode = "light" | "dark" | "system";
 
-export const THEME_STORAGE_KEY = "atlas-theme";
+export { THEME_STORAGE_KEY };
 
 /**
  * Default brand color — must match `brand.css` `:root { --atlas-brand }` and
@@ -133,15 +135,6 @@ export function setTheme(mode: ThemeMode) {
 export function applyBrandColor(color: string) {
   if (typeof document === "undefined") return;
   document.documentElement.style.setProperty("--atlas-brand", color);
-}
-
-/**
- * Returns the inline script string for the blocking `<script>` in layout.tsx.
- * Keeps the storage key and resolution logic in sync with this module.
- */
-export function buildThemeInitScript(): string {
-  const key = THEME_STORAGE_KEY;
-  return `try{var t=localStorage.getItem("${key}");var d=t==="dark"||(t!=="light"&&window.matchMedia("(prefers-color-scheme:dark)").matches);if(d)document.documentElement.classList.add("dark")}catch(e){}`;
 }
 
 export const DarkModeContext = createContext(false);

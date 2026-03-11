@@ -214,7 +214,8 @@ Manage application configuration from the UI. Settings follow a three-tier resol
   - **override** (blue) — value saved in the internal database
   - **env** (green) — value from an environment variable
   - **default** (gray) — built-in default
-- **Edit** — Override any non-secret setting. Changes are saved to the internal database and take effect immediately
+- **Edit** — Override any non-secret setting. Changes are saved to the internal database
+- **Live vs Restart** — Each setting shows whether changes take effect immediately (**Live**) or require a server restart (**Requires restart**). Query Limits and Rate Limiting are live; Security and Agent settings require a restart
 - **Reset** — Remove a DB override to revert to the environment variable or default value
 - **Secrets** — Sensitive settings (API keys, database URLs) are masked and read-only. Manage these via environment variables
 

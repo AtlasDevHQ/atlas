@@ -14,6 +14,7 @@ import { validateApiKey } from "@atlas/api/lib/auth/simple-key";
 import { validateManaged } from "@atlas/api/lib/auth/managed";
 import { validateBYOT } from "@atlas/api/lib/auth/byot";
 import { createLogger } from "@atlas/api/lib/logger";
+import { getSetting } from "@atlas/api/lib/settings";
 
 const log = createLogger("auth");
 
@@ -26,16 +27,16 @@ const WINDOW_MS = 60_000; // 60 seconds
 /** Map of rate-limit key → array of request timestamps (ms). */
 const windows = new Map<string, number[]>();
 
-let warnedInvalidRpm = false;
+let lastWarnedRpmValue: string | undefined;
 
 function getRpmLimit(): number {
-  const raw = process.env.ATLAS_RATE_LIMIT_RPM;
+  const raw = getSetting("ATLAS_RATE_LIMIT_RPM");
   if (raw === undefined || raw === "") return 0; // disabled
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 0) {
-    if (!warnedInvalidRpm) {
+    if (raw !== lastWarnedRpmValue) {
       log.warn({ value: raw }, "Invalid ATLAS_RATE_LIMIT_RPM; rate limiting disabled");
-      warnedInvalidRpm = true;
+      lastWarnedRpmValue = raw;
     }
     return 0;
   }
@@ -108,7 +109,7 @@ export function checkRateLimit(key: string): {
 /** Clear all rate limit state. For tests. */
 export function resetRateLimits(): void {
   windows.clear();
-  warnedInvalidRpm = false;
+  lastWarnedRpmValue = undefined;
 }
 
 /** Periodic cleanup — evict keys with no recent timestamps. */

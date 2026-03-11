@@ -27,7 +27,7 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
-import { Settings, Pencil, RotateCcw, Loader2, Info, Lock } from "lucide-react";
+import { Settings, Pencil, RotateCcw, Loader2, Info, Lock, RefreshCw } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -41,6 +41,7 @@ interface SettingWithValue {
   default?: string;
   secret?: boolean;
   envVar: string;
+  requiresRestart?: boolean;
   currentValue: string | undefined;
   source: "env" | "override" | "default";
 }
@@ -223,6 +224,16 @@ function SettingRow({
           <span className="text-sm font-medium">{setting.label}</span>
           <SourceBadge source={setting.source} />
           {setting.secret && <Lock className="size-3 text-muted-foreground" />}
+          {setting.requiresRestart ? (
+            <Badge variant="outline" className="gap-1 text-[10px] text-amber-600 border-amber-500/30 dark:text-amber-400">
+              <RefreshCw className="size-2.5" />
+              Requires restart
+            </Badge>
+          ) : !setting.secret ? (
+            <span className="text-[10px] text-emerald-600 dark:text-emerald-400">
+              Live
+            </span>
+          ) : null}
         </div>
         <p className="text-xs text-muted-foreground">{setting.description}</p>
         <div className="flex items-center gap-1.5">
@@ -351,8 +362,11 @@ export default function SettingsPage() {
           <div className="mb-6 flex items-start gap-2 rounded-md border border-blue-500/30 bg-blue-500/5 px-4 py-3">
             <Info className="mt-0.5 size-4 shrink-0 text-blue-600 dark:text-blue-400" />
             <p className="text-sm text-blue-700 dark:text-blue-300">
-              Setting overrides are saved to the database. Changes to most settings
-              take effect after a server restart.
+              Setting overrides are saved to the database. Settings marked{" "}
+              <span className="font-medium">Live</span> take effect immediately.
+              Settings marked{" "}
+              <span className="font-medium">Requires restart</span> need a server
+              restart.
             </p>
           </div>
         )}

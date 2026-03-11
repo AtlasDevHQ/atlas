@@ -26,6 +26,7 @@ import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { acquireSourceSlot, decrementSourceConcurrency } from "@atlas/api/lib/db/source-rate-limit";
 import { getConfig } from "@atlas/api/lib/config";
 import { resolveRLSFilters, injectRLSConditions } from "@atlas/api/lib/rls";
+import { getSetting } from "@atlas/api/lib/settings";
 
 const log = createLogger("sql");
 
@@ -262,11 +263,37 @@ export function validateSQL(sql: string, connectionId?: string): { valid: boolea
   return { valid: true };
 }
 
-const ROW_LIMIT = parseInt(process.env.ATLAS_ROW_LIMIT ?? "1000", 10);
-const QUERY_TIMEOUT = parseInt(
-  process.env.ATLAS_QUERY_TIMEOUT ?? "30000",
-  10
-);
+let lastWarnedRowLimit: string | undefined;
+
+/** Read row limit from settings cache (DB override > env var > default). Called per-query so admin changes take effect without restart. */
+function getRowLimit(): number {
+  const raw = getSetting("ATLAS_ROW_LIMIT") ?? "1000";
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n <= 0) {
+    if (raw !== lastWarnedRowLimit) {
+      log.warn({ value: raw }, "Invalid ATLAS_ROW_LIMIT value; using default 1000");
+      lastWarnedRowLimit = raw;
+    }
+    return 1000;
+  }
+  return n;
+}
+
+let lastWarnedQueryTimeout: string | undefined;
+
+/** Read query timeout from settings cache (DB override > env var > default). Called per-query so admin changes take effect without restart. */
+function getQueryTimeout(): number {
+  const raw = getSetting("ATLAS_QUERY_TIMEOUT") ?? "30000";
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n <= 0) {
+    if (raw !== lastWarnedQueryTimeout) {
+      log.warn({ value: raw }, "Invalid ATLAS_QUERY_TIMEOUT value; using default 30000ms");
+      lastWarnedQueryTimeout = raw;
+    }
+    return 30000;
+  }
+  return n;
+}
 
 export const executeSQL = tool({
   description: `Execute a read-only SQL query against the database. Only SELECT statements are allowed.
@@ -585,12 +612,16 @@ Rules:
       }
     }
 
+    // Read limits per-query so admin changes take effect immediately.
+    const rowLimit = getRowLimit();
+    const queryTimeout = getQueryTimeout();
+
     // Auto-append LIMIT if not present.
     // Custom validators are responsible for their own pagination — non-SQL
     // languages (SOQL, GraphQL) may not support the LIMIT keyword.
     let querySql = normalizedMutated;
     if (!customValidator && !/\bLIMIT\b/i.test(querySql)) {
-      querySql += ` LIMIT ${ROW_LIMIT}`;
+      querySql += ` LIMIT ${rowLimit}`;
     }
 
     // Includes connection acquisition time; the OTel span inside withSpan
@@ -604,14 +635,14 @@ Rules:
           "db.system": dbType,
           "atlas.connection_id": connId,
         },
-        () => db.query(querySql, QUERY_TIMEOUT),
+        () => db.query(querySql, queryTimeout),
         (r) => ({
           "atlas.row_count": r.rows.length,
           "atlas.column_count": r.columns.length,
         }),
       );
       const durationMs = Math.round(performance.now() - start);
-      const truncated = result.rows.length >= ROW_LIMIT;
+      const truncated = result.rows.length >= rowLimit;
 
       try {
         logQueryAudit({

@@ -27,6 +27,8 @@ export interface SettingDefinition {
   default?: string;
   secret?: boolean;
   envVar: string;
+  /** When true, the server must be restarted for changes to take effect. When absent or false, changes are picked up at runtime via getSetting() on the next request. */
+  requiresRestart?: boolean;
 }
 
 export interface SettingWithValue extends SettingDefinition {
@@ -80,6 +82,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     description: "Enable row-level security filtering on queries",
     type: "boolean",
     envVar: "ATLAS_RLS_ENABLED",
+    requiresRestart: true,
   },
   {
     key: "ATLAS_RLS_COLUMN",
@@ -88,6 +91,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     description: "Column name used for RLS filtering (e.g. tenant_id)",
     type: "string",
     envVar: "ATLAS_RLS_COLUMN",
+    requiresRestart: true,
   },
   {
     key: "ATLAS_RLS_CLAIM",
@@ -96,6 +100,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     description: "JWT claim path for RLS value extraction (e.g. org_id)",
     type: "string",
     envVar: "ATLAS_RLS_CLAIM",
+    requiresRestart: true,
   },
   {
     key: "ATLAS_TABLE_WHITELIST",
@@ -105,6 +110,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     type: "boolean",
     default: "true",
     envVar: "ATLAS_TABLE_WHITELIST",
+    requiresRestart: true,
   },
   {
     key: "ATLAS_CORS_ORIGIN",
@@ -114,6 +120,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     type: "string",
     default: "*",
     envVar: "ATLAS_CORS_ORIGIN",
+    requiresRestart: true,
   },
 
   // Agent
@@ -126,6 +133,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     options: ["anthropic", "openai", "bedrock", "ollama", "gateway"],
     default: "anthropic",
     envVar: "ATLAS_PROVIDER",
+    requiresRestart: true,
   },
   {
     key: "ATLAS_MODEL",
@@ -134,6 +142,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     description: "Model ID override (leave empty for provider default)",
     type: "string",
     envVar: "ATLAS_MODEL",
+    requiresRestart: true,
   },
   {
     key: "ATLAS_LOG_LEVEL",
@@ -144,6 +153,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     options: ["trace", "debug", "info", "warn", "error", "fatal"],
     default: "info",
     envVar: "ATLAS_LOG_LEVEL",
+    requiresRestart: true,
   },
 
   // Secrets (read-only)

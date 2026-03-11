@@ -5,7 +5,7 @@ Get Atlas running locally in under 5 minutes.
 ## Prerequisites
 
 - [Bun](https://bun.sh/) v1.3+
-- [Docker](https://docs.docker.com/get-docker/) — required for local PostgreSQL (matches production setup)
+- [Docker](https://docs.docker.com/get-docker/) — required for local PostgreSQL and sandbox sidecar (matches production setup)
 - An LLM API key (Anthropic, OpenAI, or another [supported provider](../.env.example))
 
 ## Setup
@@ -14,12 +14,12 @@ Get Atlas running locally in under 5 minutes.
 git clone <your-repo-url> atlas
 cd atlas
 bun install
-bun run db:up                        # Start Postgres + seed demo data
+bun run db:up                        # Start Postgres + sandbox sidecar
 ```
 
-This launches a `postgres:16-alpine` container via Docker Compose with two databases:
-- `atlas` — Atlas internals (auth, audit, conversations)
-- `atlas_demo` — Demo analytics data (50 companies, ~200 people, 80 accounts)
+This launches two containers via Docker Compose:
+- **Postgres** (`postgres:16-alpine`) with two databases: `atlas` (internals) and `atlas_demo` (demo analytics data)
+- **Sandbox sidecar** — isolated container for the explore tool (shell + Python execution), matching production isolation
 
 > For a larger, production-like dataset, use `bun run atlas -- init --demo cybersec` instead. This loads a 62-table cybersecurity SaaS database (~500K rows) with realistic tech debt patterns.
 
@@ -40,7 +40,7 @@ Generate the semantic layer and start:
 
 ```bash
 bun run atlas -- init                # Profile DB and generate YAMLs
-bun run dev                          # http://localhost:3000
+bun run dev:local                    # Start containers + dev servers → http://localhost:3000
 ```
 
 > **New project scaffolding:** `bun create @useatlas my-app` provides interactive setup with template selection, DB config, provider setup, and optional semantic layer generation.
@@ -86,14 +86,15 @@ See [Bring Your Own DB](bring-your-own-db.md) for production database setup incl
 
 | Command | Description |
 |---------|-------------|
-| `bun run dev` | Start API (:3001) + Next.js (:3000) dev servers |
+| `bun run dev:local` | Start containers (Postgres + sidecar) + dev servers |
+| `bun run dev` | Start API (:3001) + Next.js (:3000) — assumes containers are running |
 | `bun run build` | Production build |
 | `bun run start` | Start production server |
 | `bun run lint` | ESLint |
 | `bun run type` | TypeScript type-check |
 | `bun run test` | Run tests |
-| `bun run db:up` | Start local Postgres |
-| `bun run db:down` | Stop local Postgres |
+| `bun run db:up` | Start local Postgres + sandbox sidecar |
+| `bun run db:down` | Stop containers |
 | `bun run db:reset` | Nuke volume and re-seed from scratch |
 
 ## Next steps

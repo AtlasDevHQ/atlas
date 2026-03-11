@@ -37,9 +37,9 @@ Clone the repo and pick a database:
 
 ```bash
 bun install
-bun run db:up                         # Start local Postgres + seed demo data
-cp .env.example .env                  # Set ATLAS_PROVIDER + API key + ATLAS_DATASOURCE_URL
-bun run dev                           # http://localhost:3000
+cp .env.example .env                  # Set ATLAS_PROVIDER + API key
+bun run atlas -- init                 # Profile DB and generate semantic layer
+bun run dev:local                     # Start containers + dev servers → http://localhost:3000
 ```
 
 ## How It Works
@@ -99,7 +99,7 @@ The explore tool (filesystem access to semantic YAML files) runs in a sandbox th
 | Vercel | Firecracker microVM | Hardware-level (strongest) |
 | Self-hosted Docker | nsjail (Linux namespaces) | Kernel-level |
 | Railway | Sidecar service | Process-level |
-| Local dev | just-bash + OverlayFS | Path-traversal protection |
+| Local dev | Sidecar container (Docker Compose) | Process-level |
 
 **If you're deploying Atlas for your own team** on a private network, any tier is fine — you're protecting against prompt injection edge cases, not hostile tenants. **If you're running multi-tenant**, use Vercel or nsjail-capable platforms for real isolation.
 

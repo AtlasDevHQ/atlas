@@ -6,7 +6,7 @@ you need to get started.
 ## Prerequisites
 
 - **[bun](https://bun.sh/)** >= 1.3.10 — package manager and runtime
-- **[Docker](https://www.docker.com/)** — for the local Postgres database
+- **[Docker](https://www.docker.com/)** — for the local Postgres database and sandbox sidecar
 
 ## Dev Setup
 
@@ -14,10 +14,9 @@ you need to get started.
 git clone https://github.com/AtlasDevHQ/atlas.git
 cd atlas
 bun install
-bun run db:up          # Start local Postgres (seeds demo data)
 cp .env.example .env   # Set your LLM provider key
 bun run atlas -- init  # Profile the database and generate semantic layer
-bun run dev            # Start API (:3001) + web (:3000)
+bun run dev:local      # Start containers (Postgres + sandbox sidecar) + dev servers
 ```
 
 Default dev credentials: **admin@atlas.dev / atlas-dev**

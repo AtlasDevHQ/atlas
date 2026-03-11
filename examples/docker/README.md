@@ -22,7 +22,7 @@ From the repo root:
 
 ```bash
 bun install
-bun run db:up                    # Start local Postgres
+bun run db:up                    # Start local Postgres + sandbox sidecar
 bun run dev:api                  # Starts Hono API on :3001
 ```
 

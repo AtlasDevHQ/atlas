@@ -60,17 +60,17 @@ A 62-table B2B cybersecurity SaaS company database. ~500K rows spanning 2019-202
 
 ### Loading
 
-Requires PostgreSQL (uses `GENERATE_SERIES` for data generation). Note that `bun run db:up` only seeds the simple demo -- the `--demo cybersec` flag seeds the cybersec dataset on top.
+Requires PostgreSQL (uses `GENERATE_SERIES` for data generation). Note that `bun run db:up` seeds the simple demo only -- the `--demo cybersec` flag seeds the cybersec dataset on top.
 
 ```bash
-# Start local Postgres (if not already running)
+# Start local Postgres + sandbox sidecar (if not already running)
 bun run db:up
 
 # Load cybersec demo and generate semantic layer
 bun run atlas -- init --demo cybersec
 
 # Start Atlas
-bun run dev
+bun run dev:local
 ```
 
 To reset and reload from scratch:
@@ -184,17 +184,17 @@ A 52-table DTC (direct-to-consumer) home goods brand database. ~480K rows spanni
 
 ### Loading
 
-Requires PostgreSQL (uses `GENERATE_SERIES` for data generation). Note that `bun run db:up` only seeds the simple demo -- the `--demo ecommerce` flag seeds the ecommerce dataset on top.
+Requires PostgreSQL (uses `GENERATE_SERIES` for data generation). Note that `bun run db:up` seeds the simple demo only -- the `--demo ecommerce` flag seeds the ecommerce dataset on top.
 
 ```bash
-# Start local Postgres (if not already running)
+# Start local Postgres + sandbox sidecar (if not already running)
 bun run db:up
 
 # Load e-commerce demo and generate semantic layer
 bun run atlas -- init --demo ecommerce
 
 # Start Atlas
-bun run dev
+bun run dev:local
 ```
 
 To reset and reload from scratch:

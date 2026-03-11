@@ -6,7 +6,7 @@ import { DarkModeContext } from "../../hooks/use-dark-mode";
 import dynamic from "next/dynamic";
 import { LoadingCard } from "./loading-card";
 import { DataTable } from "./data-table";
-import type { ChartDetectionResult } from "../chart/chart-detection";
+import type { ChartDetectionResult, ChartType } from "../chart/chart-detection";
 
 const ResultChart = dynamic(
   () => import("../chart/result-chart").then((m) => ({ default: m.ResultChart })),
@@ -14,7 +14,7 @@ const ResultChart = dynamic(
 );
 
 interface RechartsChartConfig {
-  type: "line" | "bar" | "pie";
+  type: ChartType;
   data: Record<string, unknown>[];
   categoryKey: string;
   valueKeys: string[];

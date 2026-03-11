@@ -1,12 +1,17 @@
 "use client";
 
-import { Component, type ReactNode, type ErrorInfo, useMemo, useState } from "react";
+import { Component, type ReactNode, type ErrorInfo, useMemo, useId, useState } from "react";
 import {
   ResponsiveContainer,
   BarChart,
   Bar,
   LineChart,
   Line,
+  AreaChart,
+  Area,
+  ScatterChart,
+  Scatter,
+  ZAxis,
   PieChart,
   Pie,
   Cell,
@@ -129,7 +134,7 @@ function ChartTooltip({ active, payload, label, dark }: {
   if (!active || !payload?.length) return null;
   return (
     <div style={getTooltipStyle(dark)}>
-      <p style={TOOLTIP_LABEL_STYLE}>{label}</p>
+      {label && <p style={TOOLTIP_LABEL_STYLE}>{label}</p>}
       {payload.map((entry, i) => (
         <p key={i} style={{ color: entry.color }}>
           {entry.name}: {typeof entry.value === "number" ? formatNumber(entry.value) : entry.value}
@@ -293,10 +298,174 @@ function PieChartView({
 }
 
 /* ------------------------------------------------------------------ */
+/*  Area chart                                                           */
+/* ------------------------------------------------------------------ */
+
+function AreaChartView({
+  data,
+  rec,
+  dark,
+}: {
+  data: RechartsRow[];
+  rec: ChartRecommendation;
+  dark: boolean;
+}) {
+  const chartId = useId();
+  const colors = getColors(dark);
+  const t = themeTokens(dark);
+  const catKey = rec.categoryColumn.header;
+  const valKeys = rec.valueColumns.map((c) => c.header);
+
+  return (
+    <ResponsiveContainer width="100%" height={300}>
+      <AreaChart data={data} margin={{ top: 8, right: 8, bottom: 40, left: 8 }}>
+        <defs>
+          {valKeys.map((key, i) => (
+            <linearGradient key={key} id={`area-grad-${chartId}-${i}`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="5%" stopColor={colors[i % colors.length]} stopOpacity={0.3} />
+              <stop offset="95%" stopColor={colors[i % colors.length]} stopOpacity={0.05} />
+            </linearGradient>
+          ))}
+        </defs>
+        <CartesianGrid strokeDasharray="3 3" stroke={t.grid} />
+        <XAxis
+          dataKey={catKey}
+          tick={{ fill: t.axis, fontSize: 11 }}
+          tickFormatter={(v: string) => truncateLabel(v)}
+          angle={-45}
+          textAnchor="end"
+          height={60}
+        />
+        <YAxis tick={{ fill: t.axis, fontSize: 11 }} tickFormatter={formatNumber} />
+        <Tooltip content={<ChartTooltip dark={dark} />} />
+        {valKeys.length > 1 && (
+          <Legend wrapperStyle={{ fontSize: 12, color: t.legendText }} />
+        )}
+        {valKeys.map((key, i) => (
+          <Area
+            key={key}
+            type="monotone"
+            dataKey={key}
+            stroke={colors[i % colors.length]}
+            strokeWidth={2}
+            fill={`url(#area-grad-${chartId}-${i})`}
+          />
+        ))}
+      </AreaChart>
+    </ResponsiveContainer>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Stacked bar chart                                                    */
+/* ------------------------------------------------------------------ */
+
+function StackedBarChartView({
+  data,
+  rec,
+  dark,
+}: {
+  data: RechartsRow[];
+  rec: ChartRecommendation;
+  dark: boolean;
+}) {
+  const colors = getColors(dark);
+  const t = themeTokens(dark);
+  const catKey = rec.categoryColumn.header;
+  const valKeys = rec.valueColumns.map((c) => c.header);
+
+  return (
+    <ResponsiveContainer width="100%" height={300}>
+      <BarChart data={data} margin={{ top: 8, right: 8, bottom: 40, left: 8 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke={t.grid} />
+        <XAxis
+          dataKey={catKey}
+          tick={{ fill: t.axis, fontSize: 11 }}
+          tickFormatter={(v: string) => truncateLabel(v)}
+          angle={-45}
+          textAnchor="end"
+          height={60}
+        />
+        <YAxis tick={{ fill: t.axis, fontSize: 11 }} tickFormatter={formatNumber} />
+        <Tooltip content={<ChartTooltip dark={dark} />} />
+        <Legend wrapperStyle={{ fontSize: 12, color: t.legendText }} />
+        {valKeys.map((key, i) => (
+          <Bar
+            key={key}
+            dataKey={key}
+            stackId="a"
+            fill={colors[i % colors.length]}
+            radius={i === valKeys.length - 1 ? [4, 4, 0, 0] : undefined}
+          />
+        ))}
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Scatter chart                                                        */
+/* ------------------------------------------------------------------ */
+
+function ScatterChartView({
+  data,
+  rec,
+  dark,
+}: {
+  data: RechartsRow[];
+  rec: ChartRecommendation;
+  dark: boolean;
+}) {
+  const colors = getColors(dark);
+  const t = themeTokens(dark);
+  const xKey = rec.categoryColumn.header;
+  const yKey = rec.valueColumns[0].header;
+  const zKey = rec.valueColumns.length > 1 ? rec.valueColumns[1].header : undefined;
+
+  return (
+    <ResponsiveContainer width="100%" height={300}>
+      <ScatterChart margin={{ top: 8, right: 8, bottom: 40, left: 8 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke={t.grid} />
+        <XAxis
+          dataKey={xKey}
+          type="number"
+          name={xKey}
+          tick={{ fill: t.axis, fontSize: 11 }}
+          tickFormatter={formatNumber}
+        />
+        <YAxis
+          dataKey={yKey}
+          type="number"
+          name={yKey}
+          tick={{ fill: t.axis, fontSize: 11 }}
+          tickFormatter={formatNumber}
+        />
+        {zKey && <ZAxis dataKey={zKey} type="number" name={zKey} range={[40, 400]} />}
+        <Tooltip
+          content={<ChartTooltip dark={dark} />}
+          cursor={{ strokeDasharray: "3 3" }}
+        />
+        <Scatter
+          data={data}
+          fill={colors[0]}
+        />
+      </ScatterChart>
+    </ResponsiveContainer>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Chart type selector                                                 */
 /* ------------------------------------------------------------------ */
 
-const CHART_LABELS: Record<ChartType, string> = { bar: "Bar", line: "Line", pie: "Pie" };
+const CHART_LABELS: Record<ChartType, string> = {
+  bar: "Bar",
+  line: "Line",
+  pie: "Pie",
+  area: "Area",
+  "stacked-bar": "Stacked",
+  scatter: "Scatter",
+};
 
 function ChartTypeSelector({
   recommendations,
@@ -338,6 +507,39 @@ function ChartTypeSelector({
 }
 
 /* ------------------------------------------------------------------ */
+/*  Chart renderer (inside error boundary)                               */
+/* ------------------------------------------------------------------ */
+
+function ChartRenderer({
+  rows,
+  rec,
+  defaultData,
+  defaultRec,
+  dark,
+}: {
+  rows: string[][];
+  rec: ChartRecommendation;
+  defaultData: RechartsRow[];
+  defaultRec: ChartRecommendation;
+  dark: boolean;
+}) {
+  // Re-transform data when switching chart type (category axis may differ)
+  const chartData = rec === defaultRec ? defaultData : transformData(rows, rec);
+  const type = rec.type;
+
+  return (
+    <div className="p-2">
+      {type === "bar" ? <BarChartView data={chartData} rec={rec} dark={dark} />
+        : type === "line" ? <LineChartView data={chartData} rec={rec} dark={dark} />
+        : type === "area" ? <AreaChartView data={chartData} rec={rec} dark={dark} />
+        : type === "stacked-bar" ? <StackedBarChartView data={chartData} rec={rec} dark={dark} />
+        : type === "scatter" ? <ScatterChartView data={chartData} rec={rec} dark={dark} />
+        : <PieChartView data={chartData} rec={rec} dark={dark} />}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Main ResultChart component                                          */
 /* ------------------------------------------------------------------ */
 
@@ -364,11 +566,6 @@ export function ResultChart({
   const currentType = activeType ?? result.recommendations[0].type;
   const currentRec = result.recommendations.find((r) => r.type === currentType) ?? result.recommendations[0];
 
-  // Re-transform data when switching chart type (category axis may differ)
-  const chartData = currentRec === result.recommendations[0]
-    ? result.data
-    : transformData(rows, currentRec);
-
   return (
     <div className="overflow-hidden rounded-lg border border-zinc-200 dark:border-zinc-700">
       <div className="flex items-center justify-between border-b border-zinc-100 bg-zinc-50/50 px-3 py-2 dark:border-zinc-800 dark:bg-zinc-900/50">
@@ -380,11 +577,13 @@ export function ResultChart({
         />
       </div>
       <ChartErrorBoundary key={currentType}>
-        <div className="p-2">
-          {currentType === "bar" ? <BarChartView data={chartData} rec={currentRec} dark={dark} />
-            : currentType === "line" ? <LineChartView data={chartData} rec={currentRec} dark={dark} />
-            : <PieChartView data={chartData} rec={currentRec} dark={dark} />}
-        </div>
+        <ChartRenderer
+          rows={rows}
+          rec={currentRec}
+          defaultData={result.data}
+          defaultRec={result.recommendations[0]}
+          dark={dark}
+        />
       </ChartErrorBoundary>
     </div>
   );

@@ -43,6 +43,7 @@ const ComponentHealthSchema = z.object({
 export const HealthResponseSchema = z.object({
   status: z.enum(["ok", "degraded", "error"]),
   warnings: z.array(z.string()).optional(),
+  brandColor: z.string().optional(),
   components: z.object({
     datasource: ComponentHealthSchema,
     internalDb: ComponentHealthSchema,

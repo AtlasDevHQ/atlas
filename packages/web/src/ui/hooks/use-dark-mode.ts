@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useSyncExternalStore } from "react";
+import { createContext, useSyncExternalStore } from "react";
 
 // ---------------------------------------------------------------------------
 // Theme types
@@ -29,8 +29,8 @@ function init() {
     if (stored === "light" || stored === "dark" || stored === "system") {
       _mode = stored;
     }
-  } catch {
-    // SSR or storage unavailable
+  } catch (err) {
+    console.warn("Could not read theme preference from localStorage:", err);
   }
 }
 
@@ -113,8 +113,8 @@ export function setTheme(mode: ThemeMode) {
   applyClass(isDark);
   try {
     localStorage.setItem(STORAGE_KEY, mode);
-  } catch {
-    // Storage unavailable
+  } catch (err) {
+    console.warn("Could not persist theme preference to localStorage:", err);
   }
   notify();
 }
@@ -129,10 +129,4 @@ export function useDarkMode(): boolean {
 /** Returns the current ThemeMode ("light" | "dark" | "system"). */
 export function useThemeMode(): ThemeMode {
   return useSyncExternalStore(subscribeMode, getSnapshotMode, getServerSnapshotMode);
-}
-
-/** Returns the ThemeMode from context (for components that need it without the hook). */
-export const ThemeModeContext = createContext<ThemeMode>("system");
-export function useThemeModeContext(): ThemeMode {
-  return useContext(ThemeModeContext);
 }

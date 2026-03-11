@@ -14,19 +14,15 @@
 // Initialize OpenTelemetry SDK before other imports that may create spans.
 // No-op when OTEL_EXPORTER_OTLP_ENDPOINT is not set — @opentelemetry/api
 // returns no-op tracers (zero overhead).
-// Uses console.error (not pino) because the structured logger has not been
-// created yet and importing it here could create premature spans.
+// Buffers any init error and replays it through pino once the logger exists.
 let _shutdownTelemetry: (() => Promise<void>) | null = null;
+let _otelInitError: string | null = null;
 if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
   try {
     const { shutdownTelemetry } = await import("@atlas/api/lib/telemetry");
     _shutdownTelemetry = shutdownTelemetry;
   } catch (err) {
-    console.error(
-      "[atlas-api] Failed to initialize OpenTelemetry:",
-      err instanceof Error ? err.message : String(err),
-      "— tracing disabled for this process",
-    );
+    _otelInitError = err instanceof Error ? err.message : String(err);
   }
 }
 
@@ -41,6 +37,12 @@ import { wireDatasourcePlugins, wireActionPlugins, wireInteractionPlugins, wireC
 import { setPluginTools, setContextFragments, setDialectHints } from "@atlas/api/lib/plugins/tools";
 
 const log = createLogger("server");
+
+// Replay buffered OTel init error through the structured logger.
+if (_otelInitError) {
+  log.error({ err: new Error(_otelInitError) }, "Failed to initialize OpenTelemetry — tracing disabled for this process");
+}
+
 const port = Number(process.env.PORT ?? 3001);
 
 if (!Number.isFinite(port) || port < 0 || port > 65535) {

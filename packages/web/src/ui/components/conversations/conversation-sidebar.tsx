@@ -1,7 +1,13 @@
 "use client";
 
+import { useState } from "react";
+import { Star } from "lucide-react";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { Badge } from "@/components/ui/badge";
 import type { Conversation } from "../../lib/types";
 import { ConversationList } from "./conversation-list";
+
+type SidebarFilter = "all" | "saved";
 
 export function ConversationSidebar({
   conversations,
@@ -24,6 +30,10 @@ export function ConversationSidebar({
   mobileOpen: boolean;
   onMobileClose: () => void;
 }) {
+  const [filter, setFilter] = useState<SidebarFilter>("all");
+  const starredConversations = conversations.filter((c) => c.starred);
+  const filteredConversations = filter === "saved" ? starredConversations : conversations;
+
   const sidebar = (
     <div className="flex h-full flex-col border-r border-zinc-200 bg-zinc-50/50 dark:border-zinc-800 dark:bg-zinc-950/50">
       <div className="flex items-center justify-between border-b border-zinc-200 px-3 py-3 dark:border-zinc-800">
@@ -36,6 +46,29 @@ export function ConversationSidebar({
         </button>
       </div>
 
+      <div className="border-b border-zinc-200 px-3 py-2 dark:border-zinc-800">
+        <ToggleGroup
+          type="single"
+          size="sm"
+          value={filter}
+          onValueChange={(val) => { if (val) setFilter(val as SidebarFilter); }}
+          className="gap-1"
+        >
+          <ToggleGroupItem value="all" className="px-2.5 text-xs">
+            All
+          </ToggleGroupItem>
+          <ToggleGroupItem value="saved" className="gap-1.5 px-2.5 text-xs">
+            <Star className="h-3 w-3" fill={filter === "saved" ? "currentColor" : "none"} />
+            Saved
+            {starredConversations.length > 0 && (
+              <Badge variant="secondary" className="h-4 px-1.5 text-[10px] font-semibold">
+                {starredConversations.length}
+              </Badge>
+            )}
+          </ToggleGroupItem>
+        </ToggleGroup>
+      </div>
+
       <div className="flex-1 overflow-y-auto p-2">
         {loading && conversations.length === 0 ? (
           <div className="flex items-center justify-center py-8">
@@ -43,11 +76,13 @@ export function ConversationSidebar({
           </div>
         ) : (
           <ConversationList
-            conversations={conversations}
+            conversations={filteredConversations}
             selectedId={selectedId}
             onSelect={onSelect}
             onDelete={onDelete}
             onStar={onStar}
+            showSections={filter === "all"}
+            emptyMessage={filter === "saved" ? "Star conversations to save them here" : undefined}
           />
         )}
       </div>

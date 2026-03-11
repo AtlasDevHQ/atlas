@@ -24,6 +24,8 @@ import { hasInternalDB, internalQuery, encryptUrl, decryptUrl } from "@atlas/api
 import { maskConnectionUrl } from "@atlas/api/lib/security";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import { plugins } from "@atlas/api/lib/plugins/registry";
+import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
+import { savePluginEnabled, savePluginConfig, getPluginConfig } from "@atlas/api/lib/plugins/settings";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import type { AtlasRole } from "@atlas/api/lib/auth/types";
 import { ATLAS_ROLES } from "@atlas/api/lib/auth/types";
@@ -1482,7 +1484,7 @@ admin.get("/plugins", async (c) => {
 
   return withRequestContext({ requestId, user: authResult.user }, () => {
     const pluginList = plugins.describe();
-    return c.json({ plugins: pluginList });
+    return c.json({ plugins: pluginList, manageable: hasInternalDB() });
   });
 });
 
@@ -1523,6 +1525,212 @@ admin.post("/plugins/:id/health", async (c) => {
         message: "Plugin health check failed unexpectedly.",
         status: plugins.getStatus(id),
       }, 500);
+    }
+  });
+});
+
+// POST /plugins/:id/enable — enable a plugin
+admin.post("/plugins/:id/enable", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const id = c.req.param("id");
+    const plugin = plugins.get(id);
+    if (!plugin) {
+      return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404);
+    }
+
+    plugins.enable(id);
+
+    if (hasInternalDB()) {
+      try {
+        await savePluginEnabled(id, true);
+      } catch (err) {
+        log.error({ err: err instanceof Error ? err : new Error(String(err)), pluginId: id }, "Failed to persist plugin enabled state");
+      }
+    }
+
+    return c.json({ id, enabled: true, status: plugins.getStatus(id) });
+  });
+});
+
+// POST /plugins/:id/disable — disable a plugin
+admin.post("/plugins/:id/disable", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const id = c.req.param("id");
+    const plugin = plugins.get(id);
+    if (!plugin) {
+      return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404);
+    }
+
+    plugins.disable(id);
+
+    if (hasInternalDB()) {
+      try {
+        await savePluginEnabled(id, false);
+      } catch (err) {
+        log.error({ err: err instanceof Error ? err : new Error(String(err)), pluginId: id }, "Failed to persist plugin disabled state");
+      }
+    }
+
+    return c.json({ id, enabled: false, status: plugins.getStatus(id) });
+  });
+});
+
+// GET /plugins/:id/schema — return config schema and current values
+admin.get("/plugins/:id/schema", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const id = c.req.param("id");
+    const plugin = plugins.get(id);
+    if (!plugin) {
+      return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404);
+    }
+
+    const schema: ConfigSchemaField[] = typeof plugin.getConfigSchema === "function"
+      ? plugin.getConfigSchema()
+      : [];
+
+    // Build current values from plugin config + DB overrides
+    const pluginConfig = plugin.config != null && typeof plugin.config === "object"
+      ? (plugin.config as Record<string, unknown>)
+      : {};
+    const dbOverrides = await getPluginConfig(id);
+    const merged = { ...pluginConfig, ...dbOverrides };
+
+    // Mask secret values
+    const maskedValues: Record<string, unknown> = {};
+    const secretKeys = new Set(schema.filter((f) => f.secret).map((f) => f.key));
+    for (const [key, value] of Object.entries(merged)) {
+      if (secretKeys.has(key) && typeof value === "string" && value.length > 0) {
+        maskedValues[key] = value.slice(0, 3) + "***";
+      } else {
+        maskedValues[key] = value;
+      }
+    }
+
+    return c.json({
+      id,
+      schema,
+      values: maskedValues,
+      hasSchema: schema.length > 0,
+      manageable: hasInternalDB(),
+    });
+  });
+});
+
+// PUT /plugins/:id/config — update plugin configuration
+admin.put("/plugins/:id/config", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const id = c.req.param("id");
+    const plugin = plugins.get(id);
+    if (!plugin) {
+      return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404);
+    }
+
+    if (!hasInternalDB()) {
+      return c.json({
+        error: "no_internal_db",
+        message: "Internal database required to save plugin configuration. Config is read-only.",
+      }, 409);
+    }
+
+    let body: Record<string, unknown>;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "invalid_request", message: "Request body must be valid JSON." }, 400);
+    }
+
+    if (typeof body !== "object" || body === null || Array.isArray(body)) {
+      return c.json({ error: "invalid_request", message: "Request body must be a JSON object." }, 400);
+    }
+
+    // Validate against schema if plugin provides one
+    if (typeof plugin.getConfigSchema === "function") {
+      const schema = plugin.getConfigSchema();
+      const errors: string[] = [];
+
+      for (const field of schema) {
+        const value = body[field.key];
+
+        if (field.required && (value === undefined || value === null || value === "")) {
+          errors.push(`"${field.key}" is required.`);
+          continue;
+        }
+
+        if (value === undefined || value === null) continue;
+
+        switch (field.type) {
+          case "string":
+            if (typeof value !== "string") errors.push(`"${field.key}" must be a string.`);
+            break;
+          case "number":
+            if (typeof value !== "number") errors.push(`"${field.key}" must be a number.`);
+            break;
+          case "boolean":
+            if (typeof value !== "boolean") errors.push(`"${field.key}" must be a boolean.`);
+            break;
+          case "select":
+            if (field.options && !field.options.includes(String(value))) {
+              errors.push(`"${field.key}" must be one of: ${field.options.join(", ")}.`);
+            }
+            break;
+        }
+      }
+
+      if (errors.length > 0) {
+        return c.json({
+          error: "validation_error",
+          message: "Config validation failed.",
+          details: errors,
+        }, 400);
+      }
+    }
+
+    try {
+      await savePluginConfig(id, body);
+      log.info({ pluginId: id, requestId }, "Plugin config updated");
+      return c.json({
+        id,
+        message: "Configuration saved. Changes take effect on next restart.",
+      });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), pluginId: id }, "Failed to save plugin config");
+      return c.json({ error: "internal_error", message: "Failed to save plugin configuration." }, 500);
     }
   });
 });

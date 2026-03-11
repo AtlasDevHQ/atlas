@@ -237,6 +237,33 @@ export interface PluginTableDefinition {
 }
 
 // ---------------------------------------------------------------------------
+// Config schema — serializable field descriptions for admin UI
+// ---------------------------------------------------------------------------
+
+/**
+ * Describes a single config field for admin UI form generation.
+ * Plugins return an array of these from `getConfigSchema()`.
+ */
+export interface ConfigSchemaField {
+  /** Field key in the config object. */
+  key: string;
+  /** Field type for form generation. */
+  type: "string" | "number" | "boolean" | "select";
+  /** Human-readable label. Falls back to `key` in the UI. */
+  label?: string;
+  /** Help text shown below the input. */
+  description?: string;
+  /** Whether the field is required. */
+  required?: boolean;
+  /** When true, the value is masked in the UI (e.g. API keys, secrets). */
+  secret?: boolean;
+  /** Valid options for "select" type fields. */
+  options?: string[];
+  /** Default value. */
+  default?: unknown;
+}
+
+// ---------------------------------------------------------------------------
 // Base plugin interface
 // ---------------------------------------------------------------------------
 
@@ -252,6 +279,13 @@ export interface AtlasPluginBase<TConfig = undefined> {
 
   /** Plugin-specific configuration. When using createPlugin(), validated at factory call time via the provided configSchema. */
   readonly config?: TConfig;
+
+  /**
+   * Return a serializable description of the plugin's config schema.
+   * Used by the admin UI to generate dynamic config forms. Optional —
+   * plugins without this method show config as read-only JSON.
+   */
+  getConfigSchema?(): ConfigSchemaField[];
 
   /**
    * Called once during server boot with the full Atlas context.

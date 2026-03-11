@@ -181,6 +181,28 @@ Token data is recorded automatically for every agent interaction (chat and query
 
 ---
 
+## Plugins
+
+**Route:** `/admin/plugins`
+
+Manage installed plugins — enable/disable, health checks, and configuration:
+
+- **Plugin cards** — Each card shows name, type(s), version, health status, and enabled state
+- **Health check** — Trigger a live health probe for any plugin
+- **Enable/disable toggle** — Toggle a plugin on or off without restarting. Disabled plugins are skipped during agent execution (queries, hooks, tool registration)
+- **Configure** — Opens a config dialog with form inputs generated from the plugin's config schema. Secret values (API keys, tokens) are masked in the UI
+
+<Callout type="info">
+Plugin enable/disable state and config overrides are stored in the internal database (`DATABASE_URL`). Without it, all plugins are enabled and configuration is read-only.
+</Callout>
+
+**How it works:**
+- Toggling a plugin immediately takes effect — disabled plugins are excluded from `getByType()` and `getAllHealthy()` calls in the agent loop
+- Config changes are saved to the `plugin_settings` table and take effect on next restart
+- Plugins that implement `getConfigSchema()` expose a typed form in the UI. Plugins without it show current config as read-only JSON
+
+---
+
 ## User Management
 
 **Route:** `/admin/users`
@@ -248,6 +270,10 @@ All admin endpoints are at `/api/v1/admin/` and require the `admin` role. See th
 | `GET` | `/tokens/trends` | Daily token usage time series |
 | `GET` | `/plugins` | List plugins |
 | `POST` | `/plugins/:id/health` | Plugin health check |
+| `POST` | `/plugins/:id/enable` | Enable a plugin |
+| `POST` | `/plugins/:id/disable` | Disable a plugin |
+| `GET` | `/plugins/:id/schema` | Get config schema and values |
+| `PUT` | `/plugins/:id/config` | Update plugin config |
 | `GET` | `/users` | List users |
 | `GET` | `/users/stats` | User stats |
 | `PATCH` | `/users/:id/role` | Change role |

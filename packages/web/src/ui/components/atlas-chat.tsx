@@ -410,18 +410,19 @@ export function AtlasChat() {
                       m.role === "assistant" &&
                       msgIndex === messages.length - 1;
 
-                    // Parse suggestions from the last text part of this message
-                    let suggestions: string[] = [];
+                    // Extract suggestions from the last text part that contains them
+                    const lastTextWithSuggestions = m.parts
+                      ?.filter((p): p is typeof p & { type: "text"; text: string } => p.type === "text" && !!p.text.trim())
+                      .findLast((p) => parseSuggestions(p.text).suggestions.length > 0);
+                    const suggestions = lastTextWithSuggestions
+                      ? parseSuggestions(lastTextWithSuggestions.text).suggestions
+                      : [];
 
                     return (
                       <div key={m.id} className="space-y-2">
                         {m.parts?.map((part, i) => {
                           if (part.type === "text" && part.text.trim()) {
-                            const parsed = parseSuggestions(part.text);
-                            if (parsed.suggestions.length > 0) {
-                              suggestions = parsed.suggestions;
-                            }
-                            const displayText = parsed.text;
+                            const displayText = parseSuggestions(part.text).text;
                             if (!displayText.trim()) return null;
                             return (
                               <div key={i} className="max-w-[90%]">

@@ -251,6 +251,19 @@ describe("parseSuggestions", () => {
     expect(result.text).toBe("Some text before  and after");
     expect(result.suggestions).toEqual(["Q1?", "Q2?"]);
   });
+
+  test("strips all blocks when multiple exist and merges suggestions", () => {
+    const content = `Answer\n<suggestions>\nQ1?\n</suggestions>\nMore text\n<suggestions>\nQ2?\n</suggestions>`;
+    const result = parseSuggestions(content);
+    expect(result.text).toBe("Answer\n\nMore text");
+    expect(result.suggestions).toEqual(["Q1?", "Q2?"]);
+  });
+
+  test("returns empty suggestions for empty content", () => {
+    const result = parseSuggestions("");
+    expect(result.text).toBe("");
+    expect(result.suggestions).toEqual([]);
+  });
 });
 
 /* ------------------------------------------------------------------ */

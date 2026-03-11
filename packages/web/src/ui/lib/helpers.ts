@@ -168,7 +168,7 @@ export function parseSuggestions(content: string): { text: string; suggestions: 
   if (suggestions.length === 0) return { text: content, suggestions: [] };
   const text = content.replace(SUGGESTIONS_RE, "").trimEnd();
   SUGGESTIONS_RE.lastIndex = 0;
-  return { text, suggestions };
+  return { text, suggestions: suggestions.slice(0, 5) };
 }
 
 /** Format a cell value: null as em-dash, numbers with locale formatting, else stringified. */

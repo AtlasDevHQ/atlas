@@ -13,9 +13,9 @@ export function FollowUpChips({
 
   return (
     <div className="flex flex-wrap gap-2 pt-1">
-      {suggestions.map((s) => (
+      {suggestions.map((s, i) => (
         <Button
-          key={s}
+          key={`${i}-${s}`}
           variant="outline"
           size="sm"
           className="h-auto rounded-full px-3 py-1.5 text-xs font-normal text-zinc-600 dark:text-zinc-400"

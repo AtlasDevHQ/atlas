@@ -264,6 +264,22 @@ describe("parseSuggestions", () => {
     expect(result.text).toBe("");
     expect(result.suggestions).toEqual([]);
   });
+
+  test("unclosed suggestions tag is not matched (streaming partial)", () => {
+    const content = "Answer\n\n<suggestions>\nQ1?\nQ2?";
+    const result = parseSuggestions(content);
+    expect(result.text).toBe(content);
+    expect(result.suggestions).toEqual([]);
+  });
+
+  test("caps suggestions at 5", () => {
+    const lines = Array.from({ length: 10 }, (_, i) => `Question ${i + 1}?`).join("\n");
+    const content = `Answer\n<suggestions>\n${lines}\n</suggestions>`;
+    const result = parseSuggestions(content);
+    expect(result.suggestions).toHaveLength(5);
+    expect(result.suggestions[0]).toBe("Question 1?");
+    expect(result.suggestions[4]).toBe("Question 5?");
+  });
 });
 
 /* ------------------------------------------------------------------ */

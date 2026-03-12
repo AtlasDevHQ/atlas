@@ -26,6 +26,7 @@ import { openapi } from "./routes/openapi";
 import { conversations, publicConversations } from "./routes/conversations";
 import { semantic } from "./routes/semantic";
 import { widget } from "./routes/widget";
+import { widgetLoader } from "./routes/widget-loader";
 
 const log = createLogger("api");
 const tracer = trace.getTracer("atlas");
@@ -105,6 +106,7 @@ app.route("/api/v1/conversations", conversations);
 app.route("/api/public/conversations", publicConversations);
 app.route("/api/v1/semantic", semantic);
 app.route("/widget", widget);
+app.route("/widget.js", widgetLoader);
 
 // Action routes — lazy import, only loaded if ATLAS_ACTIONS_ENABLED is set.
 if (process.env.ATLAS_ACTIONS_ENABLED === "true") {

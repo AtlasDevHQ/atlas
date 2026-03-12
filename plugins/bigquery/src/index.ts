@@ -105,6 +105,7 @@ export function buildBigQueryPlugin(
       try {
         conn = createBigQueryConnection({
           projectId: config.projectId,
+          dataset: config.dataset,
           keyFilename: config.keyFilename,
           credentials: config.credentials,
           location: config.location,

@@ -1,21 +1,16 @@
-import { describe, test, expect, mock, beforeEach, spyOn } from "bun:test";
+import { describe, test, expect, mock, beforeEach } from "bun:test";
 
 // Mock @google-cloud/bigquery before any imports that use it
-const mockQuery = mock(() =>
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const mockQuery = mock((): Promise<any> =>
   Promise.resolve([
     [{ count: 42 }],
     null,
     { schema: { fields: [{ name: "count", type: "INTEGER" }] } },
   ]),
 );
-const mockCreateQueryJob = mock(() =>
-  Promise.resolve([
-    { metadata: { status: { state: "DONE" }, statistics: { totalBytesProcessed: "0" } } },
-  ]),
-);
 const mockBigQuery = mock(() => ({
   query: mockQuery,
-  createQueryJob: mockCreateQueryJob,
 }));
 
 mock.module("@google-cloud/bigquery", () => ({
@@ -33,7 +28,6 @@ import { createBigQueryConnection } from "../src/connection";
 
 beforeEach(() => {
   mockQuery.mockClear();
-  mockCreateQueryJob.mockClear();
   mockBigQuery.mockClear();
 
   // Re-stub the default return value after clearing
@@ -44,14 +38,8 @@ beforeEach(() => {
       { schema: { fields: [{ name: "count", type: "INTEGER" }] } },
     ]),
   );
-  mockCreateQueryJob.mockImplementation(() =>
-    Promise.resolve([
-      { metadata: { status: { state: "DONE" }, statistics: { totalBytesProcessed: "0" } } },
-    ]),
-  );
   mockBigQuery.mockImplementation(() => ({
     query: mockQuery,
-    createQueryJob: mockCreateQueryJob,
   }));
 });
 
@@ -116,6 +104,16 @@ describe("config validation", () => {
   test("accepts optional location field", () => {
     const plugin = bigqueryPlugin({ location: "EU" });
     expect(plugin.config?.location).toBe("EU");
+  });
+
+  test("rejects invalid projectId type", () => {
+    // @ts-expect-error — intentionally passing invalid config
+    expect(() => bigqueryPlugin({ projectId: 123 })).toThrow();
+  });
+
+  test("rejects invalid credentials type", () => {
+    // @ts-expect-error — intentionally passing invalid config
+    expect(() => bigqueryPlugin({ credentials: "not-an-object" })).toThrow();
   });
 });
 
@@ -257,9 +255,9 @@ describe("BIGQUERY_FORBIDDEN_PATTERNS", () => {
 // ---------------------------------------------------------------------------
 
 describe("connection factory", () => {
-  test("connection.create() returns a PluginDBConnection", () => {
+  test("connection.create() returns a PluginDBConnection", async () => {
     const plugin = bigqueryPlugin({ projectId: "my-project" });
-    const conn = plugin.connection.create();
+    const conn = await plugin.connection.create();
     expect(typeof conn.query).toBe("function");
     expect(typeof conn.close).toBe("function");
   });
@@ -328,6 +326,29 @@ describe("connection factory", () => {
     expect(result.rows).toEqual([]);
   });
 
+  test("query uses _unnamed_N fallback for schema fields without names", async () => {
+    mockQuery.mockImplementation(() =>
+      Promise.resolve([
+        [{ "": 42 }],
+        null,
+        { schema: { fields: [{ type: "INTEGER" }] } },
+      ]),
+    );
+    const conn = createBigQueryConnection({ projectId: "my-project" });
+    const result = await conn.query("SELECT 42");
+    expect(result.columns).toEqual(["_unnamed_0"]);
+  });
+
+  test("query passes defaultDataset with undefined projectId in ADC mode", async () => {
+    const conn = createBigQueryConnection({ dataset: "analytics" });
+    await conn.query("SELECT 1");
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.objectContaining({
+        defaultDataset: { datasetId: "analytics", projectId: undefined },
+      }),
+    );
+  });
+
   test("query passes jobTimeoutMs and useLegacySql options", async () => {
     const conn = createBigQueryConnection({ projectId: "my-project" });
     await conn.query("SELECT 1", 15000);
@@ -363,6 +384,22 @@ describe("connection factory", () => {
       expect.objectContaining({
         defaultDataset: { datasetId: "analytics", projectId: "my-project" },
       }),
+    );
+  });
+
+  test("query rejects on non-tuple response", async () => {
+    mockQuery.mockImplementation(() => Promise.resolve("not-a-tuple"));
+    const conn = createBigQueryConnection({ projectId: "my-project" });
+    await expect(conn.query("SELECT 1")).rejects.toThrow(
+      /unexpected response shape/,
+    );
+  });
+
+  test("query rejects on non-array rows", async () => {
+    mockQuery.mockImplementation(() => Promise.resolve(["not-an-array"]));
+    const conn = createBigQueryConnection({ projectId: "my-project" });
+    await expect(conn.query("SELECT 1")).rejects.toThrow(
+      /non-array rows/,
     );
   });
 

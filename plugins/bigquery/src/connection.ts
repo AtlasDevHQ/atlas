@@ -5,7 +5,8 @@
  * PluginDBConnection interface. BigQuery is a REST-based service —
  * each query creates a job, so there is no connection pool to manage.
  *
- * Authentication priority:
+ * All provided auth options are passed through to the BigQuery client,
+ * which resolves them internally in this order:
  * 1. Explicit `credentials` object (service account JSON key contents)
  * 2. `keyFilename` path to service account JSON key file
  * 3. Application Default Credentials (ADC) — automatic in GCP environments
@@ -84,7 +85,21 @@ export function createBigQueryConnection(
           };
         }
 
+        // BigQuery client.query() returns [rows, nextQuery, apiResponse]
         const response = await client.query(options);
+        if (!Array.isArray(response) || response.length < 1) {
+          throw new Error(
+            "BigQuery query returned an unexpected response shape. " +
+              "Expected a tuple [rows, nextQuery, apiResponse]. " +
+              "This may indicate an incompatible @google-cloud/bigquery version.",
+          );
+        }
+        if (response[0] != null && !Array.isArray(response[0])) {
+          throw new Error(
+            "BigQuery query returned non-array rows. " +
+              "Expected an array of row objects from the BigQuery client.",
+          );
+        }
         const rows = (response[0] ?? []) as Record<string, unknown>[];
 
         // Extract column names from API response schema (third tuple element)
@@ -92,7 +107,7 @@ export function createBigQueryConnection(
         let columns: string[];
         if (apiResponse?.schema?.fields) {
           columns = (apiResponse.schema.fields as { name?: string }[]).map(
-            (f) => f.name ?? "",
+            (f, i) => f.name || `_unnamed_${i}`,
           );
         } else if (rows.length > 0) {
           columns = Object.keys(rows[0]);

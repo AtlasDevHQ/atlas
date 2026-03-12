@@ -178,7 +178,7 @@ function ChartImage({ chart, index }: { chart: PythonChart; index: number }) {
   }
 
   return (
-    
+    // eslint-disable-next-line @next/next/no-img-element -- @useatlas/react is framework-agnostic
     <img
       src={`data:${chart.mimeType};base64,${chart.base64}`}
       alt={`Python chart ${index + 1}`}

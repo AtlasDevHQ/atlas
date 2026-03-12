@@ -11,14 +11,14 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 | | Atlas | Vanna |
 |---|---|---|
-| **License** | Apache-2.0 | MIT |
+| **License** | MIT | MIT |
 | **Language** | TypeScript | Python |
 | **Approach** | Semantic layer (YAML) | RAG training (DDL + docs + SQL pairs) |
-| **Embeddable** | Script tag, React component, API | Flask UI, Streamlit, or custom Python |
+| **Embeddable** | Script tag, React component, API | Web component (`<vanna-chat>`), Flask UI, Streamlit |
 | **Deployment** | API server (Hono) + frontend (Next.js) | Python script or notebook |
 | **Plugin system** | Plugin SDK + 15 official plugins | Swappable LLM/vector store backends |
 | **Databases** | Postgres, MySQL + plugins for 5 more | Postgres, MySQL, BigQuery, Snowflake, DuckDB, SQLite, and more |
-| **Auth model** | Managed, BYOT, API key | None built-in |
+| **Auth model** | Managed, BYOT, API key | BYOT (`UserResolver` class) |
 | **Admin console** | Built-in | No |
 | **MCP server** | Yes | No |
 | **SQL validation** | 4-layer pipeline (AST, whitelist, LIMIT, timeout) | None built-in |
@@ -35,7 +35,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 **Atlas** deploys as a standalone API server with a built-in frontend. It's designed for production: managed auth, rate limiting, audit logging, admin console, and embeddable widget. You deploy it alongside your application.
 
-**Vanna** is a Python package you import and call. The simplest deployment is a Jupyter notebook or Python script. Vanna provides a Flask-based UI and Streamlit integration for quick demos, but production deployment requires building your own API layer, auth, and frontend around it.
+**Vanna** is a Python package you import and call. The simplest deployment is a Jupyter notebook or Python script. Vanna also provides a `<vanna-chat>` web component for embedding, a Flask-based UI, and Streamlit integration. The cloud-hosted version (app.vanna.ai) adds observability, access control, and audit logs.
 
 **Trade-off:** Vanna gives you more flexibility if you're already running Python services and want to integrate text-to-SQL into an existing Python API. Atlas gives you a complete production stack out of the box.
 

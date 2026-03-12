@@ -16,7 +16,7 @@ Atlas is an embeddable text-to-SQL agent. The tools below solve overlapping prob
 | Feature | Atlas | WrenAI | Vanna | Metabase |
 |---|---|---|---|---|
 | **Deployment** | Self-hosted, cloud, embedded | Self-hosted, cloud | Self-hosted, cloud (SaaS) | Self-hosted, cloud |
-| **Embeddable widget** | Script tag, React component, API | No | No | Interactive embedding (paid) |
+| **Embeddable widget** | Script tag, React component, API | No | Web component (`<vanna-chat>`) | Embedding SDK (paid), public links (free) |
 | **Semantic layer** | YAML files (code-first) | UI-based modeling (MDL) | Training via DDL/docs/SQL pairs | Data model UI |
 | **Plugin ecosystem** | 15+ official plugins, Plugin SDK | Limited | Python extensibility | Drivers + community plugins |
 | **Databases** | | | | |
@@ -27,12 +27,12 @@ Atlas is an embeddable text-to-SQL agent. The tools below solve overlapping prob
 | DuckDB | Plugin | Yes | Yes | Community driver |
 | Snowflake | Plugin | Yes | Yes | Yes |
 | Salesforce | Plugin | No | No | No |
-| **Auth model** | Managed, BYOT, API key, none | API key | API key | Managed, SSO (paid) |
-| **License** | Apache-2.0 | AGPL-3.0 | MIT | AGPL-3.0 (Pro is proprietary) |
+| **Auth model** | Managed, BYOT, API key, none | API key | BYOT (`UserResolver`) | Managed, SSO (paid) |
+| **License** | MIT | AGPL-3.0 | MIT | AGPL-3.0 (Pro is proprietary) |
 | **Python tool** | Sandboxed execution with charts | No | Python-native | No |
 | **Admin console** | Built-in (connections, users, analytics) | Basic UI | No | Full admin UI |
 | **MCP server** | Official plugin | No | No | No |
-| **SDK** | TypeScript SDK (`@useatlas/sdk`) | Python SDK | Python package | REST API |
+| **SDK** | TypeScript SDK (`@useatlas/sdk`) | No | Python package | Embedding SDK (React, paid) |
 | **Primary language** | TypeScript | TypeScript + Rust | Python | Clojure + JavaScript |
 
 ## When to Choose What
@@ -42,7 +42,7 @@ Atlas is an embeddable text-to-SQL agent. The tools below solve overlapping prob
 - **Embed data querying in your own product** -- Atlas is designed as a component, not a standalone tool. Script tag, React component, or raw API.
 - **Control the AI's reasoning with code** -- The YAML semantic layer lives in your repo, versioned with git, reviewed in PRs.
 - **Support multiple datasources with plugins** -- Connect Postgres, MySQL, BigQuery, Snowflake, ClickHouse, DuckDB, and Salesforce from a single deployment.
-- **Run under Apache-2.0** -- No AGPL copyleft concerns for commercial products.
+- **Run under MIT** -- No AGPL copyleft concerns for commercial products.
 
 ### Choose WrenAI if you need to...
 

@@ -23,15 +23,21 @@ If still on `main`, create a branch. Use the convention `fix/`, `feat/`, `chore/
 
 If already on a feature branch, stay on it.
 
-**Step 4: Stage and commit**
+**Step 4: Run CI gates (mandatory)**
+
+Run `/ci` — all five gates must pass before proceeding. If any fail, fix them before moving on.
+
+This catches lint errors, type issues, syncpack drift, and template drift that would otherwise break CI after merge. Do NOT skip this step.
+
+**Step 5: Stage and commit**
 
 - Review all changes carefully. Stage files that are part of this work — prefer specific `git add <file>` over `git add -A`
 - Do NOT stage `.env`, credentials, or unrelated files
-- If there are already commits on the branch and no unstaged changes, skip to Step 5
+- If there are already commits on the branch and no unstaged changes, skip to Step 6
 - Write a concise commit message following the repo's style (check `git log --oneline -10` on main)
 - If there are multiple logical changes, consider separate commits
 
-**Step 5: Push and create PR**
+**Step 6: Push and create PR**
 
 1. Push the branch:
    ```
@@ -57,7 +63,7 @@ If already on a feature branch, stay on it.
    gh pr edit <PR_NUMBER> -R AtlasDevHQ/atlas --add-label "feature,area: cli"
    ```
 
-**Step 6: Move issue to "In Review" on the project board**
+**Step 7: Move issue to "In Review" on the project board**
 
 1. Find the item ID for the linked issue:
    ```
@@ -69,7 +75,7 @@ If already on a feature branch, stay on it.
    gh project item-edit --project-id PVT_kwDOD8aze84BRASF --id <ITEM_ID> --field-id PVTSSF_lADOD8aze84BRASFzg-9gBo --single-select-option-id df73e18b
    ```
 
-**Step 7: Confirm**
+**Step 8: Confirm**
 
 Output a summary:
 - PR URL
@@ -84,5 +90,4 @@ Output a summary:
 - **Do NOT close the issue** — `Closes #N` in the PR body handles that automatically on merge
 - **Do NOT move the board item to "Done"** — that happens when the issue closes on merge
 - Do NOT run `gh issue close`
-- If tests exist (`bun run test`), suggest running them first but don't block
-- If lint exists (`bun run lint`), suggest running it first but don't block
+- **CI gates must pass** — `/ci` is mandatory in Step 4, not optional

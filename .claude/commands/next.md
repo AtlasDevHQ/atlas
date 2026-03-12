@@ -65,8 +65,15 @@ The user runs up to 3 Claude Code sessions in parallel (separate checkouts).
 [Full prompt — detailed enough for a fresh session with only CLAUDE.md context.
 Reference the GH issue number. Include acceptance criteria.
 
-IMPORTANT — Testing:
-- Run tests with `bun run test` (isolated per-file runner), NEVER bare `bun test` (causes 177 false failures from mock.module() contamination across files)
+IMPORTANT — CI gates (mandatory before PR):
+- Before creating a PR, run `/ci` which checks: lint, type, test, syncpack, template drift
+- All five gates must pass. If any fail, fix them before pushing.
+- You can also run gates individually during development:
+  - `bun run lint` — ESLint
+  - `bun run type` — TypeScript (tsgo)
+  - `bun run test` — all tests (isolated per-file runner), NEVER bare `bun test`
+  - `bun x syncpack lint` — dependency version consistency
+  - `SKIP_SYNCPACK=1 bash scripts/check-template-drift.sh` — template drift
 - To run a single test file: `bun test path/to/file.test.ts`
 - When using mock.module(), mock ALL named exports — partial mocks break other test files
 

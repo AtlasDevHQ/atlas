@@ -10,6 +10,8 @@
     "actions",
     "admin-console",
     "troubleshooting",
-    "observability"
+    "observability",
+    "embedding-widget",
+    "sharing-conversations"
   ]
 }

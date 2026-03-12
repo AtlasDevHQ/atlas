@@ -1,0 +1,223 @@
+---
+title: Embedding Widget
+description: Add an Atlas chat widget to any website with a single script tag.
+---
+
+Atlas provides a drop-in chat widget that adds a floating chat bubble to any webpage. Users click the bubble to open a panel and ask questions about your data — no React or build tooling required.
+
+## Quick Start
+
+Add a single `<script>` tag before `</body>`:
+
+```html
+<script
+  src="https://your-atlas-api.example.com/widget.js"
+  data-api-url="https://your-atlas-api.example.com"
+></script>
+```
+
+This injects a floating chat bubble in the bottom-right corner. Clicking it opens the Atlas chat panel.
+
+## Configuration
+
+Configure the widget via `data-*` attributes on the script tag:
+
+| Attribute | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `data-api-url` | Yes | -- | Base URL of your Atlas API server |
+| `data-api-key` | No | -- | API key for authentication (sent as Bearer token) |
+| `data-theme` | No | `"light"` | `"light"` or `"dark"` |
+| `data-position` | No | `"bottom-right"` | `"bottom-right"` or `"bottom-left"` |
+
+### Event Callbacks
+
+Bind callbacks by setting `data-on-*` attributes to the name of a global function:
+
+| Attribute | Event | Callback Argument |
+|-----------|-------|-------------------|
+| `data-on-open` | Widget opens | `{}` |
+| `data-on-close` | Widget closes | `{}` |
+| `data-on-query-complete` | Query finishes | `{ sql?: string, rowCount?: number }` |
+| `data-on-error` | Widget error | `{ code?: string, message?: string }` |
+
+```html
+<script>
+  function onAtlasOpen() {
+    console.log("Widget opened");
+  }
+  function onAtlasError(detail) {
+    console.error("Widget error:", detail.code, detail.message);
+  }
+</script>
+
+<script
+  src="https://your-atlas-api.example.com/widget.js"
+  data-api-url="https://your-atlas-api.example.com"
+  data-api-key="sk-..."
+  data-theme="dark"
+  data-position="bottom-left"
+  data-on-open="onAtlasOpen"
+  data-on-error="onAtlasError"
+></script>
+```
+
+## Programmatic API
+
+After the script loads, `window.Atlas` exposes the following methods:
+
+| Method | Description |
+|--------|-------------|
+| `Atlas.open()` | Open the widget panel |
+| `Atlas.close()` | Close the widget panel |
+| `Atlas.toggle()` | Toggle open/close |
+| `Atlas.ask(question)` | Open the widget and send a question |
+| `Atlas.destroy()` | Remove widget from DOM, clean up all listeners |
+| `Atlas.on(event, handler)` | Bind an event listener (`"open"`, `"close"`, `"queryComplete"`, `"error"`) |
+| `Atlas.setAuthToken(token)` | Send an auth token to the widget iframe |
+| `Atlas.setTheme(theme)` | Set theme (`"light"` or `"dark"`) |
+
+### Example
+
+```javascript
+// Open the widget and ask a question
+Atlas.ask("What was last month's revenue?");
+
+// Listen for query completions
+Atlas.on("queryComplete", (detail) => {
+  console.log("Query finished:", detail.sql, detail.rowCount);
+});
+
+// Pass an auth token (e.g. after your app's login flow)
+Atlas.setAuthToken("user-jwt-token");
+
+// Clean up when navigating away in a SPA
+Atlas.destroy();
+```
+
+### Pre-load Command Queue
+
+You can queue commands before the widget script finishes loading. Initialize `window.Atlas` as an array and push commands:
+
+```html
+<script>
+  window.Atlas = window.Atlas || [];
+  Atlas.push(["open"]);
+  Atlas.push(["ask", "How many users signed up today?"]);
+</script>
+<script
+  src="https://your-atlas-api.example.com/widget.js"
+  data-api-url="https://your-atlas-api.example.com"
+></script>
+```
+
+Queued commands are replayed in order once the widget initializes.
+
+## Widget Branding
+
+The widget host page (`/widget`) accepts query parameters for custom branding. These are applied automatically when using the script tag loader — you typically don't set them directly unless using the iframe approach below.
+
+| Parameter | Description |
+|-----------|-------------|
+| `theme` | `"light"`, `"dark"`, or `"system"` (default: `"system"`) |
+| `logo` | HTTPS URL to a custom logo image |
+| `accent` | Hex color without `#` (e.g. `4f46e5`) — overrides send button, input focus, and link colors |
+| `welcome` | Welcome message shown before the first user message |
+| `initialQuery` | Auto-sends this query on first open |
+
+## Direct Iframe Embedding
+
+If you want full control over placement, embed the widget directly as an iframe instead of using the floating bubble:
+
+```html
+<iframe
+  src="https://your-atlas-api.example.com/widget?theme=light"
+  title="Atlas Chat"
+  allow="clipboard-write"
+  style="width: 400px; height: 600px; border: none; border-radius: 12px;"
+></iframe>
+```
+
+### Iframe with Branding
+
+```html
+<iframe
+  src="https://your-atlas-api.example.com/widget?theme=dark&accent=4f46e5&welcome=Ask%20me%20anything&logo=https%3A%2F%2Fexample.com%2Flogo.png"
+  title="Atlas Chat"
+  allow="clipboard-write"
+  style="width: 100%; height: 600px; border: none; border-radius: 12px;"
+></iframe>
+```
+
+### Communicating with the Iframe
+
+The iframe accepts `postMessage` commands from the parent window:
+
+```javascript
+const iframe = document.querySelector("iframe");
+
+// Set theme
+iframe.contentWindow.postMessage({ type: "theme", value: "dark" }, "*");
+
+// Pass auth token
+iframe.contentWindow.postMessage({ type: "auth", token: "user-jwt" }, "*");
+
+// Send a query
+iframe.contentWindow.postMessage({ type: "atlas:ask", query: "Show revenue by region" }, "*");
+
+// Update branding at runtime
+iframe.contentWindow.postMessage({
+  type: "atlas:setBranding",
+  logo: "https://example.com/new-logo.png",
+  accent: "dc2626",
+  welcome: "Welcome! Ask me about your data.",
+}, "*");
+```
+
+The iframe sends messages back to the parent:
+
+| Message Type | Description |
+|--------------|-------------|
+| `atlas:ready` | Widget loaded successfully |
+| `atlas:error` | Error occurred (includes `code` and `message`) |
+
+```javascript
+window.addEventListener("message", (event) => {
+  if (event.data?.type === "atlas:ready") {
+    console.log("Widget is ready");
+  }
+  if (event.data?.type === "atlas:error") {
+    console.error("Widget error:", event.data.code, event.data.message);
+  }
+});
+```
+
+## TypeScript Support
+
+TypeScript declarations for `window.Atlas` are available at `/widget.d.ts`:
+
+```bash
+curl https://your-atlas-api.example.com/widget.d.ts -o atlas-widget.d.ts
+```
+
+Add it to your project to get type-safe access to the Atlas API:
+
+```typescript
+/// <reference path="./atlas-widget.d.ts" />
+
+window.Atlas?.ask("What's the churn rate?");
+```
+
+## Security Considerations
+
+**Content Security Policy (CSP):** If your site uses CSP headers, add the Atlas API domain to your policy:
+
+```
+Content-Security-Policy:
+  script-src 'self' https://your-atlas-api.example.com;
+  frame-src 'self' https://your-atlas-api.example.com;
+  connect-src 'self' https://your-atlas-api.example.com;
+```
+
+**Allowed Origins:** The widget script and iframe routes set `Access-Control-Allow-Origin: *` and `Content-Security-Policy: frame-ancestors *` to allow embedding from any domain. If you need to restrict origins, configure your reverse proxy or CDN to override these headers.
+
+**Auth Tokens:** When using `data-api-key` or `Atlas.setAuthToken()`, the token is sent to the widget iframe via `postMessage`. Use HTTPS to prevent token interception. Prefer short-lived tokens over long-lived API keys for production deployments.

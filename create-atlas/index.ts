@@ -55,7 +55,31 @@ function bail(message?: string): never {
 // Parse --defaults / -y flag for non-interactive mode
 const args = process.argv.slice(2);
 const useDefaults = args.includes("--defaults") || args.includes("-y");
-const positionalArgs = args.filter((a) => !a.startsWith("-"));
+
+// Parse --demo flag (optionally with dataset name)
+const VALID_DEMO_DATASETS = ["simple", "cybersec", "ecommerce"] as const;
+type DemoDataset = (typeof VALID_DEMO_DATASETS)[number];
+let demoFlag = false;
+let demoDatsetFlag: DemoDataset = "simple";
+const demoIdx = args.indexOf("--demo");
+if (demoIdx !== -1) {
+  demoFlag = true;
+  const next = args[demoIdx + 1];
+  if (next && !next.startsWith("-")) {
+    if (!VALID_DEMO_DATASETS.includes(next as DemoDataset)) {
+      console.error(`Unknown demo dataset "${next}". Available: ${VALID_DEMO_DATASETS.join(", ")}`);
+      process.exit(1);
+    }
+    demoDatsetFlag = next as DemoDataset;
+  }
+}
+
+const positionalArgs = args.filter((a, i) => {
+  if (a.startsWith("-")) return false;
+  // Skip the dataset value after --demo
+  if (i > 0 && args[i - 1] === "--demo") return false;
+  return true;
+});
 
 // Platform → template mapping
 const VALID_PLATFORMS = ["vercel", "railway", "docker", "other"] as const;
@@ -263,6 +287,7 @@ if (args.includes("--help") || args.includes("-h")) {
   Usage: bun create @useatlas [project-name] [options]
 
   Options:
+    --demo [dataset]   Load demo data (simple, cybersec, ecommerce) [default: simple]
     --platform <name>  Deploy target (${VALID_PLATFORMS.join(", ")}) [default: docker]
     --preset <name>    Alias for --platform
     --defaults, -y     Use all default values (non-interactive)
@@ -279,17 +304,19 @@ if (args.includes("--help") || args.includes("-h")) {
     bun create @useatlas my-app --platform vercel
     bun create @useatlas my-app --preset railway
     bun create @useatlas my-app --defaults
+    bun create @useatlas my-app --demo --defaults
+    bun create @useatlas my-app --demo cybersec
 `);
   process.exit(0);
 }
 
 // Reject unknown flags
-const knownFlags = new Set(["--defaults", "-y", "--help", "-h", "--platform", "--preset"]);
+const knownFlags = new Set(["--defaults", "-y", "--help", "-h", "--platform", "--preset", "--demo"]);
 const unknownFlags = args.filter((a, i) => {
   if (!a.startsWith("-")) return false;
   if (knownFlags.has(a)) return false;
-  // --platform/--preset value argument
-  if (i > 0 && (args[i - 1] === "--platform" || args[i - 1] === "--preset")) return false;
+  // Value arguments for flags that take a parameter
+  if (i > 0 && (args[i - 1] === "--platform" || args[i - 1] === "--preset" || args[i - 1] === "--demo")) return false;
   return true;
 });
 if (unknownFlags.length > 0) {
@@ -577,12 +604,16 @@ async function main() {
   }
 
   // ── 7. Semantic layer / demo data ─────────────────────────────────
-  let loadDemo = false;
-  let demoDataset: "simple" | "cybersec" | "ecommerce" = "simple";
+  let loadDemo = demoFlag;
+  let demoDataset: "simple" | "cybersec" | "ecommerce" = demoDatsetFlag;
   let generateSemantic = false;
 
   // Demo data is not available for MySQL (SQL files use PostgreSQL-specific syntax)
   if (dbChoice === "mysql") {
+    if (demoFlag) {
+      p.log.warn("Demo data is not available for MySQL. The --demo flag will be ignored.");
+      loadDemo = false;
+    }
     p.log.info(`Demo data: ${pc.dim("not available for MySQL — use your own database")}`);
     generateSemantic = await confirmOrDefault({
       label: "Generate semantic layer",
@@ -590,6 +621,9 @@ async function main() {
       initialValue: false,
       defaultDisplay: "no",
     });
+  } else if (demoFlag) {
+    // --demo flag was provided — skip the prompt
+    p.log.info(`Demo data: ${pc.cyan(demoDataset)} ${pc.dim("(--demo)")}`);
   } else {
     loadDemo = await confirmOrDefault({
       label: "Demo data",
@@ -884,32 +918,105 @@ export default defineConfig({
 
   // Step 4: Load demo data + generate semantic layer
   if (loadDemo) {
-    const demoFlag = `--demo ${demoDataset}`;
+    const demoInitFlag = `--demo ${demoDataset}`;
     const timeoutMs = demoDataset === "cybersec" || demoDataset === "ecommerce" ? 120_000 : 60_000;
-    s.start(`Loading ${demoDataset} demo data and generating semantic layer...`);
+
+    // Check if Postgres is reachable before attempting to seed
+    s.start("Checking database connectivity...");
+    let dbReachable = false;
     try {
-      execSync(`bun run atlas -- init ${demoFlag}`, {
-        cwd: targetDir,
-        stdio: "pipe",
-        timeout: timeoutMs,
-        env: { ...process.env, ATLAS_DATASOURCE_URL: databaseUrl },
-      });
-      s.stop("Demo data loaded and semantic layer generated.");
-    } catch (err) {
-      s.stop("Failed to load demo data.");
-      setupFailed = true;
-      let detail = err instanceof Error ? err.message : String(err);
-      if (err && typeof err === "object" && "stderr" in err) {
-        const stderr = String((err as { stderr: unknown }).stderr).trim();
-        if (stderr) detail = stderr;
-      }
-      if (err && typeof err === "object" && "signal" in err && (err as { signal: unknown }).signal === "SIGTERM") {
-        detail = `Timed out after ${timeoutMs / 1000}s. The ${demoDataset} dataset may need more time on slow connections. Run the command manually without a timeout.`;
-      }
-      p.log.error(`Demo seeding failed: ${detail}`);
-      p.log.error(
-        `Run ${pc.cyan(`bun run atlas -- init ${demoFlag}`)} manually after resolving the issue.`
+      execSync(
+        `bun -e "const{Pool}=require('pg');const p=new Pool({connectionString:process.env.ATLAS_DATASOURCE_URL,connectionTimeoutMillis:5000});const c=await p.connect();c.release();await p.end()"`,
+        { stdio: "pipe", timeout: 10_000, cwd: targetDir, env: { ...process.env, ATLAS_DATASOURCE_URL: databaseUrl } }
       );
+      dbReachable = true;
+      s.stop("Database is reachable.");
+    } catch {
+      s.stop("Database is not reachable.");
+      // Provide actionable guidance based on the connection string
+      const isLocalhost = databaseUrl.includes("localhost") || databaseUrl.includes("127.0.0.1");
+      if (isLocalhost) {
+        // Check if Docker is available
+        let dockerRunning = false;
+        try {
+          execSync("docker info", { stdio: "pipe", timeout: 5_000 });
+          dockerRunning = true;
+        } catch {
+          // Docker not available
+        }
+        if (!dockerRunning) {
+          p.log.warn("Docker is not running. Demo data requires a PostgreSQL database.");
+          p.log.warn(`Start Docker, then run:\n  cd ${projectName} && docker compose up -d postgres && bun run atlas -- init ${demoInitFlag}`);
+        } else {
+          p.log.warn("PostgreSQL is not running. Starting it with Docker Compose...");
+          try {
+            execSync("docker compose up -d postgres", {
+              cwd: targetDir,
+              stdio: "pipe",
+              timeout: 30_000,
+            });
+            // Wait for Postgres to become healthy
+            const waitStart = Date.now();
+            while (Date.now() - waitStart < 20_000) {
+              try {
+                execSync(
+                  `bun -e "const{Pool}=require('pg');const p=new Pool({connectionString:process.env.ATLAS_DATASOURCE_URL,connectionTimeoutMillis:2000});const c=await p.connect();c.release();await p.end()"`,
+                  { stdio: "pipe", timeout: 5_000, cwd: targetDir, env: { ...process.env, ATLAS_DATASOURCE_URL: databaseUrl } }
+                );
+                dbReachable = true;
+                break;
+              } catch {
+                // Wait and retry
+                execSync("sleep 1");
+              }
+            }
+            if (dbReachable) {
+              p.log.info("PostgreSQL is ready.");
+            } else {
+              p.log.warn("PostgreSQL did not become ready in time.");
+              p.log.warn(`Run manually: cd ${projectName} && bun run atlas -- init ${demoInitFlag}`);
+            }
+          } catch (dockerErr) {
+            p.log.warn(`Could not start PostgreSQL: ${dockerErr instanceof Error ? dockerErr.message : String(dockerErr)}`);
+            p.log.warn(`Run manually:\n  cd ${projectName} && docker compose up -d postgres && bun run atlas -- init ${demoInitFlag}`);
+          }
+        }
+      } else {
+        p.log.warn(`Cannot connect to ${databaseUrl.replace(/\/\/[^@]*@/, "//***@")}.`);
+        p.log.warn("Check that the database server is running and the connection string is correct.");
+        p.log.warn(`Then run: cd ${projectName} && bun run atlas -- init ${demoInitFlag}`);
+      }
+    }
+
+    if (dbReachable) {
+      s.start(`Loading ${demoDataset} demo data and generating semantic layer...`);
+      try {
+        execSync(`bun run atlas -- init ${demoInitFlag}`, {
+          cwd: targetDir,
+          stdio: "pipe",
+          timeout: timeoutMs,
+          env: { ...process.env, ATLAS_DATASOURCE_URL: databaseUrl },
+        });
+        s.stop("Demo data loaded and semantic layer generated.");
+      } catch (err) {
+        s.stop("Failed to load demo data.");
+        setupFailed = true;
+        let detail = err instanceof Error ? err.message : String(err);
+        if (err && typeof err === "object" && "stderr" in err) {
+          const stderr = String((err as { stderr: unknown }).stderr).trim();
+          if (stderr) detail = stderr;
+        }
+        if (err && typeof err === "object" && "signal" in err && (err as { signal: unknown }).signal === "SIGTERM") {
+          detail = `Timed out after ${timeoutMs / 1000}s. The ${demoDataset} dataset may need more time on slow connections.`;
+        }
+        p.log.error(`Demo seeding failed: ${detail}`);
+        p.log.error(
+          `Run ${pc.cyan(`bun run atlas -- init ${demoInitFlag}`)} manually after resolving the issue.`
+        );
+      }
+    } else {
+      setupFailed = true;
+      p.log.warn("Skipping demo data seeding (no database connection). The project is ready — seed later.");
     }
   }
 
@@ -984,6 +1091,16 @@ export default defineConfig({
 }
 
 main().catch((err) => {
-  p.log.error(err instanceof Error ? err.message : String(err));
+  // Show actionable message, not a stack trace
+  const message = err instanceof Error ? err.message : String(err);
+  if (message.includes("EADDRINUSE")) {
+    p.log.error(`Port already in use. Stop the process using that port and try again.`);
+  } else if (message.includes("EACCES")) {
+    p.log.error(`Permission denied. Check file permissions or try a different directory.`);
+  } else if (message.includes("ENOSPC")) {
+    p.log.error(`No space left on disk. Free up space and try again.`);
+  } else {
+    p.log.error(message);
+  }
   process.exit(1);
 });

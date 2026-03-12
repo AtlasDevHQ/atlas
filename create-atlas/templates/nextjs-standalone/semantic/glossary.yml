@@ -1,6 +1,118 @@
-# Atlas Glossary — Business term definitions
-# Run `bun run atlas -- init` to auto-generate terms from your database.
 terms:
-  example_term:
+  MRR:
     status: defined
-    definition: Replace this with your own business terms
+    definition: >
+      Monthly Recurring Revenue. The sum of monthly_value across all active accounts.
+      Use accounts.monthly_value and filter by status = 'Active' for current MRR.
+    tables:
+      - accounts
+
+  ARR:
+    status: defined
+    definition: >
+      Annual Recurring Revenue. MRR * 12. Not stored directly — calculate from
+      accounts.monthly_value.
+    tables:
+      - accounts
+
+  ARPA:
+    status: defined
+    definition: >
+      Average Revenue Per Account. Total MRR divided by active account count.
+      Use AVG(monthly_value) on active accounts.
+    tables:
+      - accounts
+
+  churn:
+    status: defined
+    definition: >
+      An account with status = 'Churned'. Churned accounts have monthly_value = 0
+      and typically have a contract_end date set.
+    tables:
+      - accounts
+
+  plan:
+    status: defined
+    definition: >
+      Subscription tier. Four levels: Free ($0), Starter (~$49-89/mo),
+      Pro (~$299-500/mo), Enterprise (~$5,000-15,000/mo).
+    tables:
+      - accounts
+
+  status:
+    status: ambiguous
+    note: >
+      "status" appears on accounts only, but could be confused with general
+      state. Always refers to subscription status: Active, Inactive,
+      Suspended, or Churned.
+    possible_mappings:
+      - accounts.status
+
+  name:
+    status: ambiguous
+    note: >
+      "name" appears in both companies and people. ASK the user which
+      entity they mean — company name or person name.
+    possible_mappings:
+      - companies.name
+      - people.name
+
+  company:
+    status: defined
+    definition: >
+      Refers to the companies entity (our customers). Linked from accounts
+      and people via company_id -> companies.id.
+    tables:
+      - companies
+      - accounts
+      - people
+
+  industry:
+    status: defined
+    definition: >
+      Business sector of a customer company. Values: Education, Energy,
+      Finance, Healthcare, Manufacturing, Media, Retail, Technology.
+    tables:
+      - companies
+
+  country:
+    status: defined
+    definition: >
+      ISO 2-letter country code for company HQ location. Values: AU, BR,
+      CA, DE, FR, IN, JP, SG, UK, US.
+    tables:
+      - companies
+
+  department:
+    status: defined
+    definition: >
+      Functional department of a contact. Values: Engineering, Finance,
+      Marketing, Operations, Product, Sales.
+    tables:
+      - people
+
+  seniority:
+    status: defined
+    definition: >
+      Career level of a contact. Values: Executive, Senior, Mid, Junior.
+    tables:
+      - people
+
+  revenue:
+    status: ambiguous
+    note: >
+      Could mean company revenue (companies.revenue — annual total revenue
+      of the customer) or account revenue (accounts.monthly_value — our MRR
+      from that account). Clarify which is meant.
+    possible_mappings:
+      - companies.revenue
+      - accounts.monthly_value
+
+  contract:
+    status: defined
+    definition: >
+      Subscription agreement period. contract_start is when billing began;
+      contract_end is set when an account churns or is terminated.
+      NULL contract_end means the account is still under contract.
+    tables:
+      - accounts

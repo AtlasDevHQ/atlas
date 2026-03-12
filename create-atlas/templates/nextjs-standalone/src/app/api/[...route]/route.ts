@@ -2,9 +2,9 @@
 // every request to API routes will return a Next.js 500 until the issue is resolved.
 import { app } from "@atlas/api/app";
 
-// Default 60s. Increase based on your Vercel plan:
+// Pro plan allows up to 300s (5 min). Hobby plan max is 60s.
 // https://vercel.com/docs/functions/configuring-functions/duration
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 async function handler(req: Request): Promise<Response> {
   try {

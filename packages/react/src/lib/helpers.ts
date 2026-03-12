@@ -1,4 +1,3 @@
-/// <reference path="../env.d.ts" />
 /** Extract tool invocation input from a ToolUIPart. Returns empty object if unavailable. */
 export function getToolArgs(part: unknown): Record<string, unknown> {
   if (part == null || typeof part !== "object") return {};

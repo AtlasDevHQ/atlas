@@ -204,6 +204,7 @@
         "tailwindcss": "^4.2.1",
         "tsup": "^8.5.0",
         "typescript": "^5.9.3",
+        "xlsx": "^0.18.5",
       },
       "peerDependencies": {
         "@ai-sdk/react": ">=3.0.0",
@@ -214,10 +215,12 @@
         "react-syntax-highlighter": ">=15.0.0",
         "recharts": ">=2.0.0",
         "tailwindcss": ">=4.0.0",
+        "xlsx": ">=0.18.0",
       },
       "optionalPeers": [
         "react-syntax-highlighter",
         "recharts",
+        "xlsx",
       ],
     },
     "packages/sandbox-sidecar": {

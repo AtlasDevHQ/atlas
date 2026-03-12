@@ -178,8 +178,8 @@ body{background:#fff;color:#09090b}
 .atlas-custom-logo{height:1.75rem;width:1.75rem;object-fit:contain;flex-shrink:0}${accentCSS}
 </style>
 <script>
-window.onerror=function(m){console.error("[Atlas Widget]",m);try{window.parent.postMessage({type:"atlas:error",code:"UNCAUGHT",message:String(m)},"*")}catch(x){}};
-window.addEventListener("unhandledrejection",function(e){console.error("[Atlas Widget]",e.reason);try{window.parent.postMessage({type:"atlas:error",code:"UNHANDLED_REJECTION",message:String(e.reason)},"*")}catch(x){}});
+window.onerror=function(m){console.error("[Atlas Widget]",m);try{window.parent.postMessage({type:"atlas:error",code:"UNCAUGHT",message:String(m)},"*")}catch(x){console.warn("[Atlas Widget] Could not notify parent:",x)}};
+window.addEventListener("unhandledrejection",function(e){console.error("[Atlas Widget]",e.reason);try{window.parent.postMessage({type:"atlas:error",code:"UNHANDLED_REJECTION",message:String(e.reason)},"*")}catch(x){console.warn("[Atlas Widget] Could not notify parent:",x)}});
 </script>
 <script>try{var t=localStorage.getItem("atlas-theme");var d=t==="dark"||(t!=="light"&&window.matchMedia("(prefers-color-scheme:dark)").matches);if(d)document.documentElement.classList.add("dark")}catch(e){console.warn("[Atlas Widget] Could not read theme:",e.message)}</script>
 </head>
@@ -208,7 +208,7 @@ class EB extends Component{
   static getDerivedStateFromError(e){return{error:e}}
   componentDidCatch(e){
     console.error("[Atlas Widget] Render error:",e);
-    try{window.parent.postMessage({type:"atlas:error",code:"RENDER_FAILED",message:e.message},"*")}catch(x){}
+    try{window.parent.postMessage({type:"atlas:error",code:"RENDER_FAILED",message:e.message},"*")}catch(x){console.warn("[Atlas Widget] Could not notify parent:",x)}
   }
   render(){
     if(this.state.error)return createElement("div",{style:{padding:"2rem",textAlign:"center",color:"#888",fontFamily:"system-ui"}},
@@ -345,7 +345,7 @@ window.parent.postMessage({type:"atlas:ready"},"*");
 console.error("[Atlas Widget] Failed to load:",err);
 const el=document.getElementById("atlas-widget");
 if(el)el.innerHTML='<div style="padding:2rem;text-align:center;color:#888;font-family:system-ui"><p>Unable to load Atlas Chat.</p><p style="font-size:0.875rem;margin-top:0.5rem">Check your network connection or try refreshing.</p></div>';
-try{window.parent.postMessage({type:"atlas:error",code:"LOAD_FAILED",message:String(err.message||err)},"*")}catch(x){}
+try{window.parent.postMessage({type:"atlas:error",code:"LOAD_FAILED",message:String(err.message||err)},"*")}catch(x){console.warn("[Atlas Widget] Could not notify parent:",x)}
 }
 </script>
 </body>

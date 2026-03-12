@@ -341,6 +341,8 @@ describe("data-atlas-* selectors", () => {
     const res = await app.fetch(widgetRequest());
     const html = await res.text();
     expect(html).toContain("[data-atlas-input]");
+    // Must NOT use bare querySelector("input") for element lookup
+    expect(html).not.toContain('querySelector("input")');
   });
 
   it("uses data-atlas-form for form submission", async () => {
@@ -703,6 +705,9 @@ describe("widget asset routes", () => {
       expect(res.headers.get("content-type")).toContain("javascript");
       expect(res.headers.get("cache-control")).toContain("public");
       expect(res.headers.get("access-control-allow-origin")).toBe("*");
+    } else {
+      const body = await res.text();
+      expect(body).toContain("bun run build");
     }
   });
 
@@ -715,6 +720,9 @@ describe("widget asset routes", () => {
       expect(res.headers.get("content-type")).toContain("css");
       expect(res.headers.get("cache-control")).toContain("public");
       expect(res.headers.get("access-control-allow-origin")).toBe("*");
+    } else {
+      const body = await res.text();
+      expect(body).toContain("bun run build");
     }
   });
 });

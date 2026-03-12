@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Share2, Copy, Check, Link2Off, AlertCircle } from "lucide-react";
+import { Share2, Copy, Check, Link2Off, AlertCircle, Code } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -24,6 +24,7 @@ export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogP
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copiedEmbed, setCopiedEmbed] = useState(false);
   const [shared, setShared] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -33,6 +34,7 @@ export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogP
     setShared(false);
     setLoading(false);
     setCopied(false);
+    setCopiedEmbed(false);
     setError(null);
     setOpen(false);
   }, [conversationId]);
@@ -73,31 +75,55 @@ export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogP
     }
   }
 
-  async function handleCopy() {
-    if (!shareUrl) return;
+  async function copyToClipboard(
+    text: string,
+    onSuccess: () => void,
+  ): Promise<void> {
     try {
-      await navigator.clipboard.writeText(shareUrl);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      await navigator.clipboard.writeText(text);
+      onSuccess();
     } catch {
-      // Fallback for insecure contexts
-      const input = document.createElement("input");
-      input.value = shareUrl;
-      document.body.appendChild(input);
-      input.select();
-      const ok = document.execCommand("copy");
-      document.body.removeChild(input);
-      if (ok) {
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
+      // Fallback for insecure contexts (e.g. non-HTTPS iframes)
+      try {
+        const input = document.createElement("input");
+        input.value = text;
+        document.body.appendChild(input);
+        input.select();
+        const ok = document.execCommand("copy");
+        document.body.removeChild(input);
+        if (ok) {
+          onSuccess();
+        } else {
+          setError("Could not copy to clipboard. Please select and copy manually.");
+        }
+      } catch {
+        setError("Could not copy to clipboard. Please select and copy manually.");
       }
     }
+  }
+
+  function flashCopied(setter: (v: boolean) => void): void {
+    setter(true);
+    setTimeout(() => setter(false), 2000);
+  }
+
+  async function handleCopy(): Promise<void> {
+    if (!shareUrl) return;
+    await copyToClipboard(shareUrl, () => flashCopied(setCopied));
+  }
+
+  async function handleCopyEmbed(): Promise<void> {
+    if (!shareUrl) return;
+    const escaped = shareUrl.replace(/"/g, "&quot;");
+    const code = `<iframe src="${escaped}/embed" width="100%" height="500" frameborder="0" style="border:0;border-radius:8px"></iframe>`;
+    await copyToClipboard(code, () => flashCopied(setCopiedEmbed));
   }
 
   function handleOpenChange(next: boolean) {
     setOpen(next);
     if (!next) {
       setCopied(false);
+      setCopiedEmbed(false);
       setError(null);
     }
   }
@@ -148,6 +174,14 @@ export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogP
                   <span className="ml-1">{copied ? "Copied" : "Copy"}</span>
                 </Button>
               </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleCopyEmbed}
+              >
+                {copiedEmbed ? <Check className="h-4 w-4" /> : <Code className="h-4 w-4" />}
+                <span className="ml-1">{copiedEmbed ? "Copied" : "Copy embed code"}</span>
+              </Button>
               <Button
                 variant="ghost"
                 size="sm"

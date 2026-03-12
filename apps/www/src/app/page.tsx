@@ -1,3 +1,90 @@
+import { type ReactNode } from "react";
+
+const GITHUB_PATH =
+  "M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z";
+
+function GitHubIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor">
+      <path d={GITHUB_PATH} />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg
+      className="mt-0.5 h-3.5 w-3.5 shrink-0 text-brand"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+      strokeWidth={2.5}
+    >
+      <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+    </svg>
+  );
+}
+
+function Divider() {
+  return (
+    <div className="mx-auto max-w-5xl px-6">
+      <div className="h-px bg-gradient-to-r from-transparent via-zinc-800 to-transparent" />
+    </div>
+  );
+}
+
+function FeatureCard({ icon, title, description }: { icon: ReactNode; title: string; description: string }) {
+  return (
+    <div className="bg-zinc-950 p-8 md:p-10">
+      <div className="mb-4 flex h-9 w-9 items-center justify-center rounded-lg border border-zinc-800 text-brand">
+        {icon}
+      </div>
+      <h3 className="mb-2 font-mono text-sm font-medium tracking-wide text-zinc-100">
+        {title}
+      </h3>
+      <p className="text-sm leading-relaxed text-zinc-500">
+        {description}
+      </p>
+    </div>
+  );
+}
+
+function ChecklistGrid({ items }: { items: string[] }) {
+  return (
+    <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+      {items.map((item) => (
+        <div
+          key={item}
+          className="flex items-start gap-2.5 rounded-lg border border-zinc-800/40 bg-zinc-900/30 px-4 py-3"
+        >
+          <CheckIcon />
+          <span className="text-xs leading-snug font-medium text-zinc-400">
+            {item}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CodeBlock({ title, dots, children }: { title: string; dots?: boolean; children: ReactNode }) {
+  return (
+    <div className="overflow-hidden rounded-xl border border-zinc-800/60 bg-zinc-900/50">
+      <div className="flex items-center gap-2 border-b border-zinc-800/60 px-4 py-3">
+        {dots && (
+          <>
+            <span className="h-2.5 w-2.5 rounded-full bg-zinc-700" />
+            <span className="h-2.5 w-2.5 rounded-full bg-zinc-700" />
+            <span className="h-2.5 w-2.5 rounded-full bg-zinc-700" />
+          </>
+        )}
+        <span className={`font-mono text-xs text-zinc-600${dots ? " ml-3" : ""}`}>{title}</span>
+      </div>
+      <div className="p-5">{children}</div>
+    </div>
+  );
+}
+
 export default function Home() {
   return (
     <div className="relative min-h-screen">
@@ -89,13 +176,7 @@ export default function Home() {
               href="https://github.com/AtlasDevHQ/atlas"
               className="group inline-flex items-center gap-2 rounded-lg border border-zinc-800 px-5 py-2.5 text-sm font-medium text-zinc-300 transition-all hover:border-zinc-700 hover:text-zinc-100"
             >
-              <svg
-                className="h-4 w-4"
-                viewBox="0 0 24 24"
-                fill="currentColor"
-              >
-                <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z" />
-              </svg>
+              <GitHubIcon className="h-4 w-4" />
               View on GitHub
             </a>
           </div>
@@ -104,34 +185,23 @@ export default function Home() {
 
       {/* Quick start code */}
       <section className="mx-auto max-w-5xl px-6 pb-20 md:pb-28">
-        <div className="overflow-hidden rounded-xl border border-zinc-800/60 bg-zinc-900/50">
-          <div className="flex items-center gap-2 border-b border-zinc-800/60 px-4 py-3">
-            <span className="h-2.5 w-2.5 rounded-full bg-zinc-700" />
-            <span className="h-2.5 w-2.5 rounded-full bg-zinc-700" />
-            <span className="h-2.5 w-2.5 rounded-full bg-zinc-700" />
-            <span className="ml-3 font-mono text-xs text-zinc-600">terminal</span>
-          </div>
-          <div className="p-5">
-            <pre className="font-mono text-sm leading-relaxed text-zinc-400">
-              <code>
-                <span className="text-zinc-600">$</span>{" "}
-                <span className="text-zinc-200">bun create atlas-agent my-app --demo</span>
-                {"\n"}
-                <span className="text-zinc-600">$</span>{" "}
-                <span className="text-zinc-200">cd my-app && bun run dev</span>
-                {"\n\n"}
-                <span className="text-brand">{">"}</span>{" "}
-                <span className="text-zinc-500">Ready on http://localhost:3000</span>
-              </code>
-            </pre>
-          </div>
-        </div>
+        <CodeBlock title="terminal" dots>
+          <pre className="font-mono text-sm leading-relaxed text-zinc-400">
+            <code>
+              <span className="text-zinc-600">$</span>{" "}
+              <span className="text-zinc-200">bun create atlas-agent my-app --demo</span>
+              {"\n"}
+              <span className="text-zinc-600">$</span>{" "}
+              <span className="text-zinc-200">cd my-app && bun run dev</span>
+              {"\n\n"}
+              <span className="text-brand">{">"}</span>{" "}
+              <span className="text-zinc-500">Ready on http://localhost:3000</span>
+            </code>
+          </pre>
+        </CodeBlock>
       </section>
 
-      {/* Divider */}
-      <div className="mx-auto max-w-5xl px-6">
-        <div className="h-px bg-gradient-to-r from-transparent via-zinc-800 to-transparent" />
-      </div>
+      <Divider />
 
       {/* Features */}
       <section className="mx-auto max-w-5xl px-6 py-20 md:py-28">
@@ -173,7 +243,7 @@ export default function Home() {
                   <path strokeLinecap="round" strokeLinejoin="round" d="M14.25 6.087c0-.355.186-.676.401-.959.221-.29.349-.634.349-1.003 0-1.036-1.007-1.875-2.25-1.875s-2.25.84-2.25 1.875c0 .369.128.713.349 1.003.215.283.401.604.401.959v0a.64.64 0 01-.657.643 48.39 48.39 0 01-4.163-.3c.186 1.613.293 3.25.315 4.907a.656.656 0 01-.658.663v0c-.355 0-.676-.186-.959-.401a1.647 1.647 0 00-1.003-.349c-1.036 0-1.875 1.007-1.875 2.25s.84 2.25 1.875 2.25c.369 0 .713-.128 1.003-.349.283-.215.604-.401.959-.401v0c.31 0 .555.26.532.57a48.039 48.039 0 01-.642 5.056c1.518.19 3.058.309 4.616.354a.64.64 0 00.657-.643v0c0-.355-.186-.676-.401-.959a1.647 1.647 0 01-.349-1.003c0-1.035 1.008-1.875 2.25-1.875 1.243 0 2.25.84 2.25 1.875 0 .369-.128.713-.349 1.003-.215.283-.4.604-.4.959v0c0 .333.277.599.61.58a48.1 48.1 0 005.427-.63 48.05 48.05 0 00.582-4.717.532.532 0 00-.533-.57v0c-.355 0-.676.186-.959.401-.29.221-.634.349-1.003.349-1.035 0-1.875-1.007-1.875-2.25s.84-2.25 1.875-2.25c.37 0 .713.128 1.003.349.283.215.604.401.96.401v0a.656.656 0 00.658-.663 48.422 48.422 0 00-.37-5.36c-1.886.342-3.81.574-5.766.689a.578.578 0 01-.61-.58v0z" />
                 </svg>
               ),
-              title: "15 Plugins",
+              title: "16 Plugins",
               description:
                 "Datasource, sandbox, interaction, action, and context. Extend anything with the plugin SDK.",
             },
@@ -197,18 +267,8 @@ export default function Home() {
               description:
                 "Monitor connections, manage users, browse the semantic layer, track queries, and configure settings.",
             },
-          ].map((feature, i) => (
-            <div key={i} className="bg-zinc-950 p-8 md:p-10">
-              <div className="mb-4 flex h-9 w-9 items-center justify-center rounded-lg border border-zinc-800 text-brand">
-                {feature.icon}
-              </div>
-              <h3 className="mb-2 font-mono text-sm font-medium tracking-wide text-zinc-100">
-                {feature.title}
-              </h3>
-              <p className="text-sm leading-relaxed text-zinc-500">
-                {feature.description}
-              </p>
-            </div>
+          ].map((feature) => (
+            <FeatureCard key={feature.title} {...feature} />
           ))}
         </div>
       </section>
@@ -223,73 +283,31 @@ export default function Home() {
           no framework dependency. Or use the React component for full control.
         </p>
         <div className="grid gap-6 md:grid-cols-2">
-          {/* Script tag example */}
-          <div className="overflow-hidden rounded-xl border border-zinc-800/60 bg-zinc-900/50">
-            <div className="flex items-center gap-2 border-b border-zinc-800/60 px-4 py-3">
-              <span className="font-mono text-xs text-zinc-600">Script tag</span>
-            </div>
-            <div className="p-5">
-              <pre className="font-mono text-xs leading-relaxed text-zinc-400">
-                <code>{`<script
+          <CodeBlock title="Script tag">
+            <pre className="font-mono text-xs leading-relaxed text-zinc-400">
+              <code>{`<script
   src="/widget.js"
   data-api-url="https://your-atlas.example.com"
   data-theme="dark"
 ></script>`}</code>
-              </pre>
-            </div>
-          </div>
-          {/* React example */}
-          <div className="overflow-hidden rounded-xl border border-zinc-800/60 bg-zinc-900/50">
-            <div className="flex items-center gap-2 border-b border-zinc-800/60 px-4 py-3">
-              <span className="font-mono text-xs text-zinc-600">React component</span>
-            </div>
-            <div className="p-5">
-              <pre className="font-mono text-xs leading-relaxed text-zinc-400">
-                <code>{`import { AtlasChat } from "@useatlas/react";
+            </pre>
+          </CodeBlock>
+          <CodeBlock title="React component">
+            <pre className="font-mono text-xs leading-relaxed text-zinc-400">
+              <code>{`import { AtlasChat } from "@useatlas/react";
 
 export default function App() {
   return <AtlasChat apiUrl="..." />;
 }`}</code>
-              </pre>
-            </div>
-          </div>
+            </pre>
+          </CodeBlock>
         </div>
-        <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
-          {[
-            "Programmatic API",
-            "Event callbacks",
-            "Theme support",
-            "Auth tokens",
-          ].map((item) => (
-            <div
-              key={item}
-              className="flex items-start gap-2.5 rounded-lg border border-zinc-800/40 bg-zinc-900/30 px-4 py-3"
-            >
-              <svg
-                className="mt-0.5 h-3.5 w-3.5 shrink-0 text-brand"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth={2.5}
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M4.5 12.75l6 6 9-13.5"
-                />
-              </svg>
-              <span className="text-xs leading-snug font-medium text-zinc-400">
-                {item}
-              </span>
-            </div>
-          ))}
+        <div className="mt-6">
+          <ChecklistGrid items={["Programmatic API", "Event callbacks", "Theme support", "Auth tokens"]} />
         </div>
       </section>
 
-      {/* Divider */}
-      <div className="mx-auto max-w-5xl px-6">
-        <div className="h-px bg-gradient-to-r from-transparent via-zinc-800 to-transparent" />
-      </div>
+      <Divider />
 
       {/* How it works */}
       <section className="mx-auto max-w-5xl px-6 py-20 md:py-28">
@@ -302,7 +320,7 @@ export default function App() {
               step: "01",
               title: "Connect your database",
               description:
-                "Point Atlas at any PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, or Salesforce database. Read-only access enforced at every layer.",
+                "Point Atlas at any PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, BigQuery, or Salesforce database. Read-only access enforced at every layer.",
               code: "ATLAS_DATASOURCE_URL=postgresql://...",
             },
             {
@@ -310,7 +328,7 @@ export default function App() {
               title: "Generate semantic layer",
               description:
                 "Auto-profile tables, detect joins, enumerate values, generate glossary and metrics. Optionally enrich with LLM.",
-              code: "atlas init --enrich",
+              code: "bun run atlas -- init --enrich",
             },
             {
               step: "03",
@@ -340,10 +358,7 @@ export default function App() {
         </div>
       </section>
 
-      {/* Divider */}
-      <div className="mx-auto max-w-5xl px-6">
-        <div className="h-px bg-gradient-to-r from-transparent via-zinc-800 to-transparent" />
-      </div>
+      <Divider />
 
       {/* Databases */}
       <section className="mx-auto max-w-5xl px-6 py-20 md:py-28">
@@ -414,23 +429,13 @@ export default function App() {
               description:
                 "createAtlasClient() for programmatic access. Query, chat, and manage conversations.",
             },
-          ].map((item, i) => (
-            <div key={i} className="bg-zinc-950 p-8 md:p-10">
-              <div className="mb-4 flex h-9 w-9 items-center justify-center rounded-lg border border-zinc-800 text-brand">
-                {item.icon}
-              </div>
-              <h3 className="mb-2 font-mono text-sm font-medium tracking-wide text-zinc-100">
-                {item.title}
-              </h3>
-              <p className="text-sm leading-relaxed text-zinc-500">
-                {item.description}
-              </p>
-            </div>
+          ].map((item) => (
+            <FeatureCard key={item.title} {...item} />
           ))}
         </div>
       </section>
 
-      {/* Embed anywhere */}
+      {/* Bring your own frontend */}
       <section className="mx-auto max-w-5xl px-6 pb-20 md:pb-28">
         <h2 className="mb-4 font-mono text-xs tracking-widest text-brand/80 uppercase">
           Bring your own frontend
@@ -458,10 +463,7 @@ export default function App() {
         </div>
       </section>
 
-      {/* Divider */}
-      <div className="mx-auto max-w-5xl px-6">
-        <div className="h-px bg-gradient-to-r from-transparent via-zinc-800 to-transparent" />
-      </div>
+      <Divider />
 
       {/* Security */}
       <section className="mx-auto max-w-5xl px-6 py-20 md:py-28">
@@ -469,11 +471,11 @@ export default function App() {
           Security
         </h2>
         <p className="mb-10 max-w-xl text-zinc-400">
-          Every query runs through a 7-layer validation pipeline. No data ever
-          leaves your infrastructure.
+          Multi-layer security at every step. Your database credentials and
+          query results never leave your infrastructure.
         </p>
-        <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-          {[
+        <ChecklistGrid
+          items={[
             "Read-only queries",
             "AST validation",
             "Table whitelisting",
@@ -482,30 +484,8 @@ export default function App() {
             "Row-level security",
             "Encrypted credentials",
             "Audit logging",
-          ].map((item) => (
-            <div
-              key={item}
-              className="flex items-start gap-2.5 rounded-lg border border-zinc-800/40 bg-zinc-900/30 px-4 py-3"
-            >
-              <svg
-                className="mt-0.5 h-3.5 w-3.5 shrink-0 text-brand"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth={2.5}
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M4.5 12.75l6 6 9-13.5"
-                />
-              </svg>
-              <span className="text-xs leading-snug font-medium text-zinc-400">
-                {item}
-              </span>
-            </div>
-          ))}
-        </div>
+          ]}
+        />
       </section>
 
       {/* Footer */}
@@ -526,13 +506,7 @@ export default function App() {
               href="https://github.com/AtlasDevHQ/atlas"
               className="inline-flex items-center gap-1.5 rounded-full border border-zinc-800/60 px-2.5 py-1 text-[11px] font-medium text-zinc-500 transition-colors hover:border-zinc-700 hover:text-zinc-400"
             >
-              <svg
-                className="h-3 w-3"
-                viewBox="0 0 24 24"
-                fill="currentColor"
-              >
-                <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z" />
-              </svg>
+              <GitHubIcon className="h-3 w-3" />
               Open source
             </a>
           </div>

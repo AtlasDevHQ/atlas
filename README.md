@@ -1,11 +1,4 @@
-<p align="center">
-  <a href="https://useatlas.dev">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/AtlasDevHQ/atlas/main/.github/atlas-logo-dark.svg">
-      <img alt="Atlas" src="https://raw.githubusercontent.com/AtlasDevHQ/atlas/main/.github/atlas-logo-light.svg" height="40">
-    </picture>
-  </a>
-</p>
+<h1 align="center">Atlas</h1>
 
 <p align="center">
   Open-source text-to-SQL agent you can embed anywhere.
@@ -21,15 +14,13 @@
   <a href="https://docs.useatlas.dev">Documentation</a> · <a href="https://app.useatlas.dev">Live Demo</a> · <a href="https://docs.useatlas.dev/docs/deployment/deploy">Deploy Guide</a> · <a href="https://github.com/AtlasDevHQ/atlas/issues">Issues</a>
 </p>
 
-<!-- TODO: replace with GIF showing a question → SQL → chart flow -->
-
 ---
 
 ## What is Atlas?
 
 Atlas is a deploy-anywhere text-to-SQL agent. Connect any database, auto-generate a semantic layer, and let your users ask questions in plain English. Every query is validated through a multi-layer security pipeline — only read-only SQL against whitelisted tables is allowed.
 
-Built with Hono, Vercel AI SDK, and bun. Supports Anthropic, OpenAI, Bedrock, Ollama, and Vercel AI Gateway. Works with PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, and Salesforce.
+Built with Hono, Vercel AI SDK, and bun. Supports Anthropic, OpenAI, Bedrock, Ollama, and Vercel AI Gateway. Works with PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, BigQuery, and Salesforce.
 
 ## Try it in 60 seconds
 
@@ -72,9 +63,9 @@ The widget supports programmatic control (`Atlas.open()`, `Atlas.ask("...")`, `A
 | **Embeddable** | Script tag, React component, or headless API | Standalone app | Standalone app |
 | **Deploy anywhere** | Docker, Railway, Vercel, or your own infra | Vendor-hosted | Vendor-hosted |
 | **Semantic layer** | YAML on disk, version-controlled, LLM-enriched | Proprietary metadata | None or limited |
-| **Plugin ecosystem** | 15 plugins across 5 types — extend anything | Closed | Limited |
+| **Plugin ecosystem** | 16 plugins across 5 types — extend anything | Closed | Limited |
 | **Open source** | MIT license, full codebase | Proprietary | Varies |
-| **Multi-database** | PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, Salesforce | Usually one | Usually one |
+| **Multi-database** | PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, BigQuery, Salesforce | Usually one | Usually one |
 
 ## Deploy
 
@@ -103,15 +94,15 @@ docker compose up
 4. Results are returned with charts and interpreted narrative
 
 ```
-User question → Semantic layer exploration → SQL generation → 4-layer validation → Query execution → Charts + narrative
+User question → Semantic layer exploration → SQL generation → Multi-layer validation → Query execution → Charts + narrative
 ```
 
 ### Generate the semantic layer
 
 ```bash
-atlas init                 # Profile DB and generate YAMLs
-atlas init --enrich        # Profile + LLM enrichment
-atlas init --demo          # Load demo data + profile
+bun run atlas -- init                 # Profile DB and generate YAMLs
+bun run atlas -- init --enrich        # Profile + LLM enrichment
+bun run atlas -- init --demo          # Load demo data + profile
 ```
 
 ## Architecture
@@ -126,7 +117,7 @@ atlas/
 │   ├── sdk/              # @useatlas/sdk — TypeScript SDK
 │   ├── plugin-sdk/       # @useatlas/plugin-sdk — Plugin type definitions
 │   └── sandbox-sidecar/  # @atlas/sandbox-sidecar — Isolated explore sidecar
-├── plugins/              # 15 plugins (datasource, context, interaction, action, sandbox)
+├── plugins/              # 16 plugins (datasource, context, interaction, action, sandbox)
 ├── create-atlas/         # Scaffolding CLI (bun create atlas-agent)
 ├── apps/
 │   ├── www/              # Landing page (useatlas.dev)
@@ -136,7 +127,7 @@ atlas/
 
 ## Security
 
-Every query runs through a 7-layer validation pipeline. No data leaves your infrastructure.
+SQL validation runs through multiple layers. Your database credentials and query results never leave your infrastructure — only questions reach the LLM provider (use Ollama for fully self-hosted).
 
 | Layer | What it does |
 |-------|-------------|
@@ -175,7 +166,7 @@ See [`.env.example`](.env.example) for all options.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup. Quick version:
+Quick development setup:
 
 ```bash
 git clone https://github.com/AtlasDevHQ/atlas.git && cd atlas

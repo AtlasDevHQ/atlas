@@ -1,7 +1,7 @@
 /**
  * Atlas API — Hono application.
  *
- * Mounts chat, health, auth, v1 query, conversations, OpenAPI, and admin routes
+ * Mounts chat, health, auth, v1 query, conversations, semantic, OpenAPI, admin, and widget routes
  * with CORS middleware. Actions, scheduled tasks, and Slack routes are
  * conditionally loaded based on env vars.
  * Can be served standalone (./server.ts). The Next.js frontend
@@ -24,6 +24,7 @@ import { query } from "./routes/query";
 import { openapi } from "./routes/openapi";
 import { conversations } from "./routes/conversations";
 import { semantic } from "./routes/semantic";
+import { widget } from "./routes/widget";
 
 const log = createLogger("api");
 const tracer = trace.getTracer("atlas");
@@ -101,6 +102,7 @@ app.route("/api/v1/query", query);
 app.route("/api/v1/openapi.json", openapi);
 app.route("/api/v1/conversations", conversations);
 app.route("/api/v1/semantic", semantic);
+app.route("/widget", widget);
 
 // Action routes — lazy import, only loaded if ATLAS_ACTIONS_ENABLED is set.
 if (process.env.ATLAS_ACTIONS_ENABLED === "true") {

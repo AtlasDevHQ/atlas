@@ -85,10 +85,11 @@ Every renderer receives `ToolRendererProps<T>`:
 
 ## Headless Hooks
 
-For fully custom UIs, use the hooks entry point:
+For fully custom UIs, use the hooks entry point. Tool renderer types are also available here:
 
 ```tsx
 import { AtlasProvider, useAtlasChat } from "@useatlas/react/hooks";
+import type { ToolRendererProps, SQLToolResult } from "@useatlas/react/hooks";
 ```
 
 See the [hooks documentation](https://docs.useatlas.dev) for details.

@@ -177,4 +177,63 @@ describe("ToolPart with custom renderers", () => {
 
     expect(container.textContent).toContain("Tool result (unknown type)");
   });
+
+  it("dispatches to correct renderer when multiple renderers are registered", () => {
+    function CustomSQL({ toolName }: ToolRendererProps) {
+      return <div data-testid="custom-sql">{toolName}</div>;
+    }
+    function CustomExplore({ toolName }: ToolRendererProps) {
+      return <div data-testid="custom-explore">{toolName}</div>;
+    }
+    function CustomPython({ toolName }: ToolRendererProps) {
+      return <div data-testid="custom-python">{toolName}</div>;
+    }
+
+    const renderers: ToolRenderers = {
+      executeSQL: CustomSQL,
+      explore: CustomExplore,
+      executePython: CustomPython,
+    };
+
+    const sqlPart = makePart("executeSQL", { sql: "SELECT 1" }, { success: true });
+    const { unmount: u1 } = render(<ToolPart part={sqlPart} toolRenderers={renderers} />);
+    expect(screen.getByTestId("custom-sql").textContent).toBe("executeSQL");
+    u1();
+
+    const explorePart = makePart("explore", { command: "ls" }, "files");
+    const { unmount: u2 } = render(<ToolPart part={explorePart} toolRenderers={renderers} />);
+    expect(screen.getByTestId("custom-explore").textContent).toBe("explore");
+    u2();
+
+    const pyPart = makePart("executePython", { code: "1+1" }, { success: true });
+    render(<ToolPart part={pyPart} toolRenderers={renderers} />);
+    expect(screen.getByTestId("custom-python").textContent).toBe("executePython");
+  });
+
+  it("passes error-shaped result (success: false) through to custom renderer", () => {
+    const receivedProps: ToolRendererProps[] = [];
+    function Spy(props: ToolRendererProps) {
+      receivedProps.push(props);
+      return <div data-testid="spy">error</div>;
+    }
+
+    const renderers: ToolRenderers = { executeSQL: Spy };
+    const part = makePart("executeSQL", { sql: "BAD SQL" }, { success: false, error: "syntax error" });
+
+    render(<ToolPart part={part} toolRenderers={renderers} />);
+
+    expect(receivedProps[0].result).toEqual({ success: false, error: "syntax error" });
+    expect(receivedProps[0].isLoading).toBe(false);
+  });
+
+  it("falls back to default when renderer value is undefined in the map", () => {
+    const renderers = { executeSQL: undefined } as unknown as ToolRenderers;
+    const part = makePart("executeSQL", { sql: "SELECT 1" }, { success: true, columns: [], rows: [] });
+
+    const { container } = render(<ToolPart part={part} toolRenderers={renderers} />);
+
+    // undefined entry → default SQLResultCard renders
+    expect(container.innerHTML.length).toBeGreaterThan(0);
+    expect(screen.queryByTestId("custom-sql")).toBeNull();
+  });
 });

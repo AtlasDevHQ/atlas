@@ -17,6 +17,7 @@ COPY packages/mcp/package.json packages/mcp/package.json
 COPY packages/sandbox-sidecar/package.json packages/sandbox-sidecar/package.json
 COPY packages/plugin-sdk/package.json packages/plugin-sdk/package.json
 COPY packages/sdk/package.json packages/sdk/package.json
+COPY packages/react/package.json packages/react/package.json
 COPY apps/docs/package.json apps/docs/package.json
 COPY apps/www/package.json apps/www/package.json
 COPY examples/nextjs-standalone/package.json examples/nextjs-standalone/package.json
@@ -37,6 +38,7 @@ COPY plugins/slack/package.json plugins/slack/package.json
 COPY plugins/snowflake/package.json plugins/snowflake/package.json
 COPY plugins/salesforce/package.json plugins/salesforce/package.json
 COPY plugins/vercel-sandbox/package.json plugins/vercel-sandbox/package.json
+COPY plugins/bigquery/package.json plugins/bigquery/package.json
 COPY create-atlas-plugin/package.json create-atlas-plugin/package.json
 RUN bun ci --ignore-scripts
 

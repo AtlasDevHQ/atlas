@@ -969,6 +969,10 @@ export default defineConfig({
               p.log.warn("Docker is not running. Demo data requires a PostgreSQL database.");
             }
             p.log.warn(`Start Docker, then run:\n  cd ${projectName} && docker compose up -d postgres && bun run atlas -- init ${demoInitFlag}`);
+          } else if (!fs.existsSync(path.join(targetDir, "docker-compose.yml")) && !fs.existsSync(path.join(targetDir, "compose.yml"))) {
+            // No compose file (e.g. Vercel template) — can't auto-start Postgres
+            p.log.warn("PostgreSQL is not reachable and no docker-compose.yml found in the project.");
+            p.log.warn(`Run manually: cd ${projectName} && bun run atlas -- init ${demoInitFlag}`);
           } else {
             p.log.warn("PostgreSQL is not running. Starting it with Docker Compose...");
             try {

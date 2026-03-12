@@ -2,7 +2,12 @@
  * Widget host route — serves a self-contained HTML page for iframe embedding.
  *
  * Loaded by the script tag loader (issue #236) as an iframe target.
- * Renders the @useatlas/react AtlasChat component via CDN.
+ * Renders the @useatlas/react AtlasChat component from a self-hosted bundle
+ * (no external CDN dependencies).
+ *
+ * Static assets:
+ *   GET /widget/atlas-widget.js  — self-contained ESM bundle (React + AtlasChat)
+ *   GET /widget/atlas-widget.css — pre-compiled Tailwind CSS for widget components
  *
  * Query params:
  *   theme        — "light" | "dark" | "system" (default: "system")
@@ -30,15 +35,69 @@
  *   { type: "atlas:error", code: string, message: string } — load/render/runtime error
  *
  * Messages with unknown types or invalid shapes are silently ignored.
+ *
+ * DOM contract — the inline script uses these stable data attributes from
+ * @useatlas/react components (issue #256):
+ *   [data-atlas-logo]     — logo element
+ *   [data-atlas-messages] — message list container
+ *   [data-atlas-input]    — chat text input
+ *   [data-atlas-form]     — chat submit form
  */
 
 import { Hono } from "hono";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createLogger } from "@atlas/api/lib/logger";
 
 const widget = new Hono();
+const log = createLogger("widget");
 
 const VALID_THEMES = new Set(["light", "dark", "system"]);
 const VALID_POSITIONS = new Set(["bottomRight", "bottomLeft", "inline"]);
 const HEX_COLOR_RE = /^[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/;
+
+// ---------------------------------------------------------------------------
+// Widget bundle assets — loaded once at module init from @useatlas/react dist.
+// Restart the API server after rebuilding @useatlas/react to pick up changes.
+// ---------------------------------------------------------------------------
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+function loadWidgetAsset(filename: string): string | null {
+  const candidates = [
+    // Monorepo layout: packages/api/src/api/routes/ → packages/react/dist/
+    resolve(__dirname, "../../../../react/dist", filename),
+    // npm-installed: root node_modules/@useatlas/react/dist/
+    resolve(__dirname, "../../../../../node_modules/@useatlas/react/dist", filename),
+  ];
+  for (const p of candidates) {
+    try {
+      if (existsSync(p)) return readFileSync(p, "utf8");
+    } catch (err) {
+      log.warn(
+        { path: p, err: err instanceof Error ? err.message : String(err) },
+        `Failed to read widget asset ${filename}`,
+      );
+    }
+  }
+  return null;
+}
+
+const WIDGET_JS = loadWidgetAsset("widget.js");
+const WIDGET_CSS = loadWidgetAsset("widget.css");
+
+if (!WIDGET_JS || !WIDGET_CSS) {
+  log.warn(
+    { hasJS: !!WIDGET_JS, hasCSS: !!WIDGET_CSS },
+    "Widget bundle assets not found — /widget will return 503. " +
+      "Run `bun run build` in packages/react/ to generate them.",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Sanitization helpers
+// ---------------------------------------------------------------------------
 
 /** Reject non-HTTP(S) URLs to prevent open redirect / API traffic exfiltration. */
 function sanitizeApiUrl(raw: string): string {
@@ -70,6 +129,10 @@ function sanitizeAccent(raw: string): string {
   return HEX_COLOR_RE.test(raw) ? raw : "";
 }
 
+// ---------------------------------------------------------------------------
+// Widget HTML builder
+// ---------------------------------------------------------------------------
+
 function buildWidgetHTML(config: {
   theme: string;
   apiUrl: string;
@@ -99,6 +162,7 @@ function buildWidgetHTML(config: {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>Atlas</title>
+<link rel="stylesheet" href="widget/atlas-widget.css">
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;width:100%;overflow:hidden;font-family:ui-sans-serif,system-ui,-apple-system,sans-serif}
@@ -114,25 +178,19 @@ body{background:#fff;color:#09090b}
 .atlas-custom-logo{height:1.75rem;width:1.75rem;object-fit:contain;flex-shrink:0}${accentCSS}
 </style>
 <script>
-window.onerror=function(m){console.error("[Atlas Widget]",m);try{window.parent.postMessage({type:"atlas:error",code:"UNCAUGHT",message:String(m)},"*")}catch(x){}};
-window.addEventListener("unhandledrejection",function(e){console.error("[Atlas Widget]",e.reason);try{window.parent.postMessage({type:"atlas:error",code:"UNHANDLED_REJECTION",message:String(e.reason)},"*")}catch(x){}});
+window.onerror=function(m){console.error("[Atlas Widget]",m);try{window.parent.postMessage({type:"atlas:error",code:"UNCAUGHT",message:String(m)},"*")}catch(x){console.warn("[Atlas Widget] Could not notify parent:",x)}};
+window.addEventListener("unhandledrejection",function(e){console.error("[Atlas Widget]",e.reason);try{window.parent.postMessage({type:"atlas:error",code:"UNHANDLED_REJECTION",message:String(e.reason)},"*")}catch(x){console.warn("[Atlas Widget] Could not notify parent:",x)}});
 </script>
 <script>try{var t=localStorage.getItem("atlas-theme");var d=t==="dark"||(t!=="light"&&window.matchMedia("(prefers-color-scheme:dark)").matches);if(d)document.documentElement.classList.add("dark")}catch(e){console.warn("[Atlas Widget] Could not read theme:",e.message)}</script>
-<!-- Tailwind CSS Play CDN — generates utility classes at runtime for CDN-loaded
-     @useatlas/react components. Temporary measure; v3 Play CDN is not intended
-     for production. TODO: replace with pre-compiled widget CSS bundle. -->
-<script src="https://cdn.tailwindcss.com" onerror="console.warn('[Atlas Widget] Tailwind CDN unavailable — styling may be degraded')"></script>
 </head>
 <body data-position="${config.position}">
 <div id="atlas-widget"></div>
 <script id="atlas-config" type="application/json">${configJSON}</script>
+<script type="module" src="widget/atlas-widget.js"></script>
 <script type="module">
 try{
-const[{createElement,Component},{createRoot},{AtlasChat,setTheme}]=await Promise.all([
-  import("https://esm.sh/react@19"),
-  import("https://esm.sh/react-dom@19/client"),
-  import("https://esm.sh/@useatlas/react?deps=react@19,react-dom@19"),
-]);
+if(typeof AtlasWidget==="undefined")throw new Error("Widget bundle did not load — atlas-widget.js may have failed to fetch or execute");
+const{createElement,Component,createRoot,AtlasChat,setTheme}=AtlasWidget;
 
 const configEl=document.getElementById("atlas-config");
 if(!configEl)throw new Error("Config element not found");
@@ -150,7 +208,7 @@ class EB extends Component{
   static getDerivedStateFromError(e){return{error:e}}
   componentDidCatch(e){
     console.error("[Atlas Widget] Render error:",e);
-    try{window.parent.postMessage({type:"atlas:error",code:"RENDER_FAILED",message:e.message},"*")}catch(x){}
+    try{window.parent.postMessage({type:"atlas:error",code:"RENDER_FAILED",message:e.message},"*")}catch(x){console.warn("[Atlas Widget] Could not notify parent:",x)}
   }
   render(){
     if(this.state.error)return createElement("div",{style:{padding:"2rem",textAlign:"center",color:"#888",fontFamily:"system-ui"}},
@@ -166,16 +224,16 @@ function render(){
   root.render(createElement(EB,null,createElement(AtlasChat,{apiUrl,apiKey:state.apiKey||void 0,theme:state.theme})));
 }
 
-/** Replace the default Atlas SVG logo with a custom <img>.
- *  Finds the logo by viewBox="0 0 256 256" — must be updated if @useatlas/react changes its header SVG. */
+/** Replace the default Atlas logo element with a custom <img>.
+ *  Uses the stable data-atlas-logo attribute from @useatlas/react. */
 function applyLogo(src){
   if(!src)return;
-  const svg=el.querySelector("svg[viewBox='0 0 256 256']");
-  if(!svg){console.warn("[Atlas Widget] Could not find default logo SVG to replace");return}
+  const logo=el.querySelector("[data-atlas-logo]");
+  if(!logo){console.warn("[Atlas Widget] Could not find logo element to replace");return}
   const img=document.createElement("img");
   img.src=src;img.alt="Logo";img.className="atlas-custom-logo";
   img.onerror=function(){console.warn("[Atlas Widget] Custom logo failed to load:",src);img.style.display="none"};
-  svg.replaceWith(img);
+  logo.replaceWith(img);
 }
 
 /** Apply accent color via CSS class on the widget container. */
@@ -189,7 +247,8 @@ function applyAccent(hex){
   style.textContent='.atlas-accent button[type="submit"]{background-color:#'+hex+'!important}.atlas-accent button[type="submit"]:hover{filter:brightness(1.1)}.atlas-accent input:focus{border-color:#'+hex+'!important}.atlas-accent a{color:#'+hex+'!important}';
 }
 
-/** Insert a welcome message above the messages area. */
+/** Insert a welcome message above the messages area.
+ *  Uses the stable data-atlas-messages attribute from @useatlas/react. */
 function applyWelcome(text){
   // Remove any existing welcome
   const old=document.getElementById("atlas-welcome");
@@ -200,29 +259,28 @@ function applyWelcome(text){
   const inner=document.createElement("div");
   inner.className="atlas-welcome-inner";inner.textContent=text;
   wrapper.appendChild(inner);
-  // Insert before the messages area — targets Radix ScrollArea internal attribute;
-  // must be updated if Radix changes this data attribute.
-  const scrollArea=el.querySelector("[data-radix-scroll-area-viewport]");
-  if(scrollArea&&scrollArea.firstChild){
-    scrollArea.firstChild.prepend(wrapper);
+  const messages=el.querySelector("[data-atlas-messages]");
+  if(messages){
+    messages.prepend(wrapper);
   }else{
-    console.warn("[Atlas Widget] Could not find scroll area to insert welcome message");
+    console.warn("[Atlas Widget] Could not find messages area to insert welcome message");
   }
 }
 
 /** Programmatically submit a query. Uses the native HTMLInputElement value setter
  *  to bypass React's synthetic value tracking — setting .value directly on a
- *  controlled input does not trigger React state updates. */
+ *  controlled input does not trigger React state updates.
+ *  Uses stable data-atlas-input and data-atlas-form attributes. */
 function submitQuery(query){
   if(!query)return;
-  const input=el.querySelector("input");
+  const input=el.querySelector("[data-atlas-input]");
   if(!input){console.warn("[Atlas Widget] Cannot submit query: input element not found");return}
   const desc=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value");
   if(!desc||!desc.set){console.warn("[Atlas Widget] Cannot submit query: input value setter unavailable");return}
   desc.set.call(input,query);
   input.dispatchEvent(new Event("input",{bubbles:true}));
   requestAnimationFrame(function(){
-    const form=input.closest("form");
+    const form=el.querySelector("[data-atlas-form]");
     if(!form){console.warn("[Atlas Widget] Cannot submit query: form element not found");return}
     form.requestSubmit();
   });
@@ -261,10 +319,10 @@ window.addEventListener("message",e=>{
 render();
 
 /** Wait for the AtlasChat component to render, then invoke callback.
- *  Polls for the input element up to maxAttempts times (300ms apart). */
+ *  Polls for [data-atlas-input] up to 16 times at 300ms intervals (~4.8s). */
 function waitForReady(cb,attempts){
   attempts=attempts||0;
-  const input=el.querySelector("input");
+  const input=el.querySelector("[data-atlas-input]");
   if(input){cb();return}
   if(attempts>15){console.warn("[Atlas Widget] Timed out waiting for chat UI to render — some branding may not apply");cb();return}
   setTimeout(function(){waitForReady(cb,attempts+1)},300);
@@ -287,14 +345,59 @@ window.parent.postMessage({type:"atlas:ready"},"*");
 console.error("[Atlas Widget] Failed to load:",err);
 const el=document.getElementById("atlas-widget");
 if(el)el.innerHTML='<div style="padding:2rem;text-align:center;color:#888;font-family:system-ui"><p>Unable to load Atlas Chat.</p><p style="font-size:0.875rem;margin-top:0.5rem">Check your network connection or try refreshing.</p></div>';
-try{window.parent.postMessage({type:"atlas:error",code:"LOAD_FAILED",message:String(err.message||err)},"*")}catch(x){}
+try{window.parent.postMessage({type:"atlas:error",code:"LOAD_FAILED",message:String(err.message||err)},"*")}catch(x){console.warn("[Atlas Widget] Could not notify parent:",x)}
 }
 </script>
 </body>
 </html>`;
 }
 
+// ---------------------------------------------------------------------------
+// Routes
+// ---------------------------------------------------------------------------
+
+/** Serve the self-contained widget JS bundle. */
+widget.get("/atlas-widget.js", (c) => {
+  if (!WIDGET_JS) {
+    return c.text(
+      "Widget JS bundle not built. Run `bun run build` in packages/react/.",
+      404,
+    );
+  }
+  c.header("Content-Type", "application/javascript; charset=utf-8");
+  c.header("Cache-Control", "public, max-age=86400");
+  c.header("Access-Control-Allow-Origin", "*");
+  return c.body(WIDGET_JS);
+});
+
+/** Serve the pre-compiled widget CSS (Tailwind utilities). */
+widget.get("/atlas-widget.css", (c) => {
+  if (!WIDGET_CSS) {
+    return c.text(
+      "Widget CSS not built. Run `bun run build` in packages/react/.",
+      404,
+    );
+  }
+  c.header("Content-Type", "text/css; charset=utf-8");
+  c.header("Cache-Control", "public, max-age=86400");
+  c.header("Access-Control-Allow-Origin", "*");
+  return c.body(WIDGET_CSS);
+});
+
+/** Serve the widget HTML page. Returns 503 if widget bundle is not built. */
 widget.get("/", (c) => {
+  if (!WIDGET_JS) {
+    c.header("Content-Security-Policy", "frame-ancestors *");
+    c.header("Access-Control-Allow-Origin", "*");
+    return c.html(
+      `<!DOCTYPE html><html><body style="padding:2rem;text-align:center;color:#888;font-family:system-ui">` +
+        `<p>Widget bundle not built.</p>` +
+        `<p style="font-size:0.875rem;margin-top:0.5rem">Run <code>bun run build</code> in packages/react/.</p>` +
+        `</body></html>`,
+      503,
+    );
+  }
+
   const rawTheme = c.req.query("theme") ?? "system";
   const rawApiUrl = c.req.query("apiUrl") ?? "";
   const rawPosition = c.req.query("position") ?? "inline";

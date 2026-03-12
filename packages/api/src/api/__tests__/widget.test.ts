@@ -3,8 +3,9 @@
  *
  * Tests HTML response, headers, query param handling, XSS prevention,
  * apiUrl sanitization, branding params, postMessage API, error handling,
- * and HTML structure. Runtime behavior of inline JS (DOM manipulation,
- * postMessage handlers) requires browser-level (Playwright) testing.
+ * HTML structure, data-atlas-* selectors, and asset routes. Runtime behavior
+ * of inline JS (DOM manipulation, postMessage handlers) requires
+ * browser-level (Playwright) testing.
  * The widget route has no internal dependencies, so no mocks are needed —
  * we mount it on a standalone Hono app for isolation.
  */
@@ -213,6 +214,24 @@ describe("GET /widget", () => {
     expect(html).toContain('data-position="bottomRight"');
   });
 
+  // --- No external CDN dependencies ---
+
+  it("does not reference any external CDN URLs", async () => {
+    const res = await app.fetch(widgetRequest());
+    const html = await res.text();
+    expect(html).not.toContain("esm.sh");
+    expect(html).not.toContain("cdn.tailwindcss.com");
+    expect(html).not.toContain("cdn.jsdelivr.net");
+    expect(html).not.toContain("unpkg.com");
+  });
+
+  it("references self-hosted widget bundle and CSS", async () => {
+    const res = await app.fetch(widgetRequest());
+    const html = await res.text();
+    expect(html).toContain('src="widget/atlas-widget.js"');
+    expect(html).toContain('href="widget/atlas-widget.css"');
+  });
+
   // --- Error handling infrastructure ---
 
   it("includes global error handlers for uncaught errors", async () => {
@@ -222,11 +241,17 @@ describe("GET /widget", () => {
     expect(html).toContain("unhandledrejection");
   });
 
-  it("includes try/catch around CDN imports", async () => {
+  it("includes try/catch around widget initialization", async () => {
     const res = await app.fetch(widgetRequest());
     const html = await res.text();
     expect(html).toContain("try{");
     expect(html).toContain("}catch(err)");
+  });
+
+  it("guards against missing AtlasWidget global before destructuring", async () => {
+    const res = await app.fetch(widgetRequest());
+    const html = await res.text();
+    expect(html).toContain('typeof AtlasWidget==="undefined"');
   });
 
   it("includes React error boundary", async () => {
@@ -255,19 +280,20 @@ describe("GET /widget", () => {
     expect(html).toContain("e.source!==window.parent");
   });
 
-  // --- Component and CDN references ---
+  // --- Component references ---
 
-  it("includes AtlasChat component import", async () => {
+  it("includes AtlasChat component usage", async () => {
     const res = await app.fetch(widgetRequest());
     const html = await res.text();
     expect(html).toContain("AtlasChat");
-    expect(html).toContain("@useatlas/react");
   });
 
-  it("uses Promise.all for parallel CDN imports", async () => {
+  it("destructures widget bundle globals", async () => {
     const res = await app.fetch(widgetRequest());
     const html = await res.text();
-    expect(html).toContain("Promise.all");
+    expect(html).toContain("AtlasWidget");
+    expect(html).toContain("createElement");
+    expect(html).toContain("createRoot");
   });
 
   it("includes postMessage listener", async () => {
@@ -289,6 +315,52 @@ describe("GET /widget", () => {
     expect(html).toContain(".atlas-root{");
     expect(html).toContain("--background:");
     expect(html).toContain(".dark .atlas-root{");
+  });
+});
+
+// --- data-atlas-* stable selectors ---
+
+describe("data-atlas-* selectors", () => {
+  it("uses data-atlas-logo for logo replacement", async () => {
+    const res = await app.fetch(widgetRequest());
+    const html = await res.text();
+    expect(html).toContain("[data-atlas-logo]");
+    // Must NOT contain the old fragile SVG viewBox selector
+    expect(html).not.toContain("svg[viewBox=");
+  });
+
+  it("uses data-atlas-messages for welcome message insertion", async () => {
+    const res = await app.fetch(widgetRequest());
+    const html = await res.text();
+    expect(html).toContain("[data-atlas-messages]");
+    // Must NOT contain the old Radix internal attribute selector
+    expect(html).not.toContain("data-radix-scroll-area-viewport");
+  });
+
+  it("uses data-atlas-input for input element queries", async () => {
+    const res = await app.fetch(widgetRequest());
+    const html = await res.text();
+    expect(html).toContain("[data-atlas-input]");
+    // Must NOT use bare querySelector("input") for element lookup
+    expect(html).not.toContain('querySelector("input")');
+  });
+
+  it("uses data-atlas-form for form submission", async () => {
+    const res = await app.fetch(widgetRequest());
+    const html = await res.text();
+    expect(html).toContain("[data-atlas-form]");
+    // Must NOT use input.closest("form") pattern
+    expect(html).not.toContain('closest("form")');
+  });
+
+  it("waitForReady polls for data-atlas-input (not bare input)", async () => {
+    const res = await app.fetch(widgetRequest());
+    const html = await res.text();
+    expect(html).toContain("waitForReady");
+    // The waitForReady function should look for [data-atlas-input]
+    const waitForReadyMatch = html.match(/function waitForReady[\s\S]*?setTimeout/);
+    expect(waitForReadyMatch).toBeTruthy();
+    expect(waitForReadyMatch![0]).toContain("[data-atlas-input]");
   });
 });
 
@@ -616,6 +688,42 @@ describe("combined branding params", () => {
     const styleMatch = html.match(/<style>([\s\S]*?)<\/style>/);
     expect(styleMatch).toBeTruthy();
     expect(styleMatch![1]).not.toContain("atlas-accent");
+  });
+});
+
+// --- Widget asset routes ---
+
+describe("widget asset routes", () => {
+  it("GET /widget/atlas-widget.js returns JS content", async () => {
+    const res = await app.fetch(
+      new Request("http://localhost/widget/atlas-widget.js"),
+    );
+    // May be 200 (bundle built) or 404 (not built in CI).
+    // In either case, the route exists and responds.
+    expect([200, 404]).toContain(res.status);
+    if (res.status === 200) {
+      expect(res.headers.get("content-type")).toContain("javascript");
+      expect(res.headers.get("cache-control")).toContain("public");
+      expect(res.headers.get("access-control-allow-origin")).toBe("*");
+    } else {
+      const body = await res.text();
+      expect(body).toContain("bun run build");
+    }
+  });
+
+  it("GET /widget/atlas-widget.css returns CSS content", async () => {
+    const res = await app.fetch(
+      new Request("http://localhost/widget/atlas-widget.css"),
+    );
+    expect([200, 404]).toContain(res.status);
+    if (res.status === 200) {
+      expect(res.headers.get("content-type")).toContain("css");
+      expect(res.headers.get("cache-control")).toContain("public");
+      expect(res.headers.get("access-control-allow-origin")).toBe("*");
+    } else {
+      const body = await res.text();
+      expect(body).toContain("bun run build");
+    }
   });
 });
 

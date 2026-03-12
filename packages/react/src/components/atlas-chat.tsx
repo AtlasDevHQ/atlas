@@ -62,7 +62,7 @@ const MenuIcon = (
 );
 
 const AtlasLogo = (
-  <svg viewBox="0 0 256 256" fill="none" className="h-7 w-7 shrink-0 text-primary" aria-hidden="true">
+  <svg data-atlas-logo viewBox="0 0 256 256" fill="none" className="h-7 w-7 shrink-0 text-primary" aria-hidden="true">
     <path d="M128 24 L232 208 L24 208 Z" stroke="currentColor" strokeWidth="14" fill="none" strokeLinejoin="round"/>
     <circle cx="128" cy="28" r="16" fill="currentColor"/>
   </svg>
@@ -501,7 +501,7 @@ function AtlasChatInner({
                 )}
 
                 <ScrollArea viewportRef={scrollRef} className="min-h-0 flex-1">
-                <div className="space-y-4 pb-4 pr-3">
+                <div data-atlas-messages className="space-y-4 pb-4 pr-3">
                   {messages.length === 0 && !error && (
                     <div className="flex h-full flex-col items-center justify-center gap-6">
                       <div className="text-center">
@@ -603,6 +603,7 @@ function AtlasChatInner({
                 {error && <ErrorBanner error={error} authMode={authMode} />}
 
                 <form
+                  data-atlas-form
                   onSubmit={(e) => {
                     e.preventDefault();
                     handleSend(input);
@@ -610,6 +611,7 @@ function AtlasChatInner({
                   className="flex flex-none gap-2 border-t border-zinc-100 pt-4 dark:border-zinc-800"
                 >
                   <input
+                    data-atlas-input
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     placeholder="Ask a question about your data..."

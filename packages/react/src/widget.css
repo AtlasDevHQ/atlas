@@ -1,0 +1,12 @@
+/*
+ * Widget Tailwind CSS source.
+ *
+ * Compiled by @tailwindcss/cli during `bun run build` to produce
+ * dist/widget.css — a static CSS file containing all Tailwind
+ * utility classes used by @useatlas/react components.
+ *
+ * Pre-compiled at build time to avoid runtime CSS generation overhead.
+ */
+
+@import "tailwindcss";
+@source "./";

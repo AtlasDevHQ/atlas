@@ -46,7 +46,7 @@ var isRight=position==="bottom-right";
 var isOpen=false;
 var isReady=false;
 var origin;
-try{origin=new URL(apiUrl).origin}catch(e){console.error("[Atlas] Invalid data-api-url:",apiUrl);return}
+try{var u=new URL(apiUrl);if(u.protocol!=="https:"&&u.protocol!=="http:"){console.error("[Atlas] data-api-url must use http or https");return}origin=u.origin}catch(e){console.error("[Atlas] Invalid data-api-url:",apiUrl);return}
 
 /* ---- Styles ---- */
 var style=document.createElement("style");
@@ -101,7 +101,6 @@ wrap.className="atlas-wl-frame-wrap";
 
 var iframe=document.createElement("iframe");
 var iframeSrc=apiUrl.replace(/\\/$/,"")+"/widget?position=inline&theme="+encodeURIComponent(theme);
-if(apiKey)iframeSrc+="&apiKey="+encodeURIComponent(apiKey);
 iframe.src=iframeSrc;
 iframe.setAttribute("title","Atlas Chat");
 iframe.setAttribute("allow","clipboard-write");
@@ -136,7 +135,8 @@ document.addEventListener("keydown",function(e){
 
 /* ---- postMessage bridge ---- */
 function sendToWidget(msg){
-  if(iframe.contentWindow)iframe.contentWindow.postMessage(msg,origin);
+  if(iframe.contentWindow){iframe.contentWindow.postMessage(msg,origin)}
+  else{console.warn("[Atlas] Widget iframe not ready, message dropped:",msg.type)}
 }
 
 /* Messages from the widget iframe (origin-checked) */

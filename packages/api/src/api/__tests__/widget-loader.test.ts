@@ -106,6 +106,22 @@ describe("GET /widget.js", () => {
     expect(script).toContain("data-api-url attribute is required");
   });
 
+  it("validates apiUrl protocol is http or https", async () => {
+    const script = await getScript();
+    expect(script).toContain('u.protocol!=="https:"&&u.protocol!=="http:"');
+    expect(script).toContain("data-api-url must use http or https");
+  });
+
+  it("guards against missing document.currentScript", async () => {
+    const script = await getScript();
+    expect(script).toContain("widget.js must be loaded via a <script> tag");
+  });
+
+  it("handles invalid data-api-url with error message", async () => {
+    const script = await getScript();
+    expect(script).toContain("Invalid data-api-url");
+  });
+
   // --- Iframe construction ---
 
   it("creates iframe with /widget path as src", async () => {
@@ -118,14 +134,26 @@ describe("GET /widget.js", () => {
     expect(script).toContain("encodeURIComponent(theme)");
   });
 
-  it("passes apiKey as query param when present", async () => {
+  it("does not leak apiKey in iframe URL (uses postMessage instead)", async () => {
     const script = await getScript();
-    expect(script).toContain("encodeURIComponent(apiKey)");
+    expect(script).not.toContain("&apiKey=");
+    // Auth is delivered securely via postMessage on atlas:ready
+    expect(script).toContain('{type:"auth",token:apiKey}');
   });
 
   it("sets iframe title for accessibility", async () => {
     const script = await getScript();
     expect(script).toContain('"title","Atlas Chat"');
+  });
+
+  it("sets clipboard-write permission on iframe", async () => {
+    const script = await getScript();
+    expect(script).toContain('"allow","clipboard-write"');
+  });
+
+  it("strips trailing slash from apiUrl before building iframe src", async () => {
+    const script = await getScript();
+    expect(script).toContain('apiUrl.replace(/\\/$/,"")');
   });
 
   // --- Bubble button ---
@@ -233,6 +261,11 @@ describe("GET /widget.js", () => {
   it("sends postMessage to iframe with correct origin", async () => {
     const script = await getScript();
     expect(script).toContain("postMessage(msg,origin)");
+  });
+
+  it("warns when sending to widget before iframe is ready", async () => {
+    const script = await getScript();
+    expect(script).toContain("Widget iframe not ready, message dropped:");
   });
 
   // --- Security ---

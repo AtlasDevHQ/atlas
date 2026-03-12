@@ -38,21 +38,24 @@ Dark/light mode toggle with persistence and admin-configurable brand color, sugg
 
 ---
 
-## 0.5.0 — Governance & Sharing
+## 0.5.0 — Launch
 
-The current milestone. Access control, audit improvements, and collaboration features for production teams.
+The current milestone. Embeddable widget, new datasource support, conversation sharing, and launch prep.
 
-- **Access control** — Advanced RLS policies (multi-column, array claims), session management, OIDC/OAuth provider docs
-- **Audit** — Audit log export and search, data classification tags on query trails
-- **Collaboration** — Conversation sharing with permission controls, semantic layer diff in admin console
+- **Embeddable widget** — `@useatlas/react` component, `<script>` tag loader, dedicated widget host route
+- **SDK streaming** — `streamQuery()` API for real-time agent responses in custom integrations
+- **BigQuery** — Datasource plugin for Google BigQuery
+- **Conversation sharing** — Public links for sharing conversations with non-authenticated users
+- **Launch prep** — README overhaul, landing page refresh, onboarding hardening
 
 ---
 
-## 0.6.0 — Embeddable & Integrations
+## 0.6.0 — Governance & Integrations
 
-Atlas as drop-in analytics infrastructure for other products.
+Access control, audit, and third-party integrations for production teams.
 
-- **Embedding** — Embeddable widget (`<script>` tag + React component), SDK streaming API
+- **Access control** — Advanced RLS policies (multi-column, array claims), session management, OIDC/OAuth provider docs
+- **Audit** — Audit log export and search, data classification tags on query trails
 - **Integrations** — Microsoft Teams plugin, generic webhook plugin for Zapier/Make/n8n, email digest subscriptions
 - **Data protection** — PII detection and column masking via plugin hooks
 
@@ -64,7 +67,6 @@ Handle larger semantic layers, more concurrent users, and bigger result sets.
 
 - **Caching** — Query result caching with configurable TTL, semantic layer indexing
 - **Infrastructure** — Connection pool improvements, streaming Python output, tenant-scoped semantic layers
-- **Datasources** — BigQuery plugin
 
 ---
 

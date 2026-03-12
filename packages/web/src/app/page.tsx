@@ -1,14 +1,16 @@
 "use client";
 
-import { AtlasUIProvider } from "@/ui/context";
-import { AtlasChat } from "@/ui/components/atlas-chat";
+import { AtlasChat } from "@useatlas/react";
 import { authClient } from "@/lib/auth/client";
-import { API_URL, IS_CROSS_ORIGIN } from "@/lib/api-url";
+import { API_URL } from "@/lib/api-url";
 
 export default function Home() {
   return (
-    <AtlasUIProvider config={{ apiUrl: API_URL, isCrossOrigin: IS_CROSS_ORIGIN, authClient }}>
-      <AtlasChat />
-    </AtlasUIProvider>
+    <AtlasChat
+      apiUrl={API_URL}
+      sidebar
+      schemaExplorer
+      authClient={authClient}
+    />
   );
 }

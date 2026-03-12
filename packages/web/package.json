@@ -10,10 +10,11 @@
     "test": "bun scripts/test-isolated.ts"
   },
   "exports": {
-    "./ui/context": "./src/ui/context.tsx",
-    "./ui/components/atlas-chat": "./src/ui/components/atlas-chat.tsx"
+    "./ui/context": "./src/ui/context-reexport.ts",
+    "./ui/components/atlas-chat": "./src/ui/atlas-chat-reexport.ts"
   },
   "dependencies": {
+    "@useatlas/react": "workspace:*",
     "@ai-sdk/react": "^3.0.99",
     "@better-auth/api-key": "^1.5.1",
     "@opentelemetry/api": "^1.9.0",

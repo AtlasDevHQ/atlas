@@ -1,5 +1,7 @@
 import { type ReactNode } from "react";
 
+import { AtlasWidget, TryAtlasButton } from "./atlas-widget";
+
 const GITHUB_PATH =
   "M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z";
 
@@ -124,12 +126,11 @@ export default function Home() {
           >
             GitHub
           </a>
-          <a
-            href="https://app.useatlas.dev"
-            className="rounded-md bg-zinc-100 px-3.5 py-1.5 text-sm font-medium text-zinc-950 transition-colors hover:bg-white"
+          <TryAtlasButton
+            className="rounded-md bg-zinc-100 px-3.5 py-1.5 text-sm font-medium text-zinc-950 transition-colors hover:bg-white cursor-pointer"
           >
             Try demo
-          </a>
+          </TryAtlasButton>
         </div>
       </nav>
 
@@ -153,11 +154,10 @@ export default function Home() {
             one script tag.
           </p>
           <div className="animate-fade-in-up delay-400 mt-10 flex flex-wrap items-center gap-4">
-            <a
-              href="https://app.useatlas.dev"
-              className="group inline-flex items-center gap-2 rounded-lg bg-brand px-5 py-2.5 text-sm font-medium text-zinc-950 transition-all hover:bg-brand-hover"
+            <TryAtlasButton
+              className="group inline-flex items-center gap-2 rounded-lg bg-brand px-5 py-2.5 text-sm font-medium text-zinc-950 transition-all hover:bg-brand-hover cursor-pointer"
             >
-              Try the demo
+              Try Atlas
               <svg
                 className="h-4 w-4 transition-transform group-hover:translate-x-0.5"
                 fill="none"
@@ -171,7 +171,7 @@ export default function Home() {
                   d="M13 7l5 5m0 0l-5 5m5-5H6"
                 />
               </svg>
-            </a>
+            </TryAtlasButton>
             <a
               href="https://github.com/AtlasDevHQ/atlas"
               className="group inline-flex items-center gap-2 rounded-lg border border-zinc-800 px-5 py-2.5 text-sm font-medium text-zinc-300 transition-all hover:border-zinc-700 hover:text-zinc-100"
@@ -488,6 +488,38 @@ export default function App() {
         />
       </section>
 
+      {/* Try it — starter questions */}
+      <section className="mx-auto max-w-5xl px-6 pb-20 md:pb-28">
+        <h2 className="mb-4 font-mono text-xs tracking-widest text-brand/80 uppercase">
+          Try it now
+        </h2>
+        <p className="mb-8 max-w-xl text-zinc-400">
+          Atlas is connected to a live demo database. Click a question below or
+          ask anything.
+        </p>
+        <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3">
+          {[
+            "What are our top 10 accounts by revenue?",
+            "Show monthly active users for the last 6 months",
+            "Which products have the highest churn rate?",
+            "What's the average deal size by sales rep?",
+            "List all open critical incidents",
+            "Compare Q3 vs Q4 revenue by region",
+          ].map((question) => (
+            <TryAtlasButton
+              key={question}
+              question={question}
+              className="group cursor-pointer rounded-lg border border-zinc-800/60 bg-zinc-900/30 px-4 py-3 text-left text-sm text-zinc-400 transition-all hover:border-brand/30 hover:bg-brand/5 hover:text-zinc-300"
+            >
+              <span className="mr-2 text-brand/60 transition-colors group-hover:text-brand">
+                &rsaquo;
+              </span>
+              {question}
+            </TryAtlasButton>
+          ))}
+        </div>
+      </section>
+
       {/* Footer */}
       <footer className="mx-auto max-w-5xl px-6 pb-12">
         <div className="h-px bg-gradient-to-r from-transparent via-zinc-800 to-transparent" />
@@ -518,6 +550,9 @@ export default function App() {
           </a>
         </div>
       </footer>
+
+      {/* Atlas widget — async loaded, connected to demo backend */}
+      <AtlasWidget />
     </div>
   );
 }

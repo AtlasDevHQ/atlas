@@ -1,0 +1,11 @@
+{
+  "title": "Comparisons",
+  "description": "How Atlas compares to other text-to-SQL and BI tools",
+  "icon": "Scale",
+  "pages": [
+    "index",
+    "wrenai",
+    "vanna",
+    "metabase"
+  ]
+}

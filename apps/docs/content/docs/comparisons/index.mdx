@@ -1,0 +1,68 @@
+---
+title: Atlas vs Alternatives
+description: Feature-by-feature comparison of Atlas, WrenAI, Vanna, and Metabase for text-to-SQL and data querying.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+<Callout type="info">
+  All comparisons are based on publicly available documentation and source code as of March 2026. If something is inaccurate, [open an issue](https://github.com/AtlasDevHQ/atlas/issues) and we'll fix it.
+</Callout>
+
+Atlas is an embeddable text-to-SQL agent. The tools below solve overlapping problems in different ways -- this page helps you decide which fits your use case.
+
+## Feature Matrix
+
+| Feature | Atlas | WrenAI | Vanna | Metabase |
+|---|---|---|---|---|
+| **Deployment** | Self-hosted, cloud, embedded | Self-hosted, cloud | Self-hosted, cloud (SaaS) | Self-hosted, cloud |
+| **Embeddable widget** | Script tag, React component, API | API only (no widget) | Web component (`<vanna-chat>`) | Embedding SDK (paid), public links (free) |
+| **Semantic layer** | YAML files (code-first) | UI-based modeling (MDL) | Training via DDL/docs/SQL pairs | Data model UI |
+| **Plugin ecosystem** | 15+ official plugins, Plugin SDK | Limited | Python extensibility | Drivers + community plugins |
+| **Databases** | | | | |
+| PostgreSQL | Built-in | Yes | Yes | Yes |
+| MySQL | Built-in | Yes | Yes | Yes |
+| BigQuery | Plugin | Yes | Yes | Yes |
+| ClickHouse | Plugin | Yes | Yes | Community driver |
+| DuckDB | Plugin | Yes | Yes | Community driver |
+| Snowflake | Plugin | Yes | Yes | Yes |
+| Salesforce | Plugin | No | No | No |
+| **Auth model** | Managed, BYOT, API key, none | API key | BYOT (`UserResolver`) | Managed, SSO (paid) |
+| **License** | MIT | AGPL-3.0 | MIT | AGPL-3.0 (Pro is proprietary) |
+| **Python tool** | Sandboxed execution with charts | No | Python-native | No |
+| **Admin console** | Built-in | Basic UI | No | Full admin UI |
+| **MCP server** | Official plugin | No | No | No |
+| **SDK** | TypeScript SDK (`@useatlas/sdk`) | No | Python package | Embedding SDK (React, paid) |
+| **Primary language** | TypeScript | TypeScript + Rust | Python | Clojure + JavaScript |
+
+## When to Choose What
+
+### Choose Atlas if you need to...
+
+- **Embed data querying in your own product** -- Atlas is designed as a component, not a standalone tool. Script tag, React component, or raw API.
+- **Control the AI's reasoning with code** -- The YAML semantic layer lives in your repo, versioned with git, reviewed in PRs.
+- **Support multiple datasources with plugins** -- Connect Postgres, MySQL, BigQuery, Snowflake, ClickHouse, DuckDB, and Salesforce from a single deployment.
+- **Run under MIT** -- No AGPL copyleft concerns for commercial products.
+
+### Choose WrenAI if you need to...
+
+- **A UI-based semantic modeling experience** -- WrenAI's modeling interface lets non-developers define relationships and metrics visually.
+- **A standalone text-to-SQL product** -- WrenAI works well as a dedicated tool for teams that want a BI-like experience with natural language.
+
+### Choose Vanna if you need to...
+
+- **A Python-native workflow** -- Vanna is a Python package. Train it in a notebook, call it from scripts, integrate with existing Python data pipelines.
+- **MIT license** -- Permissive license with no copyleft restrictions.
+- **Quick prototyping** -- Minimal setup for experimenting with text-to-SQL in a Python environment.
+
+### Choose Metabase if you need to...
+
+- **A full BI platform with dashboards** -- Metabase is a complete business intelligence tool with dashboards, scheduled reports, and team features.
+- **A mature, battle-tested product** -- Metabase has been in production at thousands of companies for years.
+- **Visual query builder + SQL** -- Not just AI-driven querying, but a visual point-and-click query builder too.
+
+## Detailed Comparisons
+
+- [Atlas vs WrenAI](/comparisons/wrenai) -- Semantic layer approaches, deployment model, license implications
+- [Atlas vs Vanna](/comparisons/vanna) -- Python vs TypeScript, training vs semantic layer, embedding model
+- [Atlas vs Metabase](/comparisons/metabase) -- Embedded analytics vs embedded agent, BI platform vs composable component

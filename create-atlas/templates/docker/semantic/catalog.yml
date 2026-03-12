@@ -1,5 +1,64 @@
-# Atlas Semantic Layer — Catalog
-# Run `bun run atlas -- init` to auto-generate from your database.
 version: "1.0"
-entities: []
+name: Atlas Demo — SaaS CRM
+description: |
+  B2B SaaS company CRM dataset. Tracks companies (customers), the people who work
+  there (contacts), and subscription accounts with plan tiers and MRR.
+  Use this dataset to explore revenue analysis, customer segmentation,
+  churn patterns, and org-level reporting.
+
+entities:
+  - name: Companies
+    file: entities/companies.yml
+    grain: one row per customer company
+    description: >
+      Customer companies with firmographic data — industry, headcount,
+      geography, revenue, and valuation.
+    use_for:
+      - Firmographic segmentation (industry, country, company size)
+      - Revenue and valuation analysis
+      - Customer base composition
+    common_questions:
+      - What industries make up our customer base?
+      - Which countries have the most customers?
+      - What is the average company revenue by industry?
+      - How many enterprise-size companies (500+ employees) do we have?
+
+  - name: People
+    file: entities/people.yml
+    grain: one row per contact
+    description: >
+      Contacts at customer companies — department, seniority, title,
+      and start date. Linked to companies via company_id.
+    use_for:
+      - Stakeholder mapping by department and seniority
+      - Org chart analysis per company
+      - Tenure and hiring trend analysis
+    common_questions:
+      - How many contacts do we have per company?
+      - What is the department breakdown across all contacts?
+      - Which companies have the most executive-level contacts?
+      - What seniority levels are most common?
+
+  - name: Accounts
+    file: entities/accounts.yml
+    grain: one row per subscription account
+    description: >
+      Subscription accounts with plan tier, billing status, MRR
+      (monthly_value), and contract dates. Linked to companies via company_id.
+    use_for:
+      - MRR and revenue analysis by plan
+      - Churn and retention analysis
+      - Contract lifecycle tracking
+      - Cross-entity analysis joining to companies and people
+    common_questions:
+      - What is total MRR by plan type?
+      - How many accounts are churned vs active?
+      - What is the average contract length?
+      - Which companies have the highest MRR?
+
 glossary: glossary.yml
+metrics:
+  - file: metrics/accounts.yml
+    description: Subscription and revenue metrics (MRR, churn rate, ARPA)
+  - file: metrics/companies.yml
+    description: Customer base metrics (count, avg revenue, industry breakdown)

@@ -52,11 +52,25 @@ function scaffold(
   tmpDir: string,
   projectName: string,
   platform: string,
+  extraFlags = "",
 ): void {
   run(
-    `bun ${SCAFFOLDER} ${projectName} --defaults --platform ${platform}`,
+    `bun ${SCAFFOLDER} ${projectName} --defaults --platform ${platform} ${extraFlags}`.trim(),
     { cwd: tmpDir, timeout: SCAFFOLD_TIMEOUT, env: { ...process.env, NO_COLOR: "1" } },
   );
+}
+
+/** Check if Postgres is reachable at the default demo connection string. */
+function isPostgresReachable(): boolean {
+  try {
+    execSync(
+      `bun -e "const{Pool}=require('pg');const p=new Pool({connectionString:'postgresql://atlas:atlas@localhost:5432/atlas',connectionTimeoutMillis:3000});const c=await p.connect();c.release();await p.end()"`,
+      { stdio: "pipe", timeout: 10_000 },
+    );
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Read and parse a JSON file, including the file path in any parse error. */
@@ -298,5 +312,124 @@ describe("E2E: Scaffold — Railway platform", () => {
 
   it("does not have vercel.json", () => {
     expect(fs.existsSync(path.join(targetDir, "vercel.json"))).toBe(false);
+  });
+});
+
+describe("E2E: Scaffold — --demo flag", () => {
+  const projectName = "e2e-scaffold-demo";
+  let tmpDir: string;
+  let targetDir: string;
+  let pgAvailable: boolean;
+
+  beforeAll(() => {
+    pgAvailable = isPostgresReachable();
+    tmpDir = makeTempDir();
+    targetDir = path.join(tmpDir, projectName);
+    scaffold(tmpDir, projectName, "docker", "--demo");
+  }, SCAFFOLD_TIMEOUT);
+
+  afterAll(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("creates the project directory", () => {
+    expect(fs.existsSync(targetDir)).toBe(true);
+  });
+
+  it("has .env with correct variables", () => {
+    const envContent = fs.readFileSync(path.join(targetDir, ".env"), "utf-8");
+    expect(envContent).toContain("ATLAS_PROVIDER=anthropic");
+    expect(envContent).toContain("ATLAS_DATASOURCE_URL=");
+  });
+
+  it("has package.json with correct name", () => {
+    const pkg = readJson(path.join(targetDir, "package.json"));
+    expect(pkg.name).toBe(projectName);
+  });
+
+  it("has node_modules (bun install succeeded)", () => {
+    expect(fs.existsSync(path.join(targetDir, "node_modules"))).toBe(true);
+  });
+
+  it("has demo data files in data/", () => {
+    expect(fs.existsSync(path.join(targetDir, "data", "demo.sql"))).toBe(true);
+  });
+
+  it("has semantic directory from template", () => {
+    expect(fs.existsSync(path.join(targetDir, "semantic"))).toBe(true);
+  });
+
+  it.skipIf(!pgAvailable)("has profiled entity files when Postgres is available", () => {
+    // With Postgres, the profiler should have generated entity files
+    const entitiesDir = path.join(targetDir, "semantic", "entities");
+    expect(fs.existsSync(entitiesDir)).toBe(true);
+    const entityFiles = fs.readdirSync(entitiesDir).filter((f) => f.endsWith(".yml"));
+    expect(entityFiles.length).toBeGreaterThanOrEqual(3); // simple demo: accounts, companies, people
+  });
+});
+
+describe("E2E: Scaffold — --demo with dataset name", () => {
+  it("accepts valid dataset name (cybersec)", () => {
+    const tmpDir = makeTempDir();
+    const projectName = "e2e-demo-cybersec";
+    try {
+      scaffold(tmpDir, projectName, "docker", "--demo cybersec");
+      const targetDir = path.join(tmpDir, projectName);
+      // Verify the project was created (not a project named "cybersec")
+      expect(fs.existsSync(targetDir)).toBe(true);
+      const pkg = readJson(path.join(targetDir, "package.json"));
+      expect(pkg.name).toBe(projectName);
+      // Verify demo data files exist
+      expect(fs.existsSync(path.join(targetDir, "data", "cybersec.sql"))).toBe(true);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, SCAFFOLD_TIMEOUT);
+
+  it("rejects unknown dataset names", () => {
+    const tmpDir = makeTempDir();
+    try {
+      expect(() => {
+        run(
+          `bun ${SCAFFOLDER} test-bad-demo --defaults --demo badname`,
+          { cwd: tmpDir, timeout: SCAFFOLD_TIMEOUT, env: { ...process.env, NO_COLOR: "1" } },
+        );
+      }).toThrow(/Unknown demo dataset/);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("E2E: Scaffold — error handling", () => {
+  it("rejects unknown flags", () => {
+    const tmpDir = makeTempDir();
+    try {
+      expect(() => {
+        run(
+          `bun ${SCAFFOLDER} test-unknown-flag --defaults --banana`,
+          { cwd: tmpDir, timeout: SCAFFOLD_TIMEOUT, env: { ...process.env, NO_COLOR: "1" } },
+        );
+      }).toThrow(/Unknown flag/);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects existing directory with --defaults", () => {
+    const tmpDir = makeTempDir();
+    const projectName = "e2e-existing-dir";
+    const targetDir = path.join(tmpDir, projectName);
+    fs.mkdirSync(targetDir);
+    try {
+      expect(() => {
+        run(
+          `bun ${SCAFFOLDER} ${projectName} --defaults`,
+          { cwd: tmpDir, timeout: SCAFFOLD_TIMEOUT, env: { ...process.env, NO_COLOR: "1" } },
+        );
+      }).toThrow(/already exists/);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Share2, Copy, Check, LinkOff, AlertCircle } from "lucide-react";
+import { Share2, Copy, Check, Link2Off, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -155,7 +155,7 @@ export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogP
                 disabled={loading}
                 className="text-red-500 hover:text-red-600 dark:text-red-400"
               >
-                <LinkOff className="mr-1 h-4 w-4" />
+                <Link2Off className="mr-1 h-4 w-4" />
                 Remove share link
               </Button>
             </>

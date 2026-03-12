@@ -6,12 +6,30 @@
  * HTML structure, data-atlas-* selectors, and asset routes. Runtime behavior
  * of inline JS (DOM manipulation, postMessage handlers) requires
  * browser-level (Playwright) testing.
- * The widget route has no internal dependencies, so no mocks are needed —
- * we mount it on a standalone Hono app for isolation.
+ *
+ * The widget module loads bundle assets (widget.js/widget.css) from
+ * packages/react/dist/ at import time. We mock node:fs so tests don't
+ * require a prior `bun run build` in packages/react/.
  */
 
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, mock } from "bun:test";
 import { Hono } from "hono";
+import * as realFs from "node:fs";
+
+const mockedFs = {
+  ...realFs,
+  existsSync: (path: string) => {
+    if (path.endsWith("/widget.js") || path.endsWith("/widget.css"))
+      return true;
+    return realFs.existsSync(path);
+  },
+  readFileSync: (path: string, ...args: unknown[]) => {
+    if (path.endsWith("/widget.js")) return "/* mock widget js */";
+    if (path.endsWith("/widget.css")) return "/* mock widget css */";
+    return (realFs.readFileSync as Function)(path, ...args);
+  },
+};
+mock.module("node:fs", () => ({ ...mockedFs, default: mockedFs }));
 
 const { widget, sanitizeLogoUrl, sanitizeAccent } = await import(
   "../routes/widget"
@@ -698,32 +716,22 @@ describe("widget asset routes", () => {
     const res = await app.fetch(
       new Request("http://localhost/widget/atlas-widget.js"),
     );
-    // May be 200 (bundle built) or 404 (not built in CI).
-    // In either case, the route exists and responds.
-    expect([200, 404]).toContain(res.status);
-    if (res.status === 200) {
-      expect(res.headers.get("content-type")).toContain("javascript");
-      expect(res.headers.get("cache-control")).toContain("public");
-      expect(res.headers.get("access-control-allow-origin")).toBe("*");
-    } else {
-      const body = await res.text();
-      expect(body).toContain("bun run build");
-    }
+    // fs mock guarantees assets are always loaded at module init
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("javascript");
+    expect(res.headers.get("cache-control")).toContain("public");
+    expect(res.headers.get("access-control-allow-origin")).toBe("*");
   });
 
   it("GET /widget/atlas-widget.css returns CSS content", async () => {
     const res = await app.fetch(
       new Request("http://localhost/widget/atlas-widget.css"),
     );
-    expect([200, 404]).toContain(res.status);
-    if (res.status === 200) {
-      expect(res.headers.get("content-type")).toContain("css");
-      expect(res.headers.get("cache-control")).toContain("public");
-      expect(res.headers.get("access-control-allow-origin")).toBe("*");
-    } else {
-      const body = await res.text();
-      expect(body).toContain("bun run build");
-    }
+    // fs mock guarantees assets are always loaded at module init
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("css");
+    expect(res.headers.get("cache-control")).toContain("public");
+    expect(res.headers.get("access-control-allow-origin")).toBe("*");
   });
 });
 

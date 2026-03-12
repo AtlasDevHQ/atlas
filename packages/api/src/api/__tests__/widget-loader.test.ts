@@ -392,15 +392,25 @@ describe("GET /widget.js", () => {
     expect(script).toContain('sendToWidget({type:"close"})');
   });
 
-  it("defines Atlas.toggle() method", async () => {
+  it("defines Atlas.toggle() method that sends resolved state", async () => {
     const script = await getScript();
     expect(script).toContain("toggle:function()");
+    // Sends resolved open/close state, not "toggle", to avoid host/iframe desync
+    expect(script).toContain('next?"open":"close"');
   });
 
   it("defines Atlas.ask() method that opens and sends question", async () => {
     const script = await getScript();
     expect(script).toContain("ask:function(question)");
     expect(script).toContain('{type:"ask",question:question}');
+    // Guards against non-string arguments
+    expect(script).toContain('[Atlas] ask() requires a string argument');
+  });
+
+  it("Atlas.ask() checks isReady before sending to iframe", async () => {
+    const script = await getScript();
+    // ask() now guards with isReady like open/close
+    expect(script).toContain("if(isReady)sendToWidget({type:\"ask\"");
   });
 
   it("defines Atlas.destroy() method that removes DOM elements", async () => {
@@ -428,29 +438,35 @@ describe("GET /widget.js", () => {
   it("destroy() sets destroyed flag to prevent further API calls", async () => {
     const script = await getScript();
     expect(script).toContain("destroyed=true");
-    // All methods check the destroyed flag
-    expect(script).toContain("if(!destroyed)");
+    expect(script).toContain("if(destroyed)return");
   });
 
   it("defines Atlas.on() for programmatic event binding", async () => {
     const script = await getScript();
     expect(script).toContain("on:function(event,handler)");
-    // Validates handler is a function
-    expect(script).toContain('typeof handler!=="function"');
+    // Validates handler is a function with warning
+    expect(script).toContain('[Atlas] on() handler must be a function');
   });
 
-  it("defines Atlas.setAuthToken() method", async () => {
+  it("Atlas.on() checks destroyed flag", async () => {
+    const script = await getScript();
+    // on() must guard against post-destroy registration
+    const onMethod = script.slice(script.indexOf("on:function(event,handler)"));
+    expect(onMethod).toContain("if(destroyed)return");
+  });
+
+  it("defines Atlas.setAuthToken() with validation warning", async () => {
     const script = await getScript();
     expect(script).toContain("setAuthToken:function(token)");
-    // Validates token and sends to widget
     expect(script).toContain('{type:"auth",token:apiKey}');
+    expect(script).toContain("[Atlas] setAuthToken() requires a string token");
   });
 
-  it("defines Atlas.setTheme() method", async () => {
+  it("defines Atlas.setTheme() with validation warning", async () => {
     const script = await getScript();
     expect(script).toContain("setTheme:function(value)");
-    // Validates and sends theme to widget
     expect(script).toContain('{type:"theme",value:value}');
+    expect(script).toContain("[Atlas] Invalid theme value:");
   });
 
   // --- Pre-load command queue ---
@@ -464,10 +480,19 @@ describe("GET /widget.js", () => {
 
   it("replays queued commands after API is initialized", async () => {
     const script = await getScript();
-    // Iterates over queue and calls matching methods
     expect(script).toContain("for(var i=0;i<q.length;i++)");
-    expect(script).toContain('typeof window.Atlas[cmd[0]]==="function"');
     expect(script).toContain("window.Atlas[cmd[0]].apply(null,cmd.slice(1))");
+  });
+
+  it("warns on invalid queued commands", async () => {
+    const script = await getScript();
+    expect(script).toContain("[Atlas] Invalid queued command at index");
+    expect(script).toContain("[Atlas] Unknown queued method:");
+  });
+
+  it("wraps queued command replay in try-catch", async () => {
+    const script = await getScript();
+    expect(script).toContain("[Atlas] Queued command error:");
   });
 
   // --- Event system ---

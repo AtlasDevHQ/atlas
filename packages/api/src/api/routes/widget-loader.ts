@@ -51,7 +51,7 @@ const widgetTypesLoader = new Hono();
  */
 function buildLoaderScript(): string {
   // The IIFE is written as plain JS (no TS, no imports) so it runs in any browser.
-  // window.Atlas is the only global — intentionally exposed as the public API.
+  // window.Atlas is the only JS global exposed. DOM elements and scoped CSS are injected into the host page.
   return `(function(){
 "use strict";
 var q=window.Atlas&&Array.isArray(window.Atlas)?window.Atlas:[];
@@ -240,8 +240,8 @@ iframe.addEventListener("error",function(){
 window.Atlas={
   open:function(){if(!destroyed){setOpen(true);if(isReady)sendToWidget({type:"open"})}},
   close:function(){if(!destroyed){setOpen(false);if(isReady)sendToWidget({type:"close"})}},
-  toggle:function(){if(!destroyed){setOpen(!isOpen);if(isReady)sendToWidget({type:"toggle"})}},
-  ask:function(question){if(!destroyed&&typeof question==="string"){setOpen(true);sendToWidget({type:"ask",question:question})}},
+  toggle:function(){if(!destroyed){var next=!isOpen;setOpen(next);if(isReady)sendToWidget({type:next?"open":"close"})}},
+  ask:function(question){if(destroyed)return;if(typeof question!=="string"){console.warn("[Atlas] ask() requires a string argument");return}setOpen(true);if(isReady)sendToWidget({type:"ask",question:question})},
   destroy:function(){
     if(destroyed)return;
     destroyed=true;
@@ -255,24 +255,29 @@ window.Atlas={
     delete window.Atlas;
   },
   on:function(event,handler){
-    if(typeof handler!=="function")return;
+    if(destroyed)return;
+    if(typeof handler!=="function"){console.warn("[Atlas] on() handler must be a function");return}
     if(!listeners[event])listeners[event]=[];
     listeners[event].push(handler);
   },
   setAuthToken:function(token){
-    if(!destroyed&&typeof token==="string"){apiKey=token;sendToWidget({type:"auth",token:apiKey})}
+    if(destroyed)return;
+    if(typeof token!=="string"){console.warn("[Atlas] setAuthToken() requires a string token");return}
+    apiKey=token;sendToWidget({type:"auth",token:apiKey})
   },
   setTheme:function(value){
-    if(!destroyed&&(value==="light"||value==="dark")){theme=value;sendToWidget({type:"theme",value:value})}
+    if(destroyed)return;
+    if(value!=="light"&&value!=="dark"){console.warn("[Atlas] Invalid theme value:",value,"(expected 'light' or 'dark')");return}
+    theme=value;sendToWidget({type:"theme",value:value})
   }
 };
 
 /* Replay queued commands */
 for(var i=0;i<q.length;i++){
   var cmd=q[i];
-  if(Array.isArray(cmd)&&cmd.length>0&&typeof window.Atlas[cmd[0]]==="function"){
-    window.Atlas[cmd[0]].apply(null,cmd.slice(1));
-  }
+  if(!Array.isArray(cmd)||cmd.length===0){console.warn("[Atlas] Invalid queued command at index",i);continue}
+  if(typeof window.Atlas[cmd[0]]!=="function"){console.warn("[Atlas] Unknown queued method:",cmd[0]);continue}
+  try{window.Atlas[cmd[0]].apply(null,cmd.slice(1))}catch(err){console.error("[Atlas] Queued command error:",cmd[0],err)}
 }
 })();`;
 }
@@ -285,7 +290,7 @@ function buildTypeDeclarations(): string {
   return `interface AtlasWidgetEventMap {
   open: Record<string, never>;
   close: Record<string, never>;
-  queryComplete: { sql?: string; rowCount?: number; [key: string]: unknown };
+  queryComplete: { sql?: string; rowCount?: number };
   error: { code?: string; message?: string };
 }
 

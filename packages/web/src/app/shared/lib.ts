@@ -30,7 +30,8 @@ export async function fetchSharedConversation(
     const res = await fetch(
       `${getApiBaseUrl()}/api/public/conversations/${encodeURIComponent(token)}`,
       // Cache for 60s — balances load vs. freshness when a share link is revoked.
-      // Also deduplicates the two fetches per page load (generateMetadata + page component).
+      // Next.js revalidate also deduplicates multiple fetches within a single
+      // render pass (e.g. generateMetadata + page component on the full page).
       { next: { revalidate: 60 } },
     );
     if (!res.ok) {

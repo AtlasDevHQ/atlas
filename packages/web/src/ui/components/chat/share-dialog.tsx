@@ -75,51 +75,48 @@ export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogP
     }
   }
 
-  async function handleCopy() {
+  async function copyToClipboard(
+    text: string,
+    onSuccess: () => void,
+  ): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(text);
+      onSuccess();
+    } catch {
+      // Fallback for insecure contexts (e.g. non-HTTPS iframes)
+      try {
+        const input = document.createElement("input");
+        input.value = text;
+        document.body.appendChild(input);
+        input.select();
+        const ok = document.execCommand("copy");
+        document.body.removeChild(input);
+        if (ok) {
+          onSuccess();
+        } else {
+          setError("Could not copy to clipboard. Please select and copy manually.");
+        }
+      } catch {
+        setError("Could not copy to clipboard. Please select and copy manually.");
+      }
+    }
+  }
+
+  function flashCopied(setter: (v: boolean) => void): void {
+    setter(true);
+    setTimeout(() => setter(false), 2000);
+  }
+
+  async function handleCopy(): Promise<void> {
     if (!shareUrl) return;
-    try {
-      await navigator.clipboard.writeText(shareUrl);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // Fallback for insecure contexts
-      const input = document.createElement("input");
-      input.value = shareUrl;
-      document.body.appendChild(input);
-      input.select();
-      const ok = document.execCommand("copy");
-      document.body.removeChild(input);
-      if (ok) {
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
-      }
-    }
+    await copyToClipboard(shareUrl, () => flashCopied(setCopied));
   }
 
-  function getEmbedCode(): string {
-    if (!shareUrl) return "";
-    return `<iframe src="${shareUrl}/embed" width="100%" height="500" frameborder="0" style="border:0;border-radius:8px"></iframe>`;
-  }
-
-  async function handleCopyEmbed() {
-    const code = getEmbedCode();
-    if (!code) return;
-    try {
-      await navigator.clipboard.writeText(code);
-      setCopiedEmbed(true);
-      setTimeout(() => setCopiedEmbed(false), 2000);
-    } catch {
-      const input = document.createElement("input");
-      input.value = code;
-      document.body.appendChild(input);
-      input.select();
-      const ok = document.execCommand("copy");
-      document.body.removeChild(input);
-      if (ok) {
-        setCopiedEmbed(true);
-        setTimeout(() => setCopiedEmbed(false), 2000);
-      }
-    }
+  async function handleCopyEmbed(): Promise<void> {
+    if (!shareUrl) return;
+    const escaped = shareUrl.replace(/"/g, "&quot;");
+    const code = `<iframe src="${escaped}/embed" width="100%" height="500" frameborder="0" style="border:0;border-radius:8px"></iframe>`;
+    await copyToClipboard(code, () => flashCopied(setCopiedEmbed));
   }
 
   function handleOpenChange(next: boolean) {

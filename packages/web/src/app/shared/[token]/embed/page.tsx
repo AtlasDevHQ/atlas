@@ -1,11 +1,6 @@
 import { fetchSharedConversation, extractTextContent } from "../../lib";
 import { ScrollAnchor } from "./scroll-anchor";
 
-// ---------------------------------------------------------------------------
-// Embed page — chromeless read-only conversation view for iframes.
-// No header, footer, or navigation. Designed for 300px+ widths.
-// ---------------------------------------------------------------------------
-
 export default async function SharedConversationEmbedPage({
   params,
 }: {
@@ -54,7 +49,7 @@ export default async function SharedConversationEmbedPage({
         ))}
       </div>
 
-      {/* Footer: "Powered by Atlas" link — opens in parent/new tab */}
+      {/* Footer: "Powered by Atlas" link — opens in a new tab */}
       <div className="mt-4 border-t border-zinc-200 pt-3 text-center dark:border-zinc-800">
         <a
           href="https://useatlas.dev"

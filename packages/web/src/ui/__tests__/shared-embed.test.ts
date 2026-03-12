@@ -45,13 +45,15 @@ describe("shared/lib utilities", () => {
 
   describe("getApiBaseUrl", () => {
     test("strips trailing slashes", () => {
-      const original = process.env.ATLAS_API_URL;
+      const originalApi = process.env.ATLAS_API_URL;
+      const originalPublic = process.env.NEXT_PUBLIC_ATLAS_API_URL;
       process.env.ATLAS_API_URL = "http://localhost:3001///";
       process.env.NEXT_PUBLIC_ATLAS_API_URL = "";
       try {
         expect(getApiBaseUrl()).toBe("http://localhost:3001");
       } finally {
-        process.env.ATLAS_API_URL = original;
+        process.env.ATLAS_API_URL = originalApi;
+        process.env.NEXT_PUBLIC_ATLAS_API_URL = originalPublic;
       }
     });
   });

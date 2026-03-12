@@ -2,7 +2,7 @@ import { describe, expect, test, mock, beforeEach } from "bun:test";
 
 // Must mock fetch BEFORE the dynamic import — the page module captures fetch at evaluation time
 const mockFetch = mock(() => Promise.resolve(new Response("", { status: 404 })));
-globalThis.fetch = mockFetch as typeof fetch;
+globalThis.fetch = mockFetch as unknown as typeof fetch;
 
 // Import generateMetadata from the page module
 const { generateMetadata } = await import("../../app/shared/[token]/page");
@@ -30,6 +30,14 @@ const sampleConversation = {
   ],
 };
 
+// Helper to access union-typed metadata fields safely
+function og(meta: Awaited<ReturnType<typeof generateMetadata>>) {
+  return meta.openGraph as Record<string, unknown> | undefined;
+}
+function tw(meta: Awaited<ReturnType<typeof generateMetadata>>) {
+  return meta.twitter as Record<string, unknown> | undefined;
+}
+
 beforeEach(() => {
   mockFetch.mockReset();
 });
@@ -41,12 +49,12 @@ describe("shared page generateMetadata", () => {
     const meta = await generateMetadata({ params: makeParams("bad-token") });
 
     expect(meta.title).toContain("Atlas");
-    expect(meta.openGraph).toBeDefined();
-    expect(meta.openGraph!.title).toContain("Atlas");
-    expect(meta.openGraph!.type).toBe("article");
-    expect(meta.openGraph!.siteName).toBe("Atlas");
-    expect(meta.twitter).toBeDefined();
-    expect(meta.twitter!.card).toBe("summary");
+    expect(og(meta)).toBeDefined();
+    expect(og(meta)!.title).toContain("Atlas");
+    expect(og(meta)!.type).toBe("article");
+    expect(og(meta)!.siteName).toBe("Atlas");
+    expect(tw(meta)).toBeDefined();
+    expect(tw(meta)!.card).toBe("summary");
   });
 
   test("returns fallback metadata when fetch throws", async () => {
@@ -55,7 +63,7 @@ describe("shared page generateMetadata", () => {
     const meta = await generateMetadata({ params: makeParams("bad-token") });
 
     expect(meta.title).toContain("Atlas");
-    expect(meta.openGraph!.siteName).toBe("Atlas");
+    expect(og(meta)!.siteName).toBe("Atlas");
   });
 
   test("uses first user message as og:title", async () => {
@@ -64,8 +72,8 @@ describe("shared page generateMetadata", () => {
     const meta = await generateMetadata({ params: makeParams("valid-token") });
 
     expect(meta.title).toBe("Atlas: What were our top 10 customers by revenue last quarter?");
-    expect(meta.openGraph!.title).toBe(meta.title);
-    expect(meta.twitter!.title).toBe(meta.title);
+    expect(og(meta)!.title).toBe(meta.title);
+    expect(tw(meta)!.title).toBe(meta.title);
   });
 
   test("uses first assistant message as og:description", async () => {
@@ -74,8 +82,8 @@ describe("shared page generateMetadata", () => {
     const meta = await generateMetadata({ params: makeParams("valid-token") });
 
     expect(meta.description).toContain("analyze the revenue data");
-    expect(meta.openGraph!.description).toBe(meta.description);
-    expect(meta.twitter!.description).toBe(meta.description);
+    expect(og(meta)!.description).toBe(meta.description);
+    expect(tw(meta)!.description).toBe(meta.description);
   });
 
   test("truncates long user messages to ~60 chars", async () => {
@@ -160,9 +168,9 @@ describe("shared page generateMetadata", () => {
 
     const meta = await generateMetadata({ params: makeParams("valid-token") });
 
-    expect(meta.openGraph!.type).toBe("article");
-    expect(meta.openGraph!.siteName).toBe("Atlas");
-    expect(meta.twitter!.card).toBe("summary");
+    expect(og(meta)!.type).toBe("article");
+    expect(og(meta)!.siteName).toBe("Atlas");
+    expect(tw(meta)!.card).toBe("summary");
   });
 
   test("falls back to default title when no user messages and null title", async () => {
@@ -222,7 +230,7 @@ describe("shared page generateMetadata", () => {
     const meta = await generateMetadata({ params: makeParams("valid-token") });
 
     expect(meta.title).toContain("Atlas");
-    expect(meta.openGraph!.siteName).toBe("Atlas");
+    expect(og(meta)!.siteName).toBe("Atlas");
   });
 
   test("encodes token in fetch URL", async () => {
@@ -230,7 +238,7 @@ describe("shared page generateMetadata", () => {
 
     await generateMetadata({ params: makeParams("tok/en+special") });
 
-    const fetchUrl = mockFetch.mock.calls[0]?.[0] as string;
-    expect(fetchUrl).toContain("tok%2Fen%2Bspecial");
+    const firstCall = mockFetch.mock.calls[0] as unknown as [string, ...unknown[]];
+    expect(firstCall[0]).toContain("tok%2Fen%2Bspecial");
   });
 });

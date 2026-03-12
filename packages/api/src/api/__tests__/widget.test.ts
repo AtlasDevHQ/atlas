@@ -6,12 +6,34 @@
  * HTML structure, data-atlas-* selectors, and asset routes. Runtime behavior
  * of inline JS (DOM manipulation, postMessage handlers) requires
  * browser-level (Playwright) testing.
- * The widget route has no internal dependencies, so no mocks are needed —
- * we mount it on a standalone Hono app for isolation.
+ *
+ * The widget module loads bundle assets (widget.js/widget.css) from
+ * packages/react/dist/ at import time. We mock node:fs so tests don't
+ * require a prior `bun run build` in packages/react/.
  */
 
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, mock } from "bun:test";
 import { Hono } from "hono";
+import * as realFs from "node:fs";
+
+mock.module("node:fs", () => ({
+  ...realFs,
+  existsSync: (path: string) => {
+    if (
+      typeof path === "string" &&
+      (path.endsWith("/widget.js") || path.endsWith("/widget.css"))
+    )
+      return true;
+    return realFs.existsSync(path);
+  },
+  readFileSync: (path: string, encoding?: string) => {
+    if (typeof path === "string" && path.endsWith("/widget.js"))
+      return "/* mock widget js */";
+    if (typeof path === "string" && path.endsWith("/widget.css"))
+      return "/* mock widget css */";
+    return realFs.readFileSync(path, encoding as BufferEncoding);
+  },
+}));
 
 const { widget, sanitizeLogoUrl, sanitizeAccent } = await import(
   "../routes/widget"

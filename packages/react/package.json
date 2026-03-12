@@ -2,7 +2,7 @@
   "name": "@useatlas/react",
   "version": "0.0.1",
   "description": "Embeddable Atlas chat UI for React applications",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "type": "module",
   "main": "./src/index.ts",
   "module": "./src/index.ts",

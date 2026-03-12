@@ -7,18 +7,21 @@ export default async function SharedConversationEmbedPage({
   params: Promise<{ token: string }>;
 }) {
   const { token } = await params;
-  const convo = await fetchSharedConversation(token);
+  const result = await fetchSharedConversation(token);
 
-  if (!convo) {
+  if (!result.ok) {
+    const message =
+      result.reason === "not-found"
+        ? "Conversation not found."
+        : "Could not load conversation. Please try again later.";
     return (
       <div className="flex min-h-screen items-center justify-center p-4">
-        <p className="text-sm text-zinc-500 dark:text-zinc-400">
-          Conversation not found.
-        </p>
+        <p className="text-sm text-zinc-500 dark:text-zinc-400">{message}</p>
       </div>
     );
   }
 
+  const convo = result.data;
   const visibleMessages = convo.messages.filter(
     (m) => m.role === "user" || m.role === "assistant",
   );
@@ -49,7 +52,7 @@ export default async function SharedConversationEmbedPage({
         ))}
       </div>
 
-      {/* Footer: "Powered by Atlas" link — opens in a new tab */}
+      {/* "Powered by Atlas" link — opens in a new tab */}
       <div className="mt-4 border-t border-zinc-200 pt-3 text-center dark:border-zinc-800">
         <a
           href="https://useatlas.dev"

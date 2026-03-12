@@ -15,6 +15,10 @@ export interface SharedConversation {
   messages: SharedMessage[];
 }
 
+export type FetchResult =
+  | { ok: true; data: SharedConversation }
+  | { ok: false; reason: "not-found" | "server-error" | "network-error" };
+
 export function getApiBaseUrl(): string {
   return (
     process.env.NEXT_PUBLIC_ATLAS_API_URL ||
@@ -25,7 +29,7 @@ export function getApiBaseUrl(): string {
 
 export async function fetchSharedConversation(
   token: string,
-): Promise<SharedConversation | null> {
+): Promise<FetchResult> {
   try {
     const res = await fetch(
       `${getApiBaseUrl()}/api/public/conversations/${encodeURIComponent(token)}`,
@@ -35,31 +39,33 @@ export async function fetchSharedConversation(
       { next: { revalidate: 60 } },
     );
     if (!res.ok) {
-      if (res.status !== 404) {
-        console.error(
-          `[shared-conversation] API returned ${res.status} for token=${token}`,
-        );
-      }
-      return null;
+      if (res.status === 404) return { ok: false, reason: "not-found" };
+      console.error(
+        `[shared-conversation] API returned ${res.status} for token=${token}`,
+      );
+      return { ok: false, reason: "server-error" };
     }
     const data = await res.json();
     if (!data || !Array.isArray(data.messages)) {
       console.error(
         `[shared-conversation] Unexpected response shape for token=${token}`,
       );
-      return null;
+      return { ok: false, reason: "server-error" };
     }
-    return data as SharedConversation;
+    return { ok: true, data: data as SharedConversation };
   } catch (err) {
     console.error(
       `[shared-conversation] Failed to fetch token=${token}:`,
       err instanceof Error ? err.message : err,
     );
-    return null;
+    return { ok: false, reason: "network-error" };
   }
 }
 
-/** Extract displayable text from AI SDK message content (string or array-of-parts format). */
+/**
+ * Extract displayable text from AI SDK message content (string or array-of-parts format).
+ * Returns an empty string for unrecognized content shapes (null, undefined, non-array objects).
+ */
 export function extractTextContent(content: unknown): string {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
@@ -74,9 +80,16 @@ export function extractTextContent(content: unknown): string {
       .map((p) => p.text)
       .join(" ");
   }
+  if (content != null) {
+    console.warn(
+      "[shared-conversation] Unrecognized content shape:",
+      typeof content,
+    );
+  }
   return "";
 }
 
+/** Collapse whitespace and truncate to `maxLen` characters, appending a Unicode ellipsis if truncated. */
 export function truncate(text: string, maxLen: number): string {
   const clean = text.replace(/\s+/g, " ").trim();
   if (clean.length <= maxLen) return clean;

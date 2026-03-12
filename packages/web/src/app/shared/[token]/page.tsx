@@ -5,23 +5,19 @@ import {
   truncate,
 } from "../lib";
 
-// ---------------------------------------------------------------------------
-// Metadata (OG / Twitter tags — server-rendered for crawlers)
-// ---------------------------------------------------------------------------
-
 export async function generateMetadata({
   params,
 }: {
   params: Promise<{ token: string }>;
 }): Promise<Metadata> {
   const { token } = await params;
-  const convo = await fetchSharedConversation(token);
+  const result = await fetchSharedConversation(token);
 
   const fallbackTitle = "Atlas \u2014 Shared Conversation";
   const fallbackDescription =
     "A shared conversation from Atlas, the text-to-SQL data analyst.";
 
-  if (!convo) {
+  if (!result.ok) {
     return {
       title: fallbackTitle,
       description: fallbackDescription,
@@ -39,6 +35,7 @@ export async function generateMetadata({
     };
   }
 
+  const convo = result.data;
   const firstUserMsg = convo.messages.find((m) => m.role === "user");
   const userText = firstUserMsg ? extractTextContent(firstUserMsg.content) : "";
   const title = userText
@@ -72,33 +69,34 @@ export async function generateMetadata({
   };
 }
 
-// ---------------------------------------------------------------------------
-// Page component — read-only conversation viewer
-// ---------------------------------------------------------------------------
-
 export default async function SharedConversationPage({
   params,
 }: {
   params: Promise<{ token: string }>;
 }) {
   const { token } = await params;
-  const convo = await fetchSharedConversation(token);
+  const result = await fetchSharedConversation(token);
 
-  if (!convo) {
+  if (!result.ok) {
+    const message =
+      result.reason === "not-found"
+        ? "This conversation may have been removed or the link may be invalid."
+        : "Could not load this conversation. Please try again later.";
     return (
       <div className="flex min-h-screen items-center justify-center">
         <div className="text-center">
           <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-100">
-            Conversation not found
+            {result.reason === "not-found"
+              ? "Conversation not found"
+              : "Something went wrong"}
           </h1>
-          <p className="mt-2 text-zinc-500 dark:text-zinc-400">
-            This conversation may have been removed or the link may be invalid.
-          </p>
+          <p className="mt-2 text-zinc-500 dark:text-zinc-400">{message}</p>
         </div>
       </div>
     );
   }
 
+  const convo = result.data;
   const visibleMessages = convo.messages.filter(
     (m) => m.role === "user" || m.role === "assistant",
   );

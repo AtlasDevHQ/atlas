@@ -71,6 +71,24 @@
 .delay-700 { animation-delay: 700ms; }
 .delay-800 { animation-delay: 800ms; }
 
+/* Widget showcase animations — used by components/widget-showcase.tsx */
+@keyframes showcase-dot-bounce {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
+
+.showcase-dot {
+  animation: showcase-dot-bounce 1s ease-in-out infinite;
+}
+
+@keyframes showcase-bar-grow {
+  from { width: 0; }
+}
+
+.showcase-bar {
+  animation: showcase-bar-grow 0.6s ease-out both;
+}
+
 /* Subtle noise texture overlay */
 .noise-overlay::before {
   content: "";

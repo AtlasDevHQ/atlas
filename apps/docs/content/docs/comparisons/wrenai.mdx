@@ -13,10 +13,10 @@ import { Callout } from "fumadocs-ui/components/callout";
 |---|---|---|
 | **License** | MIT | AGPL-3.0 |
 | **Semantic layer** | YAML files (code-first, git-versioned) | UI-based MDL (Modeling Definition Language) |
-| **Embeddable** | Script tag, React component, API | No (standalone product) |
+| **Embeddable** | Script tag, React component, API | API only (no pre-built widget) |
 | **Deployment** | Self-hosted, embedded, Vercel, Railway, Docker | Self-hosted, Docker |
 | **Plugin system** | Plugin SDK + 15 official plugins | Limited extensibility |
-| **Databases** | Postgres, MySQL + plugins for 5 more | Postgres, MySQL, BigQuery, ClickHouse, DuckDB, Snowflake, and more |
+| **Databases** | Postgres, MySQL + plugins for BigQuery, ClickHouse, DuckDB, Salesforce, Snowflake | Postgres, MySQL, BigQuery, ClickHouse, DuckDB, Snowflake, and more |
 | **Python sandbox** | Yes (sandboxed execution with chart rendering) | No |
 | **MCP server** | Yes | No |
 | **Primary stack** | TypeScript (Hono + Next.js + Bun) | TypeScript + Rust (Wren Engine) |
@@ -43,7 +43,7 @@ dimensions:
 
 Atlas is designed to be embedded in other applications. You can add a chat widget to any page with a script tag, use the `@useatlas/react` component for tighter React integration, or call the API directly from any client.
 
-WrenAI is a standalone product. Users interact with it through WrenAI's own web interface. There's no official embeddable widget or component library for putting WrenAI inside your application.
+WrenAI offers API access for embedding text-to-SQL capabilities into other applications, but does not provide a pre-built widget or React component for drop-in integration. You would need to build your own UI layer on top of WrenAI's API.
 
 ## Licensing
 

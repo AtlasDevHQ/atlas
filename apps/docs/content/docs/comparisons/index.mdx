@@ -16,21 +16,21 @@ Atlas is an embeddable text-to-SQL agent. The tools below solve overlapping prob
 | Feature | Atlas | WrenAI | Vanna | Metabase |
 |---|---|---|---|---|
 | **Deployment** | Self-hosted, cloud, embedded | Self-hosted, cloud | Self-hosted, cloud (SaaS) | Self-hosted, cloud |
-| **Embeddable widget** | Script tag, React component, API | No | Web component (`<vanna-chat>`) | Embedding SDK (paid), public links (free) |
+| **Embeddable widget** | Script tag, React component, API | API only (no widget) | Web component (`<vanna-chat>`) | Embedding SDK (paid), public links (free) |
 | **Semantic layer** | YAML files (code-first) | UI-based modeling (MDL) | Training via DDL/docs/SQL pairs | Data model UI |
 | **Plugin ecosystem** | 15+ official plugins, Plugin SDK | Limited | Python extensibility | Drivers + community plugins |
 | **Databases** | | | | |
 | PostgreSQL | Built-in | Yes | Yes | Yes |
 | MySQL | Built-in | Yes | Yes | Yes |
 | BigQuery | Plugin | Yes | Yes | Yes |
-| ClickHouse | Plugin | Yes | No | Community driver |
+| ClickHouse | Plugin | Yes | Yes | Community driver |
 | DuckDB | Plugin | Yes | Yes | Community driver |
 | Snowflake | Plugin | Yes | Yes | Yes |
 | Salesforce | Plugin | No | No | No |
 | **Auth model** | Managed, BYOT, API key, none | API key | BYOT (`UserResolver`) | Managed, SSO (paid) |
 | **License** | MIT | AGPL-3.0 | MIT | AGPL-3.0 (Pro is proprietary) |
 | **Python tool** | Sandboxed execution with charts | No | Python-native | No |
-| **Admin console** | Built-in (connections, users, analytics) | Basic UI | No | Full admin UI |
+| **Admin console** | Built-in | Basic UI | No | Full admin UI |
 | **MCP server** | Official plugin | No | No | No |
 | **SDK** | TypeScript SDK (`@useatlas/sdk`) | No | Python package | Embedding SDK (React, paid) |
 | **Primary language** | TypeScript | TypeScript + Rust | Python | Clojure + JavaScript |

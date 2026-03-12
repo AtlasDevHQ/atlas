@@ -37,7 +37,7 @@
     "*.css"
   ],
   "scripts": {
-    "build": "tsup && cp src/styles.css dist/styles.css",
+    "build": "tsup && cp src/styles.css dist/styles.css && bun x @tailwindcss/cli -i src/widget.css -o dist/widget.css --minify",
     "dev": "tsup --watch",
     "type": "tsc --noEmit"
   },
@@ -83,6 +83,7 @@
     "react-syntax-highlighter": "^16.1.0",
     "@types/react-syntax-highlighter": "^15.5.13",
     "recharts": "^3.7.0",
+    "@tailwindcss/cli": "^4.2.1",
     "tailwindcss": "^4.2.1",
     "tsup": "^8.5.0",
     "typescript": "^5.9.3",

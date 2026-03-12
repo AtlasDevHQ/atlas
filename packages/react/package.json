@@ -1,0 +1,86 @@
+{
+  "name": "@useatlas/react",
+  "version": "0.0.1",
+  "description": "Embeddable Atlas chat UI for React applications",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "module": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./styles.css": "./src/styles.css"
+  },
+  "publishConfig": {
+    "main": "./dist/index.cjs",
+    "module": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "import": {
+          "types": "./dist/index.d.ts",
+          "default": "./dist/index.js"
+        },
+        "require": {
+          "types": "./dist/index.d.cts",
+          "default": "./dist/index.cjs"
+        }
+      },
+      "./styles.css": "./dist/styles.css"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "sideEffects": [
+    "*.css"
+  ],
+  "scripts": {
+    "build": "tsup && cp src/styles.css dist/styles.css",
+    "dev": "tsup --watch",
+    "type": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@ai-sdk/react": ">=3.0.0",
+    "ai": ">=6.0.0",
+    "lucide-react": ">=0.400.0",
+    "react": ">=18.0.0",
+    "react-dom": ">=18.0.0",
+    "react-syntax-highlighter": ">=15.0.0",
+    "recharts": ">=2.0.0",
+    "tailwindcss": ">=4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "react-syntax-highlighter": {
+      "optional": true
+    },
+    "recharts": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "@radix-ui/react-slot": "^1.2.3",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "radix-ui": "^1.4.3",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "tailwind-merge": "^3.5.0"
+  },
+  "devDependencies": {
+    "@ai-sdk/react": "^3.0.99",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "ai": "^6.0.97",
+    "lucide-react": "^0.577.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "react-syntax-highlighter": "^16.1.0",
+    "@types/react-syntax-highlighter": "^15.5.13",
+    "recharts": "^3.7.0",
+    "tailwindcss": "^4.2.1",
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.3"
+  }
+}

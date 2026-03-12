@@ -23,6 +23,7 @@ const nextConfig: NextConfig = {
   // Type checking is handled by `bun run type` (tsgo); skip during Next.js build
   // to avoid cross-package tsconfig path resolution issues.
   typescript: { ignoreBuildErrors: true },
+  transpilePackages: ["@useatlas/react"],
   turbopack: {},
   // When NEXT_PUBLIC_ATLAS_API_URL is set, the frontend talks directly to the API
   // (cross-origin), so no server-side rewrite is needed. When unset, Next.js proxies

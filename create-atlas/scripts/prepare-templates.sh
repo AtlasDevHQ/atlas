@@ -63,6 +63,7 @@ cp "$NEXTJS_EXAMPLE/src/app/api/[...route]/route.ts" \
 # Both templates use @/ path alias: page.tsx imports @/ui/context, @/lib/api-url, etc.
 for tpl in docker nextjs-standalone; do
   echo ":: Syncing UI components → $tpl"
+  mkdir -p "$TEMPLATES/$tpl/src"
   rm -rf "$TEMPLATES/$tpl/src/ui"
   cp -r "$WEB_SRC/ui" "$TEMPLATES/$tpl/src/ui"
   # Remove test files — not needed in scaffolded projects
@@ -92,11 +93,6 @@ cp "$WEB_SRC/lib/auth/client.ts" "$TEMPLATES/docker/src/lib/auth/"
 # preserved across the copy by saving them to a temp dir first.
 echo ":: Syncing nextjs-standalone (API source + Next.js overrides)"
 
-# Save nextjs-standalone-specific files that must survive the API src copy
-_holddir="$(mktemp -d)"
-cp "$TEMPLATES/nextjs-standalone/src/lib/api-url.ts"      "$_holddir/"
-cp "$TEMPLATES/nextjs-standalone/src/lib/auth/client.ts"   "$_holddir/"
-
 # Replace API source directories
 rm -rf "$TEMPLATES/nextjs-standalone/src/api" \
        "$TEMPLATES/nextjs-standalone/src/lib"
@@ -106,16 +102,16 @@ cp -r "$API_SRC/api"          "$TEMPLATES/nextjs-standalone/src/api"
 cp -r "$API_SRC/lib"          "$TEMPLATES/nextjs-standalone/src/lib"
 cp    "$API_SRC/test-setup.ts" "$TEMPLATES/nextjs-standalone/src/test-setup.ts"
 
-# Restore nextjs-standalone-specific overrides
-cp "$_holddir/api-url.ts"  "$TEMPLATES/nextjs-standalone/src/lib/"
+# Apply nextjs-standalone-specific overrides from examples/ (canonical, tracked in git)
+cp "$NEXTJS_EXAMPLE/src/lib/api-url.ts"      "$TEMPLATES/nextjs-standalone/src/lib/"
 mkdir -p "$TEMPLATES/nextjs-standalone/src/lib/auth"
-cp "$_holddir/client.ts"   "$TEMPLATES/nextjs-standalone/src/lib/auth/"
-rm -rf "$_holddir"
+cp "$NEXTJS_EXAMPLE/src/lib/auth/client.ts"   "$TEMPLATES/nextjs-standalone/src/lib/auth/"
 
 # Copy utils.ts (cn() helper used by UI components)
 cp "$WEB_SRC/lib/utils.ts" "$TEMPLATES/nextjs-standalone/src/lib/"
 
 # Copy Next.js app pages from packages/web
+mkdir -p "$TEMPLATES/nextjs-standalone/src/app"
 cp "$WEB_APP/page.tsx"     "$TEMPLATES/nextjs-standalone/src/app/"
 cp "$WEB_APP/layout.tsx"   "$TEMPLATES/nextjs-standalone/src/app/"
 cp "$WEB_APP/error.tsx"    "$TEMPLATES/nextjs-standalone/src/app/"

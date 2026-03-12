@@ -9,9 +9,10 @@
  *
  * These CSS custom properties define the Atlas design tokens.
  * They match shadcn/ui's "neutral" base with "new-york" style.
+ * Scoped to .atlas-root to avoid clobbering host app styles.
  */
 
-:root {
+.atlas-root {
   --radius: 0.625rem;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
@@ -35,7 +36,7 @@
   --atlas-brand: oklch(0.759 0.148 167.71);
 }
 
-.dark {
+.dark .atlas-root {
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.145 0 0);

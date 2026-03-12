@@ -48,6 +48,7 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
   const [available, setAvailable] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const fetchedRef = useRef(false);
+  const networkFailRef = useRef(0);
 
   const fetchList = useCallback(async () => {
     if (!opts.enabled || !available) return;
@@ -79,8 +80,12 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
       fetchedRef.current = true;
     } catch (err) {
       console.warn("fetchList error:", err);
-      // Network error on first attempt — permanently disable conversations for this session. A page reload resets this.
-      if (!fetchedRef.current) setAvailable(false);
+      // Network error before any successful fetch — disable temporarily.
+      // A subsequent explicit fetchList() call can retry.
+      if (!fetchedRef.current) {
+        networkFailRef.current += 1;
+        if (networkFailRef.current >= 3) setAvailable(false);
+      }
     } finally {
       setLoading(false);
     }

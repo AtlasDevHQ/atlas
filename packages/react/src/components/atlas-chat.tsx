@@ -5,7 +5,7 @@ import { DefaultChatTransport, isToolUIPart } from "ai";
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { AUTH_MODES, type AuthMode } from "../lib/types";
 import { AtlasUIProvider, useAtlasConfig, ActionAuthProvider, type AtlasAuthClient } from "../context";
-import { DarkModeContext, useDarkMode, useThemeMode, setTheme, applyBrandColor, type ThemeMode } from "../hooks/use-dark-mode";
+import { DarkModeContext, useDarkMode, useThemeMode, setTheme, applyBrandColor, OKLCH_RE, type ThemeMode } from "../hooks/use-dark-mode";
 import { useConversations } from "../hooks/use-conversations";
 import { ErrorBanner } from "./chat/error-banner";
 import { ApiKeyBar } from "./chat/api-key-bar";
@@ -38,10 +38,6 @@ export interface AtlasChatProps {
   apiKey?: string;
   /** Theme preference. Defaults to "system". */
   theme?: ThemeMode;
-  /** Widget position hint. Reserved for embeddable widget (#227). */
-  position?: "inline" | "bottom-right" | "bottom-left";
-  /** Whether the widget starts open. Reserved for embeddable widget (#227). */
-  defaultOpen?: boolean;
   /** Enable conversation history sidebar. Defaults to false. */
   sidebar?: boolean;
   /** Enable schema explorer button. Defaults to false. */
@@ -164,15 +160,13 @@ export function AtlasChat(props: AtlasChatProps) {
     authClient = noopAuthClient,
   } = props;
 
-  const isCrossOrigin = typeof window !== "undefined" && apiUrl !== "" && !apiUrl.startsWith(window.location.origin);
-
   // Apply theme from props on mount and when it changes
   useEffect(() => {
     setTheme(propTheme);
   }, [propTheme]);
 
   return (
-    <AtlasUIProvider config={{ apiUrl, isCrossOrigin, authClient }}>
+    <AtlasUIProvider config={{ apiUrl, authClient }}>
       <AtlasChatInner
         propApiKey={propApiKey}
         sidebar={sidebar}
@@ -196,6 +190,7 @@ function AtlasChatInner({
   const [input, setInput] = useState("");
   const [authMode, setAuthMode] = useState<AuthMode | null>(null);
   const [healthWarning, setHealthWarning] = useState("");
+  const [healthFailed, setHealthFailed] = useState(false);
   const [apiKey, setApiKey] = useState(propApiKey ?? "");
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -260,6 +255,7 @@ function AtlasChatInner({
             return fetchHealth(attempt + 1);
           }
           setHealthWarning("Health check failed — check server logs. Try refreshing the page.");
+          setHealthFailed(true);
           setAuthMode("none");
           return;
         }
@@ -267,8 +263,12 @@ function AtlasChatInner({
         const mode = data?.checks?.auth?.mode;
         if (typeof mode === "string" && AUTH_MODES.includes(mode as AuthMode)) {
           setAuthMode(mode as AuthMode);
+        } else {
+          console.warn("Health check succeeded but returned no valid auth mode:", data);
+          setHealthWarning("Could not determine authentication mode from the server.");
+          setAuthMode("none");
         }
-        if (typeof data?.brandColor === "string") {
+        if (typeof data?.brandColor === "string" && OKLCH_RE.test(data.brandColor)) {
           applyBrandColor(data.brandColor);
         }
       } catch (err) {
@@ -278,11 +278,12 @@ function AtlasChatInner({
           return fetchHealth(attempt + 1);
         }
         setHealthWarning("Unable to reach the API server. Try refreshing the page.");
+        setHealthFailed(true);
         setAuthMode("none");
       }
     }
     fetchHealth(1);
-  }, [apiUrl]);
+  }, [apiUrl, isCrossOrigin]);
 
   // Fetch conversation list after auth is resolved
   useEffect(() => {
@@ -298,7 +299,10 @@ function AtlasChatInner({
         const res = await fetch(`${apiUrl}/api/v1/admin/me/password-status`, {
           credentials: isCrossOrigin ? "include" : "same-origin",
         });
-        if (!res.ok) return;
+        if (!res.ok) {
+          console.warn(`Password status check returned HTTP ${res.status}`);
+          return;
+        }
         const data = await res.json();
         if (data.passwordChangeRequired) setPasswordChangeRequired(true);
       } catch (err) {
@@ -341,7 +345,7 @@ function AtlasChatInner({
         return response;
       }) as typeof fetch,
     });
-  }, [apiKey, authMode, apiUrl, isCrossOrigin]);
+  }, [apiKey, apiUrl, isCrossOrigin]);
 
   const { messages, setMessages, sendMessage, status, error } = useChat({ transport });
 
@@ -400,7 +404,7 @@ function AtlasChatInner({
   if (!authResolved || (isManaged && managedSession.isPending)) {
     return (
       <DarkModeContext.Provider value={dark}>
-        <div className="flex h-dvh items-center justify-center bg-white dark:bg-zinc-950" />
+        <div className="atlas-root flex h-dvh items-center justify-center bg-white dark:bg-zinc-950" />
       </DarkModeContext.Provider>
     );
   }
@@ -409,7 +413,7 @@ function AtlasChatInner({
 
   return (
     <DarkModeContext.Provider value={dark}>
-      <div className="flex h-dvh">
+      <div className="atlas-root flex h-dvh">
         {showSidebar && (
           <ConversationSidebar
             conversations={convos.conversations}
@@ -610,11 +614,11 @@ function AtlasChatInner({
                     onChange={(e) => setInput(e.target.value)}
                     placeholder="Ask a question about your data..."
                     className="min-w-0 flex-1 rounded-lg border border-zinc-200 bg-zinc-50 px-4 py-3 text-base text-zinc-900 placeholder-zinc-400 outline-none focus:border-blue-500 sm:text-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder-zinc-600"
-                    disabled={isLoading}
+                    disabled={isLoading || healthFailed}
                   />
                   <button
                     type="submit"
-                    disabled={isLoading || !input.trim()}
+                    disabled={isLoading || healthFailed || !input.trim()}
                     className="shrink-0 rounded-lg bg-blue-600 px-5 py-3 text-sm font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-40"
                   >
                     Ask

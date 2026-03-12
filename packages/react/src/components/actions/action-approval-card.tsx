@@ -22,7 +22,8 @@ import { ActionStatusBadge } from "./action-status-badge";
 function safeStringify(value: unknown): string {
   try {
     return JSON.stringify(value, null, 2);
-  } catch {
+  } catch (err) {
+    console.warn("Could not serialize action details:", err);
     return "[Unable to display]";
   }
 }

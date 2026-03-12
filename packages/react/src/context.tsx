@@ -19,13 +19,17 @@ export interface AtlasAuthClient {
 
 export interface AtlasUIConfig {
   apiUrl: string;
-  isCrossOrigin: boolean;
   authClient: AtlasAuthClient;
 }
 
-const AtlasUIContext = createContext<AtlasUIConfig | null>(null);
+/** Internal context value — includes derived `isCrossOrigin` computed by the provider. */
+interface AtlasUIContextValue extends AtlasUIConfig {
+  isCrossOrigin: boolean;
+}
 
-export function useAtlasConfig(): AtlasUIConfig {
+const AtlasUIContext = createContext<AtlasUIContextValue | null>(null);
+
+export function useAtlasConfig(): AtlasUIContextValue {
   const ctx = useContext(AtlasUIContext);
   if (!ctx) throw new Error("useAtlasConfig must be used within <AtlasUIProvider>");
   return ctx;
@@ -38,8 +42,11 @@ export function AtlasUIProvider({
   config: AtlasUIConfig;
   children: ReactNode;
 }) {
+  const isCrossOrigin = typeof window !== "undefined"
+    && config.apiUrl !== ""
+    && !config.apiUrl.startsWith(window.location.origin);
   return (
-    <AtlasUIContext.Provider value={config}>
+    <AtlasUIContext.Provider value={{ ...config, isCrossOrigin }}>
       {children}
     </AtlasUIContext.Provider>
   );

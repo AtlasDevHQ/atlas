@@ -54,7 +54,9 @@ async function parseErrorResponse(r: Response): Promise<string> {
   try {
     const body = await r.json();
     if (typeof body?.message === "string") return body.message;
-  } catch { /* response may not be JSON */ }
+  } catch (err) {
+    console.warn("Could not parse error response body as JSON:", err);
+  }
   return `HTTP ${r.status}`;
 }
 

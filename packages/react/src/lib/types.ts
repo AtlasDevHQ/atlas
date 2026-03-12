@@ -38,57 +38,6 @@ export interface ConversationWithMessages extends Conversation {
   messages: Message[];
 }
 
-// --- Scheduled task types (from @atlas/api/lib/scheduled-task-types) ---
-
-export type DeliveryChannel = "email" | "slack" | "webhook";
-export type DeliveryStatus = "pending" | "sent" | "failed";
-export type ApprovalMode = "auto" | "manual" | "admin-only";
-
-export interface ScheduledTask {
-  id: string;
-  ownerId: string;
-  name: string;
-  question: string;
-  cronExpression: string;
-  deliveryChannel: DeliveryChannel;
-  recipients: ScheduledTaskRecipient[];
-  connectionId: string | null;
-  approvalMode: ApprovalMode;
-  enabled: boolean;
-  lastRunAt: string | null;
-  nextRunAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface ScheduledTaskRecipient {
-  type: string;
-  [key: string]: unknown;
-}
-
-export interface ScheduledTaskRun {
-  id: string;
-  taskId: string;
-  startedAt: string;
-  completedAt: string | null;
-  status: "running" | "success" | "failed" | "skipped";
-  conversationId: string | null;
-  actionId: string | null;
-  error: string | null;
-  tokensUsed: number | null;
-  deliveryStatus: DeliveryStatus | null;
-  deliveryError: string | null;
-  createdAt: string;
-}
-
-export interface ScheduledTaskWithRuns extends ScheduledTask {
-  recentRuns: ScheduledTaskRun[];
-}
-
-export interface ScheduledTaskRunWithTaskName extends ScheduledTaskRun {
-  taskName: string;
-}
-
 // --- Connection types (from @atlas/api/lib/connection-types) ---
 
 export const DB_TYPES = [
@@ -116,16 +65,6 @@ export interface ConnectionInfo {
   dbType: DBType;
   description?: string | null;
   health?: ConnectionHealth;
-}
-
-export interface ConnectionDetail {
-  id: string;
-  dbType: string;
-  description: string | null;
-  health: ConnectionHealth | null;
-  maskedUrl: string | null;
-  schema: string | null;
-  managed: boolean;
 }
 
 // --- Error types (from @atlas/api/lib/errors) ---
@@ -287,13 +226,6 @@ export interface SemanticEntityDetail {
 
 // --- Admin entity detail type ---
 
-export interface EntityData {
+export interface EntityData extends SemanticEntityDetail {
   name: string;
-  table: string;
-  description: string;
-  type?: "table" | "view";
-  dimensions: Record<string, Dimension> | Dimension[];
-  joins?: Join[] | Record<string, Join>;
-  measures?: Record<string, Measure> | Measure[];
-  query_patterns?: Record<string, QueryPattern> | QueryPattern[];
 }

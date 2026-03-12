@@ -13,18 +13,22 @@ type SyntaxHighlighterModule = typeof import("react-syntax-highlighter");
 type StyleModule = typeof import("react-syntax-highlighter/dist/esm/styles/prism");
 
 let _highlighterCache: { Prism: SyntaxHighlighterModule["Prism"]; oneDark: StyleModule["oneDark"]; oneLight: StyleModule["oneLight"] } | null = null;
+let _loadFailed = false;
 
 function LazyCodeBlock({ language, dark, children }: { language: string; dark: boolean; children: string }) {
   const [mod, setMod] = useState(_highlighterCache);
 
   useEffect(() => {
-    if (_highlighterCache) return;
+    if (_highlighterCache || _loadFailed) return;
     Promise.all([
       import("react-syntax-highlighter"),
       import("react-syntax-highlighter/dist/esm/styles/prism"),
     ]).then(([sh, styles]) => {
       _highlighterCache = { Prism: sh.Prism, oneDark: styles.oneDark, oneLight: styles.oneLight };
       setMod(_highlighterCache);
+    }).catch((err) => {
+      console.warn("Syntax highlighter failed to load — code blocks will use plain text:", err);
+      _loadFailed = true;
     });
   }, []);
 

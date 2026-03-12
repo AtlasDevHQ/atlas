@@ -1,3 +1,4 @@
+/** Auto-served by Next.js at /shared/[token]/opengraph-image — generates the OG preview card. */
 import { ImageResponse } from "next/og";
 
 export const alt = "Atlas — Shared Conversation";

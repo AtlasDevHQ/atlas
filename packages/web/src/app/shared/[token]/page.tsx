@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 
 // ---------------------------------------------------------------------------
-// Types matching the public conversation API response
+// Subset of conversation fields exposed by the public API (internal IDs are
+// stripped server-side — see conversations.ts publicConversations route).
 // ---------------------------------------------------------------------------
 
 interface SharedMessage {
@@ -35,19 +36,40 @@ async function fetchSharedConversation(
   try {
     const res = await fetch(
       `${getApiBaseUrl()}/api/public/conversations/${encodeURIComponent(token)}`,
+      // Cache for 60s — balances load vs. freshness when a share link is revoked.
+      // Also deduplicates the two fetches per page load (generateMetadata + page component).
       { next: { revalidate: 60 } },
     );
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
+    if (!res.ok) {
+      if (res.status !== 404) {
+        console.error(
+          `[shared-conversation] API returned ${res.status} for token=${token}`,
+        );
+      }
+      return null;
+    }
+    const data = await res.json();
+    if (!data || !Array.isArray(data.messages)) {
+      console.error(
+        `[shared-conversation] Unexpected response shape for token=${token}`,
+      );
+      return null;
+    }
+    return data as SharedConversation;
+  } catch (err) {
+    console.error(
+      `[shared-conversation] Failed to fetch token=${token}:`,
+      err instanceof Error ? err.message : err,
+    );
     return null;
   }
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Content extraction and formatting
 // ---------------------------------------------------------------------------
 
+/** Extract displayable text from AI SDK message content (string or array-of-parts format). */
 function extractTextContent(content: unknown): string {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {

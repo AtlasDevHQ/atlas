@@ -178,6 +178,10 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
         return null;
       }
       const data = await res.json();
+      if (!data?.token || typeof data.token !== "string") {
+        console.warn(`shareConversation: missing token in response for ${id}`);
+        return null;
+      }
       return {
         token: data.token,
         url: `${window.location.origin}/shared/${data.token}`,

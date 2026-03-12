@@ -1,6 +1,6 @@
 import { describe, expect, test, mock, beforeEach } from "bun:test";
 
-// Mock global fetch before importing the page module
+// Must mock fetch BEFORE the dynamic import — the page module captures fetch at evaluation time
 const mockFetch = mock(() => Promise.resolve(new Response("", { status: 404 })));
 globalThis.fetch = mockFetch as typeof fetch;
 
@@ -163,6 +163,66 @@ describe("shared page generateMetadata", () => {
     expect(meta.openGraph!.type).toBe("article");
     expect(meta.openGraph!.siteName).toBe("Atlas");
     expect(meta.twitter!.card).toBe("summary");
+  });
+
+  test("falls back to default title when no user messages and null title", async () => {
+    const convo = {
+      ...sampleConversation,
+      title: null,
+      messages: [
+        { role: "assistant", content: "hello", createdAt: "2026-03-12T00:00:00Z" },
+      ],
+    };
+    mockFetch.mockResolvedValueOnce(jsonResponse(convo));
+
+    const meta = await generateMetadata({ params: makeParams("valid-token") });
+
+    expect(meta.title).toBe("Atlas \u2014 Shared Conversation");
+  });
+
+  test("falls back to default description when assistant content is only tool calls", async () => {
+    const convo = {
+      ...sampleConversation,
+      messages: [
+        { role: "user", content: "run the query", createdAt: "2026-03-12T00:00:00Z" },
+        {
+          role: "assistant",
+          content: [{ type: "tool-call", toolName: "executeSQL" }],
+          createdAt: "2026-03-12T00:00:01Z",
+        },
+      ],
+    };
+    mockFetch.mockResolvedValueOnce(jsonResponse(convo));
+
+    const meta = await generateMetadata({ params: makeParams("valid-token") });
+
+    expect(meta.description).toBe("A shared conversation from Atlas, the text-to-SQL data analyst.");
+  });
+
+  test("handles null or non-string content gracefully", async () => {
+    const convo = {
+      ...sampleConversation,
+      title: null,
+      messages: [
+        { role: "user", content: null, createdAt: "2026-03-12T00:00:00Z" },
+        { role: "assistant", content: 42, createdAt: "2026-03-12T00:00:01Z" },
+      ],
+    };
+    mockFetch.mockResolvedValueOnce(jsonResponse(convo));
+
+    const meta = await generateMetadata({ params: makeParams("valid-token") });
+
+    expect(meta.title).toBe("Atlas \u2014 Shared Conversation");
+    expect(meta.description).toBe("A shared conversation from Atlas, the text-to-SQL data analyst.");
+  });
+
+  test("returns fallback when API returns malformed JSON shape", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ error: "internal_error" }));
+
+    const meta = await generateMetadata({ params: makeParams("valid-token") });
+
+    expect(meta.title).toContain("Atlas");
+    expect(meta.openGraph!.siteName).toBe("Atlas");
   });
 
   test("encodes token in fetch URL", async () => {

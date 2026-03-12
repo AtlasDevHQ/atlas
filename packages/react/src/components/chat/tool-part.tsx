@@ -2,14 +2,20 @@
 
 import { memo } from "react";
 import { getToolName } from "ai";
-import { getToolResult, isToolComplete } from "../../lib/helpers";
+import { getToolArgs, getToolResult, isToolComplete } from "../../lib/helpers";
 import { isActionToolResult } from "../../lib/action-types";
 import { ExploreCard } from "./explore-card";
 import { SQLResultCard } from "./sql-result-card";
 import { ActionApprovalCard } from "../actions/action-approval-card";
 import { PythonResultCard } from "./python-result-card";
+import type { ToolRenderers } from "../../lib/tool-renderer-types";
 
-export const ToolPart = memo(function ToolPart({ part }: { part: unknown }) {
+export interface ToolPartProps {
+  part: unknown;
+  toolRenderers?: ToolRenderers;
+}
+
+export const ToolPart = memo(function ToolPart({ part, toolRenderers }: ToolPartProps) {
   let name: string;
   try {
     name = getToolName(part as Parameters<typeof getToolName>[0]);
@@ -20,6 +26,15 @@ export const ToolPart = memo(function ToolPart({ part }: { part: unknown }) {
         Tool result (unknown type)
       </div>
     );
+  }
+
+  // Use custom renderer if provided for this tool
+  const CustomRenderer = toolRenderers?.[name];
+  if (CustomRenderer) {
+    const args = getToolArgs(part);
+    const result = getToolResult(part);
+    const isLoading = !isToolComplete(part);
+    return <CustomRenderer toolName={name} args={args} result={result} isLoading={isLoading} />;
   }
 
   switch (name) {

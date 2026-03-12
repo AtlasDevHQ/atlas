@@ -1,0 +1,148 @@
+import { describe, it, expect, mock } from "bun:test";
+import { render, screen } from "@testing-library/react";
+import type { ToolRendererProps, ToolRenderers } from "../../lib/tool-renderer-types";
+
+// Mock the `ai` module — must mock ALL named exports used by the component tree
+mock.module("ai", () => ({
+  getToolName: (part: Record<string, unknown>) => part.toolName as string,
+  isToolUIPart: () => true,
+  DefaultChatTransport: class {},
+}));
+
+// Import after mocks
+const { ToolPart } = await import("../chat/tool-part");
+
+function makePart(toolName: string, args: Record<string, unknown>, output: unknown, state = "output-available") {
+  return { toolName, input: args, output, state };
+}
+
+describe("ToolPart with custom renderers", () => {
+  it("uses custom renderer when provided for a tool", () => {
+    function CustomSQL({ toolName, args, result, isLoading }: ToolRendererProps) {
+      return (
+        <div data-testid="custom-sql">
+          {toolName}|{String(args.sql)}|{JSON.stringify(result)}|{String(isLoading)}
+        </div>
+      );
+    }
+
+    const renderers: ToolRenderers = { executeSQL: CustomSQL };
+    const part = makePart("executeSQL", { sql: "SELECT 1" }, { success: true, columns: ["a"], rows: [{ a: 1 }] });
+
+    render(<ToolPart part={part} toolRenderers={renderers} />);
+
+    const el = screen.getByTestId("custom-sql");
+    expect(el.textContent).toContain("executeSQL");
+    expect(el.textContent).toContain("SELECT 1");
+    expect(el.textContent).toContain("false"); // isLoading should be false when state is output-available
+  });
+
+  it("falls back to default renderer when no custom renderer provided", () => {
+    const part = makePart("executeSQL", { sql: "SELECT 1" }, { success: true, columns: [], rows: [] });
+
+    // No toolRenderers prop → default renderer
+    const { container } = render(<ToolPart part={part} />);
+
+    // Default SQL card renders — should not have our custom testid
+    expect(screen.queryByTestId("custom-sql")).toBeNull();
+    // The default card renders something (the SQL result card)
+    expect(container.innerHTML.length).toBeGreaterThan(0);
+  });
+
+  it("falls back to default renderer for tools not in the renderers map", () => {
+    function CustomSQL() {
+      return <div data-testid="custom-sql">custom</div>;
+    }
+
+    const renderers: ToolRenderers = { executeSQL: CustomSQL };
+    const part = makePart("explore", { command: "ls" }, "file.txt");
+
+    render(<ToolPart part={part} toolRenderers={renderers} />);
+
+    // explore is not in renderers → uses default ExploreCard
+    expect(screen.queryByTestId("custom-sql")).toBeNull();
+  });
+
+  it("passes isLoading=true when tool is still running", () => {
+    function CustomExplore({ isLoading }: ToolRendererProps) {
+      return <div data-testid="custom-explore">{String(isLoading)}</div>;
+    }
+
+    const renderers: ToolRenderers = { explore: CustomExplore };
+    const part = makePart("explore", { command: "ls" }, null, "call");
+
+    render(<ToolPart part={part} toolRenderers={renderers} />);
+
+    expect(screen.getByTestId("custom-explore").textContent).toBe("true");
+  });
+
+  it("passes isLoading=false when tool is complete", () => {
+    function CustomExplore({ isLoading }: ToolRendererProps) {
+      return <div data-testid="custom-explore">{String(isLoading)}</div>;
+    }
+
+    const renderers: ToolRenderers = { explore: CustomExplore };
+    const part = makePart("explore", { command: "ls" }, "output", "output-available");
+
+    render(<ToolPart part={part} toolRenderers={renderers} />);
+
+    expect(screen.getByTestId("custom-explore").textContent).toBe("false");
+  });
+
+  it("supports custom renderer for executePython", () => {
+    function CustomPython({ toolName, result }: ToolRendererProps) {
+      return <div data-testid="custom-python">{toolName}|{JSON.stringify(result)}</div>;
+    }
+
+    const renderers: ToolRenderers = { executePython: CustomPython };
+    const part = makePart("executePython", { code: "print(1)" }, { success: true, output: "1" });
+
+    render(<ToolPart part={part} toolRenderers={renderers} />);
+
+    const el = screen.getByTestId("custom-python");
+    expect(el.textContent).toContain("executePython");
+    expect(el.textContent).toContain('"success":true');
+  });
+
+  it("supports custom renderer for arbitrary tool names", () => {
+    function CustomTool({ toolName }: ToolRendererProps) {
+      return <div data-testid="custom-tool">{toolName}</div>;
+    }
+
+    const renderers: ToolRenderers = { myCustomTool: CustomTool };
+    const part = makePart("myCustomTool", {}, { data: "hello" });
+
+    render(<ToolPart part={part} toolRenderers={renderers} />);
+
+    expect(screen.getByTestId("custom-tool").textContent).toBe("myCustomTool");
+  });
+
+  it("passes correct args from the tool part", () => {
+    const receivedProps: ToolRendererProps[] = [];
+    function Spy(props: ToolRendererProps) {
+      receivedProps.push(props);
+      return <div data-testid="spy">ok</div>;
+    }
+
+    const renderers: ToolRenderers = { executeSQL: Spy };
+    const part = makePart("executeSQL", { sql: "SELECT *", explanation: "Get all" }, { success: true });
+
+    render(<ToolPart part={part} toolRenderers={renderers} />);
+
+    expect(receivedProps).toHaveLength(1);
+    expect(receivedProps[0].toolName).toBe("executeSQL");
+    expect(receivedProps[0].args).toEqual({ sql: "SELECT *", explanation: "Get all" });
+    expect(receivedProps[0].result).toEqual({ success: true });
+    expect(receivedProps[0].isLoading).toBe(false);
+  });
+
+  it("renders with empty toolRenderers map (all defaults)", () => {
+    const renderers: ToolRenderers = {};
+    const part = makePart("executeSQL", { sql: "SELECT 1" }, { success: true, columns: [], rows: [] });
+
+    const { container } = render(<ToolPart part={part} toolRenderers={renderers} />);
+
+    // Should render the default card, not crash
+    expect(container.innerHTML.length).toBeGreaterThan(0);
+  });
+});

@@ -26,7 +26,7 @@ const mockedFs = {
   readFileSync: (path: string, ...args: unknown[]) => {
     if (path.endsWith("/widget.js")) return "/* mock widget js */";
     if (path.endsWith("/widget.css")) return "/* mock widget css */";
-    return (realFs.readFileSync as Function)(path, ...args);
+    return (realFs.readFileSync as (...a: unknown[]) => unknown)(path, ...args);
   },
 };
 mock.module("node:fs", () => ({ ...mockedFs, default: mockedFs }));

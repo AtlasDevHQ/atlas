@@ -48,8 +48,10 @@ import { Hono } from "hono";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createLogger } from "@atlas/api/lib/logger";
 
 const widget = new Hono();
+const log = createLogger("widget");
 
 const VALID_THEMES = new Set(["light", "dark", "system"]);
 const VALID_POSITIONS = new Set(["bottomRight", "bottomLeft", "inline"]);
@@ -69,13 +71,28 @@ function loadWidgetAsset(filename: string): string | null {
     resolve(__dirname, "../../../../../node_modules/@useatlas/react/dist", filename),
   ];
   for (const p of candidates) {
-    if (existsSync(p)) return readFileSync(p, "utf8");
+    try {
+      if (existsSync(p)) return readFileSync(p, "utf8");
+    } catch (err) {
+      log.warn(
+        { path: p, err: err instanceof Error ? err.message : String(err) },
+        `Failed to read widget asset ${filename}`,
+      );
+    }
   }
   return null;
 }
 
 const WIDGET_JS = loadWidgetAsset("widget.js");
 const WIDGET_CSS = loadWidgetAsset("widget.css");
+
+if (!WIDGET_JS || !WIDGET_CSS) {
+  log.warn(
+    { hasJS: !!WIDGET_JS, hasCSS: !!WIDGET_CSS },
+    "Widget bundle assets not found — /widget will return 503. " +
+      "Run `bun run build` in packages/react/ to generate them.",
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Sanitization helpers
@@ -171,6 +188,7 @@ window.addEventListener("unhandledrejection",function(e){console.error("[Atlas W
 <script type="module" src="widget/atlas-widget.js"></script>
 <script type="module">
 try{
+if(typeof AtlasWidget==="undefined")throw new Error("Widget bundle did not load — atlas-widget.js may have failed to fetch or execute");
 const{createElement,Component,createRoot,AtlasChat,setTheme}=AtlasWidget;
 
 const configEl=document.getElementById("atlas-config");
@@ -365,8 +383,20 @@ widget.get("/atlas-widget.css", (c) => {
   return c.body(WIDGET_CSS);
 });
 
-/** Serve the widget HTML page. */
+/** Serve the widget HTML page. Returns 503 if widget bundle is not built. */
 widget.get("/", (c) => {
+  if (!WIDGET_JS) {
+    c.header("Content-Security-Policy", "frame-ancestors *");
+    c.header("Access-Control-Allow-Origin", "*");
+    return c.html(
+      `<!DOCTYPE html><html><body style="padding:2rem;text-align:center;color:#888;font-family:system-ui">` +
+        `<p>Widget bundle not built.</p>` +
+        `<p style="font-size:0.875rem;margin-top:0.5rem">Run <code>bun run build</code> in packages/react/.</p>` +
+        `</body></html>`,
+      503,
+    );
+  }
+
   const rawTheme = c.req.query("theme") ?? "system";
   const rawApiUrl = c.req.query("apiUrl") ?? "";
   const rawPosition = c.req.query("position") ?? "inline";

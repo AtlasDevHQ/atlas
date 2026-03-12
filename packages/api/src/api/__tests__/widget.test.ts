@@ -248,6 +248,12 @@ describe("GET /widget", () => {
     expect(html).toContain("}catch(err)");
   });
 
+  it("guards against missing AtlasWidget global before destructuring", async () => {
+    const res = await app.fetch(widgetRequest());
+    const html = await res.text();
+    expect(html).toContain('typeof AtlasWidget==="undefined"');
+  });
+
   it("includes React error boundary", async () => {
     const res = await app.fetch(widgetRequest());
     const html = await res.text();

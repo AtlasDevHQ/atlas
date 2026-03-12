@@ -3,7 +3,7 @@ import { defineConfig } from "tsup";
 export default defineConfig([
   // Library build — peer deps externalized for host-app bundlers
   {
-    entry: ["src/index.ts"],
+    entry: { index: "src/index.ts", hooks: "src/hooks/index.ts" },
     format: ["esm", "cjs"],
     dts: true,
     sourcemap: true,

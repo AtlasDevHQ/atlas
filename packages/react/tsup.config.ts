@@ -25,7 +25,7 @@ export default defineConfig([
   },
   // Widget bundle — self-contained ESM with all runtime deps bundled.
   // Only react-syntax-highlighter and xlsx are external (dynamically
-  // imported with catch handlers; they gracefully degrade in the widget).
+  // imported; they degrade gracefully if unavailable in the widget).
   {
     entry: { widget: "src/widget-entry.ts" },
     format: ["esm"],

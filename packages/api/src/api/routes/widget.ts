@@ -38,7 +38,7 @@
  *
  * DOM contract — the inline script uses these stable data attributes from
  * @useatlas/react components (issue #256):
- *   [data-atlas-logo]     — logo SVG element
+ *   [data-atlas-logo]     — logo element
  *   [data-atlas-messages] — message list container
  *   [data-atlas-input]    — chat text input
  *   [data-atlas-form]     — chat submit form
@@ -58,7 +58,8 @@ const VALID_POSITIONS = new Set(["bottomRight", "bottomLeft", "inline"]);
 const HEX_COLOR_RE = /^[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/;
 
 // ---------------------------------------------------------------------------
-// Widget bundle assets — loaded once at startup from @useatlas/react dist.
+// Widget bundle assets — loaded once at module init from @useatlas/react dist.
+// Restart the API server after rebuilding @useatlas/react to pick up changes.
 // ---------------------------------------------------------------------------
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -223,7 +224,7 @@ function render(){
   root.render(createElement(EB,null,createElement(AtlasChat,{apiUrl,apiKey:state.apiKey||void 0,theme:state.theme})));
 }
 
-/** Replace the default Atlas SVG logo with a custom <img>.
+/** Replace the default Atlas logo element with a custom <img>.
  *  Uses the stable data-atlas-logo attribute from @useatlas/react. */
 function applyLogo(src){
   if(!src)return;
@@ -318,7 +319,7 @@ window.addEventListener("message",e=>{
 render();
 
 /** Wait for the AtlasChat component to render, then invoke callback.
- *  Polls for the data-atlas-input element up to maxAttempts times (300ms apart). */
+ *  Polls for [data-atlas-input] up to 16 times at 300ms intervals (~4.8s). */
 function waitForReady(cb,attempts){
   attempts=attempts||0;
   const input=el.querySelector("[data-atlas-input]");

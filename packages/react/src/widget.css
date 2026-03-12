@@ -5,7 +5,7 @@
  * dist/widget.css — a static CSS file containing all Tailwind
  * utility classes used by @useatlas/react components.
  *
- * Replaces the Tailwind Play CDN that was previously loaded at runtime.
+ * Pre-compiled at build time to avoid runtime CSS generation overhead.
  */
 
 @import "tailwindcss";

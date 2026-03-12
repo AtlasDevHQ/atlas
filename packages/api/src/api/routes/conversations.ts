@@ -266,7 +266,7 @@ conversations.post("/:id/share", async (c) => {
     const baseUrl = new URL(req.url).origin;
     return c.json({
       token: result.data.token,
-      url: `${baseUrl}/api/public/conversations/${result.data.token}`,
+      url: `${baseUrl}/shared/${result.data.token}`,
     });
   });
 });

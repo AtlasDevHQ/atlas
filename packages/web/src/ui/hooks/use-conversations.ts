@@ -177,7 +177,15 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
         console.warn(`shareConversation: HTTP ${res.status} for ${id}`);
         return null;
       }
-      return await res.json();
+      const data = await res.json();
+      if (!data?.token || typeof data.token !== "string") {
+        console.warn(`shareConversation: missing token in response for ${id}`);
+        return null;
+      }
+      return {
+        token: data.token,
+        url: `${window.location.origin}/shared/${data.token}`,
+      };
     } catch (err) {
       console.warn("shareConversation error:", err);
       return null;

@@ -585,7 +585,7 @@ describe("conversations routes", () => {
       const body = await response.json() as Record<string, unknown>;
       expect(body.token).toBe("abc123def456");
       expect(typeof body.url).toBe("string");
-      expect((body.url as string)).toContain("/api/public/conversations/abc123def456");
+      expect((body.url as string)).toContain("/shared/abc123def456");
     });
 
     it("returns 404 when conversation not found", async () => {

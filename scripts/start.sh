@@ -18,7 +18,7 @@ trap cleanup INT TERM
 PORT="${ATLAS_API_PORT:-3001}" bun packages/api/src/api/server.ts &
 API_PID=$!
 
-bun packages/web/server.js &
+bun packages/web/.next/standalone/packages/web/server.js &
 WEB_PID=$!
 
 # Poll until either child exits. POSIX sh lacks wait -n, so we check liveness.

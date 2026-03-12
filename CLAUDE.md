@@ -24,7 +24,7 @@ Guidance for Claude Code when working in this repository.
 - [ ] **bun only** — Package manager and runtime. Never npm, yarn, or node
 - [ ] **TypeScript strict mode** — Monorepo path aliases: `@atlas/api/*` for cross-package imports, `@/*` → `./src/*` within web package only
 - [ ] **Tailwind CSS 4** — Via `@tailwindcss/postcss`, not v3
-- [ ] **shadcn/ui v2** — Component library for `@atlas/web`. New-york style, neutral base, Lucide icons. **Always use shadcn/ui primitives** for UI elements (buttons, toggles, cards, dialogs, etc.) — never hand-roll equivalent components. If a needed primitive isn't installed yet, add it: `npx shadcn@latest add <component>` from `packages/web/`. Config at `packages/web/components.json`. Uses `cn()` from `@/lib/utils` for class merging
+- [ ] **shadcn/ui v2** — Component library for `@atlas/web`. New-york style, neutral base, Lucide icons. **Always use shadcn/ui primitives** for UI elements (buttons, toggles, cards, dialogs, etc.) — never hand-roll equivalent components. If a needed primitive isn't installed yet, add it: `bun x shadcn@latest add <component>` from `packages/web/`. Config at `packages/web/components.json`. Uses `cn()` from `@/lib/utils` for class merging
 - [ ] **Server external packages** — `pg`, `mysql2`, `@clickhouse/client`, `@duckdb/node-api`, `snowflake-sdk`, `jsforce`, `just-bash`, `pino`, and `pino-pretty` must stay in `serverExternalPackages` in the `create-atlas` template — they use native bindings or worker threads incompatible with Next.js bundling
 - [ ] **Frontend is a pure HTTP client** — `@atlas/web` does NOT depend on `@atlas/api` — the frontend talks to the API over HTTP (same-origin rewrite or cross-origin fetch). Shared types are duplicated in `packages/web/src/ui/lib/types.ts`. The `nextjs-standalone` example embeds `@atlas/api` server-side via a Next.js catch-all route; the React client still communicates over HTTP
 - [ ] **nuqs for URL state** — Use [nuqs](https://nuqs.47ng.com/) for any state that belongs in the URL (pagination, filters, selected items, view modes). Define parsers in a `search-params.ts` file next to the page, use `useQueryStates` in client components. Transient UI state (loading, open dropdowns, form drafts) stays as `useState`. `NuqsAdapter` is in the root layout
@@ -163,7 +163,7 @@ atlas/
 │   │       │   ├── conversation-types.ts # MessageRole, Surface, Conversation, Message
 │   │       │   ├── sidecar-types.ts     # SidecarExecRequest, SidecarExecResponse
 │   │       │   ├── slack/       # api.ts, verify.ts, format.ts, store.ts, threads.ts
-│   │       │   ├── tools/       # explore.ts, explore-nsjail.ts, sql.ts, registry.ts
+│   │       │   ├── tools/       # explore.ts, explore-nsjail.ts, sql.ts, python.ts, python-nsjail.ts, registry.ts
 │   │       │   ├── agent-query.ts  # Shared agent execution for JSON + Slack
 │   │       │   └── conversations.ts # Conversation + message persistence (CRUD)
 │   │       └── test-setup.ts
@@ -199,7 +199,8 @@ atlas/
 │   │   └── src/
 │   │       ├── server.ts        # createAtlasMcpServer() factory
 │   │       ├── tools.ts         # Bridge: AI SDK tools → MCP tools
-│   │       └── resources.ts     # Semantic layer as MCP resources
+│   │       ├── resources.ts     # Semantic layer as MCP resources
+│   │       └── sse.ts           # Server-sent events transport handler
 │   │
 │   ├── sandbox-sidecar/         # @atlas/sandbox-sidecar — Isolated explore sidecar (Railway)
 │   │   ├── package.json
@@ -570,7 +571,7 @@ Key files not obvious from the monorepo tree above. For standard paths, follow t
 
 **Core agent pipeline** — `packages/api/src/lib/`: `agent.ts` (loop), `agent-query.ts` (shared JSON+Slack execution), `providers.ts` (LLM factory), `semantic.ts` (whitelist builder), `startup.ts` (env validation), `security.ts` (scrubbing), `config.ts` (declarative config), `conversations.ts` (persistence), `settings.ts` (admin settings CRUD)
 
-**Tools** — `packages/api/src/lib/tools/`: `sql.ts` (validation+execution), `explore.ts` (reader+backend selection), `explore-nsjail.ts`, `explore-sandbox.ts` (Vercel), `explore-sidecar.ts`, `registry.ts`
+**Tools** — `packages/api/src/lib/tools/`: `sql.ts` (validation+execution), `explore.ts` (reader+backend selection), `explore-nsjail.ts`, `explore-sandbox.ts` (Vercel), `explore-sidecar.ts`, `python.ts` (Python execution router), `python-nsjail.ts`, `python-sidecar.ts`, `python-sandbox.ts` (Vercel), `registry.ts`
 
 **Auth** — `packages/api/src/lib/auth/`: `middleware.ts` (middleware+rate limiting), `detect.ts` (mode detection), `simple-key.ts`, `managed.ts`, `byot.ts`, `server.ts` (Better Auth), `audit.ts`, `migrate.ts`. Client: `packages/web/src/lib/auth/client.ts`
 
@@ -586,7 +587,7 @@ Key files not obvious from the monorepo tree above. For standard paths, follow t
 
 **CLI** — `packages/cli/bin/`: `atlas.ts` (profiler+diff+query), `enrich.ts`. Data: `packages/cli/data/demo.sql`, `cybersec.sql`
 
-**MCP** — `packages/mcp/`: `src/server.ts` (factory), `src/tools.ts` (bridge), `src/resources.ts`, `bin/serve.ts` (stdio)
+**MCP** — `packages/mcp/`: `src/server.ts` (factory), `src/tools.ts` (bridge), `src/resources.ts`, `src/sse.ts` (SSE transport), `bin/serve.ts` (stdio)
 
 **SDK** — `packages/sdk/src/`: `client.ts` (createAtlasClient, query/chat/conversations), `index.ts` (re-exports)
 

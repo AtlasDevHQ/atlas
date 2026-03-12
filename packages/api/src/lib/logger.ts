@@ -69,6 +69,9 @@ export const redactPaths = [
   "connection.url",
   "connection.connectionString",
   "connection.password",
+  "connections.*.url",
+  "connections.*.connectionString",
+  "connections.*.password",
 ];
 
 const rootLogger = pino({

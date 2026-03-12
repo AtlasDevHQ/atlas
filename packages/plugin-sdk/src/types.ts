@@ -48,6 +48,7 @@ export type PluginDBType =
   | "clickhouse"
   | "snowflake"
   | "duckdb"
+  | "bigquery"
   | (string & {});
 
 /**

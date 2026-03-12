@@ -20,6 +20,7 @@
       "packages": [
         "@useatlas/react",
         "@useatlas/plugin-sdk",
+        "@useatlas/bigquery",
         "@useatlas/clickhouse",
         "@useatlas/snowflake",
         "@useatlas/duckdb",

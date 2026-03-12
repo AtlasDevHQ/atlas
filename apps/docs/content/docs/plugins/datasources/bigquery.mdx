@@ -1,0 +1,92 @@
+---
+title: BigQuery
+description: Connect Atlas to Google BigQuery for analytics and data warehousing.
+---
+
+Connects to Google BigQuery via the `@google-cloud/bigquery` client library. BigQuery is a REST-based service -- each query creates a job, so there is no connection pool to manage. Read-only enforcement relies on the standard SQL validation pipeline (regex guard + AST parse + table whitelist) since BigQuery has no session-level read-only mode.
+
+## Installation
+
+```bash
+bun add @useatlas/bigquery @google-cloud/bigquery
+```
+
+## Configuration
+
+```typescript
+// atlas.config.ts
+import { defineConfig } from "@atlas/api/lib/config";
+import { bigqueryPlugin } from "@useatlas/bigquery";
+
+export default defineConfig({
+  plugins: [
+    bigqueryPlugin({
+      projectId: process.env.GCP_PROJECT_ID!,
+      dataset: "analytics",
+      location: "US",
+      keyFilename: process.env.GOOGLE_APPLICATION_CREDENTIALS,
+    }),
+  ],
+});
+```
+
+### Options
+
+| Option | Type | Required | Default | Description |
+|--------|------|----------|---------|-------------|
+| `projectId` | `string` | No | from credentials/ADC | GCP project ID |
+| `dataset` | `string` | No | -- | Default dataset for unqualified table references |
+| `location` | `string` | No | -- | Geographic location for query jobs (e.g. `US`, `EU`, `us-east1`) |
+| `keyFilename` | `string` | No | -- | Path to a service account JSON key file |
+| `credentials` | `object` | No | -- | Service account credentials object (parsed JSON key contents) |
+
+### Authentication
+
+The plugin supports three authentication methods, tried in priority order:
+
+1. **Credentials object** -- pass the parsed service account JSON key directly via `credentials`
+2. **Key file** -- path to a service account JSON key file via `keyFilename`
+3. **Application Default Credentials (ADC)** -- automatic in GCP environments (GCE, Cloud Run, GKE) or when `GOOGLE_APPLICATION_CREDENTIALS` is set
+
+When running locally, either set `GOOGLE_APPLICATION_CREDENTIALS` to a service account key file path or use `gcloud auth application-default login`.
+
+## SQL Dialect
+
+The following hints are injected into the agent's system prompt so it writes valid BigQuery Standard SQL:
+
+- Use backtick-quoted identifiers for table references: `` `project.dataset.table` ``
+- Use `DATE_TRUNC(date_expr, MONTH)` for date truncation
+- Use `TIMESTAMP_TRUNC()` for timestamps, `DATETIME_TRUNC()` for datetimes
+- Use `COUNTIF(condition)` instead of `COUNT(CASE WHEN ... END)`
+- Use `SAFE_DIVIDE(a, b)` to avoid division-by-zero errors
+- Use `UNNEST(array_column)` to flatten arrays (in `FROM` or `JOIN` clause)
+- Use `FORMAT_DATE` / `FORMAT_TIMESTAMP` for date formatting
+- Use `IFNULL(expr, default)` or `COALESCE()` for null handling
+- Use `EXCEPT()` and `REPLACE()` with `SELECT *` to exclude or transform columns
+- Standard SQL is the default -- do not use Legacy SQL syntax
+
+## Validation
+
+In addition to the standard SQL validation pipeline (regex guard + AST parse + table whitelist), the plugin blocks BigQuery-specific statements: `MERGE`, `EXPORT DATA`, `DECLARE`, `SET`, `BEGIN`, `ASSERT`, and `RAISE`. The AST parser uses BigQuery mode natively (supported by `node-sql-parser`).
+
+## Security
+
+BigQuery has no session-level read-only mode. Read-only enforcement relies on the Atlas SQL validation pipeline (regex + AST + table whitelist) and the service account's IAM permissions. Grant the service account only the `BigQuery Data Viewer` and `BigQuery Job User` roles for least-privilege access.
+
+## Troubleshooting
+
+### Authentication errors
+
+Ensure the service account JSON key file is valid and accessible. For ADC, run `gcloud auth application-default login` locally. In GCP environments, verify the compute instance or Cloud Run service has the correct service account attached.
+
+### Permission denied
+
+The service account needs at minimum `roles/bigquery.dataViewer` (to read tables) and `roles/bigquery.jobUser` (to run queries) on the project. Check IAM permissions in the GCP Console.
+
+### Query timeout
+
+BigQuery queries run as async jobs. Increase `ATLAS_QUERY_TIMEOUT` (default 30000ms) for long-running analytical queries. The plugin passes this as `jobTimeoutMs` to the BigQuery client.
+
+### Dataset not found
+
+If using unqualified table names, ensure the `dataset` config option is set. Otherwise, fully qualify table references as `` `project.dataset.table` `` in your semantic layer entity definitions.

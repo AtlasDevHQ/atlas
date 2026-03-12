@@ -1,0 +1,327 @@
+---
+title: React Hooks Reference
+description: Headless React hooks for building custom Atlas chat UIs.
+---
+
+The `@useatlas/react` package provides headless React hooks and a pre-built chat component for embedding Atlas into React applications. Use the hooks to build a fully custom UI, or drop in the `AtlasChat` component for a ready-made experience.
+
+## Installation
+
+```bash
+bun add @useatlas/react
+```
+
+### Peer Dependencies
+
+The hooks require these peer dependencies:
+
+```bash
+bun add react react-dom ai @ai-sdk/react
+```
+
+The pre-built `AtlasChat` component additionally uses `lucide-react`, `react-syntax-highlighter`, `recharts`, `tailwindcss`, and `xlsx` (all optional peer deps).
+
+## Imports
+
+The package has two entry points:
+
+```typescript
+// Pre-built AtlasChat component + UI provider
+import { AtlasChat, AtlasUIProvider } from "@useatlas/react";
+
+// Headless hooks only (smaller bundle, no UI components)
+import { AtlasProvider, useAtlasChat, useAtlasAuth } from "@useatlas/react/hooks";
+```
+
+The main entry point (`@useatlas/react`) exports `AtlasUIProvider` for use with the pre-built `AtlasChat` component. The hooks entry point (`@useatlas/react/hooks`) exports `AtlasProvider`, a lightweight provider for headless hooks. This page documents the headless hooks — all examples use `@useatlas/react/hooks`.
+
+---
+
+## AtlasProvider
+
+Wraps your app and supplies API URL, auth credentials, and an optional auth client to all Atlas hooks. Must be an ancestor of any component that uses Atlas hooks.
+
+```tsx
+import { AtlasProvider } from "@useatlas/react/hooks";
+
+function App() {
+  return (
+    <AtlasProvider apiUrl="https://your-atlas-api.example.com" apiKey="sk-...">
+      <YourChatUI />
+    </AtlasProvider>
+  );
+}
+```
+
+### Props
+
+| Prop | Type | Required | Description |
+|------|------|----------|-------------|
+| `apiUrl` | `string` | Yes | Atlas API server URL. Use `""` for same-origin deployments. |
+| `apiKey` | `string` | No | API key for `simple-key` auth mode. Sent as Bearer token. |
+| `authClient` | `AtlasAuthClient` | No | Custom auth client for `managed` auth mode (better-auth compatible). |
+
+The provider automatically detects cross-origin requests and configures credential handling accordingly.
+
+---
+
+## useAtlasChat
+
+Manages chat state, message streaming, and conversation tracking. Wraps the AI SDK's `useChat` with Atlas-specific transport configuration.
+
+```tsx
+import { useAtlasChat } from "@useatlas/react/hooks";
+
+function ChatUI() {
+  const {
+    messages,
+    sendMessage,
+    input,
+    setInput,
+    status,
+    isLoading,
+    error,
+    conversationId,
+  } = useAtlasChat();
+
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); sendMessage(input); }}>
+      <div>
+        {messages.map((msg) => (
+          <div key={msg.id}>{msg.parts?.map((p, i) =>
+            p.type === "text" ? <p key={i}>{p.text}</p> : null
+          )}</div>
+        ))}
+      </div>
+      <input value={input} onChange={(e) => setInput(e.target.value)} />
+      <button type="submit" disabled={isLoading}>Send</button>
+    </form>
+  );
+}
+```
+
+### Options
+
+```typescript
+useAtlasChat({
+  initialConversationId: "existing-id",     // Resume an existing conversation
+  onConversationIdChange: (id) => { ... },  // Called when server assigns a conversation ID
+})
+```
+
+### Return Value
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `messages` | `UIMessage[]` | Array of chat messages (AI SDK format) |
+| `setMessages` | `(msgs \| updater) => void` | Replace all messages, or update via callback |
+| `sendMessage` | `(text: string) => Promise<void>` | Send a text message. Rejects on failure. |
+| `input` | `string` | Current input value (managed by the hook) |
+| `setInput` | `(input: string) => void` | Update the input value |
+| `status` | `AtlasChatStatus` | `"ready"`, `"submitted"`, `"streaming"`, or `"error"` |
+| `isLoading` | `boolean` | `true` when `status` is `"submitted"` or `"streaming"` |
+| `error` | `Error \| null` | Last error, if any |
+| `conversationId` | `string \| null` | Current conversation ID (set by server via `x-conversation-id` header) |
+| `setConversationId` | `(id: string \| null) => void` | Manually set the conversation ID |
+
+---
+
+## useAtlasAuth
+
+Detects the server's auth mode, manages authentication state, and provides login/signup/logout for managed auth.
+
+```tsx
+import { useAtlasAuth } from "@useatlas/react/hooks";
+
+function AuthGate({ children }: { children: React.ReactNode }) {
+  const { authMode, isAuthenticated, isLoading, login } = useAtlasAuth();
+
+  if (isLoading) return <p>Loading...</p>;
+  if (!isAuthenticated && authMode === "managed") {
+    return <LoginForm onSubmit={login} />;
+  }
+  return <>{children}</>;
+}
+```
+
+### Return Value
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `authMode` | `AuthMode \| null` | Detected auth mode: `"none"`, `"simple-key"`, `"byot"`, or `"managed"`. `null` while loading. |
+| `isAuthenticated` | `boolean` | Whether the user is authenticated based on auth mode and credentials |
+| `session` | `{ user?: { email?: string } } \| null` | Session data for managed auth |
+| `isLoading` | `boolean` | `true` while the health check or session loading is in progress |
+| `error` | `Error \| null` | Error from health check or auth operations |
+| `login` | `(email, password) => Promise<{ error?: string }>` | Sign in with email/password (managed auth) |
+| `signup` | `(email, password, name) => Promise<{ error?: string }>` | Sign up (managed auth) |
+| `logout` | `() => Promise<{ error?: string }>` | Sign out (managed auth) |
+
+Auth mode detection works by calling the `/api/health` endpoint on mount. The hook retries once on failure (2 total attempts) before falling back to `"none"`.
+
+---
+
+## useAtlasConversations
+
+Lists, loads, deletes, and stars conversations. Auth credentials are automatically wired from `AtlasProvider`.
+
+```tsx
+import { useAtlasConversations } from "@useatlas/react/hooks";
+
+function ConversationList() {
+  const {
+    conversations,
+    total,
+    isLoading,
+    selectedId,
+    setSelectedId,
+    loadConversation,
+    deleteConversation,
+    starConversation,
+  } = useAtlasConversations();
+
+  if (isLoading) return <p>Loading...</p>;
+
+  return (
+    <ul>
+      {conversations.map((c) => (
+        <li key={c.id} onClick={() => setSelectedId(c.id)}>
+          {c.title ?? "Untitled"}
+          <button onClick={() => starConversation(c.id, !c.starred)}>
+            {c.starred ? "Unstar" : "Star"}
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+### Options
+
+```typescript
+useAtlasConversations({
+  enabled: true,  // When false, refresh() becomes a no-op (default: true)
+})
+```
+
+### Return Value
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `conversations` | `Conversation[]` | Array of conversation metadata (no messages) |
+| `total` | `number` | Total count of conversations |
+| `isLoading` | `boolean` | Whether the conversation list is loading |
+| `available` | `boolean` | Whether the conversation API is available (requires internal DB) |
+| `selectedId` | `string \| null` | Currently selected conversation ID |
+| `setSelectedId` | `(id: string \| null) => void` | Set the selected conversation |
+| `refresh` | `() => Promise<void>` | Manually refresh the conversation list |
+| `loadConversation` | `(id: string) => Promise<UIMessage[] \| null>` | Load a conversation's messages (returns AI SDK format) |
+| `deleteConversation` | `(id: string) => Promise<boolean>` | Delete a conversation |
+| `starConversation` | `(id: string, starred: boolean) => Promise<boolean>` | Star or unstar a conversation |
+
+---
+
+## useAtlasTheme
+
+Manages light/dark/system theme mode with localStorage persistence.
+
+```tsx
+import { useAtlasTheme } from "@useatlas/react/hooks";
+
+function ThemeToggle() {
+  const { theme, isDark, setTheme } = useAtlasTheme();
+
+  return (
+    <button onClick={() => setTheme(isDark ? "light" : "dark")}>
+      {isDark ? "Switch to light" : "Switch to dark"}
+    </button>
+  );
+}
+```
+
+### Return Value
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `theme` | `ThemeMode` | Current setting: `"light"`, `"dark"`, or `"system"` |
+| `isDark` | `boolean` | Whether the resolved (effective) theme is dark |
+| `setTheme` | `(mode: ThemeMode) => void` | Set the theme mode. Persists to localStorage. |
+| `applyBrandColor` | `(color: string) => void` | Apply a brand color via CSS custom property `--atlas-brand` (oklch format) |
+
+---
+
+## Full Example: Custom Chat UI
+
+A minimal working example combining multiple hooks:
+
+```tsx
+import { AtlasProvider, useAtlasChat, useAtlasAuth, useAtlasConversations } from "@useatlas/react/hooks";
+
+function App() {
+  return (
+    <AtlasProvider apiUrl="https://your-atlas-api.example.com" apiKey="sk-...">
+      <Chat />
+    </AtlasProvider>
+  );
+}
+
+function Chat() {
+  const { isAuthenticated, isLoading: authLoading } = useAtlasAuth();
+  const { messages, sendMessage, input, setInput, isLoading, setMessages, setConversationId } = useAtlasChat();
+  const { conversations, loadConversation } = useAtlasConversations();
+
+  if (authLoading) return <p>Connecting...</p>;
+  if (!isAuthenticated) return <p>Not authenticated</p>;
+
+  async function selectConversation(id: string) {
+    const msgs = await loadConversation(id);
+    if (msgs) {
+      setMessages(msgs);
+      setConversationId(id);
+    }
+  }
+
+  return (
+    <div style={{ display: "flex", gap: "1rem" }}>
+      <aside>
+        <h3>History</h3>
+        {conversations.map((c) => (
+          <button key={c.id} onClick={() => selectConversation(c.id)}>
+            {c.title ?? "Untitled"}
+          </button>
+        ))}
+      </aside>
+
+      <main>
+        <div>
+          {messages.map((msg) => (
+            <div key={msg.id}>
+              <strong>{msg.role}:</strong>
+              {msg.parts?.map((p, i) => p.type === "text" ? <span key={i}>{p.text}</span> : null)}
+            </div>
+          ))}
+        </div>
+
+        <form onSubmit={(e) => { e.preventDefault(); sendMessage(input); }}>
+          <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="Ask a question..." />
+          <button type="submit" disabled={isLoading}>Send</button>
+        </form>
+      </main>
+    </div>
+  );
+}
+```
+
+## Hooks vs. AtlasChat Component
+
+| | Headless Hooks (`@useatlas/react/hooks`) | AtlasChat Component (`@useatlas/react`) |
+|--|--|--|
+| **Provider** | `AtlasProvider` from `@useatlas/react/hooks` | `AtlasUIProvider` from `@useatlas/react` |
+| **Import** | `import { useAtlasChat } from "@useatlas/react/hooks"` | `import { AtlasChat } from "@useatlas/react"` |
+| **UI** | You build your own | Pre-built chat interface with markdown, code highlighting, charts |
+| **Bundle size** | Minimal (React + AI SDK) | Larger (includes Recharts, syntax highlighter, Radix UI) |
+| **Styling** | Your choice | Tailwind CSS 4 + shadcn/ui |
+| **Use case** | Custom UIs, design system integration | Quick setup, internal tools, embedded widgets |
+
+The `AtlasChat` component uses the same hooks internally — you can start with `AtlasChat` and switch to hooks when you need more control.

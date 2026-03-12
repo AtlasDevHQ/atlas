@@ -1,0 +1,162 @@
+---
+title: Sharing Conversations
+description: Share Atlas conversations via public links and embed them in other pages.
+---
+
+Atlas lets you share conversations via public links. Anyone with the link can view the conversation — no login required. Shared conversations include rich OpenGraph metadata for social previews.
+
+## Prerequisites
+
+Conversation sharing requires an internal database (`DATABASE_URL`). Without it, conversation history and sharing are unavailable.
+
+## Creating a Shared Link
+
+### From the UI
+
+1. Open a conversation in the Atlas chat interface.
+2. Click the **Share** button in the conversation header.
+3. Atlas generates a unique share link. Copy it to your clipboard.
+
+The share dialog also provides an iframe embed snippet for embedding the conversation in other pages.
+
+To revoke a shared link, open the share dialog again and click **Unshare**. The public link will immediately stop working.
+
+### From the API
+
+Create and revoke share links programmatically:
+
+```bash
+# Share a conversation
+curl -X POST https://your-atlas-api.example.com/api/v1/conversations/{id}/share \
+  -H "Authorization: Bearer your-api-key"
+
+# Response:
+# { "token": "abc123...", "url": "https://your-atlas-api.example.com/shared/abc123..." }
+```
+
+```bash
+# Revoke sharing
+curl -X DELETE https://your-atlas-api.example.com/api/v1/conversations/{id}/share \
+  -H "Authorization: Bearer your-api-key"
+```
+
+### From the SDK
+
+```typescript
+import { createAtlasClient } from "@useatlas/sdk";
+
+const atlas = createAtlasClient({
+  baseUrl: "https://your-atlas-api.example.com",
+  apiKey: "your-api-key",
+});
+
+// Share
+const { token, url } = await atlas.conversations.share("conversation-id");
+
+// Unshare
+await atlas.conversations.unshare("conversation-id");
+```
+
+## Public View
+
+Shared conversations are visible at `/shared/{token}`. The page displays:
+
+- **Header** — Atlas branding, "Shared conversation" label, and creation date
+- **Conversation title** — derived from the first user message
+- **Messages** — user and assistant messages rendered in a clean, read-only format (system and tool messages are hidden)
+
+No authentication is required to view a shared conversation. The public endpoint has its own rate limiter to prevent abuse. Assistant messages containing only non-text parts (such as tool call results) will appear empty in the shared view.
+
+## OpenGraph & Social Previews
+
+Shared conversation pages include OpenGraph and Twitter Card metadata for rich social previews when links are shared on Slack, Twitter, LinkedIn, etc.
+
+| Meta Tag | Value |
+|----------|-------|
+| `og:title` | First user message (truncated to 60 characters), e.g. "Atlas: What were our top 10 customers by revenue?" |
+| `og:description` | First assistant response (truncated to 160 characters) |
+| `og:type` | `article` |
+| `og:site_name` | `Atlas` |
+| `twitter:card` | `summary` |
+
+When the conversation has no user messages, the title falls back to the conversation title or "Atlas — Shared Conversation". When the assistant response is only tool calls (no text), the description uses a generic fallback.
+
+## Iframe Embedding
+
+Embed a shared conversation in another page using the `/embed` variant:
+
+```html
+<iframe
+  src="https://your-atlas-app.example.com/shared/{token}/embed"
+  title="Atlas Conversation"
+  style="width: 100%; height: 500px; border: 1px solid #e4e4e7; border-radius: 8px;"
+></iframe>
+```
+
+The embed view is a compact, chromeless version of the shared conversation — no header, smaller avatars, and a "Powered by Atlas" footer. It supports both light and dark modes (follows system preference).
+
+This is ideal for embedding conversation transcripts in documentation, blog posts, or dashboards.
+
+## API Reference
+
+### Share
+
+```
+POST /api/v1/conversations/:id/share
+```
+
+Generates a cryptographically random share token and returns the public URL. Requires authentication. If the conversation is already shared, a new token replaces the old one.
+
+**Response:**
+
+```json
+{
+  "token": "abc123...",
+  "url": "https://your-atlas-api.example.com/shared/abc123..."
+}
+```
+
+### Unshare
+
+```
+DELETE /api/v1/conversations/:id/share
+```
+
+Revokes the share token. The public link stops working immediately. Returns `204 No Content` on success.
+
+### View Shared Conversation
+
+```
+GET /api/public/conversations/:token
+```
+
+Returns the conversation with messages. No authentication required. Rate-limited per IP (60 requests per minute).
+
+**Response:**
+
+```json
+{
+  "title": "Revenue Analysis",
+  "surface": "web",
+  "createdAt": "2026-03-12T00:00:00Z",
+  "messages": [
+    {
+      "role": "user",
+      "content": "What was last month's revenue?",
+      "createdAt": "2026-03-12T00:00:01Z"
+    },
+    {
+      "role": "assistant",
+      "content": "Last month's revenue was $1.2M...",
+      "createdAt": "2026-03-12T00:00:02Z"
+    }
+  ]
+}
+```
+
+## Security
+
+- **Tokens are random** — share tokens are 28-character base64url strings generated with `crypto.randomBytes(21)`. They cannot be guessed.
+- **Revocation is instant** — unsharing clears the token from the database. Cached responses (Next.js 60s revalidate) will expire shortly after.
+- **No write access** — shared conversation views are completely read-only. Viewers cannot modify or interact with the conversation.
+- **Rate limited** — the public endpoint has a per-IP rate limiter (60 requests per minute, separate from the authenticated rate limiter) to prevent scraping.

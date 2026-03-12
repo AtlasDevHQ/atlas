@@ -1,10 +1,15 @@
-import { describe, test, expect, mock } from "bun:test";
+import { describe, test, expect, mock, afterAll } from "bun:test";
 import { createAtlasClient, AtlasError } from "../client";
 import type { StreamEvent } from "../client";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+const originalFetch = globalThis.fetch;
+afterAll(() => {
+  globalThis.fetch = originalFetch;
+});
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {

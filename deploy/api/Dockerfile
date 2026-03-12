@@ -48,6 +48,8 @@ WORKDIR /app
 COPY --from=deps /app ./
 COPY . .
 COPY packages/cli/data/demo-semantic semantic
+# Build the @useatlas/react widget bundle (served by the /widget route)
+RUN cd packages/react && bun run build
 
 # --- nsjail build stage (parallel with builder) ---
 ARG INSTALL_NSJAIL=false
@@ -78,6 +80,8 @@ RUN if [ "$INSTALL_NSJAIL" = "true" ]; then \
       && rm -rf /var/lib/apt/lists/*; \
     fi
 COPY --from=nsjail-builder /nsjail-out/ /usr/local/bin/
+# Widget bundle — built from @useatlas/react (referenced by widget route)
+COPY --from=builder --chown=atlas:atlas /app/packages/react/dist ./packages/react/dist
 # Hono API server source + dependencies
 COPY --from=builder --chown=atlas:atlas /app/packages/api ./packages/api
 COPY --from=builder --chown=atlas:atlas /app/node_modules ./node_modules

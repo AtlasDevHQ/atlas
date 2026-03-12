@@ -6,6 +6,7 @@
     "dockerfileContext": "../..",
     "watchPatterns": [
       "packages/api/**",
+      "packages/react/**",
       "packages/cli/data/**",
       "packages/plugin-sdk/**",
       "plugins/**",

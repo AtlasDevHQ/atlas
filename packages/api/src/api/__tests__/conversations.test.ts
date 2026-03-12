@@ -631,6 +631,20 @@ describe("conversations routes", () => {
       );
       expect(response.status).toBe(404);
     });
+
+    it("returns 500 on database error", async () => {
+      mockShareConversation.mockResolvedValueOnce({ ok: false, reason: "error" });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/share`, {
+          method: "POST",
+        }),
+      );
+      expect(response.status).toBe(500);
+
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.error).toBe("internal_error");
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -680,6 +694,31 @@ describe("conversations routes", () => {
       const call = mockUnshareConversation.mock.calls[0] as unknown as [string, string | undefined];
       expect(call[0]).toBe(VALID_ID);
       expect(call[1]).toBe("u1");
+    });
+
+    it("returns 500 on database error", async () => {
+      mockUnshareConversation.mockResolvedValueOnce({ ok: false, reason: "error" });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/share`, {
+          method: "DELETE",
+        }),
+      );
+      expect(response.status).toBe(500);
+
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.error).toBe("internal_error");
+    });
+
+    it("returns 404 when no internal DB", async () => {
+      delete process.env.DATABASE_URL;
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/share`, {
+          method: "DELETE",
+        }),
+      );
+      expect(response.status).toBe(404);
     });
   });
 
@@ -763,6 +802,40 @@ describe("conversations routes", () => {
         new Request("http://localhost/api/public/conversations/abcdefghij1234567890x"),
       );
       expect(response.status).toBe(404);
+    });
+
+    it("returns 500 when getSharedConversation returns error (DB failure)", async () => {
+      mockGetSharedConversation.mockResolvedValueOnce({ ok: false, reason: "error" });
+
+      const response = await app.fetch(
+        new Request("http://localhost/api/public/conversations/abcdefghij1234567890x"),
+      );
+      expect(response.status).toBe(500);
+
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.error).toBe("internal_error");
+    });
+
+    it("returns 429 when public rate limit exceeded", async () => {
+      // Override getClientIP to return a consistent IP for rate limiting
+      mockGetClientIP.mockReturnValue("1.2.3.4");
+
+      // Exhaust the rate limit (60 requests per minute)
+      for (let i = 0; i < 60; i++) {
+        mockGetSharedConversation.mockResolvedValueOnce({ ok: false, reason: "not_found" });
+        await app.fetch(
+          new Request("http://localhost/api/public/conversations/abcdefghij1234567890x"),
+        );
+      }
+
+      // The 61st request should be rate limited
+      const response = await app.fetch(
+        new Request("http://localhost/api/public/conversations/abcdefghij1234567890x"),
+      );
+      expect(response.status).toBe(429);
+
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.error).toBe("rate_limited");
     });
 
     it("strips message IDs from public response", async () => {

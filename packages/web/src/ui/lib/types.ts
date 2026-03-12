@@ -38,6 +38,13 @@ export interface ConversationWithMessages extends Conversation {
   messages: Message[];
 }
 
+// --- Share types ---
+
+export interface ShareLink {
+  token: string;
+  url: string;
+}
+
 // --- Scheduled task types (from @atlas/api/lib/scheduled-task-types) ---
 
 export type DeliveryChannel = "email" | "slack" | "webhook";

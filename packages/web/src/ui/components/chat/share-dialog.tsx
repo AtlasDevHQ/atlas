@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
-import { Share2, Copy, Check, LinkOff } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Share2, Copy, Check, LinkOff, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Dialog,
   DialogContent,
@@ -24,15 +25,31 @@ export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogP
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [shared, setShared] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Reset state when conversation changes
+  useEffect(() => {
+    setShareUrl(null);
+    setShared(false);
+    setLoading(false);
+    setCopied(false);
+    setError(null);
+    setOpen(false);
+  }, [conversationId]);
 
   async function handleShare() {
     setLoading(true);
+    setError(null);
     try {
       const result = await onShare(conversationId);
       if (result) {
         setShareUrl(result.url);
         setShared(true);
+      } else {
+        setError("Failed to create share link. Please try again.");
       }
+    } catch {
+      setError("Failed to create share link. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -40,12 +57,17 @@ export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogP
 
   async function handleUnshare() {
     setLoading(true);
+    setError(null);
     try {
       const ok = await onUnshare(conversationId);
       if (ok) {
         setShareUrl(null);
         setShared(false);
+      } else {
+        setError("Failed to remove share link. Please try again.");
       }
+    } catch {
+      setError("Failed to remove share link. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -63,10 +85,12 @@ export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogP
       input.value = shareUrl;
       document.body.appendChild(input);
       input.select();
-      document.execCommand("copy");
+      const ok = document.execCommand("copy");
       document.body.removeChild(input);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      if (ok) {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      }
     }
   }
 
@@ -74,6 +98,7 @@ export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogP
     setOpen(next);
     if (!next) {
       setCopied(false);
+      setError(null);
     }
   }
 
@@ -104,13 +129,19 @@ export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogP
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-3">
+          {error && (
+            <div className="flex items-center gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
+              <AlertCircle className="h-4 w-4 shrink-0" />
+              {error}
+            </div>
+          )}
           {shared && shareUrl ? (
             <>
               <div className="flex items-center gap-2">
-                <input
+                <Input
                   readOnly
                   value={shareUrl}
-                  className="flex-1 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                  className="flex-1"
                 />
                 <Button size="sm" variant="outline" onClick={handleCopy}>
                   {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}

@@ -126,6 +126,11 @@ export interface ListConversationsOptions {
   starred?: boolean;
 }
 
+export interface ShareConversationResponse {
+  token: string;
+  url: string;
+}
+
 // ---------------------------------------------------------------------------
 // Scheduled Task types
 // ---------------------------------------------------------------------------
@@ -774,9 +779,9 @@ export function createAtlasClient(options: AtlasClientOptions) {
       },
 
       /** Generate a share link for a conversation. */
-      async share(id: string): Promise<{ token: string; url: string }> {
+      async share(id: string): Promise<ShareConversationResponse> {
         const res = await post(`/api/v1/conversations/${encodeURIComponent(id)}/share`, {});
-        return unwrap<{ token: string; url: string }>(res);
+        return unwrap<ShareConversationResponse>(res);
       },
 
       /** Revoke sharing for a conversation. */

@@ -515,6 +515,7 @@ export function AtlasChat() {
                                   onStar={convos.starConversation}
                                 />
                                 <ShareDialog
+                                  key={conversationId}
                                   conversationId={conversationId}
                                   onShare={convos.shareConversation}
                                   onUnshare={convos.unshareConversation}

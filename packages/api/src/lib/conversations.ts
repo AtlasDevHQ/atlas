@@ -1,10 +1,12 @@
 /**
- * Conversation persistence — CRUD operations for conversations and messages.
+ * Conversation persistence — CRUD operations for conversations and messages,
+ * plus share/unshare operations for public link sharing.
  *
- * Functions that need callers to distinguish failure modes (get, delete, star)
- * return discriminated union results (CrudResult / CrudDataResult). Functions
- * that are fire-and-forget (createConversation, addMessage) still return
- * null/void. Failures are logged but never propagate as exceptions.
+ * Functions that need callers to distinguish failure modes (get, delete, star,
+ * share, unshare, getShared) return discriminated union results
+ * (CrudResult / CrudDataResult). Functions that are fire-and-forget
+ * (createConversation, addMessage) still return null/void. Failures are
+ * logged but never propagate as exceptions.
  */
 
 import * as crypto from "crypto";
@@ -331,7 +333,13 @@ export async function unshareConversation(
   }
 }
 
-/** Fetch a shared conversation by token. Returns not_found if expired or missing. No auth required. */
+/**
+ * Fetch a shared conversation by token. Returns not_found if token is missing
+ * or expired. No auth required.
+ *
+ * Note: `share_expires_at` is reserved for future use — `shareConversation`
+ * does not currently set it, so the expiry check is a no-op for now.
+ */
 export async function getSharedConversation(
   token: string,
 ): Promise<CrudDataResult<ConversationWithMessages>> {

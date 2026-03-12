@@ -90,9 +90,12 @@ The public roadmap is a prose summary (no checkboxes). Keep it in sync with the 
 - **Issues missing milestone** -> assign to the appropriate milestone:
   - 0.1.0 — Documentation & DX (CLOSED)
   - 0.2.0 — Plugin Ecosystem (CLOSED)
-  - 0.3.0 — Admin & Operations
-  - 0.4.0 — UI & Collaboration
-  - 0.5.0 — Enterprise
+  - 0.3.0 — Admin & Operations (CLOSED)
+  - 0.4.0 — Chat Experience (CLOSED)
+  - 0.5.0 — Launch
+  - 0.6.0 — Governance & Integrations
+  - 0.7.0 — Performance & Scale
+  - 0.8.0 — Intelligence & Learning
 - Parent issues with shipped sub-issues -> add status comment listing what shipped and what remains
 
 ### 2e. CI health

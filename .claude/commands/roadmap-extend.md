@@ -36,9 +36,10 @@ Research these areas by reading relevant source files:
 - Look for plugin types defined in the SDK but without reference implementations
 
 ### 2b. Competitive landscape
-- What do similar products offer? (Metabase, Mode, Looker, Hex, Evidence, Lightdash)
+- Read `.claude/research/design/competitive-landscape.md` for the full analysis (competitors, positioning, licensing strategy, RAG vs semantic learning, action items)
 - Focus on differentiators Atlas could pursue vs. table-stakes features it's missing
-- Consider the text-to-SQL and AI-data-analyst space specifically
+- Key competitors: WrenAI (AGPL, Docker-only), Vanna (Python library, RAG), Cube D3 (enterprise semantic layer), nao (YC-backed, early)
+- The unmentioned threat: general-purpose AI tools (Cursor, Claude Desktop) with raw database MCP connections
 
 ### 2c. Developer platform potential
 - What would make Atlas attractive as a platform others build on?

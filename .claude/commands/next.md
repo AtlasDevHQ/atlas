@@ -126,9 +126,14 @@ IMPORTANT — Update the project board as you work:
 **Milestone reference:**
 - 0.1.0 — Documentation & DX (CLOSED)
 - 0.2.0 — Plugin Ecosystem (CLOSED)
-- 0.3.0 — Admin & Operations
-- 0.4.0 — UI & Collaboration
-- 0.5.0 — Enterprise
+- 0.3.0 — Admin & Operations (CLOSED)
+- 0.4.0 — Chat Experience (CLOSED)
+- 0.5.0 — Launch
+- 0.6.0 — Governance & Integrations
+- 0.7.0 — Performance & Scale
+- 0.8.0 — Intelligence & Learning
+
+**Strategic context:** `.claude/research/design/competitive-landscape.md` has competitive analysis and rationale for milestone ordering. The 0.5.0 Launch milestone prioritizes adoption (embeddable widget, BigQuery, Python SDK) over enterprise features.
 
 **Board field IDs:**
 - Project: `PVT_kwDOD8aze84BRASF`

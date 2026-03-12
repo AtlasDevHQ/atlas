@@ -1,7 +1,8 @@
 You are researching the Atlas codebase to answer a question or plan a change.
 
-**Start with the ROADMAP** for high-level context:
-- `.claude/research/ROADMAP.md` — current milestones, shipped work, what's next
+**Start with these for high-level context:**
+- `.claude/research/ROADMAP.md` — current milestones, shipped work, what's next. The active milestone (0.5.0 — Launch) is a 3-week sprint ending early April focused on embeddable widget, BigQuery, Python SDK, and launch prep
+- `.claude/research/design/competitive-landscape.md` — competitive analysis, positioning, licensing strategy, strategic rationale for roadmap ordering
 
 **Module map:**
 

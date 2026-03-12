@@ -71,7 +71,7 @@
 .delay-700 { animation-delay: 700ms; }
 .delay-800 { animation-delay: 800ms; }
 
-/* Widget showcase animations */
+/* Widget showcase animations — used by components/widget-showcase.tsx */
 @keyframes showcase-dot-bounce {
   0%, 100% { opacity: 0.3; }
   50% { opacity: 1; }

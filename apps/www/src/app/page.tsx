@@ -360,7 +360,7 @@ export default function App() {
         </div>
       </section>
 
-      {/* Live showcase */}
+      {/* Widget showcase */}
       <section className="mx-auto max-w-5xl px-6 pb-20 md:pb-28">
         <div className="grid items-start gap-12 md:grid-cols-2 md:gap-8">
           <div>

@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 
 /* ------------------------------------------------------------------ */
-/*  Static conversation data — cybersecurity SaaS demo dataset         */
+/*  Static conversation data — illustrative, not synced with demo DB   */
 /* ------------------------------------------------------------------ */
 
 interface ToolCall {
@@ -21,15 +21,16 @@ interface ChartBar {
   value: number;
 }
 
-interface Step {
-  type: "user" | "assistant" | "tool" | "table" | "chart";
-  content?: string;
-  toolCall?: ToolCall;
-  table?: TableResult;
-  chart?: ChartBar[];
-  /** ms before this step appears (relative to previous step completing) */
-  delay: number;
-}
+type Step =
+  | { type: "user"; content: string; delay: number }
+  | { type: "assistant"; content: string; delay: number }
+  | { type: "tool"; toolCall: ToolCall; delay: number }
+  | { type: "table"; table: TableResult; delay: number }
+  | { type: "chart"; chart: ChartBar[]; delay: number };
+
+const USER_TYPING_SPEED = 22;
+const ASSISTANT_TYPING_SPEED = 12;
+const TYPING_BUFFER = 200;
 
 const STEPS: Step[] = [
   {
@@ -84,6 +85,17 @@ const STEPS: Step[] = [
   },
 ];
 
+/** Returns the typing animation duration for a step, or 0 for non-typed steps. */
+function stepAnimationTime(step: Step): number {
+  if (step.type === "user") {
+    return step.content.length * USER_TYPING_SPEED + TYPING_BUFFER;
+  }
+  if (step.type === "assistant") {
+    return step.content.length * ASSISTANT_TYPING_SPEED + TYPING_BUFFER;
+  }
+  return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Typing animation hook                                              */
 /* ------------------------------------------------------------------ */
@@ -130,7 +142,7 @@ function TypingDots() {
 }
 
 function UserMessage({ text, active }: { text: string; active: boolean }) {
-  const { displayed, done } = useTypewriter(text, active, 22);
+  const { displayed, done } = useTypewriter(text, active, USER_TYPING_SPEED);
   return (
     <div className="flex justify-end">
       <div className="max-w-[85%] rounded-2xl rounded-br-md bg-brand/15 px-4 py-2.5 text-sm text-zinc-200">
@@ -142,7 +154,7 @@ function UserMessage({ text, active }: { text: string; active: boolean }) {
 }
 
 function AssistantMessage({ text, active }: { text: string; active: boolean }) {
-  const { displayed, done } = useTypewriter(text, active, 12);
+  const { displayed, done } = useTypewriter(text, active, ASSISTANT_TYPING_SPEED);
   return (
     <div className="flex">
       <div className="max-w-[85%] rounded-2xl rounded-bl-md bg-zinc-800/60 px-4 py-2.5 text-sm leading-relaxed text-zinc-300">
@@ -205,7 +217,9 @@ function ResultTable({ table }: { table: TableResult }) {
 }
 
 function BarChart({ bars }: { bars: ChartBar[] }) {
+  if (bars.length === 0) return null;
   const max = Math.max(...bars.map((b) => b.value));
+  const safeMax = max > 0 ? max : 1;
   return (
     <div className="flex">
       <div className="max-w-[85%] overflow-hidden rounded-xl border border-zinc-800/60 bg-zinc-900/30 p-4">
@@ -219,7 +233,7 @@ function BarChart({ bars }: { bars: ChartBar[] }) {
               <div className="relative h-5 flex-1 overflow-hidden rounded bg-zinc-800/50">
                 <div
                   className="showcase-bar absolute inset-y-0 left-0 rounded bg-brand/40"
-                  style={{ width: `${(bar.value / max) * 100}%` }}
+                  style={{ width: `${(bar.value / safeMax) * 100}%` }}
                 />
               </div>
               <span className="w-14 shrink-0 font-mono text-[10px] text-zinc-400">
@@ -233,25 +247,47 @@ function BarChart({ bars }: { bars: ChartBar[] }) {
   );
 }
 
+function renderStep(step: Step, i: number, isLatest: boolean) {
+  switch (step.type) {
+    case "user":
+      return <UserMessage key={i} text={step.content} active={isLatest} />;
+    case "assistant":
+      return <AssistantMessage key={i} text={step.content} active={isLatest} />;
+    case "tool":
+      return <ToolCallBadge key={i} toolCall={step.toolCall} />;
+    case "table":
+      return <ResultTable key={i} table={step.table} />;
+    case "chart":
+      return <BarChart key={i} bars={step.chart} />;
+    default: {
+      const _exhaustive: never = step;
+      return _exhaustive;
+    }
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /*  Main showcase component                                            */
 /* ------------------------------------------------------------------ */
 
 export function WidgetShowcase() {
   const containerRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const [visibleCount, setVisibleCount] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [hasPlayed, setHasPlayed] = useState(false);
+  const hasStartedRef = useRef(false);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Trigger playback on scroll into view
+  // Start playback when 30% of the widget scrolls into view (one-shot)
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
 
     const observer = new IntersectionObserver(
       ([entry]) => {
-        if (entry.isIntersecting && !isPlaying && !hasPlayed) {
+        if (entry.isIntersecting && !hasStartedRef.current) {
+          hasStartedRef.current = true;
           setIsPlaying(true);
         }
       },
@@ -259,7 +295,7 @@ export function WidgetShowcase() {
     );
     observer.observe(el);
     return () => observer.disconnect();
-  }, [isPlaying, hasPlayed]);
+  }, []);
 
   // Step through the conversation
   useEffect(() => {
@@ -272,24 +308,28 @@ export function WidgetShowcase() {
 
     const step = STEPS[visibleCount];
     const baseDelay = step.delay;
-    // For user messages, add time for typing animation
-    const typingTime = step.type === "user" && step.content ? step.content.length * 22 + 200 : 0;
-    const assistantTime = step.type === "assistant" && step.content ? step.content.length * 12 + 200 : 0;
 
-    // Show this step after its delay
+    // Wait for the previous step's typing animation to finish before advancing
+    const prevStep = visibleCount > 0 ? STEPS[visibleCount - 1] : null;
+    const prevAnimationTime = prevStep ? stepAnimationTime(prevStep) : 0;
+
     timeoutRef.current = setTimeout(
-      () => {
-        setVisibleCount((c) => c + 1);
-      },
-      visibleCount === 0 ? baseDelay : baseDelay + typingTime + assistantTime,
+      () => setVisibleCount((c) => c + 1),
+      baseDelay + prevAnimationTime,
     );
 
-    return () => {
-      if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    };
+    return () => clearTimeout(timeoutRef.current!);
   }, [isPlaying, visibleCount]);
 
+  // Auto-scroll to bottom as new steps appear
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [visibleCount]);
+
   function replay() {
+    hasStartedRef.current = true;
     setVisibleCount(0);
     setHasPlayed(false);
     setIsPlaying(true);
@@ -297,7 +337,6 @@ export function WidgetShowcase() {
 
   return (
     <div ref={containerRef} className="mx-auto w-full max-w-md">
-      {/* Widget chrome */}
       <div className="overflow-hidden rounded-2xl border border-zinc-800/60 bg-zinc-950 shadow-2xl shadow-black/30">
         {/* Title bar */}
         <div className="flex items-center gap-2 border-b border-zinc-800/60 px-4 py-3">
@@ -313,7 +352,7 @@ export function WidgetShowcase() {
         </div>
 
         {/* Chat area */}
-        <div className="flex h-[420px] flex-col gap-3 overflow-hidden px-4 py-4 sm:h-[460px]">
+        <div ref={scrollRef} className="flex h-[420px] flex-col gap-3 overflow-y-auto px-4 py-4 sm:h-[460px]">
           {/* Welcome message (always visible) */}
           <div className="flex">
             <div className="rounded-2xl rounded-bl-md bg-zinc-800/60 px-4 py-2.5 text-sm text-zinc-400">
@@ -323,19 +362,7 @@ export function WidgetShowcase() {
 
           {STEPS.slice(0, visibleCount).map((step, i) => {
             const isLatest = i === visibleCount - 1 && isPlaying;
-
-            switch (step.type) {
-              case "user":
-                return <UserMessage key={i} text={step.content!} active={isLatest} />;
-              case "assistant":
-                return <AssistantMessage key={i} text={step.content!} active={isLatest} />;
-              case "tool":
-                return <ToolCallBadge key={i} toolCall={step.toolCall!} />;
-              case "table":
-                return <ResultTable key={i} table={step.table!} />;
-              case "chart":
-                return <BarChart key={i} bars={step.chart!} />;
-            }
+            return renderStep(step, i, isLatest);
           })}
 
           {/* Thinking indicator while playing between steps */}

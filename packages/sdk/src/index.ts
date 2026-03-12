@@ -28,6 +28,7 @@ export {
   type ListConversationsOptions,
   type ChatMessage,
   type ChatOptions,
+  type ShareConversationResponse,
   type StreamEvent,
   type StreamFinishReason,
   type StreamQueryOptions,

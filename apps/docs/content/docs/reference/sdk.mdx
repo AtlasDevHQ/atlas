@@ -96,7 +96,7 @@ interface QueryResponse {
 
 ## Chat
 
-Stream a chat response using the AI SDK Data Stream Protocol.
+Stream a chat response using the AI SDK UI Message Stream Protocol.
 
 ```typescript
 const response = await atlas.chat([
@@ -408,6 +408,7 @@ import type {
   ConversationWithMessages,
   ListConversationsResponse,
   ListConversationsOptions,
+  ShareConversationResponse,
 
   // Scheduled Tasks
   DeliveryChannel,

@@ -19,7 +19,7 @@ Atlas is a headless API. The built-in `@atlas/web` package is a Next.js referenc
 
 The API server (`@atlas/api`) is a standalone Hono app that:
 
-- Streams chat responses using the [Vercel AI SDK Data Stream Protocol](https://sdk.vercel.ai/docs/ai-sdk-ui/stream-protocol#data-stream-protocol)
+- Streams chat responses using the [Vercel AI SDK UI Message Stream Protocol](https://sdk.vercel.ai/docs/ai-sdk-ui/stream-protocol#ui-message-stream-protocol)
 - Accepts `Authorization: Bearer <key>` headers for API key auth
 - Returns CORS headers (configurable via `ATLAS_CORS_ORIGIN`)
 - Exposes tool call parts (explore, executeSQL) as structured data in the stream

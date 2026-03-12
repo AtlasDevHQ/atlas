@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
-import { renderHook, waitFor } from "@testing-library/react";
+import { renderHook, waitFor, act } from "@testing-library/react";
 import { AtlasProvider } from "../provider";
 import { useAtlasConversations } from "../use-atlas-conversations";
 import type { ReactNode } from "react";
@@ -29,8 +29,17 @@ const fetchMock = mock(() =>
 const originalFetch = globalThis.fetch;
 
 beforeEach(() => {
-  globalThis.fetch = fetchMock as unknown as typeof fetch;
+  // mockClear only clears call history, not implementation — restore the default
+  fetchMock.mockImplementation(() =>
+    Promise.resolve(
+      new Response(
+        JSON.stringify({ conversations: mockConversations, total: 1 }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    ),
+  );
   fetchMock.mockClear();
+  globalThis.fetch = fetchMock as unknown as typeof fetch;
 });
 
 afterEach(() => {
@@ -54,18 +63,18 @@ describe("useAtlasConversations", () => {
 
     expect(result.current.conversations).toEqual([]);
     expect(result.current.total).toBe(0);
-    expect(result.current.loading).toBe(false);
+    expect(result.current.isLoading).toBe(false);
     expect(result.current.available).toBe(true);
     expect(result.current.selectedId).toBeNull();
   });
 
-  it("fetches conversations when enabled", async () => {
+  it("fetches conversations with correct auth headers", async () => {
     const { result } = renderHook(
       () => useAtlasConversations({ enabled: true }),
       { wrapper },
     );
 
-    await result.current.fetchList();
+    await result.current.refresh();
 
     await waitFor(() => {
       expect(result.current.conversations).toHaveLength(1);
@@ -73,6 +82,12 @@ describe("useAtlasConversations", () => {
 
     expect(result.current.conversations[0].id).toBe("conv-1");
     expect(result.current.total).toBe(1);
+
+    // Verify fetch called with correct URL and auth header
+    const calls = fetchMock.mock.calls as unknown as [string, RequestInit][];
+    expect(calls[0][0]).toBe("https://api.example.com/api/v1/conversations?limit=50");
+    const headers = calls[0][1]?.headers as Record<string, string>;
+    expect(headers["Authorization"]).toBe("Bearer test-key");
   });
 
   it("disables on 404 response", async () => {
@@ -85,24 +100,60 @@ describe("useAtlasConversations", () => {
       { wrapper },
     );
 
-    await result.current.fetchList();
+    await result.current.refresh();
 
     await waitFor(() => {
       expect(result.current.available).toBe(false);
     });
   });
 
-  it("exposes CRUD methods", () => {
+  it("deleteConversation removes from local state", async () => {
     const { result } = renderHook(
-      () => useAtlasConversations({ enabled: false }),
+      () => useAtlasConversations({ enabled: true }),
       { wrapper },
     );
 
-    expect(typeof result.current.fetchList).toBe("function");
-    expect(typeof result.current.loadConversation).toBe("function");
-    expect(typeof result.current.deleteConversation).toBe("function");
-    expect(typeof result.current.starConversation).toBe("function");
-    expect(typeof result.current.refresh).toBe("function");
-    expect(typeof result.current.setSelectedId).toBe("function");
+    await act(async () => {
+      await result.current.refresh();
+    });
+    expect(result.current.conversations).toHaveLength(1);
+
+    // Mock DELETE response
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(new Response("", { status: 200 })),
+    );
+
+    let deleted = false;
+    await act(async () => {
+      deleted = await result.current.deleteConversation("conv-1");
+    });
+    expect(deleted).toBe(true);
+    expect(result.current.conversations).toHaveLength(0);
+    expect(result.current.total).toBe(0);
+  });
+
+  it("starConversation does optimistic update and rolls back on failure", async () => {
+    const { result } = renderHook(
+      () => useAtlasConversations({ enabled: true }),
+      { wrapper },
+    );
+
+    await act(async () => {
+      await result.current.refresh();
+    });
+    expect(result.current.conversations).toHaveLength(1);
+
+    // Mock PATCH to fail
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(new Response("", { status: 500 })),
+    );
+
+    let starred = true;
+    await act(async () => {
+      starred = await result.current.starConversation("conv-1", true);
+    });
+    expect(starred).toBe(false);
+    // Should roll back to unstarred
+    expect(result.current.conversations[0].starred).toBe(false);
   });
 });

@@ -4,7 +4,6 @@ import { useAtlasTheme } from "../use-atlas-theme";
 
 describe("useAtlasTheme", () => {
   beforeEach(() => {
-    // Reset to system default
     const { result } = renderHook(() => useAtlasTheme());
     act(() => {
       result.current.setTheme("system");
@@ -17,7 +16,7 @@ describe("useAtlasTheme", () => {
     expect(typeof result.current.isDark).toBe("boolean");
   });
 
-  it("exposes setTheme function", () => {
+  it("sets theme to dark", () => {
     const { result } = renderHook(() => useAtlasTheme());
 
     act(() => {
@@ -44,8 +43,14 @@ describe("useAtlasTheme", () => {
     expect(result.current.isDark).toBe(true);
   });
 
-  it("exposes applyBrandColor function", () => {
+  it("applyBrandColor sets CSS custom property", () => {
     const { result } = renderHook(() => useAtlasTheme());
-    expect(typeof result.current.applyBrandColor).toBe("function");
+
+    act(() => {
+      result.current.applyBrandColor("oklch(0.759 0.148 167.71)");
+    });
+
+    const value = document.documentElement.style.getPropertyValue("--atlas-brand");
+    expect(value).toBe("oklch(0.759 0.148 167.71)");
   });
 });

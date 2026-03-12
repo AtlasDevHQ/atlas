@@ -8,7 +8,11 @@ export type {
 
 // Hooks
 export { useAtlasChat } from "./use-atlas-chat";
-export type { UseAtlasChatOptions, UseAtlasChatReturn } from "./use-atlas-chat";
+export type {
+  AtlasChatStatus,
+  UseAtlasChatOptions,
+  UseAtlasChatReturn,
+} from "./use-atlas-chat";
 
 export { useAtlasAuth } from "./use-atlas-auth";
 export type { UseAtlasAuthReturn } from "./use-atlas-auth";

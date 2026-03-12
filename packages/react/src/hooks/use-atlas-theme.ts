@@ -17,7 +17,7 @@ export interface UseAtlasThemeReturn {
   isDark: boolean;
   /** Set the theme mode. Persists to localStorage. */
   setTheme: (mode: ThemeMode) => void;
-  /** Apply a brand color via CSS custom property --atlas-brand. */
+  /** Apply a brand color (oklch format, e.g. "oklch(0.759 0.148 167.71)") via CSS custom property --atlas-brand. */
   applyBrandColor: (color: string) => void;
 }
 

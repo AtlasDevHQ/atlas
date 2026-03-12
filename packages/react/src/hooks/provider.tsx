@@ -8,7 +8,7 @@ export type { AtlasAuthClient };
 export interface AtlasProviderProps {
   /** Atlas API server URL (e.g. "https://api.example.com" or "" for same-origin). */
   apiUrl: string;
-  /** API key for simple-key auth mode. Sent as Bearer token. */
+  /** API key for simple-key auth mode. Sent as Bearer token. Accessible in context by all hooks. */
   apiKey?: string;
   /** Custom auth client for managed auth mode (better-auth compatible). */
   authClient?: AtlasAuthClient;
@@ -22,11 +22,23 @@ export interface AtlasContextValue {
   isCrossOrigin: boolean;
 }
 
-/** No-op auth client for non-managed auth modes. */
+/** No-op auth client for non-managed auth modes. Warns when auth operations are attempted. */
 const noopAuthClient: AtlasAuthClient = {
-  signIn: { email: async () => ({ error: { message: "Not supported" } }) },
-  signUp: { email: async () => ({ error: { message: "Not supported" } }) },
-  signOut: async () => {},
+  signIn: {
+    email: async () => {
+      console.warn("[Atlas] signIn called but no authClient was provided to AtlasProvider");
+      return { error: { message: "Auth client not configured" } };
+    },
+  },
+  signUp: {
+    email: async () => {
+      console.warn("[Atlas] signUp called but no authClient was provided to AtlasProvider");
+      return { error: { message: "Auth client not configured" } };
+    },
+  },
+  signOut: async () => {
+    console.warn("[Atlas] signOut called but no authClient was provided to AtlasProvider");
+  },
   useSession: () => ({ data: null, isPending: false }),
 };
 
@@ -43,7 +55,8 @@ export function useAtlasContext(): AtlasContextValue {
  * Lightweight provider for headless Atlas hooks.
  *
  * Wraps your app and supplies API URL, auth credentials, and an optional
- * better-auth client to all Atlas hooks.
+ * better-auth client to all Atlas hooks. Derives isCrossOrigin from apiUrl
+ * to configure credential handling for cross-origin requests.
  */
 export function AtlasProvider({
   apiUrl,

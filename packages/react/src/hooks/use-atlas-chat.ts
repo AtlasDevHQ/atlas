@@ -5,31 +5,32 @@ import { useChat, type UIMessage } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import { useAtlasContext } from "./provider";
 
+export type AtlasChatStatus = "submitted" | "streaming" | "ready" | "error";
+
 export interface UseAtlasChatOptions {
-  /** Initial conversation ID to resume. */
-  conversationId?: string;
+  /** Conversation ID to associate with this chat session. The server will append messages to this conversation. To load prior messages, use loadConversation() from useAtlasConversations and pass them via setMessages. */
+  initialConversationId?: string;
   /** Called when the server assigns or changes the conversation ID. */
   onConversationIdChange?: (id: string) => void;
 }
 
 export interface UseAtlasChatReturn {
-  /** Chat messages. */
   messages: UIMessage[];
-  /** Replace messages (e.g. when loading a saved conversation). */
-  setMessages: (messages: UIMessage[]) => void;
-  /** Send a text message. */
+  /** Replace all messages, or update via callback `(prev) => next`. */
+  setMessages: (messages: UIMessage[] | ((prev: UIMessage[]) => UIMessage[])) => void;
+  /** Send a text message. Rejects on failure (also surfaces via `error`). */
   sendMessage: (text: string) => Promise<void>;
   /** Current input value (managed by the hook). */
   input: string;
   /** Update the input value. */
   setInput: (input: string) => void;
-  /** Chat status: "ready", "streaming", "submitted", or "error". */
-  status: string;
+  /** Chat status from the AI SDK. */
+  status: AtlasChatStatus;
   /** Whether the chat is currently loading (streaming or submitted). */
   isLoading: boolean;
   /** Last error, if any. */
   error: Error | null;
-  /** Current conversation ID (assigned by the server). */
+  /** Current conversation ID. Initially set from options, updated when the server returns an x-conversation-id header. */
   conversationId: string | null;
   /** Manually set the conversation ID. */
   setConversationId: (id: string | null) => void;
@@ -38,7 +39,7 @@ export interface UseAtlasChatReturn {
 export function useAtlasChat(options: UseAtlasChatOptions = {}): UseAtlasChatReturn {
   const { apiUrl, apiKey, isCrossOrigin } = useAtlasContext();
   const [conversationId, setConversationId] = useState<string | null>(
-    options.conversationId ?? null,
+    options.initialConversationId ?? null,
   );
   const conversationIdRef = useRef(conversationId);
   conversationIdRef.current = conversationId;
@@ -76,8 +77,14 @@ export function useAtlasChat(options: UseAtlasChatOptions = {}): UseAtlasChatRet
   const [input, setInput] = useState("");
 
   const sendMessage = async (text: string) => {
+    const previousInput = input;
     setInput("");
-    await rawSend({ text });
+    try {
+      await rawSend({ text });
+    } catch (err) {
+      setInput(previousInput);
+      throw err;
+    }
   };
 
   return {
@@ -86,7 +93,7 @@ export function useAtlasChat(options: UseAtlasChatOptions = {}): UseAtlasChatRet
     sendMessage,
     input,
     setInput,
-    status,
+    status: status as AtlasChatStatus,
     isLoading: status === "streaming" || status === "submitted",
     error: error ?? null,
     conversationId,

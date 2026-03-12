@@ -27,12 +27,18 @@ describe("AtlasProvider", () => {
     }).toThrow("useAtlasContext must be used within <AtlasProvider>");
   });
 
-  it("provides a noop auth client by default", () => {
+  it("noop auth client warns and returns error on use", async () => {
     const { result } = renderHook(() => useAtlasContext(), { wrapper });
 
     const session = result.current.authClient.useSession();
     expect(session.data).toBeNull();
     expect(session.isPending).toBe(false);
+
+    const signInResult = await result.current.authClient.signIn.email({
+      email: "test@test.com",
+      password: "pass",
+    });
+    expect(signInResult.error?.message).toBe("Auth client not configured");
   });
 
   it("detects same-origin URLs", () => {
@@ -51,7 +57,7 @@ describe("AtlasProvider", () => {
     expect(result.current.isCrossOrigin).toBe(false);
   });
 
-  it("accepts a custom auth client", async () => {
+  it("accepts a custom auth client", () => {
     const customAuthClient = {
       signIn: { email: async () => ({ error: null }) },
       signUp: { email: async () => ({ error: null }) },

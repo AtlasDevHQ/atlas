@@ -64,10 +64,16 @@
     "xlsx": ">=0.18.0"
   },
   "peerDependenciesMeta": {
+    "lucide-react": {
+      "optional": true
+    },
     "react-syntax-highlighter": {
       "optional": true
     },
     "recharts": {
+      "optional": true
+    },
+    "tailwindcss": {
       "optional": true
     },
     "xlsx": {

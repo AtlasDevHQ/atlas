@@ -1,14 +1,27 @@
 "use client";
 
+import type { UIMessage } from "@ai-sdk/react";
 import { useAtlasContext } from "./provider";
-import { useConversations, type UseConversationsReturn } from "./use-conversations";
+import { useConversations } from "./use-conversations";
+import type { Conversation } from "../lib/types";
 
 export interface UseAtlasConversationsOptions {
-  /** Enable fetching conversations. Defaults to true. */
+  /** When false, refresh() becomes a no-op. Defaults to true. */
   enabled?: boolean;
 }
 
-export type UseAtlasConversationsReturn = UseConversationsReturn;
+export interface UseAtlasConversationsReturn {
+  conversations: Conversation[];
+  total: number;
+  isLoading: boolean;
+  available: boolean;
+  selectedId: string | null;
+  setSelectedId: (id: string | null) => void;
+  refresh: () => Promise<void>;
+  loadConversation: (id: string) => Promise<UIMessage[] | null>;
+  deleteConversation: (id: string) => Promise<boolean>;
+  starConversation: (id: string, starred: boolean) => Promise<boolean>;
+}
 
 /**
  * Manage conversation history with auth automatically wired from AtlasProvider.
@@ -22,7 +35,7 @@ export function useAtlasConversations(
   const { apiUrl, apiKey, isCrossOrigin } = useAtlasContext();
   const { enabled = true } = options;
 
-  return useConversations({
+  const inner = useConversations({
     apiUrl,
     enabled,
     getHeaders: () => {
@@ -32,4 +45,17 @@ export function useAtlasConversations(
     },
     getCredentials: () => (isCrossOrigin ? "include" : "same-origin"),
   });
+
+  return {
+    conversations: inner.conversations,
+    total: inner.total,
+    isLoading: inner.loading,
+    available: inner.available,
+    selectedId: inner.selectedId,
+    setSelectedId: inner.setSelectedId,
+    refresh: inner.refresh,
+    loadConversation: inner.loadConversation,
+    deleteConversation: inner.deleteConversation,
+    starConversation: inner.starConversation,
+  };
 }

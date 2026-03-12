@@ -235,6 +235,61 @@ describe("GET /widget.js", () => {
     expect(script).toContain("postMessage(msg,origin)");
   });
 
+  // --- Security ---
+
+  it("accepts host page API messages only from same window", async () => {
+    const script = await getScript();
+    // The public API listener must check e.source!==window (reject cross-origin)
+    expect(script).toContain("e.source!==window)return");
+  });
+
+  it("checks origin for widget iframe messages", async () => {
+    const script = await getScript();
+    expect(script).toContain("e.origin!==origin)return");
+  });
+
+  // --- Error handling ---
+
+  it("handles atlas:error messages from widget iframe", async () => {
+    const script = await getScript();
+    expect(script).toContain('"atlas:error"');
+    expect(script).toContain("[Atlas] Widget error:");
+  });
+
+  it("warns on invalid setTheme value", async () => {
+    const script = await getScript();
+    expect(script).toContain("[Atlas] Invalid theme value:");
+  });
+
+  it("warns on invalid setAuth payload", async () => {
+    const script = await getScript();
+    expect(script).toContain("[Atlas] Invalid auth payload: token must be a string");
+  });
+
+  it("handles iframe load errors", async () => {
+    const script = await getScript();
+    expect(script).toContain("[Atlas] Failed to load widget iframe");
+  });
+
+  // --- Query param isolation ---
+
+  it("ignores query parameters (static output)", async () => {
+    const normal = await getScript();
+    const res = await app.fetch(
+      new Request("http://localhost/widget.js?theme=%3Cscript%3Ealert(1)%3C/script%3E"),
+    );
+    const withParams = await res.text();
+    expect(normal).toBe(withParams);
+  });
+
+  // --- Syntax validation ---
+
+  it("produces syntactically valid JavaScript", async () => {
+    const script = await getScript();
+    // Wrap in a function to avoid executing DOM APIs, but verify it parses
+    expect(() => new Function(script)).not.toThrow();
+  });
+
   // --- CSS / Styling ---
 
   it("injects scoped CSS styles", async () => {

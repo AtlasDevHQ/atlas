@@ -3,10 +3,18 @@
  * a floating chat bubble and iframe overlay into any host page.
  *
  * GET /widget.js — returns the loader script with application/javascript content type.
- * The script reads data-* attributes from its own <script> tag for configuration.
+ * The script reads data-* attributes from its own <script> tag for configuration:
+ *   data-api-url  (required) — base URL of the Atlas API
+ *   data-api-key  (optional) — API key for auth
+ *   data-theme    (optional, default "light") — "light" or "dark"
+ *   data-position (optional, default "bottom-right") — "bottom-right" or "bottom-left"
  *
  * Intended usage:
- *   <script src="https://api.example.com/widget.js" data-api-url="https://api.example.com"></script>
+ *   <script src="https://api.example.com/widget.js"
+ *     data-api-url="https://api.example.com"
+ *     data-api-key="sk-..."
+ *     data-theme="dark"
+ *     data-position="bottom-left"></script>
  */
 
 import { Hono } from "hono";
@@ -131,6 +139,7 @@ function sendToWidget(msg){
   if(iframe.contentWindow)iframe.contentWindow.postMessage(msg,origin);
 }
 
+/* Messages from the widget iframe (origin-checked) */
 window.addEventListener("message",function(e){
   if(!e.origin||e.origin!==origin)return;
   var d=e.data;
@@ -140,14 +149,18 @@ window.addEventListener("message",function(e){
       isReady=true;
       if(apiKey)sendToWidget({type:"auth",token:apiKey});
       break;
+    case"atlas:error":
+      console.error("[Atlas] Widget error:",d.code,d.message);
+      break;
     case"atlas:open":setOpen(true);break;
     case"atlas:close":setOpen(false);break;
   }
 });
 
-/* ---- Public API via postMessage (Host → Widget forwarding) ---- */
+/* Host page API — same-window messages only (e.source === window).
+   Usage: window.postMessage({type:"atlas:setTheme",value:"dark"},"*") */
 window.addEventListener("message",function(e){
-  if(e.source===window)return;
+  if(e.source!==window)return;
   var d=e.data;
   if(!d||typeof d!=="object"||typeof d.type!=="string")return;
   switch(d.type){
@@ -155,17 +168,26 @@ window.addEventListener("message",function(e){
       if(d.value==="light"||d.value==="dark"){
         theme=d.value;
         sendToWidget({type:"theme",value:theme});
+      }else{
+        console.warn("[Atlas] Invalid theme value:",d.value,"(expected 'light' or 'dark')");
       }
       break;
     case"atlas:setAuth":
       if(typeof d.token==="string"){
         apiKey=d.token;
         sendToWidget({type:"auth",token:apiKey});
+      }else{
+        console.warn("[Atlas] Invalid auth payload: token must be a string");
       }
       break;
     case"atlas:open":setOpen(true);break;
     case"atlas:close":setOpen(false);break;
   }
+});
+
+/* Iframe load error — fires if src is unreachable */
+iframe.addEventListener("error",function(){
+  console.error("[Atlas] Failed to load widget iframe");
 });
 })();`;
 }

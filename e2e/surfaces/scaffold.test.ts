@@ -355,12 +355,11 @@ describe("E2E: Scaffold — --demo flag", () => {
     expect(fs.existsSync(path.join(targetDir, "data", "demo.sql"))).toBe(true);
   });
 
-  it("has semantic layer with demo entities when Postgres is available", () => {
-    if (!pgAvailable) {
-      // Without Postgres, demo seeding is skipped — semantic dir still exists from template
-      expect(fs.existsSync(path.join(targetDir, "semantic"))).toBe(true);
-      return;
-    }
+  it("has semantic directory from template", () => {
+    expect(fs.existsSync(path.join(targetDir, "semantic"))).toBe(true);
+  });
+
+  it.skipIf(!pgAvailable)("has profiled entity files when Postgres is available", () => {
     // With Postgres, the profiler should have generated entity files
     const entitiesDir = path.join(targetDir, "semantic", "entities");
     expect(fs.existsSync(entitiesDir)).toBe(true);
@@ -370,6 +369,23 @@ describe("E2E: Scaffold — --demo flag", () => {
 });
 
 describe("E2E: Scaffold — --demo with dataset name", () => {
+  it("accepts valid dataset name (cybersec)", () => {
+    const tmpDir = makeTempDir();
+    const projectName = "e2e-demo-cybersec";
+    try {
+      scaffold(tmpDir, projectName, "docker", "--demo cybersec");
+      const targetDir = path.join(tmpDir, projectName);
+      // Verify the project was created (not a project named "cybersec")
+      expect(fs.existsSync(targetDir)).toBe(true);
+      const pkg = readJson(path.join(targetDir, "package.json"));
+      expect(pkg.name).toBe(projectName);
+      // Verify demo data files exist
+      expect(fs.existsSync(path.join(targetDir, "data", "cybersec.sql"))).toBe(true);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, SCAFFOLD_TIMEOUT);
+
   it("rejects unknown dataset names", () => {
     const tmpDir = makeTempDir();
     try {

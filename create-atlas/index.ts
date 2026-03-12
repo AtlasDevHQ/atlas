@@ -60,7 +60,7 @@ const useDefaults = args.includes("--defaults") || args.includes("-y");
 const VALID_DEMO_DATASETS = ["simple", "cybersec", "ecommerce"] as const;
 type DemoDataset = (typeof VALID_DEMO_DATASETS)[number];
 let demoFlag = false;
-let demoDatsetFlag: DemoDataset = "simple";
+let demoDatasetFlag: DemoDataset = "simple";
 const demoIdx = args.indexOf("--demo");
 if (demoIdx !== -1) {
   demoFlag = true;
@@ -70,7 +70,7 @@ if (demoIdx !== -1) {
       console.error(`Unknown demo dataset "${next}". Available: ${VALID_DEMO_DATASETS.join(", ")}`);
       process.exit(1);
     }
-    demoDatsetFlag = next as DemoDataset;
+    demoDatasetFlag = next as DemoDataset;
   }
 }
 
@@ -605,7 +605,7 @@ async function main() {
 
   // ── 7. Semantic layer / demo data ─────────────────────────────────
   let loadDemo = demoFlag;
-  let demoDataset: "simple" | "cybersec" | "ecommerce" = demoDatsetFlag;
+  let demoDataset: "simple" | "cybersec" | "ecommerce" = demoDatasetFlag;
   let generateSemantic = false;
 
   // Demo data is not available for MySQL (SQL files use PostgreSQL-specific syntax)
@@ -910,6 +910,7 @@ export default defineConfig({
     s.stop("Dependencies installed.");
   } catch (err) {
     s.stop("Failed to install dependencies.");
+    setupFailed = true;
     p.log.warn(
       `Could not run ${pc.cyan("bun install")}: ${err instanceof Error ? err.message : String(err)}`
     );
@@ -921,6 +922,15 @@ export default defineConfig({
     const demoInitFlag = `--demo ${demoDataset}`;
     const timeoutMs = demoDataset === "cybersec" || demoDataset === "ecommerce" ? 120_000 : 60_000;
 
+    /** Extract stderr from an execSync error, or fall back to message. */
+    function extractError(err: unknown): string {
+      if (err && typeof err === "object" && "stderr" in err) {
+        const stderr = String((err as { stderr: unknown }).stderr).trim();
+        if (stderr) return stderr;
+      }
+      return err instanceof Error ? err.message : String(err);
+    }
+
     // Check if Postgres is reachable before attempting to seed
     s.start("Checking database connectivity...");
     let dbReachable = false;
@@ -931,60 +941,79 @@ export default defineConfig({
       );
       dbReachable = true;
       s.stop("Database is reachable.");
-    } catch {
+    } catch (connErr) {
       s.stop("Database is not reachable.");
-      // Provide actionable guidance based on the connection string
-      const isLocalhost = databaseUrl.includes("localhost") || databaseUrl.includes("127.0.0.1");
-      if (isLocalhost) {
-        // Check if Docker is available
-        let dockerRunning = false;
-        try {
-          execSync("docker info", { stdio: "pipe", timeout: 5_000 });
-          dockerRunning = true;
-        } catch {
-          // Docker not available
-        }
-        if (!dockerRunning) {
-          p.log.warn("Docker is not running. Demo data requires a PostgreSQL database.");
-          p.log.warn(`Start Docker, then run:\n  cd ${projectName} && docker compose up -d postgres && bun run atlas -- init ${demoInitFlag}`);
-        } else {
-          p.log.warn("PostgreSQL is not running. Starting it with Docker Compose...");
-          try {
-            execSync("docker compose up -d postgres", {
-              cwd: targetDir,
-              stdio: "pipe",
-              timeout: 30_000,
-            });
-            // Wait for Postgres to become healthy
-            const waitStart = Date.now();
-            while (Date.now() - waitStart < 20_000) {
-              try {
-                execSync(
-                  `bun -e "const{Pool}=require('pg');const p=new Pool({connectionString:process.env.ATLAS_DATASOURCE_URL,connectionTimeoutMillis:2000});const c=await p.connect();c.release();await p.end()"`,
-                  { stdio: "pipe", timeout: 5_000, cwd: targetDir, env: { ...process.env, ATLAS_DATASOURCE_URL: databaseUrl } }
-                );
-                dbReachable = true;
-                break;
-              } catch {
-                // Wait and retry
-                execSync("sleep 1");
-              }
-            }
-            if (dbReachable) {
-              p.log.info("PostgreSQL is ready.");
-            } else {
-              p.log.warn("PostgreSQL did not become ready in time.");
-              p.log.warn(`Run manually: cd ${projectName} && bun run atlas -- init ${demoInitFlag}`);
-            }
-          } catch (dockerErr) {
-            p.log.warn(`Could not start PostgreSQL: ${dockerErr instanceof Error ? dockerErr.message : String(dockerErr)}`);
-            p.log.warn(`Run manually:\n  cd ${projectName} && docker compose up -d postgres && bun run atlas -- init ${demoInitFlag}`);
-          }
-        }
+      const connDetail = extractError(connErr);
+
+      // If the error is about a missing module, bun install likely failed — don't chase Docker
+      if (connDetail.includes("Cannot find module") || connDetail.includes("MODULE_NOT_FOUND")) {
+        p.log.warn("pg module not found — bun install may have failed. Skipping DB check.");
+        p.log.warn(`Run: cd ${projectName} && bun install && bun run atlas -- init ${demoInitFlag}`);
       } else {
-        p.log.warn(`Cannot connect to ${databaseUrl.replace(/\/\/[^@]*@/, "//***@")}.`);
-        p.log.warn("Check that the database server is running and the connection string is correct.");
-        p.log.warn(`Then run: cd ${projectName} && bun run atlas -- init ${demoInitFlag}`);
+        // Provide actionable guidance based on the connection string
+        const isLocalhost = databaseUrl.includes("localhost") || databaseUrl.includes("127.0.0.1");
+        if (isLocalhost) {
+          // Check if Docker is available
+          let dockerRunning = false;
+          let dockerError = "";
+          try {
+            execSync("docker info", { stdio: "pipe", timeout: 5_000 });
+            dockerRunning = true;
+          } catch (dockerCheckErr) {
+            dockerError = extractError(dockerCheckErr);
+          }
+          if (!dockerRunning) {
+            if (dockerError.includes("permission denied")) {
+              p.log.warn("Docker is running but inaccessible (permission denied). Try: sudo usermod -aG docker $USER");
+            } else {
+              p.log.warn("Docker is not running. Demo data requires a PostgreSQL database.");
+            }
+            p.log.warn(`Start Docker, then run:\n  cd ${projectName} && docker compose up -d postgres && bun run atlas -- init ${demoInitFlag}`);
+          } else {
+            p.log.warn("PostgreSQL is not running. Starting it with Docker Compose...");
+            try {
+              execSync("docker compose up -d postgres", {
+                cwd: targetDir,
+                stdio: "pipe",
+                timeout: 30_000,
+              });
+              // Wait for Postgres to become healthy
+              const waitStart = Date.now();
+              while (Date.now() - waitStart < 20_000) {
+                try {
+                  execSync(
+                    `bun -e "const{Pool}=require('pg');const p=new Pool({connectionString:process.env.ATLAS_DATASOURCE_URL,connectionTimeoutMillis:2000});const c=await p.connect();c.release();await p.end()"`,
+                    { stdio: "pipe", timeout: 5_000, cwd: targetDir, env: { ...process.env, ATLAS_DATASOURCE_URL: databaseUrl } }
+                  );
+                  dbReachable = true;
+                  break;
+                } catch (retryErr) {
+                  // Break immediately on non-retryable errors
+                  const retryDetail = extractError(retryErr);
+                  if (retryDetail.includes("Cannot find module") || retryDetail.includes("password authentication failed")) {
+                    p.log.warn(`Connection error: ${retryDetail}`);
+                    break;
+                  }
+                  // Retryable (ECONNREFUSED, timeout) — wait and try again
+                  await new Promise((r) => setTimeout(r, 1_000));
+                }
+              }
+              if (dbReachable) {
+                p.log.info("PostgreSQL is ready.");
+              } else {
+                p.log.warn("PostgreSQL did not become ready in time.");
+                p.log.warn(`Run manually: cd ${projectName} && bun run atlas -- init ${demoInitFlag}`);
+              }
+            } catch (dockerErr) {
+              p.log.warn(`Could not start PostgreSQL: ${extractError(dockerErr)}`);
+              p.log.warn(`Run manually:\n  cd ${projectName} && docker compose up -d postgres && bun run atlas -- init ${demoInitFlag}`);
+            }
+          }
+        } else {
+          p.log.warn(`Cannot connect to ${databaseUrl.replace(/\/\/[^@]*@/, "//***@")}: ${connDetail.replace(/\/\/[^@]*@/g, "//***@")}`);
+          p.log.warn("Check that the database server is running and the connection string is correct.");
+          p.log.warn(`Then run: cd ${projectName} && bun run atlas -- init ${demoInitFlag}`);
+        }
       }
     }
 
@@ -1092,12 +1121,13 @@ export default defineConfig({
 
 main().catch((err) => {
   // Show actionable message, not a stack trace
+  const code = err && typeof err === "object" && "code" in err ? (err as { code: string }).code : "";
   const message = err instanceof Error ? err.message : String(err);
-  if (message.includes("EADDRINUSE")) {
+  if (code === "EADDRINUSE" || message.includes("EADDRINUSE")) {
     p.log.error(`Port already in use. Stop the process using that port and try again.`);
-  } else if (message.includes("EACCES")) {
+  } else if (code === "EACCES" || message.includes("EACCES")) {
     p.log.error(`Permission denied. Check file permissions or try a different directory.`);
-  } else if (message.includes("ENOSPC")) {
+  } else if (code === "ENOSPC" || message.includes("ENOSPC")) {
     p.log.error(`No space left on disk. Free up space and try again.`);
   } else {
     p.log.error(message);

@@ -21,26 +21,26 @@ function App() {
 
 ## Custom Tool Renderers
 
-Override how SQL results, charts, explore output, and Python results render inside the widget using the `toolRenderers` prop:
+Override how SQL results, charts, explore output, and Python results render inside the widget using the `toolRenderers` prop. This example assumes you have already imported the styles as shown above.
 
 ```tsx
 import { AtlasChat, type ToolRendererProps, type SQLToolResult } from "@useatlas/react";
 
-function MySQLRenderer({ toolName, args, result, isLoading }: ToolRendererProps<SQLToolResult | null>) {
-  if (isLoading) return <div>Running query...</div>;
-  if (!result?.success) return <div>Query failed</div>;
+function MySQLRenderer({ result, isLoading }: ToolRendererProps<SQLToolResult | null>) {
+  if (isLoading || !result) return <div>Running query...</div>;
+  if (!result.success) return <div>Query failed: {result.error}</div>;
 
   return (
     <div>
-      <h3>Results ({result.rows?.length} rows)</h3>
+      <h3>Results ({result.rows.length} rows)</h3>
       <table>
         <thead>
-          <tr>{result.columns?.map((col) => <th key={col}>{col}</th>)}</tr>
+          <tr>{result.columns.map((col) => <th key={col}>{col}</th>)}</tr>
         </thead>
         <tbody>
-          {result.rows?.map((row, i) => (
+          {result.rows.map((row, i) => (
             <tr key={i}>
-              {result.columns?.map((col) => <td key={col}>{String(row[col] ?? "")}</td>)}
+              {result.columns.map((col) => <td key={col}>{String(row[col] ?? "")}</td>)}
             </tr>
           ))}
         </tbody>
@@ -67,7 +67,7 @@ function App() {
 | Tool Name       | Result Type         | Description                  |
 | --------------- | ------------------- | ---------------------------- |
 | `executeSQL`    | `SQLToolResult`     | SQL query results with columns and rows |
-| `explore`       | `ExploreToolResult` | Shell command output (string) |
+| `explore`       | `ExploreToolResult` | Semantic layer exploration output (string) |
 | `executePython` | `PythonToolResult`  | Python execution results with optional charts and tables |
 
 Custom renderers for any tool name are supported — just add the tool name as a key in the `toolRenderers` map. Tools without a custom renderer use the built-in defaults.
@@ -80,7 +80,7 @@ Every renderer receives `ToolRendererProps<T>`:
 | ----------- | -------------------------- | ---------------------------------------- |
 | `toolName`  | `string`                   | Name of the tool being rendered          |
 | `args`      | `Record<string, unknown>`  | Input arguments passed to the tool       |
-| `result`    | `T`                        | Tool output (`null` while still running) |
+| `result`    | `T`                        | Tool output. Built-in tool types include `\| null` for the loading state |
 | `isLoading` | `boolean`                  | Whether the tool invocation is in progress |
 
 ## Headless Hooks

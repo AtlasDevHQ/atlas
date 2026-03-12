@@ -1,10 +1,14 @@
 import { describe, it, expect, mock } from "bun:test";
+import type React from "react";
 import { render, screen } from "@testing-library/react";
 import type { ToolRendererProps, ToolRenderers } from "../../lib/tool-renderer-types";
 
 // Mock the `ai` module — must mock ALL named exports used by the component tree
 mock.module("ai", () => ({
-  getToolName: (part: Record<string, unknown>) => part.toolName as string,
+  getToolName: (part: Record<string, unknown>) => {
+    if (!part.toolName) throw new Error("Unknown tool part");
+    return part.toolName as string;
+  },
   isToolUIPart: () => true,
   DefaultChatTransport: class {},
 }));
@@ -63,17 +67,21 @@ describe("ToolPart with custom renderers", () => {
     expect(screen.queryByTestId("custom-sql")).toBeNull();
   });
 
-  it("passes isLoading=true when tool is still running", () => {
-    function CustomExplore({ isLoading }: ToolRendererProps) {
-      return <div data-testid="custom-explore">{String(isLoading)}</div>;
+  it("passes isLoading=true and result=null when tool is still running", () => {
+    const receivedProps: ToolRendererProps[] = [];
+    function Spy(props: ToolRendererProps) {
+      receivedProps.push(props);
+      return <div data-testid="custom-explore">{String(props.isLoading)}</div>;
     }
 
-    const renderers: ToolRenderers = { explore: CustomExplore };
+    const renderers: ToolRenderers = { explore: Spy };
     const part = makePart("explore", { command: "ls" }, null, "call");
 
     render(<ToolPart part={part} toolRenderers={renderers} />);
 
     expect(screen.getByTestId("custom-explore").textContent).toBe("true");
+    expect(receivedProps[0].isLoading).toBe(true);
+    expect(receivedProps[0].result).toBeNull();
   });
 
   it("passes isLoading=false when tool is complete", () => {
@@ -144,5 +152,29 @@ describe("ToolPart with custom renderers", () => {
 
     // Should render the default card, not crash
     expect(container.innerHTML.length).toBeGreaterThan(0);
+  });
+
+  it("renders error fallback when custom renderer throws", () => {
+    function BrokenRenderer(): React.ReactNode {
+      throw new Error("Renderer exploded");
+    }
+
+    const renderers: ToolRenderers = { executeSQL: BrokenRenderer };
+    const part = makePart("executeSQL", { sql: "SELECT 1" }, { success: true });
+
+    // Error boundary should catch — no crash
+    const { container } = render(<ToolPart part={part} toolRenderers={renderers} />);
+
+    expect(container.textContent).toContain("failed");
+    expect(container.textContent).toContain("Renderer exploded");
+  });
+
+  it("renders fallback banner when getToolName fails", () => {
+    // Part without toolName triggers the mock's throw
+    const malformedPart = { input: {}, output: null, state: "call" };
+
+    const { container } = render(<ToolPart part={malformedPart} />);
+
+    expect(container.textContent).toContain("Tool result (unknown type)");
   });
 });

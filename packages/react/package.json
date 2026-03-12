@@ -70,8 +70,8 @@
   },
   "devDependencies": {
     "@ai-sdk/react": "^3.0.99",
-    "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
     "ai": "^6.0.97",
     "lucide-react": "^0.577.0",
     "react": "^19.2.4",

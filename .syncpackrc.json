@@ -16,8 +16,9 @@
       "pinVersion": "workspace:*"
     },
     {
-      "label": "Plugin peer deps use wide ranges for compatibility",
+      "label": "Published packages use wide peer dep ranges for compatibility",
       "packages": [
+        "@useatlas/react",
         "@useatlas/plugin-sdk",
         "@useatlas/clickhouse",
         "@useatlas/snowflake",

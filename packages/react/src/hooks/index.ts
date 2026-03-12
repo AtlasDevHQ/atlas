@@ -36,3 +36,12 @@ export type {
   ChatErrorInfo,
 } from "../lib/types";
 export { AUTH_MODES, parseChatError } from "../lib/types";
+
+// Tool renderer types
+export type {
+  ToolRendererProps,
+  ToolRenderers,
+  SQLToolResult,
+  ExploreToolResult,
+  PythonToolResult,
+} from "../lib/tool-renderer-types";

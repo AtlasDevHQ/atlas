@@ -22,6 +22,15 @@ export type {
 } from "./lib/types";
 export { AUTH_MODES, parseChatError } from "./lib/types";
 
+// Tool renderer types
+export type {
+  ToolRendererProps,
+  ToolRenderers,
+  SQLToolResult,
+  ExploreToolResult,
+  PythonToolResult,
+} from "./lib/tool-renderer-types";
+
 // Hooks
 export { useConversations } from "./hooks/use-conversations";
 export type { UseConversationsOptions, UseConversationsReturn } from "./hooks/use-conversations";

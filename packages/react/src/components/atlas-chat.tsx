@@ -4,6 +4,7 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, isToolUIPart } from "ai";
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { AUTH_MODES, type AuthMode } from "../lib/types";
+import type { ToolRenderers } from "../lib/tool-renderer-types";
 import { AtlasUIProvider, useAtlasConfig, ActionAuthProvider, type AtlasAuthClient } from "../context";
 import { DarkModeContext, useDarkMode, useThemeMode, setTheme, applyBrandColor, OKLCH_RE, type ThemeMode } from "../hooks/use-dark-mode";
 import { useConversations } from "../hooks/use-conversations";
@@ -44,6 +45,8 @@ export interface AtlasChatProps {
   schemaExplorer?: boolean;
   /** Custom auth client for managed auth mode. */
   authClient?: AtlasAuthClient;
+  /** Custom renderers for tool results. Keys are tool names (e.g. "executeSQL", "explore", "executePython"). */
+  toolRenderers?: ToolRenderers;
 }
 
 /** No-op auth client for non-managed auth modes. */
@@ -158,6 +161,7 @@ export function AtlasChat(props: AtlasChatProps) {
     sidebar = false,
     schemaExplorer: schemaExplorerEnabled = false,
     authClient = noopAuthClient,
+    toolRenderers,
   } = props;
 
   // Apply theme from props on mount and when it changes
@@ -171,6 +175,7 @@ export function AtlasChat(props: AtlasChatProps) {
         propApiKey={propApiKey}
         sidebar={sidebar}
         schemaExplorerEnabled={schemaExplorerEnabled}
+        toolRenderers={toolRenderers}
       />
     </AtlasUIProvider>
   );
@@ -180,10 +185,12 @@ function AtlasChatInner({
   propApiKey,
   sidebar,
   schemaExplorerEnabled,
+  toolRenderers,
 }: {
   propApiKey?: string;
   sidebar: boolean;
   schemaExplorerEnabled: boolean;
+  toolRenderers?: ToolRenderers;
 }) {
   const { apiUrl, isCrossOrigin, authClient } = useAtlasConfig();
   const dark = useDarkMode();
@@ -571,7 +578,7 @@ function AtlasChatInner({
                           if (isToolUIPart(part)) {
                             return (
                               <div key={i} className="max-w-[95%]">
-                                <ToolPart part={part} />
+                                <ToolPart part={part} toolRenderers={toolRenderers} />
                               </div>
                             );
                           }

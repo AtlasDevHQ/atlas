@@ -367,9 +367,6 @@ export interface AtlasDatasourcePlugin<TConfig = undefined> extends AtlasPluginB
      *
      * Ignored when a custom `validate` function is provided (which replaces
      * the entire SQL validation pipeline).
-     *
-     * **Note:** Wired into the core pipeline in #15. Until then, this field
-     * is validated at registration time but not yet consumed at query time.
      */
     parserDialect?: ParserDialect;
     /**
@@ -380,9 +377,6 @@ export interface AtlasDatasourcePlugin<TConfig = undefined> extends AtlasPluginB
      *
      * Ignored when a custom `validate` function is provided (which replaces
      * the entire SQL validation pipeline).
-     *
-     * **Note:** Wired into the core pipeline in #15. Until then, this field
-     * is validated at registration time but not yet consumed at query time.
      */
     forbiddenPatterns?: RegExp[];
   };

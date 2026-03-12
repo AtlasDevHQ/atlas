@@ -96,7 +96,7 @@ interface QueryResponse {
 
 ## Chat
 
-Stream a chat response using the AI SDK Data Stream Protocol.
+Stream a chat response using the AI SDK UI Message Stream Protocol.
 
 ```typescript
 const response = await atlas.chat([
@@ -117,6 +117,87 @@ const reader = response.body?.getReader();
 const response = await atlas.chat(messages, {
   conversationId: "existing-conversation-id",
 });
+```
+
+---
+
+## Stream Query
+
+Stream a query as an async iterator of typed events. The agent's reasoning, tool calls, and results are yielded incrementally as `StreamEvent` objects.
+
+### Method Signature
+
+```typescript
+async *streamQuery(
+  question: string,
+  opts?: StreamQueryOptions,
+): AsyncGenerator<StreamEvent>
+```
+
+### Options
+
+```typescript
+interface StreamQueryOptions {
+  /** AbortSignal for cancelling the stream */
+  signal?: AbortSignal;
+  /** Resume an existing conversation */
+  conversationId?: string;
+}
+```
+
+### Stream Events
+
+Each yielded event is a discriminated union:
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `text` | `content` | Text chunk from the agent |
+| `tool-call` | `toolCallId`, `name`, `args` | Agent is calling a tool |
+| `tool-result` | `toolCallId`, `name`, `result` | Tool returned a result |
+| `result` | `columns`, `rows` | Convenience event when `executeSQL` returns data (emitted alongside `tool-result`) |
+| `error` | `message` | Error during streaming |
+| `finish` | `reason` | Stream completed (`"stop"`, `"length"`, `"tool-calls"`, etc.) |
+
+### Usage
+
+```typescript
+for await (const event of atlas.streamQuery("Revenue by region last quarter")) {
+  switch (event.type) {
+    case "text":
+      process.stdout.write(event.content);
+      break;
+    case "tool-call":
+      console.log(`Calling ${event.name}`, event.args);
+      break;
+    case "result":
+      console.table(event.rows);
+      break;
+    case "finish":
+      console.log(`\nDone (${event.reason})`);
+      break;
+  }
+}
+```
+
+### Cancellation
+
+Pass an `AbortSignal` to cancel the stream mid-flight:
+
+```typescript
+const controller = new AbortController();
+setTimeout(() => controller.abort(), 10_000);
+
+try {
+  for await (const event of atlas.streamQuery("...", {
+    signal: controller.signal,
+  })) {
+    if (event.type === "text") process.stdout.write(event.content);
+  }
+} catch (err) {
+  if (err instanceof Error && err.name === "AbortError") {
+    console.log("Stream cancelled");
+  }
+}
 ```
 
 ---
@@ -316,12 +397,18 @@ import type {
   ChatMessage,
   ChatOptions,
 
+  // Streaming
+  StreamEvent,
+  StreamQueryOptions,
+  StreamFinishReason,
+
   // Conversations
   Conversation,
   Message,
   ConversationWithMessages,
   ListConversationsResponse,
   ListConversationsOptions,
+  ShareConversationResponse,
 
   // Scheduled Tasks
   DeliveryChannel,

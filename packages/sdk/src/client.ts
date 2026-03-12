@@ -362,14 +362,19 @@ export interface ChatOptions {
 // Stream types
 // ---------------------------------------------------------------------------
 
+/** Known finish reasons from the AI SDK, plus extensibility for unknown provider values. */
+export type StreamFinishReason =
+  | "stop" | "length" | "content-filter" | "tool-calls" | "error" | "other"
+  | (string & {});
+
 /** Discriminated union of events yielded by `streamQuery()`. */
 export type StreamEvent =
   | { type: "text"; content: string }
   | { type: "tool-call"; toolCallId: string; name: string; args: Record<string, unknown> }
-  | { type: "tool-result"; toolCallId: string; name: string; result: unknown }
+  | { type: "tool-result"; toolCallId: string; name: string; result: Record<string, unknown> }
   | { type: "result"; columns: string[]; rows: Record<string, unknown>[] }
   | { type: "error"; message: string }
-  | { type: "finish"; reason: string };
+  | { type: "finish"; reason: StreamFinishReason };
 
 export interface StreamQueryOptions {
   /** AbortSignal for cancelling the stream */
@@ -465,7 +470,7 @@ export function createAtlasClient(options: AtlasClientOptions) {
         signal: opts?.signal,
       });
     } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") throw err;
+      if (err instanceof Error && err.name === "AbortError") throw err;
       throw new AtlasError(
         "network_error",
         err instanceof Error ? err.message : String(err),
@@ -561,12 +566,13 @@ export function createAtlasClient(options: AtlasClientOptions) {
 
     const onAbort = () => {
       aborted = true;
-      reader.cancel();
+      reader.cancel().catch(() => {});
     };
     signal?.addEventListener("abort", onAbort, { once: true });
 
     try {
       while (true) {
+        if (aborted) throw new DOMException("The operation was aborted.", "AbortError");
         const { done, value } = await reader.read();
         if (aborted) throw new DOMException("The operation was aborted.", "AbortError");
         if (done) break;
@@ -593,6 +599,7 @@ export function createAtlasClient(options: AtlasClientOptions) {
       }
     } finally {
       signal?.removeEventListener("abort", onAbort);
+      await reader.cancel().catch(() => {});
       reader.releaseLock();
     }
   }
@@ -615,7 +622,8 @@ export function createAtlasClient(options: AtlasClientOptions) {
 
     /**
      * Stream a query — sends a question and yields typed events as the agent
-     * responds. Parses the AI SDK UI Message Stream Protocol.
+     * responds. Parses the AI SDK UI Message Stream Protocol. Emits a `result`
+     * convenience event when `executeSQL` returns `{ columns, rows }`.
      *
      * Supports cancellation via `AbortController`:
      * ```ts
@@ -648,70 +656,78 @@ export function createAtlasClient(options: AtlasClientOptions) {
 
       const toolNames = new Map<string, string>();
 
-      for await (const event of parseSSE(res.body, opts?.signal)) {
-        const t = event.type as string;
+      try {
+        for await (const event of parseSSE(res.body, opts?.signal)) {
+          const t = event.type as string;
 
-        switch (t) {
-          case "text-delta": {
-            const content = (event.delta ?? event.textDelta) as string | undefined;
-            if (content) yield { type: "text", content };
-            break;
-          }
-          case "tool-input-start": {
-            const id = event.toolCallId as string;
-            const name = event.toolName as string;
-            if (id && name) toolNames.set(id, name);
-            break;
-          }
-          case "tool-input-available": {
-            const id = event.toolCallId as string;
-            const name = toolNames.get(id) ?? "unknown";
-            yield {
-              type: "tool-call",
-              toolCallId: id,
-              name,
-              args: (event.input ?? {}) as Record<string, unknown>,
-            };
-            break;
-          }
-          case "tool-output-available": {
-            const id = event.toolCallId as string;
-            const name = toolNames.get(id) ?? "unknown";
-            const output = event.output;
-            yield {
-              type: "tool-result",
-              toolCallId: id,
-              name,
-              result: output,
-            };
-            if (
-              name === "executeSQL" &&
-              output != null &&
-              typeof output === "object" &&
-              Array.isArray((output as Record<string, unknown>).columns) &&
-              Array.isArray((output as Record<string, unknown>).rows)
-            ) {
-              const o = output as { columns: string[]; rows: Record<string, unknown>[] };
-              yield { type: "result", columns: o.columns, rows: o.rows };
+          switch (t) {
+            case "text-delta": {
+              const content = (event.delta ?? event.textDelta) as string | undefined;
+              if (content) yield { type: "text", content };
+              break;
             }
-            break;
+            case "tool-input-start": {
+              const id = event.toolCallId as string;
+              const name = event.toolName as string;
+              if (id && name) toolNames.set(id, name);
+              break;
+            }
+            case "tool-input-available": {
+              const id = event.toolCallId as string;
+              const name = toolNames.get(id) ?? "unknown";
+              yield {
+                type: "tool-call",
+                toolCallId: id,
+                name,
+                args: (event.input ?? {}) as Record<string, unknown>,
+              };
+              break;
+            }
+            case "tool-output-available": {
+              const id = event.toolCallId as string;
+              const name = toolNames.get(id) ?? "unknown";
+              const output = event.output as Record<string, unknown> | undefined;
+              yield {
+                type: "tool-result",
+                toolCallId: id,
+                name,
+                result: (output ?? {}) as Record<string, unknown>,
+              };
+              if (
+                name === "executeSQL" &&
+                output != null &&
+                Array.isArray(output.columns) &&
+                Array.isArray(output.rows)
+              ) {
+                yield { type: "result", columns: output.columns as string[], rows: output.rows as Record<string, unknown>[] };
+              }
+              break;
+            }
+            case "error": {
+              yield {
+                type: "error",
+                message: (event.errorText ?? event.message ?? "Unknown error") as string,
+              };
+              break;
+            }
+            case "finish": {
+              yield {
+                type: "finish",
+                reason: ((event.finishReason ?? "stop") as string) as StreamFinishReason,
+              };
+              break;
+            }
+            // Only text-delta, tool-input-start, tool-input-available, tool-output-available, error, and finish are mapped to StreamEvents.
           }
-          case "error": {
-            yield {
-              type: "error",
-              message: (event.errorText ?? event.message ?? "Unknown error") as string,
-            };
-            break;
-          }
-          case "finish": {
-            yield {
-              type: "finish",
-              reason: (event.finishReason ?? "stop") as string,
-            };
-            break;
-          }
-          // Ignore: start, message-start, text-start, text-end, tool-input-delta, etc.
         }
+      } catch (err) {
+        if (err instanceof Error && err.name === "AbortError") throw err;
+        if (err instanceof AtlasError) throw err;
+        throw new AtlasError(
+          "network_error",
+          `Stream interrupted: ${err instanceof Error ? err.message : String(err)}`,
+          0,
+        );
       }
     },
 
@@ -912,7 +928,7 @@ export function createAtlasClient(options: AtlasClientOptions) {
 
     /**
      * Start a streaming chat session — returns the raw `Response` whose body
-     * is an SSE stream (AI SDK Data Stream Protocol). Callers can consume it
+     * is an SSE stream (AI SDK UI Message Stream Protocol). Callers can consume it
      * directly with the AI SDK's `useChat` or manual stream parsing.
      */
     async chat(

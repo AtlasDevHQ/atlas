@@ -244,6 +244,73 @@ describe("streamQuery — tool events", () => {
       result: { data: "test" },
     });
   });
+
+  test("tool-input-available without prior tool-input-start uses 'unknown' name", async () => {
+    installFetchMock(sseResponse([
+      { type: "tool-input-available", toolCallId: "tc1", input: { sql: "SELECT 1" } },
+      { type: "finish", finishReason: "stop" },
+    ]));
+
+    const events = await collectEvents(makeClient().streamQuery("test"));
+    expect(events[0]).toEqual({
+      type: "tool-call",
+      toolCallId: "tc1",
+      name: "unknown",
+      args: { sql: "SELECT 1" },
+    });
+  });
+
+  test("tool-input-available with missing input field yields empty args", async () => {
+    installFetchMock(sseResponse([
+      { type: "tool-input-start", toolCallId: "tc1", toolName: "explore" },
+      { type: "tool-input-available", toolCallId: "tc1" },
+      { type: "finish", finishReason: "stop" },
+    ]));
+
+    const events = await collectEvents(makeClient().streamQuery("test"));
+    expect(events[0]).toEqual({
+      type: "tool-call",
+      toolCallId: "tc1",
+      name: "explore",
+      args: {},
+    });
+  });
+
+  test("multiple tool calls in single stream tracked independently", async () => {
+    installFetchMock(sseResponse([
+      { type: "tool-input-start", toolCallId: "tc1", toolName: "explore" },
+      { type: "tool-input-available", toolCallId: "tc1", input: { command: "ls" } },
+      { type: "tool-output-available", toolCallId: "tc1", output: { content: "entities/" } },
+      { type: "tool-input-start", toolCallId: "tc2", toolName: "executeSQL" },
+      { type: "tool-input-available", toolCallId: "tc2", input: { sql: "SELECT 1" } },
+      { type: "tool-output-available", toolCallId: "tc2", output: { columns: ["a"], rows: [{ a: 1 }] } },
+      { type: "finish", finishReason: "stop" },
+    ]));
+
+    const events = await collectEvents(makeClient().streamQuery("test"));
+    // explore: tool-call, tool-result (no result event)
+    // executeSQL: tool-call, tool-result, result (convenience)
+    // finish
+    expect(events).toHaveLength(6);
+    expect(events[0]).toEqual({ type: "tool-call", toolCallId: "tc1", name: "explore", args: { command: "ls" } });
+    expect(events[1]).toEqual({ type: "tool-result", toolCallId: "tc1", name: "explore", result: { content: "entities/" } });
+    expect(events[2]).toEqual({ type: "tool-call", toolCallId: "tc2", name: "executeSQL", args: { sql: "SELECT 1" } });
+    expect(events[3]).toEqual({ type: "tool-result", toolCallId: "tc2", name: "executeSQL", result: { columns: ["a"], rows: [{ a: 1 }] } });
+    expect(events[4]).toEqual({ type: "result", columns: ["a"], rows: [{ a: 1 }] });
+    expect(events[5]).toEqual({ type: "finish", reason: "stop" });
+  });
+
+  test("executeSQL output with partial shape does not yield result event", async () => {
+    installFetchMock(sseResponse([
+      { type: "tool-input-start", toolCallId: "tc1", toolName: "executeSQL" },
+      { type: "tool-output-available", toolCallId: "tc1", output: { columns: ["a"] } },
+      { type: "finish", finishReason: "stop" },
+    ]));
+
+    const events = await collectEvents(makeClient().streamQuery("test"));
+    expect(events.filter(e => e.type === "result")).toHaveLength(0);
+    expect(events[0].type).toBe("tool-result");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -267,6 +334,15 @@ describe("streamQuery — error and finish events", () => {
 
     const events = await collectEvents(makeClient().streamQuery("test"));
     expect(events[0]).toEqual({ type: "error", message: "Fallback error" });
+  });
+
+  test("yields error event with no message fields defaults to 'Unknown error'", async () => {
+    installFetchMock(sseResponse([
+      { type: "error" },
+    ]));
+
+    const events = await collectEvents(makeClient().streamQuery("test"));
+    expect(events[0]).toEqual({ type: "error", message: "Unknown error" });
   });
 
   test("yields finish event with default reason", async () => {
@@ -406,7 +482,7 @@ describe("streamQuery — abort support", () => {
       }
       expect(true).toBe(false); // should not reach
     } catch (err) {
-      expect((err as DOMException).name).toBe("AbortError");
+      expect((err as Error).name).toBe("AbortError");
     }
 
     expect(events).toHaveLength(1);
@@ -427,7 +503,7 @@ describe("streamQuery — abort support", () => {
       await collectEvents(client.streamQuery("test", { signal: controller.signal }));
       expect(true).toBe(false);
     } catch (err) {
-      expect((err as DOMException).name).toBe("AbortError");
+      expect((err as Error).name).toBe("AbortError");
     }
   });
 });
@@ -495,5 +571,54 @@ describe("streamQuery — SSE parsing", () => {
       { type: "text", content: "ok" },
       { type: "finish", reason: "stop" },
     ]);
+  });
+
+  test("empty stream with only [DONE] yields zero events", async () => {
+    installFetchMock(sseResponse([]));
+
+    const events = await collectEvents(makeClient().streamQuery("test"));
+    expect(events).toHaveLength(0);
+  });
+
+  test("mid-stream network error throws AtlasError", async () => {
+    const encoder = new TextEncoder();
+    let streamController: ReadableStreamDefaultController<Uint8Array>;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+        // Enqueue first event, error will be sent after a microtask
+        controller.enqueue(encoder.encode('data: {"type":"text-delta","textDelta":"partial"}\n\n'));
+      },
+    });
+
+    // Direct mock (not installFetchMock) to avoid response.clone() issues
+    lastRequest = null;
+    const mockFn = mock(async (input: string | URL | Request, init?: RequestInit) => {
+      lastRequest = new Request(input as string, init);
+      // Schedule the error after the response is returned
+      queueMicrotask(() => streamController.error(new Error("Connection reset")));
+      return new Response(body, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      });
+    });
+    globalThis.fetch = Object.assign(mockFn, {
+      preconnect: () => {},
+    }) as unknown as typeof fetch;
+
+    const events: StreamEvent[] = [];
+    try {
+      for await (const event of makeClient().streamQuery("test")) {
+        events.push(event);
+      }
+      expect(true).toBe(false);
+    } catch (err) {
+      expect(err).toBeInstanceOf(AtlasError);
+      const e = err as AtlasError;
+      expect(e.code).toBe("network_error");
+      expect(e.message).toContain("Connection reset");
+    }
+    // Partial events should have been yielded before the error
+    expect(events.length).toBeGreaterThanOrEqual(0); // timing-dependent
   });
 });

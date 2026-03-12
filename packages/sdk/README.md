@@ -101,8 +101,11 @@ for await (const event of atlas.streamQuery("How many users signed up last week?
     case "tool-call":
       console.log(`Calling ${event.name}`, event.args);
       break;
+    case "tool-result":
+      console.log(`${event.name} returned`, event.result);
+      break;
     case "result":
-      console.table(event.rows); // { columns, rows } from executeSQL
+      console.table(event.rows); // convenience: { columns, rows } from executeSQL
       break;
     case "error":
       console.error(event.message);
@@ -129,7 +132,7 @@ try {
     if (event.type === "text") process.stdout.write(event.content);
   }
 } catch (err) {
-  if (err instanceof DOMException && err.name === "AbortError") {
+  if (err instanceof Error && err.name === "AbortError") {
     console.log("Stream cancelled");
   }
 }
@@ -142,7 +145,7 @@ try {
 | `text` | `content` | Text chunk from the agent |
 | `tool-call` | `toolCallId`, `name`, `args` | Agent is calling a tool |
 | `tool-result` | `toolCallId`, `name`, `result` | Tool returned a result |
-| `result` | `columns`, `rows` | Convenience event for `executeSQL` results |
+| `result` | `columns`, `rows` | Convenience event extracted from `tool-result` when `executeSQL` returns data. Both `tool-result` and `result` are emitted. |
 | `error` | `message` | Error during streaming |
 | `finish` | `reason` | Stream completed |
 

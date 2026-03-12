@@ -29,6 +29,7 @@ export {
   type ChatMessage,
   type ChatOptions,
   type StreamEvent,
+  type StreamFinishReason,
   type StreamQueryOptions,
   type DeliveryChannel,
   type ScheduledTaskRecipient,

@@ -1,0 +1,63 @@
+---
+title: Atlas vs WrenAI
+description: Comparing Atlas and WrenAI for text-to-SQL -- semantic layer design, deployment, licensing, and embedding.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+[WrenAI](https://www.getwren.ai/) is an open-source text-to-SQL tool with a UI-based semantic modeling layer. Both Atlas and WrenAI use a semantic layer to improve SQL accuracy, but they take different approaches to modeling, deployment, and extensibility.
+
+## Quick Comparison
+
+| | Atlas | WrenAI |
+|---|---|---|
+| **License** | Apache-2.0 | AGPL-3.0 |
+| **Semantic layer** | YAML files (code-first, git-versioned) | UI-based MDL (Modeling Definition Language) |
+| **Embeddable** | Script tag, React component, API | No (standalone product) |
+| **Deployment** | Self-hosted, embedded, Vercel, Railway, Docker | Self-hosted, Docker |
+| **Plugin system** | Plugin SDK + 15 official plugins | Limited extensibility |
+| **Databases** | Postgres, MySQL + plugins for 5 more | Postgres, MySQL, BigQuery, ClickHouse, DuckDB, Snowflake, and more |
+| **Python sandbox** | Yes (sandboxed execution with chart rendering) | No |
+| **MCP server** | Yes | No |
+| **Primary stack** | TypeScript (Hono + Next.js + Bun) | TypeScript + Rust (Wren Engine) |
+
+## Semantic Layer
+
+**Atlas** uses a code-first YAML semantic layer. Entity files, metrics, glossary terms, and query patterns live in your repository alongside your application code. Changes go through pull requests, are reviewed by your team, and deploy with your app.
+
+```yaml
+# semantic/entities/orders.yml
+table: orders
+dimensions:
+  total:
+    type: number
+    description: Order total in USD
+    sample_values: [29.99, 149.00, 499.50]
+```
+
+**WrenAI** uses a visual modeling interface where you define tables, relationships, and calculated fields through a UI. The modeling language (MDL) captures these definitions. This is easier for non-developers to get started with but harder to version control or review in code.
+
+**Trade-off:** YAML-in-repo works better when your data model is managed by engineers and deployed as part of an application. UI-based modeling works better when analysts or business users own the semantic definitions.
+
+## Embedding
+
+Atlas is designed to be embedded in other applications. You can add a chat widget to any page with a script tag, use the `@useatlas/react` component for tighter React integration, or call the API directly from any client.
+
+WrenAI is a standalone product. Users interact with it through WrenAI's own web interface. There's no official embeddable widget or component library for putting WrenAI inside your application.
+
+## Licensing
+
+Atlas uses **Apache-2.0**, which allows unrestricted commercial use, modification, and distribution without copyleft obligations.
+
+WrenAI uses **AGPL-3.0**, which requires that any modified version of the software — and in some interpretations, any software that interacts with it over a network — must also be released under AGPL-3.0. This can be a concern for commercial SaaS products that want to embed text-to-SQL without open-sourcing their own code.
+
+<Callout type="info">
+  License choice matters most when you're embedding a tool inside a commercial product. If you're deploying WrenAI as a standalone internal tool, AGPL may not be a practical concern.
+</Callout>
+
+## When to Choose WrenAI
+
+- Your semantic layer is owned by analysts or business users, not engineers
+- You want a standalone text-to-SQL product, not an embeddable component
+- You prefer a visual modeling experience over YAML files
+- AGPL-3.0 is compatible with your use case

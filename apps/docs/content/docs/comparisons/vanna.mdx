@@ -1,0 +1,64 @@
+---
+title: Atlas vs Vanna
+description: Comparing Atlas and Vanna for text-to-SQL -- Python vs TypeScript, training vs semantic layer, embedding approaches.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+[Vanna](https://vanna.ai/) is a Python package for text-to-SQL that uses RAG (retrieval-augmented generation) to improve accuracy. Atlas and Vanna solve the same core problem but for different audiences and deployment models.
+
+## Quick Comparison
+
+| | Atlas | Vanna |
+|---|---|---|
+| **License** | Apache-2.0 | MIT |
+| **Language** | TypeScript | Python |
+| **Approach** | Semantic layer (YAML) | RAG training (DDL + docs + SQL pairs) |
+| **Embeddable** | Script tag, React component, API | Flask UI, Streamlit, or custom Python |
+| **Deployment** | API server (Hono) + frontend (Next.js) | Python script or notebook |
+| **Plugin system** | Plugin SDK + 15 official plugins | Swappable LLM/vector store backends |
+| **Databases** | Postgres, MySQL + plugins for 5 more | Postgres, MySQL, BigQuery, Snowflake, DuckDB, SQLite, and more |
+| **Auth model** | Managed, BYOT, API key | None built-in |
+| **Admin console** | Built-in | No |
+| **MCP server** | Yes | No |
+| **SQL validation** | 4-layer pipeline (AST, whitelist, LIMIT, timeout) | None built-in |
+
+## Context Approach
+
+**Atlas** uses a declarative semantic layer: YAML files that describe tables, columns, business terms, metrics, and query patterns. The agent reads these before generating SQL. Changes are explicit -- you edit YAML, review in a PR, and deploy.
+
+**Vanna** uses RAG training: you feed it DDL statements, documentation strings, and example SQL question/query pairs. Vanna stores these in a vector database and retrieves relevant context at query time. This is more flexible (you can train on anything) but less predictable (retrieval quality varies).
+
+**Trade-off:** A semantic layer gives you deterministic context -- you know exactly what the agent sees. RAG training is easier to bootstrap (just dump your DDL and a few example queries) but harder to audit and maintain as your schema evolves.
+
+## Deployment Model
+
+**Atlas** deploys as a standalone API server with a built-in frontend. It's designed for production: managed auth, rate limiting, audit logging, admin console, and embeddable widget. You deploy it alongside your application.
+
+**Vanna** is a Python package you import and call. The simplest deployment is a Jupyter notebook or Python script. Vanna provides a Flask-based UI and Streamlit integration for quick demos, but production deployment requires building your own API layer, auth, and frontend around it.
+
+**Trade-off:** Vanna gives you more flexibility if you're already running Python services and want to integrate text-to-SQL into an existing Python API. Atlas gives you a complete production stack out of the box.
+
+## SQL Safety
+
+Atlas enforces read-only access through a 4-layer SQL validation pipeline: regex guard, AST parsing (only SELECT), table whitelist (only semantic layer entities), and auto LIMIT with statement timeout.
+
+Vanna does not include built-in SQL validation. The generated SQL is passed directly to your database connection. You're responsible for adding guardrails -- read-only database users, query validation, and timeout enforcement.
+
+<Callout type="warn">
+  If you use Vanna in production, ensure your database connection uses a read-only user and implement your own query validation layer.
+</Callout>
+
+## Ecosystem
+
+Atlas has a typed Plugin SDK with 15+ official plugins covering datasource adapters, sandbox backends, interaction channels (Slack, MCP), and action triggers (email, JIRA). You can build custom plugins with `bun create @useatlas/plugin`.
+
+Vanna has a modular architecture where you can swap the LLM backend (OpenAI, Mistral, Ollama, etc.) and vector store (ChromaDB, Pinecone, etc.). This is closer to a library with pluggable backends than a plugin ecosystem.
+
+## When to Choose Vanna
+
+- You work primarily in Python and want to integrate text-to-SQL into existing Python services
+- You want a library, not a product -- minimal opinions about deployment, auth, or UI
+- You prefer RAG-style training over a declarative semantic layer
+- You're prototyping or building a one-off analysis tool, not a production embedded feature
+- MIT license compatibility matters

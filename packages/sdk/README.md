@@ -43,7 +43,8 @@ const atlas = createAtlasClient({ baseUrl: "...", bearerToken: "eyJ..." });
 | Method | Description |
 |--------|-------------|
 | `atlas.query(question, opts?)` | Run a synchronous query. Returns `{ answer, sql, data, steps, usage }` |
-| `atlas.chat(messages, opts?)` | Start a streaming chat session. Returns a raw `Response` with SSE body (AI SDK Data Stream Protocol) |
+| `atlas.streamQuery(question, opts?)` | Stream a query as an async iterator of typed `StreamEvent`s |
+| `atlas.chat(messages, opts?)` | Start a streaming chat session. Returns a raw `Response` with SSE body (AI SDK UI Message Stream Protocol) |
 
 ### Conversations
 
@@ -84,6 +85,69 @@ const atlas = createAtlasClient({ baseUrl: "...", bearerToken: "eyJ..." });
 | `atlas.admin.auditStats()` | Aggregate audit stats |
 | `atlas.admin.plugins()` | List installed plugins |
 | `atlas.admin.pluginHealth(id)` | Check plugin health |
+
+## Streaming
+
+Use `streamQuery()` to receive typed events as the agent works:
+
+```typescript
+import type { StreamEvent } from "@useatlas/sdk";
+
+for await (const event of atlas.streamQuery("How many users signed up last week?")) {
+  switch (event.type) {
+    case "text":
+      process.stdout.write(event.content);
+      break;
+    case "tool-call":
+      console.log(`Calling ${event.name}`, event.args);
+      break;
+    case "tool-result":
+      console.log(`${event.name} returned`, event.result);
+      break;
+    case "result":
+      console.table(event.rows); // convenience: { columns, rows } from executeSQL
+      break;
+    case "error":
+      console.error(event.message);
+      break;
+    case "finish":
+      console.log(`\nDone (${event.reason})`);
+      break;
+  }
+}
+```
+
+### Cancellation
+
+Pass an `AbortSignal` to cancel the stream:
+
+```typescript
+const controller = new AbortController();
+
+// Cancel after 10 seconds
+setTimeout(() => controller.abort(), 10_000);
+
+try {
+  for await (const event of atlas.streamQuery("...", { signal: controller.signal })) {
+    if (event.type === "text") process.stdout.write(event.content);
+  }
+} catch (err) {
+  if (err instanceof Error && err.name === "AbortError") {
+    console.log("Stream cancelled");
+  }
+}
+```
+
+### Stream Event Types
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `text` | `content` | Text chunk from the agent |
+| `tool-call` | `toolCallId`, `name`, `args` | Agent is calling a tool |
+| `tool-result` | `toolCallId`, `name`, `result` | Tool returned a result |
+| `result` | `columns`, `rows` | Convenience event extracted from `tool-result` when `executeSQL` returns data. Both `tool-result` and `result` are emitted. |
+| `error` | `message` | Error during streaming |
+| `finish` | `reason` | Stream completed |
 
 ## Error Handling
 

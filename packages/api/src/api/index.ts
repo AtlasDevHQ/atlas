@@ -22,7 +22,7 @@ import { health } from "./routes/health";
 import { auth } from "./routes/auth";
 import { query } from "./routes/query";
 import { openapi } from "./routes/openapi";
-import { conversations } from "./routes/conversations";
+import { conversations, publicConversations } from "./routes/conversations";
 import { semantic } from "./routes/semantic";
 import { widget } from "./routes/widget";
 
@@ -101,6 +101,7 @@ app.route("/api/auth", auth);
 app.route("/api/v1/query", query);
 app.route("/api/v1/openapi.json", openapi);
 app.route("/api/v1/conversations", conversations);
+app.route("/api/public/conversations", publicConversations);
 app.route("/api/v1/semantic", semantic);
 app.route("/widget", widget);
 

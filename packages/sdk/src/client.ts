@@ -772,6 +772,18 @@ export function createAtlasClient(options: AtlasClientOptions) {
         const res = await patch(`/api/v1/conversations/${encodeURIComponent(id)}/star`, { starred: false });
         await throwIfNotOk(res);
       },
+
+      /** Generate a share link for a conversation. */
+      async share(id: string): Promise<{ token: string; url: string }> {
+        const res = await post(`/api/v1/conversations/${encodeURIComponent(id)}/share`, {});
+        return unwrap<{ token: string; url: string }>(res);
+      },
+
+      /** Revoke sharing for a conversation. */
+      async unshare(id: string): Promise<void> {
+        const res = await del(`/api/v1/conversations/${encodeURIComponent(id)}/share`);
+        await throwIfNotOk(res);
+      },
     },
 
     /** Scheduled task CRUD methods. */

@@ -353,6 +353,9 @@ mock.module("@atlas/api/lib/conversations", () => ({
   }),
 
   generateTitle: mock((q: string) => q.slice(0, 80)),
+  shareConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
+  unshareConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
+  getSharedConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
 }));
 
 // ---------------------------------------------------------------------------

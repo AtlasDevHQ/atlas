@@ -79,7 +79,7 @@ var listeners={};
 var attrMap={open:"data-on-open",close:"data-on-close",queryComplete:"data-on-query-complete",error:"data-on-error"};
 function emit(ev,detail){
   var attr=attrMap[ev];
-  if(attr){var fn=s.getAttribute(attr);if(fn&&typeof window[fn]==="function"){try{window[fn](detail)}catch(err){console.error("[Atlas] Callback error:",err)}}}
+  if(attr){var fn=s.getAttribute(attr);if(fn){if(typeof window[fn]==="function"){try{window[fn](detail)}catch(err){console.error("[Atlas] Callback error:",err)}}else{console.warn("[Atlas] Callback",fn,"is not a function on window")}}}
   var arr=listeners[ev];
   if(arr){for(var i=0;i<arr.length;i++){try{arr[i](detail)}catch(err){console.error("[Atlas] Listener error:",err)}}}
 }
@@ -203,7 +203,7 @@ function onWidgetMessage(e){
 window.addEventListener("message",onWidgetMessage);
 
 /* Host page API — same-window messages only (e.source === window).
-   Usage: window.postMessage({type:"atlas:setTheme",value:"dark"},"*") */
+   Prefer window.Atlas.setTheme() / setAuthToken() instead. postMessage kept for backward compat. */
 function onHostMessage(e){
   if(e.source!==window)return;
   var d=e.data;
@@ -287,34 +287,37 @@ for(var i=0;i<q.length;i++){
  * Served from GET /widget.d.ts for host page type safety.
  */
 function buildTypeDeclarations(): string {
-  return `interface AtlasWidgetEventMap {
-  open: Record<string, never>;
-  close: Record<string, never>;
-  queryComplete: { sql?: string; rowCount?: number };
-  error: { code?: string; message?: string };
-}
+  return `export {};
+declare global {
+  interface AtlasWidgetEventMap {
+    open: Record<string, never>;
+    close: Record<string, never>;
+    queryComplete: { sql?: string; rowCount?: number };
+    error: { code?: string; message?: string };
+  }
 
-interface AtlasWidget {
-  /** Opens the widget panel */
-  open(): void;
-  /** Closes the widget panel */
-  close(): void;
-  /** Toggles the widget panel open/close */
-  toggle(): void;
-  /** Opens the widget and sends a question */
-  ask(question: string): void;
-  /** Removes widget from DOM and cleans up all listeners */
-  destroy(): void;
-  /** Binds an event listener */
-  on<K extends keyof AtlasWidgetEventMap>(event: K, handler: (detail: AtlasWidgetEventMap[K]) => void): void;
-  /** Sends an auth token to the widget iframe */
-  setAuthToken(token: string): void;
-  /** Sets the widget theme */
-  setTheme(theme: "light" | "dark"): void;
-}
+  interface AtlasWidget {
+    /** Opens the widget panel */
+    open(): void;
+    /** Closes the widget panel */
+    close(): void;
+    /** Toggles the widget panel open/close */
+    toggle(): void;
+    /** Opens the widget and sends a question */
+    ask(question: string): void;
+    /** Removes widget from DOM, cleans up all listeners, and deletes window.Atlas */
+    destroy(): void;
+    /** Binds an event listener (events: 'open', 'close', 'queryComplete', 'error') */
+    on<K extends keyof AtlasWidgetEventMap>(event: K, handler: (detail: AtlasWidgetEventMap[K]) => void): void;
+    /** Sends an auth token to the widget iframe */
+    setAuthToken(token: string): void;
+    /** Sets the widget theme */
+    setTheme(theme: "light" | "dark"): void;
+  }
 
-interface Window {
-  Atlas?: AtlasWidget | Array<[string, ...unknown[]]>;
+  interface Window {
+    Atlas?: AtlasWidget | Array<[string, ...unknown[]]>;
+  }
 }
 `;
 }

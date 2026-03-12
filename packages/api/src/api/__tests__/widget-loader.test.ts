@@ -524,6 +524,12 @@ describe("GET /widget.js", () => {
     expect(script).toContain("[Atlas] Callback error:");
   });
 
+  it("warns when data-on-* references a non-existent global function", async () => {
+    const script = await getScript();
+    expect(script).toContain("[Atlas] Callback");
+    expect(script).toContain("is not a function on window");
+  });
+
   it("calls programmatic listeners registered via Atlas.on()", async () => {
     const script = await getScript();
     expect(script).toContain("arr[i](detail)");
@@ -586,6 +592,12 @@ describe("GET /widget.d.ts", () => {
     const cc = res.headers.get("cache-control");
     expect(cc).toContain("public");
     expect(cc).toContain("max-age=");
+  });
+
+  it("wraps declarations in declare global for module-context safety", async () => {
+    const types = await getTypes();
+    expect(types).toContain("export {};");
+    expect(types).toContain("declare global {");
   });
 
   it("declares AtlasWidget interface with all API methods", async () => {

@@ -22,6 +22,8 @@ export interface UseConversationsReturn {
   loadConversation: (id: string) => Promise<UIMessage[] | null>;
   deleteConversation: (id: string) => Promise<boolean>;
   starConversation: (id: string, starred: boolean) => Promise<boolean>;
+  shareConversation: (id: string) => Promise<{ token: string; url: string } | null>;
+  unshareConversation: (id: string) => Promise<boolean>;
   refresh: () => Promise<void>;
 }
 
@@ -164,6 +166,42 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
     }
   }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);
 
+  const shareConversation = useCallback(async (id: string): Promise<{ token: string; url: string } | null> => {
+    try {
+      const res = await fetch(`${opts.apiUrl}/api/v1/conversations/${id}/share`, {
+        method: "POST",
+        headers: { ...opts.getHeaders(), "Content-Type": "application/json" },
+        credentials: opts.getCredentials(),
+      });
+      if (!res.ok) {
+        console.warn(`shareConversation: HTTP ${res.status} for ${id}`);
+        return null;
+      }
+      return await res.json();
+    } catch (err) {
+      console.warn("shareConversation error:", err);
+      return null;
+    }
+  }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);
+
+  const unshareConversation = useCallback(async (id: string): Promise<boolean> => {
+    try {
+      const res = await fetch(`${opts.apiUrl}/api/v1/conversations/${id}/share`, {
+        method: "DELETE",
+        headers: opts.getHeaders(),
+        credentials: opts.getCredentials(),
+      });
+      if (!res.ok) {
+        console.warn(`unshareConversation: HTTP ${res.status} for ${id}`);
+        return false;
+      }
+      return true;
+    } catch (err) {
+      console.warn("unshareConversation error:", err);
+      return false;
+    }
+  }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);
+
   const refresh = useCallback(async () => {
     await fetchList();
   }, [fetchList]);
@@ -179,6 +217,8 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
     loadConversation,
     deleteConversation,
     starConversation,
+    shareConversation,
+    unshareConversation,
     refresh,
   };
 }

@@ -15,6 +15,7 @@ import { ToolPart } from "./chat/tool-part";
 import { Markdown } from "./chat/markdown";
 import { STARTER_PROMPTS } from "./chat/starter-prompts";
 import { FollowUpChips } from "./chat/follow-up-chips";
+import { ShareDialog } from "./chat/share-dialog";
 import { ConversationSidebar } from "./conversations/conversation-sidebar";
 import { ChangePasswordDialog } from "./admin/change-password-dialog";
 import { Sun, Moon, Monitor, Star, TableProperties } from "lucide-react";
@@ -507,11 +508,19 @@ export function AtlasChat() {
                               onSelect={handleSend}
                             />
                             {conversationId && convos.available && (
-                              <SaveButton
-                                conversationId={conversationId}
-                                conversations={convos.conversations}
-                                onStar={convos.starConversation}
-                              />
+                              <div className="flex items-center gap-1">
+                                <SaveButton
+                                  conversationId={conversationId}
+                                  conversations={convos.conversations}
+                                  onStar={convos.starConversation}
+                                />
+                                <ShareDialog
+                                  key={conversationId}
+                                  conversationId={conversationId}
+                                  onShare={convos.shareConversation}
+                                  onUnshare={convos.unshareConversation}
+                                />
+                              </div>
                             )}
                           </>
                         )}

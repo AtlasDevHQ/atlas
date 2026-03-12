@@ -328,6 +328,10 @@ export async function migrateInternalDB(): Promise<void> {
   await pool.query(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS starred BOOLEAN NOT NULL DEFAULT false;`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_conversations_starred ON conversations(user_id, starred) WHERE starred = true;`);
 
+  // Conversation sharing (partial unique index is the real constraint — no column-level UNIQUE needed)
+  await pool.query(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS share_token VARCHAR(64), ADD COLUMN IF NOT EXISTS share_expires_at TIMESTAMPTZ;`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_share_token ON conversations(share_token) WHERE share_token IS NOT NULL;`);
+
   // Scheduled tasks
   await pool.query(`
     CREATE TABLE IF NOT EXISTS scheduled_tasks (

@@ -1,8 +1,9 @@
 /**
- * Conversations REST routes — list, get, and delete conversations.
+ * Conversations REST routes — list, get, delete, star, share/unshare.
  *
- * Middleware stack follows the same auth → rate limit → withRequestContext
- * pattern as chat.ts and query.ts.
+ * Authenticated routes follow the same auth → rate limit → withRequestContext
+ * pattern as chat.ts and query.ts. The public shared-conversation route
+ * (`publicConversations`) has its own in-memory rate limiter and no auth.
  */
 
 import { Hono } from "hono";
@@ -20,6 +21,9 @@ import {
   getConversation,
   deleteConversation,
   starConversation,
+  shareConversation,
+  unshareConversation,
+  getSharedConversation,
   type CrudFailReason,
 } from "@atlas/api/lib/conversations";
 
@@ -231,6 +235,76 @@ conversations.patch("/:id/star", async (c) => {
 });
 
 // ---------------------------------------------------------------------------
+// POST /:id/share — generate share link
+// ---------------------------------------------------------------------------
+
+conversations.post("/:id/share", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
+  }
+
+  const preamble = await authPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  const id = c.req.param("id");
+  if (!UUID_RE.test(id)) {
+    return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const result = await shareConversation(id, authResult.user?.id);
+    if (!result.ok) {
+      const fail = crudFailResponse(result.reason);
+      return c.json(fail.body, fail.status);
+    }
+    const baseUrl = new URL(req.url).origin;
+    return c.json({
+      token: result.data.token,
+      url: `${baseUrl}/api/public/conversations/${result.data.token}`,
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DELETE /:id/share — revoke share link
+// ---------------------------------------------------------------------------
+
+conversations.delete("/:id/share", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
+  }
+
+  const preamble = await authPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  const id = c.req.param("id");
+  if (!UUID_RE.test(id)) {
+    return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const result = await unshareConversation(id, authResult.user?.id);
+    if (!result.ok) {
+      const fail = crudFailResponse(result.reason);
+      return c.json(fail.body, fail.status);
+    }
+    return c.body(null, 204);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // DELETE /:id — delete conversation
 // ---------------------------------------------------------------------------
 
@@ -263,4 +337,103 @@ conversations.delete("/:id", async (c) => {
   });
 });
 
-export { conversations };
+// ---------------------------------------------------------------------------
+// Public shared conversation route (no auth required)
+// ---------------------------------------------------------------------------
+
+const SHARE_TOKEN_RE = /^[A-Za-z0-9_-]{20,64}$/;
+
+export const SharedConversationMessageSchema = z.object({
+  role: z.enum(["user", "assistant", "system", "tool"]),
+  content: z.unknown(),
+  createdAt: z.string().datetime(),
+});
+
+export const SharedConversationResponseSchema = z.object({
+  title: z.string().nullable(),
+  surface: z.enum(["web", "api", "mcp", "slack"]),
+  createdAt: z.string().datetime(),
+  messages: z.array(SharedConversationMessageSchema),
+});
+
+// ---------------------------------------------------------------------------
+// In-memory rate limiter for public route
+// ---------------------------------------------------------------------------
+
+const PUBLIC_RATE_WINDOW_MS = 60_000;
+const PUBLIC_RATE_MAX = 60;
+
+const publicRateMap = new Map<string, { count: number; resetAt: number }>();
+
+/** Evict expired entries to prevent unbounded growth. Runs periodically. */
+function sweepPublicRateMap() {
+  const now = Date.now();
+  for (const [key, entry] of publicRateMap) {
+    if (now > entry.resetAt) publicRateMap.delete(key);
+  }
+}
+
+// Sweep every 60 seconds
+const _sweepInterval = setInterval(sweepPublicRateMap, PUBLIC_RATE_WINDOW_MS);
+// Don't prevent process exit
+if (typeof _sweepInterval === "object" && "unref" in _sweepInterval) _sweepInterval.unref();
+
+function checkPublicRateLimit(ip: string): boolean {
+  const now = Date.now();
+  const entry = publicRateMap.get(ip);
+  if (!entry || now > entry.resetAt) {
+    publicRateMap.set(ip, { count: 1, resetAt: now + PUBLIC_RATE_WINDOW_MS });
+    return true;
+  }
+  entry.count++;
+  return entry.count <= PUBLIC_RATE_MAX;
+}
+
+const publicConversations = new Hono();
+
+publicConversations.get("/:token", async (c) => {
+  const requestId = crypto.randomUUID();
+
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Sharing is not available." }, 404);
+  }
+
+  const ip = getClientIP(c.req.raw);
+  if (!ip) {
+    log.warn({ requestId }, "Public conversation request with no client IP");
+  }
+  const rateLimitKey = ip ?? `unknown-${requestId}`;
+  if (!checkPublicRateLimit(rateLimitKey)) {
+    log.warn({ requestId, ip }, "Public conversation rate limited");
+    return c.json({ error: "rate_limited", message: "Too many requests. Please wait before trying again." }, 429);
+  }
+
+  const token = c.req.param("token");
+  if (!SHARE_TOKEN_RE.test(token)) {
+    return c.json({ error: "not_found", message: "Conversation not found." }, 404);
+  }
+
+  const result = await getSharedConversation(token);
+  if (!result.ok) {
+    if (result.reason === "error") {
+      log.error({ requestId }, "Public conversation fetch failed due to DB error");
+      return c.json({ error: "internal_error", message: "A server error occurred. Please try again." }, 500);
+    }
+    return c.json({ error: "not_found", message: "Conversation not found." }, 404);
+  }
+
+  // Strip internal IDs — only expose conversation content
+  const { title, surface, createdAt, messages } = result.data;
+  return c.json({
+    title,
+    surface,
+    createdAt,
+    messages: messages.map((m) => ({
+      role: m.role,
+      content: m.content,
+      createdAt: m.createdAt,
+    })),
+  });
+});
+
+export { conversations, publicConversations };

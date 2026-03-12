@@ -17,6 +17,8 @@ import type { AuthResult } from "@atlas/api/lib/auth/types";
 import type { CrudResult, CrudDataResult } from "@atlas/api/lib/conversations";
 import type { ConversationWithMessages } from "@atlas/api/lib/conversation-types";
 
+type ShareResult = CrudDataResult<{ token: string }>;
+
 // --- Mocks ---
 
 const mockAuthenticateRequest: Mock<
@@ -52,12 +54,18 @@ const mockStarConversation = mock((): Promise<CrudResult> => Promise.resolve({ o
 const mockCreateConversation = mock(() => Promise.resolve(null));
 const mockAddMessage = mock(() => {});
 const mockGenerateTitle = mock(() => "Test title");
+const mockShareConversation = mock((): Promise<ShareResult> => Promise.resolve({ ok: false, reason: "not_found" }));
+const mockUnshareConversation = mock((): Promise<CrudResult> => Promise.resolve({ ok: false, reason: "not_found" }));
+const mockGetSharedConversation = mock((): Promise<CrudDataResult<ConversationWithMessages>> => Promise.resolve({ ok: false, reason: "not_found" }));
 
 mock.module("@atlas/api/lib/conversations", () => ({
   listConversations: mockListConversations,
   getConversation: mockGetConversation,
   deleteConversation: mockDeleteConversation,
   starConversation: mockStarConversation,
+  shareConversation: mockShareConversation,
+  unshareConversation: mockUnshareConversation,
+  getSharedConversation: mockGetSharedConversation,
   createConversation: mockCreateConversation,
   addMessage: mockAddMessage,
   generateTitle: mockGenerateTitle,
@@ -126,6 +134,12 @@ describe("conversations routes", () => {
     mockDeleteConversation.mockResolvedValue({ ok: false, reason: "not_found" });
     mockStarConversation.mockReset();
     mockStarConversation.mockResolvedValue({ ok: false, reason: "not_found" });
+    mockShareConversation.mockReset();
+    mockShareConversation.mockResolvedValue({ ok: false, reason: "not_found" });
+    mockUnshareConversation.mockReset();
+    mockUnshareConversation.mockResolvedValue({ ok: false, reason: "not_found" });
+    mockGetSharedConversation.mockReset();
+    mockGetSharedConversation.mockResolvedValue({ ok: false, reason: "not_found" });
   });
 
   afterEach(() => {
@@ -550,6 +564,305 @@ describe("conversations routes", () => {
       expect(call[0]).toBe(VALID_ID);
       expect(call[1]).toBe(true);
       expect(call[2]).toBe("u1");
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // POST /api/v1/conversations/:id/share
+  // -----------------------------------------------------------------------
+
+  describe("POST /api/v1/conversations/:id/share", () => {
+    it("returns 200 with token and url on success", async () => {
+      mockShareConversation.mockResolvedValueOnce({ ok: true, data: { token: "abc123def456" } });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/share`, {
+          method: "POST",
+        }),
+      );
+      expect(response.status).toBe(200);
+
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.token).toBe("abc123def456");
+      expect(typeof body.url).toBe("string");
+      expect((body.url as string)).toContain("/api/public/conversations/abc123def456");
+    });
+
+    it("returns 404 when conversation not found", async () => {
+      mockShareConversation.mockResolvedValueOnce({ ok: false, reason: "not_found" });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/share`, {
+          method: "POST",
+        }),
+      );
+      expect(response.status).toBe(404);
+    });
+
+    it("returns 400 for invalid ID format", async () => {
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/conversations/not-a-uuid/share", {
+          method: "POST",
+        }),
+      );
+      expect(response.status).toBe(400);
+    });
+
+    it("passes userId for auth scoping", async () => {
+      mockShareConversation.mockResolvedValueOnce({ ok: true, data: { token: "tok" } });
+
+      await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/share`, {
+          method: "POST",
+        }),
+      );
+      const call = mockShareConversation.mock.calls[0] as unknown as [string, string | undefined];
+      expect(call[0]).toBe(VALID_ID);
+      expect(call[1]).toBe("u1");
+    });
+
+    it("returns 404 when no internal DB", async () => {
+      delete process.env.DATABASE_URL;
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/share`, {
+          method: "POST",
+        }),
+      );
+      expect(response.status).toBe(404);
+    });
+
+    it("returns 500 on database error", async () => {
+      mockShareConversation.mockResolvedValueOnce({ ok: false, reason: "error" });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/share`, {
+          method: "POST",
+        }),
+      );
+      expect(response.status).toBe(500);
+
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.error).toBe("internal_error");
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // DELETE /api/v1/conversations/:id/share
+  // -----------------------------------------------------------------------
+
+  describe("DELETE /api/v1/conversations/:id/share", () => {
+    it("returns 204 on successful unshare", async () => {
+      mockUnshareConversation.mockResolvedValueOnce({ ok: true });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/share`, {
+          method: "DELETE",
+        }),
+      );
+      expect(response.status).toBe(204);
+    });
+
+    it("returns 404 when conversation not found", async () => {
+      mockUnshareConversation.mockResolvedValueOnce({ ok: false, reason: "not_found" });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/share`, {
+          method: "DELETE",
+        }),
+      );
+      expect(response.status).toBe(404);
+    });
+
+    it("returns 400 for invalid ID format", async () => {
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/conversations/not-a-uuid/share", {
+          method: "DELETE",
+        }),
+      );
+      expect(response.status).toBe(400);
+    });
+
+    it("passes userId for auth scoping", async () => {
+      mockUnshareConversation.mockResolvedValueOnce({ ok: true });
+
+      await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/share`, {
+          method: "DELETE",
+        }),
+      );
+      const call = mockUnshareConversation.mock.calls[0] as unknown as [string, string | undefined];
+      expect(call[0]).toBe(VALID_ID);
+      expect(call[1]).toBe("u1");
+    });
+
+    it("returns 500 on database error", async () => {
+      mockUnshareConversation.mockResolvedValueOnce({ ok: false, reason: "error" });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/share`, {
+          method: "DELETE",
+        }),
+      );
+      expect(response.status).toBe(500);
+
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.error).toBe("internal_error");
+    });
+
+    it("returns 404 when no internal DB", async () => {
+      delete process.env.DATABASE_URL;
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/share`, {
+          method: "DELETE",
+        }),
+      );
+      expect(response.status).toBe(404);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // GET /api/public/conversations/:token
+  // -----------------------------------------------------------------------
+
+  describe("GET /api/public/conversations/:token", () => {
+    it("returns 200 with conversation content for valid token", async () => {
+      mockGetSharedConversation.mockResolvedValueOnce({
+        ok: true,
+        data: {
+          id: VALID_ID,
+          userId: "u1",
+          title: "Shared chat",
+          surface: "web",
+          connectionId: null,
+          starred: false,
+          createdAt: "2024-01-01",
+          updatedAt: "2024-01-01",
+          messages: [
+            { id: "m1", conversationId: VALID_ID, role: "user", content: "hello", createdAt: "2024-01-01" },
+            { id: "m2", conversationId: VALID_ID, role: "assistant", content: "hi", createdAt: "2024-01-01" },
+          ],
+        },
+      });
+
+      const response = await app.fetch(
+        new Request("http://localhost/api/public/conversations/abcdefghij1234567890x"),
+      );
+      expect(response.status).toBe(200);
+
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.title).toBe("Shared chat");
+      expect((body.messages as unknown[]).length).toBe(2);
+      // Should NOT expose internal IDs
+      expect(body).not.toHaveProperty("id");
+      expect(body).not.toHaveProperty("userId");
+    });
+
+    it("does not require auth", async () => {
+      mockAuthenticateRequest.mockResolvedValueOnce({
+        authenticated: false as const,
+        mode: "simple-key" as const,
+        status: 401 as const,
+        error: "API key required",
+      });
+      mockGetSharedConversation.mockResolvedValueOnce({
+        ok: true,
+        data: {
+          id: VALID_ID,
+          userId: "u1",
+          title: "Test",
+          surface: "web",
+          connectionId: null,
+          starred: false,
+          createdAt: "2024-01-01",
+          updatedAt: "2024-01-01",
+          messages: [],
+        },
+      });
+
+      const response = await app.fetch(
+        new Request("http://localhost/api/public/conversations/abcdefghij1234567890x"),
+      );
+      // Should return 200 even though auth fails — public route
+      expect(response.status).toBe(200);
+    });
+
+    it("returns 404 for invalid token format", async () => {
+      const response = await app.fetch(
+        new Request("http://localhost/api/public/conversations/short"),
+      );
+      expect(response.status).toBe(404);
+    });
+
+    it("returns 404 when token not found or expired", async () => {
+      mockGetSharedConversation.mockResolvedValueOnce({ ok: false, reason: "not_found" });
+
+      const response = await app.fetch(
+        new Request("http://localhost/api/public/conversations/abcdefghij1234567890x"),
+      );
+      expect(response.status).toBe(404);
+    });
+
+    it("returns 500 when getSharedConversation returns error (DB failure)", async () => {
+      mockGetSharedConversation.mockResolvedValueOnce({ ok: false, reason: "error" });
+
+      const response = await app.fetch(
+        new Request("http://localhost/api/public/conversations/abcdefghij1234567890x"),
+      );
+      expect(response.status).toBe(500);
+
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.error).toBe("internal_error");
+    });
+
+    it("returns 429 when public rate limit exceeded", async () => {
+      // Override getClientIP to return a consistent IP for rate limiting
+      mockGetClientIP.mockReturnValue("1.2.3.4");
+
+      // Exhaust the rate limit (60 requests per minute)
+      for (let i = 0; i < 60; i++) {
+        mockGetSharedConversation.mockResolvedValueOnce({ ok: false, reason: "not_found" });
+        await app.fetch(
+          new Request("http://localhost/api/public/conversations/abcdefghij1234567890x"),
+        );
+      }
+
+      // The 61st request should be rate limited
+      const response = await app.fetch(
+        new Request("http://localhost/api/public/conversations/abcdefghij1234567890x"),
+      );
+      expect(response.status).toBe(429);
+
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.error).toBe("rate_limited");
+    });
+
+    it("strips message IDs from public response", async () => {
+      mockGetSharedConversation.mockResolvedValueOnce({
+        ok: true,
+        data: {
+          id: VALID_ID,
+          userId: "u1",
+          title: "Test",
+          surface: "web",
+          connectionId: null,
+          starred: false,
+          createdAt: "2024-01-01",
+          updatedAt: "2024-01-01",
+          messages: [
+            { id: "m1", conversationId: VALID_ID, role: "user", content: "hello", createdAt: "2024-01-01" },
+          ],
+        },
+      });
+
+      const response = await app.fetch(
+        new Request("http://localhost/api/public/conversations/abcdefghij1234567890x"),
+      );
+      const body = await response.json() as Record<string, unknown>;
+      const msgs = body.messages as Record<string, unknown>[];
+      expect(msgs[0]).not.toHaveProperty("id");
+      expect(msgs[0]).not.toHaveProperty("conversationId");
     });
   });
 });

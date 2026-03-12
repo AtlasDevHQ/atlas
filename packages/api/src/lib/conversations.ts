@@ -1,12 +1,15 @@
 /**
- * Conversation persistence — CRUD operations for conversations and messages.
+ * Conversation persistence — CRUD operations for conversations and messages,
+ * plus share/unshare operations for public link sharing.
  *
- * Functions that need callers to distinguish failure modes (get, delete, star)
- * return discriminated union results (CrudResult / CrudDataResult). Functions
- * that are fire-and-forget (createConversation, addMessage) still return
- * null/void. Failures are logged but never propagate as exceptions.
+ * Functions that need callers to distinguish failure modes (get, delete, star,
+ * share, unshare, getShared) return discriminated union results
+ * (CrudResult / CrudDataResult). Functions that are fire-and-forget
+ * (createConversation, addMessage) still return null/void. Failures are
+ * logged but never propagate as exceptions.
  */
 
+import * as crypto from "crypto";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
   hasInternalDB,
@@ -265,6 +268,115 @@ export async function deleteConversation(
     return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
   } catch (err) {
     log.error({ err: err instanceof Error ? err.message : String(err) }, "deleteConversation failed");
+    return { ok: false, reason: "error" };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Sharing
+// ---------------------------------------------------------------------------
+
+/** Generate a cryptographically random share token (28 chars, base64url). */
+function generateShareToken(): string {
+  return crypto.randomBytes(21).toString("base64url");
+}
+
+/** Enable sharing for a conversation. Returns the share token. Auth-scoped when userId is provided. */
+export async function shareConversation(
+  id: string,
+  userId?: string | null,
+): Promise<CrudDataResult<{ token: string }>> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+  try {
+    const token = generateShareToken();
+    const rows = userId
+      ? await internalQuery<{ share_token: string }>(
+          `UPDATE conversations SET share_token = $1, updated_at = now()
+           WHERE id = $2 AND user_id = $3 RETURNING share_token`,
+          [token, id, userId],
+        )
+      : await internalQuery<{ share_token: string }>(
+          `UPDATE conversations SET share_token = $1, updated_at = now()
+           WHERE id = $2 RETURNING share_token`,
+          [token, id],
+        );
+    if (rows.length === 0) return { ok: false, reason: "not_found" };
+    return { ok: true, data: { token: rows[0].share_token } };
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err) }, "shareConversation failed");
+    return { ok: false, reason: "error" };
+  }
+}
+
+/** Revoke sharing for a conversation. Auth-scoped when userId is provided. */
+export async function unshareConversation(
+  id: string,
+  userId?: string | null,
+): Promise<CrudResult> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+  try {
+    const rows = userId
+      ? await internalQuery<{ id: string }>(
+          `UPDATE conversations SET share_token = NULL, share_expires_at = NULL, updated_at = now()
+           WHERE id = $1 AND user_id = $2 RETURNING id`,
+          [id, userId],
+        )
+      : await internalQuery<{ id: string }>(
+          `UPDATE conversations SET share_token = NULL, share_expires_at = NULL, updated_at = now()
+           WHERE id = $1 RETURNING id`,
+          [id],
+        );
+    return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err) }, "unshareConversation failed");
+    return { ok: false, reason: "error" };
+  }
+}
+
+/**
+ * Fetch a shared conversation by token. Returns not_found if token is missing
+ * or expired. No auth required.
+ *
+ * Note: `share_expires_at` is reserved for future use — `shareConversation`
+ * does not currently set it, so the expiry check is a no-op for now.
+ */
+export async function getSharedConversation(
+  token: string,
+): Promise<CrudDataResult<ConversationWithMessages>> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+  try {
+    const convRows = await internalQuery<Record<string, unknown>>(
+      `SELECT id, user_id, title, surface, connection_id, starred, created_at, updated_at
+       FROM conversations
+       WHERE share_token = $1
+         AND (share_expires_at IS NULL OR share_expires_at > now())`,
+      [token],
+    );
+
+    if (convRows.length === 0) return { ok: false, reason: "not_found" };
+
+    const convId = convRows[0].id as string;
+    const msgRows = await internalQuery<Record<string, unknown>>(
+      `SELECT id, conversation_id, role, content, created_at
+       FROM messages WHERE conversation_id = $1 ORDER BY created_at ASC`,
+      [convId],
+    );
+
+    return {
+      ok: true,
+      data: {
+        ...rowToConversation(convRows[0]),
+        messages: msgRows.map((m) => ({
+          id: m.id as string,
+          conversationId: m.conversation_id as string,
+          role: m.role as MessageRole,
+          content: m.content,
+          createdAt: String(m.created_at),
+        })),
+      },
+    };
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err) }, "getSharedConversation failed");
     return { ok: false, reason: "error" };
   }
 }

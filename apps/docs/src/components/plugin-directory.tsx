@@ -31,6 +31,14 @@ interface Plugin {
 const plugins: Plugin[] = [
   // Datasources
   {
+    name: "BigQuery",
+    href: "/plugins/datasources/bigquery",
+    type: "datasource",
+    package: "@useatlas/bigquery",
+    description:
+      "Google Cloud data warehouse via REST API with service account and ADC authentication.",
+  },
+  {
     name: "ClickHouse",
     href: "/plugins/datasources/clickhouse",
     type: "datasource",

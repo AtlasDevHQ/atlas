@@ -1,6 +1,6 @@
 ---
 title: Datasource Plugins
-description: Connect ClickHouse, DuckDB, MySQL, Snowflake, and Salesforce as Atlas query targets.
+description: Connect BigQuery, ClickHouse, DuckDB, MySQL, Snowflake, and Salesforce as Atlas query targets.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -21,6 +21,7 @@ Never commit credentials to version control. Use environment variables (`process
 ## Available Datasource Plugins
 
 <Cards>
+  <Card title="BigQuery" href="/plugins/datasources/bigquery" description="Google Cloud data warehouse via REST API" />
   <Card title="ClickHouse" href="/plugins/datasources/clickhouse" description="Column-oriented analytics database via HTTP transport" />
   <Card title="DuckDB" href="/plugins/datasources/duckdb" description="Embedded analytics engine, file-based or in-memory" />
   <Card title="MySQL" href="/plugins/datasources/mysql" description="MySQL / MariaDB via connection pool" />
@@ -30,12 +31,12 @@ Never commit credentials to version control. Use environment variables (`process
 
 ## Comparison
 
-| Feature | ClickHouse | DuckDB | MySQL | Snowflake | Salesforce |
-|---------|-----------|--------|-------|-----------|------------|
-| Driver package | `@clickhouse/client` | `@duckdb/node-api` | `mysql2` | `snowflake-sdk` | `jsforce` |
-| Transport | HTTP | In-process | TCP pool | SDK pool | REST API |
-| Query language | ClickHouse SQL | DuckDB SQL | MySQL SQL | Snowflake SQL | SOQL |
-| Parser dialect | PostgreSQL (closest) | PostgreSQL (closest) | MySQL | Snowflake | Custom (regex) |
-| Read-only enforcement | `readonly: 1` per query | `READ_ONLY` access mode (file-based only) | `READ ONLY` session | SQL validation only | SELECT-only validation |
-| Agent tool | `executeSQL` | `executeSQL` | `executeSQL` | `executeSQL` | `querySalesforce` |
-| Connection caching | No (stateless HTTP) | Yes (in-process) | Yes (pool) | Yes (pool) | Yes (session) |
+| Feature | BigQuery | ClickHouse | DuckDB | MySQL | Snowflake | Salesforce |
+|---------|----------|-----------|--------|-------|-----------|------------|
+| Driver package | `@google-cloud/bigquery` | `@clickhouse/client` | `@duckdb/node-api` | `mysql2` | `snowflake-sdk` | `jsforce` |
+| Transport | REST API | HTTP | In-process | TCP pool | SDK pool | REST API |
+| Query language | BigQuery SQL | ClickHouse SQL | DuckDB SQL | MySQL SQL | Snowflake SQL | SOQL |
+| Parser dialect | BigQuery | PostgreSQL (closest) | PostgreSQL (closest) | MySQL | Snowflake | Custom (regex) |
+| Read-only enforcement | SQL validation + IAM | `readonly: 1` per query | `READ_ONLY` access mode (file-based only) | `READ ONLY` session | SQL validation only | SELECT-only validation |
+| Agent tool | `executeSQL` | `executeSQL` | `executeSQL` | `executeSQL` | `executeSQL` | `querySalesforce` |
+| Connection caching | No (stateless REST) | No (stateless HTTP) | Yes (in-process) | Yes (pool) | Yes (pool) | Yes (session) |

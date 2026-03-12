@@ -2,6 +2,7 @@
   "title": "Datasources",
   "pages": [
     "index",
+    "bigquery",
     "clickhouse",
     "duckdb",
     "mysql",

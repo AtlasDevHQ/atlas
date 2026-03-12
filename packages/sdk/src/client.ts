@@ -359,6 +359,26 @@ export interface ChatOptions {
 }
 
 // ---------------------------------------------------------------------------
+// Stream types
+// ---------------------------------------------------------------------------
+
+/** Discriminated union of events yielded by `streamQuery()`. */
+export type StreamEvent =
+  | { type: "text"; content: string }
+  | { type: "tool-call"; toolCallId: string; name: string; args: Record<string, unknown> }
+  | { type: "tool-result"; toolCallId: string; name: string; result: unknown }
+  | { type: "result"; columns: string[]; rows: Record<string, unknown>[] }
+  | { type: "error"; message: string }
+  | { type: "finish"; reason: string };
+
+export interface StreamQueryOptions {
+  /** AbortSignal for cancelling the stream */
+  signal?: AbortSignal;
+  /** Resume an existing conversation */
+  conversationId?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
 
@@ -433,7 +453,7 @@ export function createAtlasClient(options: AtlasClientOptions) {
   }
 
   /** Send a JSON POST request. */
-  async function post(path: string, body: unknown): Promise<Response> {
+  async function post(path: string, body: unknown, opts?: { signal?: AbortSignal }): Promise<Response> {
     try {
       return await fetch(`${base}${path}`, {
         method: "POST",
@@ -442,8 +462,10 @@ export function createAtlasClient(options: AtlasClientOptions) {
           Authorization: authHeader,
         },
         body: JSON.stringify(body),
+        signal: opts?.signal,
       });
     } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") throw err;
       throw new AtlasError(
         "network_error",
         err instanceof Error ? err.message : String(err),
@@ -524,6 +546,57 @@ export function createAtlasClient(options: AtlasClientOptions) {
     }
   }
 
+  // -------------------------------------------------------------------------
+  // SSE parser — reads a ReadableStream<Uint8Array> and yields parsed JSON objects
+  // -------------------------------------------------------------------------
+
+  async function* parseSSE(
+    body: ReadableStream<Uint8Array>,
+    signal?: AbortSignal,
+  ): AsyncGenerator<Record<string, unknown>> {
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let aborted = false;
+
+    const onAbort = () => {
+      aborted = true;
+      reader.cancel();
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (aborted) throw new DOMException("The operation was aborted.", "AbortError");
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop()!;
+
+        for (const part of parts) {
+          for (const line of part.split("\n")) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith("data: ")) continue;
+            const data = trimmed.slice(6);
+            if (data === "[DONE]") return;
+
+            try {
+              yield JSON.parse(data) as Record<string, unknown>;
+            } catch {
+              // Skip unparseable events
+            }
+          }
+        }
+      }
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+      reader.releaseLock();
+    }
+  }
+
   return {
     /**
      * Run a synchronous query — sends a question, waits for the full agent
@@ -538,6 +611,108 @@ export function createAtlasClient(options: AtlasClientOptions) {
         conversationId: opts?.conversationId,
       });
       return unwrap<QueryResponse>(res);
+    },
+
+    /**
+     * Stream a query — sends a question and yields typed events as the agent
+     * responds. Parses the AI SDK UI Message Stream Protocol.
+     *
+     * Supports cancellation via `AbortController`:
+     * ```ts
+     * const controller = new AbortController();
+     * for await (const event of atlas.streamQuery("...", { signal: controller.signal })) {
+     *   if (event.type === "text") process.stdout.write(event.content);
+     * }
+     * ```
+     */
+    async *streamQuery(
+      question: string,
+      opts?: StreamQueryOptions,
+    ): AsyncGenerator<StreamEvent> {
+      const messages = [{
+        id: crypto.randomUUID(),
+        role: "user" as const,
+        parts: [{ type: "text", text: question }],
+      }];
+
+      const res = await post("/api/chat", {
+        messages,
+        conversationId: opts?.conversationId,
+      }, { signal: opts?.signal });
+
+      await throwIfNotOk(res);
+
+      if (!res.body) {
+        throw new AtlasError("invalid_response", "Response body is empty", res.status);
+      }
+
+      const toolNames = new Map<string, string>();
+
+      for await (const event of parseSSE(res.body, opts?.signal)) {
+        const t = event.type as string;
+
+        switch (t) {
+          case "text-delta": {
+            const content = (event.delta ?? event.textDelta) as string | undefined;
+            if (content) yield { type: "text", content };
+            break;
+          }
+          case "tool-input-start": {
+            const id = event.toolCallId as string;
+            const name = event.toolName as string;
+            if (id && name) toolNames.set(id, name);
+            break;
+          }
+          case "tool-input-available": {
+            const id = event.toolCallId as string;
+            const name = toolNames.get(id) ?? "unknown";
+            yield {
+              type: "tool-call",
+              toolCallId: id,
+              name,
+              args: (event.input ?? {}) as Record<string, unknown>,
+            };
+            break;
+          }
+          case "tool-output-available": {
+            const id = event.toolCallId as string;
+            const name = toolNames.get(id) ?? "unknown";
+            const output = event.output;
+            yield {
+              type: "tool-result",
+              toolCallId: id,
+              name,
+              result: output,
+            };
+            if (
+              name === "executeSQL" &&
+              output != null &&
+              typeof output === "object" &&
+              Array.isArray((output as Record<string, unknown>).columns) &&
+              Array.isArray((output as Record<string, unknown>).rows)
+            ) {
+              const o = output as { columns: string[]; rows: Record<string, unknown>[] };
+              yield { type: "result", columns: o.columns, rows: o.rows };
+            }
+            break;
+          }
+          case "error": {
+            yield {
+              type: "error",
+              message: (event.errorText ?? event.message ?? "Unknown error") as string,
+            };
+            break;
+          }
+          case "finish": {
+            yield {
+              type: "finish",
+              reason: (event.finishReason ?? "stop") as string,
+            };
+            break;
+          }
+          // Ignore: start, message-start, text-start, text-end, tool-input-delta, etc.
+        }
+      }
     },
 
     /** Conversation CRUD methods. */

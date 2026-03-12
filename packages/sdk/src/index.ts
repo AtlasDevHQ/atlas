@@ -28,6 +28,8 @@ export {
   type ListConversationsOptions,
   type ChatMessage,
   type ChatOptions,
+  type StreamEvent,
+  type StreamQueryOptions,
   type DeliveryChannel,
   type ScheduledTaskRecipient,
   type ScheduledTask,

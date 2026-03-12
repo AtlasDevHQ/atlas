@@ -10,8 +10,10 @@
  *                  to the iframe's window.location.origin at runtime)
  *   position     — "bottomRight" | "bottomLeft" | "inline" (default: "inline")
  *                  Applied as data-position on <body>; consumed by parent script loader.
- *   logo         — HTTPS URL to a logo image (falls back to Atlas logo if missing/invalid)
- *   accent       — hex color without # (e.g. "4f46e5") for send button, input focus, links
+ *   logo         — HTTPS URL to a custom logo image (sanitized to "" if missing/invalid;
+ *                  the AtlasChat component's default SVG logo remains when no custom logo is set)
+ *   accent       — hex color without # (e.g. "4f46e5"); sets --atlas-widget-accent CSS
+ *                  custom property and overrides send button, input focus, and link colors
  *   welcome      — welcome message shown before first user message
  *   initialQuery — auto-sends this query on first open
  *
@@ -20,6 +22,7 @@
  *   { type: "auth", token: string }                 — passed as apiKey prop to AtlasChat
  *   { type: "toggle" }                              — show/hide the widget
  *   { type: "atlas:setBranding", logo?, accent?, welcome? } — update branding at runtime
+ *                                                            (use atlas:ask to send queries)
  *   { type: "atlas:ask", query: string }            — programmatically send a query
  *
  * Widget → parent messages:
@@ -79,7 +82,8 @@ function buildWidgetHTML(config: {
   // Escape < to \u003c to prevent XSS via </script> injection in the JSON blob
   const configJSON = JSON.stringify(config).replace(/</g, "\\u003c");
 
-  // Server-side accent CSS — only emitted when accent is a validated hex value
+  // Server-side accent CSS — only emitted when accent is a validated hex value.
+  // Keep in sync with applyAccent() which duplicates these rules for runtime setBranding updates.
   const accentCSS = config.accent
     ? `
 .atlas-accent{--atlas-widget-accent:#${config.accent}}
@@ -162,14 +166,15 @@ function render(){
   root.render(createElement(EB,null,createElement(AtlasChat,{apiUrl,apiKey:state.apiKey||void 0,theme:state.theme})));
 }
 
-/** Replace the default Atlas SVG logo with a custom <img> in the rendered header. */
+/** Replace the default Atlas SVG logo with a custom <img>.
+ *  Finds the logo by viewBox="0 0 256 256" — must be updated if @useatlas/react changes its header SVG. */
 function applyLogo(src){
   if(!src)return;
   const svg=el.querySelector("svg[viewBox='0 0 256 256']");
-  if(!svg)return;
+  if(!svg){console.warn("[Atlas Widget] Could not find default logo SVG to replace");return}
   const img=document.createElement("img");
   img.src=src;img.alt="Logo";img.className="atlas-custom-logo";
-  img.onerror=function(){img.style.display="none"};
+  img.onerror=function(){console.warn("[Atlas Widget] Custom logo failed to load:",src);img.style.display="none"};
   svg.replaceWith(img);
 }
 
@@ -195,24 +200,31 @@ function applyWelcome(text){
   const inner=document.createElement("div");
   inner.className="atlas-welcome-inner";inner.textContent=text;
   wrapper.appendChild(inner);
-  // Insert before the messages area — find the scrollable container
+  // Insert before the messages area — targets Radix ScrollArea internal attribute;
+  // must be updated if Radix changes this data attribute.
   const scrollArea=el.querySelector("[data-radix-scroll-area-viewport]");
   if(scrollArea&&scrollArea.firstChild){
     scrollArea.firstChild.prepend(wrapper);
+  }else{
+    console.warn("[Atlas Widget] Could not find scroll area to insert welcome message");
   }
 }
 
-/** Programmatically submit a query by interacting with the form input. */
+/** Programmatically submit a query. Uses the native HTMLInputElement value setter
+ *  to bypass React's synthetic value tracking — setting .value directly on a
+ *  controlled input does not trigger React state updates. */
 function submitQuery(query){
   if(!query)return;
   const input=el.querySelector("input");
-  if(!input)return;
-  const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set;
-  setter.call(input,query);
+  if(!input){console.warn("[Atlas Widget] Cannot submit query: input element not found");return}
+  const desc=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value");
+  if(!desc||!desc.set){console.warn("[Atlas Widget] Cannot submit query: input value setter unavailable");return}
+  desc.set.call(input,query);
   input.dispatchEvent(new Event("input",{bubbles:true}));
   requestAnimationFrame(function(){
     const form=input.closest("form");
-    if(form)form.requestSubmit();
+    if(!form){console.warn("[Atlas Widget] Cannot submit query: form element not found");return}
+    form.requestSubmit();
   });
 }
 
@@ -234,7 +246,7 @@ window.addEventListener("message",e=>{
       break;
     case"atlas:setBranding":{
       if(typeof d.logo==="string"){
-        try{const u=new URL(d.logo);if(u.protocol==="https:")applyLogo(d.logo)}catch(e){}
+        try{const u=new URL(d.logo);if(u.protocol==="https:"){applyLogo(d.logo)}else{console.warn("[Atlas Widget] Logo URL rejected: must use HTTPS, got",u.protocol)}}catch(urlErr){console.warn("[Atlas Widget] Invalid logo URL:",d.logo)}
       }
       if(typeof d.accent==="string")applyAccent(d.accent);
       if(typeof d.welcome==="string")applyWelcome(d.welcome);
@@ -248,18 +260,27 @@ window.addEventListener("message",e=>{
 
 render();
 
-// Apply branding after initial render
-setTimeout(function(){
+/** Wait for the AtlasChat component to render, then invoke callback.
+ *  Polls for the input element up to maxAttempts times (300ms apart). */
+function waitForReady(cb,attempts){
+  attempts=attempts||0;
+  const input=el.querySelector("input");
+  if(input){cb();return}
+  if(attempts>15){console.warn("[Atlas Widget] Timed out waiting for chat UI to render — some branding may not apply");cb();return}
+  setTimeout(function(){waitForReady(cb,attempts+1)},300);
+}
+
+// Apply branding after AtlasChat renders
+waitForReady(function(){
   if(cfg.logo)applyLogo(cfg.logo);
   if(cfg.accent)applyAccent(cfg.accent);
   if(cfg.welcome)applyWelcome(cfg.welcome);
   // Auto-send initial query on first open
   if(cfg.initialQuery&&!initialQuerySent){
     initialQuerySent=true;
-    // Delay to let AtlasChat complete its health check and mount
-    setTimeout(function(){submitQuery(cfg.initialQuery)},1000);
+    submitQuery(cfg.initialQuery);
   }
-},100);
+});
 
 window.parent.postMessage({type:"atlas:ready"},"*");
 }catch(err){
@@ -287,9 +308,10 @@ widget.get("/", (c) => {
   const position = VALID_POSITIONS.has(rawPosition) ? rawPosition : "inline";
   const logo = sanitizeLogoUrl(rawLogo);
   const accent = sanitizeAccent(rawAccent);
-  // welcome and initialQuery are plain text — sanitized by JSON.stringify + < escaping
-  const welcome = rawWelcome;
-  const initialQuery = rawInitialQuery;
+  // welcome and initialQuery are plain text — sanitized by JSON.stringify + < escaping.
+  // Length-limited to prevent oversized HTML responses.
+  const welcome = rawWelcome.slice(0, 500);
+  const initialQuery = rawInitialQuery.slice(0, 500);
 
   // Allow embedding as iframe from any origin
   c.header("Content-Security-Policy", "frame-ancestors *");

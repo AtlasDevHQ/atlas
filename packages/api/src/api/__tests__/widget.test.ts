@@ -2,7 +2,9 @@
  * Tests for the widget host route.
  *
  * Tests HTML response, headers, query param handling, XSS prevention,
- * apiUrl sanitization, branding params, postMessage API, and HTML structure.
+ * apiUrl sanitization, branding params, postMessage API, error handling,
+ * and HTML structure. Runtime behavior of inline JS (DOM manipulation,
+ * postMessage handlers) requires browser-level (Playwright) testing.
  * The widget route has no internal dependencies, so no mocks are needed —
  * we mount it on a standalone Hono app for isolation.
  */
@@ -342,6 +344,17 @@ describe("branding — logo", () => {
     expect(html).toContain('"logo":""');
   });
 
+  it("escapes < in logo URL to prevent script injection", async () => {
+    const res = await app.fetch(
+      widgetRequest({
+        logo: 'https://example.com/logo.png?x=</script><script>alert(1)</script>',
+      }),
+    );
+    const html = await res.text();
+    expect(html).not.toContain("</script><script>alert(1)</script>");
+    expect(html).toContain("\\u003c");
+  });
+
   it("includes applyLogo function in widget script", async () => {
     const res = await app.fetch(widgetRequest());
     const html = await res.text();
@@ -455,6 +468,14 @@ describe("branding — welcome", () => {
     const html = await res.text();
     expect(html).toContain("applyWelcome");
   });
+
+  it("truncates welcome message to 500 characters", async () => {
+    const longWelcome = "b".repeat(600);
+    const res = await app.fetch(widgetRequest({ welcome: longWelcome }));
+    const html = await res.text();
+    expect(html).toContain('"welcome":"' + "b".repeat(500) + '"');
+    expect(html).not.toContain("b".repeat(501));
+  });
 });
 
 // --- Branding: initialQuery ---
@@ -495,6 +516,20 @@ describe("branding — initialQuery", () => {
     const res = await app.fetch(widgetRequest());
     const html = await res.text();
     expect(html).toContain("submitQuery");
+  });
+
+  it("truncates initialQuery to 500 characters", async () => {
+    const longQuery = "a".repeat(600);
+    const res = await app.fetch(widgetRequest({ initialQuery: longQuery }));
+    const html = await res.text();
+    expect(html).toContain('"initialQuery":"' + "a".repeat(500) + '"');
+    expect(html).not.toContain("a".repeat(501));
+  });
+
+  it("includes waitForReady polling instead of fixed setTimeout", async () => {
+    const res = await app.fetch(widgetRequest());
+    const html = await res.text();
+    expect(html).toContain("waitForReady");
   });
 });
 
@@ -645,6 +680,10 @@ describe("sanitizeAccent", () => {
 
   it("rejects 7+ digit hex", () => {
     expect(sanitizeAccent("4f46e5f")).toBe("");
+  });
+
+  it("rejects 8-digit RGBA hex", () => {
+    expect(sanitizeAccent("4f46e5ff")).toBe("");
   });
 
   it("rejects non-hex characters", () => {

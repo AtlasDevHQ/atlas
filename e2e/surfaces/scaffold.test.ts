@@ -319,7 +319,7 @@ describe("E2E: Scaffold — --demo flag", () => {
   const projectName = "e2e-scaffold-demo";
   let tmpDir: string;
   let targetDir: string;
-  let pgAvailable: boolean;
+  let pgAvailable = false;
 
   beforeAll(() => {
     pgAvailable = isPostgresReachable();

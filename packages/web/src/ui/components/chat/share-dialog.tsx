@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Share2, Copy, Check, Link2Off, AlertCircle } from "lucide-react";
+import { Share2, Copy, Check, Link2Off, AlertCircle, Code } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -24,6 +24,7 @@ export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogP
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copiedEmbed, setCopiedEmbed] = useState(false);
   const [shared, setShared] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -33,6 +34,7 @@ export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogP
     setShared(false);
     setLoading(false);
     setCopied(false);
+    setCopiedEmbed(false);
     setError(null);
     setOpen(false);
   }, [conversationId]);
@@ -94,10 +96,37 @@ export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogP
     }
   }
 
+  function getEmbedCode(): string {
+    if (!shareUrl) return "";
+    return `<iframe src="${shareUrl}/embed" width="100%" height="500" frameborder="0" style="border:0;border-radius:8px"></iframe>`;
+  }
+
+  async function handleCopyEmbed() {
+    const code = getEmbedCode();
+    if (!code) return;
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopiedEmbed(true);
+      setTimeout(() => setCopiedEmbed(false), 2000);
+    } catch {
+      const input = document.createElement("input");
+      input.value = code;
+      document.body.appendChild(input);
+      input.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(input);
+      if (ok) {
+        setCopiedEmbed(true);
+        setTimeout(() => setCopiedEmbed(false), 2000);
+      }
+    }
+  }
+
   function handleOpenChange(next: boolean) {
     setOpen(next);
     if (!next) {
       setCopied(false);
+      setCopiedEmbed(false);
       setError(null);
     }
   }
@@ -148,6 +177,14 @@ export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogP
                   <span className="ml-1">{copied ? "Copied" : "Copy"}</span>
                 </Button>
               </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleCopyEmbed}
+              >
+                {copiedEmbed ? <Check className="h-4 w-4" /> : <Code className="h-4 w-4" />}
+                <span className="ml-1">{copiedEmbed ? "Copied" : "Copy embed code"}</span>
+              </Button>
               <Button
                 variant="ghost"
                 size="sm"

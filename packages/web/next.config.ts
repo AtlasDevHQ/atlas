@@ -25,6 +25,25 @@ const nextConfig: NextConfig = {
   typescript: { ignoreBuildErrors: true },
   transpilePackages: ["@useatlas/react"],
   turbopack: {},
+  // Allow embedding shared conversations in iframes. The /embed route removes
+  // chrome for a minimal read-only view; frame-ancestors * permits any origin.
+  async headers() {
+    return [
+      {
+        source: "/shared/:token/embed",
+        headers: [
+          {
+            key: "Content-Security-Policy",
+            value: "frame-ancestors *",
+          },
+          {
+            key: "X-Frame-Options",
+            value: "ALLOWALL",
+          },
+        ],
+      },
+    ];
+  },
   // When NEXT_PUBLIC_ATLAS_API_URL is set, the frontend talks directly to the API
   // (cross-origin), so no server-side rewrite is needed. When unset, Next.js proxies
   // /api/* to the Hono API server (ATLAS_API_URL, default localhost:3001).

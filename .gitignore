@@ -13,13 +13,7 @@ create-atlas/templates/*/semantic/
 create-atlas/templates/*/bin/
 create-atlas/templates/*/data/
 create-atlas/templates/*/docs/
-create-atlas/templates/*/src/api/
-create-atlas/templates/*/src/app/
-create-atlas/templates/*/src/lib/
-create-atlas/templates/*/src/ui/
-create-atlas/templates/*/src/test-setup.ts
-create-atlas/templates/*/src/global.d.ts
-create-atlas/templates/*/src/types/
+create-atlas/templates/*/src/
 dist/
 routeTree.gen.ts
 e2e/browser/storage-state.json

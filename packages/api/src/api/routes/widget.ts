@@ -5,16 +5,22 @@
  * Renders the @useatlas/react AtlasChat component via CDN.
  *
  * Query params:
- *   theme    — "light" | "dark" | "system" (default: "system")
- *   apiUrl   — Atlas API base URL, must be http(s) (default: "" → falls back
- *              to the iframe's window.location.origin at runtime)
- *   position — "bottomRight" | "bottomLeft" | "inline" (default: "inline")
- *              Applied as data-position on <body>; consumed by parent script loader.
+ *   theme        — "light" | "dark" | "system" (default: "system")
+ *   apiUrl       — Atlas API base URL, must be http(s) (default: "" → falls back
+ *                  to the iframe's window.location.origin at runtime)
+ *   position     — "bottomRight" | "bottomLeft" | "inline" (default: "inline")
+ *                  Applied as data-position on <body>; consumed by parent script loader.
+ *   logo         — HTTPS URL to a logo image (falls back to Atlas logo if missing/invalid)
+ *   accent       — hex color without # (e.g. "4f46e5") for send button, input focus, links
+ *   welcome      — welcome message shown before first user message
+ *   initialQuery — auto-sends this query on first open
  *
  * postMessage API (from parent window only — e.source === window.parent):
- *   { type: "theme", value: "dark" | "light" }  — "system" not supported via postMessage
- *   { type: "auth", token: string }              — passed as apiKey prop to AtlasChat
- *   { type: "toggle" }                           — show/hide the widget
+ *   { type: "theme", value: "dark" | "light" }     — "system" not supported via postMessage
+ *   { type: "auth", token: string }                 — passed as apiKey prop to AtlasChat
+ *   { type: "toggle" }                              — show/hide the widget
+ *   { type: "atlas:setBranding", logo?, accent?, welcome? } — update branding at runtime
+ *   { type: "atlas:ask", query: string }            — programmatically send a query
  *
  * Widget → parent messages:
  *   { type: "atlas:ready" }                                — widget loaded successfully
@@ -29,6 +35,7 @@ const widget = new Hono();
 
 const VALID_THEMES = new Set(["light", "dark", "system"]);
 const VALID_POSITIONS = new Set(["bottomRight", "bottomLeft", "inline"]);
+const HEX_COLOR_RE = /^[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/;
 
 /** Reject non-HTTP(S) URLs to prevent open redirect / API traffic exfiltration. */
 function sanitizeApiUrl(raw: string): string {
@@ -42,13 +49,45 @@ function sanitizeApiUrl(raw: string): string {
   }
 }
 
+/** Logo URL must be HTTPS to prevent mixed content and XSS via javascript: / data: URIs. */
+function sanitizeLogoUrl(raw: string): string {
+  if (!raw) return "";
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "https:") return "";
+    return raw;
+  } catch {
+    return "";
+  }
+}
+
+/** Accent must be a valid 3- or 6-digit hex color (no #). */
+function sanitizeAccent(raw: string): string {
+  if (!raw) return "";
+  return HEX_COLOR_RE.test(raw) ? raw : "";
+}
+
 function buildWidgetHTML(config: {
   theme: string;
   apiUrl: string;
   position: string;
+  logo: string;
+  accent: string;
+  welcome: string;
+  initialQuery: string;
 }): string {
   // Escape < to \u003c to prevent XSS via </script> injection in the JSON blob
   const configJSON = JSON.stringify(config).replace(/</g, "\\u003c");
+
+  // Server-side accent CSS — only emitted when accent is a validated hex value
+  const accentCSS = config.accent
+    ? `
+.atlas-accent{--atlas-widget-accent:#${config.accent}}
+.atlas-accent button[type="submit"]{background-color:#${config.accent}!important}
+.atlas-accent button[type="submit"]:hover{filter:brightness(1.1)}
+.atlas-accent input:focus{border-color:#${config.accent}!important}
+.atlas-accent a{color:#${config.accent}!important}`
+    : "";
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -65,6 +104,10 @@ body{background:#fff;color:#09090b}
 #atlas-widget[data-hidden]{display:none}
 .atlas-root{--radius:0.625rem;--background:oklch(1 0 0);--foreground:oklch(0.145 0 0);--card:oklch(1 0 0);--card-foreground:oklch(0.145 0 0);--popover:oklch(1 0 0);--popover-foreground:oklch(0.145 0 0);--primary:oklch(0.205 0 0);--primary-foreground:oklch(0.985 0 0);--secondary:oklch(0.97 0 0);--secondary-foreground:oklch(0.205 0 0);--muted:oklch(0.97 0 0);--muted-foreground:oklch(0.556 0 0);--accent:oklch(0.97 0 0);--accent-foreground:oklch(0.205 0 0);--destructive:oklch(0.577 0.245 27.325);--destructive-foreground:oklch(0.577 0.245 27.325);--border:oklch(0.922 0 0);--input:oklch(0.922 0 0);--ring:oklch(0.708 0 0);--atlas-brand:oklch(0.759 0.148 167.71)}
 .dark .atlas-root{--background:oklch(0.145 0 0);--foreground:oklch(0.985 0 0);--card:oklch(0.145 0 0);--card-foreground:oklch(0.985 0 0);--popover:oklch(0.145 0 0);--popover-foreground:oklch(0.985 0 0);--primary:oklch(0.985 0 0);--primary-foreground:oklch(0.205 0 0);--secondary:oklch(0.269 0 0);--secondary-foreground:oklch(0.985 0 0);--muted:oklch(0.269 0 0);--muted-foreground:oklch(0.708 0 0);--accent:oklch(0.269 0 0);--accent-foreground:oklch(0.985 0 0);--destructive:oklch(0.396 0.141 25.723);--destructive-foreground:oklch(0.637 0.237 25.331);--border:oklch(0.269 0 0);--input:oklch(0.269 0 0);--ring:oklch(0.439 0 0)}
+.atlas-welcome-msg{max-width:90%;margin-bottom:0.5rem}
+.atlas-welcome-inner{border-radius:0.75rem;background:#f4f4f5;padding:0.75rem 1rem;font-size:0.875rem;color:#52525b}
+.dark .atlas-welcome-inner{background:#27272a;color:#a1a1aa}
+.atlas-custom-logo{height:1.75rem;width:1.75rem;object-fit:contain;flex-shrink:0}${accentCSS}
 </style>
 <script>
 window.onerror=function(m){console.error("[Atlas Widget]",m);try{window.parent.postMessage({type:"atlas:error",code:"UNCAUGHT",message:String(m)},"*")}catch(x){}};
@@ -94,6 +137,9 @@ const apiUrl=cfg.apiUrl||window.location.origin;
 const el=document.getElementById("atlas-widget");
 const root=createRoot(el);
 let state={theme:cfg.theme,apiKey:"",visible:true};
+let initialQuerySent=false;
+
+const HEX_RE=/^[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/;
 
 class EB extends Component{
   constructor(p){super(p);this.state={error:null}}
@@ -116,6 +162,60 @@ function render(){
   root.render(createElement(EB,null,createElement(AtlasChat,{apiUrl,apiKey:state.apiKey||void 0,theme:state.theme})));
 }
 
+/** Replace the default Atlas SVG logo with a custom <img> in the rendered header. */
+function applyLogo(src){
+  if(!src)return;
+  const svg=el.querySelector("svg[viewBox='0 0 256 256']");
+  if(!svg)return;
+  const img=document.createElement("img");
+  img.src=src;img.alt="Logo";img.className="atlas-custom-logo";
+  img.onerror=function(){img.style.display="none"};
+  svg.replaceWith(img);
+}
+
+/** Apply accent color via CSS class on the widget container. */
+function applyAccent(hex){
+  if(!hex||!HEX_RE.test(hex))return;
+  el.classList.add("atlas-accent");
+  el.style.setProperty("--atlas-widget-accent","#"+hex);
+  // Inject/update dynamic accent style for runtime changes
+  let style=document.getElementById("atlas-accent-style");
+  if(!style){style=document.createElement("style");style.id="atlas-accent-style";document.head.appendChild(style)}
+  style.textContent='.atlas-accent button[type="submit"]{background-color:#'+hex+'!important}.atlas-accent button[type="submit"]:hover{filter:brightness(1.1)}.atlas-accent input:focus{border-color:#'+hex+'!important}.atlas-accent a{color:#'+hex+'!important}';
+}
+
+/** Insert a welcome message above the messages area. */
+function applyWelcome(text){
+  // Remove any existing welcome
+  const old=document.getElementById("atlas-welcome");
+  if(old)old.remove();
+  if(!text)return;
+  const wrapper=document.createElement("div");
+  wrapper.id="atlas-welcome";wrapper.className="atlas-welcome-msg";
+  const inner=document.createElement("div");
+  inner.className="atlas-welcome-inner";inner.textContent=text;
+  wrapper.appendChild(inner);
+  // Insert before the messages area — find the scrollable container
+  const scrollArea=el.querySelector("[data-radix-scroll-area-viewport]");
+  if(scrollArea&&scrollArea.firstChild){
+    scrollArea.firstChild.prepend(wrapper);
+  }
+}
+
+/** Programmatically submit a query by interacting with the form input. */
+function submitQuery(query){
+  if(!query)return;
+  const input=el.querySelector("input");
+  if(!input)return;
+  const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set;
+  setter.call(input,query);
+  input.dispatchEvent(new Event("input",{bubbles:true}));
+  requestAnimationFrame(function(){
+    const form=input.closest("form");
+    if(form)form.requestSubmit();
+  });
+}
+
 window.addEventListener("message",e=>{
   if(e.source!==window.parent)return;
   const d=e.data;
@@ -132,10 +232,35 @@ window.addEventListener("message",e=>{
     case"toggle":
       state={...state,visible:!state.visible};render();
       break;
+    case"atlas:setBranding":{
+      if(typeof d.logo==="string"){
+        try{const u=new URL(d.logo);if(u.protocol==="https:")applyLogo(d.logo)}catch(e){}
+      }
+      if(typeof d.accent==="string")applyAccent(d.accent);
+      if(typeof d.welcome==="string")applyWelcome(d.welcome);
+      break;
+    }
+    case"atlas:ask":
+      if(typeof d.query==="string"&&d.query.trim())submitQuery(d.query);
+      break;
   }
 });
 
 render();
+
+// Apply branding after initial render
+setTimeout(function(){
+  if(cfg.logo)applyLogo(cfg.logo);
+  if(cfg.accent)applyAccent(cfg.accent);
+  if(cfg.welcome)applyWelcome(cfg.welcome);
+  // Auto-send initial query on first open
+  if(cfg.initialQuery&&!initialQuerySent){
+    initialQuerySent=true;
+    // Delay to let AtlasChat complete its health check and mount
+    setTimeout(function(){submitQuery(cfg.initialQuery)},1000);
+  }
+},100);
+
 window.parent.postMessage({type:"atlas:ready"},"*");
 }catch(err){
 console.error("[Atlas Widget] Failed to load:",err);
@@ -152,16 +277,27 @@ widget.get("/", (c) => {
   const rawTheme = c.req.query("theme") ?? "system";
   const rawApiUrl = c.req.query("apiUrl") ?? "";
   const rawPosition = c.req.query("position") ?? "inline";
+  const rawLogo = c.req.query("logo") ?? "";
+  const rawAccent = c.req.query("accent") ?? "";
+  const rawWelcome = c.req.query("welcome") ?? "";
+  const rawInitialQuery = c.req.query("initialQuery") ?? "";
 
   const theme = VALID_THEMES.has(rawTheme) ? rawTheme : "system";
   const apiUrl = sanitizeApiUrl(rawApiUrl);
   const position = VALID_POSITIONS.has(rawPosition) ? rawPosition : "inline";
+  const logo = sanitizeLogoUrl(rawLogo);
+  const accent = sanitizeAccent(rawAccent);
+  // welcome and initialQuery are plain text — sanitized by JSON.stringify + < escaping
+  const welcome = rawWelcome;
+  const initialQuery = rawInitialQuery;
 
   // Allow embedding as iframe from any origin
   c.header("Content-Security-Policy", "frame-ancestors *");
   c.header("Access-Control-Allow-Origin", "*");
 
-  return c.html(buildWidgetHTML({ theme, apiUrl, position }));
+  return c.html(
+    buildWidgetHTML({ theme, apiUrl, position, logo, accent, welcome, initialQuery }),
+  );
 });
 
-export { widget };
+export { widget, sanitizeLogoUrl, sanitizeAccent };

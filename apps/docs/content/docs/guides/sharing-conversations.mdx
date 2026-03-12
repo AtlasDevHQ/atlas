@@ -65,7 +65,7 @@ Shared conversations are visible at `/shared/{token}`. The page displays:
 - **Conversation title** — derived from the first user message
 - **Messages** — user and assistant messages rendered in a clean, read-only format (system and tool messages are hidden)
 
-No authentication is required to view a shared conversation. The public endpoint has its own rate limiter to prevent abuse.
+No authentication is required to view a shared conversation. The public endpoint has its own rate limiter to prevent abuse. Assistant messages containing only non-text parts (such as tool call results) will appear empty in the shared view.
 
 ## OpenGraph & Social Previews
 
@@ -159,4 +159,4 @@ Returns the conversation with messages. No authentication required. Rate-limited
 - **Tokens are random** — share tokens are 28-character base64url strings generated with `crypto.randomBytes(21)`. They cannot be guessed.
 - **Revocation is instant** — unsharing clears the token from the database. Cached responses (Next.js 60s revalidate) will expire shortly after.
 - **No write access** — shared conversation views are completely read-only. Viewers cannot modify or interact with the conversation.
-- **Rate limited** — the public endpoint has a per-IP rate limiter (separate from the authenticated rate limiter) to prevent scraping.
+- **Rate limited** — the public endpoint has a per-IP rate limiter (60 requests per minute, separate from the authenticated rate limiter) to prevent scraping.

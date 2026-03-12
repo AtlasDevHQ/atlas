@@ -9,9 +9,9 @@
     "scheduled-tasks",
     "actions",
     "admin-console",
-    "troubleshooting",
-    "observability",
     "embedding-widget",
-    "sharing-conversations"
+    "sharing-conversations",
+    "troubleshooting",
+    "observability"
   ]
 }

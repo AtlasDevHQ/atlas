@@ -37,7 +37,7 @@ Bind callbacks by setting `data-on-*` attributes to the name of a global functio
 |-----------|-------|-------------------|
 | `data-on-open` | Widget opens | `{}` |
 | `data-on-close` | Widget closes | `{}` |
-| `data-on-query-complete` | Query finishes | `{ sql?: string, rowCount?: number }` |
+| `data-on-query-complete` | Query finishes (reserved — not yet emitted) | `{ sql?: string, rowCount?: number }` |
 | `data-on-error` | Widget error | `{ code?: string, message?: string }` |
 
 ```html
@@ -82,9 +82,9 @@ After the script loads, `window.Atlas` exposes the following methods:
 // Open the widget and ask a question
 Atlas.ask("What was last month's revenue?");
 
-// Listen for query completions
-Atlas.on("queryComplete", (detail) => {
-  console.log("Query finished:", detail.sql, detail.rowCount);
+// Listen for errors
+Atlas.on("error", (detail) => {
+  console.error("Widget error:", detail.code, detail.message);
 });
 
 // Pass an auth token (e.g. after your app's login flow)

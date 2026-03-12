@@ -19,19 +19,21 @@ The hooks require these peer dependencies:
 bun add react react-dom ai @ai-sdk/react
 ```
 
-The pre-built `AtlasChat` component additionally uses `lucide-react`, `react-syntax-highlighter`, `recharts`, and `tailwindcss` (all optional peer deps).
+The pre-built `AtlasChat` component additionally uses `lucide-react`, `react-syntax-highlighter`, `recharts`, `tailwindcss`, and `xlsx` (all optional peer deps).
 
 ## Imports
 
 The package has two entry points:
 
 ```typescript
-// Pre-built AtlasChat component + hooks + provider
-import { AtlasChat, AtlasProvider } from "@useatlas/react";
+// Pre-built AtlasChat component + UI provider
+import { AtlasChat, AtlasUIProvider } from "@useatlas/react";
 
 // Headless hooks only (smaller bundle, no UI components)
 import { AtlasProvider, useAtlasChat, useAtlasAuth } from "@useatlas/react/hooks";
 ```
+
+The main entry point (`@useatlas/react`) exports `AtlasUIProvider` for use with the pre-built `AtlasChat` component. The hooks entry point (`@useatlas/react/hooks`) exports `AtlasProvider`, a lightweight provider for headless hooks. This page documents the headless hooks — all examples use `@useatlas/react/hooks`.
 
 ---
 
@@ -148,14 +150,14 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 |-------|------|-------------|
 | `authMode` | `AuthMode \| null` | Detected auth mode: `"none"`, `"simple-key"`, `"byot"`, or `"managed"`. `null` while loading. |
 | `isAuthenticated` | `boolean` | Whether the user is authenticated based on auth mode and credentials |
-| `session` | `object \| null` | Session data for managed auth (includes `user.email`) |
+| `session` | `{ user?: { email?: string } } \| null` | Session data for managed auth |
 | `isLoading` | `boolean` | `true` while the health check or session loading is in progress |
 | `error` | `Error \| null` | Error from health check or auth operations |
-| `login` | `(email, password) => Promise<{ error? }>` | Sign in with email/password (managed auth) |
-| `signup` | `(email, password, name) => Promise<{ error? }>` | Sign up (managed auth) |
-| `logout` | `() => Promise<{ error? }>` | Sign out (managed auth) |
+| `login` | `(email, password) => Promise<{ error?: string }>` | Sign in with email/password (managed auth) |
+| `signup` | `(email, password, name) => Promise<{ error?: string }>` | Sign up (managed auth) |
+| `logout` | `() => Promise<{ error?: string }>` | Sign out (managed auth) |
 
-Auth mode detection works by calling the `/api/health` endpoint on mount. The hook retries up to 2 times on failure before falling back to `"none"`.
+Auth mode detection works by calling the `/api/health` endpoint on mount. The hook retries once on failure (2 total attempts) before falling back to `"none"`.
 
 ---
 
@@ -199,7 +201,7 @@ function ConversationList() {
 
 ```typescript
 useAtlasConversations({
-  enabled: true,  // Set to false to disable auto-refresh (default: true)
+  enabled: true,  // When false, refresh() becomes a no-op (default: true)
 })
 ```
 
@@ -315,6 +317,7 @@ function Chat() {
 
 | | Headless Hooks (`@useatlas/react/hooks`) | AtlasChat Component (`@useatlas/react`) |
 |--|--|--|
+| **Provider** | `AtlasProvider` from `@useatlas/react/hooks` | `AtlasUIProvider` from `@useatlas/react` |
 | **Import** | `import { useAtlasChat } from "@useatlas/react/hooks"` | `import { AtlasChat } from "@useatlas/react"` |
 | **UI** | You build your own | Pre-built chat interface with markdown, code highlighting, charts |
 | **Bundle size** | Minimal (React + AI SDK) | Larger (includes Recharts, syntax highlighter, Radix UI) |

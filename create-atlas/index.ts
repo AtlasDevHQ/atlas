@@ -56,6 +56,9 @@ function bail(message?: string): never {
 const args = process.argv.slice(2);
 const useDefaults = args.includes("--defaults") || args.includes("-y");
 
+// Parse --skip-doctor flag to skip post-scaffold atlas doctor auto-run
+const skipDoctor = args.includes("--skip-doctor");
+
 // Parse --demo flag (optionally with dataset name)
 const VALID_DEMO_DATASETS = ["simple", "cybersec", "ecommerce"] as const;
 type DemoDataset = (typeof VALID_DEMO_DATASETS)[number];
@@ -365,6 +368,7 @@ async function confirmOrDefault(opts: {
 }
 
 async function main() {
+  const startTime = Date.now();
   console.log("");
   p.intro(
     `${pc.bgCyan(pc.black(" @useatlas/create "))} ${pc.dim(`v${ATLAS_VERSION}`)}`
@@ -1114,11 +1118,49 @@ export default defineConfig({
 
   p.note(noteBody, "Next steps");
 
+  // Step 5: Run atlas doctor to validate the setup
+  if (!skipDoctor) {
+    s.start("Running atlas doctor...");
+    try {
+      const doctorOutput = execSync("bun run atlas -- doctor", {
+        cwd: targetDir,
+        stdio: "pipe",
+        timeout: 30_000,
+        env: { ...process.env, ATLAS_DATASOURCE_URL: databaseUrl },
+      });
+      s.stop("Health check complete.");
+      const output = doctorOutput.toString().trim();
+      if (output) {
+        console.log(output);
+      }
+    } catch (err) {
+      s.stop("Health check found issues.");
+      // Doctor exits 1 on critical failures — show its output for actionable fixes
+      if (err && typeof err === "object" && "stdout" in err) {
+        const stdout = String((err as { stdout: unknown }).stdout).trim();
+        if (stdout) console.log(stdout);
+      }
+      if (err && typeof err === "object" && "stderr" in err) {
+        const stderr = String((err as { stderr: unknown }).stderr).trim();
+        if (stderr) console.log(stderr);
+      }
+      p.log.warn(
+        `Some checks failed. Run ${pc.cyan("bun run atlas -- doctor")} after fixing the issues above.`
+      );
+    }
+  }
+
+  // Print total elapsed time
+  const elapsed = Math.round((Date.now() - startTime) / 1000);
+  const timeStr = elapsed >= 60
+    ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`
+    : `${elapsed}s`;
+
   if (setupFailed) {
-    p.outro(`${pc.yellow("Partial setup.")} See errors above.`);
+    p.outro(`${pc.yellow("Partial setup")} in ${pc.dim(timeStr)}. See errors above.`);
   } else {
     p.outro(
-      `${pc.green("Done!")} Your Atlas project is ready at ${pc.cyan(`./${projectName}`)}`
+      `${pc.green("Done!")} Setup complete in ${pc.dim(timeStr)} — ${pc.cyan(`./${projectName}`)} is ready.`
     );
   }
 }

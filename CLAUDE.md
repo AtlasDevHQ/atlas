@@ -92,6 +92,7 @@ bun run atlas -- diff    # Compare DB schema vs semantic layer
 | `packages/mcp` | `@atlas/mcp` | MCP server (stdio + SSE transport) |
 | `packages/sandbox-sidecar` | `@atlas/sandbox-sidecar` | Isolated explore/python sidecar |
 | `packages/sdk` | `@useatlas/sdk` | TypeScript SDK for Atlas API |
+| `packages/react` | `@useatlas/react` | Embeddable React chat component + headless hooks |
 | `packages/plugin-sdk` | `@useatlas/plugin-sdk` | Plugin type definitions + `definePlugin()` helper |
 | `apps/www` | `@atlas/www` | Landing page (useatlas.dev) |
 | `apps/docs` | `@atlas/docs` | Documentation site (Fumadocs) |

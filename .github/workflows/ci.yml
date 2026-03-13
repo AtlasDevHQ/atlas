@@ -43,6 +43,9 @@ jobs:
           if [ $ERRORS -gt 0 ]; then exit 1; fi
           echo "All Dockerfiles pin bun $EXPECTED"
 
+      - name: Check Dockerfile workspace completeness
+        run: bash scripts/check-dockerfile-workspace.sh
+
       - name: Check template drift
         run: bash scripts/check-template-drift.sh
 

@@ -3,9 +3,30 @@ title: Environment Variables
 description: Complete reference for all Atlas environment variables with defaults and examples.
 ---
 
+import { Callout } from "fumadocs-ui/components/callout";
+import { Tabs, Tab } from "fumadocs-ui/components/tabs";
+
 All Atlas configuration is via environment variables. Most have safe defaults — a minimal deployment needs only an LLM provider key and a datasource URL.
 
-## LLM Provider
+## Precedence
+
+When both `atlas.config.ts` and environment variables are present:
+
+1. **Config file wins** for `datasources`, `tools`, `auth`, `semanticLayer`, `plugins`, `actions`, `rls`, and `scheduler`
+2. **Env vars are fallbacks** — used when the config file doesn't define a field
+3. **Some vars are env-only** — secrets (`ANTHROPIC_API_KEY`, `BETTER_AUTH_SECRET`), runtime hints (`ATLAS_RUNTIME`), and networking (`PORT`, `ATLAS_CORS_ORIGIN`) are always read from environment variables
+
+See the [Configuration reference](/reference/config) for the full `atlas.config.ts` guide.
+
+<Callout type="info">
+Run [`atlas doctor`](/reference/cli#doctor) to verify your environment is correctly configured — it checks database connectivity, LLM providers, semantic layer, and sandbox availability.
+</Callout>
+
+---
+
+## Provider
+
+LLM provider and model configuration.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -33,6 +54,47 @@ Each provider requires its own API key:
 | `ollama` | `llama3.1` |
 | `gateway` | `anthropic/claude-opus-4.6` |
 
+<Tabs items={["Anthropic", "OpenAI", "AWS Bedrock", "Ollama (local)"]}>
+<Tab value="Anthropic">
+```bash
+# Anthropic (default provider)
+ATLAS_PROVIDER=anthropic
+ANTHROPIC_API_KEY=sk-ant-...
+# Optional: override the default model
+# ATLAS_MODEL=claude-sonnet-4-6
+```
+</Tab>
+<Tab value="OpenAI">
+```bash
+# OpenAI
+ATLAS_PROVIDER=openai
+OPENAI_API_KEY=sk-...
+# Optional: override the default model
+# ATLAS_MODEL=gpt-4o
+```
+</Tab>
+<Tab value="AWS Bedrock">
+```bash
+# AWS Bedrock (uses IAM credentials)
+ATLAS_PROVIDER=bedrock
+AWS_REGION=us-east-1
+AWS_ACCESS_KEY_ID=AKIA...
+AWS_SECRET_ACCESS_KEY=...
+```
+</Tab>
+<Tab value="Ollama (local)">
+```bash
+# Ollama (local, no API key needed)
+ATLAS_PROVIDER=ollama
+OLLAMA_BASE_URL=http://localhost:11434/v1
+# Optional: override the default model
+# ATLAS_MODEL=llama3.1
+```
+</Tab>
+</Tabs>
+
+---
+
 ## Database
 
 | Variable | Default | Description |
@@ -43,7 +105,36 @@ Each provider requires its own API key:
 
 **Demo data fallback chain:** When `ATLAS_DEMO_DATA=true` and `ATLAS_DATASOURCE_URL` is not set, Atlas resolves the analytics datasource by checking `DATABASE_URL_UNPOOLED` first, then `DATABASE_URL`. This lets a single Postgres instance (e.g. Neon on Vercel) serve as both the analytics datasource and Atlas's internal database.
 
-## Query Safety
+<Tabs items={["Local development", "Production (separate DBs)", "Vercel (shared DB)"]}>
+<Tab value="Local development">
+```bash
+# Local dev: Docker Compose provisions both databases
+DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas
+ATLAS_DATASOURCE_URL=postgresql://atlas:atlas@localhost:5432/atlas_demo
+```
+</Tab>
+<Tab value="Production (separate DBs)">
+```bash
+# Production: separate databases for isolation
+DATABASE_URL=postgresql://user:pass@internal-host:5432/atlas
+ATLAS_DATASOURCE_URL=postgresql://readonly:pass@analytics-host:5432/warehouse
+```
+</Tab>
+<Tab value="Vercel (shared DB)">
+```bash
+# Vercel with Neon: single Postgres for everything
+DATABASE_URL=postgresql://...@neon-host/atlas?sslmode=require
+ATLAS_DEMO_DATA=true
+# ATLAS_DATASOURCE_URL not needed — falls back to DATABASE_URL
+```
+</Tab>
+</Tabs>
+
+---
+
+## Security
+
+Query safety and SQL validation settings. See [SQL Validation Pipeline](/security/sql-validation) for how these are enforced.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -52,9 +143,23 @@ Each provider requires its own API key:
 | `ATLAS_TABLE_WHITELIST` | `true` | Only allow queries against tables defined in the semantic layer |
 | `ATLAS_SCHEMA` | `public` | PostgreSQL schema name. Used by the CLI for profiling (`init`, `diff`) and by the API at runtime to set the connection `search_path` |
 
-See [SQL Validation Pipeline](/security/sql-validation) for how these are enforced.
+<Callout type="warn">
+Non-SELECT SQL (INSERT, UPDATE, DELETE, DROP, etc.) is **always rejected** — there is no toggle to disable this. The `ATLAS_TABLE_WHITELIST` setting only controls whether queries are restricted to semantic layer tables.
+</Callout>
 
-## Authentication
+```bash
+# Production: tighter limits
+ATLAS_ROW_LIMIT=500           # Fewer rows per query
+ATLAS_QUERY_TIMEOUT=15000     # 15s timeout (default: 30s)
+ATLAS_TABLE_WHITELIST=true    # Only semantic layer tables (default)
+ATLAS_SCHEMA=analytics        # Non-default PostgreSQL schema
+```
+
+---
+
+## Auth
+
+Authentication mode and per-mode settings. See [Authentication](/deployment/authentication) for full setup guides.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -67,14 +172,18 @@ When `ATLAS_AUTH_MODE` is not set, Atlas auto-detects based on which variables a
 3. `ATLAS_API_KEY` set → **Simple Key**
 4. None of the above → **No auth**
 
-See [Authentication](/deployment/authentication) for full setup guides.
-
 ### Simple Key
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ATLAS_API_KEY` | — | Shared secret. Clients send `Authorization: Bearer <key>` or `X-API-Key: <key>` |
 | `ATLAS_API_KEY_ROLE` | `analyst` | Role for API key users: `viewer`, `analyst`, `admin` |
+
+```bash
+# Simple key auth for headless integrations
+ATLAS_API_KEY=your-secret-key-here
+ATLAS_API_KEY_ROLE=analyst
+```
 
 ### Managed (Better Auth)
 
@@ -86,6 +195,19 @@ See [Authentication](/deployment/authentication) for full setup guides.
 | `BETTER_AUTH_TRUSTED_ORIGINS` | — | Comma-separated CSRF-allowed origins |
 | `ATLAS_ADMIN_EMAIL` | — | User matching this email gets `admin` role on signup. If unset, first signup gets admin |
 
+<Callout type="warn">
+Never use the default dev secret in production. Generate a cryptographically random secret: `openssl rand -base64 32`
+</Callout>
+
+```bash
+# Managed auth for multi-user web apps
+BETTER_AUTH_SECRET=$(openssl rand -base64 32)
+BETTER_AUTH_URL=https://api.example.com
+BETTER_AUTH_TRUSTED_ORIGINS=https://app.example.com
+ATLAS_ADMIN_EMAIL=admin@example.com
+DATABASE_URL=postgresql://user:pass@host:5432/atlas
+```
+
 ### BYOT (Bring Your Own Token)
 
 | Variable | Default | Description |
@@ -95,6 +217,15 @@ See [Authentication](/deployment/authentication) for full setup guides.
 | `ATLAS_AUTH_AUDIENCE` | — | Expected JWT `aud` claim (optional) |
 | `ATLAS_AUTH_ROLE_CLAIM` | `role` then `atlas_role` | Dot-delimited JWT claim path for role extraction (e.g. `app_metadata.role`). Default is a fallback chain: Atlas checks the `role` claim first, then falls back to `atlas_role` if `role` is not present |
 
+```bash
+# BYOT with Auth0
+ATLAS_AUTH_JWKS_URL=https://your-tenant.auth0.com/.well-known/jwks.json
+ATLAS_AUTH_ISSUER=https://your-tenant.auth0.com/
+ATLAS_AUTH_AUDIENCE=https://api.example.com
+# Nested claim for role extraction
+ATLAS_AUTH_ROLE_CLAIM=app_metadata.atlas_role
+```
+
 ### Rate Limiting
 
 | Variable | Default | Description |
@@ -102,7 +233,17 @@ See [Authentication](/deployment/authentication) for full setup guides.
 | `ATLAS_RATE_LIMIT_RPM` | `0` (disabled) | Max requests per minute per user. 0 or unset = unlimited |
 | `ATLAS_TRUST_PROXY` | `false` | Trust `X-Forwarded-For` / `X-Real-IP` headers. Set `true` behind a reverse proxy |
 
+```bash
+# Production rate limiting behind a reverse proxy
+ATLAS_RATE_LIMIT_RPM=30
+ATLAS_TRUST_PROXY=true
+```
+
+---
+
 ## Row-Level Security
+
+Env var shorthand for a single global RLS policy. For per-table policies, use [`atlas.config.ts`](/reference/config#rls-row-level-security). See [Row-Level Security](/security/row-level-security) for the full guide.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -111,22 +252,25 @@ See [Authentication](/deployment/authentication) for full setup guides.
 | `ATLAS_RLS_CLAIM` | — | JWT/session claim path for RLS value extraction (e.g. `org_id`) |
 | `ATLAS_RLS_CLAIMS` | — | Static JSON claims for RLS with simple-key auth |
 
-`ATLAS_RLS_CLAIMS` is a JSON string that provides static claims for row-level security filtering. **This variable is only used with simple-key (`ATLAS_API_KEY`) auth mode**, where there is no JWT or session to extract claims from. For managed and BYOT auth, RLS claims are extracted from the user's JWT/session automatically.
+<Callout type="info">
+`ATLAS_RLS_CLAIMS` is only used with simple-key (`ATLAS_API_KEY`) auth, where there is no JWT or session to extract claims from. For managed and BYOT auth, RLS claims are extracted from the user's JWT/session automatically.
+</Callout>
 
 ```bash
+# Single global RLS policy via env vars
+ATLAS_RLS_ENABLED=true
+ATLAS_RLS_COLUMN=tenant_id
+ATLAS_RLS_CLAIM=org_id
+
+# Static claims for simple-key auth
 ATLAS_RLS_CLAIMS='{"tenant_id": "acme-corp"}'
 ```
 
-## Networking & CORS
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ATLAS_PUBLIC_URL` | — | Public base URL for constructing action approval URLs. When not set, derived from request headers. Set explicitly in production for reliable approve/deny links in `/api/v1/query` responses |
-| `ATLAS_CORS_ORIGIN` | `*` | CORS allowed origin. Must set explicitly for cross-origin + managed auth (cookie-based) |
-| `NEXT_PUBLIC_ATLAS_API_URL` | — | Next.js frontend: cross-origin API URL. When unset, same-origin via Next.js rewrites |
-| `ATLAS_API_URL` | `http://localhost:3001` | Rewrite target for same-origin mode (only used when `NEXT_PUBLIC_ATLAS_API_URL` is unset) |
+---
 
 ## Sandbox & Isolation
+
+Explore tool isolation backends. See [Sandbox Architecture](/architecture/sandbox#backend-selection-priority) for the full selection priority.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -138,9 +282,55 @@ ATLAS_RLS_CLAIMS='{"tenant_id": "acme-corp"}'
 | `ATLAS_NSJAIL_TIME_LIMIT` | `10` | nsjail per-command time limit in seconds |
 | `ATLAS_NSJAIL_MEMORY_LIMIT` | `256` | nsjail per-command memory limit in MB |
 
-See [Sandbox Architecture](/architecture/sandbox#backend-selection-priority) for the full selection priority.
+<Tabs items={["Docker Compose (dev)", "Production sidecar", "nsjail (self-hosted)"]}>
+<Tab value="Docker Compose (dev)">
+```bash
+# Local dev: sidecar via docker compose (bun run db:up)
+ATLAS_SANDBOX_URL=http://localhost:8080
+```
+</Tab>
+<Tab value="Production sidecar">
+```bash
+# Production: sidecar as a separate service
+ATLAS_SANDBOX_URL=http://sandbox-sidecar:8080
+# Optional: shared secret for sidecar auth
+SIDECAR_AUTH_TOKEN=your-shared-secret
+```
+</Tab>
+<Tab value="nsjail (self-hosted)">
+```bash
+# Self-hosted: nsjail for process isolation
+ATLAS_SANDBOX=nsjail
+# Optional: tune limits
+ATLAS_NSJAIL_TIME_LIMIT=10
+ATLAS_NSJAIL_MEMORY_LIMIT=256
+```
+</Tab>
+</Tabs>
+
+---
+
+## Networking & CORS
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_PUBLIC_URL` | — | Public base URL for constructing action approval URLs. When not set, derived from request headers. Set explicitly in production for reliable approve/deny links in `/api/v1/query` responses |
+| `ATLAS_CORS_ORIGIN` | `*` | CORS allowed origin. Must set explicitly for cross-origin + managed auth (cookie-based) |
+| `NEXT_PUBLIC_ATLAS_API_URL` | — | Next.js frontend: cross-origin API URL. When unset, same-origin via Next.js rewrites |
+| `ATLAS_API_URL` | `http://localhost:3001` | Rewrite target for same-origin mode (only used when `NEXT_PUBLIC_ATLAS_API_URL` is unset) |
+
+```bash
+# Production: cross-origin setup
+ATLAS_CORS_ORIGIN=https://app.example.com
+NEXT_PUBLIC_ATLAS_API_URL=https://api.example.com
+ATLAS_PUBLIC_URL=https://api.example.com
+```
+
+---
 
 ## Actions
+
+Action framework settings. These can also be configured via [`atlas.config.ts`](/reference/config#actions). See the [Actions guide](/guides/actions) for the full setup.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -150,9 +340,19 @@ See [Sandbox Architecture](/architecture/sandbox#backend-selection-priority) for
 | `ATLAS_ACTION_MAX_PER_CONVERSATION` | `10` | Maximum number of actions allowed per conversation |
 | `ATLAS_EMAIL_ALLOWED_DOMAINS` | — | Comma-separated list of allowed email recipient domains for the email action plugin. When unset, all domains are allowed |
 
-These env vars can also be set via `atlas.config.ts` under `actions.defaults`. See the [declarative config guide](/reference/config) for details.
+```bash
+# Enable actions with admin-only approval
+ATLAS_ACTIONS_ENABLED=true
+ATLAS_ACTION_APPROVAL=admin-only
+# Restrict email recipients to your domain
+ATLAS_EMAIL_ALLOWED_DOMAINS=example.com,trusted-partner.com
+```
+
+---
 
 ## Scheduler
+
+Scheduled task execution. Can also be configured via [`atlas.config.ts`](/reference/config#scheduler). See [Scheduled Tasks](/guides/scheduled-tasks) for the full guide.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -170,12 +370,27 @@ These env vars can also be set via `atlas.config.ts` under `actions.defaults`. S
 - `webhook` — External cron service hits `POST /:id/run`. Use when you need external scheduling.
 - `vercel` — Vercel Cron hits `POST /tick`. Use on Vercel deployments.
 
+---
+
+## Python Tool
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_PYTHON_ENABLED` | — | Set `true` to enable the `executePython` agent tool. Requires `ATLAS_SANDBOX_URL` to be set (Python runs in the sandbox sidecar for isolation) |
+| `ATLAS_PYTHON_TIMEOUT` | `30000` | Python execution timeout in milliseconds |
+
+See [Python Tool](/guides/python) for the full guide.
+
+---
+
 ## Email Delivery
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `RESEND_API_KEY` | — | Resend API key for email delivery in scheduled tasks |
 | `ATLAS_EMAIL_FROM` | `Atlas <noreply@useatlas.dev>` | From address for scheduled task emails |
+
+---
 
 ## Slack Integration
 
@@ -186,12 +401,9 @@ These env vars can also be set via `atlas.config.ts` under `actions.defaults`. S
 | `SLACK_CLIENT_ID` | — | Multi-workspace OAuth app client ID |
 | `SLACK_CLIENT_SECRET` | — | Multi-workspace OAuth app client secret |
 
-## Python Tool
+See [Slack guide](/guides/slack) for the full setup.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ATLAS_PYTHON_ENABLED` | — | Set `true` to enable the `executePython` agent tool. Requires `ATLAS_SANDBOX_URL` to be set (Python runs in the sandbox sidecar for isolation) |
-| `ATLAS_PYTHON_TIMEOUT` | `30000` | Python execution timeout in milliseconds |
+---
 
 ## Runtime
 
@@ -199,9 +411,13 @@ These env vars can also be set via `atlas.config.ts` under `actions.defaults`. S
 |----------|---------|-------------|
 | `PORT` | `3001` | HTTP port for the standalone Hono API server. Most platforms (Railway, Render, Fly) set this automatically |
 
+---
+
 ## Logging & Observability
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ATLAS_LOG_LEVEL` | `info` | Pino log level: `trace`, `debug`, `info`, `warn`, `error`, `fatal` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OpenTelemetry collector endpoint (e.g. `http://localhost:4318`). When set, the API server (`atlas-api`) and web frontend (`atlas`) emit distributed trace spans for HTTP requests, agent steps, SQL queries, and explore commands |
+
+See [Observability](/guides/observability) for the full setup guide.

@@ -222,8 +222,9 @@ chat.post("/", async (c) => {
             toolRegistry = result.registry;
             warnings.push(...result.warnings);
           } catch (err) {
+            const errObj = err instanceof Error ? err : new Error(String(err));
             log.error(
-              { err: err instanceof Error ? err : new Error(String(err)) },
+              { err: errObj },
               "Failed to build tool registry — falling back to default tools",
             );
             warnings.push(
@@ -233,6 +234,7 @@ chat.post("/", async (c) => {
         }
 
         // Merge plugin tools (if any) on top of the current registry
+        const prePluginRegistry = toolRegistry;
         try {
           const { getPluginTools } = await import("@atlas/api/lib/plugins/tools");
           const pluginTools = getPluginTools();
@@ -243,14 +245,14 @@ chat.post("/", async (c) => {
             toolRegistry.freeze();
           }
         } catch (err) {
+          toolRegistry = prePluginRegistry;
+          const errObj = err instanceof Error ? err : new Error(String(err));
           log.error(
-            { err: err instanceof Error ? err : new Error(String(err)) },
+            { err: errObj },
             "Failed to merge plugin tools — continuing without plugin tools",
           );
           warnings.push(
-            "Plugin tools failed to load: " +
-              (err instanceof Error ? err.message : String(err)) +
-              ". Chat will continue without plugin tools.",
+            `Plugin tools failed to load: ${errObj.message}. Chat will continue without plugin tools. Inform the user that plugin-provided tools are unavailable for this session.`,
           );
         }
 

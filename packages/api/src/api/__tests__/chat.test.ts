@@ -438,4 +438,42 @@ describe("POST /api/chat", () => {
     expect(call.warnings![0]).toContain("Plugin tools failed to load");
     expect(call.warnings![0]).toContain("plugin tool has empty name");
   });
+
+  it("handles non-Error throw from plugin tools gracefully", async () => {
+    mockGetPluginTools.mockImplementation(() => {
+      throw "string error from plugin";
+    });
+
+    const response = await app.fetch(makeRequest());
+    expect(response.status).toBe(200);
+    expect(mockRunAgent).toHaveBeenCalledTimes(1);
+    const calls = mockRunAgent.mock.calls as unknown as unknown[][];
+    const call = calls[0]![0] as { warnings?: string[] };
+    expect(call.warnings).toBeDefined();
+    expect(call.warnings!.length).toBe(1);
+    expect(call.warnings![0]).toContain("string error from plugin");
+  });
+
+  it("accumulates warnings when both action registry and plugin tools fail", async () => {
+    process.env.ATLAS_ACTIONS_ENABLED = "true";
+    process.env.ATLAS_PYTHON_ENABLED = "true";
+    delete process.env.ATLAS_SANDBOX_URL;
+    mockGetPluginTools.mockImplementation(() => {
+      throw new Error("plugin merge failed");
+    });
+
+    try {
+      const response = await app.fetch(makeRequest());
+      expect(response.status).toBe(200);
+      expect(mockRunAgent).toHaveBeenCalledTimes(1);
+      const calls = mockRunAgent.mock.calls as unknown as unknown[][];
+      const call = calls[0]![0] as { warnings?: string[] };
+      expect(call.warnings).toBeDefined();
+      expect(call.warnings!.length).toBe(2);
+      expect(call.warnings![0]).toContain("tool registry failed to build");
+      expect(call.warnings![1]).toContain("Plugin tools failed to load");
+    } finally {
+      delete process.env.ATLAS_PYTHON_ENABLED;
+    }
+  });
 });

@@ -3,7 +3,8 @@
  *
  * Authenticated routes follow the same auth → rate limit → withRequestContext
  * pattern as chat.ts and query.ts. The public shared-conversation route
- * (`publicConversations`) has its own in-memory rate limiter and no auth.
+ * (`publicConversations`) has its own in-memory rate limiter and requires
+ * no auth for public links (org-scoped links trigger a full auth check).
  */
 
 import { Hono } from "hono";
@@ -269,15 +270,19 @@ conversations.post("/:id/share", async (c) => {
     // Parse optional body for expiry and share mode
     let expiresIn: ShareExpiry = "never";
     let shareMode: ShareMode = "public";
+    let body: unknown;
     try {
-      const body = await req.json();
-      const parsed = ShareConversationBodySchema.safeParse(body);
-      if (parsed.success) {
-        expiresIn = parsed.data.expiresIn;
-        shareMode = parsed.data.shareMode;
-      }
+      body = await req.json();
     } catch {
-      // No body or invalid JSON — use defaults
+      // No body or invalid JSON — use defaults (backward-compatible with bodyless POST)
+    }
+    if (body !== undefined) {
+      const parsed = ShareConversationBodySchema.safeParse(body);
+      if (!parsed.success) {
+        return c.json({ error: "invalid_request", message: "Invalid share options. Valid expiresIn: 1h, 24h, 7d, 30d, never. Valid shareMode: public, org." }, 400);
+      }
+      expiresIn = parsed.data.expiresIn;
+      shareMode = parsed.data.shareMode;
     }
 
     const result = await shareConversation(id, authResult.user?.id, { expiresIn, shareMode });
@@ -449,16 +454,20 @@ publicConversations.get("/:token", async (c) => {
     return c.json({ error: "not_found", message: "Conversation not found." }, 404);
   }
 
-  // Org-scoped shares require authentication — check via auth header presence
+  // Org-scoped shares require authentication — run full auth check
   if (result.shareMode === "org") {
     let authResult;
     try {
       authResult = await authenticateRequest(c.req.raw);
-    } catch {
-      authResult = null;
+    } catch (err) {
+      log.error(
+        { err: err instanceof Error ? err : new Error(String(err)), requestId },
+        "Auth dispatch failed during org-scoped share check",
+      );
+      return c.json({ error: "internal_error", message: "Authentication system error. Please try again." }, 500);
     }
-    if (!authResult || !authResult.authenticated) {
-      return c.json({ error: "auth_required", message: "This shared conversation is restricted to organization members. Please sign in." }, 401);
+    if (!authResult.authenticated) {
+      return c.json({ error: "auth_required", message: "This shared conversation requires authentication. Please sign in." }, 401);
     }
   }
 

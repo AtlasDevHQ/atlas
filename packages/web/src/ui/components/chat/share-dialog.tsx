@@ -77,7 +77,8 @@ export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogP
       } else {
         setError("Failed to create share link. Please try again.");
       }
-    } catch {
+    } catch (err) {
+      console.error("handleShare failed:", err);
       setError("Failed to create share link. Please try again.");
     } finally {
       setLoading(false);
@@ -97,7 +98,8 @@ export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogP
       } else {
         setError("Failed to remove share link. Please try again.");
       }
-    } catch {
+    } catch (err) {
+      console.error("handleUnshare failed:", err);
       setError("Failed to remove share link. Please try again.");
     } finally {
       setLoading(false);
@@ -205,7 +207,7 @@ export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogP
                   <span className="ml-1">{copied ? "Copied" : "Copy"}</span>
                 </Button>
               </div>
-              {expiresAt && (
+              {expiresAt && !isNaN(new Date(expiresAt).getTime()) && (
                 <p className="text-xs text-zinc-500 dark:text-zinc-400">
                   Expires{" "}
                   {new Date(expiresAt).toLocaleString(undefined, {

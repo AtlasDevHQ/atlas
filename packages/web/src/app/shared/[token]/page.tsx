@@ -87,7 +87,7 @@ export default async function SharedConversationPage({
         break;
       case "auth-required":
         title = "Sign in required";
-        message = "This shared conversation is restricted to organization members. Please sign in to view it.";
+        message = "This shared conversation requires authentication. Please sign in to view it.";
         break;
       case "not-found":
         title = "Conversation not found";

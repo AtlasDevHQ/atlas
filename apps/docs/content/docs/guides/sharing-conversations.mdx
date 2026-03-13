@@ -66,6 +66,8 @@ const { token, url } = await atlas.conversations.share("conversation-id");
 await atlas.conversations.unshare("conversation-id");
 ```
 
+> **Note:** The SDK currently uses default settings (no expiry, public access). To specify expiry or share mode, use the REST API directly.
+
 ## Link Expiry
 
 Shared links can be configured to expire after a set duration:
@@ -87,9 +89,9 @@ Each shared link has an access mode:
 | Mode | Description |
 |------|-------------|
 | `public` | Anyone with the link can view the conversation (default) |
-| `org` | Only authenticated organization members can view the conversation |
+| `org` | Only authenticated users can view the conversation |
 
-Organization-scoped shares require the viewer to be signed in. Unauthenticated viewers see a "Sign in required" message.
+Organization-scoped shares require the viewer to be authenticated. Unauthenticated viewers see a "Sign in required" message.
 
 ## Public View
 
@@ -208,9 +210,11 @@ Returns the conversation with messages. No authentication required for public li
 
 | Status | Error | Description |
 |--------|-------|-------------|
+| `401` | `auth_required` | Org-scoped link — viewer must sign in |
 | `404` | `not_found` | Token does not exist or was revoked |
 | `410` | `expired` | The shared link has expired |
-| `401` | `auth_required` | Org-scoped link — viewer must sign in |
+| `429` | `rate_limited` | Too many requests (60 per minute per IP) |
+| `500` | `internal_error` | A server error occurred |
 
 ## Security
 
@@ -219,4 +223,4 @@ Returns the conversation with messages. No authentication required for public li
 - **No write access** — shared conversation views are completely read-only. Viewers cannot modify or interact with the conversation.
 - **Rate limited** — the public endpoint has a per-IP rate limiter (60 requests per minute, separate from the authenticated rate limiter) to prevent scraping.
 - **Expiry enforced server-side** — the API checks link expiry on every access, not just at creation time. Expired links return `410 Gone`.
-- **Org-scoped access** — links with `shareMode: "org"` require the viewer to be authenticated. Unauthenticated requests receive `401`.
+- **Org-scoped access** — links with `shareMode: "org"` require the viewer to be authenticated. Unauthenticated requests receive `401`. Note: this checks for any valid authentication, not organization membership. In `auth: "none"` deployments, org-scoped sharing has no effect.

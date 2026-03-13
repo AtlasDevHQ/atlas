@@ -1,12 +1,13 @@
 /**
  * Conversation persistence — CRUD operations for conversations and messages,
- * plus share/unshare operations for public link sharing.
+ * plus share/unshare operations with expiry and access-scope controls.
  *
  * Functions that need callers to distinguish failure modes (get, delete, star,
- * share, unshare, getShared) return discriminated union results
- * (CrudResult / CrudDataResult). Functions that are fire-and-forget
- * (createConversation, addMessage) still return null/void. Failures are
- * logged but never propagate as exceptions.
+ * share, unshare) return discriminated union results (CrudResult / CrudDataResult).
+ * getSharedConversation returns SharedConversationResult (extends failure reasons
+ * with "expired"). Functions that are fire-and-forget (createConversation,
+ * addMessage) still return null/void. Failures are logged but never propagate
+ * as exceptions.
  */
 
 import * as crypto from "crypto";
@@ -282,7 +283,7 @@ function generateShareToken(): string {
   return crypto.randomBytes(21).toString("base64url");
 }
 
-/** Enable sharing for a conversation. Returns the share token. Auth-scoped when userId is provided. */
+/** Enable sharing for a conversation. Returns the share token, expiry timestamp, and access mode. Auth-scoped when userId is provided. */
 export async function shareConversation(
   id: string,
   userId?: string | null,

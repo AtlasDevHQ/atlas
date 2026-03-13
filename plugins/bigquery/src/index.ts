@@ -24,12 +24,15 @@
 
 import { z } from "zod";
 import { createPlugin } from "@useatlas/plugin-sdk";
-import type { AtlasDatasourcePlugin, PluginDBConnection, PluginHealthResult, PluginLogger } from "@useatlas/plugin-sdk";
+import type { AtlasDatasourcePlugin, PluginDBConnection, PluginHealthResult, PluginLogger, PluginHooks, QueryHookContext, QueryHookMutation } from "@useatlas/plugin-sdk";
 import {
   createBigQueryConnection,
   extractProjectId,
 } from "./connection";
 import { BIGQUERY_FORBIDDEN_PATTERNS } from "./validation";
+import { estimateQueryCost, formatBytes } from "./cost-estimator";
+
+const CostApprovalMode = z.enum(["auto", "always", "threshold"]);
 
 const BigQueryConfigSchema = z.object({
   /** GCP project ID. When omitted, inferred from credentials or ADC. */
@@ -42,9 +45,23 @@ const BigQueryConfigSchema = z.object({
   keyFilename: z.string().optional(),
   /** Service account credentials object (contents of the JSON key file). */
   credentials: z.record(z.string(), z.unknown()).optional(),
+  /**
+   * Cost approval mode for BigQuery queries.
+   * - "auto": execute immediately, include cost metadata in the result
+   * - "threshold" (default): auto-approve under costThreshold, require approval above
+   * - "always": every query requires user approval with cost estimate
+   */
+  costApproval: CostApprovalMode.optional().default("threshold"),
+  /** USD cost threshold for "threshold" mode. Queries above this require approval. Default $1.00. */
+  costThreshold: z.number().optional().default(1.0),
 });
 
-export type BigQueryConfig = z.infer<typeof BigQueryConfigSchema>;
+/**
+ * BigQuery config type. Uses `z.input` so both the `bigqueryPlugin()` factory
+ * (which applies Zod defaults) and direct `buildBigQueryPlugin()` callers work
+ * without requiring cost fields to be explicitly passed.
+ */
+export type BigQueryConfig = z.input<typeof BigQueryConfigSchema>;
 
 /**
  * Build the plugin object from validated config.
@@ -55,6 +72,48 @@ export function buildBigQueryPlugin(
   config: BigQueryConfig,
 ): AtlasDatasourcePlugin<BigQueryConfig> {
   let log: PluginLogger | undefined;
+
+  const costApproval = config.costApproval ?? "threshold";
+  const costThreshold = config.costThreshold ?? 1.0;
+
+  const hooks: PluginHooks = {
+    beforeQuery: [
+      {
+        matcher: (ctx: QueryHookContext) => ctx.connectionId === "bigquery-datasource",
+        handler: async (ctx: QueryHookContext): Promise<QueryHookMutation | void> => {
+          const estimate = await estimateQueryCost(ctx.sql, config);
+
+          if (!estimate) {
+            log?.warn("BigQuery dry-run failed — proceeding without cost estimate");
+            return;
+          }
+
+          const { bytesScanned, estimatedCostUsd } = estimate;
+          const costStr = `$${estimatedCostUsd.toFixed(4)}`;
+          const bytesStr = formatBytes(bytesScanned);
+
+          // Attach cost metadata for the tool result
+          if (ctx.metadata) {
+            ctx.metadata.estimatedCostUsd = estimatedCostUsd;
+            ctx.metadata.bytesScanned = bytesScanned;
+          }
+
+          if (costApproval === "auto") {
+            return;
+          }
+
+          if (costApproval === "threshold" && estimatedCostUsd <= costThreshold) {
+            return;
+          }
+
+          // Over threshold or "always" mode — reject with cost info
+          throw new Error(
+            `This query will scan ~${bytesStr} (~${costStr}). Approve to execute.`,
+          );
+        },
+      },
+    ],
+  };
 
   return {
     id: "bigquery-datasource",
@@ -92,7 +151,10 @@ export function buildBigQueryPlugin(
       "- Use IFNULL(expr, default) or COALESCE() for null handling.",
       "- Use EXCEPT() and REPLACE() with SELECT * to exclude or transform columns.",
       "- Do not use Legacy SQL syntax — Standard SQL is the default.",
+      "- When a cost estimate is available, mention it to the user.",
     ].join("\n"),
+
+    hooks,
 
     async initialize(ctx) {
       log = ctx.logger;
@@ -148,3 +210,5 @@ export const bigqueryPlugin = createPlugin({
 
 export { createBigQueryConnection, extractProjectId } from "./connection";
 export { BIGQUERY_FORBIDDEN_PATTERNS } from "./validation";
+export { estimateQueryCost, formatBytes, _resetCachedClient } from "./cost-estimator";
+export type { CostEstimate } from "./cost-estimator";

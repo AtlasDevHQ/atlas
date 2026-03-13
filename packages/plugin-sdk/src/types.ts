@@ -159,6 +159,12 @@ export interface PluginHookEntry<TContext = unknown, TReturn = void> {
 export interface QueryHookContext {
   sql: string;
   connectionId?: string;
+  /**
+   * Mutable metadata bag. Hooks can attach arbitrary key-value pairs
+   * (e.g. `{ estimatedCostUsd, bytesScanned }`) that the caller
+   * merges into the tool result so the agent can reference them.
+   */
+  metadata?: Record<string, unknown>;
 }
 
 export interface AfterQueryHookContext extends QueryHookContext {

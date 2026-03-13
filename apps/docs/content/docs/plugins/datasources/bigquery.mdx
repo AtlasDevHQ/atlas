@@ -39,6 +39,8 @@ export default defineConfig({
 | `location` | `string` | No | -- | Geographic location for query jobs (e.g. `US`, `EU`, `us-east1`) |
 | `keyFilename` | `string` | No | -- | Path to a service account JSON key file |
 | `credentials` | `object` | No | -- | Service account credentials object (parsed JSON key contents) |
+| `costApproval` | `"auto" \| "threshold" \| "always"` | No | `"threshold"` | Cost approval mode (see [Cost Control](#cost-control)) |
+| `costThreshold` | `number` | No | `1.00` | USD threshold for `"threshold"` mode |
 
 ### Authentication
 
@@ -64,6 +66,63 @@ The following hints are injected into the agent's system prompt so it writes val
 - Use `IFNULL(expr, default)` or `COALESCE()` for null handling
 - Use `EXCEPT()` and `REPLACE()` with `SELECT *` to exclude or transform columns
 - Standard SQL is the default -- do not use Legacy SQL syntax
+
+## Cost Control
+
+BigQuery charges per query based on bytes scanned ([on-demand pricing](https://cloud.google.com/bigquery/pricing#on_demand_pricing): $5 per TB). The plugin runs a free dry-run before every query to estimate cost, then gates execution based on the `costApproval` mode.
+
+### Modes
+
+| Mode | Behavior |
+|------|----------|
+| `"threshold"` (default) | Auto-approve queries under `costThreshold` (default $1.00). Queries above the threshold are rejected with a cost estimate — the agent surfaces this to the user for approval. |
+| `"auto"` | Execute immediately. The estimated cost and bytes scanned are included in the query result metadata so the agent can mention them. |
+| `"always"` | Every query requires user approval. The agent shows the estimated cost before executing. |
+
+### Configuration examples
+
+```typescript
+// Default: threshold mode at $1.00
+bigqueryPlugin({
+  projectId: "my-project",
+  dataset: "analytics",
+})
+
+// Stricter: $0.10 threshold
+bigqueryPlugin({
+  projectId: "my-project",
+  costApproval: "threshold",
+  costThreshold: 0.10,
+})
+
+// No gates: always execute, log cost in metadata
+bigqueryPlugin({
+  projectId: "my-project",
+  costApproval: "auto",
+})
+
+// Maximum control: always require approval
+bigqueryPlugin({
+  projectId: "my-project",
+  costApproval: "always",
+})
+```
+
+### How it works
+
+1. Before executing a query, the plugin runs a BigQuery [dry run](https://cloud.google.com/bigquery/docs/dry-run-queries) (`dryRun: true`) to get `totalBytesProcessed`
+2. Estimated cost is calculated: `(bytes / 1 TB) * $5`
+3. Based on the approval mode, the query either proceeds (with cost metadata attached) or is rejected with a user-facing message
+4. If the dry run fails (e.g. network issue, permissions), the query proceeds without cost gating — dry-run failures never block execution
+
+### Cost metadata
+
+When a query proceeds (in `"auto"` mode or under threshold in `"threshold"` mode), the tool result includes:
+
+- `estimatedCostUsd` — estimated cost in USD
+- `bytesScanned` — total bytes the query will process
+
+The agent uses this metadata to inform the user about query costs.
 
 ## Validation
 

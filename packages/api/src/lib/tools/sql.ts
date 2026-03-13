@@ -428,9 +428,10 @@ Rules:
     }
 
     const { dispatchHook, dispatchMutableHook } = await import("@atlas/api/lib/plugins/hooks");
+    const hookMetadata: Record<string, unknown> = {};
     let mutatedSql: string;
     try {
-      const hookCtx = { sql, connectionId: connId } as const;
+      const hookCtx = { sql, connectionId: connId, metadata: hookMetadata };
       mutatedSql = await dispatchMutableHook(
         "beforeQuery",
         hookCtx,
@@ -665,6 +666,7 @@ Rules:
         durationMs,
       });
 
+      const hasHookMeta = Object.keys(hookMetadata).length > 0;
       return {
         success: true,
         explanation,
@@ -672,6 +674,7 @@ Rules:
         columns: result.columns,
         rows: result.rows,
         truncated,
+        ...(hasHookMeta && { metadata: hookMetadata }),
       };
     } catch (err) {
       const durationMs = Math.round(performance.now() - start);

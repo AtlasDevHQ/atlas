@@ -54,9 +54,9 @@ Under **Event Subscriptions**:
 Install the app to your workspace, then copy the **Bot User OAuth Token** and **Signing Secret**:
 
 ```bash
-# .env
-SLACK_BOT_TOKEN=xoxb-your-bot-token
-SLACK_SIGNING_SECRET=your-signing-secret
+# .env — copy these from your Slack app's settings page
+SLACK_BOT_TOKEN=xoxb-your-bot-token        # OAuth & Permissions → Bot User OAuth Token
+SLACK_SIGNING_SECRET=your-signing-secret    # Basic Information → Signing Secret
 ```
 
 ---
@@ -74,11 +74,11 @@ In your Slack app settings, under **OAuth & Permissions**:
 ### 2. Set Environment Variables
 
 ```bash
-# .env
+# .env — OAuth credentials from your Slack app settings
 SLACK_CLIENT_ID=your-client-id
 SLACK_CLIENT_SECRET=your-client-secret
 SLACK_SIGNING_SECRET=your-signing-secret
-DATABASE_URL=postgresql://...        # Required for token storage
+DATABASE_URL=postgresql://...        # Required — stores per-workspace bot tokens
 ```
 
 ### 3. Install Flow

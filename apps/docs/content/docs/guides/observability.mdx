@@ -54,13 +54,13 @@ Any OpenTelemetry-compatible collector works. Here are common setups:
 #### Jaeger
 
 ```bash
-# Run Jaeger with OTLP ingestion
+# Run Jaeger with OTLP ingestion (port 16686 = UI, 4318 = OTLP HTTP)
 docker run -d --name jaeger \
   -p 16686:16686 \
   -p 4318:4318 \
   jaegertracing/jaeger:latest
 
-# Point Atlas at it
+# Point Atlas at the Jaeger OTLP endpoint
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 ```
 
@@ -89,6 +89,7 @@ See the [Datadog OTLP documentation](https://docs.datadoghq.com/opentelemetry/ot
 Any service that accepts OTLP over HTTP (Honeycomb, Axiom, Signoz, etc.) works by setting the endpoint:
 
 ```bash
+# Set the OTLP endpoint and any required auth headers for your collector
 OTEL_EXPORTER_OTLP_ENDPOINT=https://api.honeycomb.io
 OTEL_EXPORTER_OTLP_HEADERS="x-honeycomb-team=your-api-key"
 ```

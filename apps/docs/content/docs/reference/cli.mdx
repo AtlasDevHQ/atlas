@@ -131,19 +131,19 @@ bun run atlas -- query "your question" [options]
 **Examples:**
 
 ```bash
-# Table output (default)
+# Default: formatted table output with narrative explanation
 bun run atlas -- query "How many users signed up last month?"
 
-# JSON output for scripting
+# JSON: structured response for piping to jq or other scripts
 bun run atlas -- query "top 10 customers by revenue" --json
 
-# CSV output (pipe to other tools)
+# CSV: headers + rows only, redirect to file for reports
 bun run atlas -- query "monthly revenue by product" --csv > report.csv
 
-# Data only, no explanation
+# Quiet: raw data with no narrative, SQL, or stats
 bun run atlas -- query "active users today" --quiet
 
-# Query a specific datasource
+# Target a named datasource from atlas.config.ts
 bun run atlas -- query "warehouse inventory" --connection warehouse
 ```
 

@@ -12,16 +12,17 @@ When you register multiple plugins in `atlas.config.ts`, Atlas wires them into t
 Each datasource plugin gets a unique connection registered under its plugin `id`. The default connection from `ATLAS_DATASOURCE_URL` coexists alongside plugin connections -- they don't replace it.
 
 ```typescript
-// atlas.config.ts
+// atlas.config.ts — multiple datasource plugins coexist with the default connection
 import { defineConfig } from "@atlas/api/lib/config";
 import { clickhousePlugin } from "@useatlas/clickhouse";
 import { snowflakePlugin } from "@useatlas/snowflake";
 
 export default defineConfig({
   datasources: {
-    default: { url: process.env.ATLAS_DATASOURCE_URL! },
+    default: { url: process.env.ATLAS_DATASOURCE_URL! },  // Primary Postgres
   },
   plugins: [
+    // Each plugin registers a connection under its plugin ID
     clickhousePlugin({ url: process.env.CLICKHOUSE_URL! }),
     snowflakePlugin({
       account: process.env.SNOWFLAKE_ACCOUNT!,

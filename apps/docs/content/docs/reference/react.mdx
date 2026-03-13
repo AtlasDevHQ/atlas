@@ -46,6 +46,7 @@ import { AtlasProvider } from "@useatlas/react/hooks";
 
 function App() {
   return (
+    // Wrap your app — all Atlas hooks read config from this provider
     <AtlasProvider apiUrl="https://your-atlas-api.example.com" apiKey="sk-...">
       <YourChatUI />
     </AtlasProvider>
@@ -73,19 +74,21 @@ Manages chat state, message streaming, and conversation tracking. Wraps the AI S
 import { useAtlasChat } from "@useatlas/react/hooks";
 
 function ChatUI() {
+  // Destructure chat state and actions from the hook
   const {
-    messages,
-    sendMessage,
-    input,
-    setInput,
-    status,
-    isLoading,
-    error,
-    conversationId,
+    messages,        // All messages in the conversation (AI SDK UIMessage format)
+    sendMessage,     // Send a text message to the agent
+    input,           // Controlled input value
+    setInput,        // Update the input field
+    status,          // "ready" | "submitted" | "streaming" | "error"
+    isLoading,       // True while the agent is working
+    error,           // Last error, if any
+    conversationId,  // Server-assigned conversation ID
   } = useAtlasChat();
 
   return (
     <form onSubmit={(e) => { e.preventDefault(); sendMessage(input); }}>
+      {/* Render each message's text parts */}
       <div>
         {messages.map((msg) => (
           <div key={msg.id}>{msg.parts?.map((p, i) =>
@@ -133,10 +136,12 @@ Detects the server's auth mode, manages authentication state, and provides login
 ```tsx
 import { useAtlasAuth } from "@useatlas/react/hooks";
 
+// Gate component — shows login form or children based on auth state
 function AuthGate({ children }: { children: React.ReactNode }) {
   const { authMode, isAuthenticated, isLoading, login } = useAtlasAuth();
 
   if (isLoading) return <p>Loading...</p>;
+  // Only show login for managed auth — other modes handle auth externally
   if (!isAuthenticated && authMode === "managed") {
     return <LoginForm onSubmit={login} />;
   }
@@ -169,15 +174,16 @@ Lists, loads, deletes, and stars conversations. Auth credentials are automatical
 import { useAtlasConversations } from "@useatlas/react/hooks";
 
 function ConversationList() {
+  // Manages conversation list, selection, and CRUD operations
   const {
-    conversations,
-    total,
+    conversations,       // Array of conversation metadata (no messages)
+    total,               // Total count for pagination
     isLoading,
-    selectedId,
-    setSelectedId,
-    loadConversation,
+    selectedId,          // Currently highlighted conversation
+    setSelectedId,       // Select a conversation by ID
+    loadConversation,    // Fetch full message history for a conversation
     deleteConversation,
-    starConversation,
+    starConversation,    // Toggle star status (pinning)
   } = useAtlasConversations();
 
   if (isLoading) return <p>Loading...</p>;
@@ -187,6 +193,7 @@ function ConversationList() {
       {conversations.map((c) => (
         <li key={c.id} onClick={() => setSelectedId(c.id)}>
           {c.title ?? "Untitled"}
+          {/* Toggle star — second arg is the desired starred state */}
           <button onClick={() => starConversation(c.id, !c.starred)}>
             {c.starred ? "Unstar" : "Star"}
           </button>
@@ -260,6 +267,7 @@ import { AtlasProvider, useAtlasChat, useAtlasAuth, useAtlasConversations } from
 
 function App() {
   return (
+    // Provider supplies API URL and credentials to all hooks below
     <AtlasProvider apiUrl="https://your-atlas-api.example.com" apiKey="sk-...">
       <Chat />
     </AtlasProvider>
@@ -267,6 +275,7 @@ function App() {
 }
 
 function Chat() {
+  // Combine auth, chat, and conversation hooks for a complete UI
   const { isAuthenticated, isLoading: authLoading } = useAtlasAuth();
   const { messages, sendMessage, input, setInput, isLoading, setMessages, setConversationId } = useAtlasChat();
   const { conversations, loadConversation } = useAtlasConversations();
@@ -274,16 +283,18 @@ function Chat() {
   if (authLoading) return <p>Connecting...</p>;
   if (!isAuthenticated) return <p>Not authenticated</p>;
 
+  // Load a past conversation's messages into the chat view
   async function selectConversation(id: string) {
     const msgs = await loadConversation(id);
     if (msgs) {
-      setMessages(msgs);
-      setConversationId(id);
+      setMessages(msgs);           // Replace current messages with loaded history
+      setConversationId(id);       // Link future messages to this conversation
     }
   }
 
   return (
     <div style={{ display: "flex", gap: "1rem" }}>
+      {/* Sidebar: conversation history */}
       <aside>
         <h3>History</h3>
         {conversations.map((c) => (
@@ -293,6 +304,7 @@ function Chat() {
         ))}
       </aside>
 
+      {/* Main area: messages + input */}
       <main>
         <div>
           {messages.map((msg) => (

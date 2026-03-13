@@ -58,7 +58,7 @@ export default function App() {
 }
 ```
 
-The widget supports programmatic control (`Atlas.open()`, `Atlas.ask("...")`, `Atlas.destroy()`), event callbacks, and theming. See the [widget docs](https://docs.useatlas.dev/docs/frameworks/widget).
+The widget supports programmatic control (`Atlas.open()`, `Atlas.ask("...")`, `Atlas.destroy()`), event callbacks, and theming. See the [widget docs](https://docs.useatlas.dev/docs/guides/embedding-widget).
 
 ## Why Atlas?
 
@@ -163,7 +163,7 @@ See [`.env.example`](.env.example) for all options.
 - [Quick Start](https://docs.useatlas.dev/docs/getting-started/quick-start) — Local dev from zero to asking questions
 - [Deploy Options](https://docs.useatlas.dev/docs/deployment/deploy) — Docker, Railway, Vercel, and more
 - [Connect Your Data](https://docs.useatlas.dev/docs/getting-started/connect-your-data) — Connect to an existing database safely
-- [Widget Embedding](https://docs.useatlas.dev/docs/frameworks/widget) — Script tag and React component
+- [Widget Embedding](https://docs.useatlas.dev/docs/guides/embedding-widget) — Script tag and React component
 - [Bring Your Own Frontend](https://docs.useatlas.dev/docs/frameworks/overview) — Nuxt, SvelteKit, React/Vite, TanStack Start
 - [Plugin Authoring](https://docs.useatlas.dev/docs/plugins/authoring-guide) — Build custom plugins
 - [Security & Sandbox](https://docs.useatlas.dev/docs/architecture/sandbox) — Threat model, isolation tiers

@@ -53,7 +53,7 @@ internal paths. See [CLAUDE.md](./CLAUDE.md) for the full architecture reference
   cross-package, `@/*` within web
 - **Tailwind CSS 4** — via `@tailwindcss/postcss`
 - **shadcn/ui v2** — always use shadcn/ui primitives for UI elements. Add new
-  components with `npx shadcn@latest add <component>` from `packages/web/`
+  components with `bun x shadcn@latest add <component>` from `packages/web/`
 - **nuqs for URL state** — use [nuqs](https://nuqs.47ng.com/) for any state
   that belongs in the URL (pagination, filters, view modes). Transient UI state
   stays as `useState`

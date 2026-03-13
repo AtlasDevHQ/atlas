@@ -120,5 +120,6 @@ describe("DataTable", () => {
     const { container } = render(<DataTable columns={["id"]} rows={[]} />);
     expect(container.querySelector("table")).toBeNull();
     expect(container.textContent).toContain("Query returned no results");
+    expect(container.textContent).toContain("Try adjusting your query filters or criteria");
   });
 });

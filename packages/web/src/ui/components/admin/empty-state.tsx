@@ -2,6 +2,7 @@
 
 import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
+import { Button } from "@/components/ui/button";
 
 export function EmptyState({
   icon: Icon,
@@ -29,13 +30,14 @@ export function EmptyState({
           <p className="mt-1 text-xs text-muted-foreground/70">{description}</p>
         )}
         {action && (
-          <button
-            type="button"
+          <Button
+            variant="link"
+            size="xs"
             onClick={action.onClick}
-            className="mt-3 text-xs font-medium text-primary hover:underline"
+            className="mt-3"
           >
             {action.label}
-          </button>
+          </Button>
         )}
         {children}
       </div>

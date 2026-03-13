@@ -4,6 +4,7 @@
   "icon": "Scale",
   "pages": [
     "index",
+    "raw-mcp",
     "wrenai",
     "vanna",
     "metabase"

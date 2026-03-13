@@ -1,0 +1,163 @@
+---
+title: Atlas vs Raw MCP
+description: Why connecting an AI client directly to your database via MCP is risky — and what a semantic layer adds.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+[MCP](https://modelcontextprotocol.io/) (Model Context Protocol) lets AI clients like Claude Desktop and Cursor call external tools. Database MCP servers like [DBHub](https://github.com/bytebase/dbhub) give the AI direct access to your schema and the ability to run arbitrary SQL.
+
+This works for quick exploration. It does not work for production.
+
+This page explains what you lose when the AI talks directly to your database, and what Atlas adds on top of MCP.
+
+## The problem with raw MCP
+
+When you point Claude Desktop at a database MCP server, the AI sees raw schema metadata — column names like `dim_user_status_cd`, `fact_txn_amt`, `is_del_flg`. It has no business context, no guardrails, and no audit trail.
+
+Three things go wrong:
+
+1. **The AI guesses.** Without descriptions, sample values, or documented relationships, the AI infers what columns mean from their names. It gets it wrong often enough to be dangerous — silently returning incorrect numbers that look plausible.
+
+2. **Nothing validates the SQL.** The generated query runs directly against the database. There's no mutation guard, no table whitelist, no row-level filtering. A prompt injection or hallucinated query could read sensitive tables or, if the connection has write access, modify data.
+
+3. **Nobody knows what happened.** No audit log records which user asked which question, what SQL ran, or what data was returned. For compliance-regulated environments, this is a non-starter.
+
+## What Atlas adds
+
+Atlas sits between the AI and the database, providing context before query generation and validation before execution.
+
+| Capability | Raw MCP | Atlas |
+|---|---|---|
+| **Business context** | Column names only | Entity YAML with descriptions, sample values, joins, metrics, glossary |
+| **SQL validation** | None | [7-layer pipeline](/security/sql-validation) (regex guard, AST parse, table whitelist, RLS, auto-LIMIT, timeout) |
+| **Table access control** | Full schema visible | Only tables defined in the semantic layer |
+| **Row-level security** | None | Automatic WHERE clause injection based on user identity |
+| **Mutation protection** | Depends on DB user permissions | SELECT-only enforcement at the application layer, independent of DB permissions |
+| **Audit logging** | None | Every query logged with user attribution and timing |
+| **Sandboxed execution** | None | Explore tool isolated via nsjail or sidecar |
+
+## Side-by-side: the same question, two approaches
+
+**Question:** "What's our monthly revenue by product?"
+
+### Raw MCP
+
+The AI sees the schema and guesses:
+
+```sql
+-- The AI picks the wrong table — fact_order_lines stores
+-- gross amounts before discounts and refunds.
+-- It also misses the soft-delete flag, including deleted orders.
+SELECT
+  DATE_TRUNC('month', order_date) AS month,
+  product_name,
+  SUM(fact_txn_amt) AS revenue
+FROM fact_order_lines
+GROUP BY 1, 2
+ORDER BY 1 DESC
+```
+
+Problems:
+- `fact_txn_amt` is gross amount, not net revenue
+- Deleted rows (`is_del_flg = 1`) are included
+- No LIMIT — could return thousands of rows
+- No timeout — a full table scan on a large table could run for minutes
+
+### Atlas
+
+The agent reads the semantic layer first, which defines revenue clearly:
+
+```yaml
+# semantic/entities/orders.yml — the agent reads this before writing SQL
+table: orders
+dimensions:
+  product_name:
+    type: string
+    description: Display name of the product
+  created_at:
+    type: timestamp
+    description: When the order was placed
+  is_deleted:
+    type: boolean
+    description: Soft-delete flag — exclude from all queries
+measures:
+  net_revenue:
+    sql: "SUM(total - discount - refund_amount)"
+    description: Net revenue after discounts and refunds
+```
+
+The agent generates:
+
+```sql
+-- Uses the documented measure definition for net revenue.
+-- Filters out soft-deleted rows as the entity description instructs.
+-- Atlas adds LIMIT 1000 and a 30-second timeout automatically.
+SELECT
+  DATE_TRUNC('month', created_at) AS month,
+  product_name,
+  SUM(total - discount - refund_amount) AS net_revenue
+FROM orders
+WHERE is_deleted = false
+GROUP BY 1, 2
+ORDER BY 1 DESC
+```
+
+Before this query reaches the database, Atlas validates it through the [SQL validation pipeline](/security/sql-validation):
+
+1. **Regex guard** — confirms no DML/DDL keywords
+2. **AST parse** — confirms single SELECT statement
+3. **Table whitelist** — `orders` is in the semantic layer, allowed
+4. **RLS injection** — if enabled, adds `AND tenant_id = 'acme-corp'`
+5. **Auto LIMIT** — appends `LIMIT 1000`
+6. **Statement timeout** — sets 30-second deadline
+
+## Security implications
+
+The security gap between raw MCP and Atlas is not theoretical. Here are three concrete risks:
+
+### No validation = SQL injection surface
+
+MCP servers pass AI-generated SQL directly to the database. If a user crafts a prompt that causes the AI to generate `SELECT 1; DROP TABLE users`, there's nothing between that SQL and your database except the connection's permission level. Atlas blocks this at [multiple layers](/security/sql-validation#layer-1-regex-mutation-guard) — the regex guard catches `DROP`, and the AST parser rejects multi-statement queries.
+
+### No RLS = data leakage
+
+In a multi-tenant application, raw MCP has no concept of row-level isolation. The AI can query any row in any table the connection can access. Atlas injects [WHERE clauses automatically](/security/row-level-security) based on the authenticated user's identity claims — fail-closed, so missing claims block the query entirely.
+
+### No audit = compliance gap
+
+Regulations like SOC 2, HIPAA, and GDPR require knowing who accessed what data and when. Raw MCP provides no audit trail. Atlas logs every query — successful and failed — with user attribution, timing, the SQL that ran, and whether results were truncated.
+
+## When raw MCP is fine
+
+Raw MCP is a reasonable choice when:
+
+- **Local development** — You're exploring your own database in Claude Desktop or Cursor, iterating on queries, and don't need guardrails because the data isn't sensitive.
+- **Read-only on non-sensitive data** — The database contains only public or non-regulated data, the connection is strictly read-only at the database level, and you're the only user.
+- **Prototyping** — You're testing whether text-to-SQL is useful for your use case before investing in a semantic layer.
+
+Once any of these change — multiple users, sensitive data, production workloads, compliance requirements — you need the semantic layer, validation, and audit trail that Atlas provides.
+
+<Callout type="info">
+Atlas has its own [MCP server](/guides/mcp) that gives Claude Desktop and Cursor the same validated, context-aware SQL execution as the API. You don't have to choose between MCP compatibility and safety.
+</Callout>
+
+## The semantic layer advantage
+
+The core difference isn't just validation — it's **context**. Raw MCP gives the AI a schema. Atlas gives it understanding.
+
+A schema tells the AI that a column named `total` exists and is numeric. The semantic layer tells it that `total` is the order total in USD before discounts, that net revenue is calculated as `SUM(total - discount - refund_amount)`, and that rows with `is_deleted = true` should always be excluded.
+
+This matters because the quality of AI-generated SQL is bounded by the quality of the context the AI receives. Gartner predicts that [by 2027, 40% of agentic AI projects in analytics will fail due to inadequate data governance](https://www.gartner.com/en/newsroom/press-releases/2025-03-03-gartner-predicts-40-percent-of-agentic-ai-projects-will-fail) — not because the AI can't write SQL, but because it doesn't have enough context to write the *right* SQL.
+
+A semantic layer is that governance. It's the difference between an AI that can query your database and one that understands your business.
+
+---
+
+## Related
+
+- [MCP Server](/guides/mcp) — use Atlas as an MCP server with full validation and semantic context
+- [SQL Validation Pipeline](/security/sql-validation) — the 7-layer defense-in-depth pipeline
+- [Row-Level Security](/security/row-level-security) — automatic tenant isolation
+- [Semantic Layer](/getting-started/semantic-layer) — how entity YAML files provide business context
+- [Atlas vs Alternatives](/comparisons) — comparisons with WrenAI, Vanna, and Metabase

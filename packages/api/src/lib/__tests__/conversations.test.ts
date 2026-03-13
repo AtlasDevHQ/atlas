@@ -597,7 +597,7 @@ describe("conversations module", () => {
   // -------------------------------------------------------------------------
 
   describe("shareConversation()", () => {
-    it("returns { ok: true, data: { token } } on success", async () => {
+    it("returns { ok: true, data: { token, expiresAt, shareMode } } on success", async () => {
       enableInternalDB();
       setResults({ rows: [{ share_token: "test-token-abc" }] });
 
@@ -605,8 +605,12 @@ describe("conversations module", () => {
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.data.token).toBe("test-token-abc");
+        expect(result.data.expiresAt).toBeNull();
+        expect(result.data.shareMode).toBe("public");
       }
       expect(queryCalls[0].sql).toContain("UPDATE conversations SET share_token");
+      expect(queryCalls[0].sql).toContain("share_expires_at");
+      expect(queryCalls[0].sql).toContain("share_mode");
       expect(queryCalls[0].sql).toContain("user_id");
     });
 
@@ -619,6 +623,46 @@ describe("conversations module", () => {
       const tokenParam = queryCalls[0].params?.[0] as string;
       expect(typeof tokenParam).toBe("string");
       expect(tokenParam.length).toBeGreaterThanOrEqual(20);
+    });
+
+    it("sets expiresAt for non-never durations", async () => {
+      enableInternalDB();
+      setResults({ rows: [{ share_token: "tok" }] });
+
+      const result = await shareConversation("c1", null, { expiresIn: "1h" });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.data.expiresAt).not.toBeNull();
+        const expiry = new Date(result.data.expiresAt!);
+        const diff = expiry.getTime() - Date.now();
+        // Should be roughly 1 hour (3600s ± some tolerance)
+        expect(diff).toBeGreaterThan(3500 * 1000);
+        expect(diff).toBeLessThan(3700 * 1000);
+      }
+    });
+
+    it("sets shareMode to org when specified", async () => {
+      enableInternalDB();
+      setResults({ rows: [{ share_token: "tok" }] });
+
+      const result = await shareConversation("c1", null, { shareMode: "org" });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.data.shareMode).toBe("org");
+      }
+      // Verify the SQL includes share_mode param
+      expect(queryCalls[0].params?.[2]).toBe("org");
+    });
+
+    it("returns null expiresAt for 'never'", async () => {
+      enableInternalDB();
+      setResults({ rows: [{ share_token: "tok" }] });
+
+      const result = await shareConversation("c1", null, { expiresIn: "never" });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.data.expiresAt).toBeNull();
+      }
     });
 
     it("returns { ok: false, reason: 'not_found' } when conversation not found", async () => {
@@ -663,6 +707,7 @@ describe("conversations module", () => {
       expect(result).toEqual({ ok: true });
       expect(queryCalls[0].sql).toContain("share_token = NULL");
       expect(queryCalls[0].sql).toContain("share_expires_at = NULL");
+      expect(queryCalls[0].sql).toContain("share_mode = 'public'");
     });
 
     it("returns { ok: false, reason: 'not_found' } when not found", async () => {
@@ -700,9 +745,9 @@ describe("conversations module", () => {
   // -------------------------------------------------------------------------
 
   describe("getShareStatus()", () => {
-    it("returns shared=true with token when conversation has a share_token", async () => {
+    it("returns shared=true with token and shareMode when conversation has a share_token", async () => {
       enableInternalDB();
-      setResults({ rows: [{ share_token: "abc123", share_expires_at: null }] });
+      setResults({ rows: [{ share_token: "abc123", share_expires_at: null, share_mode: "public" }] });
 
       const result = await getShareStatus("c1", "u1");
       expect(result.ok).toBe(true);
@@ -710,12 +755,13 @@ describe("conversations module", () => {
         expect(result.data.shared).toBe(true);
         expect(result.data.token).toBe("abc123");
         expect(result.data.expiresAt).toBeNull();
+        expect(result.data.shareMode).toBe("public");
       }
     });
 
     it("returns shared=false when conversation has no share_token", async () => {
       enableInternalDB();
-      setResults({ rows: [{ share_token: null, share_expires_at: null }] });
+      setResults({ rows: [{ share_token: null, share_expires_at: null, share_mode: "public" }] });
 
       const result = await getShareStatus("c1", "u1");
       expect(result.ok).toBe(true);
@@ -723,25 +769,27 @@ describe("conversations module", () => {
         expect(result.data.shared).toBe(false);
         expect(result.data.token).toBeNull();
         expect(result.data.expiresAt).toBeNull();
+        expect(result.data.shareMode).toBeNull();
       }
     });
 
-    it("returns expiresAt when set and not expired", async () => {
+    it("returns expiresAt and shareMode when set and not expired", async () => {
       enableInternalDB();
       const futureDate = new Date(Date.now() + 86400000).toISOString();
-      setResults({ rows: [{ share_token: "tok", share_expires_at: futureDate }] });
+      setResults({ rows: [{ share_token: "tok", share_expires_at: futureDate, share_mode: "org" }] });
 
       const result = await getShareStatus("c1");
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.data.shared).toBe(true);
         expect(result.data.expiresAt).toBe(futureDate);
+        expect(result.data.shareMode).toBe("org");
       }
     });
 
     it("returns shared=false when token has expired", async () => {
       enableInternalDB();
-      setResults({ rows: [{ share_token: "tok", share_expires_at: "2020-01-01T00:00:00Z" }] });
+      setResults({ rows: [{ share_token: "tok", share_expires_at: "2020-01-01T00:00:00Z", share_mode: "public" }] });
 
       const result = await getShareStatus("c1");
       expect(result.ok).toBe(true);
@@ -749,6 +797,7 @@ describe("conversations module", () => {
         expect(result.data.shared).toBe(false);
         expect(result.data.token).toBeNull();
         expect(result.data.expiresAt).toBeNull();
+        expect(result.data.shareMode).toBeNull();
       }
     });
 
@@ -774,16 +823,17 @@ describe("conversations module", () => {
 
     it("scopes by userId when provided", async () => {
       enableInternalDB();
-      setResults({ rows: [{ share_token: null, share_expires_at: null }] });
+      setResults({ rows: [{ share_token: null, share_expires_at: null, share_mode: "public" }] });
 
       await getShareStatus("c1", "u1");
+      expect(queryCalls[0].sql).toContain("share_mode");
       expect(queryCalls[0].sql).toContain("AND user_id");
       expect(queryCalls[0].params).toEqual(["c1", "u1"]);
     });
 
     it("does not scope by userId when not provided", async () => {
       enableInternalDB();
-      setResults({ rows: [{ share_token: null, share_expires_at: null }] });
+      setResults({ rows: [{ share_token: null, share_expires_at: null, share_mode: "public" }] });
 
       await getShareStatus("c1");
       expect(queryCalls[0].sql).not.toContain("AND user_id");
@@ -796,7 +846,7 @@ describe("conversations module", () => {
   // -------------------------------------------------------------------------
 
   describe("getSharedConversation()", () => {
-    it("returns conversation with messages for valid token", async () => {
+    it("returns conversation with messages and shareMode for valid token", async () => {
       enableInternalDB();
       setResults(
         {
@@ -807,6 +857,8 @@ describe("conversations module", () => {
             surface: "web",
             connection_id: null,
             starred: false,
+            share_expires_at: null,
+            share_mode: "public",
             created_at: "2024-01-01T00:00:00Z",
             updated_at: "2024-01-01T00:00:00Z",
           }],
@@ -827,15 +879,56 @@ describe("conversations module", () => {
       if (result.ok) {
         expect(result.data.title).toBe("Shared conv");
         expect(result.data.messages).toHaveLength(1);
+        expect(result.data.shareMode).toBe("public");
       }
     });
 
-    it("checks expiry in query", async () => {
+    it("returns org shareMode when set", async () => {
       enableInternalDB();
-      setResults({ rows: [] });
+      setResults(
+        {
+          rows: [{
+            id: "c1",
+            user_id: "u1",
+            title: "Org conv",
+            surface: "web",
+            connection_id: null,
+            starred: false,
+            share_expires_at: null,
+            share_mode: "org",
+            created_at: "2024-01-01T00:00:00Z",
+            updated_at: "2024-01-01T00:00:00Z",
+          }],
+        },
+        { rows: [] },
+      );
 
-      await getSharedConversation("expired-token");
-      expect(queryCalls[0].sql).toContain("share_expires_at IS NULL OR share_expires_at > now()");
+      const result = await getSharedConversation("org-token");
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.data.shareMode).toBe("org");
+      }
+    });
+
+    it("returns expired for token with past expiry", async () => {
+      enableInternalDB();
+      setResults({
+        rows: [{
+          id: "c1",
+          user_id: "u1",
+          title: "Expired conv",
+          surface: "web",
+          connection_id: null,
+          starred: false,
+          share_expires_at: "2020-01-01T00:00:00Z",
+          share_mode: "public",
+          created_at: "2024-01-01T00:00:00Z",
+          updated_at: "2024-01-01T00:00:00Z",
+        }],
+      });
+
+      const result = await getSharedConversation("expired-token");
+      expect(result).toEqual({ ok: false, reason: "expired" });
     });
 
     it("returns not_found for missing token", async () => {
@@ -900,7 +993,7 @@ describe("conversations module", () => {
       expect(count).toBe(2);
       expect(queryCalls.length).toBe(1);
       expect(queryCalls[0].sql).toContain("UPDATE conversations");
-      expect(queryCalls[0].sql).toContain("SET share_token = NULL, share_expires_at = NULL");
+      expect(queryCalls[0].sql).toContain("SET share_token = NULL, share_expires_at = NULL, share_mode = 'public'");
       expect(queryCalls[0].sql).toContain("share_expires_at IS NOT NULL");
       expect(queryCalls[0].sql).toContain("share_expires_at < NOW()");
       expect(queryCalls[0].sql).toContain("RETURNING id");

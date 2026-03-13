@@ -1,9 +1,9 @@
 ---
 title: Sharing Conversations
-description: Share Atlas conversations via public links and embed them in other pages.
+description: Share Atlas conversations via public or org-scoped links with configurable expiry.
 ---
 
-Atlas lets you share conversations via public links. Anyone with the link can view the conversation — no login required. Shared conversations include rich OpenGraph metadata for social previews.
+Atlas lets you share conversations via links with configurable expiry and access controls. Public shares are visible to anyone with the link. Organization-scoped shares require authentication. Shared conversations include rich OpenGraph metadata for social previews.
 
 ## Prerequisites
 
@@ -15,24 +15,37 @@ Conversation sharing requires an internal database (`DATABASE_URL`). Without it,
 
 1. Open a conversation in the Atlas chat interface.
 2. Click the **Share** button in the conversation header.
-3. Atlas generates a unique share link. Copy it to your clipboard.
+3. Choose an **expiry duration** (1 hour, 24 hours, 7 days, 30 days, or never).
+4. Optionally toggle **Organization only** to restrict access to authenticated users.
+5. Click **Create share link** — Atlas generates a unique share link. Copy it to your clipboard.
 
 The share dialog also provides an iframe embed snippet for embedding the conversation in other pages.
 
-To revoke a shared link, open the share dialog again and click **Unshare**. The public link will immediately stop working.
+To revoke a shared link, open the share dialog again and click **Remove share link**. The public link will immediately stop working.
 
 ### From the API
 
 Create and revoke share links programmatically:
 
 ```bash
-# Share a conversation
+# Share a conversation (with expiry and share mode)
 curl -X POST https://your-atlas-api.example.com/api/v1/conversations/{id}/share \
-  -H "Authorization: Bearer your-api-key"
+  -H "Authorization: Bearer your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{"expiresIn": "7d", "shareMode": "public"}'
 
 # Response:
-# { "token": "abc123...", "url": "https://your-atlas-api.example.com/shared/abc123..." }
+# {
+#   "token": "abc123...",
+#   "url": "https://your-atlas-api.example.com/shared/abc123...",
+#   "expiresAt": "2026-03-19T00:00:00.000Z",
+#   "shareMode": "public"
+# }
 ```
+
+Available `expiresIn` values: `"1h"`, `"24h"`, `"7d"`, `"30d"`, `"never"` (default: `"never"`).
+
+Available `shareMode` values: `"public"` (anyone with link), `"org"` (authenticated users only).
 
 ```bash
 # Revoke sharing
@@ -50,8 +63,11 @@ const atlas = createAtlasClient({
   apiKey: "your-api-key",
 });
 
-// Share
-const { token, url } = await atlas.conversations.share("conversation-id");
+// Share with options
+const { token, url } = await atlas.conversations.share("conversation-id", {
+  expiresIn: "7d",
+  shareMode: "public",
+});
 
 // Unshare
 await atlas.conversations.unshare("conversation-id");
@@ -107,12 +123,28 @@ POST /api/v1/conversations/:id/share
 
 Generates a cryptographically random share token and returns the public URL. Requires authentication. If the conversation is already shared, a new token replaces the old one.
 
+**Request body** (optional):
+
+```json
+{
+  "expiresIn": "7d",
+  "shareMode": "public"
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `expiresIn` | `"1h"` \| `"24h"` \| `"7d"` \| `"30d"` \| `"never"` | `"never"` | When the link expires |
+| `shareMode` | `"public"` \| `"org"` | `"public"` | `public` = anyone with link; `org` = authenticated users only |
+
 **Response:**
 
 ```json
 {
   "token": "abc123...",
-  "url": "https://your-atlas-api.example.com/shared/abc123..."
+  "url": "https://your-atlas-api.example.com/shared/abc123...",
+  "expiresAt": "2026-03-19T00:00:00.000Z",
+  "shareMode": "public"
 }
 ```
 
@@ -130,7 +162,7 @@ Revokes the share token. The public link stops working immediately. Returns `204
 GET /api/public/conversations/:token
 ```
 
-Returns the conversation with messages. No authentication required. Rate-limited per IP (60 requests per minute).
+Returns the conversation with messages. Public shares require no authentication. Organization-scoped shares (`shareMode: "org"`) require authentication — unauthenticated requests receive `403`. Expired links return `410 Gone`. Rate-limited per IP (60 requests per minute).
 
 **Response:**
 
@@ -157,6 +189,8 @@ Returns the conversation with messages. No authentication required. Rate-limited
 ## Security
 
 - **Tokens are random** — share tokens are 28-character base64url strings generated with `crypto.randomBytes(21)`. They cannot be guessed.
+- **Expiry enforcement** — expired links are checked on every access (not just at creation). Expired tokens return `410 Gone`. A background cleanup task also removes expired tokens from the database hourly.
+- **Organization-scoped sharing** — links with `shareMode: "org"` require the viewer to be authenticated. Unauthenticated requests receive `403`.
 - **Revocation is instant** — unsharing clears the token from the database. Cached responses (Next.js 60s revalidate) will expire shortly after.
 - **No write access** — shared conversation views are completely read-only. Viewers cannot modify or interact with the conversation.
 - **Rate limited** — the public endpoint has a per-IP rate limiter (60 requests per minute, separate from the authenticated rate limiter) to prevent scraping.

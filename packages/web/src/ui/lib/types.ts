@@ -13,6 +13,8 @@ export type {
   Message,
   ConversationWithMessages,
   ShareLink,
+  ShareMode,
+  ShareExpiryKey,
   DeliveryChannel,
   DeliveryStatus,
   Recipient,
@@ -36,10 +38,11 @@ export type {
   EntityData,
   ActionApprovalMode,
 } from "@useatlas/types";
+export { SHARE_MODES, SHARE_EXPIRY_OPTIONS } from "@useatlas/types";
 export { authErrorMessage, parseChatError } from "@useatlas/types/errors";
 
 // --- Web-only types (not in @useatlas/types) ---
 
 export type ShareStatus =
   | { shared: false }
-  | { shared: true; token: string; url: string; expiresAt: string | null };
+  | { shared: true; token: string; url: string; expiresAt: string | null; shareMode: ShareMode };

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef } from "react";
-import type { Conversation, ConversationWithMessages, Message, ShareStatus } from "../lib/types";
+import type { Conversation, ConversationWithMessages, Message, ShareStatus, ShareMode, ShareExpiryKey } from "../lib/types";
 import type { UIMessage } from "@ai-sdk/react";
 
 export interface UseConversationsOptions {
@@ -22,7 +22,7 @@ export interface UseConversationsReturn {
   loadConversation: (id: string) => Promise<UIMessage[] | null>;
   deleteConversation: (id: string) => Promise<boolean>;
   starConversation: (id: string, starred: boolean) => Promise<boolean>;
-  shareConversation: (id: string) => Promise<{ token: string; url: string } | null>;
+  shareConversation: (id: string, opts?: { expiresIn?: ShareExpiryKey; shareMode?: ShareMode }) => Promise<{ token: string; url: string } | null>;
   unshareConversation: (id: string) => Promise<boolean>;
   getShareStatus: (id: string) => Promise<ShareStatus | null>;
   refresh: () => Promise<void>;
@@ -167,12 +167,13 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
     }
   }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);
 
-  const shareConversation = useCallback(async (id: string): Promise<{ token: string; url: string } | null> => {
+  const shareConversation = useCallback(async (id: string, shareOpts?: { expiresIn?: ShareExpiryKey; shareMode?: ShareMode }): Promise<{ token: string; url: string } | null> => {
     try {
       const res = await fetch(`${opts.apiUrl}/api/v1/conversations/${id}/share`, {
         method: "POST",
         headers: { ...opts.getHeaders(), "Content-Type": "application/json" },
         credentials: opts.getCredentials(),
+        body: shareOpts ? JSON.stringify(shareOpts) : undefined,
       });
       if (!res.ok) {
         console.warn(`shareConversation: HTTP ${res.status} for ${id}`);

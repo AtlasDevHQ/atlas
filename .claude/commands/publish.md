@@ -12,7 +12,7 @@ Run these in parallel:
 
 1. Current published versions:
    ```bash
-   for pkg in create create-plugin sdk plugin-sdk clickhouse snowflake duckdb mysql salesforce e2b daytona nsjail sidecar vercel-sandbox slack email jira yaml-context; do
+   for pkg in types create create-plugin sdk plugin-sdk react clickhouse snowflake duckdb mysql salesforce e2b daytona nsjail sidecar vercel-sandbox slack email jira yaml-context; do
      npm view "@useatlas/$pkg" version 2>/dev/null && echo "  @useatlas/$pkg" || echo "  @useatlas/$pkg (not published)"
    done
    ```
@@ -20,10 +20,12 @@ Run these in parallel:
 2. Current local versions:
    ```bash
    # Core packages
+   jq -r '.version' packages/types/package.json && echo "  types"
    jq -r '.version' create-atlas/package.json && echo "  create-atlas"
    jq -r '.version' create-atlas-plugin/package.json && echo "  create-atlas-plugin"
    jq -r '.version' packages/sdk/package.json && echo "  sdk"
    jq -r '.version' packages/plugin-sdk/package.json && echo "  plugin-sdk"
+   jq -r '.version' packages/react/package.json && echo "  react"
    # Plugins
    for plugin in clickhouse snowflake duckdb mysql salesforce e2b daytona nsjail sidecar vercel-sandbox slack email jira yaml-context; do
      jq -r '.version' "plugins/$plugin/package.json" && echo "  $plugin"
@@ -101,13 +103,17 @@ done
 
 | Package | Tag pattern | Example |
 |---------|------------|---------|
+| `@useatlas/types` | `types-v*` | `types-v0.0.2` |
 | `@useatlas/create` | `create-v*` | `create-v0.0.7` |
 | `@useatlas/create-plugin` | `create-plugin-v*` | `create-plugin-v0.0.5` |
 | `@useatlas/sdk` | `sdk-v*` | `sdk-v0.0.7` |
 | `@useatlas/plugin-sdk` | `plugin-sdk-v*` | `plugin-sdk-v0.0.7` |
+| `@useatlas/react` | `react-v*` | `react-v0.0.2` |
 | `@useatlas/<plugin>` | `<plugin>-v*` | `clickhouse-v0.0.6` |
 
 **Excluded:** `@useatlas/mcp` — private, depends on unpublished `@atlas/mcp` workspace package.
+
+**Publish order:** `types` must be published before `sdk` or `react` (they depend on it).
 
 **Step 5: Verify workflows triggered**
 
@@ -177,6 +183,6 @@ All N packages published successfully.
 - If a publish fails, don't retry blindly — check the error first
 - The `@useatlas/mcp` package is excluded (private, unpublished workspace dep)
 - Tags are always cut from main — never push a tag from a feature branch
-- Core packages (sdk, plugin-sdk) build and test before publish; plugins ship raw TypeScript
+- Core packages (types, sdk, plugin-sdk, react) build before publish; sdk and plugin-sdk also test; plugins ship raw TypeScript
 - npm uses OIDC trusted publisher — no tokens needed, but the GitHub environment must be `npm`
 - After publishing, npm may take 1-2 minutes to propagate — `npm view` may lag slightly

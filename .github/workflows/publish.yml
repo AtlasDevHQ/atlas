@@ -8,6 +8,7 @@ on:
       - 'create-plugin-v*'
       - 'sdk-v*'
       - 'plugin-sdk-v*'
+      - 'react-v*'
       # Plugins — datasource
       - 'clickhouse-v*'
       - 'snowflake-v*'
@@ -70,6 +71,10 @@ jobs:
       - name: Build, test, and publish @useatlas/plugin-sdk
         if: startsWith(github.ref, 'refs/tags/plugin-sdk-v')
         run: cd packages/plugin-sdk && bun run build && bun run test && npm publish --access public
+
+      - name: Build and publish @useatlas/react
+        if: startsWith(github.ref, 'refs/tags/react-v')
+        run: cd packages/react && bun run build && npm publish --access public
 
       # Plugins — ship raw TypeScript, no build step needed
       # Tests are already run by CI on every push to main; tags are always cut from main

@@ -93,12 +93,18 @@ describe("matchError", () => {
 
   // --- SSL / TLS ---
 
-  test("matches SSL error", () => {
+  test("matches SSL connection error", () => {
     const result = matchError(new Error("SSL connection has been closed unexpectedly")) as MatchedError;
     expect(result).not.toBeNull();
     expect(result.code).toBe("internal_error");
     expect(result.message).toContain("SSL connection failed");
     expect(result.message).toContain("sslmode");
+  });
+
+  test("matches TLS handshake error", () => {
+    const result = matchError(new Error("TLS handshake failed: connection reset")) as MatchedError;
+    expect(result).not.toBeNull();
+    expect(result.message).toContain("SSL connection failed");
   });
 
   test("matches self-signed certificate error", () => {
@@ -113,10 +119,16 @@ describe("matchError", () => {
     expect(result.message).toContain("SSL connection failed");
   });
 
-  test("matches certificate error", () => {
+  test("matches certificate has expired", () => {
     const result = matchError(new Error("certificate has expired")) as MatchedError;
     expect(result).not.toBeNull();
     expect(result.message).toContain("SSL connection failed");
+  });
+
+  test("does NOT match bare 'SSL' or 'certificate' in column names", () => {
+    expect(matchError(new Error('column "ssl_enabled" does not exist'))).toBeNull();
+    expect(matchError(new Error('relation "tls_config" does not exist'))).toBeNull();
+    expect(matchError(new Error('column "certificate_id" is ambiguous'))).toBeNull();
   });
 
   // --- 502 / 503 ---
@@ -135,15 +147,38 @@ describe("matchError", () => {
     expect(result.code).toBe("provider_unreachable");
   });
 
+  test("does NOT match bare 502/503 in unrelated contexts", () => {
+    expect(matchError(new Error("Port 5032 is already in use"))).toBeNull();
+    expect(matchError(new Error("Error at line 503 of query"))).toBeNull();
+    expect(matchError(new Error('column "col503" does not exist'))).toBeNull();
+    expect(matchError(new Error("Row count: 50299"))).toBeNull();
+  });
+
+  // --- fetch failed ---
+
+  test("matches fetch failed", () => {
+    const result = matchError(new Error("TypeError: fetch failed")) as MatchedError;
+    expect(result).not.toBeNull();
+    expect(result.code).toBe("provider_unreachable");
+    expect(result.message).toContain("unreachable");
+  });
+
   // --- No stack traces in messages ---
+
+  test("ECONNREFUSED without trailing host returns unknown host", () => {
+    const result = matchError(new Error("ECONNREFUSED")) as MatchedError;
+    expect(result).not.toBeNull();
+    expect(result.message).toContain("(unknown host)");
+  });
 
   test("no stack traces in any matched message", () => {
     const errors = [
       new Error("connect ECONNREFUSED 127.0.0.1:5432"),
       new Error("getaddrinfo ENOTFOUND bad.host"),
-      new Error("SSL connection refused"),
+      new Error("SSL connection has been closed"),
       new Error("Query read timeout"),
       new Error("502 Bad Gateway"),
+      new Error("TypeError: fetch failed"),
     ];
     for (const err of errors) {
       err.stack = "Error: something\n    at Object.<anonymous> (/app/src/index.ts:42:5)";

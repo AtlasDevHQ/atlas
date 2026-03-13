@@ -186,16 +186,17 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
           const detail = err instanceof Error ? err.message : "";
           log.error({ err: detail }, "MySQL connection check failed");
 
+          const maskedUrl = maskConnectionUrl(resolvedDatasourceUrl);
           const matched = matchError(err);
           let message: string;
           if (matched) {
-            message = matched.message;
+            message = `Cannot connect to ${maskedUrl}. ${matched.message}`;
           } else if (/Access denied/i.test(detail) || /ER_ACCESS_DENIED/i.test(detail)) {
-            message = `Cannot connect to ${maskConnectionUrl(resolvedDatasourceUrl)}. Authentication failed — check your username and password.`;
+            message = `Cannot connect to ${maskedUrl}. Authentication failed — check your username and password.`;
           } else if (/ER_BAD_DB_ERROR/i.test(detail)) {
-            message = `Cannot connect to ${maskConnectionUrl(resolvedDatasourceUrl)}. The specified database does not exist.`;
+            message = `Cannot connect to ${maskedUrl}. The specified database does not exist.`;
           } else {
-            message = `Cannot connect to ${maskConnectionUrl(resolvedDatasourceUrl)}. Check the connection string and ensure the database is running.`;
+            message = `Cannot connect to ${maskedUrl}. Check the connection string and ensure the database is running.`;
           }
 
           errors.push({ code: "DB_UNREACHABLE", message });
@@ -263,14 +264,15 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
           const detail = err instanceof Error ? err.message : "";
           log.error({ err: detail }, "DB connection check failed");
 
+          const maskedUrl = maskConnectionUrl(resolvedDatasourceUrl);
           const matched = matchError(err);
           let message: string;
           if (matched) {
-            message = matched.message;
+            message = `Cannot connect to ${maskedUrl}. ${matched.message}`;
           } else if (/authentication/i.test(detail) || /password/i.test(detail)) {
-            message = `Cannot connect to ${maskConnectionUrl(resolvedDatasourceUrl)}. Authentication failed — check your username and password.`;
+            message = `Cannot connect to ${maskedUrl}. Authentication failed — check your username and password.`;
           } else {
-            message = `Cannot connect to ${maskConnectionUrl(resolvedDatasourceUrl)}. Check the connection string and ensure the database is running.`;
+            message = `Cannot connect to ${maskedUrl}. Check the connection string and ensure the database is running.`;
           }
 
           errors.push({ code: "DB_UNREACHABLE", message });
@@ -313,14 +315,15 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
         const detail = err instanceof Error ? err.message : "";
         log.error({ err: detail }, "Internal DB connection check failed");
 
+        const maskedUrl = maskConnectionUrl(process.env.DATABASE_URL!);
         const matched = matchError(err);
         let message: string;
         if (matched) {
-          message = `Internal database: ${matched.message}`;
+          message = `Cannot connect to internal database at ${maskedUrl}. ${matched.message}`;
         } else if (/authentication/i.test(detail) || /password/i.test(detail)) {
-          message = `Cannot connect to the internal database at ${maskConnectionUrl(process.env.DATABASE_URL!)}. Authentication failed — check your username and password.`;
+          message = `Cannot connect to internal database at ${maskedUrl}. Authentication failed — check your username and password.`;
         } else {
-          message = `Cannot connect to the internal database at ${maskConnectionUrl(process.env.DATABASE_URL!)}. Check the connection string and ensure the database is running.`;
+          message = `Cannot connect to internal database at ${maskedUrl}. Check the connection string and ensure the database is running.`;
         }
 
         errors.push({ code: "INTERNAL_DB_UNREACHABLE", message });

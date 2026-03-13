@@ -383,19 +383,28 @@ chat.post("/", async (c) => {
         }
 
         // --- Pattern-matched errors (non-APICallError exceptions) ---
+        // In the chat route, errors from runAgent are typically provider-related,
+        // so we override matchError's generic messages with provider-appropriate ones.
 
         const matched = matchError(err);
         if (matched) {
-          // In the chat route context, connection/DNS errors are provider-related
-          const code = (matched.code === "internal_error" && /ECONNREFUSED|ENOTFOUND|fetch failed/i.test(message))
+          const isConnectionError = /ECONNREFUSED|ENOTFOUND|fetch failed/i.test(message);
+          const code = (matched.code === "internal_error" && isConnectionError)
             ? "provider_unreachable" as const
+            : matched.code === "provider_unreachable" ? "provider_unreachable" as const
             : matched.code;
           const httpStatus = code === "provider_unreachable" ? 503
             : code === "provider_timeout" ? 504
             : 500;
+          // Use provider-appropriate messages instead of database-oriented matchError defaults
+          const userMessage = code === "provider_unreachable"
+            ? "Could not reach the LLM provider. Check your network connection and provider status."
+            : code === "provider_timeout"
+              ? "The request timed out. The LLM provider took too long to respond. Try again, or if using a local model, ensure it has sufficient resources."
+              : matched.message;
           log.error({ err: errObj, category: code }, "Matched error: %s", code);
           return c.json(
-            { error: code, message: matched.message, requestId },
+            { error: code, message: userMessage, requestId },
             httpStatus as 500,
           );
         }

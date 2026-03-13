@@ -439,8 +439,8 @@ try {
 | `invalid_response` | — | Response could not be parsed |
 | `unknown_error` | — | Unrecognized error |
 
-All error responses include a `requestId` field (8-character prefix of a UUID) for correlating
-client errors with server logs. Quote this value when reporting issues.
+All error responses include a `requestId` field (UUID) for correlating client errors with
+server logs. Quote this value when reporting issues.
 
 ### Handling Specific Error Codes
 

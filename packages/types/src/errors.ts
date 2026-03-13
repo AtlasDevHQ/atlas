@@ -42,7 +42,7 @@ export function isChatErrorCode(value: string): value is ChatErrorCode {
  * - `retryAfterSeconds` — Seconds to wait before retrying (rate_limited only).
  *   Clamped to [0, 300].
  * - `code` — The server error code, if the response was valid JSON with a known code.
- * - `requestId` — Server-assigned request ID for log correlation (8-char prefix of a UUID).
+ * - `requestId` — Server-assigned request ID (UUID) for log correlation.
  */
 export interface ChatErrorInfo {
   title: string;
@@ -118,8 +118,8 @@ export function matchError(
     };
   }
 
-  // SSL / TLS errors
-  if (/SSL|TLS|SELF_SIGNED_CERT|UNABLE_TO_VERIFY_LEAF_SIGNATURE|certificate/i.test(msg)) {
+  // SSL / TLS errors — match specific error contexts, not bare keywords
+  if (/SELF_SIGNED_CERT|UNABLE_TO_VERIFY_LEAF_SIGNATURE|ssl\s+connection|tls\s+handshake|certificate\s+(has expired|verify|error|rejected)/i.test(msg)) {
     return {
       code: "internal_error",
       message: "SSL connection failed — check sslmode in your connection string",
@@ -128,18 +128,26 @@ export function matchError(
 
   // Timeout — query or request exceeded the configured limit
   if (/timeout|timed out|AbortError/i.test(msg)) {
-    const seconds = opts?.timeoutSeconds ?? 30;
+    const seconds = Math.max(1, opts?.timeoutSeconds ?? 30);
     return {
       code: "provider_timeout",
       message: `Query exceeded the ${seconds}-second timeout — try a simpler query or increase ATLAS_QUERY_TIMEOUT`,
     };
   }
 
-  // 502 / 503 — upstream provider unavailable
-  if (/502|Bad Gateway|503|Service Unavailable/i.test(msg)) {
+  // 502 / 503 — upstream provider unavailable (word boundaries prevent matching port numbers etc.)
+  if (/\b502\s+Bad Gateway\b|\b503\s+Service Unavailable\b/i.test(msg)) {
     return {
       code: "provider_unreachable",
       message: "AI provider API unavailable — this is usually temporary, retry in a few seconds",
+    };
+  }
+
+  // fetch failed — Node.js/undici connection failure (no ECONNREFUSED detail)
+  if (/fetch failed/i.test(msg)) {
+    return {
+      code: "provider_unreachable",
+      message: "Network request failed — the remote service may be down or unreachable",
     };
   }
 

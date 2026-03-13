@@ -124,8 +124,9 @@ export function checkConfig(): ValidateResult {
     };
   }
 
-  // We can't dynamically import .ts config at validate-time without a bundler,
-  // so just verify the file exists and is readable.
+  // Static check: verify the file exists, is readable, and has expected structure.
+  // Full Zod validation happens at runtime via loadConfig() → validateAndResolve()
+  // which uses formatZodErrors() for human-readable error messages.
   try {
     const content = fs.readFileSync(configPath, "utf-8");
     if (content.trim().length === 0) {

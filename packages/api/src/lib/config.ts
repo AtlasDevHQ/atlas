@@ -203,7 +203,7 @@ export type AtlasConfig = z.infer<typeof AtlasConfigSchema>;
 /** The input type for user-authored config (optional fields allowed). */
 export type AtlasConfigInput = z.input<typeof AtlasConfigSchema>;
 
-/** Expose schemas for external validation (e.g. tests). */
+/** Expose schemas and formatter for external validation (e.g. tests, CLI). */
 export { AtlasConfigSchema, RateLimitConfigSchema, RLSPolicySchema, RLSConfigSchema };
 
 /**
@@ -475,6 +475,184 @@ function validatePlugins(plugins: unknown[]): void {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Zod error formatting
+// ---------------------------------------------------------------------------
+
+/** Loosely-typed Zod issue — works across Zod v3 and v4. */
+type Issue = z.ZodError["issues"][number];
+
+/**
+ * Human-readable labels for config fields. Used to give context beyond
+ * raw Zod type names (e.g. "connection URL" for datasources.*.url).
+ */
+const FIELD_HINTS: Record<string, string> = {
+  "datasources.*.url": "connection URL",
+  auth: "auth mode",
+  semanticLayer: "path to the semantic layer directory",
+  maxTotalConnections: "max total pool connections",
+};
+
+/** Map of common misspellings/variants to the correct value. */
+const COMMON_SUGGESTIONS: Record<string, Record<string, string>> = {
+  auth: {
+    "apiKey": "api-key",
+    "api_key": "api-key",
+    "apikey": "api-key",
+    "API-KEY": "api-key",
+    "API_KEY": "api-key",
+    "basic": "api-key",
+    "bearer": "byot",
+    "token": "byot",
+    "bring-your-own-token": "byot",
+    "true": "managed",
+    "false": "none",
+    "off": "none",
+    "on": "auto",
+    "default": "auto",
+  },
+};
+
+/**
+ * Look up a human-readable hint for a field path. Supports wildcards:
+ * `datasources.mydb.url` matches `datasources.*.url`.
+ */
+function getFieldHint(fieldPath: string): string | undefined {
+  if (FIELD_HINTS[fieldPath]) return FIELD_HINTS[fieldPath];
+  // Try wildcard: replace middle segments with *
+  const parts = fieldPath.split(".");
+  if (parts.length >= 3) {
+    const wildcard = `${parts[0]}.*.${parts.slice(2).join(".")}`;
+    if (FIELD_HINTS[wildcard]) return FIELD_HINTS[wildcard];
+  }
+  return undefined;
+}
+
+/**
+ * Extract the received value from the issue's message (Zod v4 encodes
+ * it in the message string rather than a dedicated field).
+ */
+function extractReceived(issue: Issue): string | undefined {
+  // Zod v4 invalid_type message: "Invalid input: expected string, received number"
+  const match = issue.message.match(/received (\S+)/);
+  if (match) return match[1];
+  return undefined;
+}
+
+/**
+ * Check if the received value for a field has a common suggestion.
+ */
+function getSuggestion(fieldPath: string, input: unknown): string | undefined {
+  const topField = fieldPath.split(".")[0];
+  const suggestions = COMMON_SUGGESTIONS[topField];
+  if (!suggestions || typeof input !== "string") return undefined;
+  const correct = suggestions[input];
+  if (correct) return `Did you mean "${correct}"?`;
+  return undefined;
+}
+
+/**
+ * Format a single Zod issue into a human-readable line.
+ */
+function formatIssue(issue: Issue, rawInput: unknown): string {
+  const fieldPath = issue.path.length > 0
+    ? issue.path.map(String).join(".")
+    : "(root)";
+  const hint = getFieldHint(fieldPath);
+
+  // Resolve the value that was actually passed for this path
+  let inputAtPath: unknown = rawInput;
+  for (const segment of issue.path) {
+    if (inputAtPath != null && typeof inputAtPath === "object") {
+      inputAtPath = (inputAtPath as Record<string, unknown>)[String(segment)];
+    } else {
+      inputAtPath = undefined;
+      break;
+    }
+  }
+
+  let line: string;
+  // Use unknown-typed accessor to handle Zod v4 issue shapes safely
+  const issueObj = issue as unknown as Record<string, unknown>;
+
+  switch (issue.code) {
+    case "invalid_type": {
+      const expected = String(issueObj.expected ?? "unknown");
+      const received = extractReceived(issue) ?? typeof inputAtPath;
+      const expectedLabel = hint ? `${expected} (${hint})` : expected;
+      line = `Config error at ${fieldPath}: expected ${expectedLabel}, got ${received}`;
+      break;
+    }
+    case "invalid_union": {
+      // Zod v4: `errors` is an array of issue arrays
+      const unionErrors = issueObj.errors as unknown[][] | undefined;
+      const validOptions: string[] = [];
+      if (unionErrors) {
+        for (const errGroup of unionErrors) {
+          const issues = Array.isArray(errGroup) ? errGroup : [];
+          for (const sub of issues) {
+            const subObj = sub as Record<string, unknown>;
+            // Zod v4 uses "invalid_value" with a "values" array
+            if (subObj.code === "invalid_value" && Array.isArray(subObj.values)) {
+              for (const v of subObj.values) {
+                const opt = `"${v}"`;
+                if (!validOptions.includes(opt)) validOptions.push(opt);
+              }
+            }
+            // Zod v3 uses "invalid_literal" with "expected"
+            if (subObj.code === "invalid_literal" && subObj.expected !== undefined) {
+              const opt = `"${subObj.expected}"`;
+              if (!validOptions.includes(opt)) validOptions.push(opt);
+            }
+          }
+        }
+      }
+      if (validOptions.length > 0) {
+        line = `Config error at ${fieldPath}: invalid value. Valid options: ${validOptions.join(", ")}`;
+      } else {
+        line = `Config error at ${fieldPath}: ${issue.message}`;
+      }
+      break;
+    }
+    case "invalid_value": {
+      // Zod v4 uses "invalid_value" for enums and literals
+      const values = issueObj.values as unknown[] | undefined;
+      if (values && values.length > 0) {
+        line = `Config error at ${fieldPath}: invalid value. Valid options: ${values.map((o) => `"${o}"`).join(", ")}`;
+      } else {
+        line = `Config error at ${fieldPath}: ${issue.message}`;
+      }
+      break;
+    }
+    default: {
+      line = `Config error at ${fieldPath}: ${issue.message}`;
+    }
+  }
+
+  // Append suggestion for common mistakes
+  const suggestion = getSuggestion(fieldPath, inputAtPath);
+  if (suggestion) {
+    line += ` — ${suggestion}`;
+  }
+
+  return line;
+}
+
+/**
+ * Format a ZodError into human-readable, multi-line error messages.
+ *
+ * Each line shows the field path, expected type, and received value.
+ * Common mistakes get targeted suggestions (e.g. "did you mean 'api-key'?").
+ * All errors are shown, not just the first one.
+ *
+ * @param error - The ZodError to format.
+ * @param rawInput - The original input that was validated (used to resolve
+ *   actual received values and to generate suggestions).
+ */
+export function formatZodErrors(error: z.ZodError, rawInput?: unknown): string {
+  return error.issues.map((issue) => `  - ${formatIssue(issue, rawInput)}`).join("\n");
+}
+
 /**
  * Validate a raw config object against the Zod schema and return a
  * ResolvedConfig. Throws on validation failure with human-readable errors.
@@ -488,10 +666,7 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
 
   const parseResult = AtlasConfigSchema.safeParse(raw);
   if (!parseResult.success) {
-    const formatted = parseResult.error.issues
-      .map((issue) => `  - ${issue.path.join(".")}: ${issue.message}`)
-      .join("\n");
-    throw new Error(`Invalid atlas.config.ts:\n${formatted}`);
+    throw new Error(`Invalid atlas.config.ts:\n${formatZodErrors(parseResult.error, raw)}`);
   }
 
   const config = parseResult.data;

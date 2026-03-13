@@ -68,9 +68,23 @@ const VALID_STATUSES: ReadonlySet<ActionDisplayStatus> = new Set<ActionDisplaySt
 export function isActionToolResult(result: unknown): result is ActionToolResultShape {
   if (result == null || typeof result !== "object") return false;
   const r = result as Record<string, unknown>;
-  return (
-    typeof r.actionId === "string" &&
-    typeof r.status === "string" &&
-    VALID_STATUSES.has(r.status as ActionDisplayStatus)
-  );
+  if (typeof r.actionId !== "string" || typeof r.status !== "string") return false;
+  if (!VALID_STATUSES.has(r.status as ActionDisplayStatus)) return false;
+
+  switch (r.status) {
+    case "pending_approval":
+      return typeof r.summary === "string";
+    case "approved":
+    case "executed":
+    case "auto_approved":
+      return "result" in r;
+    case "failed":
+      return typeof r.error === "string";
+    case "denied":
+    case "rolled_back":
+    case "timed_out":
+      return true;
+    default:
+      return false;
+  }
 }

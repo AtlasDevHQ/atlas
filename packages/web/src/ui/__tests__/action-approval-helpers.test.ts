@@ -149,10 +149,19 @@ describe("status set consistency", () => {
   });
 
   test("every entry in RESOLVED_STATUSES is a valid ActionDisplayStatus", () => {
+    // Provide variant-specific required fields so the guard accepts each status
+    const fixtures: Record<string, Record<string, unknown>> = {
+      approved: { result: "ok" },
+      executed: { result: "ok" },
+      auto_approved: { result: "ok" },
+      failed: { error: "boom" },
+      denied: {},
+      rolled_back: {},
+      timed_out: {},
+    };
     for (const status of RESOLVED_STATUSES) {
-      // If it is a valid status, isActionToolResult should accept it
       expect(
-        isActionToolResult({ status, actionId: "act_test" }),
+        isActionToolResult({ status, actionId: "act_test", ...fixtures[status] }),
       ).toBe(true);
     }
   });
@@ -237,14 +246,24 @@ describe("isActionToolResult edge cases", () => {
 
   test("object with empty string actionId passes (type guard only checks typeof)", () => {
     expect(
-      isActionToolResult({ status: "approved", actionId: "" }),
+      isActionToolResult({ status: "approved", actionId: "", result: "ok" }),
     ).toBe(true);
   });
 
   test("every ALL_STATUSES value produces a valid action result", () => {
+    const fixtures: Record<string, Record<string, unknown>> = {
+      pending_approval: { summary: "Do the thing" },
+      approved: { result: "ok" },
+      executed: { result: "ok" },
+      auto_approved: { result: "ok" },
+      failed: { error: "boom" },
+      denied: {},
+      rolled_back: {},
+      timed_out: {},
+    };
     for (const status of ALL_STATUSES) {
       expect(
-        isActionToolResult({ status, actionId: `act_${status}` }),
+        isActionToolResult({ status, actionId: `act_${status}`, ...fixtures[status] }),
       ).toBe(true);
     }
   });

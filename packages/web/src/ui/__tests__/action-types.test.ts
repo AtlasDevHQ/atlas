@@ -37,18 +37,18 @@ describe("isActionToolResult", () => {
   });
 
   test("all valid statuses are accepted", () => {
-    const statuses = [
-      "pending_approval",
-      "approved",
-      "executed",
-      "auto_approved",
-      "denied",
-      "failed",
-      "rolled_back",
-      "timed_out",
-    ];
-    for (const status of statuses) {
-      expect(isActionToolResult({ status, actionId: "act_1" })).toBe(true);
+    const fixtures: Record<string, Record<string, unknown>> = {
+      pending_approval: { summary: "Do the thing" },
+      approved: { result: "ok" },
+      executed: { result: "ok" },
+      auto_approved: { result: "ok" },
+      failed: { error: "boom" },
+      denied: {},
+      rolled_back: {},
+      timed_out: {},
+    };
+    for (const [status, extra] of Object.entries(fixtures)) {
+      expect(isActionToolResult({ status, actionId: "act_1", ...extra })).toBe(true);
     }
   });
 

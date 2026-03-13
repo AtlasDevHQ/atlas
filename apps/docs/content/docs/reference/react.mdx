@@ -275,6 +275,20 @@ function App() {
 }
 
 function ChatWithHistory() {
+  // Destructure conversations first — refresh() is used in onConversationIdChange below
+  const {
+    conversations,
+    total,
+    isLoading: listLoading,
+    available,
+    selectedId,
+    setSelectedId,
+    loadConversation,
+    deleteConversation,
+    starConversation,
+    refresh,
+  } = useAtlasConversations();
+
   const {
     messages,
     sendMessage,
@@ -291,19 +305,6 @@ function ChatWithHistory() {
       refresh();
     },
   });
-
-  const {
-    conversations,
-    total,
-    isLoading: listLoading,
-    available,
-    selectedId,
-    setSelectedId,
-    loadConversation,
-    deleteConversation,
-    starConversation,
-    refresh,
-  } = useAtlasConversations();
 
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -453,7 +454,7 @@ function BrandPicker() {
   const { applyBrandColor } = useAtlasTheme();
 
   // applyBrandColor sets the --atlas-brand CSS custom property on :root.
-  // The value must be in oklch format.
+  // Use oklch format for consistency with the built-in theme tokens.
   return (
     <div>
       <button onClick={() => applyBrandColor("oklch(0.6 0.2 260)")}>
@@ -472,7 +473,7 @@ function BrandPicker() {
 
 ### Error Boundaries
 
-Atlas hooks throw when used outside their provider, and network errors can occur during streaming. Wrap Atlas components in an error boundary to catch both cases:
+Atlas hooks throw when used outside their provider. Wrap Atlas components in an error boundary to catch initialization errors gracefully. For runtime errors during streaming, check the `error` state from `useAtlasChat` and render inline feedback:
 
 ```tsx
 import { Component, type ReactNode } from "react";
@@ -566,7 +567,7 @@ import type { UIMessage } from "@ai-sdk/react";
 // Each message contains an array of typed parts (text, tool calls, etc.)
 interface UIMessage {
   id: string;
-  role: "user" | "assistant";
+  role: "system" | "user" | "assistant";
   parts: Array<
     | { type: "text"; text: string }         // Plain text content
     | { type: "tool-invocation"; /* ... */ }  // Tool call (executeSQL, explore, etc.)
@@ -592,7 +593,7 @@ interface Conversation {
   id: string;
   userId: string | null;
   title: string | null;        // Auto-generated from first message, or null
-  surface: Surface;            // "web" | "api" | "mcp" | "slack"
+  surface: "web" | "api" | "mcp" | "slack";
   connectionId: string | null; // Datasource used for this conversation
   starred: boolean;            // Pinned by user
   createdAt: string;           // ISO 8601 timestamp
@@ -604,7 +605,6 @@ interface ConversationWithMessages extends Conversation {
   messages: Message[];
 }
 
-type Surface = "web" | "api" | "mcp" | "slack";
 ```
 
 ### Tool Result Types
@@ -630,7 +630,7 @@ interface ToolRendererProps<T = unknown> {
 
 // SQLToolResult — result from the executeSQL tool
 type SQLToolResult =
-  | { success: true; columns: string[]; rows: Record<string, unknown>[]; truncated?: boolean; row_count?: number }
+  | { success: true; columns: string[]; rows: Record<string, unknown>[]; truncated?: boolean; explanation?: string; row_count?: number }
   | { success: false; error: string };
 
 // ExploreToolResult — result from the explore tool (plain text output)
@@ -638,7 +638,7 @@ type ExploreToolResult = string;
 
 // PythonToolResult — result from the executePython tool
 type PythonToolResult =
-  | { success: true; output?: string; table?: { columns: string[]; rows: unknown[][] }; charts?: { base64: string; mimeType: "image/png" }[] }
+  | { success: true; output?: string; explanation?: string; table?: { columns: string[]; rows: unknown[][] }; charts?: { base64: string; mimeType: "image/png" }[]; rechartsCharts?: { type: "line" | "bar" | "pie"; data: Record<string, unknown>[]; categoryKey: string; valueKeys: string[] }[] }
   | { success: false; error: string; output?: string };
 
 // ToolRenderers — map of tool names to custom renderer components
@@ -656,7 +656,7 @@ type ToolRenderers = {
 
 ```typescript
 // AuthMode — detected from the server's /api/health endpoint
-type AuthMode = "none" | "simple-key" | "byot" | "managed";
+type AuthMode = "none" | "simple-key" | "managed" | "byot";
 
 // AtlasChatStatus — chat state from useAtlasChat()
 type AtlasChatStatus = "ready" | "submitted" | "streaming" | "error";

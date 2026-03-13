@@ -30,7 +30,7 @@ Atlas sits between the AI and the database, providing context before query gener
 | Capability | Raw MCP | Atlas |
 |---|---|---|
 | **Business context** | Column names only | Entity YAML with descriptions, sample values, joins, metrics, glossary |
-| **SQL validation** | None | [7-layer pipeline](/security/sql-validation) (regex guard, AST parse, table whitelist, RLS, auto-LIMIT, timeout) |
+| **SQL validation** | None | [7-layer pipeline](/security/sql-validation) (empty check, regex guard, AST parse, table whitelist, RLS, auto-LIMIT, timeout) |
 | **Table access control** | Full schema visible | Only tables defined in the semantic layer |
 | **Row-level security** | None | Automatic WHERE clause injection based on user identity |
 | **Mutation protection** | Depends on DB user permissions | SELECT-only enforcement at the application layer, independent of DB permissions |
@@ -82,8 +82,9 @@ dimensions:
     type: boolean
     description: Soft-delete flag — exclude from all queries
 measures:
-  net_revenue:
-    sql: "SUM(total - discount - refund_amount)"
+  - name: net_revenue
+    sql: "total - discount - refund_amount"
+    type: sum
     description: Net revenue after discounts and refunds
 ```
 
@@ -92,7 +93,7 @@ The agent generates:
 ```sql
 -- Uses the documented measure definition for net revenue.
 -- Filters out soft-deleted rows as the entity description instructs.
--- Atlas adds LIMIT 1000 and a 30-second timeout automatically.
+-- Atlas appends LIMIT 1000 to the query and sets a 30-second statement timeout on the connection.
 SELECT
   DATE_TRUNC('month', created_at) AS month,
   product_name,
@@ -105,12 +106,13 @@ ORDER BY 1 DESC
 
 Before this query reaches the database, Atlas validates it through the [SQL validation pipeline](/security/sql-validation):
 
+0. **Empty check** — rejects empty or whitespace-only input
 1. **Regex guard** — confirms no DML/DDL keywords
 2. **AST parse** — confirms single SELECT statement
 3. **Table whitelist** — `orders` is in the semantic layer, allowed
-4. **RLS injection** — if enabled, adds `AND tenant_id = 'acme-corp'`
+4. **RLS injection** — if configured, injects a WHERE clause like `AND tenant_id = 'acme-corp'` based on the user's JWT claims
 5. **Auto LIMIT** — appends `LIMIT 1000`
-6. **Statement timeout** — sets 30-second deadline
+6. **Statement timeout** — sets 30-second deadline on the database connection
 
 ## Security implications
 
@@ -148,7 +150,7 @@ The core difference isn't just validation — it's **context**. Raw MCP gives th
 
 A schema tells the AI that a column named `total` exists and is numeric. The semantic layer tells it that `total` is the order total in USD before discounts, that net revenue is calculated as `SUM(total - discount - refund_amount)`, and that rows with `is_deleted = true` should always be excluded.
 
-This matters because the quality of AI-generated SQL is bounded by the quality of the context the AI receives. Gartner predicts that [by 2027, 40% of agentic AI projects in analytics will fail due to inadequate data governance](https://www.gartner.com/en/newsroom/press-releases/2025-03-03-gartner-predicts-40-percent-of-agentic-ai-projects-will-fail) — not because the AI can't write SQL, but because it doesn't have enough context to write the *right* SQL.
+This matters because the quality of AI-generated SQL is bounded by the quality of the context the AI receives. Without business context, an AI agent can write syntactically correct SQL that returns confidently wrong answers — and nobody catches it until a decision has already been made on bad data.
 
 A semantic layer is that governance. It's the difference between an AI that can query your database and one that understands your business.
 

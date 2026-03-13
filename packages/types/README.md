@@ -29,7 +29,7 @@ import { parseChatError, authErrorMessage } from "@useatlas/types/errors";
 | `@useatlas/types/auth` | `AuthMode`, `AtlasRole`, `AtlasUser` |
 | `@useatlas/types/conversation` | `Conversation`, `Message`, `ConversationWithMessages` |
 | `@useatlas/types/connection` | `DBType`, `ConnectionHealth`, `ConnectionInfo`, `ConnectionDetail` |
-| `@useatlas/types/action` | `ActionApprovalMode`, `ActionStatus`, `ActionToolResultShape` |
+| `@useatlas/types/action` | `ActionApprovalMode`, `ActionDisplayStatus`, `ActionToolResultShape` |
 | `@useatlas/types/scheduled-task` | `ScheduledTask`, `Recipient`, `ScheduledTaskRun` |
 | `@useatlas/types/errors` | `ChatErrorCode`, `ChatErrorInfo`, `parseChatError`, `authErrorMessage` |
 | `@useatlas/types/semantic` | `Dimension`, `SemanticEntitySummary`, `SemanticEntityDetail` |

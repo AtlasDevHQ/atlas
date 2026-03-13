@@ -5,8 +5,8 @@ import { getToolArgs, getToolResult, isToolComplete } from "../../lib/helpers";
 import {
   isActionToolResult,
   RESOLVED_STATUSES,
-  type ActionStatus,
-  type ResolvedStatus,
+  type ActionDisplayStatus,
+  type ResolvedDisplayStatus,
   type ActionApprovalResponse,
   type ActionToolResultShape,
 } from "../../lib/action-types";
@@ -34,14 +34,14 @@ function safeStringify(value: unknown): string {
 type CardState =
   | { phase: "idle" }
   | { phase: "submitting"; action: "approve" | "deny" }
-  | { phase: "resolved"; status: ResolvedStatus; result?: unknown }
+  | { phase: "resolved"; status: ResolvedDisplayStatus; result?: unknown }
   | { phase: "error"; message: string };
 
 /* ------------------------------------------------------------------ */
 /*  Border color by status                                             */
 /* ------------------------------------------------------------------ */
 
-function borderColor(status: ActionStatus): string {
+function borderColor(status: ActionDisplayStatus): string {
   switch (status) {
     case "pending_approval":
       return "border-yellow-300 dark:border-yellow-900/50";
@@ -52,7 +52,8 @@ function borderColor(status: ActionStatus): string {
     case "denied":
     case "failed":
       return "border-red-300 dark:border-red-900/50";
-    default:
+    case "rolled_back":
+    case "timed_out":
       return "border-zinc-200 dark:border-zinc-700";
   }
 }
@@ -86,12 +87,16 @@ export function ActionApprovalCard({ part }: { part: unknown }) {
   const toolResult: ActionToolResultShape = rawResult;
 
   // Effective status: local optimistic update wins over server result
-  const effectiveStatus: ActionStatus =
+  const effectiveStatus: ActionDisplayStatus =
     cardState.phase === "resolved" ? cardState.status : toolResult.status;
 
   const isPending = effectiveStatus === "pending_approval" && cardState.phase !== "submitting";
   const isSubmitting = cardState.phase === "submitting";
-  const resolvedResult = cardState.phase === "resolved" ? cardState.result : toolResult.result;
+  const resolvedResult = cardState.phase === "resolved"
+    ? cardState.result
+    : toolResult.status === "approved" || toolResult.status === "executed" || toolResult.status === "auto_approved"
+      ? toolResult.result
+      : undefined;
 
   /* ---------------------------------------------------------------- */
   /*  API helpers                                                      */
@@ -126,8 +131,10 @@ export function ActionApprovalCard({ part }: { part: unknown }) {
       } catch {
         throw new Error("Action was already resolved, but the response could not be read. Refresh the page.");
       }
-      const status = typeof data.status === "string" ? data.status as ResolvedStatus : "failed" as ResolvedStatus;
-      const label = status.replace(/_/g, " ");
+      if (typeof data.status !== "string" || !RESOLVED_STATUSES.has(data.status as ActionDisplayStatus)) {
+        throw new Error("Action was already resolved with an unrecognized status. Refresh the page.");
+      }
+      const label = data.status.replace(/_/g, " ");
       throw new Error(`This action was already ${label} by another user or policy.`);
     }
 
@@ -142,10 +149,10 @@ export function ActionApprovalCard({ part }: { part: unknown }) {
     } catch {
       throw new Error("Action succeeded, but the response could not be read. Refresh the page.");
     }
-    if (typeof data.status !== "string") {
-      throw new Error("Action succeeded, but the server returned an invalid status. Refresh the page.");
+    if (typeof data.status !== "string" || !RESOLVED_STATUSES.has(data.status as ActionDisplayStatus)) {
+      throw new Error("Action succeeded, but the server returned an unrecognized status. Refresh the page.");
     }
-    setCardState({ phase: "resolved", status: data.status as ResolvedStatus, result: data.result });
+    setCardState({ phase: "resolved", status: data.status as ResolvedDisplayStatus, result: data.result });
   }
 
   async function handleApprove() {
@@ -214,13 +221,13 @@ export function ActionApprovalCard({ part }: { part: unknown }) {
                 : safeStringify(resolvedResult)}
             </div>
           )}
-          {toolResult.error && (
+          {toolResult.status === "failed" && (
             <div className="mb-2 rounded bg-red-50 p-2 text-xs text-red-700 dark:bg-red-900/20 dark:text-red-400">
               <span className="font-medium">Error: </span>
               {toolResult.error}
             </div>
           )}
-          {toolResult.reason && RESOLVED_STATUSES.has(effectiveStatus) && (
+          {toolResult.status === "denied" && RESOLVED_STATUSES.has(effectiveStatus) && (
             <div className="mb-2 text-xs text-zinc-500 dark:text-zinc-400">
               <span className="font-medium">Reason: </span>
               {toolResult.reason}

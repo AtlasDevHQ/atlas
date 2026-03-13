@@ -68,7 +68,8 @@ const VALID_STATUSES: ReadonlySet<ActionDisplayStatus> = new Set<ActionDisplaySt
 export function isActionToolResult(result: unknown): result is ActionToolResultShape {
   if (result == null || typeof result !== "object") return false;
   const r = result as Record<string, unknown>;
-  if (typeof r.actionId !== "string" || typeof r.status !== "string") return false;
+  if (typeof r.actionId !== "string" || r.actionId.length === 0) return false;
+  if (typeof r.status !== "string") return false;
   if (!VALID_STATUSES.has(r.status as ActionDisplayStatus)) return false;
 
   switch (r.status) {
@@ -85,6 +86,8 @@ export function isActionToolResult(result: unknown): result is ActionToolResultS
     case "timed_out":
       return true;
     default:
+      // Unreachable: VALID_STATUSES.has() above guarantees status is in ActionDisplayStatus.
+      // If you add a new status, add a case here too.
       return false;
   }
 }

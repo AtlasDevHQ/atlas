@@ -98,6 +98,10 @@ describe("isActionToolResult", () => {
     expect(isActionToolResult({ status: "denied", actionId: 123 })).toBe(false);
   });
 
+  test("empty string actionId", () => {
+    expect(isActionToolResult({ status: "denied", actionId: "" })).toBe(false);
+  });
+
   test("invalid status", () => {
     expect(isActionToolResult({ status: "unknown", actionId: "a1" })).toBe(false);
   });

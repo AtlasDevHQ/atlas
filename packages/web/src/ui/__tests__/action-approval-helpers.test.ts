@@ -244,10 +244,10 @@ describe("isActionToolResult edge cases", () => {
     expect(isActionToolResult([{ status: "approved", actionId: "act_1" }])).toBe(false);
   });
 
-  test("object with empty string actionId passes (type guard only checks typeof)", () => {
+  test("object with empty string actionId is rejected", () => {
     expect(
       isActionToolResult({ status: "approved", actionId: "", result: "ok" }),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   test("every ALL_STATUSES value produces a valid action result", () => {

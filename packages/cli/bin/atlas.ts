@@ -4752,11 +4752,254 @@ async function handleMigrate(args: string[]): Promise<void> {
   }
 }
 
+// --- Help system ---
+
+interface SubcommandHelp {
+  description: string;
+  usage: string;
+  flags?: Array<{ flag: string; description: string }>;
+  subcommands?: Array<{ name: string; description: string }>;
+  examples?: string[];
+}
+
+function printSubcommandHelp(help: SubcommandHelp): void {
+  console.log(`${help.description}\n`);
+  console.log(`Usage: atlas ${help.usage}\n`);
+  if (help.subcommands?.length) {
+    console.log("Subcommands:");
+    const maxLen = Math.max(...help.subcommands.map((s) => s.name.length));
+    for (const s of help.subcommands) {
+      console.log(`  ${s.name.padEnd(maxLen + 2)}${s.description}`);
+    }
+    console.log();
+  }
+  if (help.flags?.length) {
+    console.log("Options:");
+    const maxLen = Math.max(...help.flags.map((f) => f.flag.length));
+    for (const f of help.flags) {
+      console.log(`  ${f.flag.padEnd(maxLen + 2)}${f.description}`);
+    }
+    console.log();
+  }
+  if (help.examples?.length) {
+    console.log("Examples:");
+    for (const ex of help.examples) {
+      console.log(`  ${ex}`);
+    }
+    console.log();
+  }
+}
+
+const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
+  init: {
+    description: "Profile a database and generate semantic layer YAML files.",
+    usage: "init [options]",
+    flags: [
+      { flag: "--tables <t1,t2>", description: "Profile only specific tables/views (comma-separated)" },
+      { flag: "--schema <name>", description: "PostgreSQL schema name (default: public)" },
+      { flag: "--source <name>", description: "Write to semantic/{name}/ subdirectory (mutually exclusive with --connection)" },
+      { flag: "--connection <name>", description: "Profile a named datasource from atlas.config.ts (mutually exclusive with --source)" },
+      { flag: "--csv <file1.csv,...>", description: "Load CSV files via DuckDB (no DB server needed, requires @duckdb/node-api)" },
+      { flag: "--parquet <f1.parquet,...>", description: "Load Parquet files via DuckDB (requires @duckdb/node-api)" },
+      { flag: "--enrich", description: "Add LLM-enriched descriptions and query patterns (requires API key)" },
+      { flag: "--no-enrich", description: "Explicitly skip LLM enrichment" },
+      { flag: "--force", description: "Continue even if more than 20% of tables fail to profile" },
+      { flag: "--demo [simple|cybersec|ecommerce]", description: "Load a demo dataset then profile (default: simple)" },
+    ],
+    examples: [
+      "atlas init",
+      "atlas init --tables users,orders,products",
+      "atlas init --enrich",
+      "atlas init --demo cybersec",
+      "atlas init --csv sales.csv,products.csv",
+    ],
+  },
+  diff: {
+    description: "Compare the database schema against the existing semantic layer. Exits with code 1 if drift is detected.",
+    usage: "diff [options]",
+    flags: [
+      { flag: "--tables <t1,t2>", description: "Diff only specific tables/views" },
+      { flag: "--schema <name>", description: "PostgreSQL schema (falls back to ATLAS_SCHEMA, then public)" },
+      { flag: "--source <name>", description: "Read from semantic/{name}/ subdirectory" },
+    ],
+    examples: [
+      "atlas diff",
+      "atlas diff --tables users,orders",
+      'atlas diff || echo "Schema drift detected!"',
+    ],
+  },
+  query: {
+    description: "Ask a natural language question and get an answer. Requires a running Atlas API server.",
+    usage: 'query "your question" [options]',
+    flags: [
+      { flag: "--json", description: "Raw JSON output (pipe-friendly)" },
+      { flag: "--csv", description: "CSV output (headers + rows, no narrative)" },
+      { flag: "--quiet", description: "Data only — no narrative, SQL, or stats" },
+      { flag: "--auto-approve", description: "Auto-approve any pending actions" },
+      { flag: "--connection <id>", description: "Query a specific datasource" },
+    ],
+    examples: [
+      'atlas query "How many users signed up last month?"',
+      'atlas query "top 10 customers by revenue" --json',
+      'atlas query "monthly revenue by product" --csv > report.csv',
+    ],
+  },
+  doctor: {
+    description: "Validate the environment, connectivity, and configuration.",
+    usage: "doctor",
+    examples: [
+      "atlas doctor",
+    ],
+  },
+  validate: {
+    description: "Check semantic layer YAML files for errors. Runs offline — no database or API key required.",
+    usage: "validate",
+    examples: [
+      "atlas validate",
+    ],
+  },
+  mcp: {
+    description: "Start an MCP (Model Context Protocol) server for Claude Desktop, Cursor, and other MCP clients.",
+    usage: "mcp [options]",
+    flags: [
+      { flag: "--transport <stdio|sse>", description: "Transport type (default: stdio)" },
+      { flag: "--port <n>", description: "Port for SSE transport (default: 8080)" },
+    ],
+    examples: [
+      "atlas mcp",
+      "atlas mcp --transport sse --port 9090",
+    ],
+  },
+  migrate: {
+    description: "Generate or apply plugin schema migrations.",
+    usage: "migrate [options]",
+    flags: [
+      { flag: "--apply", description: "Execute migrations against internal database (default: dry-run)" },
+    ],
+    examples: [
+      "atlas migrate",
+      "atlas migrate --apply",
+    ],
+  },
+  plugin: {
+    description: "Manage Atlas plugins.",
+    usage: "plugin <list|create|add>",
+    subcommands: [
+      { name: "list", description: "List installed plugins from atlas.config.ts" },
+      { name: "create <name> --type <type>", description: "Scaffold a new plugin (datasource|context|interaction|action|sandbox)" },
+      { name: "add <package-name>", description: "Install a plugin package" },
+    ],
+    examples: [
+      "atlas plugin list",
+      "atlas plugin create my-plugin --type datasource",
+      "atlas plugin add @useatlas/plugin-bigquery",
+    ],
+  },
+  eval: {
+    description: "Run the evaluation pipeline against demo schemas to measure text-to-SQL accuracy.",
+    usage: "eval [options]",
+    flags: [
+      { flag: "--schema <name>", description: "Filter by demo dataset (not a PostgreSQL schema; e.g. simple, cybersec, ecommerce)" },
+      { flag: "--category <name>", description: "Filter by category" },
+      { flag: "--difficulty <level>", description: "Filter by difficulty (simple|medium|complex)" },
+      { flag: "--id <case-id>", description: "Run a single case" },
+      { flag: "--limit <n>", description: "Max cases to evaluate" },
+      { flag: "--resume <file>", description: "Resume from existing JSONL results file" },
+      { flag: "--baseline", description: "Save results as new baseline" },
+      { flag: "--compare <file.jsonl>", description: "Diff against baseline (exit 1 on regression)" },
+      { flag: "--csv", description: "CSV output" },
+      { flag: "--json", description: "JSON summary output" },
+    ],
+    examples: [
+      "atlas eval",
+      "atlas eval --schema cybersec --difficulty complex",
+      "atlas eval --baseline",
+    ],
+  },
+  smoke: {
+    description: "Run end-to-end smoke tests against a running Atlas deployment.",
+    usage: "smoke [options]",
+    flags: [
+      { flag: "--target <url>", description: "API base URL (default: http://localhost:3001)" },
+      { flag: "--api-key <key>", description: "Bearer auth token" },
+      { flag: "--timeout <ms>", description: "Per-check timeout (default: 30000)" },
+      { flag: "--verbose", description: "Show full response bodies on failure" },
+      { flag: "--json", description: "Machine-readable JSON output" },
+    ],
+    examples: [
+      "atlas smoke",
+      "atlas smoke --target https://api.example.com --api-key sk-...",
+    ],
+  },
+  benchmark: {
+    description: "Run the BIRD benchmark for text-to-SQL accuracy evaluation.",
+    usage: "benchmark [options]",
+    flags: [
+      { flag: "--bird-path <path>", description: "Path to the downloaded BIRD dev directory (required)" },
+      { flag: "--limit <n>", description: "Max questions to evaluate" },
+      { flag: "--db <name>", description: "Filter to a single database" },
+      { flag: "--csv", description: "CSV output" },
+      { flag: "--resume <file>", description: "Resume from existing JSONL results file" },
+    ],
+    examples: [
+      "atlas benchmark --bird-path ./bird-dev",
+      "atlas benchmark --bird-path ./bird-dev --db california_schools --limit 50",
+    ],
+  },
+  completions: {
+    description: "Output a shell completion script.",
+    usage: "completions <bash|zsh|fish>",
+    examples: [
+      'eval "$(atlas completions bash)"',
+      'eval "$(atlas completions zsh)"',
+      "atlas completions fish > ~/.config/fish/completions/atlas.fish",
+    ],
+  },
+};
+
+function printOverviewHelp(): void {
+  console.log(
+    "Atlas CLI — profile databases, generate semantic layers, and query your data.\n\n" +
+    "Usage: atlas <command> [options]\n\n" +
+    "Commands:\n" +
+    "  init          Profile DB and generate semantic layer\n" +
+    "  diff          Compare DB schema against existing semantic layer\n" +
+    "  query         Ask a question via the Atlas API\n" +
+    "  doctor        Validate environment, connectivity, and configuration\n" +
+    "  validate      Check config and semantic layer YAML files (offline)\n" +
+    "  eval          Run eval pipeline against demo schemas\n" +
+    "  smoke         Run E2E smoke tests against a running Atlas deployment\n" +
+    "  migrate       Generate/apply plugin schema migrations\n" +
+    "  plugin        Manage plugins (list, create, add)\n" +
+    "  benchmark     Run BIRD benchmark for text-to-SQL accuracy\n" +
+    "  mcp           Start MCP server (stdio or SSE transport)\n" +
+    "  completions   Output shell completion script (bash, zsh, fish)\n\n" +
+    "Run atlas <command> --help for detailed usage of any command."
+  );
+}
+
+/** Check if args contain --help or -h for a subcommand. */
+function wantsHelp(args: string[]): boolean {
+  return args.includes("--help") || args.includes("-h");
+}
+
 // --- Main ---
 
 async function main() {
   const args = process.argv.slice(2);
   const command = args[0];
+
+  // Top-level help: atlas --help, atlas -h, or no command
+  if (!command || command === "--help" || command === "-h") {
+    printOverviewHelp();
+    process.exit(0);
+  }
+
+  // Per-subcommand --help
+  if (wantsHelp(args) && command in SUBCOMMAND_HELP) {
+    printSubcommandHelp(SUBCOMMAND_HELP[command]);
+    process.exit(0);
+  }
 
   await checkEnvFile(command);
 
@@ -4870,57 +5113,8 @@ async function main() {
   }
 
   if (command !== "init") {
-    console.log(
-      "Usage: bun run atlas -- <init|diff|query|doctor|validate|eval|smoke|migrate|plugin|benchmark|mcp|completions> [options]\n\n" +
-      "Commands:\n" +
-      "  init          Profile DB and generate semantic layer\n" +
-      "  diff          Compare DB schema against existing semantic layer\n" +
-      "  query         Ask a question via the Atlas API\n" +
-      "  doctor        Validate environment, connectivity, and configuration\n" +
-      "  validate      Check config and semantic layer YAML files (offline)\n" +
-      "  eval          Run eval pipeline against demo schemas\n" +
-      "  smoke         Run E2E smoke tests against a running Atlas deployment\n" +
-      "  migrate       Generate/apply plugin schema migrations\n" +
-      "  plugin        Manage plugins (list, create, add)\n" +
-      "  benchmark     Run BIRD benchmark for text-to-SQL accuracy\n" +
-      "  mcp           Start MCP server (stdio default, --transport sse --port N for SSE)\n" +
-      "  completions   Output shell completion script (bash, zsh, fish)\n\n" +
-      "Options (init):\n" +
-      "  --tables t1,t2         Only specific tables/views\n" +
-      "  --schema <name>        PostgreSQL schema (default: public)\n" +
-      "  --source <name>        Write to semantic/{name}/ subdirectory (per-source layout)\n" +
-      "  --connection <name>    Profile a datasource from atlas.config.ts\n" +
-      "  --csv file1.csv[,...]  Load CSV files via DuckDB (no DB server needed)\n" +
-      "  --parquet f1.parquet[,...] Load Parquet files via DuckDB\n" +
-      "  --enrich               Profile + LLM enrichment (needs API key)\n" +
-      "  --no-enrich            Explicitly skip LLM enrichment\n" +
-      "  --force                Continue even if >20% of tables fail to profile\n" +
-      "  --demo [simple|cybersec|ecommerce]  Load demo dataset then profile\n\n" +
-      "Options (diff):\n" +
-      "  --tables t1,t2         Only diff specific tables/views\n" +
-      "  --schema <name>        PostgreSQL schema (default: public)\n" +
-      "  --source <name>        Read from semantic/{name}/ subdirectory\n\n" +
-      "Options (query):\n" +
-      '  atlas query "question"     Ask a question (requires running API server)\n' +
-      "  --json                     Raw JSON output (pipe-friendly)\n" +
-      "  --csv                      CSV output (headers + rows, no narrative)\n" +
-      "  --quiet                    Data only — no narrative, SQL, or stats\n" +
-      "  --auto-approve             Auto-approve any pending actions\n" +
-      "  --connection <id>          Query a specific datasource\n\n" +
-      "Options (migrate):\n" +
-      "  atlas migrate              Dry run — show SQL that would be executed\n" +
-      "  --apply                    Execute migrations against internal DB\n\n" +
-      "Options (smoke):\n" +
-      "  --target <url>             API base URL (default: http://localhost:3001)\n" +
-      "  --api-key <key>            Bearer auth token\n" +
-      "  --timeout <ms>             Per-check timeout (default: 30000)\n" +
-      "  --verbose                  Show full response bodies on failure\n" +
-      "  --json                     Machine-readable JSON output\n\n" +
-      "Options (plugin):\n" +
-      "  atlas plugin list                          List installed plugins\n" +
-      "  atlas plugin create <name> --type <type>   Scaffold a new plugin\n" +
-      "  atlas plugin add <package-name>            Install a plugin package"
-    );
+    console.error(`Unknown command: ${command}\n`);
+    printOverviewHelp();
     process.exit(1);
   }
 

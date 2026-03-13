@@ -52,8 +52,9 @@ const atlas = createAtlasClient({
 type AtlasClientOptions = {
   baseUrl: string; // Atlas API base URL
 } & (
-  | { apiKey: string }          // Simple API key
-  | { bearerToken: string }     // Bearer token (managed/BYOT)
+  | { apiKey: string; bearerToken?: undefined }    // Simple API key
+  | { bearerToken: string; apiKey?: undefined }    // Bearer token (managed/BYOT)
+  | { apiKey: string; bearerToken: string }        // Both — apiKey takes precedence
 );
 ```
 
@@ -265,6 +266,8 @@ console.log(page1.total);         // Total number of conversations
 To iterate through all conversations:
 
 ```typescript
+import type { Conversation } from "@useatlas/sdk";
+
 // Collect all conversations by advancing the offset each page
 const all: Conversation[] = [];
 const pageSize = 50;
@@ -440,7 +443,7 @@ try {
 Different error codes require different recovery strategies:
 
 ```typescript
-import { AtlasError } from "@useatlas/sdk";
+import { AtlasError, type AtlasClient } from "@useatlas/sdk";
 
 // Helper: sleep for a given number of milliseconds
 function sleep(ms: number): Promise<void> {
@@ -513,6 +516,8 @@ console.log(topProducts.sql);
 For large batches, limit concurrency to avoid rate limits:
 
 ```typescript
+import type { QueryResponse } from "@useatlas/sdk";
+
 // Process questions in chunks to stay within rate limits
 const questions = [
   "Revenue by region",

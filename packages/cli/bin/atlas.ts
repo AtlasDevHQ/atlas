@@ -120,14 +120,48 @@ export interface TableProfile {
   partition_info?: { strategy: "range" | "list" | "hash"; key: string; children: string[] };
 }
 
+/** A table/view/object that failed to profile. */
 export interface ProfileError {
+  /** Name of the table, view, or object that failed to profile. */
   table: string;
   error: string;
 }
 
+/** Outcome of profiling a datasource: successful profiles + per-table errors. Each table appears in exactly one array. */
 export interface ProfilingResult {
   profiles: TableProfile[];
   errors: ProfileError[];
+}
+
+const FAILURE_THRESHOLD = 0.2;
+
+/**
+ * Check whether profiling errors exceed the failure threshold.
+ * Returns `{ shouldAbort, failureRate }`. Always `false` when force is set or there are no errors.
+ */
+export function checkFailureThreshold(
+  result: ProfilingResult,
+  force: boolean
+): { shouldAbort: boolean; failureRate: number } {
+  if (result.errors.length === 0) return { shouldAbort: false, failureRate: 0 };
+  const total = result.profiles.length + result.errors.length;
+  const failureRate = result.errors.length / total;
+  return { shouldAbort: failureRate > FAILURE_THRESHOLD && !force, failureRate };
+}
+
+/** Log a warning summary for profiling errors (first 5 + overflow). */
+export function logProfilingErrors(errors: ProfileError[], total: number): void {
+  const pct = Math.round((errors.length / total) * 100);
+  console.warn(
+    `\nWarning: ${errors.length}/${total} tables (${pct}%) failed to profile:`
+  );
+  const preview = errors.slice(0, 5);
+  for (const e of preview) {
+    console.warn(`  - ${e.table}: ${e.error}`);
+  }
+  if (errors.length > 5) {
+    console.warn(`  ... and ${errors.length - 5} more`);
+  }
 }
 
 /** Check whether a profile represents a database view. */
@@ -588,13 +622,6 @@ export async function profilePostgres(
 
   await pool.end();
 
-  if (errors.length > 0 && !progress) {
-    console.log(`\nWarning: ${errors.length} table(s)/view(s) failed to profile:`);
-    for (const e of errors) {
-      console.log(`  - ${e.table}: ${e.error}`);
-    }
-  }
-
   return { profiles, errors };
 }
 
@@ -816,13 +843,6 @@ export async function profileMySQL(
     await pool.end().catch((err: unknown) => {
       console.warn(`[atlas] MySQL pool cleanup warning: ${err instanceof Error ? err.message : String(err)}`);
     });
-  }
-
-  if (errors.length > 0 && !progress) {
-    console.log(`\nWarning: ${errors.length} table(s)/view(s) failed to profile:`);
-    for (const e of errors) {
-      console.log(`  - ${e.table}: ${e.error}`);
-    }
   }
 
   return { profiles, errors };
@@ -1068,13 +1088,6 @@ export async function profileClickHouse(
     await client.close().catch((err: unknown) => {
       console.warn(`[atlas] ClickHouse client cleanup warning: ${err instanceof Error ? err.message : String(err)}`);
     });
-  }
-
-  if (errors.length > 0 && !progress) {
-    console.log(`\nWarning: ${errors.length} table(s)/view(s) failed to profile:`);
-    for (const e of errors) {
-      console.log(`  - ${e.table}: ${e.error}`);
-    }
   }
 
   return { profiles, errors };
@@ -1417,13 +1430,6 @@ export async function profileSnowflake(
     }
   }
 
-  if (errors.length > 0 && !progress) {
-    console.log(`\nWarning: ${errors.length} table(s)/view(s) failed to profile:`);
-    for (const e of errors) {
-      console.log(`  - ${e.table}: ${e.error}`);
-    }
-  }
-
   return { profiles, errors };
 }
 
@@ -1607,13 +1613,6 @@ export async function profileSalesforce(
     }
   } finally {
     await source.close();
-  }
-
-  if (errors.length > 0 && !progress) {
-    console.log(`\nWarning: ${errors.length} object(s) failed to profile:`);
-    for (const e of errors) {
-      console.log(`  - ${e.table}: ${e.error}`);
-    }
   }
 
   return { profiles, errors };
@@ -4100,6 +4099,11 @@ async function handleDiff(args: string[]): Promise<void> {
       }
     }
     profiles = result.profiles;
+    if (result.errors.length > 0) {
+      const total = result.profiles.length + result.errors.length;
+      logProfilingErrors(result.errors, total);
+      console.warn(`Continuing diff with ${profiles.length} successfully profiled tables.\n`);
+    }
   } catch (err) {
     console.error(`\nError: Failed to profile database.`);
     console.error(err instanceof Error ? err.message : String(err));
@@ -4441,26 +4445,22 @@ async function profileDatasource(opts: ProfileDatasourceOpts): Promise<void> {
     throw new Error("No tables or views were successfully profiled. Check the warnings above and verify your database permissions.");
   }
 
-  // Failure threshold: if >20% of tables failed, exit unless --force
+  // Always warn about profiling errors
   if (profilingErrors.length > 0) {
     const totalAttempted = profiles.length + profilingErrors.length;
-    const failureRate = profilingErrors.length / totalAttempted;
-    if (failureRate > 0.2 && !force) {
-      const pct = Math.round(failureRate * 100);
-      console.error(
-        `\nError: Profiling failed for ${profilingErrors.length}/${totalAttempted} tables (${pct}%) — ` +
-        `this usually indicates a connection or permission issue.\n`
+    logProfilingErrors(profilingErrors, totalAttempted);
+
+    const { shouldAbort } = checkFailureThreshold(result, force);
+    if (shouldAbort) {
+      console.error(`\nThis usually indicates a connection or permission issue.`);
+      console.error(`Run \`atlas doctor\` to diagnose. Use \`--force\` to continue anyway.`);
+      throw new Error(
+        `Profiling failed for ${profilingErrors.length}/${totalAttempted} tables ` +
+        `(${Math.round((profilingErrors.length / totalAttempted) * 100)}%). ` +
+        `Use --force to continue anyway.`
       );
-      const preview = profilingErrors.slice(0, 5);
-      for (const e of preview) {
-        console.error(`  - ${e.table}: ${e.error}`);
-      }
-      if (profilingErrors.length > 5) {
-        console.error(`  ... and ${profilingErrors.length - 5} more`);
-      }
-      console.error(`\nRun \`atlas doctor\` to diagnose. Use \`--force\` to continue anyway.`);
-      process.exit(1);
     }
+    console.warn(`Continuing with ${profiles.length} successfully profiled tables.\n`);
   }
 
   // Run profiler heuristics
@@ -4940,13 +4940,25 @@ async function main() {
     const duckFilterTables = filterTables ?? tableNames;
     const duckProgress = createProgressTracker();
     const duckStart = Date.now();
-    const { profiles } = await profileDuckDB(dbPath, duckFilterTables, undefined, duckProgress);
+    const duckResult = await profileDuckDB(dbPath, duckFilterTables, undefined, duckProgress);
+    const { profiles } = duckResult;
     duckProgress.onComplete(profiles.length, Date.now() - duckStart);
-
 
     if (profiles.length === 0) {
       console.error("\nError: No tables were successfully profiled.");
       process.exit(1);
+    }
+
+    // Warn about any profiling errors
+    if (duckResult.errors.length > 0) {
+      const total = profiles.length + duckResult.errors.length;
+      logProfilingErrors(duckResult.errors, total);
+      const { shouldAbort } = checkFailureThreshold(duckResult, forceInit);
+      if (shouldAbort) {
+        console.error(`\nUse \`--force\` to continue anyway.`);
+        process.exit(1);
+      }
+      console.warn(`Continuing with ${profiles.length} successfully profiled tables.\n`);
     }
 
     // Run profiler heuristics

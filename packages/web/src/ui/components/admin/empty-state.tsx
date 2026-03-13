@@ -4,6 +4,13 @@ import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 
+type EmptyStateProps = {
+  icon: LucideIcon;
+  description?: string;
+  action?: { label: string; onClick: () => void };
+  children?: ReactNode;
+} & ({ title: string; message?: string } | { title?: never; /** @deprecated Use `title` instead */ message: string });
+
 export function EmptyState({
   icon: Icon,
   title,
@@ -11,15 +18,7 @@ export function EmptyState({
   message,
   action,
   children,
-}: {
-  icon: LucideIcon;
-  title?: string;
-  description?: string;
-  /** @deprecated Use `title` instead */
-  message?: string;
-  action?: { label: string; onClick: () => void };
-  children?: ReactNode;
-}) {
+}: EmptyStateProps) {
   const heading = title ?? message;
   return (
     <div className="flex h-64 items-center justify-center text-muted-foreground">

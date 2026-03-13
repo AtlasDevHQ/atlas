@@ -2741,7 +2741,7 @@ export async function profileDuckDB(
         if (progress) {
           progress.onTableError(tableName, msg, i, objectsToProfile.length);
         } else {
-          console.warn(`  Warning: Failed to profile ${tableName}: ${msg}`);
+          console.error(`  Warning: Failed to profile ${tableName}: ${msg}`);
         }
         errors.push({ table: tableName, error: msg });
         continue;

@@ -333,6 +333,39 @@ export async function unshareConversation(
   }
 }
 
+/** Fetch the share status of a conversation. Auth-scoped when userId is provided. */
+export async function getShareStatus(
+  id: string,
+  userId?: string | null,
+): Promise<CrudDataResult<{ shared: boolean; token: string | null; expiresAt: string | null }>> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+  try {
+    const rows = userId
+      ? await internalQuery<Record<string, unknown>>(
+          `SELECT share_token, share_expires_at FROM conversations WHERE id = $1 AND user_id = $2`,
+          [id, userId],
+        )
+      : await internalQuery<Record<string, unknown>>(
+          `SELECT share_token, share_expires_at FROM conversations WHERE id = $1`,
+          [id],
+        );
+    if (rows.length === 0) return { ok: false, reason: "not_found" };
+    const token = (rows[0].share_token as string) ?? null;
+    const expiresAt = rows[0].share_expires_at ? String(rows[0].share_expires_at) : null;
+    return {
+      ok: true,
+      data: {
+        shared: token !== null,
+        token,
+        expiresAt,
+      },
+    };
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err) }, "getShareStatus failed");
+    return { ok: false, reason: "error" };
+  }
+}
+
 /**
  * Clean up expired share tokens by NULLing out `share_token` and
  * `share_expires_at` for rows where the expiry has passed. Returns the

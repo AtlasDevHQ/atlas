@@ -16,6 +16,7 @@ import {
   starConversation,
   shareConversation,
   unshareConversation,
+  getShareStatus,
   getSharedConversation,
   cleanupExpiredShares,
 } from "../conversations";
@@ -691,6 +692,88 @@ describe("conversations module", () => {
       await unshareConversation("c1", "u1");
       expect(queryCalls[0].sql).toContain("user_id");
       expect(queryCalls[0].params).toEqual(["c1", "u1"]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // getShareStatus
+  // -------------------------------------------------------------------------
+
+  describe("getShareStatus()", () => {
+    it("returns shared=true with token when conversation has a share_token", async () => {
+      enableInternalDB();
+      setResults({ rows: [{ share_token: "abc123", share_expires_at: null }] });
+
+      const result = await getShareStatus("c1", "u1");
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.data.shared).toBe(true);
+        expect(result.data.token).toBe("abc123");
+        expect(result.data.expiresAt).toBeNull();
+      }
+    });
+
+    it("returns shared=false when conversation has no share_token", async () => {
+      enableInternalDB();
+      setResults({ rows: [{ share_token: null, share_expires_at: null }] });
+
+      const result = await getShareStatus("c1", "u1");
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.data.shared).toBe(false);
+        expect(result.data.token).toBeNull();
+        expect(result.data.expiresAt).toBeNull();
+      }
+    });
+
+    it("returns expiresAt when set", async () => {
+      enableInternalDB();
+      setResults({ rows: [{ share_token: "tok", share_expires_at: "2025-12-31T00:00:00Z" }] });
+
+      const result = await getShareStatus("c1");
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.data.shared).toBe(true);
+        expect(result.data.expiresAt).toBe("2025-12-31T00:00:00Z");
+      }
+    });
+
+    it("returns { ok: false, reason: 'not_found' } when conversation not found", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      const result = await getShareStatus("missing", "u1");
+      expect(result).toEqual({ ok: false, reason: "not_found" });
+    });
+
+    it("returns { ok: false, reason: 'no_db' } when no DB", async () => {
+      const result = await getShareStatus("c1");
+      expect(result).toEqual({ ok: false, reason: "no_db" });
+    });
+
+    it("returns { ok: false, reason: 'error' } on DB error", async () => {
+      enableInternalDB();
+      queryThrow = new Error("connection lost");
+      const result = await getShareStatus("c1", "u1");
+      expect(result).toEqual({ ok: false, reason: "error" });
+    });
+
+    it("scopes by userId when provided", async () => {
+      enableInternalDB();
+      setResults({ rows: [{ share_token: null, share_expires_at: null }] });
+
+      await getShareStatus("c1", "u1");
+      expect(queryCalls[0].sql).toContain("AND user_id");
+      expect(queryCalls[0].params).toEqual(["c1", "u1"]);
+    });
+
+    it("does not scope by userId when not provided", async () => {
+      enableInternalDB();
+      setResults({ rows: [{ share_token: null, share_expires_at: null }] });
+
+      await getShareStatus("c1");
+      expect(queryCalls[0].sql).not.toContain("AND user_id");
+      expect(queryCalls[0].params).toEqual(["c1"]);
     });
   });
 

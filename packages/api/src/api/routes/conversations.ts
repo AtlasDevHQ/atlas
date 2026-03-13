@@ -23,6 +23,7 @@ import {
   starConversation,
   shareConversation,
   unshareConversation,
+  getShareStatus,
   getSharedConversation,
   cleanupExpiredShares,
   type CrudFailReason,
@@ -232,6 +233,49 @@ conversations.patch("/:id/star", async (c) => {
       return c.json(fail.body, fail.status);
     }
     return c.json({ id, starred: parsed.data.starred });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /:id/share — get share status
+// ---------------------------------------------------------------------------
+
+conversations.get("/:id/share", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
+  }
+
+  const preamble = await authPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  const id = c.req.param("id");
+  if (!UUID_RE.test(id)) {
+    return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const result = await getShareStatus(id, authResult.user?.id);
+    if (!result.ok) {
+      const fail = crudFailResponse(result.reason);
+      return c.json(fail.body, fail.status);
+    }
+    const { shared, token, expiresAt } = result.data;
+    if (!shared || !token) {
+      return c.json({ shared: false });
+    }
+    const baseUrl = new URL(req.url).origin;
+    return c.json({
+      shared: true,
+      token,
+      url: `${baseUrl}/shared/${token}`,
+      expiresAt,
+    });
   });
 });
 

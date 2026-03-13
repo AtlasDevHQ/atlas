@@ -12,7 +12,7 @@ export function FollowUpChips({
   if (suggestions.length === 0) return null;
 
   return (
-    <div className="flex flex-wrap gap-2 pt-1">
+    <div className="flex flex-wrap gap-2 pt-1" role="group" aria-label="Suggested follow-up questions">
       {suggestions.map((s, i) => (
         <Button
           key={`${i}-${s}`}

@@ -536,7 +536,7 @@ function AtlasChatInner({
                   {messages.map((m, msgIndex) => {
                     if (m.role === "user") {
                       return (
-                        <div key={m.id} className="flex justify-end">
+                        <div key={m.id} className="flex justify-end" role="article" aria-label={`Message from you${m.createdAt ? ` at ${new Date(m.createdAt).toLocaleTimeString()}` : ""}`}>
                           <div className="max-w-[85%] rounded-xl bg-blue-600 px-4 py-3 text-sm text-white">
                             {m.parts?.map((part, i) =>
                               part.type === "text" ? (
@@ -562,7 +562,7 @@ function AtlasChatInner({
                       : [];
 
                     return (
-                      <div key={m.id} className="space-y-2">
+                      <div key={m.id} className="space-y-2" role="article" aria-label={`Message from Atlas${m.createdAt ? ` at ${new Date(m.createdAt).toLocaleTimeString()}` : ""}`}>
                         {m.parts?.map((part, i) => {
                           if (part.type === "text" && part.text.trim()) {
                             const displayText = parseSuggestions(part.text).text;
@@ -634,7 +634,9 @@ function AtlasChatInner({
                   }}
                   className="flex flex-none gap-2 border-t border-zinc-100 pt-4 dark:border-zinc-800"
                 >
+                  <label htmlFor="atlas-chat-input" className="sr-only">Chat message</label>
                   <input
+                    id="atlas-chat-input"
                     data-atlas-input
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
@@ -644,11 +646,14 @@ function AtlasChatInner({
                   />
                   <button
                     type="submit"
-                    disabled={isLoading || healthFailed || !input.trim()}
-                    className="shrink-0 rounded-lg bg-blue-600 px-5 py-3 text-sm font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-40"
+                    disabled={isLoading || healthFailed}
+                    aria-disabled={!(isLoading || healthFailed) && !input.trim() ? true : undefined}
+                    aria-describedby={!input.trim() ? "atlas-chat-submit-hint" : undefined}
+                    className="shrink-0 rounded-lg bg-blue-600 px-5 py-3 text-sm font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-40 aria-disabled:opacity-40"
                   >
                     Ask
                   </button>
+                  <span id="atlas-chat-submit-hint" className="sr-only">Type a message to enable sending</span>
                 </form>
               </ActionAuthProvider>
             )}

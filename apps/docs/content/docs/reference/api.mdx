@@ -144,6 +144,8 @@ console.log(result.data);       // Raw query results ({ columns, rows }[])
 }
 ```
 
+`conversationId` is only returned when an internal database (`DATABASE_URL`) is configured. Without it, conversations are not persisted and this field is omitted.
+
 ### Chat (Streaming)
 
 `POST /api/chat` streams the agent's response in real time using Server-Sent Events (SSE). This is what the web UI uses. The response includes tool calls, intermediate results, and the final answer as they happen.
@@ -348,14 +350,22 @@ curl http://localhost:3001/api/health
 
 ```json
 {
-  "status": "healthy",
-  "version": "0.0.6",
+  "status": "ok",
   "components": {
-    "datasource": { "status": "healthy" },
-    "internalDb": { "status": "healthy" },
-    "llmProvider": { "status": "healthy", "provider": "anthropic", "model": "claude-sonnet-4-20250514" },
-    "sandbox": { "status": "healthy", "backend": "sidecar" },
-    "scheduler": { "status": "disabled" }
+    "datasource": { "status": "healthy", "latencyMs": 3, "lastCheckedAt": "2026-03-13T14:22:00.000Z" },
+    "internalDb": { "status": "healthy", "latencyMs": 1, "lastCheckedAt": "2026-03-13T14:22:00.000Z" },
+    "provider": { "status": "healthy", "model": "claude-sonnet-4-20250514", "lastCheckedAt": "2026-03-13T14:22:00.000Z" },
+    "sandbox": { "status": "healthy", "backend": "sidecar", "lastCheckedAt": "2026-03-13T14:22:00.000Z" },
+    "scheduler": { "status": "disabled", "lastCheckedAt": "2026-03-13T14:22:00.000Z" }
+  },
+  "checks": {
+    "datasource": { "status": "ok", "latencyMs": 3 },
+    "provider": { "status": "ok", "provider": "anthropic", "model": "claude-sonnet-4-20250514" },
+    "semanticLayer": { "status": "ok", "entityCount": 12 },
+    "internalDb": { "status": "ok", "latencyMs": 1 },
+    "explore": { "backend": "sidecar", "isolated": true },
+    "auth": { "mode": "simple-key", "enabled": true },
+    "slack": { "enabled": false, "mode": "disabled" }
   }
 }
 ```

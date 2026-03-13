@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
 
-// Mock all @clack/prompts exports before importing the module under test
+// Mock @clack/prompts BEFORE importing env-check — Bun requires mock.module() to precede the import
 const mockConfirm = mock(() => Promise.resolve(true));
 const mockLogWarn = mock(() => {});
 const mockLogSuccess = mock(() => {});
@@ -25,10 +25,16 @@ mock.module("@clack/prompts", () => ({
   outro: mock(() => {}),
   spinner: mock(() => ({ start: mock(() => {}), stop: mock(() => {}) })),
   text: mock(() => Promise.resolve("")),
+  password: mock(() => Promise.resolve("")),
   select: mock(() => Promise.resolve("")),
+  selectKey: mock(() => Promise.resolve("")),
   multiselect: mock(() => Promise.resolve([])),
+  groupMultiselect: mock(() => Promise.resolve([])),
   note: mock(() => {}),
   group: mock(() => Promise.resolve({})),
+  tasks: mock(() => Promise.resolve()),
+  updateSettings: mock(() => {}),
+  stream: { message: mock(() => Promise.resolve()) },
 }));
 
 import { checkEnvFile, ENV_COMMANDS } from "../env-check";
@@ -44,7 +50,6 @@ describe("env-check", () => {
     process.cwd = () => tmpDir;
     origIsTTY = process.stdin.isTTY;
 
-    // Reset mocks
     mockConfirm.mockReset();
     mockConfirm.mockResolvedValue(true);
     mockLogWarn.mockReset();
@@ -67,7 +72,7 @@ describe("env-check", () => {
       }
     });
 
-    test("does not include help/utility commands", () => {
+    test("does not include env-independent commands", () => {
       for (const cmd of ["eval", "benchmark", "smoke", "completions", "plugin"]) {
         expect(ENV_COMMANDS.has(cmd)).toBe(false);
       }
@@ -133,11 +138,13 @@ describe("env-check", () => {
 
       await checkEnvFile("doctor");
 
-      expect(mockConfirm).toHaveBeenCalled();
+      expect(mockConfirm).toHaveBeenCalledWith({
+        message: "No .env file found. Copy from .env.example?",
+        initialValue: true,
+      });
       expect(mockLogSuccess).toHaveBeenCalledWith(
         "Created .env — edit it with your database URL and API key.",
       );
-      // Verify file was copied
       const created = fs.readFileSync(path.join(tmpDir, ".env"), "utf-8");
       expect(created).toBe(exampleContent);
     });
@@ -175,6 +182,25 @@ describe("env-check", () => {
       expect(mockCancel).toHaveBeenCalledWith("Operation cancelled.");
     });
 
+    test("warns gracefully when copy fails", async () => {
+      fs.writeFileSync(path.join(tmpDir, ".env.example"), "EXAMPLE=1");
+      Object.defineProperty(process.stdin, "isTTY", { value: true, writable: true });
+      mockConfirm.mockResolvedValue(true);
+
+      // Make directory read-only so copyFileSync fails with EACCES
+      fs.chmodSync(tmpDir, 0o555);
+
+      await checkEnvFile("init");
+
+      // Should have warned instead of crashing
+      expect(mockLogWarn).toHaveBeenCalled();
+      const warnCall = mockLogWarn.mock.calls[0] as unknown[];
+      expect(warnCall[0]).toContain("Could not copy .env.example to .env");
+
+      // Restore permissions for cleanup
+      fs.chmodSync(tmpDir, 0o755);
+    });
+
     test("works for all env-dependent commands", async () => {
       Object.defineProperty(process.stdin, "isTTY", { value: true, writable: true });
 
@@ -187,8 +213,10 @@ describe("env-check", () => {
 
         expect(mockConfirm).toHaveBeenCalled();
 
-        // Clean up for next iteration
-        try { fs.unlinkSync(path.join(tmpDir, ".env")); } catch { /* may not exist */ }
+        // Clean up .env for next iteration (may not exist if user declined)
+        if (fs.existsSync(path.join(tmpDir, ".env"))) {
+          fs.unlinkSync(path.join(tmpDir, ".env"));
+        }
       }
     });
   });

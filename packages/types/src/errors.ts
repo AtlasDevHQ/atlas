@@ -91,8 +91,14 @@ export function parseChatError(error: Error, authMode: AuthMode): ChatErrorInfo 
     return { title: "Something went wrong. Please try again." };
   }
 
-  const code = typeof parsed.error === "string" ? parsed.error : undefined;
+  const rawCode = typeof parsed.error === "string" ? parsed.error : undefined;
   const serverMessage = typeof parsed.message === "string" ? parsed.message : undefined;
+
+  if (rawCode === undefined || !CHAT_ERROR_CODES.includes(rawCode as ChatErrorCode)) {
+    return { title: serverMessage ?? "Something went wrong. Please try again." };
+  }
+
+  const code: ChatErrorCode = rawCode as ChatErrorCode;
 
   switch (code) {
     case "auth_error":
@@ -141,7 +147,9 @@ export function parseChatError(error: Error, authMode: AuthMode): ChatErrorInfo 
     case "internal_error":
       return { title: serverMessage ?? "An unexpected error occurred.", code };
 
-    default:
-      return { title: serverMessage ?? "Something went wrong. Please try again." };
+    default: {
+      const _exhaustive: never = code;
+      return { title: serverMessage ?? `Something went wrong (${_exhaustive}).` };
+    }
   }
 }

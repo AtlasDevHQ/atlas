@@ -120,6 +120,16 @@ export interface TableProfile {
   partition_info?: { strategy: "range" | "list" | "hash"; key: string; children: string[] };
 }
 
+export interface ProfileError {
+  table: string;
+  error: string;
+}
+
+export interface ProfilingResult {
+  profiles: TableProfile[];
+  errors: ProfileError[];
+}
+
 /** Check whether a profile represents a database view. */
 export function isView(profile: TableProfile): boolean {
   return profile.object_type === "view";
@@ -297,10 +307,10 @@ export async function profilePostgres(
   prefetchedObjects?: DatabaseObject[],
   schema: string = "public",
   progress?: ProfileProgressCallbacks
-): Promise<TableProfile[]> {
+): Promise<ProfilingResult> {
   const pool = new Pool({ connectionString, max: 3 });
   const profiles: TableProfile[] = [];
-  const errors: { table: string; error: string }[] = [];
+  const errors: ProfileError[] = [];
 
   let allObjects: DatabaseObject[];
   if (prefetchedObjects) {
@@ -585,7 +595,7 @@ export async function profilePostgres(
     }
   }
 
-  return profiles;
+  return { profiles, errors };
 }
 
 // --- MySQL profiler ---
@@ -631,7 +641,7 @@ export async function profileMySQL(
   filterTables?: string[],
   prefetchedObjects?: DatabaseObject[],
   progress?: ProfileProgressCallbacks
-): Promise<TableProfile[]> {
+): Promise<ProfilingResult> {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const mysql = require("mysql2/promise");
   const pool = mysql.createPool({
@@ -641,7 +651,7 @@ export async function profileMySQL(
     bigNumberStrings: true,
   });
   const profiles: TableProfile[] = [];
-  const errors: { table: string; error: string }[] = [];
+  const errors: ProfileError[] = [];
 
   try {
   let allObjects: DatabaseObject[];
@@ -815,7 +825,7 @@ export async function profileMySQL(
     }
   }
 
-  return profiles;
+  return { profiles, errors };
 }
 
 // --- ClickHouse profiler ---
@@ -894,13 +904,13 @@ export async function profileClickHouse(
   filterTables?: string[],
   prefetchedObjects?: DatabaseObject[],
   progress?: ProfileProgressCallbacks
-): Promise<TableProfile[]> {
+): Promise<ProfilingResult> {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { createClient } = require("@clickhouse/client");
   const client = createClient({ url: rewriteClickHouseUrl(connectionString) });
 
   const profiles: TableProfile[] = [];
-  const errors: { table: string; error: string }[] = [];
+  const errors: ProfileError[] = [];
 
   try {
     let allObjects: DatabaseObject[];
@@ -1067,7 +1077,7 @@ export async function profileClickHouse(
     }
   }
 
-  return profiles;
+  return { profiles, errors };
 }
 
 // --- Snowflake profiler ---
@@ -1212,12 +1222,12 @@ export async function profileSnowflake(
   filterTables?: string[],
   prefetchedObjects?: DatabaseObject[],
   progress?: ProfileProgressCallbacks
-): Promise<TableProfile[]> {
+): Promise<ProfilingResult> {
   const { pool, opts } = await createSnowflakePool(connectionString, 3);
 
 
   const profiles: TableProfile[] = [];
-  const errors: { table: string; error: string }[] = [];
+  const errors: ProfileError[] = [];
   const escId = (name: string) => name.replace(/"/g, '""');
 
   try {
@@ -1414,7 +1424,7 @@ export async function profileSnowflake(
     }
   }
 
-  return profiles;
+  return { profiles, errors };
 }
 
 // --- Salesforce profiler ---
@@ -1475,14 +1485,14 @@ export async function profileSalesforce(
   filterTables?: string[],
   prefetchedObjects?: DatabaseObject[],
   progress?: ProfileProgressCallbacks
-): Promise<TableProfile[]> {
+): Promise<ProfilingResult> {
   const { parseSalesforceURL, createSalesforceConnection } = await import("../../../plugins/salesforce/src/connection");
   const config = parseSalesforceURL(connectionString);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const source: any = createSalesforceConnection(config);
 
   const profiles: TableProfile[] = [];
-  const errors: { table: string; error: string }[] = [];
+  const errors: ProfileError[] = [];
 
   try {
     let allObjects: DatabaseObject[];
@@ -1606,7 +1616,7 @@ export async function profileSalesforce(
     }
   }
 
-  return profiles;
+  return { profiles, errors };
 }
 
 // --- Pluralization / singularization (shared by heuristics + YAML generation) ---
@@ -2614,12 +2624,12 @@ export async function profileDuckDB(
   filterTables?: string[],
   prefetchedObjects?: DatabaseObject[],
   progress?: ProfileProgressCallbacks
-): Promise<TableProfile[]> {
+): Promise<ProfilingResult> {
   const DuckDBInstance = await loadDuckDB();
   const instance = await DuckDBInstance.create(dbPath, { access_mode: "READ_ONLY" });
   const conn = await instance.connect();
   const profiles: TableProfile[] = [];
-  const errors: { table: string; error: string }[] = [];
+  const errors: ProfileError[] = [];
 
   try {
     let allObjects: DatabaseObject[];
@@ -2744,7 +2754,6 @@ export async function profileDuckDB(
           console.error(`  Warning: Failed to profile ${tableName}: ${msg}`);
         }
         errors.push({ table: tableName, error: msg });
-        continue;
       }
     }
   } finally {
@@ -2755,14 +2764,7 @@ export async function profileDuckDB(
     (instance as any).closeSync();
   }
 
-  if (errors.length > 0 && !progress) {
-    console.log(`\nWarning: ${errors.length} table(s)/view(s) failed to profile:`);
-    for (const e of errors) {
-      console.log(`  - ${e.table}: ${e.error}`);
-    }
-  }
-
-  return profiles;
+  return { profiles, errors };
 }
 
 // --- Demo datasets ---
@@ -4070,32 +4072,34 @@ async function handleDiff(args: string[]): Promise<void> {
   console.log(`\nProfiling ${dbType} database...\n`);
   let profiles: TableProfile[];
   try {
+    let result: ProfilingResult;
     switch (dbType) {
       case "mysql":
-        profiles = await profileMySQL(connStr, filterTables);
+        result = await profileMySQL(connStr, filterTables);
         break;
       case "postgres":
-        profiles = await profilePostgres(connStr, filterTables, undefined, schemaArg);
+        result = await profilePostgres(connStr, filterTables, undefined, schemaArg);
         break;
       case "clickhouse":
-        profiles = await profileClickHouse(connStr, filterTables);
+        result = await profileClickHouse(connStr, filterTables);
         break;
       case "snowflake":
-        profiles = await profileSnowflake(connStr, filterTables);
+        result = await profileSnowflake(connStr, filterTables);
         break;
       case "duckdb": {
         const { parseDuckDBUrl } = await import("../../../plugins/duckdb/src/connection");
         const duckConfig = parseDuckDBUrl(connStr);
-        profiles = await profileDuckDB(duckConfig.path, filterTables);
+        result = await profileDuckDB(duckConfig.path, filterTables);
         break;
       }
       case "salesforce":
-        profiles = await profileSalesforce(connStr, filterTables);
+        result = await profileSalesforce(connStr, filterTables);
         break;
       default: {
         throw new Error(`Unknown database type: ${dbType}`);
       }
     }
+    profiles = result.profiles;
   } catch (err) {
     console.error(`\nError: Failed to profile database.`);
     console.error(err instanceof Error ? err.message : String(err));
@@ -4166,6 +4170,7 @@ export interface ProfileDatasourceOpts {
   shouldEnrich: boolean;
   explicitEnrich: boolean;
   demoDataset: DemoDataset | null;  // null for multi-source runs (--demo is single-datasource only)
+  force: boolean;          // skip failure threshold check
 }
 
 /**
@@ -4184,7 +4189,7 @@ export interface DatasourceEntry {
 }
 
 async function profileDatasource(opts: ProfileDatasourceOpts): Promise<void> {
-  const { id, url: connStr, dbType, filterTables, shouldEnrich, explicitEnrich, demoDataset } = opts;
+  const { id, url: connStr, dbType, filterTables, shouldEnrich, explicitEnrich, demoDataset, force } = opts;
   let { schema: schemaArg } = opts;
 
   validateSchemaName(schemaArg);
@@ -4400,39 +4405,62 @@ async function profileDatasource(opts: ProfileDatasourceOpts): Promise<void> {
   const progress = createProgressTracker();
   const profilingStart = Date.now();
 
-  let profiles: TableProfile[];
+  let result: ProfilingResult;
   switch (dbType) {
     case "mysql":
-      profiles = await profileMySQL(connStr, selectedTables, prefetchedObjects, progress);
+      result = await profileMySQL(connStr, selectedTables, prefetchedObjects, progress);
       break;
     case "postgres":
-      profiles = await profilePostgres(connStr, selectedTables, prefetchedObjects, schemaArg, progress);
+      result = await profilePostgres(connStr, selectedTables, prefetchedObjects, schemaArg, progress);
       break;
     case "clickhouse":
-      profiles = await profileClickHouse(connStr, selectedTables, prefetchedObjects, progress);
+      result = await profileClickHouse(connStr, selectedTables, prefetchedObjects, progress);
       break;
     case "snowflake":
-      profiles = await profileSnowflake(connStr, selectedTables, prefetchedObjects, progress);
+      result = await profileSnowflake(connStr, selectedTables, prefetchedObjects, progress);
       break;
     case "duckdb": {
       const { parseDuckDBUrl } = await import("../../../plugins/duckdb/src/connection");
       const duckConfig = parseDuckDBUrl(connStr);
-      profiles = await profileDuckDB(duckConfig.path, selectedTables, prefetchedObjects, progress);
+      result = await profileDuckDB(duckConfig.path, selectedTables, prefetchedObjects, progress);
       break;
     }
     case "salesforce":
-      profiles = await profileSalesforce(connStr, selectedTables, prefetchedObjects, progress);
+      result = await profileSalesforce(connStr, selectedTables, prefetchedObjects, progress);
       break;
     default: {
       throw new Error(`Unknown database type: ${dbType}`);
     }
   }
 
+  const { profiles, errors: profilingErrors } = result;
   const profilingElapsed = Date.now() - profilingStart;
   progress.onComplete(profiles.length, profilingElapsed);
 
   if (profiles.length === 0) {
     throw new Error("No tables or views were successfully profiled. Check the warnings above and verify your database permissions.");
+  }
+
+  // Failure threshold: if >20% of tables failed, exit unless --force
+  if (profilingErrors.length > 0) {
+    const totalAttempted = profiles.length + profilingErrors.length;
+    const failureRate = profilingErrors.length / totalAttempted;
+    if (failureRate > 0.2 && !force) {
+      const pct = Math.round(failureRate * 100);
+      console.error(
+        `\nError: Profiling failed for ${profilingErrors.length}/${totalAttempted} tables (${pct}%) — ` +
+        `this usually indicates a connection or permission issue.\n`
+      );
+      const preview = profilingErrors.slice(0, 5);
+      for (const e of preview) {
+        console.error(`  - ${e.table}: ${e.error}`);
+      }
+      if (profilingErrors.length > 5) {
+        console.error(`  ... and ${profilingErrors.length - 5} more`);
+      }
+      console.error(`\nRun \`atlas doctor\` to diagnose. Use \`--force\` to continue anyway.`);
+      process.exit(1);
+    }
   }
 
   // Run profiler heuristics
@@ -4825,6 +4853,7 @@ async function main() {
       "  --parquet f1.parquet[,...] Load Parquet files via DuckDB\n" +
       "  --enrich               Profile + LLM enrichment (needs API key)\n" +
       "  --no-enrich            Explicitly skip LLM enrichment\n" +
+      "  --force                Continue even if >20% of tables fail to profile\n" +
       "  --demo [simple|cybersec|ecommerce]  Load demo dataset then profile\n\n" +
       "Options (diff):\n" +
       "  --tables t1,t2         Only diff specific tables/views\n" +
@@ -4860,6 +4889,7 @@ async function main() {
   const sourceArg = requireFlagIdentifier(args, "--source", "source name");
   const connectionArg = requireFlagIdentifier(args, "--connection", "connection name");
   const demoDataset = parseDemoArg(args);
+  const forceInit = args.includes("--force");
   const csvArg = getFlag(args, "--csv");
   const parquetArg = getFlag(args, "--parquet");
   const hasDocumentFiles = !!(csvArg || parquetArg);
@@ -4910,7 +4940,7 @@ async function main() {
     const duckFilterTables = filterTables ?? tableNames;
     const duckProgress = createProgressTracker();
     const duckStart = Date.now();
-    const profiles = await profileDuckDB(dbPath, duckFilterTables, undefined, duckProgress);
+    const { profiles } = await profileDuckDB(dbPath, duckFilterTables, undefined, duckProgress);
     duckProgress.onComplete(profiles.length, Date.now() - duckStart);
 
 
@@ -5177,6 +5207,7 @@ Next steps:
         shouldEnrich,
         explicitEnrich,
         demoDataset: isMultiSource ? null : demoDataset,
+        force: forceInit,
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

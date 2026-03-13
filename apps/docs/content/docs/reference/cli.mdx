@@ -31,6 +31,7 @@ bun run atlas -- init [options]
 | `--parquet <f1.parquet,...>` | Load Parquet files via DuckDB. Requires `@duckdb/node-api` |
 | `--enrich` | Add LLM-enriched descriptions and query patterns (requires API key) |
 | `--no-enrich` | Explicitly skip LLM enrichment |
+| `--force` | Continue even if more than 20% of tables fail to profile |
 | `--demo [simple\|cybersec\|ecommerce]` | Load a demo dataset then profile (default: `simple`) |
 
 **Examples:**
@@ -68,6 +69,8 @@ bun run atlas -- init --source warehouse
 - **No flag** — Profiles the default datasource (`ATLAS_DATASOURCE_URL`) and writes output to `semantic/entities/`.
 - **`--source <name>`** — Writes output to `semantic/<name>/entities/` (for multi-source layouts where you organize by source). Does not change which datasource is profiled.
 - **`--connection <name>`** — Profiles a named datasource defined in `atlas.config.ts` (e.g. `datasources.warehouse`) and automatically writes output to the matching `semantic/<name>/` subdirectory.
+
+If more than 20% of tables fail to profile, `init` exits with an error — this usually indicates a systemic issue like wrong credentials or missing permissions. Use `--force` to override this threshold.
 
 In TTY mode (interactive terminal), `init` presents a table picker. Pass `--tables` to skip the picker for scripted/CI usage.
 

@@ -132,10 +132,11 @@ describe("profileDuckDB", () => {
     const dbPath = path.join(dir, "test.duckdb");
     await ingestIntoDuckDB(dbPath, [{ path: csvPath, format: "csv" }]);
 
-    const profiles = await profileDuckDB(dbPath);
-    expect(profiles).toHaveLength(1);
+    const result = await profileDuckDB(dbPath);
+    expect(result.profiles).toHaveLength(1);
+    expect(result.errors).toHaveLength(0);
 
-    const profile = profiles[0];
+    const profile = result.profiles[0];
     expect(profile.table_name).toBe("employees");
     expect(profile.row_count).toBe(5);
     expect(profile.columns.length).toBe(4);
@@ -164,8 +165,8 @@ describe("profileDuckDB", () => {
       { path: csv2, format: "csv" },
     ]);
 
-    const profiles = await profileDuckDB(dbPath, ["a"]);
-    expect(profiles).toHaveLength(1);
-    expect(profiles[0].table_name).toBe("a");
+    const result = await profileDuckDB(dbPath, ["a"]);
+    expect(result.profiles).toHaveLength(1);
+    expect(result.profiles[0].table_name).toBe("a");
   });
 });

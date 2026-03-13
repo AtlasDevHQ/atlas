@@ -31,6 +31,7 @@ import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import { Puzzle, Loader2, Settings2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAdminFetch, useInProgressSet, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { ErrorBoundary } from "@/ui/components/error-boundary";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -364,6 +365,7 @@ export default function PluginsPage() {
         <p className="text-sm text-muted-foreground">Manage installed plugins</p>
       </div>
 
+      <ErrorBoundary fallback={<div className="flex items-center justify-center p-6 text-sm text-red-600 dark:text-red-400">This section encountered an error.</div>}>
       <div className="flex-1 overflow-auto p-6">
         {error && <ErrorBanner message={friendlyError(error)} onRetry={refetch} />}
         {mutationError && (
@@ -446,6 +448,7 @@ export default function PluginsPage() {
           </div>
         ) : null}
       </div>
+      </ErrorBoundary>
 
       {configPlugin && (
         <ConfigDialog

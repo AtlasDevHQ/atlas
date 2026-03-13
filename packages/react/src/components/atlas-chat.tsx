@@ -29,6 +29,7 @@ import {
 import { Button } from "./ui/button";
 import { ScrollArea } from "./ui/scroll-area";
 import { parseSuggestions } from "../lib/helpers";
+import { ErrorBoundary } from "./error-boundary";
 
 const API_KEY_STORAGE_KEY = "atlas-api-key";
 
@@ -508,6 +509,13 @@ function AtlasChatInner({
                 )}
 
                 <ScrollArea viewportRef={scrollRef} className="min-h-0 flex-1">
+                <ErrorBoundary
+                  fallback={
+                    <div className="flex items-center justify-center p-6 text-sm text-red-600 dark:text-red-400">
+                      Failed to render messages. Try refreshing.
+                    </div>
+                  }
+                >
                 <div data-atlas-messages className="space-y-4 pb-4 pr-3">
                   {messages.length === 0 && !error && (
                     <div className="flex h-full flex-col items-center justify-center gap-6">
@@ -605,6 +613,7 @@ function AtlasChatInner({
 
                   {isLoading && messages.length > 0 && <TypingIndicator />}
                 </div>
+                </ErrorBoundary>
                 </ScrollArea>
 
                 {error && (

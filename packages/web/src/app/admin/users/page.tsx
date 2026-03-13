@@ -59,6 +59,7 @@ import {
   friendlyError,
   type FetchError,
 } from "@/ui/hooks/use-admin-fetch";
+import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
   Users,
   Search,
@@ -379,6 +380,7 @@ export default function UsersPage() {
         </Button>
       </div>
 
+      <ErrorBoundary fallback={<div className="flex items-center justify-center p-6 text-sm text-red-600 dark:text-red-400">This section encountered an error.</div>}>
       <div className="flex-1 overflow-auto p-6 space-y-6">
         {/* Stats row */}
         {statsError && !statsError.status ? (
@@ -661,6 +663,7 @@ export default function UsersPage() {
           </div>
         )}
       </div>
+      </ErrorBoundary>
 
       {/* Invite user dialog */}
       <Dialog open={inviteOpen} onOpenChange={(open) => { if (!open) setInviteOpen(false); }}>

@@ -27,6 +27,7 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { Settings, Pencil, RotateCcw, Loader2, Info, Lock, RefreshCw, Palette } from "lucide-react";
 import { DEFAULT_BRAND_COLOR, OKLCH_RE, applyBrandColor } from "@/ui/hooks/use-dark-mode";
 
@@ -493,6 +494,7 @@ export default function SettingsPage() {
         </p>
       </div>
 
+      <ErrorBoundary fallback={<div className="flex items-center justify-center p-6 text-sm text-red-600 dark:text-red-400">This section encountered an error.</div>}>
       <div className="flex-1 overflow-auto p-6">
         {error && <ErrorBanner message={friendlyError(error)} onRetry={refetch} />}
         {mutationError && (
@@ -568,6 +570,7 @@ export default function SettingsPage() {
           </div>
         ) : null}
       </div>
+      </ErrorBoundary>
 
       {editSetting && (
         <EditDialog

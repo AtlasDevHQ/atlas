@@ -22,6 +22,47 @@ describe("matchError", () => {
     expect(matchError(null)).toBeNull();
   });
 
+  // --- Pool exhaustion ---
+
+  test("matches PostgreSQL 'too many clients already'", () => {
+    const err = new Error("sorry, too many clients already");
+    const result = matchError(err) as MatchedError;
+    expect(result).not.toBeNull();
+    expect(result.code).toBe("rate_limited");
+    expect(result.message).toContain("pool exhausted");
+    expect(result.message).toContain("try again");
+  });
+
+  test("matches MySQL 'Too many connections'", () => {
+    const err = new Error("ER_CON_COUNT_ERROR: Too many connections");
+    const result = matchError(err) as MatchedError;
+    expect(result).not.toBeNull();
+    expect(result.code).toBe("rate_limited");
+    expect(result.message).toContain("pool exhausted");
+  });
+
+  test("matches generic 'Connection pool exhausted'", () => {
+    const err = new Error("Connection pool exhausted");
+    const result = matchError(err) as MatchedError;
+    expect(result).not.toBeNull();
+    expect(result.code).toBe("rate_limited");
+  });
+
+  test("matches PostgreSQL 'remaining connection slots are reserved'", () => {
+    const err = new Error("FATAL: remaining connection slots are reserved for non-replication superuser connections");
+    const result = matchError(err) as MatchedError;
+    expect(result).not.toBeNull();
+    expect(result.code).toBe("rate_limited");
+    expect(result.message).toContain("pool exhausted");
+  });
+
+  test("pool exhaustion is classified as retryable", () => {
+    const err = new Error("sorry, too many clients already");
+    const result = matchError(err) as MatchedError;
+    expect(result).not.toBeNull();
+    expect(isRetryableError(result.code)).toBe(true);
+  });
+
   // --- ECONNREFUSED ---
 
   test("matches ECONNREFUSED with host:port", () => {
@@ -353,5 +394,48 @@ describe("parseChatError retryable", () => {
     const err = new Error(JSON.stringify({ error: "unknown_xyz", message: "wat" }));
     const info = parseChatError(err, authMode);
     expect(info.retryable).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseChatError — rate_limited detail uses server message for pool exhaustion
+// ---------------------------------------------------------------------------
+
+describe("parseChatError rate_limited detail", () => {
+  const authMode: AuthMode = "none";
+
+  test("uses retryAfterSeconds when present (API rate limit)", () => {
+    const err = new Error(
+      JSON.stringify({
+        error: "rate_limited",
+        message: "Too many requests. Please wait before trying again.",
+        retryAfterSeconds: 30,
+      }),
+    );
+    const info = parseChatError(err, authMode);
+    expect(info.detail).toBe("Try again in 30 seconds.");
+    expect(info.retryAfterSeconds).toBe(30);
+  });
+
+  test("uses server message when retryAfterSeconds is absent (pool exhaustion)", () => {
+    const err = new Error(
+      JSON.stringify({
+        error: "rate_limited",
+        message: "Database connection pool exhausted — try again in a few seconds, or reduce concurrent queries",
+      }),
+    );
+    const info = parseChatError(err, authMode);
+    expect(info.detail).toContain("pool exhausted");
+    expect(info.retryAfterSeconds).toBeUndefined();
+  });
+
+  test("falls back to generic message when no server message and no retryAfterSeconds", () => {
+    const err = new Error(
+      JSON.stringify({
+        error: "rate_limited",
+      }),
+    );
+    const info = parseChatError(err, authMode);
+    expect(info.detail).toBe("Please wait before trying again.");
   });
 });

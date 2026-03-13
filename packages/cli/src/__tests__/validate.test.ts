@@ -65,8 +65,10 @@ import {
   checkMetrics,
   checkCrossReferences,
   renderValidateResults,
+  renderValidateSections,
   runValidate,
   type ValidateResult,
+  type ValidateSection,
 } from "../validate";
 
 // ---------------------------------------------------------------------------
@@ -698,7 +700,7 @@ describe("renderValidateResults", () => {
 // ---------------------------------------------------------------------------
 
 describe("runValidate", () => {
-  test("returns 0 for a valid semantic layer", async () => {
+  test("returns 0 for a valid semantic layer (offline)", async () => {
     const dir = makeTmpDir();
     createSemanticDir(dir, {
       entities: {
@@ -722,7 +724,7 @@ describe("runValidate", () => {
         "order_count.yml": "metric: order_count\ntable: orders\n",
       },
     });
-    const exitCode = await withCwd(dir, () => runValidate());
+    const exitCode = await withCwd(dir, () => runValidate({ offline: true }));
     expect(exitCode).toBe(0);
   });
 
@@ -733,7 +735,7 @@ describe("runValidate", () => {
         "bad.yml": ": invalid [yaml",
       },
     });
-    const exitCode = await withCwd(dir, () => runValidate());
+    const exitCode = await withCwd(dir, () => runValidate({ offline: true }));
     expect(exitCode).toBe(1);
   });
 
@@ -753,11 +755,11 @@ describe("runValidate", () => {
         ].join("\n"),
       },
     });
-    const exitCode = await withCwd(dir, () => runValidate());
+    const exitCode = await withCwd(dir, () => runValidate({ offline: true }));
     expect(exitCode).toBe(1);
   });
 
-  test("returns 0 when only warnings present", async () => {
+  test("returns 2 when only warnings present (offline)", async () => {
     const dir = makeTmpDir();
     createSemanticDir(dir, {
       entities: {
@@ -770,14 +772,68 @@ describe("runValidate", () => {
         ].join("\n"),
       },
     });
-    const exitCode = await withCwd(dir, () => runValidate());
-    expect(exitCode).toBe(0);
+    const exitCode = await withCwd(dir, () => runValidate({ offline: true }));
+    expect(exitCode).toBe(2);
   });
 
   test("returns 1 when no entities exist", async () => {
     const dir = makeTmpDir();
     createSemanticDir(dir);
-    const exitCode = await withCwd(dir, () => runValidate());
+    const exitCode = await withCwd(dir, () => runValidate({ offline: true }));
     expect(exitCode).toBe(1);
+  });
+
+  test("--offline skips connectivity section", async () => {
+    const dir = makeTmpDir();
+    createSemanticDir(dir, {
+      entities: {
+        "users.yml": "table: users\ndimensions:\n  id:\n    type: integer\n    description: User ID\n",
+      },
+      metrics: {
+        "user_count.yml": "metric: user_count\ntable: users\n",
+      },
+    });
+    // offline mode should not attempt any network calls
+    const exitCode = await withCwd(dir, () => runValidate({ offline: true }));
+    expect(exitCode).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// renderValidateSections
+// ---------------------------------------------------------------------------
+
+describe("renderValidateSections", () => {
+  test("renders sections without crashing", () => {
+    const sections: ValidateSection[] = [
+      {
+        category: "Config",
+        results: [{ status: "pass", label: "atlas.config.ts", detail: "Valid" }],
+      },
+      {
+        category: "Semantic Layer",
+        results: [
+          { status: "fail", label: "entities/bad.yml", detail: "Error", fix: "Fix it" },
+          { status: "warn", label: "entities/ok.yml:15", detail: "Missing description" },
+        ],
+      },
+      {
+        category: "Connectivity",
+        results: [{ status: "pass", label: "Database", detail: "Connected" }],
+      },
+    ];
+    expect(() => renderValidateSections(sections)).not.toThrow();
+  });
+
+  test("handles empty sections without crashing", () => {
+    expect(() => renderValidateSections([])).not.toThrow();
+  });
+
+  test("skips sections with no results", () => {
+    const sections: ValidateSection[] = [
+      { category: "Config", results: [] },
+      { category: "Semantic Layer", results: [{ status: "pass", label: "test", detail: "ok" }] },
+    ];
+    expect(() => renderValidateSections(sections)).not.toThrow();
   });
 });

@@ -495,10 +495,10 @@ class AtlasErrorBoundary extends Component<
       // Show fallback UI when an Atlas component throws
       return this.props.fallback ?? (
         <div role="alert" style={{ padding: "1rem", border: "1px solid red" }}>
-          <h2>Something went wrong</h2>
+          <h2>Atlas encountered an error</h2>
           <p>{this.state.error.message}</p>
           <button onClick={() => this.setState({ error: null })}>
-            Try again
+            Retry
           </button>
         </div>
       );

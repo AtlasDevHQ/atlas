@@ -9,6 +9,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { type UIMessage } from "ai";
 import { APICallError, LoadAPIKeyError, NoSuchModelError } from "ai";
+import { matchError } from "@useatlas/types";
 import { runAgent } from "@atlas/api/lib/agent";
 import { validateEnvironment } from "@atlas/api/lib/startup";
 import { GatewayModelNotFoundError } from "@ai-sdk/gateway";
@@ -65,14 +66,14 @@ chat.post("/", async (c) => {
       "Auth dispatch failed",
     );
     return c.json(
-      { error: "auth_error", message: "Authentication system error" },
+      { error: "auth_error", message: "Authentication system error", requestId },
       500,
     );
   }
   if (!authResult.authenticated) {
     log.warn({ requestId, status: authResult.status }, "Authentication failed");
     return c.json(
-      { error: "auth_error", message: authResult.error },
+      { error: "auth_error", message: authResult.error, requestId },
       authResult.status as 401 | 403 | 500,
     );
   }
@@ -94,6 +95,7 @@ chat.post("/", async (c) => {
         error: "rate_limited",
         message: "Too many requests. Please wait before trying again.",
         retryAfterSeconds,
+        requestId,
       },
       { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } },
     );
@@ -112,6 +114,7 @@ chat.post("/", async (c) => {
             error: "configuration_error",
             message: diagnostics.map((d) => d.message).join("\n\n"),
             diagnostics,
+            requestId,
           },
           400,
         );
@@ -125,6 +128,7 @@ chat.post("/", async (c) => {
             error: "no_datasource",
             message:
               "No analytics datasource configured. Set ATLAS_DATASOURCE_URL to query your data.",
+            requestId,
           },
           400,
         );
@@ -143,6 +147,7 @@ chat.post("/", async (c) => {
           {
             error: "invalid_request",
             message: "Invalid JSON body.",
+            requestId,
           },
           400,
         );
@@ -155,6 +160,7 @@ chat.post("/", async (c) => {
             error: "validation_error",
             message: "Invalid request body.",
             details: parsed.error.issues,
+            requestId,
           },
           422,
         );
@@ -169,7 +175,7 @@ chat.post("/", async (c) => {
           // Ownership verification — NOT best-effort, this is a security check
           const existing = await getConversation(conversationId, authResult.user?.id);
           if (!existing.ok) {
-            return c.json({ error: "not_found", message: "Conversation not found." }, 404);
+            return c.json({ error: "not_found", message: "Conversation not found.", requestId }, 404);
           }
           // Persist the latest user message
           try {
@@ -255,16 +261,14 @@ chat.post("/", async (c) => {
 
         return streamResponse;
       } catch (err) {
-        const message = err instanceof Error ? err.message : "";
+        const errObj = err instanceof Error ? err : new Error(String(err));
+        const message = errObj.message;
 
         // --- Structured AI SDK error types (checked first) ---
 
         if (GatewayModelNotFoundError.isInstance(err)) {
           log.error(
-            {
-              err: err instanceof Error ? err : new Error(String(err)),
-              category: "provider_model_not_found",
-            },
+            { err: errObj, category: "provider_model_not_found" },
             "Gateway model not found",
           );
           return c.json(
@@ -272,6 +276,7 @@ chat.post("/", async (c) => {
               error: "provider_model_not_found",
               message:
                 "Model not found on the AI Gateway. Check that your ATLAS_MODEL uses the correct provider/model format (e.g., anthropic/claude-sonnet-4.6).",
+              requestId,
             },
             400,
           );
@@ -279,10 +284,7 @@ chat.post("/", async (c) => {
 
         if (NoSuchModelError.isInstance(err)) {
           log.error(
-            {
-              err: err instanceof Error ? err : new Error(String(err)),
-              category: "provider_model_not_found",
-            },
+            { err: errObj, category: "provider_model_not_found" },
             "Model not found",
           );
           return c.json(
@@ -290,6 +292,7 @@ chat.post("/", async (c) => {
               error: "provider_model_not_found",
               message:
                 "The configured model was not found. Check ATLAS_MODEL and ATLAS_PROVIDER settings.",
+              requestId,
             },
             400,
           );
@@ -297,10 +300,7 @@ chat.post("/", async (c) => {
 
         if (LoadAPIKeyError.isInstance(err)) {
           log.error(
-            {
-              err: err instanceof Error ? err : new Error(String(err)),
-              category: "provider_auth_error",
-            },
+            { err: errObj, category: "provider_auth_error" },
             "API key not loaded",
           );
           return c.json(
@@ -308,6 +308,7 @@ chat.post("/", async (c) => {
               error: "provider_auth_error",
               message:
                 "LLM provider API key could not be loaded. Check that the required API key environment variable is set.",
+              requestId,
             },
             503,
           );
@@ -319,11 +320,7 @@ chat.post("/", async (c) => {
 
           if (status === 401 || status === 403) {
             log.error(
-              {
-                err: err instanceof Error ? err : new Error(String(err)),
-                category: "provider_auth_error",
-                statusCode: status,
-              },
+              { err: errObj, category: "provider_auth_error", statusCode: status },
               "Provider auth error",
             );
             return c.json(
@@ -331,6 +328,7 @@ chat.post("/", async (c) => {
                 error: "provider_auth_error",
                 message:
                   "LLM provider authentication failed. Check that your API key is valid and has not expired.",
+                requestId,
               },
               503,
             );
@@ -338,11 +336,7 @@ chat.post("/", async (c) => {
 
           if (status === 429) {
             log.error(
-              {
-                err: err instanceof Error ? err : new Error(String(err)),
-                category: "provider_rate_limit",
-                statusCode: status,
-              },
+              { err: errObj, category: "provider_rate_limit", statusCode: status },
               "Provider rate limit",
             );
             return c.json(
@@ -350,6 +344,7 @@ chat.post("/", async (c) => {
                 error: "provider_rate_limit",
                 message:
                   "LLM provider rate limit reached. Wait a moment and try again.",
+                requestId,
               },
               503,
             );
@@ -357,11 +352,7 @@ chat.post("/", async (c) => {
 
           if (status === 408 || /timeout/i.test(message)) {
             log.error(
-              {
-                err: err instanceof Error ? err : new Error(String(err)),
-                category: "provider_timeout",
-                statusCode: status,
-              },
+              { err: errObj, category: "provider_timeout", statusCode: status },
               "Request timed out",
             );
             return c.json(
@@ -370,6 +361,7 @@ chat.post("/", async (c) => {
                 message:
                   "The request timed out. The LLM provider took too long to respond. " +
                   "Try again, or if using a local model, ensure it has sufficient resources.",
+                requestId,
               },
               504,
             );
@@ -377,73 +369,58 @@ chat.post("/", async (c) => {
 
           // Catch-all for any other APICallError status codes (5xx, etc.)
           log.error(
-            {
-              err: err instanceof Error ? err : new Error(String(err)),
-              category: "provider_error",
-              statusCode: status,
-            },
+            { err: errObj, category: "provider_error", statusCode: status },
             "Provider error",
           );
           return c.json(
             {
               error: "provider_error",
               message: `The LLM provider returned an error (HTTP ${status}). This is usually a temporary issue. Try again in a moment.`,
+              requestId,
             },
             502,
           );
         }
 
-        // --- Regex fallbacks for non-APICallError exceptions ---
+        // --- Pattern-matched errors (non-APICallError exceptions) ---
+        // In the chat route, errors from runAgent are typically provider-related,
+        // so we override matchError's generic messages with provider-appropriate ones.
 
-        if (/timeout|timed out|AbortError/i.test(message)) {
-          log.error(
-            {
-              err: err instanceof Error ? err : new Error(String(err)),
-              category: "provider_timeout",
-            },
-            "Request timed out",
-          );
+        const matched = matchError(err);
+        if (matched) {
+          const isConnectionError = /ECONNREFUSED|ENOTFOUND|fetch failed/i.test(message);
+          const code = (matched.code === "internal_error" && isConnectionError)
+            ? "provider_unreachable" as const
+            : matched.code === "provider_unreachable" ? "provider_unreachable" as const
+            : matched.code;
+          const httpStatus = code === "provider_unreachable" ? 503
+            : code === "provider_timeout" ? 504
+            : 500;
+          // Use provider-appropriate messages instead of database-oriented matchError defaults
+          const userMessage = code === "provider_unreachable"
+            ? "Could not reach the LLM provider. Check your network connection and provider status."
+            : code === "provider_timeout"
+              ? "The request timed out. The LLM provider took too long to respond. Try again, or if using a local model, ensure it has sufficient resources."
+              : matched.message;
+          log.error({ err: errObj, category: code }, "Matched error: %s", code);
           return c.json(
-            {
-              error: "provider_timeout",
-              message:
-                "The request timed out. The LLM provider took too long to respond. " +
-                "Try again, or if using a local model, ensure it has sufficient resources.",
-            },
-            504,
+            { error: code, message: userMessage, requestId },
+            httpStatus as 500,
           );
         }
 
-        if (/fetch failed|ECONNREFUSED|ENOTFOUND/i.test(message)) {
-          log.error(
-            {
-              err: err instanceof Error ? err : new Error(String(err)),
-              category: "provider_unreachable",
-            },
-            "Provider unreachable",
-          );
-          return c.json(
-            {
-              error: "provider_unreachable",
-              message:
-                "Could not reach the LLM provider. Check your network connection and provider status.",
-            },
-            503,
-          );
-        }
-
-        // Fallback — safe 500 with requestId for correlation
+        // Fallback — safe 500 with requestId for log correlation.
+        // Full error details (stack trace, original message) are logged
+        // server-side; only a generic message + request ID reach the client.
         log.error(
-          {
-            err: err instanceof Error ? err : new Error(String(err)),
-            category: "internal_error",
-          },
-          "Unexpected error",
+          { err: errObj, category: "internal_error", stack: errObj.stack },
+          "Unclassified error",
         );
         return c.json(
           {
             error: "internal_error",
-            message: `An unexpected error occurred (ref: ${requestId.slice(0, 8)}). If this persists, check the server logs.`,
+            message: `An unexpected error occurred. Quote ref ${requestId.slice(0, 8)} when reporting this issue.`,
+            requestId,
           },
           500,
         );

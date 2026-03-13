@@ -272,6 +272,7 @@ describe("first-run: database unreachable", () => {
     const err = errors.find((e) => e.code === "DB_UNREACHABLE");
     expect(err).toBeDefined();
     expect(err!.message).toContain("***@mysql.example.com:3306");
+    expect(err!.message).toContain("Database unreachable");
     expect(err!.message).not.toContain("p4ssw0rd");
     expect(err!.message).not.toContain("admin:p4ssw0rd");
   });
@@ -294,7 +295,7 @@ describe("first-run: database unreachable", () => {
     const errors = await validateEnvironment();
     const err = errors.find((e) => e.code === "DB_UNREACHABLE");
     expect(err).toBeDefined();
-    expect(err!.message).toContain("connection was refused");
+    expect(err!.message).toContain("Database unreachable at 127.0.0.1:3306");
   });
 
   it("reports malformed postgres URL without leaking credentials", async () => {

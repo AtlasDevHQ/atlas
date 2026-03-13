@@ -3,6 +3,9 @@ import {
   matchError,
   parseChatError,
   isChatErrorCode,
+  isRetryableError,
+  CHAT_ERROR_CODES,
+  type ChatErrorCode,
   type MatchedError,
   type AuthMode,
 } from "../index";
@@ -268,5 +271,87 @@ describe("isChatErrorCode", () => {
   test("rejects invalid codes", () => {
     expect(isChatErrorCode("fake_code")).toBe(false);
     expect(isChatErrorCode("")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isRetryableError
+// ---------------------------------------------------------------------------
+
+describe("isRetryableError", () => {
+  const retryableCodes: ChatErrorCode[] = [
+    "rate_limited",
+    "provider_timeout",
+    "provider_unreachable",
+    "provider_error",
+    "provider_rate_limit",
+    "internal_error",
+  ];
+
+  const nonRetryableCodes: ChatErrorCode[] = [
+    "auth_error",
+    "configuration_error",
+    "no_datasource",
+    "invalid_request",
+    "provider_model_not_found",
+    "provider_auth_error",
+    "validation_error",
+    "not_found",
+    "forbidden",
+  ];
+
+  test("marks transient codes as retryable", () => {
+    for (const code of retryableCodes) {
+      expect(isRetryableError(code)).toBe(true);
+    }
+  });
+
+  test("marks permanent codes as not retryable", () => {
+    for (const code of nonRetryableCodes) {
+      expect(isRetryableError(code)).toBe(false);
+    }
+  });
+
+  test("every ChatErrorCode is classified", () => {
+    const all = new Set([...retryableCodes, ...nonRetryableCodes]);
+    for (const code of CHAT_ERROR_CODES) {
+      expect(all.has(code)).toBe(true);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseChatError — retryable field
+// ---------------------------------------------------------------------------
+
+describe("parseChatError retryable", () => {
+  const authMode: AuthMode = "none";
+
+  test("retryable is true for transient error codes", () => {
+    for (const code of ["rate_limited", "provider_timeout", "provider_error", "internal_error"] as const) {
+      const err = new Error(JSON.stringify({ error: code, message: "fail" }));
+      const info = parseChatError(err, authMode);
+      expect(info.retryable).toBe(true);
+    }
+  });
+
+  test("retryable is false for permanent error codes", () => {
+    for (const code of ["auth_error", "configuration_error", "invalid_request", "validation_error", "forbidden"] as const) {
+      const err = new Error(JSON.stringify({ error: code, message: "fail" }));
+      const info = parseChatError(err, authMode);
+      expect(info.retryable).toBe(false);
+    }
+  });
+
+  test("retryable is undefined for non-JSON errors", () => {
+    const err = new Error("plain text");
+    const info = parseChatError(err, authMode);
+    expect(info.retryable).toBeUndefined();
+  });
+
+  test("retryable is undefined for unknown error codes", () => {
+    const err = new Error(JSON.stringify({ error: "unknown_xyz", message: "wat" }));
+    const info = parseChatError(err, authMode);
+    expect(info.retryable).toBeUndefined();
   });
 });

@@ -70,13 +70,16 @@ export class AtlasError extends Error {
   readonly code: AtlasErrorCode;
   readonly status: number;
   readonly retryAfterSeconds?: number;
+  /** Whether retrying the request may succeed. Derived from the server's `retryable` field. */
+  readonly retryable: boolean;
 
-  constructor(code: AtlasErrorCode, message: string, status: number, retryAfterSeconds?: number) {
+  constructor(code: AtlasErrorCode, message: string, status: number, opts?: { retryAfterSeconds?: number; retryable?: boolean }) {
     super(message);
     this.name = "AtlasError";
     this.code = code;
     this.status = status;
-    this.retryAfterSeconds = retryAfterSeconds;
+    this.retryAfterSeconds = opts?.retryAfterSeconds;
+    this.retryable = opts?.retryable ?? false;
   }
 }
 
@@ -358,6 +361,7 @@ export function createAtlasClient(options: AtlasClientOptions) {
       let code: AtlasErrorCode = "unknown_error";
       let msg = res.statusText;
       let retryAfterSeconds: number | undefined;
+      let retryable: boolean | undefined;
       try {
         const text = await res.text();
         try {
@@ -366,13 +370,14 @@ export function createAtlasClient(options: AtlasClientOptions) {
           if (typeof body.message === "string") msg = body.message;
           else if (typeof body.error === "string" && !body.message) msg = body.error;
           if (typeof body.retryAfterSeconds === "number") retryAfterSeconds = body.retryAfterSeconds;
+          if (typeof body.retryable === "boolean") retryable = body.retryable;
         } catch {
           if (text) msg = `${res.statusText}: ${text.slice(0, 200)}`;
         }
       } catch {
         // Could not read body at all
       }
-      throw new AtlasError(code, msg, res.status, retryAfterSeconds);
+      throw new AtlasError(code, msg, res.status, { retryAfterSeconds, retryable });
     }
   }
 

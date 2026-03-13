@@ -491,7 +491,7 @@ describe("error handling", () => {
 
   test("429 response includes retryAfterSeconds on AtlasError", async () => {
     installFetchMock(
-      jsonResponse({ error: "rate_limited", message: "Slow down", retryAfterSeconds: 30 }, 429),
+      jsonResponse({ error: "rate_limited", message: "Slow down", retryAfterSeconds: 30, retryable: true }, 429),
     );
     const client = createAtlasClient({ baseUrl: "http://localhost:3001", apiKey: "k" });
 
@@ -503,6 +503,55 @@ describe("error handling", () => {
       const e = err as AtlasError;
       expect(e.code).toBe("rate_limited");
       expect(e.retryAfterSeconds).toBe(30);
+      expect(e.retryable).toBe(true);
+    }
+  });
+
+  test("retryable is true for transient errors", async () => {
+    installFetchMock(
+      jsonResponse({ error: "provider_timeout", message: "Timed out", retryable: true }, 504),
+    );
+    const client = createAtlasClient({ baseUrl: "http://localhost:3001", apiKey: "k" });
+
+    try {
+      await client.query("test");
+      expect(true).toBe(false);
+    } catch (err) {
+      expect(err).toBeInstanceOf(AtlasError);
+      const e = err as AtlasError;
+      expect(e.retryable).toBe(true);
+    }
+  });
+
+  test("retryable is false for permanent errors", async () => {
+    installFetchMock(
+      jsonResponse({ error: "auth_error", message: "Unauthorized", retryable: false }, 401),
+    );
+    const client = createAtlasClient({ baseUrl: "http://localhost:3001", apiKey: "k" });
+
+    try {
+      await client.query("test");
+      expect(true).toBe(false);
+    } catch (err) {
+      expect(err).toBeInstanceOf(AtlasError);
+      const e = err as AtlasError;
+      expect(e.retryable).toBe(false);
+    }
+  });
+
+  test("retryable defaults to false when not in response", async () => {
+    installFetchMock(
+      jsonResponse({ error: "internal_error", message: "fail" }, 500),
+    );
+    const client = createAtlasClient({ baseUrl: "http://localhost:3001", apiKey: "k" });
+
+    try {
+      await client.query("test");
+      expect(true).toBe(false);
+    } catch (err) {
+      expect(err).toBeInstanceOf(AtlasError);
+      const e = err as AtlasError;
+      expect(e.retryable).toBe(false);
     }
   });
 

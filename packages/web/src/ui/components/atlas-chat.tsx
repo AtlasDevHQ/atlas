@@ -533,7 +533,20 @@ export function AtlasChat() {
                 </div>
                 </ScrollArea>
 
-                {error && <ErrorBanner error={error} authMode={authMode} />}
+                {error && (
+                  <ErrorBanner
+                    error={error}
+                    authMode={authMode}
+                    onRetry={() => {
+                      const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
+                      const text = lastUserMsg?.parts
+                        ?.filter((p): p is { type: "text"; text: string } => p.type === "text")
+                        .map((p) => p.text)
+                        .join(" ");
+                      if (text) handleSend(text);
+                    }}
+                  />
+                )}
 
                 <form
                   onSubmit={(e) => {

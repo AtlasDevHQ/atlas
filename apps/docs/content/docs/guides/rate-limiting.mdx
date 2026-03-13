@@ -89,7 +89,7 @@ The SDK and built-in widget clamp `retryAfterSeconds` to `[0, 300]` when parsing
 
 ## SDK Error Handling
 
-The `@useatlas/sdk` surfaces rate limit errors as `AtlasError` instances with the `rate_limited` code and a `retryAfterSeconds` property.
+The `@useatlas/sdk` surfaces rate limit errors as `AtlasError` instances with the `rate_limited` code, a `retryAfterSeconds` property, and `retryable: true`.
 
 ```typescript
 import { createAtlasClient, AtlasError } from "@useatlas/sdk";
@@ -102,9 +102,9 @@ const atlas = createAtlasClient({
 try {
   const result = await atlas.query("Revenue by region");
 } catch (error) {
-  if (error instanceof AtlasError && error.code === "rate_limited") {
-    // Server tells you exactly how long to wait
-    console.log(`Rate limited — retry in ${error.retryAfterSeconds}s`);
+  if (error instanceof AtlasError && error.retryable) {
+    // All transient errors (rate limits, provider issues, etc.) have retryable: true
+    console.log(`Retryable error (${error.code}) — retry in ${error.retryAfterSeconds ?? 5}s`);
   }
 }
 ```

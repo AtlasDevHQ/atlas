@@ -14,7 +14,8 @@ Config loading is **binary** — when `atlas.config.ts` exists, it is used exclu
 
 1. **Config file found** → all structural config (`datasources`, `tools`, `semanticLayer`, `plugins`, `actions`, `rls`, `scheduler`) comes from the file
 2. **No config file** → all configuration comes from environment variables
-3. **Some vars are always env-only** — secrets (`ANTHROPIC_API_KEY`, `BETTER_AUTH_SECRET`), auth mode (`ATLAS_AUTH_MODE`), runtime hints (`ATLAS_RUNTIME`), and networking (`PORT`, `ATLAS_CORS_ORIGIN`) are always read from environment variables regardless of config file presence
+3. **Some vars are always env-only** — secrets (`ANTHROPIC_API_KEY`, `BETTER_AUTH_SECRET`), runtime hints (`ATLAS_RUNTIME`), and networking (`PORT`, `ATLAS_CORS_ORIGIN`) are always read from environment variables regardless of config file presence
+4. **Auth mode** can be set via the config file `auth` field or `ATLAS_AUTH_MODE` env var. Priority: env var → config file → auto-detection
 
 See the [Configuration reference](/reference/config) for the full `atlas.config.ts` guide.
 

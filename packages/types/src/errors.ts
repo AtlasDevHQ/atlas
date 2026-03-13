@@ -22,6 +22,11 @@ export const CHAT_ERROR_CODES = [
 /** Union of all error codes the server can return in the `error` field. */
 export type ChatErrorCode = (typeof CHAT_ERROR_CODES)[number];
 
+/** Type guard — checks whether a string is a known `ChatErrorCode`. */
+export function isChatErrorCode(value: string): value is ChatErrorCode {
+  return (CHAT_ERROR_CODES as ReadonlyArray<string>).includes(value);
+}
+
 // ---------------------------------------------------------------------------
 // ChatErrorInfo
 // ---------------------------------------------------------------------------
@@ -94,15 +99,13 @@ export function parseChatError(error: Error, authMode: AuthMode): ChatErrorInfo 
   const rawCode = typeof parsed.error === "string" ? parsed.error : undefined;
   const serverMessage = typeof parsed.message === "string" ? parsed.message : undefined;
 
-  if (rawCode === undefined || !CHAT_ERROR_CODES.includes(rawCode as ChatErrorCode)) {
+  if (rawCode === undefined || !isChatErrorCode(rawCode)) {
     return { title: serverMessage ?? "Something went wrong. Please try again." };
   }
 
-  const code: ChatErrorCode = rawCode as ChatErrorCode;
-
-  switch (code) {
+  switch (rawCode) {
     case "auth_error":
-      return { title: authErrorMessage(authMode), code };
+      return { title: authErrorMessage(authMode), code: rawCode };
 
     case "rate_limited": {
       const raw = typeof parsed.retryAfterSeconds === "number" ? parsed.retryAfterSeconds : undefined;
@@ -113,42 +116,42 @@ export function parseChatError(error: Error, authMode: AuthMode): ChatErrorInfo 
           ? `Try again in ${clamped} seconds.`
           : "Please wait before trying again.",
         retryAfterSeconds: clamped,
-        code,
+        code: rawCode,
       };
     }
 
     case "configuration_error":
-      return { title: "Atlas is not fully configured.", detail: serverMessage, code };
+      return { title: "Atlas is not fully configured.", detail: serverMessage, code: rawCode };
 
     case "no_datasource":
-      return { title: "No data source configured.", detail: serverMessage, code };
+      return { title: "No data source configured.", detail: serverMessage, code: rawCode };
 
     case "invalid_request":
-      return { title: "Invalid request.", detail: serverMessage, code };
+      return { title: "Invalid request.", detail: serverMessage, code: rawCode };
 
     case "provider_model_not_found":
-      return { title: "The configured AI model was not found.", detail: serverMessage, code };
+      return { title: "The configured AI model was not found.", detail: serverMessage, code: rawCode };
 
     case "provider_auth_error":
-      return { title: "The AI provider could not authenticate.", detail: serverMessage, code };
+      return { title: "The AI provider could not authenticate.", detail: serverMessage, code: rawCode };
 
     case "provider_rate_limit":
-      return { title: "The AI provider is rate limiting requests.", detail: serverMessage, code };
+      return { title: "The AI provider is rate limiting requests.", detail: serverMessage, code: rawCode };
 
     case "provider_timeout":
-      return { title: "The AI provider timed out.", detail: serverMessage, code };
+      return { title: "The AI provider timed out.", detail: serverMessage, code: rawCode };
 
     case "provider_unreachable":
-      return { title: "Could not reach the AI provider.", detail: serverMessage, code };
+      return { title: "Could not reach the AI provider.", detail: serverMessage, code: rawCode };
 
     case "provider_error":
-      return { title: "The AI provider returned an error.", detail: serverMessage, code };
+      return { title: "The AI provider returned an error.", detail: serverMessage, code: rawCode };
 
     case "internal_error":
-      return { title: serverMessage ?? "An unexpected error occurred.", code };
+      return { title: serverMessage ?? "An unexpected error occurred.", code: rawCode };
 
     default: {
-      const _exhaustive: never = code;
+      const _exhaustive: never = rawCode;
       return { title: serverMessage ?? `Something went wrong (${_exhaustive}).` };
     }
   }

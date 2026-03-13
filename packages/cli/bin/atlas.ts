@@ -5033,9 +5033,10 @@ async function main() {
   }
 
   if (command === "doctor") {
-    // doctor is an alias for validate (with connectivity)
+    // doctor is an alias for validate with relaxed exit codes:
+    // Sandbox and Internal DB failures don't contribute to exit 1
     const { runValidate } = await import("../src/validate");
-    const exitCode = await runValidate();
+    const exitCode = await runValidate({ mode: "doctor" });
     process.exit(exitCode);
   }
 

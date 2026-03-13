@@ -64,6 +64,7 @@ import {
   checkCatalog,
   checkMetrics,
   checkCrossReferences,
+  computeExitCode,
   renderValidateResults,
   renderValidateSections,
   runValidate,
@@ -796,6 +797,92 @@ describe("runValidate", () => {
     // offline mode should not attempt any network calls
     const exitCode = await withCwd(dir, () => runValidate({ offline: true }));
     expect(exitCode).toBe(0);
+  });
+
+  test("doctor mode does not change offline behavior", async () => {
+    const dir = makeTmpDir();
+    createSemanticDir(dir, {
+      entities: {
+        "bad.yml": ": invalid [yaml",
+      },
+    });
+    const exitCode = await withCwd(dir, () => runValidate({ offline: true, mode: "doctor" }));
+    expect(exitCode).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeExitCode
+// ---------------------------------------------------------------------------
+
+describe("computeExitCode", () => {
+  test("returns 0 when all results pass", () => {
+    const results: ValidateResult[] = [
+      { status: "pass", label: "atlas.config.ts", detail: "Valid" },
+      { status: "pass", label: "semantic/entities/", detail: "2 entities parsed" },
+    ];
+    expect(computeExitCode(results)).toBe(0);
+  });
+
+  test("returns 1 when any result fails (strict mode)", () => {
+    const results: ValidateResult[] = [
+      { status: "pass", label: "atlas.config.ts", detail: "Valid" },
+      { status: "fail", label: "Sandbox", detail: "nsjail not found" },
+    ];
+    expect(computeExitCode(results)).toBe(1);
+  });
+
+  test("returns 2 when only warnings present", () => {
+    const results: ValidateResult[] = [
+      { status: "pass", label: "atlas.config.ts", detail: "Valid" },
+      { status: "warn", label: "entities/users.yml", detail: "Missing description" },
+    ];
+    expect(computeExitCode(results)).toBe(2);
+  });
+
+  test("doctor mode ignores Sandbox failure", () => {
+    const results: ValidateResult[] = [
+      { status: "pass", label: "semantic/entities/", detail: "2 entities parsed" },
+      { status: "fail", label: "Sandbox", detail: "nsjail not found" },
+    ];
+    expect(computeExitCode(results, { mode: "doctor" })).toBe(0);
+    expect(computeExitCode(results)).toBe(1); // strict
+  });
+
+  test("doctor mode ignores Internal DB failure", () => {
+    const results: ValidateResult[] = [
+      { status: "pass", label: "semantic/entities/", detail: "2 entities parsed" },
+      { status: "fail", label: "Internal DB", detail: "Connection refused" },
+    ];
+    expect(computeExitCode(results, { mode: "doctor" })).toBe(0);
+    expect(computeExitCode(results, { mode: "strict" })).toBe(1);
+  });
+
+  test("doctor mode still fails on critical failures alongside non-critical", () => {
+    const results: ValidateResult[] = [
+      { status: "fail", label: "entities/bad.yml", detail: "Invalid YAML" },
+      { status: "fail", label: "Sandbox", detail: "nsjail not found" },
+    ];
+    expect(computeExitCode(results, { mode: "doctor" })).toBe(1);
+  });
+
+  test("doctor mode returns 2 when non-critical failures coexist with warnings", () => {
+    const results: ValidateResult[] = [
+      { status: "warn", label: "entities/users.yml", detail: "Missing description" },
+      { status: "fail", label: "Internal DB", detail: "Connection refused" },
+    ];
+    expect(computeExitCode(results, { mode: "doctor" })).toBe(2);
+    expect(computeExitCode(results)).toBe(1); // strict
+  });
+
+  test("doctor mode ignores both Sandbox and Internal DB failures together", () => {
+    const results: ValidateResult[] = [
+      { status: "pass", label: "semantic/entities/", detail: "1 entity parsed" },
+      { status: "fail", label: "Sandbox", detail: "not configured" },
+      { status: "fail", label: "Internal DB", detail: "not configured" },
+    ];
+    expect(computeExitCode(results, { mode: "doctor" })).toBe(0);
+    expect(computeExitCode(results)).toBe(1); // strict
   });
 });
 

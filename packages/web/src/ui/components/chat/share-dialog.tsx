@@ -22,6 +22,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import type { ShareStatus, ShareMode, ShareExpiryKey } from "../../lib/types";
+import { SHARE_EXPIRY_OPTIONS } from "../../lib/types";
 
 const EXPIRY_LABELS: Record<ShareExpiryKey, string> = {
   "1h": "1 hour",
@@ -103,6 +104,12 @@ export function ShareDialog({ conversationId, onShare, onUnshare, onGetShareStat
     return () => { cancelled = true; };
   }, [open, conversationId, onGetShareStatus]);
 
+  function computeDisplayExpiry(key: ShareExpiryKey): string | null {
+    const seconds = SHARE_EXPIRY_OPTIONS[key];
+    if (seconds === null) return null;
+    return new Date(Date.now() + seconds * 1000).toISOString();
+  }
+
   async function handleShare() {
     setLoading(true);
     setError(null);
@@ -112,16 +119,7 @@ export function ShareDialog({ conversationId, onShare, onUnshare, onGetShareStat
         setShareUrl(result.url);
         setShared(true);
         setCurrentShareMode(shareMode);
-        // Compute display expiry from the selected option
-        if (expiresIn === "never") {
-          setExpiresAt(null);
-        } else {
-          const EXPIRY_SECONDS: Record<string, number> = { "1h": 3600, "24h": 86400, "7d": 604800, "30d": 2592000 };
-          const seconds = EXPIRY_SECONDS[expiresIn];
-          if (seconds) {
-            setExpiresAt(new Date(Date.now() + seconds * 1000).toISOString());
-          }
-        }
+        setExpiresAt(computeDisplayExpiry(expiresIn));
       } else {
         setError("Failed to create share link. Please try again.");
       }
@@ -162,6 +160,7 @@ export function ShareDialog({ conversationId, onShare, onUnshare, onGetShareStat
         setShareUrl(result.url);
         setShared(true);
         setCurrentShareMode(shareMode);
+        setExpiresAt(computeDisplayExpiry(expiresIn));
       } else {
         setError("Failed to regenerate share link. Please try again.");
       }

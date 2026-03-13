@@ -29,6 +29,7 @@ import {
   type CrudFailReason,
   type SharedConversationFailReason,
 } from "@atlas/api/lib/conversations";
+import type { ShareExpiryKey } from "@useatlas/types/share";
 import { SHARE_MODES, SHARE_EXPIRY_OPTIONS } from "@useatlas/types/share";
 
 const log = createLogger("conversations");
@@ -69,8 +70,10 @@ export const ListConversationsResponseSchema = z.object({
   total: z.number().int().nonnegative(),
 });
 
+const EXPIRY_KEYS = Object.keys(SHARE_EXPIRY_OPTIONS) as [ShareExpiryKey, ...ShareExpiryKey[]];
+
 export const ShareConversationBodySchema = z.object({
-  expiresIn: z.enum(Object.keys(SHARE_EXPIRY_OPTIONS) as [string, ...string[]]).nullable().optional(),
+  expiresIn: z.enum(EXPIRY_KEYS).optional(),
   shareMode: z.enum(SHARE_MODES).optional(),
 }).optional();
 
@@ -329,7 +332,7 @@ conversations.post("/:id/share", async (c) => {
 
     const opts = parsed.data;
     const result = await shareConversation(id, authResult.user?.id, {
-      expiresIn: (opts?.expiresIn as import("@useatlas/types/share").ShareExpiryKey) ?? undefined,
+      expiresIn: opts?.expiresIn,
       shareMode: opts?.shareMode,
     });
     if (!result.ok) {
@@ -545,7 +548,7 @@ publicConversations.get("/:token", async (c) => {
   if (!result.ok) {
     const fail = sharedConversationFailResponse(result.reason);
     if (result.reason === "error") {
-      log.error({ requestId }, "Public conversation fetch failed due to DB error");
+      log.error({ requestId, token }, "Public conversation fetch failed due to DB error");
     }
     return c.json(fail.body, fail.status);
   }
@@ -555,8 +558,12 @@ publicConversations.get("/:token", async (c) => {
     let authResult: AuthResult;
     try {
       authResult = await authenticateRequest(c.req.raw);
-    } catch {
-      return c.json({ error: "auth_required", message: "This shared conversation requires authentication." }, 403);
+    } catch (err) {
+      log.error(
+        { err: err instanceof Error ? err.message : String(err), requestId, token },
+        "Auth check failed for org-scoped share",
+      );
+      return c.json({ error: "internal_error", message: "Authentication check failed. Please try again." }, 500);
     }
     if (!authResult.authenticated) {
       return c.json({ error: "auth_required", message: "This shared conversation requires authentication." }, 403);

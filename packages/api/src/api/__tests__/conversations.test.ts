@@ -17,7 +17,9 @@ import type { AuthResult } from "@atlas/api/lib/auth/types";
 import type { CrudResult, CrudDataResult } from "@atlas/api/lib/conversations";
 import type { ConversationWithMessages } from "@atlas/api/lib/conversation-types";
 
-type ShareResult = CrudDataResult<{ token: string; expiresAt: string | null; shareMode: string }>;
+import type { ShareMode } from "@useatlas/types/share";
+
+type ShareResult = CrudDataResult<{ token: string; expiresAt: string | null; shareMode: ShareMode }>;
 
 // --- Mocks ---
 
@@ -775,6 +777,50 @@ describe("conversations routes", () => {
       const body = await response.json() as Record<string, unknown>;
       expect(body.error).toBe("internal_error");
     });
+
+    it("returns 400 for malformed JSON body", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/share`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "not-json",
+        }),
+      );
+      expect(response.status).toBe(400);
+
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.error).toBe("invalid_request");
+      expect(body.message).toContain("Invalid JSON body");
+    });
+
+    it("returns 400 for invalid expiresIn value", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/share`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ expiresIn: "99d" }),
+        }),
+      );
+      expect(response.status).toBe(400);
+
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.error).toBe("invalid_request");
+      expect(body.message).toContain("Invalid share options");
+    });
+
+    it("returns 400 for invalid shareMode value", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/share`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ shareMode: "team" }),
+        }),
+      );
+      expect(response.status).toBe(400);
+
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.error).toBe("invalid_request");
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -1015,6 +1061,33 @@ describe("conversations routes", () => {
       const body = await response.json() as Record<string, unknown>;
       expect(body.title).toBe("Org share");
       expect(body.shareMode).toBe("org");
+    });
+
+    it("returns 500 for org-scoped shares when authenticateRequest throws", async () => {
+      mockGetSharedConversation.mockResolvedValueOnce({
+        ok: true,
+        data: {
+          id: VALID_ID,
+          userId: "u1",
+          title: "Org share",
+          surface: "web",
+          connectionId: null,
+          starred: false,
+          shareMode: "org" as const,
+          createdAt: "2024-01-01",
+          updatedAt: "2024-01-01",
+          messages: [],
+        },
+      });
+      mockAuthenticateRequest.mockRejectedValueOnce(new Error("Auth DB crashed"));
+
+      const response = await app.fetch(
+        new Request("http://localhost/api/public/conversations/abcdefghij1234567890x"),
+      );
+      expect(response.status).toBe(500);
+
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.error).toBe("internal_error");
     });
 
     it("returns 500 when getSharedConversation returns error (DB failure)", async () => {

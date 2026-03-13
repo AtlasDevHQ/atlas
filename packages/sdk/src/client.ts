@@ -30,6 +30,7 @@ export type {
 
 import type {
   AuthMode,
+  ChatErrorCode,
   Conversation,
   ConversationWithMessages,
   ConnectionHealth,
@@ -52,26 +53,15 @@ export type ScheduledTaskRecipient = Recipient;
 /**
  * All error codes the Atlas server can return, plus SDK-specific codes.
  *
- * Server codes sourced from `CHAT_ERROR_CODES` in `@atlas/api/lib/errors`
+ * Server codes derived from `ChatErrorCode` in `@useatlas/types/errors`
  * plus admin route codes (`forbidden`, `not_found`, `not_available`).
  * SDK-specific: `network_error`, `invalid_response`, `unknown_error`.
  */
 export type AtlasErrorCode =
-  | "auth_error"
+  | ChatErrorCode
   | "forbidden"
-  | "rate_limited"
-  | "configuration_error"
-  | "no_datasource"
-  | "invalid_request"
   | "not_found"
   | "not_available"
-  | "provider_model_not_found"
-  | "provider_auth_error"
-  | "provider_rate_limit"
-  | "provider_timeout"
-  | "provider_unreachable"
-  | "provider_error"
-  | "internal_error"
   | "network_error"
   | "invalid_response"
   | "unknown_error";

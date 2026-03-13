@@ -1,10 +1,9 @@
 /**
  * Scheduled task types for Atlas.
  *
- * DeliveryChannel determines where results are sent.
- * RunStatus tracks the lifecycle of a single scheduled run.
- * ScheduledTaskRow / ScheduledTask represent the DB and API shapes.
- * ScheduledTaskRunRow / ScheduledTaskRun represent run history.
+ * ScheduledTaskRow / ScheduledTaskRunRow are the DB shapes (API-internal only).
+ * All other types (DeliveryChannel, RunStatus, ScheduledTask, etc.) are
+ * re-exported from @useatlas/types/scheduled-task.
  */
 
 // Re-export shared types from @useatlas/types

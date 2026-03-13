@@ -1,6 +1,11 @@
+/** Semantic layer entity types — dimensions, joins, measures, query patterns, and entity shapes. */
+
+/** Valid dimension types per the semantic layer YAML spec. */
+export type DimensionType = "string" | "number" | "date" | "boolean" | "timestamp";
+
 export interface Dimension {
   name: string;
-  type: string;
+  type: DimensionType | (string & {});
   description?: string;
   sample_values?: string[];
   primary_key?: boolean;
@@ -38,7 +43,7 @@ export interface SemanticEntitySummary {
 export interface SemanticEntityDetail {
   table: string;
   description: string;
-  type?: "table" | "view";
+  type?: "table" | "view" | null;
   dimensions: Record<string, Dimension> | Dimension[];
   joins?: Join[] | Record<string, Join>;
   measures?: Record<string, Measure> | Measure[];

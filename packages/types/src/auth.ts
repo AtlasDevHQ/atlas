@@ -1,3 +1,11 @@
+/**
+ * Auth types shared across API, frontend, and SDK.
+ *
+ * AuthMode determines how requests are authenticated.
+ * AtlasRole determines the user's permission level for action approval.
+ * AtlasUser represents a verified identity attached to a request.
+ */
+
 export const AUTH_MODES = ["none", "simple-key", "managed", "byot"] as const;
 export type AuthMode = (typeof AUTH_MODES)[number];
 

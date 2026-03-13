@@ -1,8 +1,6 @@
 /**
- * Client-side error parsing for Atlas chat errors.
- *
- * The server returns JSON error bodies with { error, message, retryAfterSeconds? }.
- * This module parses those into user-friendly `ChatErrorInfo` objects.
+ * Chat error types and client-side parsing helpers.
+ * Re-exported from @useatlas/types/errors.
  */
 
 export * from "@useatlas/types/errors";

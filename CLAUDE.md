@@ -26,7 +26,7 @@ Guidance for Claude Code when working in this repository.
 - [ ] **Tailwind CSS 4** — Via `@tailwindcss/postcss`, not v3
 - [ ] **shadcn/ui v2** — New-york style, neutral base, Lucide icons. **Always use shadcn/ui primitives** — never hand-roll equivalent components. Install: `bun x shadcn@latest add <component>` from `packages/web/`. Uses `cn()` from `@/lib/utils`
 - [ ] **Server external packages** — `pg`, `mysql2`, `@clickhouse/client`, `@duckdb/node-api`, `snowflake-sdk`, `jsforce`, `just-bash`, `pino`, `pino-pretty` must stay in `serverExternalPackages` in the `create-atlas` template
-- [ ] **Frontend is a pure HTTP client** — `@atlas/web` does NOT depend on `@atlas/api`. Shared types are duplicated in `packages/web/src/ui/lib/types.ts`
+- [ ] **Frontend is a pure HTTP client** — `@atlas/web` does NOT depend on `@atlas/api`. Shared types live in `@useatlas/types` and are re-exported via `packages/web/src/ui/lib/types.ts`
 - [ ] **nuqs for URL state** — Use [nuqs](https://nuqs.47ng.com/) for URL state (pagination, filters, selected items). Define parsers in `search-params.ts` next to the page. Transient UI state stays as `useState`
 - [ ] **React Compiler handles memoization** — Do not add `useMemo`, `useCallback`, or `React.memo` for performance. Only use `useMemo` for correctness (stable references), `React.memo` with custom comparators for semantic equality
 - [ ] **No async waterfalls** — Use `Promise.all([a(), b()])` for independent awaits
@@ -86,7 +86,8 @@ bun run atlas -- diff    # Compare DB schema vs semantic layer
 
 | Package | Name | Description |
 |---------|------|-------------|
-| `packages/api` | `@atlas/api` | Hono API server, agent loop, tools, auth, DB, shared types |
+| `packages/types` | `@useatlas/types` | Shared TypeScript types (wire format) across API, web, SDK, and react |
+| `packages/api` | `@atlas/api` | Hono API server, agent loop, tools, auth, DB |
 | `packages/web` | `@atlas/web` | Next.js frontend, chat UI components (exports `./ui/context`, `./ui/components/atlas-chat`) |
 | `packages/cli` | `@atlas/cli` | CLI: profiler, schema diff, enrichment, query |
 | `packages/mcp` | `@atlas/mcp` | MCP server (stdio + SSE transport) |

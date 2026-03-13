@@ -1,8 +1,8 @@
 /**
  * Action types for Atlas.
  *
- * ActionApprovalMode determines how an action request is handled.
- * ActionStatus tracks the lifecycle of an action request.
+ * ActionApprovalMode is re-exported from @useatlas/types/action.
+ * ActionStatus tracks the server-internal lifecycle of an action request.
  * ActionRequest and ActionToolResult provide the tool-level interface.
  * AtlasAction extends the structural tool interface with action metadata.
  * ActionLogEntry represents the persisted audit row.

@@ -8,7 +8,7 @@ export const DB_TYPES = [
   { value: "salesforce", label: "Salesforce" },
 ] as const;
 
-/** Database type — closed union derived from DB_TYPES. The backend's internal DBType in connection.ts is wider to accommodate plugin-registered databases. */
+/** Database type — closed union derived from DB_TYPES. The backend's internal DBType in @atlas/api/lib/db/connection.ts is wider to accommodate plugin-registered databases. */
 export type DBType = (typeof DB_TYPES)[number]["value"];
 
 /** Health check status for a connection. */
@@ -34,7 +34,7 @@ export interface ConnectionInfo {
 export interface ConnectionDetail {
   id: string;
   /** Broader than DBType — includes fallback "unknown" when metadata is unavailable. */
-  dbType: string;
+  dbType: DBType | "unknown";
   description: string | null;
   health: ConnectionHealth | null;
   maskedUrl: string | null;

@@ -1,3 +1,5 @@
+/** Conversation persistence types — wire format for conversations and messages. */
+
 export type MessageRole = "user" | "assistant" | "system" | "tool";
 export type Surface = "web" | "api" | "mcp" | "slack";
 

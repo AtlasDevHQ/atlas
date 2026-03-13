@@ -69,7 +69,7 @@ async function loadDuckDB() {
   return DuckDBInstance;
 }
 
-/** Connection-level error codes that indicate the database is unreachable — re-throw immediately to abort profiling. */
+/** Network/socket error codes indicating the database connection is down or broken — re-throw immediately to abort profiling. */
 export const FATAL_ERROR_PATTERN = /ECONNRESET|ECONNREFUSED|EHOSTUNREACH|ENOTFOUND|EPIPE|ETIMEDOUT/i;
 
 const SEMANTIC_DIR = path.resolve("semantic");
@@ -378,7 +378,11 @@ export async function profilePostgres(
         allObjects.push({ name: r.table_name, type: "materialized_view" });
       }
     } catch (mvErr) {
-      console.warn(`  Warning: Could not discover materialized views: ${mvErr instanceof Error ? mvErr.message : String(mvErr)}`);
+      const mvMsg = mvErr instanceof Error ? mvErr.message : String(mvErr);
+      if (FATAL_ERROR_PATTERN.test(mvMsg)) {
+        throw mvErr;
+      }
+      console.warn(`  Warning: Could not discover materialized views: ${mvMsg}`);
     }
     allObjects.sort((a, b) => a.name.localeCompare(b.name));
   }
@@ -412,7 +416,11 @@ export async function profilePostgres(
             matview_populated = mvResult.rows[0].ispopulated;
           }
         } catch (mvErr) {
-          console.warn(`    Warning: Could not read matview status for ${table_name}: ${mvErr instanceof Error ? mvErr.message : String(mvErr)}`);
+          const mvMsg = mvErr instanceof Error ? mvErr.message : String(mvErr);
+          if (FATAL_ERROR_PATTERN.test(mvMsg)) {
+            throw mvErr;
+          }
+          console.warn(`    Warning: Could not read matview status for ${table_name}: ${mvMsg}`);
         }
       }
 
@@ -435,12 +443,20 @@ export async function profilePostgres(
         try {
           primaryKeyColumns = await queryPrimaryKeys(pool, table_name, schema);
         } catch (pkErr) {
-          console.warn(`    Warning: Could not read PK constraints for ${table_name}: ${pkErr instanceof Error ? pkErr.message : String(pkErr)}`);
+          const pkMsg = pkErr instanceof Error ? pkErr.message : String(pkErr);
+          if (FATAL_ERROR_PATTERN.test(pkMsg)) {
+            throw pkErr;
+          }
+          console.warn(`    Warning: Could not read PK constraints for ${table_name}: ${pkMsg}`);
         }
         try {
           foreignKeys = await queryForeignKeys(pool, table_name, schema);
         } catch (fkErr) {
-          console.warn(`    Warning: Could not read FK constraints for ${table_name}: ${fkErr instanceof Error ? fkErr.message : String(fkErr)}`);
+          const fkMsg = fkErr instanceof Error ? fkErr.message : String(fkErr);
+          if (FATAL_ERROR_PATTERN.test(fkMsg)) {
+            throw fkErr;
+          }
+          console.warn(`    Warning: Could not read FK constraints for ${table_name}: ${fkMsg}`);
         }
       }
 
@@ -595,7 +611,11 @@ export async function profilePostgres(
       partitionMap.set(r.relname, { strategy: r.strategy, key: r.partition_key });
     }
   } catch (partErr) {
-    console.warn(`  Warning: Could not read partition metadata: ${partErr instanceof Error ? partErr.message : String(partErr)}`);
+    const partMsg = partErr instanceof Error ? partErr.message : String(partErr);
+    if (FATAL_ERROR_PATTERN.test(partMsg)) {
+      throw partErr;
+    }
+    console.warn(`  Warning: Could not read partition metadata: ${partMsg}`);
   }
 
   const childrenMap = new Map<string, string[]>();
@@ -616,7 +636,11 @@ export async function profilePostgres(
       childrenMap.set(r.parent, children);
     }
   } catch (childErr) {
-    console.warn(`  Warning: Could not read partition children: ${childErr instanceof Error ? childErr.message : String(childErr)}`);
+    const childMsg = childErr instanceof Error ? childErr.message : String(childErr);
+    if (FATAL_ERROR_PATTERN.test(childMsg)) {
+      throw childErr;
+    }
+    console.warn(`  Warning: Could not read partition children: ${childMsg}`);
   }
 
   for (const profile of profiles) {
@@ -734,12 +758,20 @@ export async function profileMySQL(
         try {
           primaryKeyColumns = await queryMySQLPrimaryKeys(pool, table_name);
         } catch (pkErr) {
-          console.warn(`    Warning: Could not read PK constraints for ${table_name}: ${pkErr instanceof Error ? pkErr.message : String(pkErr)}`);
+          const pkMsg = pkErr instanceof Error ? pkErr.message : String(pkErr);
+          if (FATAL_ERROR_PATTERN.test(pkMsg)) {
+            throw pkErr;
+          }
+          console.warn(`    Warning: Could not read PK constraints for ${table_name}: ${pkMsg}`);
         }
         try {
           foreignKeys = await queryMySQLForeignKeys(pool, table_name);
         } catch (fkErr) {
-          console.warn(`    Warning: Could not read FK constraints for ${table_name}: ${fkErr instanceof Error ? fkErr.message : String(fkErr)}`);
+          const fkMsg = fkErr instanceof Error ? fkErr.message : String(fkErr);
+          if (FATAL_ERROR_PATTERN.test(fkMsg)) {
+            throw fkErr;
+          }
+          console.warn(`    Warning: Could not read FK constraints for ${table_name}: ${fkMsg}`);
         }
       }
 
@@ -995,7 +1027,11 @@ export async function profileClickHouse(
           try {
             primaryKeyColumns = await queryClickHousePrimaryKeys(client, table_name);
           } catch (pkErr) {
-            console.warn(`    Warning: Could not read PK columns for ${table_name}: ${pkErr instanceof Error ? pkErr.message : String(pkErr)}`);
+            const pkMsg = pkErr instanceof Error ? pkErr.message : String(pkErr);
+            if (FATAL_ERROR_PATTERN.test(pkMsg)) {
+              throw pkErr;
+            }
+            console.warn(`    Warning: Could not read PK columns for ${table_name}: ${pkMsg}`);
           }
         }
 

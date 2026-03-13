@@ -123,7 +123,7 @@ See [Environment Variables — LLM Provider](/reference/environment-variables#ll
 <Step>
 ### Generate the semantic layer
 
-The semantic layer (a set of YAML entity files in `semantic/`) tells the agent what tables exist and what they mean. Generate it from the demo database:
+The [semantic layer](/getting-started/concepts) (a set of YAML entity files in `semantic/`) tells the agent what tables exist and what they mean. Generate it from the demo database:
 
 ```bash
 bun run atlas -- init
@@ -217,6 +217,7 @@ See [CLI Reference](/reference/cli) for all commands and flags.
 
 ## Next steps
 
+- **[Understand the semantic layer](/getting-started/concepts)** — learn what entities, dimensions, measures, and metrics mean
 - **[Connect your own database](/getting-started/connect-your-data)** — replace the demo with your PostgreSQL, MySQL, or other datasource
 - **[Deploy to production](/deployment/deploy)** — Railway, Vercel, or Docker
 - **[Set up authentication](/deployment/authentication)** — API key, managed auth, or bring-your-own-token

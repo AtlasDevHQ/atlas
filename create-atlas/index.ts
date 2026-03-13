@@ -52,6 +52,23 @@ function bail(message?: string): never {
   process.exit(1);
 }
 
+/** Extract a stream from an execSync error. Returns the stream content, or err.message as fallback. */
+function extractExecOutput(err: unknown, stream: "stdout" | "stderr" = "stderr"): string {
+  if (err && typeof err === "object" && stream in err) {
+    const value = String((err as Record<string, unknown>)[stream]).trim();
+    if (value) return value;
+  }
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** Extract a stream from an execSync error. Returns empty string if not present. */
+function extractExecStream(err: unknown, stream: "stdout" | "stderr"): string {
+  if (err && typeof err === "object" && stream in err) {
+    return String((err as Record<string, unknown>)[stream]).trim();
+  }
+  return "";
+}
+
 // Parse --defaults / -y flag for non-interactive mode
 const args = process.argv.slice(2);
 const useDefaults = args.includes("--defaults") || args.includes("-y");
@@ -687,10 +704,8 @@ async function main() {
       connSpinner.stop("Database is reachable.");
     } catch (err) {
       connSpinner.stop("Could not connect to database.");
-      if (err && typeof err === "object" && "stderr" in err) {
-        const stderr = String((err as { stderr: unknown }).stderr).trim();
-        if (stderr) p.log.warn(stderr);
-      }
+      const connStderr = extractExecStream(err, "stderr");
+      if (connStderr) p.log.warn(connStderr);
       const proceed = await p.confirm({
         message: "Database is not reachable. Try generating semantic layer anyway?",
         initialValue: false,
@@ -925,15 +940,6 @@ export default defineConfig({
     const demoInitFlag = `--demo ${demoDataset}`;
     const timeoutMs = demoDataset === "cybersec" || demoDataset === "ecommerce" ? 120_000 : 60_000;
 
-    /** Extract stderr from an execSync error, or fall back to message. */
-    function extractError(err: unknown): string {
-      if (err && typeof err === "object" && "stderr" in err) {
-        const stderr = String((err as { stderr: unknown }).stderr).trim();
-        if (stderr) return stderr;
-      }
-      return err instanceof Error ? err.message : String(err);
-    }
-
     // Check if Postgres is reachable before attempting to seed
     s.start("Checking database connectivity...");
     let dbReachable = false;
@@ -946,7 +952,7 @@ export default defineConfig({
       s.stop("Database is reachable.");
     } catch (connErr) {
       s.stop("Database is not reachable.");
-      const connDetail = extractError(connErr);
+      const connDetail = extractExecOutput(connErr);
 
       // If the error is about a missing module, bun install likely failed — don't chase Docker
       if (connDetail.includes("Cannot find module") || connDetail.includes("MODULE_NOT_FOUND")) {
@@ -963,7 +969,7 @@ export default defineConfig({
             execSync("docker info", { stdio: "pipe", timeout: 5_000 });
             dockerRunning = true;
           } catch (dockerCheckErr) {
-            dockerError = extractError(dockerCheckErr);
+            dockerError = extractExecOutput(dockerCheckErr);
           }
           if (!dockerRunning) {
             if (dockerError.includes("permission denied")) {
@@ -996,7 +1002,7 @@ export default defineConfig({
                   break;
                 } catch (retryErr) {
                   // Break immediately on non-retryable errors
-                  const retryDetail = extractError(retryErr);
+                  const retryDetail = extractExecOutput(retryErr);
                   if (retryDetail.includes("Cannot find module") || retryDetail.includes("password authentication failed")) {
                     p.log.warn(`Connection error: ${retryDetail}`);
                     break;
@@ -1012,7 +1018,7 @@ export default defineConfig({
                 p.log.warn(`Run manually: cd ${projectName} && bun run atlas -- init ${demoInitFlag}`);
               }
             } catch (dockerErr) {
-              p.log.warn(`Could not start PostgreSQL: ${extractError(dockerErr)}`);
+              p.log.warn(`Could not start PostgreSQL: ${extractExecOutput(dockerErr)}`);
               p.log.warn(`Run manually:\n  cd ${projectName} && docker compose up -d postgres && bun run atlas -- init ${demoInitFlag}`);
             }
           }
@@ -1037,14 +1043,10 @@ export default defineConfig({
       } catch (err) {
         s.stop("Failed to load demo data.");
         setupFailed = true;
-        let detail = err instanceof Error ? err.message : String(err);
-        if (err && typeof err === "object" && "stderr" in err) {
-          const stderr = String((err as { stderr: unknown }).stderr).trim();
-          if (stderr) detail = stderr;
-        }
-        if (err && typeof err === "object" && "signal" in err && (err as { signal: unknown }).signal === "SIGTERM") {
-          detail = `Timed out after ${timeoutMs / 1000}s. The ${demoDataset} dataset may need more time on slow connections.`;
-        }
+        const signal = err && typeof err === "object" && "signal" in err ? (err as { signal: unknown }).signal : null;
+        const detail = signal === "SIGTERM"
+          ? `Timed out after ${timeoutMs / 1000}s. The ${demoDataset} dataset may need more time on slow connections.`
+          : extractExecOutput(err);
         p.log.error(`Demo seeding failed: ${detail}`);
         p.log.error(
           `Run ${pc.cyan(`bun run atlas -- init ${demoInitFlag}`)} manually after resolving the issue.`
@@ -1117,6 +1119,7 @@ export default defineConfig({
 
   p.note(noteBody, "Next steps");
 
+  let doctorFailed = false;
   if (!skipDoctor && !setupFailed) {
     s.start("Running atlas doctor...");
     try {
@@ -1132,6 +1135,7 @@ export default defineConfig({
         console.log(output);
       }
     } catch (err) {
+      doctorFailed = true;
       const isExecError = err && typeof err === "object";
       const signal = isExecError && "signal" in err ? (err as { signal: unknown }).signal : null;
       const status = isExecError && "status" in err ? (err as { status: unknown }).status : null;
@@ -1143,21 +1147,16 @@ export default defineConfig({
         );
       } else if (status === 1) {
         s.stop("Health check found issues.");
-        if (isExecError && "stdout" in err) {
-          const stdout = String((err as { stdout: unknown }).stdout).trim();
-          if (stdout) console.log(stdout);
-        }
-        if (isExecError && "stderr" in err) {
-          const stderr = String((err as { stderr: unknown }).stderr).trim();
-          if (stderr) p.log.warn(stderr);
-        }
+        const stdout = extractExecStream(err, "stdout");
+        const stderr = extractExecStream(err, "stderr");
+        if (stdout) console.log(stdout);
+        if (stderr) p.log.warn(stderr);
         p.log.warn(
           `Some checks failed. Run ${pc.cyan("bun run atlas -- doctor")} after fixing the issues above.`
         );
       } else {
         s.stop("Could not run health check.");
-        const detail = err instanceof Error ? err.message : String(err);
-        p.log.warn(`Atlas doctor could not run: ${detail}`);
+        p.log.warn(`Atlas doctor could not run: ${extractExecOutput(err)}`);
         p.log.warn(
           `Run ${pc.cyan("bun run atlas -- doctor")} manually to validate your setup.`
         );
@@ -1173,6 +1172,8 @@ export default defineConfig({
 
   if (setupFailed) {
     p.outro(`${pc.yellow("Partial setup")} in ${pc.dim(timeStr)}. See errors above.`);
+  } else if (doctorFailed) {
+    p.outro(`${pc.yellow("Setup complete")} in ${pc.dim(timeStr)} — fix issues above, then ${pc.cyan("bun run dev")}.`);
   } else {
     p.outro(
       `${pc.green("Done!")} Setup complete in ${pc.dim(timeStr)} — ${pc.cyan(`./${projectName}`)} is ready.`

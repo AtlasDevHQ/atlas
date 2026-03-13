@@ -12,14 +12,22 @@ export function FollowUpChips({
   if (suggestions.length === 0) return null;
 
   return (
-    <div className="flex flex-wrap gap-2 pt-1">
+    <div className="flex flex-wrap gap-2 pt-1" role="group" aria-label="Suggested follow-up questions">
       {suggestions.map((s, i) => (
         <Button
           key={`${i}-${s}`}
           variant="outline"
           size="sm"
+          role="button"
+          tabIndex={0}
           className="h-auto rounded-full px-3 py-1.5 text-xs font-normal text-zinc-600 dark:text-zinc-400"
           onClick={() => onSelect(s)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              onSelect(s);
+            }
+          }}
         >
           {s}
         </Button>

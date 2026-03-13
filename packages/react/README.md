@@ -5,7 +5,7 @@ Embeddable Atlas chat UI for React applications.
 ## Installation
 
 ```bash
-npm install @useatlas/react
+bun add @useatlas/react
 ```
 
 ## Usage

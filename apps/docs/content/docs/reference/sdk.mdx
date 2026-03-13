@@ -395,7 +395,7 @@ See [Admin Console](/guides/admin-console) for details on each endpoint.
 
 ## Error Handling
 
-All API errors are thrown as `AtlasError` instances.
+All API errors are thrown as `AtlasError` instances. See the [Rate Limiting & Retry](/guides/rate-limiting) guide for retry-with-backoff patterns and handling 429 responses.
 
 ```typescript
 import { AtlasError } from "@useatlas/sdk";

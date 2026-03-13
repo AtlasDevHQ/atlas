@@ -231,7 +231,7 @@ ATLAS_AUTH_ROLE_CLAIM=app_metadata.atlas_role
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ATLAS_RATE_LIMIT_RPM` | `0` (disabled) | Max requests per minute per user. 0 or unset = unlimited |
+| `ATLAS_RATE_LIMIT_RPM` | `0` (disabled) | Max requests per minute per user. `0` or unset = unlimited |
 | `ATLAS_TRUST_PROXY` | `false` | Trust `X-Forwarded-For` / `X-Real-IP` headers. Set `true` behind a reverse proxy |
 
 ```bash
@@ -239,6 +239,8 @@ ATLAS_AUTH_ROLE_CLAIM=app_metadata.atlas_role
 ATLAS_RATE_LIMIT_RPM=30
 ATLAS_TRUST_PROXY=true
 ```
+
+See [Rate Limiting & Retry](/guides/rate-limiting) for client-side handling, SDK retry patterns, and troubleshooting.
 
 ---
 

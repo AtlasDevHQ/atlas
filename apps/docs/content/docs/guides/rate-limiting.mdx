@@ -1,0 +1,285 @@
+---
+title: Rate Limiting & Retry
+description: Configure server-side rate limits and handle 429 responses in your client code.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+import { Tabs, Tab } from "fumadocs-ui/components/tabs";
+
+Atlas provides two layers of rate limiting: **per-user request limits** (RPM) and **per-datasource query limits** (QPM + concurrency). This guide covers how to configure both, handle 429 responses, and implement retry logic in your client code.
+
+---
+
+## Server-Side Configuration
+
+### Per-User Rate Limiting
+
+Control how many requests each user can make per minute. This is a sliding-window counter that tracks requests per authenticated user (or per IP for anonymous users).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_RATE_LIMIT_RPM` | `0` (disabled) | Max requests per minute per user. `0` or unset = unlimited |
+| `ATLAS_TRUST_PROXY` | `false` | Trust `X-Forwarded-For` / `X-Real-IP` headers for client IP detection |
+
+```bash
+# Enable rate limiting at 30 requests per minute per user
+ATLAS_RATE_LIMIT_RPM=30
+
+# Required when behind a reverse proxy (Railway, Vercel, nginx, etc.)
+ATLAS_TRUST_PROXY=true
+```
+
+<Callout type="info">
+Rate limit keys are resolved in order: authenticated user ID, then forwarded IP (if `ATLAS_TRUST_PROXY=true`), then a shared `anon` bucket. Without `ATLAS_TRUST_PROXY`, all proxied users share the same key.
+</Callout>
+
+Rate limiting is **disabled by default**. When enabled, it covers the primary API routes: `/api/chat`, `/api/v1/query`, `/api/v1/conversations`, `/api/v1/admin/*`, `/api/v1/semantic/*`, `/api/v1/scheduled-tasks`, and `/api/v1/actions`. Health, auth, widget, and OpenAPI spec endpoints are exempt.
+
+### Per-Datasource Rate Limiting
+
+When using [`atlas.config.ts`](/reference/config), you can set per-datasource query limits to protect your analytics database from excessive load.
+
+```typescript
+// atlas.config.ts
+import { defineConfig } from "@atlas/api/lib/config";
+
+export default defineConfig({
+  datasources: {
+    default: {
+      url: process.env.ATLAS_DATASOURCE_URL!,
+      rateLimit: {
+        queriesPerMinute: 60,  // Max SQL queries per minute (default: 60)
+        concurrency: 5,        // Max concurrent queries (default: 5)
+      },
+    },
+  },
+});
+```
+
+Per-datasource limits are checked when the agent calls `executeSQL`. If the limit is hit, the tool returns an error to the agent with a `retryAfterMs` hint — the agent sees this as a failed tool call and can adjust its approach.
+
+---
+
+## HTTP Response Format
+
+When a rate limit is exceeded, Atlas returns a standard `429 Too Many Requests` response.
+
+### Response Headers
+
+```
+HTTP/1.1 429 Too Many Requests
+Retry-After: 12
+```
+
+The `Retry-After` header follows [RFC 7231](https://datatracker.ietf.org/doc/html/rfc7231#section-7.1.3) and contains the number of seconds to wait.
+
+### Response Body
+
+```json
+{
+  "error": "rate_limited",
+  "message": "Too many requests. Please wait before trying again.",
+  "retryAfterSeconds": 12
+}
+```
+
+The SDK and built-in widget clamp `retryAfterSeconds` to `[0, 300]` when parsing the response. If you build a custom client, apply your own clamping to the raw value.
+
+---
+
+## SDK Error Handling
+
+The `@useatlas/sdk` surfaces rate limit errors as `AtlasError` instances with the `rate_limited` code and a `retryAfterSeconds` property.
+
+```typescript
+import { createAtlasClient, AtlasError } from "@useatlas/sdk";
+
+const atlas = createAtlasClient({
+  baseUrl: "https://api.example.com",
+  apiKey: "your-api-key",
+});
+
+try {
+  const result = await atlas.query("Revenue by region");
+} catch (error) {
+  if (error instanceof AtlasError && error.code === "rate_limited") {
+    // Server tells you exactly how long to wait
+    console.log(`Rate limited — retry in ${error.retryAfterSeconds}s`);
+  }
+}
+```
+
+### Retry with Exponential Backoff
+
+The SDK does not retry automatically — you control the retry strategy. Here is a reusable helper:
+
+```typescript
+import { AtlasError } from "@useatlas/sdk";
+
+/**
+ * Retry a function with exponential backoff, respecting Retry-After on 429s.
+ */
+async function withRetry<T>(
+  fn: (signal: AbortSignal) => Promise<T>,
+  opts: { maxRetries?: number; baseDelayMs?: number; signal?: AbortSignal } = {},
+): Promise<T> {
+  const { maxRetries = 3, baseDelayMs = 1000, signal } = opts;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    // Create a linked AbortController so individual attempts can be cancelled
+    const controller = new AbortController();
+    signal?.addEventListener("abort", () => controller.abort(), { once: true });
+
+    try {
+      return await fn(controller.signal);
+    } catch (error) {
+      // Don't retry if the caller cancelled the operation
+      if (signal?.aborted) throw error;
+
+      // Only retry on rate limit errors
+      if (!(error instanceof AtlasError && error.code === "rate_limited")) {
+        throw error;
+      }
+
+      // No more retries — throw the last error
+      if (attempt === maxRetries) throw error;
+
+      // Use server's Retry-After if available, otherwise exponential backoff
+      const delayMs = error.retryAfterSeconds
+        ? error.retryAfterSeconds * 1000
+        : baseDelayMs * 2 ** attempt;
+
+      console.log(`Attempt ${attempt + 1} rate limited — waiting ${delayMs}ms`);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+
+  // Unreachable, but satisfies TypeScript
+  throw new Error("Retry loop exited unexpectedly");
+}
+```
+
+### Usage Examples
+
+<Tabs items={["Single query", "Streaming", "Batch with concurrency"]}>
+<Tab value="Single query">
+```typescript
+// Retry a single query up to 3 times, respecting Retry-After
+// Note: query() does not support AbortSignal — only streamQuery() does
+const result = await withRetry(
+  () => atlas.query("Revenue by region"),
+  { maxRetries: 3 },
+);
+```
+</Tab>
+<Tab value="Streaming">
+```typescript
+// Retry the stream connection — once connected, the stream itself won't 429
+const controller = new AbortController();
+
+// Cancel after 30 seconds if no response
+setTimeout(() => controller.abort(), 30_000);
+
+await withRetry(
+  async (signal) => {
+    for await (const event of atlas.streamQuery("Revenue trend", { signal })) {
+      if (event.type === "text") process.stdout.write(event.content);
+      if (event.type === "finish") console.log(`\nDone (${event.reason})`);
+    }
+  },
+  { signal: controller.signal },
+);
+```
+</Tab>
+<Tab value="Batch with concurrency">
+```typescript
+// Run multiple queries with controlled concurrency to avoid hitting limits
+const questions = [
+  "Revenue by region",
+  "Top 10 customers",
+  "Monthly churn rate",
+  "Average order value",
+];
+
+// Process 2 at a time to stay within RPM limits
+const batchSize = 2;
+const results = [];
+
+for (let i = 0; i < questions.length; i += batchSize) {
+  const batch = questions.slice(i, i + batchSize);
+  const batchResults = await Promise.all(
+    batch.map((q) => withRetry(() => atlas.query(q))),
+  );
+  results.push(...batchResults);
+}
+```
+</Tab>
+</Tabs>
+
+---
+
+## Widget & Embed Behavior
+
+The Atlas [chat widget](/guides/embedding-widget) and `@useatlas/react` component handle rate limits automatically. When a 429 is received:
+
+1. A red error banner appears with the message **"Too many requests."**
+2. A live countdown shows the remaining wait time: **"Try again in 12 seconds."**
+3. The countdown ticks down each second until it reaches zero, at which point the user can retry
+
+No client-side code is needed — the widget reads `retryAfterSeconds` from the error response and renders the countdown automatically.
+
+---
+
+## Troubleshooting
+
+### Rate limit too low for batch operations
+
+If you're running batch queries via the SDK and hitting limits frequently, you have two options:
+
+1. **Increase `ATLAS_RATE_LIMIT_RPM`** — Set a higher per-user limit for the API key user
+2. **Add client-side throttling** — Space out requests using the batch concurrency pattern above
+
+<Callout type="warn">
+Setting `ATLAS_RATE_LIMIT_RPM=0` disables rate limiting entirely. Only do this for trusted internal services, not public-facing deployments.
+</Callout>
+
+### Per-user vs per-API-key limits
+
+Rate limits are tracked **per authentication identity**:
+
+- **Managed auth** — Each signed-in user has their own limit
+- **API key auth** — All requests sharing the same API key share one limit
+- **Anonymous** — All unauthenticated users behind a proxy share an IP-based limit (or a single `anon` bucket without `ATLAS_TRUST_PROXY`)
+
+If multiple services share an API key and hit limits, consider issuing separate keys or switching to managed/BYOT auth for per-user tracking.
+
+### All users hitting the same limit
+
+If `ATLAS_TRUST_PROXY` is `false` (the default) but your deployment sits behind a reverse proxy, all requests appear to come from the same internal IP. Set `ATLAS_TRUST_PROXY=true` to use forwarded headers for per-client tracking.
+
+### Diagnosing rate limit issues
+
+Rate limit rejections are logged at `warn` level. Ensure `ATLAS_LOG_LEVEL` is set to `warn` or lower (e.g., `info`, the default) to see these entries in your server logs. Each rejection logs the rate limit key and retry delay.
+
+The audit log records **per-datasource** rate limit rejections — filter by failed queries with "Rate limited" in the error field via Admin > Audit Log. Per-user RPM rejections return a 429 before the agent runs and are not audit-logged — check server logs instead.
+
+### Per-datasource limits vs per-user limits
+
+These are independent layers:
+
+| Layer | Controls | Configured via |
+|-------|----------|----------------|
+| Per-user RPM | How often a user can call any API endpoint | `ATLAS_RATE_LIMIT_RPM` env var |
+| Per-datasource QPM | How many SQL queries hit a specific database per minute | `atlas.config.ts` `rateLimit.queriesPerMinute` |
+| Per-datasource concurrency | How many SQL queries run simultaneously against a database | `atlas.config.ts` `rateLimit.concurrency` |
+
+A request can pass the per-user check but still fail at the per-datasource layer if the database is under heavy load.
+
+---
+
+## Related
+
+- [Environment Variables](/reference/environment-variables#rate-limiting) — `ATLAS_RATE_LIMIT_RPM` and `ATLAS_TRUST_PROXY` reference
+- [SDK Reference](/reference/sdk#error-handling) — `AtlasError` and error codes
+- [Configuration Reference](/reference/config) — Per-datasource rate limit settings in `atlas.config.ts`
+- [Embedding Widget](/guides/embedding-widget) — Widget setup and customization

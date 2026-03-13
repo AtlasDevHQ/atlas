@@ -797,6 +797,48 @@ describe("runValidate", () => {
     const exitCode = await withCwd(dir, () => runValidate({ offline: true }));
     expect(exitCode).toBe(0);
   });
+
+  test("doctor mode returns same exit code as strict for offline failures", async () => {
+    const dir = makeTmpDir();
+    createSemanticDir(dir, {
+      entities: {
+        "bad.yml": ": invalid [yaml",
+      },
+    });
+    const exitCode = await withCwd(dir, () => runValidate({ offline: true, mode: "doctor" }));
+    expect(exitCode).toBe(1);
+  });
+
+  test("doctor mode returns 0 for valid semantic layer (offline)", async () => {
+    const dir = makeTmpDir();
+    createSemanticDir(dir, {
+      entities: {
+        "users.yml": "table: users\ndimensions:\n  id:\n    type: integer\n    description: User ID\n",
+      },
+      metrics: {
+        "user_count.yml": "metric: user_count\ntable: users\n",
+      },
+    });
+    const exitCode = await withCwd(dir, () => runValidate({ offline: true, mode: "doctor" }));
+    expect(exitCode).toBe(0);
+  });
+
+  test("doctor mode returns 2 for warnings-only (offline)", async () => {
+    const dir = makeTmpDir();
+    createSemanticDir(dir, {
+      entities: {
+        "users.yml": [
+          "table: users",
+          "dimensions:",
+          "  id:",
+          "    type: integer",
+          // missing description — triggers warn, not fail
+        ].join("\n"),
+      },
+    });
+    const exitCode = await withCwd(dir, () => runValidate({ offline: true, mode: "doctor" }));
+    expect(exitCode).toBe(2);
+  });
 });
 
 // ---------------------------------------------------------------------------

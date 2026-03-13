@@ -38,6 +38,8 @@ export interface ValidateResult {
 
 export interface ValidateOptions {
   offline?: boolean;
+  /** "strict" (default) exits 1 on any failure. "doctor" excludes Sandbox/Internal DB from exit 1. */
+  mode?: "strict" | "doctor";
 }
 
 export interface ValidateSection {
@@ -879,7 +881,14 @@ export async function runValidate(opts?: ValidateOptions): Promise<number> {
 
   // Exit codes: 0 = all pass, 1 = any fail, 2 = warnings only
   const allResults = sections.flatMap((s) => s.results);
-  const hasFail = allResults.some((r) => r.status === "fail");
+
+  // In doctor mode, Sandbox and Internal DB failures are non-critical (exit 0)
+  const nonCriticalLabels = new Set(["Sandbox", "Internal DB"]);
+  const isDoctorMode = opts?.mode === "doctor";
+
+  const hasFail = allResults.some(
+    (r) => r.status === "fail" && !(isDoctorMode && nonCriticalLabels.has(r.label)),
+  );
   const hasWarn = allResults.some((r) => r.status === "warn");
 
   if (hasFail) return 1;

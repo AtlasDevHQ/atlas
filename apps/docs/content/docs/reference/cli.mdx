@@ -152,18 +152,13 @@ bun run atlas -- query "warehouse inventory" --connection warehouse
 
 ## doctor
 
-Validate the environment, connectivity, and configuration. Checks that all required services are reachable and properly configured.
+Alias for [`validate`](#validate) with relaxed exit codes. Runs the same config, semantic layer, and connectivity checks, but Sandbox and Internal DB failures are treated as warnings instead of errors — the command still exits 0 for these non-critical failures.
 
 ```bash
 bun run atlas -- doctor
 ```
 
-No flags. Checks:
-- Database connectivity (`ATLAS_DATASOURCE_URL`)
-- Internal DB connectivity (`DATABASE_URL`)
-- LLM provider configuration
-- Semantic layer presence and validity
-- Sandbox availability
+No flags. Use `doctor` in CI pipelines where Sandbox or Internal DB are optional. Use `validate` when you want strict exit codes for all failures.
 
 **Example output:**
 
@@ -177,20 +172,24 @@ No flags. Checks:
 
 ## validate
 
-Check the semantic layer YAML files for errors. Runs offline — no database or API key required.
+Validate config, semantic layer, and connectivity. Checks that configuration is correct, semantic layer YAML files are valid, and all services are reachable.
 
 ```bash
-bun run atlas -- validate
+bun run atlas -- validate [options]
 ```
 
-No flags. Validates:
-- YAML syntax and required fields
-- Column type consistency
-- Join references
-- Metric SQL syntax
-- Glossary entries
+| Flag | Description |
+|------|-------------|
+| `--offline` | Skip connectivity checks (no database or API key required) |
 
-Useful in CI to catch semantic layer errors before deployment.
+**Checks:**
+- **Config** — `atlas.config.ts` presence and structure
+- **Semantic layer** — YAML syntax, required fields, column types, join references, metric SQL, glossary entries, cross-references
+- **Connectivity** (unless `--offline`) — datasource, database, LLM provider, sandbox, internal DB
+
+**Exit codes:** 0 = all pass, 1 = any failure, 2 = warnings only.
+
+Useful in CI to catch errors before deployment. Use `--offline` for fast, local-only validation.
 
 ## mcp
 

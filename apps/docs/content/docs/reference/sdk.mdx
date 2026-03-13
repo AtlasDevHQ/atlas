@@ -425,7 +425,7 @@ try {
 | `configuration_error` | 400 | Server misconfigured |
 | `no_datasource` | 400 | No datasource connected |
 | `invalid_request` | 400 | Invalid request body |
-| `validation_error` | 422 | SQL validation failed — query rejected by AST parser or table whitelist |
+| `validation_error` | 422 | Request validation failed (see `details` for field errors) |
 | `not_found` | 404 | Resource not found |
 | `not_available` | 404 | Feature not available (e.g., no internal DB) |
 | `provider_model_not_found` | 400 | Configured AI model does not exist |

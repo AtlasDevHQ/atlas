@@ -17,6 +17,9 @@ export const CHAT_ERROR_CODES = [
   "provider_unreachable",
   "provider_error",
   "internal_error",
+  "validation_error",
+  "not_found",
+  "forbidden",
 ] as const;
 
 /** Union of all error codes the server can return in the `error` field. */
@@ -85,15 +88,17 @@ export function authErrorMessage(authMode: AuthMode): string {
  * Parse an AI SDK chat error into a user-friendly `ChatErrorInfo`.
  *
  * Expects `error.message` to contain a JSON string with `{ error, message, retryAfterSeconds? }`.
- * Falls back to a generic message when the body is not valid JSON (e.g. network failures,
- * HTML error pages, or unexpected formats).
+ * Falls back to a generic title when the body is not valid JSON (e.g. network failures,
+ * HTML error pages, or unexpected formats), preserving the original message as `detail`
+ * (truncated to 200 characters).
  */
 export function parseChatError(error: Error, authMode: AuthMode): ChatErrorInfo {
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(error.message);
   } catch {
-    return { title: "Something went wrong. Please try again." };
+    const raw = error.message.length > 200 ? error.message.slice(0, 200) + "..." : error.message;
+    return { title: "Something went wrong. Please try again.", detail: raw };
   }
 
   const rawCode = typeof parsed.error === "string" ? parsed.error : undefined;
@@ -149,6 +154,15 @@ export function parseChatError(error: Error, authMode: AuthMode): ChatErrorInfo 
 
     case "internal_error":
       return { title: serverMessage ?? "An unexpected error occurred.", code: rawCode };
+
+    case "validation_error":
+      return { title: "Validation error.", detail: serverMessage, code: rawCode };
+
+    case "not_found":
+      return { title: "Not found.", detail: serverMessage, code: rawCode };
+
+    case "forbidden":
+      return { title: "Access denied.", detail: serverMessage, code: rawCode };
 
     default: {
       const _exhaustive: never = rawCode;

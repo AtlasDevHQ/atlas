@@ -361,7 +361,7 @@ Atlas enforces several safety limits. Tune them via environment variables:
 
 ### SQL validation pipeline
 
-Every query passes through a 7-layer validation pipeline (regex guard, AST parse, table whitelist, RLS injection, auto-LIMIT, statement timeout) before execution. See [SQL Validation Pipeline](/security/sql-validation) for the full breakdown.
+Every query passes through a 7-layer validation pipeline (empty check, regex guard, AST parse, table whitelist, RLS injection, auto-LIMIT, statement timeout) before execution. See [SQL Validation Pipeline](/security/sql-validation) for the full breakdown.
 
 ### Read-only enforcement by data source
 

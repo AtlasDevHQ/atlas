@@ -5,7 +5,7 @@ description: How Atlas enforces read-only SQL execution through a 7-layer defens
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Atlas lets an AI agent write SQL against your production database. Without guardrails, this is dangerous — a single malicious or mistaken query could delete data, expose secrets, or lock up your database. The validation pipeline exists to make this impossible.
+Atlas lets an AI agent write SQL against your production database. Without guardrails, this is dangerous — a single malicious or mistaken query could delete data, expose secrets, or lock up your database. The validation pipeline is designed to prevent this.
 
 Every SQL query the agent writes passes through **7 layers of validation** before it reaches your database. No query can bypass the pipeline — if any layer rejects, the query is blocked and the agent receives a structured error message explaining why.
 
@@ -54,7 +54,7 @@ The pipeline is identical across all supported databases. The only difference is
 
 ## Layer 1: Regex mutation guard
 
-**What it does:** A fast first-pass check that scans the query text for keywords associated with data modification or administrative commands. SQL comments are stripped before testing so they cannot be used to hide dangerous keywords.
+**What it does:** A fast first-pass check that scans the query text for keywords associated with data modification or administrative commands. SQL comments are stripped before testing so they cannot be used to hide dangerous keywords, but string literals are preserved — this is why keywords inside string values (like `WHERE status = 'DELETE'`) trigger false positives.
 
 **Why it matters:** This is the first line of defense against queries that try to change or destroy data. It runs before the more expensive AST parsing, catching obvious attacks cheaply.
 
@@ -175,7 +175,7 @@ RLS injection runs **after** validation (layers 0–3) and **after** all plugin 
 
 ## Layer 5: Auto LIMIT
 
-**What it does:** A `LIMIT` clause is appended to every query that doesn't already have one.
+**What it does:** A `LIMIT` clause is appended to every query that doesn't already have one. The check is text-based — if the word `LIMIT` appears anywhere in the query (including in a subquery), no additional LIMIT is appended.
 
 **Why it matters:** Without a limit, a simple `SELECT * FROM events` on a table with millions of rows could return a massive result set, consuming memory and bandwidth. Auto LIMIT caps the result set to a safe default.
 
@@ -198,7 +198,7 @@ If the result set hits the limit, the response includes `truncated: true` so the
 **Why it matters:** Even a valid, read-only SELECT can consume significant resources — a complex join across large tables, or a query that triggers a sequential scan, could run for minutes and degrade performance for other users. The statement timeout prevents any single query from monopolizing the database.
 
 - **PostgreSQL**: Session-level `statement_timeout` set on the connection
-- **MySQL**: Session-level timeout variable
+- **MySQL**: Session-level `MAX_EXECUTION_TIME` set per query
 
 Default: **30 seconds** (30000ms). Configure with `ATLAS_QUERY_TIMEOUT`.
 

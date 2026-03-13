@@ -21,7 +21,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 | **Auth model** | Managed, BYOT, API key | BYOT (`UserResolver` class) |
 | **Admin console** | Built-in | No |
 | **MCP server** | Yes | No |
-| **SQL validation** | 4-layer pipeline (AST, whitelist, LIMIT, timeout) | None built-in |
+| **SQL validation** | 7-layer pipeline (empty check, regex guard, AST parse, table whitelist, RLS, auto-LIMIT, timeout) | None built-in |
 
 ## Context Approach
 
@@ -41,7 +41,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 ## SQL Safety
 
-Atlas enforces read-only access through a 4-layer SQL validation pipeline: regex guard, AST parsing (only SELECT), table whitelist (only semantic layer entities), and auto LIMIT with statement timeout.
+Atlas enforces read-only access through a [7-layer SQL validation pipeline](/security/sql-validation): empty check, regex mutation guard, AST parsing (single SELECT only), table whitelist (only semantic layer entities), RLS injection, auto LIMIT, and statement timeout.
 
 Vanna does not include built-in SQL validation. The generated SQL is passed directly to your database connection. You're responsible for adding guardrails -- read-only database users, query validation, and timeout enforcement.
 

@@ -14,6 +14,10 @@
   <a href="https://docs.useatlas.dev">Documentation</a> · <a href="https://app.useatlas.dev">Live Demo</a> · <a href="https://docs.useatlas.dev/docs/deployment/deploy">Deploy Guide</a> · <a href="https://github.com/AtlasDevHQ/atlas/issues">Issues</a>
 </p>
 
+<p align="center">
+  <img src="assets/demo.svg" alt="Atlas terminal demo — create, init, and query in under 30 seconds" width="820">
+</p>
+
 ---
 
 ## What is Atlas?

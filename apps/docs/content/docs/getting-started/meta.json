@@ -6,6 +6,7 @@
   "pages": [
     "quick-start",
     "connect-your-data",
+    "concepts",
     "semantic-layer",
     "demo-datasets"
   ]

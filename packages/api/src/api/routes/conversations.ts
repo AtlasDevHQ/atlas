@@ -262,19 +262,21 @@ conversations.get("/:id/share", async (c) => {
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     const result = await getShareStatus(id, authResult.user?.id);
     if (!result.ok) {
+      if (result.reason === "error") {
+        log.error({ requestId, conversationId: id }, "Share status fetch failed due to DB error");
+      }
       const fail = crudFailResponse(result.reason);
       return c.json(fail.body, fail.status);
     }
-    const { shared, token, expiresAt } = result.data;
-    if (!shared || !token) {
-      return c.json({ shared: false });
+    if (!result.data.shared) {
+      return c.json({ shared: false as const });
     }
     const baseUrl = new URL(req.url).origin;
     return c.json({
-      shared: true,
-      token,
-      url: `${baseUrl}/shared/${token}`,
-      expiresAt,
+      shared: true as const,
+      token: result.data.token,
+      url: `${baseUrl}/shared/${result.data.token}`,
+      expiresAt: result.data.expiresAt,
     });
   });
 });
@@ -388,6 +390,16 @@ conversations.delete("/:id", async (c) => {
 
 const SHARE_TOKEN_RE = /^[A-Za-z0-9_-]{20,64}$/;
 
+export const ShareStatusResponseSchema = z.discriminatedUnion("shared", [
+  z.object({ shared: z.literal(false) }),
+  z.object({
+    shared: z.literal(true),
+    token: z.string(),
+    url: z.string(),
+    expiresAt: z.string().nullable(),
+  }),
+]);
+
 export const SharedConversationMessageSchema = z.object({
   role: z.enum(["user", "assistant", "system", "tool"]),
   content: z.unknown(),
@@ -425,7 +437,25 @@ if (typeof _sweepInterval === "object" && "unref" in _sweepInterval) _sweepInter
 
 // Clean up expired share tokens every 60 minutes
 const SHARE_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
-const _shareCleanupInterval = setInterval(() => void cleanupExpiredShares(), SHARE_CLEANUP_INTERVAL_MS);
+let shareCleanupConsecutiveFailures = 0;
+const _shareCleanupInterval = setInterval(async () => {
+  try {
+    const count = await cleanupExpiredShares();
+    if (count >= 0) {
+      shareCleanupConsecutiveFailures = 0;
+    } else {
+      shareCleanupConsecutiveFailures++;
+      if (shareCleanupConsecutiveFailures >= 5) {
+        log.error({ consecutiveFailures: shareCleanupConsecutiveFailures },
+          "Share cleanup has failed repeatedly — expired tokens may remain accessible");
+      }
+    }
+  } catch (err) {
+    shareCleanupConsecutiveFailures++;
+    log.error({ err: err instanceof Error ? err.message : String(err) },
+      "Unexpected error in share cleanup interval");
+  }
+}, SHARE_CLEANUP_INTERVAL_MS);
 if (typeof _shareCleanupInterval === "object" && "unref" in _shareCleanupInterval) _shareCleanupInterval.unref();
 
 function checkPublicRateLimit(ip: string): boolean {

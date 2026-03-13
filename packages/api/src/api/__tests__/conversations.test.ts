@@ -56,7 +56,7 @@ const mockAddMessage = mock(() => {});
 const mockGenerateTitle = mock(() => "Test title");
 const mockShareConversation = mock((): Promise<ShareResult> => Promise.resolve({ ok: false, reason: "not_found" }));
 const mockUnshareConversation = mock((): Promise<CrudResult> => Promise.resolve({ ok: false, reason: "not_found" }));
-const mockGetShareStatus = mock((): Promise<CrudDataResult<{ shared: boolean; token: string | null; expiresAt: string | null }>> => Promise.resolve({ ok: false, reason: "not_found" }));
+const mockGetShareStatus = mock((): Promise<CrudDataResult<import("@atlas/api/lib/conversations").ShareStatusData>> => Promise.resolve({ ok: false, reason: "not_found" }));
 const mockGetSharedConversation = mock((): Promise<CrudDataResult<ConversationWithMessages>> => Promise.resolve({ ok: false, reason: "not_found" }));
 
 mock.module("@atlas/api/lib/conversations", () => ({
@@ -67,6 +67,7 @@ mock.module("@atlas/api/lib/conversations", () => ({
   shareConversation: mockShareConversation,
   unshareConversation: mockUnshareConversation,
   getShareStatus: mockGetShareStatus,
+  cleanupExpiredShares: mock(() => Promise.resolve(0)),
   getSharedConversation: mockGetSharedConversation,
   createConversation: mockCreateConversation,
   addMessage: mockAddMessage,
@@ -579,7 +580,7 @@ describe("conversations routes", () => {
     it("returns 200 with shared=true and url when conversation is shared", async () => {
       mockGetShareStatus.mockResolvedValueOnce({
         ok: true,
-        data: { shared: true, token: "abc123def456", expiresAt: null },
+        data: { shared: true as const, token: "abc123def456", expiresAt: null },
       });
 
       const response = await app.fetch(
@@ -598,7 +599,7 @@ describe("conversations routes", () => {
     it("returns 200 with shared=false when conversation is not shared", async () => {
       mockGetShareStatus.mockResolvedValueOnce({
         ok: true,
-        data: { shared: false, token: null, expiresAt: null },
+        data: { shared: false as const, token: null, expiresAt: null },
       });
 
       const response = await app.fetch(
@@ -631,7 +632,7 @@ describe("conversations routes", () => {
     it("passes userId for auth scoping", async () => {
       mockGetShareStatus.mockResolvedValueOnce({
         ok: true,
-        data: { shared: false, token: null, expiresAt: null },
+        data: { shared: false as const, token: null, expiresAt: null },
       });
 
       await app.fetch(

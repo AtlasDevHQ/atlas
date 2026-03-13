@@ -45,12 +45,9 @@ export interface ShareLink {
   url: string;
 }
 
-export interface ShareStatus {
-  shared: boolean;
-  token?: string;
-  url?: string;
-  expiresAt?: string | null;
-}
+export type ShareStatus =
+  | { shared: false }
+  | { shared: true; token: string; url: string; expiresAt: string | null };
 
 // --- Scheduled task types (from @atlas/api/lib/scheduled-task-types) ---
 

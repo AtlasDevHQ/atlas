@@ -726,15 +726,29 @@ describe("conversations module", () => {
       }
     });
 
-    it("returns expiresAt when set", async () => {
+    it("returns expiresAt when set and not expired", async () => {
       enableInternalDB();
-      setResults({ rows: [{ share_token: "tok", share_expires_at: "2025-12-31T00:00:00Z" }] });
+      const futureDate = new Date(Date.now() + 86400000).toISOString();
+      setResults({ rows: [{ share_token: "tok", share_expires_at: futureDate }] });
 
       const result = await getShareStatus("c1");
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.data.shared).toBe(true);
-        expect(result.data.expiresAt).toBe("2025-12-31T00:00:00Z");
+        expect(result.data.expiresAt).toBe(futureDate);
+      }
+    });
+
+    it("returns shared=false when token has expired", async () => {
+      enableInternalDB();
+      setResults({ rows: [{ share_token: "tok", share_expires_at: "2020-01-01T00:00:00Z" }] });
+
+      const result = await getShareStatus("c1");
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.data.shared).toBe(false);
+        expect(result.data.token).toBeNull();
+        expect(result.data.expiresAt).toBeNull();
       }
     });
 
@@ -900,12 +914,12 @@ describe("conversations module", () => {
       expect(count).toBe(0);
     });
 
-    it("returns 0 on DB error", async () => {
+    it("returns -1 on DB error", async () => {
       enableInternalDB();
       queryThrow = new Error("connection lost");
 
       const count = await cleanupExpiredShares();
-      expect(count).toBe(0);
+      expect(count).toBe(-1);
     });
   });
 });

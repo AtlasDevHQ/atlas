@@ -54,16 +54,17 @@ export function ShareDialog({ conversationId, onShare, onUnshare, onGetShareStat
       try {
         const status = await onGetShareStatus(conversationId);
         if (cancelled) return;
-        if (status?.shared && status.url) {
+        if (status?.shared) {
           setShared(true);
           setShareUrl(status.url);
         } else {
           setShared(false);
           setShareUrl(null);
         }
-      } catch {
+      } catch (err) {
         if (!cancelled) {
-          // Silently fail — user can still create a new share link
+          console.warn("getShareStatus: fetch failed", err);
+          setError("Could not check existing share status. You can still create a new share link.");
         }
       } finally {
         if (!cancelled) setFetchingStatus(false);
@@ -85,7 +86,8 @@ export function ShareDialog({ conversationId, onShare, onUnshare, onGetShareStat
       } else {
         setError("Failed to create share link. Please try again.");
       }
-    } catch {
+    } catch (err) {
+      console.warn("handleShare error:", err);
       setError("Failed to create share link. Please try again.");
     } finally {
       setLoading(false);
@@ -103,7 +105,8 @@ export function ShareDialog({ conversationId, onShare, onUnshare, onGetShareStat
       } else {
         setError("Failed to remove share link. Please try again.");
       }
-    } catch {
+    } catch (err) {
+      console.warn("handleUnshare error:", err);
       setError("Failed to remove share link. Please try again.");
     } finally {
       setLoading(false);
@@ -121,7 +124,8 @@ export function ShareDialog({ conversationId, onShare, onUnshare, onGetShareStat
       } else {
         setError("Failed to regenerate share link. Please try again.");
       }
-    } catch {
+    } catch (err) {
+      console.warn("handleRegenerate error:", err);
       setError("Failed to regenerate share link. Please try again.");
     } finally {
       setLoading(false);
@@ -135,7 +139,7 @@ export function ShareDialog({ conversationId, onShare, onUnshare, onGetShareStat
     try {
       await navigator.clipboard.writeText(text);
       onSuccess();
-    } catch {
+    } catch (clipErr) {
       // Fallback for insecure contexts (e.g. non-HTTPS iframes)
       try {
         const input = document.createElement("input");
@@ -149,7 +153,8 @@ export function ShareDialog({ conversationId, onShare, onUnshare, onGetShareStat
         } else {
           setError("Could not copy to clipboard. Please select and copy manually.");
         }
-      } catch {
+      } catch (fallbackErr) {
+        console.warn("copyToClipboard: both methods failed", clipErr, fallbackErr);
         setError("Could not copy to clipboard. Please select and copy manually.");
       }
     }

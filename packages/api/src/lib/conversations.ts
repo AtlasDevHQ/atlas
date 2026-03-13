@@ -333,11 +333,16 @@ export async function unshareConversation(
   }
 }
 
-/** Fetch the share status of a conversation. Auth-scoped when userId is provided. */
+/** Share status data — discriminated union keyed on `shared`. */
+export type ShareStatusData =
+  | { shared: false; token: null; expiresAt: null }
+  | { shared: true; token: string; expiresAt: string | null };
+
+/** Fetch the share status of a conversation. Auth-scoped when userId is provided. Expired tokens are treated as not shared. */
 export async function getShareStatus(
   id: string,
   userId?: string | null,
-): Promise<CrudDataResult<{ shared: boolean; token: string | null; expiresAt: string | null }>> {
+): Promise<CrudDataResult<ShareStatusData>> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
     const rows = userId
@@ -351,15 +356,12 @@ export async function getShareStatus(
         );
     if (rows.length === 0) return { ok: false, reason: "not_found" };
     const token = (rows[0].share_token as string) ?? null;
-    const expiresAt = rows[0].share_expires_at ? String(rows[0].share_expires_at) : null;
-    return {
-      ok: true,
-      data: {
-        shared: token !== null,
-        token,
-        expiresAt,
-      },
-    };
+    const expiresAt = token && rows[0].share_expires_at ? String(rows[0].share_expires_at) : null;
+    const isExpired = expiresAt !== null && new Date(expiresAt) < new Date();
+    if (!token || isExpired) {
+      return { ok: true, data: { shared: false, token: null, expiresAt: null } };
+    }
+    return { ok: true, data: { shared: true, token, expiresAt } };
   } catch (err) {
     log.error({ err: err instanceof Error ? err.message : String(err) }, "getShareStatus failed");
     return { ok: false, reason: "error" };
@@ -369,7 +371,7 @@ export async function getShareStatus(
 /**
  * Clean up expired share tokens by NULLing out `share_token` and
  * `share_expires_at` for rows where the expiry has passed. Returns the
- * number of rows cleaned, or 0 if no internal DB is configured.
+ * number of rows cleaned, 0 if nothing to clean, or -1 on error.
  */
 export async function cleanupExpiredShares(): Promise<number> {
   if (!hasInternalDB()) return 0;
@@ -387,7 +389,7 @@ export async function cleanupExpiredShares(): Promise<number> {
     return count;
   } catch (err) {
     log.error({ err: err instanceof Error ? err.message : String(err) }, "cleanupExpiredShares failed");
-    return 0;
+    return -1;
   }
 }
 

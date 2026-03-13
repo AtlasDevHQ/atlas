@@ -185,7 +185,7 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
       }
       return {
         token: data.token,
-        url: `${window.location.origin}/shared/${data.token}`,
+        url: data.url ?? `${window.location.origin}/shared/${data.token}`,
       };
     } catch (err) {
       console.warn("shareConversation error:", err);

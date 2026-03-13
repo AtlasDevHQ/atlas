@@ -305,6 +305,7 @@ export type StreamEvent =
   | { type: "tool-result"; toolCallId: string; name: string; result: Record<string, unknown> }
   | { type: "result"; columns: string[]; rows: Record<string, unknown>[] }
   | { type: "error"; message: string }
+  | { type: "parse_error"; raw: string; error: string }
   | { type: "finish"; reason: StreamFinishReason };
 
 export interface StreamQueryOptions {
@@ -522,8 +523,8 @@ export function createAtlasClient(options: AtlasClientOptions) {
 
             try {
               yield JSON.parse(data) as Record<string, unknown>;
-            } catch {
-              // Skip unparseable events
+            } catch (e) {
+              yield { type: "parse_error", raw: data, error: e instanceof Error ? e.message : String(e) };
             }
           }
         }
@@ -638,6 +639,14 @@ export function createAtlasClient(options: AtlasClientOptions) {
               yield {
                 type: "error",
                 message: (event.errorText ?? event.message ?? "Unknown error") as string,
+              };
+              break;
+            }
+            case "parse_error": {
+              yield {
+                type: "parse_error",
+                raw: event.raw as string,
+                error: event.error as string,
               };
               break;
             }

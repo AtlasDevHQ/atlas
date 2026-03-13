@@ -1,9 +1,10 @@
 ---
 title: API Overview
-description: HTTP API overview and authentication guide. For endpoint details, see the interactive API Reference.
+description: HTTP API overview, authentication guide, and working examples for every core endpoint.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
+import { Tabs, Tab } from "fumadocs-ui/components/tabs";
 
 Atlas exposes a Hono-based HTTP API. All endpoints are mounted under `/api/`. Use the [SDK](/reference/sdk) for a typed client, or call the API directly.
 
@@ -29,6 +30,8 @@ You can use this with tools like [Scalar](https://scalar.com), [Swagger UI](http
 | Standalone API | `http://localhost:3001/api` |
 | Cross-origin | Set `NEXT_PUBLIC_ATLAS_API_URL` to the API host |
 
+All examples below use `http://localhost:3001` as the base URL. Replace with your deployment URL in production.
+
 ---
 
 ## Authentication
@@ -41,6 +44,331 @@ Authentication headers depend on the configured [auth mode](/deployment/authenti
 | Simple Key | `Authorization: Bearer <api-key>` or `X-API-Key: <key>` |
 | Managed | `Cookie: better-auth.session_token=<token>` (browser) or `Authorization: Bearer <session-token>` |
 | BYOT | `Authorization: Bearer <jwt>` |
+
+### Auth Examples
+
+**Simple Key** — use either header format:
+
+```bash
+# Authorization header (Bearer format)
+curl http://localhost:3001/api/v1/conversations \
+  -H "Authorization: Bearer your-atlas-api-key"
+
+# X-API-Key header (alternative)
+curl http://localhost:3001/api/v1/conversations \
+  -H "X-API-Key: your-atlas-api-key"
+```
+
+**Managed (Better Auth)** — use the session token from sign-in:
+
+```bash
+# Browser requests send the cookie automatically.
+# For server-to-server calls, pass the session token as a Bearer token.
+curl http://localhost:3001/api/v1/conversations \
+  -H "Authorization: Bearer session-token-from-sign-in"
+```
+
+---
+
+## Endpoints
+
+### Query
+
+`POST /api/v1/query` runs a natural-language question through the agent and returns the final answer synchronously (no streaming). Good for scripts, cron jobs, and integrations that need a single JSON response.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `question` | string | Yes | Natural-language question |
+| `conversationId` | string (UUID) | No | Continue an existing conversation |
+
+<Tabs items={["curl", "fetch"]}>
+<Tab value="curl">
+```bash
+# Ask a question and get a synchronous JSON response.
+# The agent explores the semantic layer, writes SQL, and returns results.
+curl -X POST http://localhost:3001/api/v1/query \
+  -H "Authorization: Bearer your-atlas-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "What are the top 5 customers by total contract value?"
+  }'
+```
+</Tab>
+<Tab value="fetch">
+```typescript
+// Synchronous query — resolves once the agent finishes all steps.
+const response = await fetch("http://localhost:3001/api/v1/query", {
+  method: "POST",
+  headers: {
+    "Authorization": "Bearer your-atlas-api-key",
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    question: "What are the top 5 customers by total contract value?",
+  }),
+});
+
+const result = await response.json();
+console.log(result.answer);     // Natural-language answer
+console.log(result.sql);        // SQL queries the agent executed
+console.log(result.data);       // Raw query results ({ columns, rows }[]) — empty if no SQL was needed
+```
+</Tab>
+</Tabs>
+
+**Response:**
+
+```json
+{
+  "answer": "Here are the top 5 customers by total contract value:\n\n| Customer | Total Value |\n|---|---|\n| Meridian Health Systems | $2,847,500 |\n| Coastal Federal Credit Union | $1,923,000 |\n| Vertex Dynamics | $1,456,200 |\n| Pacific Northwest Energy | $1,290,800 |\n| Brightfield Manufacturing | $1,105,400 |",
+  "sql": [
+    "SELECT c.name, SUM(ct.value) AS total_value FROM customers c JOIN contracts ct ON c.id = ct.customer_id GROUP BY c.name ORDER BY total_value DESC LIMIT 5"
+  ],
+  "data": [
+    {
+      "columns": ["name", "total_value"],
+      "rows": [
+        { "name": "Meridian Health Systems", "total_value": 2847500 },
+        { "name": "Coastal Federal Credit Union", "total_value": 1923000 },
+        { "name": "Vertex Dynamics", "total_value": 1456200 },
+        { "name": "Pacific Northwest Energy", "total_value": 1290800 },
+        { "name": "Brightfield Manufacturing", "total_value": 1105400 }
+      ]
+    }
+  ],
+  "steps": 4,
+  "usage": { "totalTokens": 3847 },
+  "conversationId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+}
+```
+
+`conversationId` is only returned when an internal database (`DATABASE_URL`) is configured. Without it, conversations are not persisted and this field is omitted.
+
+### Chat (Streaming)
+
+`POST /api/chat` streams the agent's response in real time using Server-Sent Events (SSE). This is what the web UI uses. The response includes tool calls, intermediate results, and the final answer as they happen.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `messages` | array | Yes | Conversation messages (role + parts + id) |
+| `conversationId` | string (UUID) | No | Continue an existing conversation |
+
+<Tabs items={["curl", "fetch"]}>
+<Tab value="curl">
+```bash
+# Stream the agent's response as Server-Sent Events.
+# -N disables output buffering so events print as they arrive.
+curl -N -X POST http://localhost:3001/api/chat \
+  -H "Authorization: Bearer your-atlas-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [
+      {
+        "role": "user",
+        "id": "msg-001",
+        "parts": [{ "type": "text", "text": "How many active threats were detected this week?" }]
+      }
+    ]
+  }'
+```
+</Tab>
+<Tab value="fetch">
+```typescript
+// Stream the agent's response using the Fetch API.
+// Each SSE event contains a chunk of the agent's work (text, tool calls, data).
+const response = await fetch("http://localhost:3001/api/chat", {
+  method: "POST",
+  headers: {
+    "Authorization": "Bearer your-atlas-api-key",
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    messages: [
+      {
+        role: "user",
+        id: "msg-001",
+        parts: [{ type: "text", text: "How many active threats were detected this week?" }],
+      },
+    ],
+  }),
+});
+
+// The response is an SSE stream. Read it line by line.
+const reader = response.body!.getReader();
+const decoder = new TextDecoder();
+
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+  // Each chunk may contain one or more SSE events (data: ... lines)
+  console.log(decoder.decode(value));
+}
+```
+</Tab>
+</Tabs>
+
+The response streams as SSE events. The `x-conversation-id` response header contains the conversation ID for follow-up messages (only present when `DATABASE_URL` is configured).
+
+**SSE event stream (abbreviated):**
+
+```
+data: 0:"Let me check the threat detection data for this week."
+
+data: 9:{"toolCallId":"call_01","toolName":"explore","args":{"path":"semantic/entities"}}
+
+data: a:{"toolCallId":"call_01","result":{"entries":["threats.yml","incidents.yml","customers.yml"]}}
+
+data: 9:{"toolCallId":"call_02","toolName":"executeSQL","args":{"sql":"SELECT COUNT(*) AS active_threats FROM threats WHERE status = 'active' AND detected_at >= CURRENT_DATE - INTERVAL '7 days'"}}
+
+data: a:{"toolCallId":"call_02","result":{"columns":["active_threats"],"rows":[{"active_threats":142}]}}
+
+data: 0:"There were **142 active threats** detected in the past 7 days."
+
+data: d:{"finishReason":"stop"}
+```
+
+### Conversations
+
+Conversation endpoints require an internal database (`DATABASE_URL`). They return HTTP 404 with error code `not_available` if no internal database is configured.
+
+#### List conversations
+
+```bash
+# List recent conversations. Supports pagination via limit/offset.
+# Use starred=true to filter to starred conversations only.
+curl "http://localhost:3001/api/v1/conversations?limit=5&offset=0" \
+  -H "Authorization: Bearer your-atlas-api-key"
+```
+
+**Response:**
+
+```json
+{
+  "conversations": [
+    {
+      "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "userId": "user_01",
+      "title": "Top customers by contract value",
+      "surface": "web",
+      "connectionId": null,
+      "starred": false,
+      "createdAt": "2026-03-13T14:22:00.000Z",
+      "updatedAt": "2026-03-13T14:23:15.000Z"
+    },
+    {
+      "id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+      "userId": "user_01",
+      "title": "Weekly threat summary",
+      "surface": "api",
+      "connectionId": null,
+      "starred": true,
+      "createdAt": "2026-03-12T09:10:00.000Z",
+      "updatedAt": "2026-03-12T09:15:42.000Z"
+    }
+  ],
+  "total": 47
+}
+```
+
+#### Get conversation with messages
+
+```bash
+# Fetch a single conversation including its full message history.
+curl http://localhost:3001/api/v1/conversations/a1b2c3d4-e5f6-7890-abcd-ef1234567890 \
+  -H "Authorization: Bearer your-atlas-api-key"
+```
+
+**Response:**
+
+```json
+{
+  "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "userId": "user_01",
+  "title": "Top customers by contract value",
+  "surface": "web",
+  "connectionId": null,
+  "starred": false,
+  "createdAt": "2026-03-13T14:22:00.000Z",
+  "updatedAt": "2026-03-13T14:23:15.000Z",
+  "messages": [
+    {
+      "id": "m1a2b3c4-d5e6-7890-abcd-ef1234567890",
+      "conversationId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "role": "user",
+      "content": [{ "type": "text", "text": "What are the top 5 customers by total contract value?" }],
+      "createdAt": "2026-03-13T14:22:00.000Z"
+    },
+    {
+      "id": "m2b3c4d5-e6f7-8901-bcde-f12345678901",
+      "conversationId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "role": "assistant",
+      "content": [{ "type": "text", "text": "Here are the top 5 customers by total contract value..." }],
+      "createdAt": "2026-03-13T14:23:15.000Z"
+    }
+  ]
+}
+```
+
+#### Delete conversation
+
+```bash
+# Delete a conversation and all its messages. Returns 204 on success.
+curl -X DELETE http://localhost:3001/api/v1/conversations/a1b2c3d4-e5f6-7890-abcd-ef1234567890 \
+  -H "Authorization: Bearer your-atlas-api-key"
+```
+
+#### Star / unstar a conversation
+
+```bash
+# Star a conversation to pin it. Set starred to false to unstar.
+curl -X PATCH http://localhost:3001/api/v1/conversations/a1b2c3d4-e5f6-7890-abcd-ef1234567890/star \
+  -H "Authorization: Bearer your-atlas-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{ "starred": true }'
+```
+
+**Response:**
+
+```json
+{ "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890", "starred": true }
+```
+
+### Health
+
+`GET /api/health` is a public endpoint (no auth required) that reports the status of all Atlas components.
+
+```bash
+# Check API health and component status. No authentication needed.
+curl http://localhost:3001/api/health
+```
+
+**Response:**
+
+```json
+{
+  "status": "ok",
+  "components": {
+    "datasource": { "status": "healthy", "latencyMs": 3, "lastCheckedAt": "2026-03-13T14:22:00.000Z" },
+    "internalDb": { "status": "healthy", "latencyMs": 1, "lastCheckedAt": "2026-03-13T14:22:00.000Z" },
+    "provider": { "status": "healthy", "model": "your-configured-model", "lastCheckedAt": "2026-03-13T14:22:00.000Z" },
+    "sandbox": { "status": "healthy", "backend": "sidecar", "lastCheckedAt": "2026-03-13T14:22:00.000Z" },
+    "scheduler": { "status": "disabled", "lastCheckedAt": "2026-03-13T14:22:00.000Z" }
+  },
+  "checks": {
+    "datasource": { "status": "ok", "latencyMs": 3 },
+    "provider": { "status": "ok", "provider": "anthropic", "model": "your-configured-model" },
+    "semanticLayer": { "status": "ok", "entityCount": 12 },
+    "internalDb": { "status": "ok", "latencyMs": 1 },
+    "explore": { "backend": "sidecar", "isolated": true },
+    "auth": { "mode": "simple-key", "enabled": true },
+    "slack": { "enabled": false, "mode": "disabled" }
+  }
+}
+```
 
 ---
 
@@ -60,7 +388,7 @@ All error responses follow a consistent format:
 
 | Code | Status | Description |
 |------|--------|-------------|
-| `auth_error` | 401 | Authentication failed or missing |
+| `auth_error` | 401/403 | Authentication failed or missing |
 | `rate_limited` | 429 | Too many requests. `Retry-After` header included |
 | `configuration_error` | 400 | Atlas is not fully configured (missing provider, etc.) |
 | `no_datasource` | 400 | No datasource URL configured |
@@ -69,10 +397,10 @@ All error responses follow a consistent format:
 | `not_found` | 404 | Resource not found |
 | `not_available` | 404 | Feature not available (e.g., no internal DB) |
 | `provider_model_not_found` | 400 | Configured AI model does not exist |
-| `provider_auth_error` | 502 | AI provider authentication failed |
-| `provider_rate_limit` | 429 | AI provider rate limited |
+| `provider_auth_error` | 503 | AI provider authentication failed |
+| `provider_rate_limit` | 503 | AI provider rate limited |
 | `provider_timeout` | 504 | AI provider timed out |
-| `provider_unreachable` | 502 | Could not reach the AI provider |
+| `provider_unreachable` | 503 | Could not reach the AI provider |
 | `provider_error` | 502 | AI provider returned an error |
 | `internal_error` | 500 | Unexpected server error |
 

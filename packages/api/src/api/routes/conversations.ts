@@ -24,6 +24,7 @@ import {
   shareConversation,
   unshareConversation,
   getSharedConversation,
+  cleanupExpiredShares,
   type CrudFailReason,
 } from "@atlas/api/lib/conversations";
 
@@ -377,6 +378,11 @@ function sweepPublicRateMap() {
 const _sweepInterval = setInterval(sweepPublicRateMap, PUBLIC_RATE_WINDOW_MS);
 // Don't prevent process exit
 if (typeof _sweepInterval === "object" && "unref" in _sweepInterval) _sweepInterval.unref();
+
+// Clean up expired share tokens every 60 minutes
+const SHARE_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+const _shareCleanupInterval = setInterval(() => void cleanupExpiredShares(), SHARE_CLEANUP_INTERVAL_MS);
+if (typeof _shareCleanupInterval === "object" && "unref" in _shareCleanupInterval) _shareCleanupInterval.unref();
 
 function checkPublicRateLimit(ip: string): boolean {
   const now = Date.now();

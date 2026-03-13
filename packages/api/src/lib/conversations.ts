@@ -334,6 +334,31 @@ export async function unshareConversation(
 }
 
 /**
+ * Clean up expired share tokens by NULLing out `share_token` and
+ * `share_expires_at` for rows where the expiry has passed. Returns the
+ * number of rows cleaned, or 0 if no internal DB is configured.
+ */
+export async function cleanupExpiredShares(): Promise<number> {
+  if (!hasInternalDB()) return 0;
+  try {
+    const rows = await internalQuery<{ id: string }>(
+      `UPDATE conversations
+         SET share_token = NULL, share_expires_at = NULL
+       WHERE share_expires_at IS NOT NULL AND share_expires_at < NOW()
+       RETURNING id`,
+    );
+    const count = rows.length;
+    if (count > 0) {
+      log.info({ count }, "Cleaned up expired share tokens");
+    }
+    return count;
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err) }, "cleanupExpiredShares failed");
+    return 0;
+  }
+}
+
+/**
  * Fetch a shared conversation by token. Returns not_found if token is missing
  * or expired. No auth required.
  *

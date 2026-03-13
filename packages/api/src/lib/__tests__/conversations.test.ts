@@ -17,6 +17,7 @@ import {
   shareConversation,
   unshareConversation,
   getSharedConversation,
+  cleanupExpiredShares,
 } from "../conversations";
 
 // ---------------------------------------------------------------------------
@@ -780,6 +781,48 @@ describe("conversations module", () => {
       const unshareResult = await unshareConversation("c1", "u1");
       expect(unshareResult).toEqual({ ok: true });
       expect(queryCalls[0].sql).toContain("share_token = NULL");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // cleanupExpiredShares
+  // -------------------------------------------------------------------------
+
+  describe("cleanupExpiredShares()", () => {
+    it("returns 0 when no internal DB", async () => {
+      const count = await cleanupExpiredShares();
+      expect(count).toBe(0);
+      expect(queryCalls.length).toBe(0);
+    });
+
+    it("runs the correct UPDATE ... RETURNING SQL", async () => {
+      enableInternalDB();
+      setResults({ rows: [{ id: "c1" }, { id: "c2" }] });
+
+      const count = await cleanupExpiredShares();
+      expect(count).toBe(2);
+      expect(queryCalls.length).toBe(1);
+      expect(queryCalls[0].sql).toContain("UPDATE conversations");
+      expect(queryCalls[0].sql).toContain("SET share_token = NULL, share_expires_at = NULL");
+      expect(queryCalls[0].sql).toContain("share_expires_at IS NOT NULL");
+      expect(queryCalls[0].sql).toContain("share_expires_at < NOW()");
+      expect(queryCalls[0].sql).toContain("RETURNING id");
+    });
+
+    it("returns 0 when no rows match", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      const count = await cleanupExpiredShares();
+      expect(count).toBe(0);
+    });
+
+    it("returns 0 on DB error", async () => {
+      enableInternalDB();
+      queryThrow = new Error("connection lost");
+
+      const count = await cleanupExpiredShares();
+      expect(count).toBe(0);
     });
   });
 });

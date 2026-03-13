@@ -27,6 +27,10 @@ describe("formatDuration", () => {
 });
 
 describe("estimateRemaining", () => {
+  test("returns 0 when total is 0", () => {
+    expect(estimateRemaining(5000, 0, 0)).toBe(0);
+  });
+
   test("returns 0 when no items completed", () => {
     expect(estimateRemaining(5000, 0, 10)).toBe(0);
   });

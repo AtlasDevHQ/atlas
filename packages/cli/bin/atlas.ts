@@ -578,7 +578,7 @@ export async function profilePostgres(
 
   await pool.end();
 
-  if (errors.length > 0) {
+  if (errors.length > 0 && !progress) {
     console.log(`\nWarning: ${errors.length} table(s)/view(s) failed to profile:`);
     for (const e of errors) {
       console.log(`  - ${e.table}: ${e.error}`);
@@ -808,7 +808,7 @@ export async function profileMySQL(
     });
   }
 
-  if (errors.length > 0) {
+  if (errors.length > 0 && !progress) {
     console.log(`\nWarning: ${errors.length} table(s)/view(s) failed to profile:`);
     for (const e of errors) {
       console.log(`  - ${e.table}: ${e.error}`);
@@ -1060,7 +1060,7 @@ export async function profileClickHouse(
     });
   }
 
-  if (errors.length > 0) {
+  if (errors.length > 0 && !progress) {
     console.log(`\nWarning: ${errors.length} table(s)/view(s) failed to profile:`);
     for (const e of errors) {
       console.log(`  - ${e.table}: ${e.error}`);
@@ -1407,7 +1407,7 @@ export async function profileSnowflake(
     }
   }
 
-  if (errors.length > 0) {
+  if (errors.length > 0 && !progress) {
     console.log(`\nWarning: ${errors.length} table(s)/view(s) failed to profile:`);
     for (const e of errors) {
       console.log(`  - ${e.table}: ${e.error}`);
@@ -1599,7 +1599,7 @@ export async function profileSalesforce(
     await source.close();
   }
 
-  if (errors.length > 0) {
+  if (errors.length > 0 && !progress) {
     console.log(`\nWarning: ${errors.length} object(s) failed to profile:`);
     for (const e of errors) {
       console.log(`  - ${e.table}: ${e.error}`);
@@ -4415,7 +4415,7 @@ async function profileDatasource(opts: ProfileDatasourceOpts): Promise<void> {
   }
 
   const profilingElapsed = Date.now() - profilingStart;
-  progress.onComplete(profiles.length, 0, profilingElapsed);
+  progress.onComplete(profiles.length, profilingElapsed);
 
   if (profiles.length === 0) {
     throw new Error("No tables or views were successfully profiled. Check the warnings above and verify your database permissions.");
@@ -4895,7 +4895,10 @@ async function main() {
     console.log("Profiling DuckDB tables...\n");
     const duckFilterTables = filterTables ?? tableNames;
     const duckProgress = createProgressTracker();
+    const duckStart = Date.now();
     const profiles = await profileDuckDB(dbPath, duckFilterTables, undefined, duckProgress);
+    duckProgress.onComplete(profiles.length, Date.now() - duckStart);
+
 
     if (profiles.length === 0) {
       console.error("\nError: No tables were successfully profiled.");

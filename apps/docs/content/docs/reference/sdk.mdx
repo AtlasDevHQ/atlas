@@ -180,7 +180,7 @@ for await (const event of atlas.streamQuery("Revenue by region last quarter")) {
       console.table(event.rows);
       break;
     case "finish":
-      // Stream complete — reason is "stop", "length", or "tool-calls"
+      // Stream complete — common reasons: "stop", "length", "tool-calls", "error"
       console.log(`\nDone (${event.reason})`);
       break;
   }
@@ -198,7 +198,7 @@ setTimeout(() => controller.abort(), 10_000); // Cancel after 10 seconds
 
 try {
   for await (const event of atlas.streamQuery("...", {
-    signal: controller.signal, // Pass the signal to enable cancellation
+    signal: controller.signal,
   })) {
     if (event.type === "text") process.stdout.write(event.content);
   }
@@ -295,7 +295,7 @@ await atlas.scheduledTasks.trigger(task.id);
 // Fetch execution history for debugging or monitoring
 const { runs } = await atlas.scheduledTasks.listRuns(task.id, { limit: 10 });
 
-// Soft-delete the task (preserved in audit trail)
+// Soft-delete the task (sets enabled=false)
 await atlas.scheduledTasks.delete(task.id);
 ```
 
@@ -317,7 +317,7 @@ const { entity } = await atlas.admin.semantic.entity("orders");
 const { metrics } = await atlas.admin.semantic.metrics();
 const { glossary } = await atlas.admin.semantic.glossary();
 const { catalog } = await atlas.admin.semantic.catalog();
-const stats = await atlas.admin.semantic.stats(); // Coverage percentages
+const stats = await atlas.admin.semantic.stats(); // Entity counts and coverage gap counts
 
 // List datasource connections and test their health
 const { connections } = await atlas.admin.connections();

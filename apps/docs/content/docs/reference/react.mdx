@@ -74,7 +74,6 @@ Manages chat state, message streaming, and conversation tracking. Wraps the AI S
 import { useAtlasChat } from "@useatlas/react/hooks";
 
 function ChatUI() {
-  // Destructure chat state and actions from the hook
   const {
     messages,        // All messages in the conversation (AI SDK UIMessage format)
     sendMessage,     // Send a text message to the agent
@@ -174,7 +173,6 @@ Lists, loads, deletes, and stars conversations. Auth credentials are automatical
 import { useAtlasConversations } from "@useatlas/react/hooks";
 
 function ConversationList() {
-  // Manages conversation list, selection, and CRUD operations
   const {
     conversations,       // Array of conversation metadata (no messages)
     total,               // Total count for pagination
@@ -183,7 +181,7 @@ function ConversationList() {
     setSelectedId,       // Select a conversation by ID
     loadConversation,    // Fetch full message history for a conversation
     deleteConversation,
-    starConversation,    // Toggle star status (pinning)
+    starConversation,    // Set star status (true to pin, false to unpin)
   } = useAtlasConversations();
 
   if (isLoading) return <p>Loading...</p>;

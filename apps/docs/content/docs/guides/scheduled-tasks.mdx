@@ -148,7 +148,7 @@ curl -X POST https://api.example.com/api/v1/scheduled-tasks/tick \
 
 Uses Vercel's built-in cron service. Configure in `vercel.json`:
 
-```json
+```jsonc
 {
   "crons": [{
     "path": "/api/v1/scheduled-tasks/tick",  // Vercel calls this endpoint on schedule

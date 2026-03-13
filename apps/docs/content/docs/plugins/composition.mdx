@@ -19,7 +19,7 @@ import { snowflakePlugin } from "@useatlas/snowflake";
 
 export default defineConfig({
   datasources: {
-    default: { url: process.env.ATLAS_DATASOURCE_URL! },  // Primary Postgres
+    default: { url: process.env.ATLAS_DATASOURCE_URL! },  // Primary datasource
   },
   plugins: [
     // Each plugin registers a connection under its plugin ID

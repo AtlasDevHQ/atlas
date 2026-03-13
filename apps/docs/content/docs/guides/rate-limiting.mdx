@@ -33,7 +33,7 @@ ATLAS_TRUST_PROXY=true
 Rate limit keys are resolved in order: authenticated user ID, then forwarded IP (if `ATLAS_TRUST_PROXY=true`), then a shared `anon` bucket. Without `ATLAS_TRUST_PROXY`, all proxied users share the same key.
 </Callout>
 
-Rate limiting is **disabled by default**. When enabled, all API routes are covered — `/api/chat`, `/api/v1/query`, `/api/v1/conversations`, admin endpoints, and more.
+Rate limiting is **disabled by default**. When enabled, it covers the primary API routes: `/api/chat`, `/api/v1/query`, `/api/v1/conversations`, `/api/v1/admin/*`, `/api/v1/semantic/*`, `/api/v1/scheduled-tasks`, and `/api/v1/actions`. Health, auth, widget, and OpenAPI spec endpoints are exempt.
 
 ### Per-Datasource Rate Limiting
 
@@ -83,7 +83,7 @@ The `Retry-After` header follows [RFC 7231](https://datatracker.ietf.org/doc/htm
 }
 ```
 
-The `retryAfterSeconds` field is clamped to `[0, 300]` — the maximum wait the server will ask for is 5 minutes.
+The SDK and built-in widget clamp `retryAfterSeconds` to `[0, 300]` when parsing the response. If you build a custom client, apply your own clamping to the raw value.
 
 ---
 
@@ -165,8 +165,9 @@ async function withRetry<T>(
 <Tab value="Single query">
 ```typescript
 // Retry a single query up to 3 times, respecting Retry-After
+// Note: query() does not support AbortSignal — only streamQuery() does
 const result = await withRetry(
-  (signal) => atlas.query("Revenue by region"),
+  () => atlas.query("Revenue by region"),
   { maxRetries: 3 },
 );
 ```
@@ -223,7 +224,7 @@ The Atlas [chat widget](/guides/embedding-widget) and `@useatlas/react` componen
 
 1. A red error banner appears with the message **"Too many requests."**
 2. A live countdown shows the remaining wait time: **"Try again in 12 seconds."**
-3. The countdown ticks down each second and disappears when it reaches zero
+3. The countdown ticks down each second until it reaches zero, at which point the user can retry
 
 No client-side code is needed — the widget reads `retryAfterSeconds` from the error response and renders the countdown automatically.
 
@@ -258,20 +259,9 @@ If `ATLAS_TRUST_PROXY` is `false` (the default) but your deployment sits behind 
 
 ### Diagnosing rate limit issues
 
-```bash
-# Check current rate limit configuration
-atlas doctor
+Rate limit rejections are logged at `warn` level. Ensure `ATLAS_LOG_LEVEL` is set to `warn` or lower (e.g., `info`, the default) to see these entries in your server logs. Each rejection logs the rate limit key and retry delay.
 
-# Review audit log for rate-limited queries (logged with "Rate limited" error)
-# In the admin console: Admin > Audit Log, filter by failed queries
-```
-
-You can also check the API logs — rate limit rejections are logged at `warn` level with the rate limit key and retry delay:
-
-```bash
-# Set debug logging to see rate limit decisions
-ATLAS_LOG_LEVEL=debug
-```
+The audit log records **per-datasource** rate limit rejections — filter by failed queries with "Rate limited" in the error field via Admin > Audit Log. Per-user RPM rejections return a 429 before the agent runs and are not audit-logged — check server logs instead.
 
 ### Per-datasource limits vs per-user limits
 

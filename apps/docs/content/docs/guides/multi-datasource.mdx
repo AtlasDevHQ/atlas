@@ -1,0 +1,408 @@
+---
+title: Multi-Datasource Routing
+description: Configure multiple databases in a single Atlas deployment and control how the agent routes queries to each datasource.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+import { Tabs, Tab } from "fumadocs-ui/components/tabs";
+import { Steps, Step } from "fumadocs-ui/components/steps";
+
+When your data lives in more than one database — a PostgreSQL application DB, a Snowflake warehouse, a ClickHouse analytics cluster — Atlas can query all of them from a single deployment. This guide explains how the agent selects which datasource to query and how you control that routing.
+
+## Prerequisites
+
+- Atlas installed (`bun install`)
+- Two or more datasources you want to connect (see [Connect Your Data](/getting-started/connect-your-data) for per-database setup)
+- `atlas.config.ts` — multi-datasource requires the config file (env vars only support a single datasource)
+
+---
+
+## How routing works
+
+Every datasource in Atlas gets a **connection ID** — a string key like `"default"`, `"warehouse"`, or `"analytics"`. The agent routes queries through two mechanisms:
+
+1. **Semantic layer partitioning** — entity YAMLs are organized by datasource, so the agent knows which tables live where
+2. **The `connectionId` parameter** — the agent's `executeSQL` tool accepts an optional `connectionId` to target a specific datasource
+
+When the agent reads entity files to understand your data, the directory structure (or explicit `connection` field in the YAML) tells it which datasource owns each table. When it writes SQL, it includes the `connectionId` so the query hits the right database.
+
+### The default datasource
+
+The datasource keyed as `"default"` in your config is used whenever `connectionId` is omitted. For single-datasource deployments, this is the only connection. For multi-datasource setups, it's the fallback.
+
+### Resolution order
+
+```
+executeSQL(sql, explanation, connectionId?)
+    │
+    ├─ connectionId provided → ConnectionRegistry.get(connectionId)
+    │                              ├─ found → execute against that datasource
+    │                              └─ not found → error: "Unknown connection"
+    │
+    └─ connectionId omitted  → ConnectionRegistry.getDefault()
+                                   ├─ "default" registered → execute against default
+                                   └─ fallback → ATLAS_DATASOURCE_URL env var
+```
+
+---
+
+## Configuration
+
+Define named datasources in `atlas.config.ts`. Each gets its own connection pool, table whitelist, rate limits, and health checks.
+
+<Tabs items={["Core databases", "With plugins", "With rate limits"]}>
+<Tab value="Core databases">
+```typescript
+// atlas.config.ts — two PostgreSQL databases
+import { defineConfig } from "@atlas/api/lib/config";
+
+export default defineConfig({
+  datasources: {
+    // "default" is used when no connectionId is specified
+    default: {
+      url: process.env.ATLAS_DATASOURCE_URL!,
+      description: "Application database — users, orders, products",
+    },
+    warehouse: {
+      url: process.env.WAREHOUSE_URL!,
+      schema: "analytics",
+      description: "Data warehouse — aggregated metrics and reports",
+      maxConnections: 20,
+    },
+  },
+});
+```
+</Tab>
+<Tab value="With plugins">
+```typescript
+// atlas.config.ts — mixed database types
+import { defineConfig } from "@atlas/api/lib/config";
+import { clickhousePlugin } from "@useatlas/clickhouse";
+import { snowflakePlugin } from "@useatlas/snowflake";
+
+export default defineConfig({
+  datasources: {
+    default: {
+      url: process.env.ATLAS_DATASOURCE_URL!,
+      description: "Primary PostgreSQL database",
+    },
+    // Named datasources for plugin-backed databases
+    warehouse: {
+      url: process.env.WAREHOUSE_URL!,
+      description: "Snowflake data warehouse",
+    },
+    analytics: {
+      url: process.env.CLICKHOUSE_URL!,
+      description: "ClickHouse analytics cluster",
+    },
+  },
+  plugins: [
+    // Each plugin binds to its named datasource
+    snowflakePlugin({ connectionId: "warehouse" }),
+    clickhousePlugin({ connectionId: "analytics" }),
+  ],
+});
+```
+</Tab>
+<Tab value="With rate limits">
+```typescript
+// atlas.config.ts — per-datasource rate limiting
+import { defineConfig } from "@atlas/api/lib/config";
+import { snowflakePlugin } from "@useatlas/snowflake";
+
+export default defineConfig({
+  datasources: {
+    default: {
+      url: process.env.ATLAS_DATASOURCE_URL!,
+      description: "Application database",
+      rateLimit: {
+        queriesPerMinute: 60,  // default
+        concurrency: 5,        // default
+      },
+    },
+    warehouse: {
+      url: process.env.WAREHOUSE_URL!,
+      description: "Snowflake warehouse — expensive queries",
+      rateLimit: {
+        queriesPerMinute: 20,  // Lower limit for cost control
+        concurrency: 2,        // Max 2 concurrent queries
+      },
+    },
+  },
+  plugins: [
+    snowflakePlugin({ connectionId: "warehouse" }),
+  ],
+  // Cap total connections across all datasources
+  maxTotalConnections: 50,
+});
+```
+</Tab>
+</Tabs>
+
+### Key points
+
+- At least one datasource named `"default"` is recommended — it's the fallback when `connectionId` is omitted
+- Plugin-based datasources (ClickHouse, Snowflake, DuckDB, BigQuery, Salesforce) require both a `datasources` entry and a `plugins` entry with a matching `connectionId`
+- Each datasource gets independent connection pooling, rate limiting, and health monitoring
+- See [Configuration Reference](/reference/config#datasources) for all datasource fields
+
+---
+
+## Semantic layer organization
+
+The semantic layer tells the agent which tables belong to which datasource. There are two ways to express this:
+
+### Directory-based partitioning (recommended)
+
+Create a subdirectory under `semantic/` for each non-default datasource. The directory name must match the connection ID:
+
+```
+semantic/
+├── entities/              # "default" datasource
+│   ├── users.yml
+│   └── orders.yml
+├── metrics/               # "default" datasource metrics
+├── glossary.yml
+├── catalog.yml
+├── warehouse/             # "warehouse" datasource
+│   ├── entities/
+│   │   ├── events.yml
+│   │   └── daily_metrics.yml
+│   ├── metrics/
+│   └── glossary.yml       # Optional per-source glossary
+└── analytics/             # "analytics" datasource
+    └── entities/
+        └── page_views.yml
+```
+
+Atlas discovers per-source subdirectories automatically. Tables in `semantic/entities/` belong to the default connection. Tables in `semantic/warehouse/entities/` belong to the `"warehouse"` connection.
+
+### Generate per-source semantic layers
+
+Use the `--connection` flag to profile a specific datasource:
+
+```bash
+# Profile the default datasource → writes to semantic/entities/
+bun run atlas -- init
+
+# Profile the "warehouse" datasource → writes to semantic/warehouse/entities/
+bun run atlas -- init --connection warehouse
+```
+
+### Explicit `connection` field
+
+Alternatively, set the `connection` field directly in an entity YAML. This overrides directory-based inference:
+
+```yaml
+# semantic/entities/external_events.yml
+table: external_events
+connection: analytics  # Routes to the "analytics" datasource regardless of file location
+description: Clickstream events from ClickHouse
+dimensions:
+  event_id:
+    type: string
+    description: Unique event identifier
+```
+
+<Callout type="info">
+When any entity uses the `connection` field or per-source subdirectories exist, Atlas enters **partitioned mode** — each datasource gets its own isolated table whitelist. Tables from one datasource cannot be queried through another datasource's connection.
+</Callout>
+
+---
+
+## Agent behavior
+
+### System prompt adaptation
+
+When multiple datasources are registered, Atlas automatically expands the agent's system prompt to list all available sources:
+
+```
+## Available Data Sources
+
+This environment has 3 database connections:
+- **default** (PostgreSQL) — Application database — users, orders, products
+- **warehouse** (Snowflake) — Data warehouse — aggregated metrics and reports
+- **analytics** (ClickHouse) — ClickHouse analytics cluster
+```
+
+The agent sees each datasource's ID, database type, description, and health status. If a datasource is degraded or unavailable, the system prompt warns the agent.
+
+### How the agent picks a datasource
+
+1. The agent reads entity YAMLs via the `explore` tool to understand the data model
+2. Entity files indicate which datasource owns each table (via directory or `connection` field)
+3. When writing SQL, the agent includes `connectionId` to target the correct datasource
+4. If the user's question only involves tables from one datasource, routing is straightforward
+5. If the question spans datasources, the agent queries each one separately
+
+### Cross-datasource queries
+
+SQL `JOIN`s across datasources are not supported — each query executes against a single database. When the user asks a question that spans multiple datasources, the agent:
+
+1. Queries each datasource separately with its own `executeSQL` call
+2. Combines the results in its response (reasoning over the data from each source)
+
+You can help the agent by declaring cross-source relationships in your entity YAMLs:
+
+```yaml
+# semantic/entities/users.yml
+table: users
+description: Application users
+cross_source_joins:
+  - source: warehouse
+    target_table: daily_metrics
+    on: users.id = daily_metrics.user_id
+    relationship: one_to_many
+    description: "User activity metrics from the warehouse"
+```
+
+These hints are surfaced in the agent's system prompt so it knows to query each source separately and correlate the results:
+
+```
+## Cross-Source Relationships
+- **default.users** → **warehouse.daily_metrics**: User activity metrics (one_to_many)
+```
+
+<Callout type="warn">
+Cross-source join hints are informational — they tell the agent which tables are related across datasources, but the agent still needs to execute separate queries and combine results. There is no automatic query federation.
+</Callout>
+
+---
+
+## SDK and API usage
+
+### SDK
+
+The Atlas SDK sends messages to the chat API endpoint. Datasource routing is handled by the agent — there's no client-side `connectionId` parameter. The agent automatically determines which datasource to query based on the user's question and the semantic layer.
+
+```typescript
+import { Atlas } from "@useatlas/sdk";
+
+const atlas = new Atlas({ baseUrl: "https://api.your-atlas.com" });
+
+// The agent routes to the correct datasource automatically
+const response = await atlas.chat({
+  messages: [
+    { role: "user", content: "What are our top events by revenue?" }
+  ],
+});
+```
+
+### REST API
+
+When calling the chat API directly, the agent handles routing internally. You don't need to specify a datasource — the agent reads the semantic layer and includes the appropriate `connectionId` in its tool calls:
+
+```bash
+curl -X POST https://your-atlas.com/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [{"role": "user", "content": "Compare order counts with warehouse metrics"}]}'
+```
+
+### Health endpoint
+
+The `/api/health` endpoint reports the status of each registered datasource:
+
+```bash
+curl http://localhost:3001/api/health
+```
+
+```json
+{
+  "status": "ok",
+  "checks": {
+    "datasource": { "status": "ok" }
+  },
+  "sources": {
+    "default": { "dbType": "postgres", "status": "healthy" },
+    "warehouse": { "dbType": "snowflake", "status": "healthy" },
+    "analytics": { "dbType": "clickhouse", "status": "degraded" }
+  }
+}
+```
+
+---
+
+## Troubleshooting
+
+### Table not found
+
+**Symptom:** The agent returns "table not in whitelist" or fails to find a table you know exists.
+
+**Causes:**
+- The entity YAML is in the wrong directory — check that the file is in `semantic/{connectionId}/entities/`, not `semantic/entities/` (or vice versa)
+- The `connection` field in the YAML doesn't match a registered datasource ID
+- The table name in the YAML doesn't match the actual database table (case-sensitive)
+
+**Fix:** Verify the directory structure matches your config. Run `atlas validate` to check for broken references:
+
+```bash
+bun run atlas -- validate
+```
+
+### Unknown connection error
+
+**Symptom:** `executeSQL` returns "Unknown connection: warehouse".
+
+**Causes:**
+- The datasource isn't registered in `atlas.config.ts`
+- For plugin datasources, the plugin isn't listed in the `plugins` array or the `connectionId` doesn't match
+- The config file has a typo in the datasource key
+
+**Fix:** Check that the connection ID in your entity YAMLs matches a key in `datasources` (or a plugin's `connectionId`):
+
+```typescript
+// These must match:
+datasources: {
+  warehouse: { url: "..." },  // ← connection ID "warehouse"
+},
+plugins: [
+  snowflakePlugin({ connectionId: "warehouse" }),  // ← same ID
+],
+```
+
+### Agent queries the wrong datasource
+
+**Symptom:** The agent runs a query against `"default"` when it should target `"warehouse"`.
+
+**Causes:**
+- Entity YAMLs are all in `semantic/entities/` without per-source subdirectories or `connection` fields — Atlas runs in shared mode where all connections see all tables
+- The entity's `connection` field is missing or set to the wrong value
+
+**Fix:** Move entity files to per-source subdirectories or add explicit `connection` fields. Once any entity has a `connection` field or per-source directories exist, Atlas switches to partitioned mode with isolated whitelists.
+
+### Connection failures for one datasource
+
+**Symptom:** One datasource is healthy but another shows `"degraded"` or `"unhealthy"` in the health endpoint.
+
+**Causes:**
+- Network connectivity issue to that specific database
+- Credentials expired or rotated for that datasource
+- The database is overloaded or down
+
+**Fix:**
+1. Check the health endpoint: `curl http://localhost:3001/api/health`
+2. Verify the connection string works directly (e.g., `psql "$WAREHOUSE_URL"`)
+3. Check rate limits — the datasource may be at its `concurrency` cap
+
+Atlas runs background health checks with a 3-strike failure threshold over a 5-minute window. A temporarily failing datasource is marked `"degraded"` first, then `"unhealthy"` after sustained failures. The agent's system prompt reflects this status so it can warn users.
+
+### Rate limit exceeded
+
+**Symptom:** `executeSQL` returns a rate limit error with a `retryAfterMs` value.
+
+**Causes:**
+- The datasource's `queriesPerMinute` or `concurrency` limit was reached
+
+**Fix:** Either increase the limits in your config, or wait for the sliding window to reset (60 seconds). The agent will see the retry hint and can try again.
+
+```typescript
+datasources: {
+  warehouse: {
+    url: "...",
+    rateLimit: {
+      queriesPerMinute: 100,  // Increase from default 60
+      concurrency: 10,        // Increase from default 5
+    },
+  },
+},
+```

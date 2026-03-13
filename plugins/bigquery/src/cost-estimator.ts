@@ -16,6 +16,21 @@ export interface CostEstimate {
   estimatedCostUsd: number;
 }
 
+// Cached BigQuery client — lazily created on first dry run,
+// reused across all subsequent calls to avoid re-resolving credentials.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let cachedClient: any = null;
+let cachedConfigKey: string | undefined;
+
+/** Build a stable cache key from the auth-relevant config fields. */
+function configCacheKey(config: BigQueryConnectionConfig): string {
+  return JSON.stringify({
+    p: config.projectId,
+    k: config.keyFilename,
+    c: config.credentials ? Object.keys(config.credentials).sort().join(",") : undefined,
+  });
+}
+
 /**
  * Run a dry-run query to estimate bytes scanned and cost.
  *
@@ -36,12 +51,15 @@ export async function estimateQueryCost(
   }
 
   try {
-    const clientOpts: Record<string, unknown> = {};
-    if (config.projectId) clientOpts.projectId = config.projectId;
-    if (config.keyFilename) clientOpts.keyFilename = config.keyFilename;
-    if (config.credentials) clientOpts.credentials = config.credentials;
-
-    const client = new BigQueryClass(clientOpts);
+    const key = configCacheKey(config);
+    if (!cachedClient || cachedConfigKey !== key) {
+      const clientOpts: Record<string, unknown> = {};
+      if (config.projectId) clientOpts.projectId = config.projectId;
+      if (config.keyFilename) clientOpts.keyFilename = config.keyFilename;
+      if (config.credentials) clientOpts.credentials = config.credentials;
+      cachedClient = new BigQueryClass(clientOpts);
+      cachedConfigKey = key;
+    }
 
     const options: Record<string, unknown> = {
       query: sql,
@@ -56,7 +74,7 @@ export async function estimateQueryCost(
       };
     }
 
-    const [job] = await client.createQueryJob(options);
+    const [job] = await cachedClient.createQueryJob(options);
     const bytesScanned = Number(
       job?.metadata?.statistics?.totalBytesProcessed ?? 0,
     );
@@ -73,4 +91,10 @@ export function formatBytes(bytes: number): string {
   if (bytes < 1e9) return `${(bytes / 1e6).toFixed(1)} MB`;
   if (bytes < 1e12) return `${(bytes / 1e9).toFixed(1)} GB`;
   return `${(bytes / 1e12).toFixed(2)} TB`;
+}
+
+/** Reset the cached client — for testing only. */
+export function _resetCachedClient(): void {
+  cachedClient = null;
+  cachedConfigKey = undefined;
 }

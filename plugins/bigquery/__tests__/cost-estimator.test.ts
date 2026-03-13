@@ -35,7 +35,7 @@ mock.module("@google-cloud/bigquery", () => ({
   BigQuery: mockBigQuery,
 }));
 
-import { estimateQueryCost, formatBytes } from "../src/cost-estimator";
+import { estimateQueryCost, formatBytes, _resetCachedClient } from "../src/cost-estimator";
 import { buildBigQueryPlugin, bigqueryPlugin } from "../src/index";
 import type { QueryHookContext, QueryHookMutation, PluginHookEntry } from "@useatlas/plugin-sdk";
 
@@ -43,6 +43,7 @@ beforeEach(() => {
   mockCreateQueryJob.mockClear();
   mockBigQuery.mockClear();
   mockQuery.mockClear();
+  _resetCachedClient();
 
   // Re-stub default return values after clearing
   mockCreateQueryJob.mockImplementation(() =>

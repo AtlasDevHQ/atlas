@@ -210,5 +210,5 @@ export const bigqueryPlugin = createPlugin({
 
 export { createBigQueryConnection, extractProjectId } from "./connection";
 export { BIGQUERY_FORBIDDEN_PATTERNS } from "./validation";
-export { estimateQueryCost, formatBytes } from "./cost-estimator";
+export { estimateQueryCost, formatBytes, _resetCachedClient } from "./cost-estimator";
 export type { CostEstimate } from "./cost-estimator";

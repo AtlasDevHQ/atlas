@@ -674,7 +674,7 @@ Rules:
         columns: result.columns,
         rows: result.rows,
         truncated,
-        ...(hasHookMeta && hookMetadata),
+        ...(hasHookMeta && { metadata: hookMetadata }),
       };
     } catch (err) {
       const durationMs = Math.round(performance.now() - start);

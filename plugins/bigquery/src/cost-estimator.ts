@@ -9,7 +9,14 @@
  * but never block query execution due to a failed dry run.
  */
 
-import type { BigQueryConnectionConfig } from "./connection";
+/** Subset of BigQueryConnectionConfig needed for dry-run estimation. */
+export interface CostEstimatorConfig {
+  projectId?: string;
+  dataset?: string;
+  location?: string;
+  keyFilename?: string;
+  credentials?: Record<string, unknown>;
+}
 
 export interface CostEstimate {
   bytesScanned: number;
@@ -23,7 +30,7 @@ let cachedClient: any = null;
 let cachedConfigKey: string | undefined;
 
 /** Build a stable cache key from the auth-relevant config fields. */
-function configCacheKey(config: BigQueryConnectionConfig): string {
+function configCacheKey(config: CostEstimatorConfig): string {
   return JSON.stringify({
     p: config.projectId,
     k: config.keyFilename,
@@ -39,7 +46,7 @@ function configCacheKey(config: BigQueryConnectionConfig): string {
  */
 export async function estimateQueryCost(
   sql: string,
-  config: BigQueryConnectionConfig,
+  config: CostEstimatorConfig,
 ): Promise<CostEstimate | null> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let BigQueryClass: any;
@@ -90,7 +97,7 @@ export function formatBytes(bytes: number): string {
   if (bytes < 1e6) return `${(bytes / 1e3).toFixed(1)} KB`;
   if (bytes < 1e9) return `${(bytes / 1e6).toFixed(1)} MB`;
   if (bytes < 1e12) return `${(bytes / 1e9).toFixed(1)} GB`;
-  return `${(bytes / 1e12).toFixed(2)} TB`;
+  return `${(bytes / 1e12).toFixed(1)} TB`;
 }
 
 /** Reset the cached client — for testing only. */

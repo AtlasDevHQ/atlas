@@ -167,7 +167,7 @@ describe("formatBytes", () => {
   });
 
   test("formats terabytes", () => {
-    expect(formatBytes(1_500_000_000_000)).toBe("1.50 TB");
+    expect(formatBytes(1_500_000_000_000)).toBe("1.5 TB");
   });
 });
 

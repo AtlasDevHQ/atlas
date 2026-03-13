@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
+import { Button } from "@/components/ui/button";
 import { parseChatError, type AuthMode } from "../../lib/types";
 
 export function ErrorBanner({
@@ -38,13 +39,14 @@ export function ErrorBanner({
       <p className="font-medium">{info.title}</p>
       {detail && <p className="mt-1 text-xs opacity-80">{detail}</p>}
       {showRetry && (
-        <button
-          type="button"
+        <Button
+          variant="link"
+          size="sm"
           onClick={onRetry}
-          className="mt-2 text-xs font-medium underline underline-offset-2 hover:opacity-80"
+          className="mt-2 h-auto p-0 text-xs font-medium text-red-700 dark:text-red-400"
         >
           Try again
-        </button>
+        </Button>
       )}
     </div>
   );

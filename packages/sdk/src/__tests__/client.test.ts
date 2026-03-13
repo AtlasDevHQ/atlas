@@ -457,7 +457,7 @@ describe("error handling", () => {
     }
   });
 
-  test("network failure throws AtlasError with code network_error", async () => {
+  test("network failure throws AtlasError with code network_error and retryable true", async () => {
     installFetchError(new TypeError("fetch failed"));
     const client = createAtlasClient({ baseUrl: "http://localhost:3001", apiKey: "k" });
 
@@ -470,6 +470,7 @@ describe("error handling", () => {
       expect(e.code).toBe("network_error");
       expect(e.message).toBe("fetch failed");
       expect(e.status).toBe(0);
+      expect(e.retryable).toBe(true);
     }
   });
 
@@ -539,9 +540,26 @@ describe("error handling", () => {
     }
   });
 
-  test("retryable defaults to false when not in response", async () => {
+  test("retryable computed from code when server omits the field", async () => {
     installFetchMock(
       jsonResponse({ error: "internal_error", message: "fail" }, 500),
+    );
+    const client = createAtlasClient({ baseUrl: "http://localhost:3001", apiKey: "k" });
+
+    try {
+      await client.query("test");
+      expect(true).toBe(false);
+    } catch (err) {
+      expect(err).toBeInstanceOf(AtlasError);
+      const e = err as AtlasError;
+      // internal_error is transient — SDK computes retryable from code
+      expect(e.retryable).toBe(true);
+    }
+  });
+
+  test("retryable computed as false for permanent code when server omits the field", async () => {
+    installFetchMock(
+      jsonResponse({ error: "configuration_error", message: "bad config" }, 400),
     );
     const client = createAtlasClient({ baseUrl: "http://localhost:3001", apiKey: "k" });
 

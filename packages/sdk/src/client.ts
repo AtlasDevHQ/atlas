@@ -42,6 +42,7 @@ import type {
   ScheduledTaskWithRuns,
   ScheduledTaskRun,
 } from "@useatlas/types";
+import { isChatErrorCode, isRetryableError } from "@useatlas/types";
 
 /** @deprecated Use `Recipient` instead. */
 export type ScheduledTaskRecipient = Recipient;
@@ -66,20 +67,30 @@ export type AtlasErrorCode =
   | "invalid_response"
   | "unknown_error";
 
+/** SDK-only codes that represent transient failures where retrying may succeed. */
+const SDK_RETRYABLE_CODES: ReadonlySet<string> = new Set(["network_error"]);
+
 export class AtlasError extends Error {
   readonly code: AtlasErrorCode;
   readonly status: number;
   readonly retryAfterSeconds?: number;
-  /** Whether retrying the request may succeed. Derived from the server's `retryable` field. */
+  /** Whether retrying the request may succeed. Derived from the server's `retryable` field, or computed from the error code when the server does not provide it. */
   readonly retryable: boolean;
 
-  constructor(code: AtlasErrorCode, message: string, status: number, opts?: { retryAfterSeconds?: number; retryable?: boolean }) {
+  constructor(code: AtlasErrorCode, message: string, status: number, opts?: number | { retryAfterSeconds?: number; retryable?: boolean }) {
     super(message);
     this.name = "AtlasError";
     this.code = code;
     this.status = status;
-    this.retryAfterSeconds = opts?.retryAfterSeconds;
-    this.retryable = opts?.retryable ?? false;
+    if (typeof opts === "number") {
+      // Backward compatibility: positional retryAfterSeconds (pre-0.0.x callers)
+      this.retryAfterSeconds = opts;
+      this.retryable = SDK_RETRYABLE_CODES.has(code) || (isChatErrorCode(code) && isRetryableError(code));
+    } else {
+      this.retryAfterSeconds = opts?.retryAfterSeconds;
+      // Use server value when provided, otherwise compute from code
+      this.retryable = opts?.retryable ?? (SDK_RETRYABLE_CODES.has(code) || (isChatErrorCode(code) && isRetryableError(code)));
+    }
   }
 }
 

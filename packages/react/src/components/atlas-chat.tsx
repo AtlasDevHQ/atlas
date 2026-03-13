@@ -612,7 +612,7 @@ function AtlasChatInner({
                     error={error}
                     authMode={authMode}
                     onRetry={() => {
-                      const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
+                      const lastUserMsg = messages.toReversed().find((m) => m.role === "user");
                       const text = lastUserMsg?.parts
                         ?.filter((p): p is { type: "text"; text: string } => p.type === "text")
                         .map((p) => p.text)

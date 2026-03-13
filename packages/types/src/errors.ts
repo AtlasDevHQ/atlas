@@ -143,6 +143,14 @@ export function matchError(
 ): MatchedError | null {
   const msg = error instanceof Error ? error.message : String(error);
 
+  // Pool exhaustion — too many active database connections (transient)
+  if (/too many (clients already|connections)|connection pool exhausted|remaining connection slots are reserved/i.test(msg)) {
+    return {
+      code: "rate_limited",
+      message: "Database connection pool exhausted — try again in a few seconds, or reduce concurrent queries",
+    };
+  }
+
   // ECONNREFUSED — database or service unreachable
   if (/ECONNREFUSED/i.test(msg)) {
     const host = extractHostFromError(msg);

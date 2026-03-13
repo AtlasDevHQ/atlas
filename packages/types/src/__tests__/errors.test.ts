@@ -22,6 +22,47 @@ describe("matchError", () => {
     expect(matchError(null)).toBeNull();
   });
 
+  // --- Pool exhaustion ---
+
+  test("matches PostgreSQL 'too many clients already'", () => {
+    const err = new Error("sorry, too many clients already");
+    const result = matchError(err) as MatchedError;
+    expect(result).not.toBeNull();
+    expect(result.code).toBe("rate_limited");
+    expect(result.message).toContain("pool exhausted");
+    expect(result.message).toContain("try again");
+  });
+
+  test("matches MySQL 'Too many connections'", () => {
+    const err = new Error("ER_CON_COUNT_ERROR: Too many connections");
+    const result = matchError(err) as MatchedError;
+    expect(result).not.toBeNull();
+    expect(result.code).toBe("rate_limited");
+    expect(result.message).toContain("pool exhausted");
+  });
+
+  test("matches generic 'Connection pool exhausted'", () => {
+    const err = new Error("Connection pool exhausted");
+    const result = matchError(err) as MatchedError;
+    expect(result).not.toBeNull();
+    expect(result.code).toBe("rate_limited");
+  });
+
+  test("matches PostgreSQL 'remaining connection slots are reserved'", () => {
+    const err = new Error("FATAL: remaining connection slots are reserved for non-replication superuser connections");
+    const result = matchError(err) as MatchedError;
+    expect(result).not.toBeNull();
+    expect(result.code).toBe("rate_limited");
+    expect(result.message).toContain("pool exhausted");
+  });
+
+  test("pool exhaustion is classified as retryable", () => {
+    const err = new Error("sorry, too many clients already");
+    const result = matchError(err) as MatchedError;
+    expect(result).not.toBeNull();
+    expect(isRetryableError(result.code)).toBe(true);
+  });
+
   // --- ECONNREFUSED ---
 
   test("matches ECONNREFUSED with host:port", () => {

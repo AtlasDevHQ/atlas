@@ -430,7 +430,8 @@ chat.post("/", async (c) => {
             ? "provider_unreachable" as const
             : matched.code === "provider_unreachable" ? "provider_unreachable" as const
             : matched.code;
-          const httpStatus = code === "provider_unreachable" ? 503
+          const httpStatus = code === "rate_limited" ? 429
+            : code === "provider_unreachable" ? 503
             : code === "provider_timeout" ? 504
             : 500;
           // Use provider-appropriate messages instead of database-oriented matchError defaults
@@ -439,7 +440,9 @@ chat.post("/", async (c) => {
             : code === "provider_timeout"
               ? "The request timed out. The LLM provider took too long to respond. Try again, or if using a local model, ensure it has sufficient resources."
               : matched.message;
-          log.error({ err: errObj, category: code }, "Matched error: %s", code);
+          // Pool exhaustion is transient — warn, don't error
+          const logFn = code === "rate_limited" ? log.warn : log.error;
+          logFn.call(log, { err: errObj, category: code }, "Matched error: %s", code);
           return c.json(
             { error: code, message: userMessage, retryable: isRetryableError(code), requestId },
             httpStatus as 500,

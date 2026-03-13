@@ -1,37 +1,49 @@
 ---
 title: SQL Validation Pipeline
-description: How Atlas enforces read-only SQL execution through a multi-layer defense-in-depth pipeline.
+description: How Atlas enforces read-only SQL execution through a 7-layer defense-in-depth pipeline — explained for developers, PMs, and security reviewers.
 ---
 
-Every SQL query the agent writes passes through a multi-layer validation pipeline before it reaches your database. No query can bypass validation — if any layer rejects, the query is blocked.
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas lets an AI agent write SQL against your production database. Without guardrails, this is dangerous — a single malicious or mistaken query could delete data, expose secrets, or lock up your database. The validation pipeline exists to make this impossible.
+
+Every SQL query the agent writes passes through **7 layers of validation** before it reaches your database. No query can bypass the pipeline — if any layer rejects, the query is blocked and the agent receives a structured error message explaining why.
+
+## Key terms
+
+Before diving in, here are a few terms used throughout this page:
+
+| Term | Meaning |
+|------|---------|
+| **DML** (Data Manipulation Language) | SQL statements that change data: `INSERT`, `UPDATE`, `DELETE` |
+| **DDL** (Data Definition Language) | SQL statements that change database structure: `CREATE TABLE`, `DROP TABLE`, `ALTER TABLE` |
+| **AST** (Abstract Syntax Tree) | A structured representation of a SQL query, produced by a parser. Like a grammar diagram for code — it lets Atlas understand the _structure_ of a query, not just its text |
+| **RLS** (Row-Level Security) | A mechanism that restricts which rows a user can see by automatically adding filter conditions to every query |
+| **Table whitelist** | The set of tables the agent is allowed to query — derived from your [semantic layer](/getting-started/semantic-layer) entity YAML files |
+| **CTE** (Common Table Expression) | A temporary named result set defined with `WITH name AS (...)`. CTEs are part of the query, not real tables |
+| **Semantic layer** | YAML files that describe your database tables, columns, and relationships — the agent reads these to understand your data |
 
 ## Pipeline overview
 
-| Layer | Name | Purpose |
-|-------|------|---------|
-| 0 | Empty check | Reject empty or whitespace-only input |
-| 1 | Regex mutation guard | Quick reject of obvious DML/DDL keywords |
-| 2 | AST parse | Full SQL parse — verify single SELECT statement |
-| 3 | Table whitelist | Only allow tables defined in the semantic layer |
+| Layer | Name | Runs | Purpose |
+|-------|------|------|---------|
+| 0 | Empty check | Before execution | Reject empty or whitespace-only input |
+| 1 | Regex mutation guard | Before execution | Quick reject of DML/DDL keywords |
+| 2 | AST parse | Before execution | Full SQL parse — verify single SELECT statement |
+| 3 | Table whitelist | Before execution | Only allow tables defined in the semantic layer |
+| 4 | RLS injection | During execution | Inject WHERE clauses for tenant isolation |
+| 5 | Auto LIMIT | During execution | Cap result set size to prevent full-table scans |
+| 6 | Statement timeout | During execution | Kill queries that run too long |
 
-Layers 0–3 run in `validateSQL()` before execution. Layers 4–6 below are applied during execution.
+Layers 0–3 run in `validateSQL()` before the query touches the database. Layers 4–6 are applied during execution in `executeSQL()`. Between layers 3 and 4, per-source rate limiting checks concurrency and queries-per-minute limits.
 
-### Execution-time controls
-
-These are not validation layers — they are applied during query execution in `executeSQL()`.
-
-| Control | Purpose |
-|---------|---------|
-| Per-source rate limiting | Atomic concurrency + QPM check via `acquireSourceSlot(connId)` before the query reaches the database. Sits between validation (layers 0--3) and RLS injection (layer 4). Rejects with a rate-limit error (and an optional `retryAfterMs` hint) when the source is at capacity. Configurable via `rateLimit` in `atlas.config.ts` datasource entries (`queriesPerMinute` and `concurrency` fields, defaults 60 and 5 respectively) |
-| RLS injection (layer 4) | Inject WHERE clauses based on user claims (when enabled) |
-| Auto LIMIT (layer 5) | Append row limit to every query |
-| Statement timeout (layer 6) | Per-query execution deadline |
-
-The validation pipeline is identical across all supported databases. The only difference is the AST parser mode: `node-sql-parser` uses `PostgresQL` mode for PostgreSQL connections and `MySQL` mode for MySQL connections. Plugin-registered database types (any `dbType` beyond the two built-in ones) fall back to the PostgreSQL parser with a warning. Plugins can register a custom `parserDialect` via `ConnectionPluginMeta` to override the parser mode for any connection.
+The pipeline is identical across all supported databases. The only difference is the AST parser mode: `node-sql-parser` uses `PostgresQL` mode for PostgreSQL connections and `MySQL` mode for MySQL connections. Plugin-registered database types fall back to the PostgreSQL parser with a warning. Plugins can register a custom `parserDialect` via `ConnectionPluginMeta` to override the parser mode.
 
 ## Layer 0: Empty check
 
-Rejects empty strings, whitespace-only input, and trailing semicolons (stripped before processing).
+**What it does:** Rejects empty strings, whitespace-only input, and bare semicolons. Trailing semicolons are stripped before processing.
+
+**Why it matters:** An empty query sent to the database would return an error, but catching it here provides a clearer error message and avoids unnecessary database round-trips.
 
 ```sql
 -- Blocked
@@ -42,13 +54,15 @@ Rejects empty strings, whitespace-only input, and trailing semicolons (stripped 
 
 ## Layer 1: Regex mutation guard
 
-A fast first-pass check that rejects queries containing DML or DDL keywords. Comments are stripped before testing so they can't be used to bypass the patterns.
+**What it does:** A fast first-pass check that scans the query text for keywords associated with data modification or administrative commands. SQL comments are stripped before testing so they cannot be used to hide dangerous keywords.
+
+**Why it matters:** This is the first line of defense against queries that try to change or destroy data. It runs before the more expensive AST parsing, catching obvious attacks cheaply.
 
 **Blocked keywords (all databases):**
 
 ```
 INSERT, UPDATE, DELETE, DROP, CREATE, ALTER, TRUNCATE
-GRANT, REVOKE, EXEC, EXECUTE, CALL
+GRANT, REVOKE, EXEC, EXECUTE, CALL, KILL
 COPY, LOAD, VACUUM, REINDEX, OPTIMIZE
 INTO OUTFILE
 ```
@@ -75,22 +89,24 @@ DROP TABLE users
 SELECT * FROM logs WHERE status = 'DELETE'
 ```
 
-The regex guard is intentionally broad — security over usability. Keywords inside string literals (like `WHERE status = 'DELETE'`) are blocked as a false positive. The agent can work around this by reformulating the query (e.g. using a subquery or different filter).
+<Callout type="info">
+The regex guard is intentionally broad — it prefers **false positives over false negatives**. A query like `WHERE status = 'DELETE'` is blocked because the word "DELETE" appears in the text, even though it's inside a string literal. The agent can work around this by reformulating the query (e.g. filtering by a status code instead).
+</Callout>
 
 Plugins can register additional forbidden patterns via `ConnectionPluginMeta.forbiddenPatterns` to add database-specific protection for connection types not covered by the built-in rules.
 
 ## Layer 2: AST parse
 
-The query is fully parsed into an abstract syntax tree using [node-sql-parser](https://github.com/taozhi8833998/node-sql-parser). The parser mode is auto-detected based on the connection type (PostgreSQL or MySQL). If a plugin has registered a custom `parserDialect` via `ConnectionPluginMeta`, that dialect is used instead of the default mapping.
-
-**Enforced rules:**
+**What it does:** The query is fully parsed into an Abstract Syntax Tree using [node-sql-parser](https://github.com/taozhi8833998/node-sql-parser). The parser mode is auto-detected based on the connection type (PostgreSQL or MySQL). This layer enforces three rules:
 
 1. **Single statement** — No semicolon-separated batches. Exactly one statement allowed.
-2. **SELECT only** — The parsed statement type must be `select`. Any other type (INSERT, UPDATE, CREATE, etc.) is rejected.
-3. **Must parse** — If the parser cannot understand the query, it is **rejected**. A query that passes the regex guard but confuses the parser could be a crafted bypass attempt. The agent can always reformulate into standard SQL.
+2. **SELECT only** — The parsed statement type must be `select`. Any other type is rejected.
+3. **Must parse** — If the parser cannot understand the query, it is **rejected**. This is a critical security decision — an unparseable query could be a crafted bypass attempt.
+
+**Why it matters:** The regex guard (layer 1) catches known bad keywords, but it can't understand SQL structure. A query like `SELECT 1; DROP TABLE users` contains `SELECT`, but it also contains a second statement that drops a table. Only a full parser can detect this — the AST reveals the query has two statements, and the second one isn't a SELECT.
 
 ```sql
--- Blocked: multiple statements
+-- Blocked: multiple statements (piggybacking attack)
 SELECT 1; DROP TABLE users
 
 -- Blocked: non-SELECT
@@ -104,19 +120,25 @@ WITH active AS (SELECT * FROM users WHERE active = true)
 SELECT * FROM active
 ```
 
-CTE names (`WITH x AS (...)`) are collected during parsing for use in the table whitelist check (layer 3).
+<Callout type="warn">
+**Reject by default:** If the parser can't understand a query, Atlas blocks it. This is the opposite of how most tools work — they allow queries they don't understand. Atlas treats "I can't parse this" as a potential attack, not a syntax error to ignore.
+</Callout>
+
+CTE names (`WITH x AS (...)`) are collected during parsing and passed to layer 3 so they aren't mistaken for real table names.
 
 ## Layer 3: Table whitelist
 
-Every table referenced in the query must exist in the semantic layer (`semantic/entities/*.yml` or `semantic/{source}/entities/*.yml`). Tables not in the whitelist are blocked.
+**What it does:** Every table referenced in the query is checked against a whitelist derived from your semantic layer. Only tables that have an entity YAML file (`semantic/entities/*.yml` or `semantic/{source}/entities/*.yml`) are allowed.
+
+**Why it matters:** Even a valid SELECT can be dangerous if it reads from the wrong table. Your database might contain tables with sensitive data (credentials, PII, internal configuration) that the agent should never access. The whitelist ensures the agent can only query tables you've explicitly described in the semantic layer.
 
 ```sql
 -- Given semantic layer defines: users, orders, products
 
--- Allowed
+-- Allowed: both tables are in the semantic layer
 SELECT * FROM users JOIN orders ON users.id = orders.user_id
 
--- Blocked: "secrets" not in semantic layer
+-- Blocked: "secrets" is not in the semantic layer
 SELECT * FROM secrets
 
 -- Blocked: schema-qualified reference requires qualified name in whitelist
@@ -131,7 +153,9 @@ SELECT * FROM internal.secrets
 
 ## Layer 4: RLS injection
 
-When Row-Level Security is enabled, WHERE clauses are injected based on the authenticated user's claims. RLS injection occurs after all validation layers (0--3) pass and after all plugin hooks have run. This ordering ensures plugins cannot strip RLS conditions.
+**What it does:** When Row-Level Security is enabled, Atlas automatically adds WHERE clauses to the query based on the authenticated user's identity claims. This is done via AST manipulation — not string concatenation — so the resulting SQL is always syntactically correct.
+
+**Why it matters:** In multi-tenant applications, different users should only see their own data. Without RLS, the agent could accidentally (or intentionally) query another tenant's rows. RLS makes this impossible by injecting filter conditions that the agent cannot remove or override.
 
 RLS can be configured via [environment variables](/reference/environment-variables#row-level-security) (single-policy shorthand) or declaratively in `atlas.config.ts` with the `rls` key (supports multiple policies targeting different tables and claims).
 
@@ -143,11 +167,17 @@ SELECT * FROM orders WHERE status = 'active'
 SELECT * FROM orders WHERE status = 'active' AND orders.tenant_id = 'acme-corp'
 ```
 
-RLS is fail-closed: if claims are missing or cannot be resolved, the query is blocked entirely.
+<Callout type="warn">
+RLS is **fail-closed**. If the user's claims are missing or cannot be resolved, the query is blocked entirely. A blocked query is always safer than a data leak.
+</Callout>
+
+RLS injection runs **after** validation (layers 0–3) and **after** all plugin `beforeQuery` hooks. This ordering ensures plugins cannot strip RLS conditions. See [Row-Level Security](/security/row-level-security) for full configuration details.
 
 ## Layer 5: Auto LIMIT
 
-A `LIMIT` clause is appended to every query that doesn't already have one. This prevents accidental full-table scans.
+**What it does:** A `LIMIT` clause is appended to every query that doesn't already have one.
+
+**Why it matters:** Without a limit, a simple `SELECT * FROM events` on a table with millions of rows could return a massive result set, consuming memory and bandwidth. Auto LIMIT caps the result set to a safe default.
 
 ```sql
 -- Input (no LIMIT)
@@ -157,20 +187,87 @@ SELECT * FROM users
 SELECT * FROM users LIMIT 1000
 ```
 
-Default: 1000 rows. Configure with `ATLAS_ROW_LIMIT`.
+Default: **1000 rows**. Configure with `ATLAS_ROW_LIMIT`.
 
-If the result set hits the limit, the response includes `truncated: true` so the agent knows data was cut off.
+If the result set hits the limit, the response includes `truncated: true` so the agent knows data was cut off and can add filters or pagination.
 
 ## Layer 6: Statement timeout
 
-A per-query execution deadline prevents long-running queries from consuming database resources.
+**What it does:** A per-query execution deadline is set on the database connection. Queries that exceed the deadline are terminated by the database engine itself.
+
+**Why it matters:** Even a valid, read-only SELECT can consume significant resources — a complex join across large tables, or a query that triggers a sequential scan, could run for minutes and degrade performance for other users. The statement timeout prevents any single query from monopolizing the database.
 
 - **PostgreSQL**: Session-level `statement_timeout` set on the connection
 - **MySQL**: Session-level timeout variable
 
-Default: 30 seconds (30000ms). Configure with `ATLAS_QUERY_TIMEOUT`.
+Default: **30 seconds** (30000ms). Configure with `ATLAS_QUERY_TIMEOUT`.
 
 Queries that exceed the timeout are terminated by the database and return an error to the agent.
+
+## What gets rejected: concrete examples
+
+Here are real-world attack patterns and which layer catches them:
+
+### 1. SQL injection via piggybacked statement
+
+An attacker tries to append a destructive statement after a legitimate SELECT:
+
+```sql
+SELECT * FROM users; DROP TABLE users
+```
+
+**Caught at:** Layer 1 (regex guard blocks `DROP`) **and** layer 2 (AST parser detects two statements). Defense in depth — even if one layer had a bug, the other would catch it.
+
+### 2. Data exfiltration from an undocumented table
+
+The agent tries to read from a table that exists in the database but isn't described in the semantic layer:
+
+```sql
+SELECT api_key, secret FROM internal_credentials
+```
+
+**Caught at:** Layer 3 (table whitelist). `internal_credentials` has no entity YAML file, so it's not in the allowed set. The agent only knows about tables you've explicitly documented.
+
+### 3. Comment-wrapped mutation attempt
+
+An attacker hides a DELETE statement inside what looks like a commented-out section, hoping the validator only sees the harmless-looking parts:
+
+```sql
+/* just a select */ DELETE FROM users WHERE 1=1
+```
+
+**Caught at:** Layer 1 (regex guard). SQL comments are stripped before pattern matching, so `DELETE` is detected regardless of surrounding comments.
+
+### 4. Resource exhaustion via unlimited query
+
+The agent writes a query that would return millions of rows, consuming memory and network bandwidth:
+
+```sql
+SELECT * FROM events
+```
+
+**Caught at:** Layer 5 (auto LIMIT). The query is rewritten to `SELECT * FROM events LIMIT 1000` before execution. If it still runs too long, layer 6 (statement timeout) terminates it after 30 seconds.
+
+## How Atlas compares to other tools
+
+Most text-to-SQL tools validate queries minimally or not at all. Here's how Atlas's pipeline compares:
+
+| Validation layer | Atlas | WrenAI | Vanna | Metabase |
+|-----------------|-------|--------|-------|----------|
+| Empty check | Yes | — | — | — |
+| Regex mutation guard | Yes (DML + DDL + admin commands) | — | — | — |
+| AST parse (single SELECT) | Yes (reject if unparseable) | — | — | Partial (native driver) |
+| Table whitelist | Yes (semantic layer) | Modeling layer | — | Sandboxed permissions |
+| RLS / row-level filtering | Yes (AST injection, fail-closed) | — | — | Yes (sandboxing) |
+| Auto LIMIT | Yes (configurable) | — | — | Yes (hardcoded) |
+| Statement timeout | Yes (configurable) | — | — | Yes |
+| **Total layers** | **7** | **~1** | **~0** | **~3** |
+
+<Callout type="info">
+This comparison reflects publicly documented validation behavior as of March 2026. WrenAI and Vanna focus on query generation accuracy rather than execution-time validation. Metabase has a mature permissions model but serves a different use case (BI dashboards vs. AI agent SQL execution).
+</Callout>
+
+The key difference isn't just the number of layers — it's the **fail-closed philosophy**. Atlas rejects anything it doesn't understand (unparseable SQL, unknown tables, missing claims). Most tools default to allowing queries they can't validate.
 
 ## Plugin hooks
 
@@ -216,5 +313,7 @@ Run the tests: `bun run test` (isolated per-file runner).
 
 ## Related
 
-- [Row-Level Security](/security/row-level-security) -- automatic WHERE clause injection based on user claims (Layer 4)
-- [Connect Your Data](/getting-started/connect-your-data#safety-knobs) -- configuring row limits, query timeouts, and table whitelists
+- [Row-Level Security](/security/row-level-security) — automatic WHERE clause injection based on user claims (layer 4)
+- [Connect Your Data](/getting-started/connect-your-data#safety-knobs) — configuring row limits, query timeouts, and table whitelists
+- [Semantic Layer](/getting-started/semantic-layer) — how entity YAML files define the table whitelist (layer 3)
+- [Plugin Authoring Guide](/plugins/authoring-guide) — extending validation with custom forbidden patterns and validators

@@ -18,8 +18,8 @@ Atlas has three integration surfaces. Each serves a different audience and custo
 | **Framework requirement** | None — plain HTML | React 18+ | Node.js / Bun (or any JS runtime) | None — any HTTP client |
 | **Auth approach** | `data-api-key` attribute or `Atlas.setAuthToken()` | Better Auth client or Bearer token via provider | API key or Bearer token passed to `createAtlasClient()` | `Authorization: Bearer <key>` header |
 | **Customization** | Theme (light/dark), position, accent color, logo, CSS variables | Full control — custom components, tool renderers, hooks | Programmatic — build any UI or pipeline on top | Full control — raw request/response |
-| **Streaming support** | Yes (built-in) | Yes (built-in via AI SDK) | Yes (`streamQuery()` returns async iterator) | Yes (SSE on `POST /api/v1/chat`) |
-| **Conversation management** | Automatic (widget handles state) | Automatic (`useConversations` hook) | Manual (`listConversations`, `getConversation`) | Manual (REST endpoints) |
+| **Streaming support** | Yes (built-in) | Yes (built-in via AI SDK) | Yes (`streamQuery()` returns async generator) | Yes (SSE on `POST /api/chat`) |
+| **Conversation management** | Automatic (widget handles state) | Automatic (`useConversations` hook) | Manual (`conversations.list()`, `conversations.get()`) | Manual (REST endpoints) |
 | **Best for** | Marketing sites, internal tools, quick demos | Product teams building a branded data experience | Backend services, scheduled reports, CI pipelines | Non-JS backends (Python, Go, Ruby), microservices |
 
 <Callout>
@@ -41,11 +41,11 @@ Atlas has three integration surfaces. Each serves a different audience and custo
 **React package** — wrap your app in the provider:
 
 ```tsx
-import { AtlasChat, AtlasUIProvider } from "@useatlas/react";
+import { AtlasProvider, AtlasChat } from "@useatlas/react";
 
-<AtlasUIProvider config={{ apiUrl: "https://your-api.example.com", authClient }}>
+<AtlasProvider apiUrl="https://your-api.example.com" apiKey="sk-...">
   <AtlasChat />
-</AtlasUIProvider>
+</AtlasProvider>
 ```
 
 **TypeScript SDK** — programmatic queries:
@@ -76,11 +76,11 @@ Atlas supports four authentication modes. The right choice depends on your deplo
 | Dimension | None | Simple Key (`api-key`) | Managed (`managed`) | BYOT (`byot`) |
 |---|---|---|---|---|
 | **Best for** | Local dev, internal tools behind a VPN | Headless integrations, CLI tools, SDKs | Multi-user web apps with login | Enterprises with existing SSO (Auth0, Clerk, Okta) |
-| **Session management** | None — all requests are anonymous | None — stateless key per request | Server-side sessions (7-day expiry, auto-renew) | Stateless — JWT verified per request via JWKS |
+| **Session management** | None — all requests are anonymous | None — stateless key per request | Server-side sessions (7-day expiry, renewed on activity) | Stateless — JWT verified per request via JWKS |
 | **User isolation** | No — all queries share one identity | No — single shared identity per key | Yes — each user has their own account and history | Yes — user identity extracted from JWT `sub` claim |
 | **Role support** | No roles | Single role for the key (`ATLAS_API_KEY_ROLE`) | Per-user roles (viewer, analyst, admin) | Role extracted from JWT claim (configurable path) |
 | **RLS (row-level security)** | Not available | Static claims only (`ATLAS_RLS_CLAIMS`) | Per-user claims from session | Per-user claims from JWT payload |
-| **Setup complexity** | Zero config | One env var (`ATLAS_API_KEY`) | 2-3 env vars + internal Postgres (`DATABASE_URL`) | 2-4 env vars pointing to your IdP's JWKS endpoint |
+| **Setup complexity** | Zero config | One env var (`ATLAS_API_KEY`) | 2-3 env vars + internal Postgres (`DATABASE_URL`) | 2-4 env vars (JWKS URL + issuer required, audience + role claim optional) |
 | **Requires internal database** | No | No | Yes (`DATABASE_URL`) | No |
 | **Recommended for** | Getting started, demos | Automated pipelines, single-user tools | Production apps with user accounts | Production apps with existing identity provider |
 
@@ -118,7 +118,7 @@ ATLAS_ADMIN_EMAIL=admin@example.com  # optional: first admin account
 ATLAS_AUTH_JWKS_URL=https://your-idp.com/.well-known/jwks.json
 ATLAS_AUTH_ISSUER=https://your-idp.com/
 ATLAS_AUTH_AUDIENCE=your-atlas-api         # optional but recommended
-ATLAS_AUTH_ROLE_CLAIM=app_metadata.role    # optional, defaults to "role"
+ATLAS_AUTH_ROLE_CLAIM=app_metadata.role    # optional, defaults to checking "role" then "atlas_role"
 ```
 
 ### Auto-detection

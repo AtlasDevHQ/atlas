@@ -50,6 +50,48 @@ The current milestone. Embeddable widget, new datasource support, conversation s
 
 ---
 
+## 0.5.1 — Agent-Friendly Docs
+
+Systematic docs overhaul applying best practices for both human and LLM consumption.
+
+- **Tutorials** — Verification checkpoints after every setup step, prerequisites in expandable blocks, per-stage troubleshooting
+- **How-to guides** — New guides for widget customization, multi-datasource routing, schema evolution, rate limiting. Corner cases moved out of tutorials into dedicated pages
+- **Reference pages** — More code examples with inline comments, curl/fetch request examples, pagination and error handling patterns
+- **Explanation pages** — SQL validation pipeline walkthrough, semantic layer concepts glossary, comparison tables (Widget vs SDK vs API, auth modes)
+- **Agent optimization** — llms.txt audit, stable headings, no media-only information
+
+---
+
+## 0.5.2 — Onboarding & CLI Polish
+
+Making the first 60 seconds perfect — every error a new user could hit gets a clear, actionable message.
+
+- **Onboarding** — `atlas init` progress spinner with ETA, failure threshold for table profiling, first-run `.env` detection
+- **Error handling** — Pattern-matched errors replacing generic fallbacks (connection refused, provider unavailable, query timeout), request IDs on internal errors, transient vs permanent error hints
+- **CLI** — Proper `--help` for all subcommands, better config validation messages
+
+---
+
+## 0.5.3 — UI & Accessibility Polish
+
+No new features — making everything feel right across the existing surface area.
+
+- **Accessibility** — ARIA labels on chat input and message bubbles, skip links, keyboard navigation audit, Lighthouse/axe compliance
+- **UI** — Loading state audit, meaningful empty states, error boundaries, mobile polish pass, chart responsiveness
+- **Widget** — TypeScript type exports for embedders, CSS customization docs, graceful error states
+
+---
+
+## 0.5.4 — SDK & Integration Polish
+
+Making every integration surface production-ready.
+
+- **SDK** — `listTables()` convenience method, error code catalog with retry guidance, streaming timeout documentation
+- **Testing** — End-to-end widget embed test, SDK streaming test, MCP server smoke test
+- **Docs cross-cuts** — Troubleshooting section on every guide, self-contained how-to pages, cross-link audit
+
+---
+
 ## 0.6.0 — Governance & Integrations
 
 Access control, audit, and third-party integrations for production teams.

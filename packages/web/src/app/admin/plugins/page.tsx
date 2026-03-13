@@ -373,7 +373,11 @@ export default function PluginsPage() {
         {loading ? (
           <LoadingState message="Loading plugins..." />
         ) : displayPlugins.length === 0 && !error ? (
-          <EmptyState icon={Puzzle} message="No plugins installed" />
+          <EmptyState
+            icon={Puzzle}
+            title="No plugins installed"
+            description="Plugins extend Atlas with additional datasources, tools, and integrations"
+          />
         ) : displayPlugins.length > 0 ? (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {displayPlugins.map((plugin) => (

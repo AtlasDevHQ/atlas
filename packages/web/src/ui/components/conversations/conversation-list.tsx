@@ -1,5 +1,6 @@
 "use client";
 
+import { MessageSquare, Star } from "lucide-react";
 import type { Conversation } from "../../lib/types";
 import { ConversationItem } from "./conversation-item";
 
@@ -21,9 +22,19 @@ export function ConversationList({
   emptyMessage?: string;
 }) {
   if (conversations.length === 0) {
+    const isSaved = !!emptyMessage;
+    const Icon = isSaved ? Star : MessageSquare;
     return (
-      <div className="px-3 py-6 text-center text-xs text-zinc-400 dark:text-zinc-500">
-        {emptyMessage ?? "No conversations yet"}
+      <div className="flex flex-col items-center px-3 py-8 text-center">
+        <Icon className="size-8 text-zinc-300 dark:text-zinc-600" />
+        <p className="mt-2 text-xs font-medium text-zinc-500 dark:text-zinc-400">
+          {emptyMessage ?? "No conversations yet"}
+        </p>
+        {!isSaved && (
+          <p className="mt-0.5 text-[11px] text-zinc-400 dark:text-zinc-500">
+            Ask a question to get started
+          </p>
+        )}
       </div>
     );
   }

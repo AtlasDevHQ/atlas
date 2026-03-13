@@ -408,7 +408,12 @@ export default function ScheduledTasksPage() {
         {loading ? (
           <LoadingState message="Loading scheduled tasks..." />
         ) : tasks.length === 0 && !error ? (
-          <EmptyState icon={CalendarClock} message="No scheduled tasks found" />
+          <EmptyState
+            icon={CalendarClock}
+            title="No scheduled tasks"
+            description="Create a task to automate recurring queries and reports"
+            action={{ label: "Create task", onClick: openCreate }}
+          />
         ) : tasks.length > 0 ? (
           <>
             <Table>

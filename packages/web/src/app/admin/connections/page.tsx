@@ -537,7 +537,12 @@ export default function ConnectionsPage() {
           <LoadingState message="Loading connections..." />
         ) : displayConnections.length === 0 && !error ? (
           <div className="p-6">
-            <EmptyState icon={Cable} message="No connections configured" />
+            <EmptyState
+              icon={Cable}
+              title="No datasource connections"
+              description="Add a connection to start querying your data"
+              action={{ label: "Add connection", onClick: handleAdd }}
+            />
           </div>
         ) : displayConnections.length > 0 ? (
           <Table>

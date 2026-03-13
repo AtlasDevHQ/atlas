@@ -281,7 +281,20 @@ export default function AuditPage() {
               <LoadingState message="Loading audit log..." />
             </div>
           ) : rows.length === 0 ? (
-            <EmptyState icon={ScrollText} message="No audit log entries found" />
+            params.user || params.from || params.to || params.errorOnly ? (
+              <EmptyState
+                icon={Search}
+                title="No results match your filters"
+                description="Try adjusting your date range or clearing filters"
+                action={{ label: "Clear filters", onClick: () => { setFilters({ user: "", from: "", to: "", errorOnly: false }); setParams({ user: "", from: "", to: "", errorOnly: false, page: 1 }); } }}
+              />
+            ) : (
+              <EmptyState
+                icon={ScrollText}
+                title="No query activity recorded yet"
+                description="Query activity will appear here once users start asking questions"
+              />
+            )
           ) : (
             <>
               <div className="rounded-md border">

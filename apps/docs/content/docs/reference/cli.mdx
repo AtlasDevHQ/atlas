@@ -354,9 +354,9 @@ Output a shell completion script for bash, zsh, or fish. Completions cover all c
 bun run atlas -- completions <bash|zsh|fish>
 ```
 
-No flags. The only argument is the target shell.
+No flags. The only argument is the target shell. If the shell argument is missing or unsupported, the command prints usage instructions and exits with code 1.
 
-**Installation:**
+**Installation** (assumes `atlas` is installed globally or aliased — substitute `bun run atlas --` if running from the monorepo)**:**
 
 | Shell | Setup |
 |-------|-------|

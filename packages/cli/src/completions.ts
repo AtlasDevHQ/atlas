@@ -41,6 +41,7 @@ export const COMMANDS: Record<string, CommandSpec> = {
       "--enrich": "Profile + LLM enrichment",
       "--no-enrich": "Skip LLM enrichment",
       "--demo": "Load demo dataset (simple, cybersec, ecommerce)",
+      "--force": "Continue even if more than 20% of tables fail to profile",
     },
   },
   diff: {
@@ -90,7 +91,18 @@ export const COMMANDS: Record<string, CommandSpec> = {
   },
   eval: {
     description: "Run eval pipeline against demo schemas",
-    flags: {},
+    flags: {
+      "--schema": "Filter by demo dataset name",
+      "--category": "Filter by category",
+      "--difficulty": "Filter by difficulty (simple|medium|complex)",
+      "--id": "Run a single case",
+      "--limit": "Max cases to evaluate",
+      "--resume": "Resume from existing JSONL results file",
+      "--baseline": "Save results as new baseline",
+      "--compare": "Diff against baseline (exit 1 on regression)",
+      "--csv": "CSV output",
+      "--json": "JSON summary output",
+    },
   },
   smoke: {
     description: "Run E2E smoke tests",
@@ -104,7 +116,13 @@ export const COMMANDS: Record<string, CommandSpec> = {
   },
   benchmark: {
     description: "Run BIRD benchmark for text-to-SQL accuracy",
-    flags: {},
+    flags: {
+      "--bird-path": "Path to the downloaded BIRD dev directory",
+      "--limit": "Max questions to evaluate",
+      "--db": "Filter to a single database",
+      "--csv": "CSV output",
+      "--resume": "Resume from existing JSONL results file",
+    },
   },
   completions: {
     description: "Output shell completion script",

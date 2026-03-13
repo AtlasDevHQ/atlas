@@ -402,7 +402,7 @@ describe("GET /widget.js", () => {
   it("defines Atlas.ask() method that opens and sends question", async () => {
     const script = await getScript();
     expect(script).toContain("ask:function(question)");
-    expect(script).toContain('{type:"ask",question:question}');
+    expect(script).toContain('{type:"atlas:ask",query:question}');
     // Guards against non-string arguments
     expect(script).toContain('[Atlas] ask() requires a string argument');
   });
@@ -410,7 +410,7 @@ describe("GET /widget.js", () => {
   it("Atlas.ask() checks isReady before sending to iframe", async () => {
     const script = await getScript();
     // ask() now guards with isReady like open/close
-    expect(script).toContain("if(isReady)sendToWidget({type:\"ask\"");
+    expect(script).toContain("if(isReady)sendToWidget({type:\"atlas:ask\"");
   });
 
   it("defines Atlas.destroy() method that removes DOM elements", async () => {

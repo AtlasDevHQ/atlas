@@ -241,7 +241,7 @@ window.Atlas={
   open:function(){if(!destroyed){setOpen(true);if(isReady)sendToWidget({type:"open"})}},
   close:function(){if(!destroyed){setOpen(false);if(isReady)sendToWidget({type:"close"})}},
   toggle:function(){if(!destroyed){var next=!isOpen;setOpen(next);if(isReady)sendToWidget({type:next?"open":"close"})}},
-  ask:function(question){if(destroyed)return;if(typeof question!=="string"){console.warn("[Atlas] ask() requires a string argument");return}setOpen(true);if(isReady)sendToWidget({type:"ask",question:question})},
+  ask:function(question){if(destroyed)return;if(typeof question!=="string"){console.warn("[Atlas] ask() requires a string argument");return}setOpen(true);if(isReady)sendToWidget({type:"atlas:ask",query:question})},
   destroy:function(){
     if(destroyed)return;
     destroyed=true;

@@ -4,6 +4,8 @@
  * All types are canonical from @useatlas/types — no local duplication.
  */
 
+import type { ShareMode } from "@useatlas/types";
+
 export { AUTH_MODES, DB_TYPES, CHAT_ERROR_CODES } from "@useatlas/types";
 export type {
   AuthMode,

@@ -36,23 +36,15 @@ Self-service management and observability for the admin console. Connection CRUD
 
 Dark/light mode toggle with persistence and admin-configurable brand color, suggested follow-up questions after each answer, Excel export alongside CSV, mobile-responsive chat UI, saved queries with starred filters, visual schema explorer for non-admin users, and expanded chart types (area, stacked bar, scatter).
 
----
+### 0.5.0 — Launch
 
-## 0.5.0 — Launch
-
-The current milestone. Embeddable widget, new datasource support, conversation sharing, and launch prep.
-
-- **Embeddable widget** — `@useatlas/react` component with headless hooks API, `<script>` tag loader with programmatic JS API, dedicated widget host route with configurable branding
-- **SDK streaming** — `streamQuery()` API with abort support for real-time agent responses in custom integrations
-- **BigQuery** — Datasource plugin for Google BigQuery with cost-gated query approval
-- **Conversation sharing** — Public links with OG meta tags for social previews, iframe embed mode for external embedding
-- **Launch prep** — README overhaul, landing page refresh, comparison pages, onboarding hardening
+Embeddable widget infrastructure: `@useatlas/react` component with headless hooks API, `<script>` tag loader with programmatic JS API, and dedicated widget host route with configurable branding. SDK streaming via `streamQuery()` with abort support. BigQuery datasource plugin with cost-gated query approval. Conversation sharing with public links, OG meta tags, iframe embed mode, expiry controls, and org-scoped permissions. Launch prep including README overhaul with animated terminal recording, landing page refresh with interactive widget demo, and comparison pages. Extracted `@useatlas/types` shared package, hardened error handling across the stack, and isolated CLI test runner.
 
 ---
 
 ## 0.5.1 — Agent-Friendly Docs
 
-Systematic docs overhaul applying best practices for both human and LLM consumption.
+The current milestone. Systematic docs overhaul applying best practices for both human and LLM consumption.
 
 - **Tutorials** — Verification checkpoints after every setup step, prerequisites in expandable blocks, per-stage troubleshooting
 - **How-to guides** — New guides for widget customization, multi-datasource routing, schema evolution, rate limiting. Corner cases moved out of tutorials into dedicated pages

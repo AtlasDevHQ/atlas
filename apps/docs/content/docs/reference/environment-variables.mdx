@@ -6,15 +6,15 @@ description: Complete reference for all Atlas environment variables with default
 import { Callout } from "fumadocs-ui/components/callout";
 import { Tabs, Tab } from "fumadocs-ui/components/tabs";
 
-All Atlas configuration is via environment variables. Most have safe defaults — a minimal deployment needs only an LLM provider key and a datasource URL.
+Atlas can be configured entirely via environment variables. Most have safe defaults — a minimal deployment needs only an LLM provider key and a datasource URL. For multi-datasource setups or advanced configuration, see the [Configuration reference](/reference/config).
 
 ## Precedence
 
-When both `atlas.config.ts` and environment variables are present:
+Config loading is **binary** — when `atlas.config.ts` exists, it is used exclusively for structure. Env vars like `ATLAS_DATASOURCE_URL` are not merged in as fallbacks. Fields omitted from the config file get Zod schema defaults, not env var values.
 
-1. **Config file wins** for `datasources`, `tools`, `auth`, `semanticLayer`, `plugins`, `actions`, `rls`, and `scheduler`
-2. **Env vars are fallbacks** — used when the config file doesn't define a field
-3. **Some vars are env-only** — secrets (`ANTHROPIC_API_KEY`, `BETTER_AUTH_SECRET`), runtime hints (`ATLAS_RUNTIME`), and networking (`PORT`, `ATLAS_CORS_ORIGIN`) are always read from environment variables
+1. **Config file found** → all structural config (`datasources`, `tools`, `semanticLayer`, `plugins`, `actions`, `rls`, `scheduler`) comes from the file
+2. **No config file** → all configuration comes from environment variables
+3. **Some vars are always env-only** — secrets (`ANTHROPIC_API_KEY`, `BETTER_AUTH_SECRET`), auth mode (`ATLAS_AUTH_MODE`), runtime hints (`ATLAS_RUNTIME`), and networking (`PORT`, `ATLAS_CORS_ORIGIN`) are always read from environment variables regardless of config file presence
 
 See the [Configuration reference](/reference/config) for the full `atlas.config.ts` guide.
 
@@ -336,8 +336,8 @@ Action framework settings. These can also be configured via [`atlas.config.ts`](
 |----------|---------|-------------|
 | `ATLAS_ACTIONS_ENABLED` | — | Set `true` to enable the action framework (approval-gated write operations) |
 | `ATLAS_ACTION_APPROVAL` | `manual` | Default approval mode for actions: `auto`, `manual`, or `admin-only` |
-| `ATLAS_ACTION_TIMEOUT` | `30000` | Per-action execution timeout in milliseconds |
-| `ATLAS_ACTION_MAX_PER_CONVERSATION` | `10` | Maximum number of actions allowed per conversation |
+| `ATLAS_ACTION_TIMEOUT` | — | Per-action execution timeout in milliseconds |
+| `ATLAS_ACTION_MAX_PER_CONVERSATION` | — | Maximum number of actions allowed per conversation |
 | `ATLAS_EMAIL_ALLOWED_DOMAINS` | — | Comma-separated list of allowed email recipient domains for the email action plugin. When unset, all domains are allowed |
 
 ```bash

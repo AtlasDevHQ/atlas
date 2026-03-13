@@ -6,7 +6,7 @@ description: Declarative configuration with atlas.config.ts for multi-datasource
 import { Callout } from "fumadocs-ui/components/callout";
 import { Tabs, Tab } from "fumadocs-ui/components/tabs";
 
-Atlas can be configured via environment variables (see [Environment Variables](/reference/environment-variables)) or a declarative `atlas.config.ts` file. When both are present, the config file takes precedence for datasource, auth, and tool configuration. Environment variables still work as fallbacks.
+Atlas can be configured via environment variables (see [Environment Variables](/reference/environment-variables)) or a declarative `atlas.config.ts` file. For multi-datasource setups, plugins, RLS, or actions, use the config file. For simple single-datasource deployments, env vars alone are sufficient.
 
 ## File Location
 
@@ -29,11 +29,15 @@ Run [`atlas validate`](/reference/cli#validate) to check your config file and se
 
 ## Precedence
 
-When both a config file and environment variables are present:
+Config loading is **binary**: when a config file exists, it is used exclusively. Env vars like `ATLAS_DATASOURCE_URL` are **not** merged in. When no config file exists, all configuration comes from environment variables.
 
-1. **Config file wins** for `datasources`, `tools`, `auth`, `semanticLayer`, `plugins`, `actions`, `rls`, and `scheduler`
-2. **Environment variables** are used as fallbacks when the config file doesn't define a field
-3. **Secrets should stay in env vars** — reference them via `process.env` in the config file
+1. **Config file found** → parsed and validated via Zod. Fields omitted from the config file get Zod schema defaults (e.g. `auth: "auto"`, `semanticLayer: "./semantic"`), not env var values
+2. **No config file** → all configuration comes from environment variables
+3. **Secrets should stay in env vars** — reference them via `process.env` in the config file (this is user code executing at import time, not a config-loader merge)
+
+<Callout type="info">
+Auth mode is always determined by environment variables (`ATLAS_AUTH_MODE` or auto-detection). The `auth` field in the config file is stored but not yet wired to the auth detection pipeline. See [Authentication](/deployment/authentication) for how auth mode is resolved.
+</Callout>
 
 ```typescript
 // atlas.config.ts — secrets from env, structure in config
@@ -95,7 +99,7 @@ export default defineConfig({
     default: {
       // Connection string from env var
       url: process.env.ATLAS_DATASOURCE_URL!,
-      // PostgreSQL schema (default: public)
+      // PostgreSQL schema (omit for default search_path)
       schema: "public",
       // Shown in the agent system prompt
       description: "Primary PostgreSQL database",
@@ -158,7 +162,7 @@ export default defineConfig({
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `url` | `string` | Yes | — | Connection string (`postgresql://`, `mysql://`, or plugin schemes) |
-| `schema` | `string` | No | `"public"` | PostgreSQL schema name (sets `search_path`). Ignored for MySQL and plugins |
+| `schema` | `string` | No | — | PostgreSQL schema name (sets `search_path`). When omitted, PostgreSQL's default `search_path` applies (typically `public`). Ignored for MySQL and plugins |
 | `description` | `string` | No | — | Human-readable label shown in the agent system prompt |
 | `maxConnections` | `number` | No | — | Connection pool size for this datasource |
 | `idleTimeoutMs` | `number` | No | — | Idle connection timeout in milliseconds |
@@ -511,4 +515,4 @@ export default defineConfig({
 | `plugins` | `unknown[]` | — | Plugin instances to register at boot |
 | `actions` | `ActionsConfig` | — | Action framework configuration |
 | `rls` | `RLSConfig` | — | Row-Level Security policies |
-| `scheduler` | `SchedulerConfig` | — | Scheduled task configuration |
+| `scheduler` | `object` | — | Scheduled task configuration ([details](#scheduler)) |

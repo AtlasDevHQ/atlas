@@ -1,8 +1,8 @@
 "use client";
 
-import type { ActionStatus } from "../../lib/action-types";
+import type { ActionDisplayStatus } from "../../lib/action-types";
 
-const STATUS_CONFIG: Record<ActionStatus, { label: string; classes: string }> = {
+const STATUS_CONFIG: Record<ActionDisplayStatus, { label: string; classes: string }> = {
   pending_approval: {
     label: "Pending Approval",
     classes: "bg-yellow-100 text-yellow-700 dark:bg-yellow-600/20 dark:text-yellow-400",
@@ -37,7 +37,7 @@ const STATUS_CONFIG: Record<ActionStatus, { label: string; classes: string }> = 
   },
 };
 
-export function ActionStatusBadge({ status }: { status: ActionStatus }) {
+export function ActionStatusBadge({ status }: { status: ActionDisplayStatus }) {
   const config = STATUS_CONFIG[status] ?? {
     label: status.replace(/_/g, " "),
     classes: "bg-zinc-100 text-zinc-700 dark:bg-zinc-600/20 dark:text-zinc-400",

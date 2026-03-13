@@ -4,8 +4,8 @@ export {
   isActionToolResult,
 } from "@useatlas/types/action";
 export type {
-  ActionStatus,
-  ResolvedStatus,
+  ActionDisplayStatus,
+  ResolvedDisplayStatus,
   ActionToolResultShape,
   ActionApprovalResponse,
 } from "@useatlas/types/action";

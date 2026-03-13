@@ -22,7 +22,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { ActionStatusBadge } from "@/ui/components/actions/action-status-badge";
-import type { ActionStatus } from "@/ui/lib/action-types";
+import type { ActionDisplayStatus } from "@/ui/lib/action-types";
 import { EmptyState } from "@/ui/components/admin/empty-state";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
@@ -93,7 +93,7 @@ const ACTION_TYPE_ICONS: Record<string, typeof Database> = {
   command: Terminal,
 };
 
-function mapStatus(status: ActionLogEntry["status"]): ActionStatus {
+function mapStatus(status: ActionLogEntry["status"]): ActionDisplayStatus {
   return status === "pending" ? "pending_approval" : status;
 }
 

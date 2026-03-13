@@ -148,7 +148,7 @@ describe("status set consistency", () => {
     expect(RESOLVED_STATUSES.size).toBe(7);
   });
 
-  test("every entry in RESOLVED_STATUSES is a valid ActionStatus", () => {
+  test("every entry in RESOLVED_STATUSES is a valid ActionDisplayStatus", () => {
     for (const status of RESOLVED_STATUSES) {
       // If it is a valid status, isActionToolResult should accept it
       expect(

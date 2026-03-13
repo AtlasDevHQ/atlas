@@ -207,6 +207,7 @@ chat.post("/", async (c) => {
       try {
         // Build a dynamic registry when actions are enabled
         let toolRegistry;
+        const warnings: string[] = [];
         const includeActions = process.env.ATLAS_ACTIONS_ENABLED === "true";
         if (includeActions) {
           try {
@@ -216,6 +217,9 @@ chat.post("/", async (c) => {
             log.error(
               { err: err instanceof Error ? err : new Error(String(err)) },
               "Failed to build tool registry — falling back to default tools",
+            );
+            warnings.push(
+              "Actions were requested but failed to initialize. Action tools are unavailable for this session. Inform the user that actions are currently unavailable and suggest they check server logs or retry later.",
             );
           }
         }
@@ -230,7 +234,12 @@ chat.post("/", async (c) => {
           toolRegistry.freeze();
         }
 
-        const result = await runAgent({ messages, ...(toolRegistry && { tools: toolRegistry }), conversationId });
+        const result = await runAgent({
+          messages,
+          ...(toolRegistry && { tools: toolRegistry }),
+          conversationId,
+          ...(warnings.length > 0 && { warnings }),
+        });
         const streamResponse = result.toUIMessageStreamResponse();
 
         // Prevent proxy buffering (Next.js rewrites, nginx, etc.) so chunks

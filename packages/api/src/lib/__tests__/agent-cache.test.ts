@@ -281,6 +281,38 @@ describe("buildSystemParam", () => {
     expect(result as string).toContain("Custom Step");
     expect(result as string).not.toContain("Explore the Semantic Layer");
   });
+
+  test("includes warnings section when warnings are provided", () => {
+    const result = buildSystemParam("openai", undefined, [
+      "Actions failed to initialize.",
+      "Python tool is unavailable.",
+    ]);
+    expect(typeof result).toBe("string");
+    const content = result as string;
+    expect(content).toContain("## Warnings");
+    expect(content).toContain("Actions failed to initialize.");
+    expect(content).toContain("Python tool is unavailable.");
+  });
+
+  test("omits warnings section when warnings array is empty", () => {
+    const result = buildSystemParam("openai", undefined, []);
+    expect(typeof result).toBe("string");
+    expect(result as string).not.toContain("## Warnings");
+  });
+
+  test("omits warnings section when warnings is undefined", () => {
+    const result = buildSystemParam("openai");
+    expect(typeof result).toBe("string");
+    expect(result as string).not.toContain("## Warnings");
+  });
+
+  test("warnings are included in SystemModelMessage content for anthropic", () => {
+    const result = buildSystemParam("anthropic", undefined, ["Test warning"]);
+    expect(typeof result).toBe("object");
+    const msg = result as { content: string };
+    expect(msg.content).toContain("## Warnings");
+    expect(msg.content).toContain("Test warning");
+  });
 });
 
 // ---------------------------------------------------------------------------

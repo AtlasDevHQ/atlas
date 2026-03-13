@@ -378,4 +378,36 @@ describe("POST /api/chat", () => {
     const call = calls[0]![0] as { tools?: unknown };
     expect(call.tools).toBeUndefined();
   });
+
+  it("passes warnings to runAgent when action registry build fails", async () => {
+    process.env.ATLAS_ACTIONS_ENABLED = "true";
+    // Trigger buildRegistry failure: ATLAS_PYTHON_ENABLED=true without
+    // ATLAS_SANDBOX_URL causes buildRegistry to throw before it reaches
+    // action registration.
+    process.env.ATLAS_PYTHON_ENABLED = "true";
+    delete process.env.ATLAS_SANDBOX_URL;
+
+    try {
+      const response = await app.fetch(makeRequest());
+      expect(response.status).toBe(200);
+      expect(mockRunAgent).toHaveBeenCalledTimes(1);
+      const calls = mockRunAgent.mock.calls as unknown as unknown[][];
+      const call = calls[0]![0] as { warnings?: string[] };
+      expect(call.warnings).toBeDefined();
+      expect(call.warnings!.length).toBe(1);
+      expect(call.warnings![0]).toContain("Actions were requested but failed to initialize");
+    } finally {
+      delete process.env.ATLAS_PYTHON_ENABLED;
+    }
+  });
+
+  it("does not pass warnings when actions build succeeds", async () => {
+    process.env.ATLAS_ACTIONS_ENABLED = "true";
+    const response = await app.fetch(makeRequest());
+    expect(response.status).toBe(200);
+    expect(mockRunAgent).toHaveBeenCalledTimes(1);
+    const calls = mockRunAgent.mock.calls as unknown as unknown[][];
+    const call = calls[0]![0] as { warnings?: string[] };
+    expect(call.warnings).toBeUndefined();
+  });
 });

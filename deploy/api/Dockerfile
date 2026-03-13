@@ -49,7 +49,8 @@ WORKDIR /app
 COPY --from=deps /app ./
 COPY . .
 COPY packages/cli/data/demo-semantic semantic
-# Build the @useatlas/react widget bundle (served by the /widget route)
+# Build @useatlas/types first (exports point to dist/) then the react widget bundle
+RUN cd packages/types && bun run build
 RUN cd packages/react && bun run build
 
 # --- nsjail build stage (parallel with builder) ---

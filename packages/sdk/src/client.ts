@@ -305,6 +305,8 @@ export type StreamEvent =
   | { type: "tool-result"; toolCallId: string; name: string; result: Record<string, unknown> }
   | { type: "result"; columns: string[]; rows: Record<string, unknown>[] }
   | { type: "error"; message: string }
+  /** Client-side: emitted when an SSE frame contains invalid JSON. */
+  | { type: "parse-error"; raw: string; error: string }
   | { type: "finish"; reason: StreamFinishReason };
 
 export interface StreamQueryOptions {
@@ -522,8 +524,8 @@ export function createAtlasClient(options: AtlasClientOptions) {
 
             try {
               yield JSON.parse(data) as Record<string, unknown>;
-            } catch {
-              // Skip unparseable events
+            } catch (e) {
+              yield { type: "parse-error", raw: data, error: e instanceof Error ? e.message : String(e) };
             }
           }
         }
@@ -641,6 +643,14 @@ export function createAtlasClient(options: AtlasClientOptions) {
               };
               break;
             }
+            case "parse-error": {
+              yield {
+                type: "parse-error",
+                raw: event.raw as string,
+                error: event.error as string,
+              };
+              break;
+            }
             case "finish": {
               yield {
                 type: "finish",
@@ -648,7 +658,7 @@ export function createAtlasClient(options: AtlasClientOptions) {
               };
               break;
             }
-            // Only text-delta, tool-input-start, tool-input-available, tool-output-available, error, and finish are mapped to StreamEvents.
+            // Only text-delta, tool-input-start, tool-input-available, tool-output-available, error, parse-error, and finish are mapped to StreamEvents.
           }
         }
       } catch (err) {

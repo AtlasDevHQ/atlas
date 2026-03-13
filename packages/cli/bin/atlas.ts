@@ -70,7 +70,17 @@ async function loadDuckDB() {
 }
 
 /** Network/socket error codes indicating the database connection is down or broken — re-throw immediately to abort profiling. */
-export const FATAL_ERROR_PATTERN = /ECONNRESET|ECONNREFUSED|EHOSTUNREACH|ENOTFOUND|EPIPE|ETIMEDOUT/i;
+export const FATAL_ERROR_PATTERN = /\bECONNRESET\b|\bECONNREFUSED\b|\bEHOSTUNREACH\b|\bENOTFOUND\b|\bEPIPE\b|\bETIMEDOUT\b/i;
+
+/** Check whether an error is a fatal connection error by inspecting message, code, and cause chain. */
+export function isFatalConnectionError(err: unknown): boolean {
+  if (!(err instanceof Error)) return FATAL_ERROR_PATTERN.test(String(err));
+  if (FATAL_ERROR_PATTERN.test(err.message)) return true;
+  const code = (err as NodeJS.ErrnoException).code;
+  if (code && FATAL_ERROR_PATTERN.test(code)) return true;
+  if (err.cause) return isFatalConnectionError(err.cause);
+  return false;
+}
 
 const SEMANTIC_DIR = path.resolve("semantic");
 const ENTITIES_DIR = path.join(SEMANTIC_DIR, "entities");
@@ -378,11 +388,8 @@ export async function profilePostgres(
         allObjects.push({ name: r.table_name, type: "materialized_view" });
       }
     } catch (mvErr) {
-      const mvMsg = mvErr instanceof Error ? mvErr.message : String(mvErr);
-      if (FATAL_ERROR_PATTERN.test(mvMsg)) {
-        throw mvErr;
-      }
-      console.warn(`  Warning: Could not discover materialized views: ${mvMsg}`);
+      if (isFatalConnectionError(mvErr)) throw mvErr;
+      console.warn(`  Warning: Could not discover materialized views: ${mvErr instanceof Error ? mvErr.message : String(mvErr)}`);
     }
     allObjects.sort((a, b) => a.name.localeCompare(b.name));
   }
@@ -416,11 +423,8 @@ export async function profilePostgres(
             matview_populated = mvResult.rows[0].ispopulated;
           }
         } catch (mvErr) {
-          const mvMsg = mvErr instanceof Error ? mvErr.message : String(mvErr);
-          if (FATAL_ERROR_PATTERN.test(mvMsg)) {
-            throw mvErr;
-          }
-          console.warn(`    Warning: Could not read matview status for ${table_name}: ${mvMsg}`);
+          if (isFatalConnectionError(mvErr)) throw mvErr;
+          console.warn(`    Warning: Could not read matview status for ${table_name}: ${mvErr instanceof Error ? mvErr.message : String(mvErr)}`);
         }
       }
 
@@ -443,20 +447,14 @@ export async function profilePostgres(
         try {
           primaryKeyColumns = await queryPrimaryKeys(pool, table_name, schema);
         } catch (pkErr) {
-          const pkMsg = pkErr instanceof Error ? pkErr.message : String(pkErr);
-          if (FATAL_ERROR_PATTERN.test(pkMsg)) {
-            throw pkErr;
-          }
-          console.warn(`    Warning: Could not read PK constraints for ${table_name}: ${pkMsg}`);
+          if (isFatalConnectionError(pkErr)) throw pkErr;
+          console.warn(`    Warning: Could not read PK constraints for ${table_name}: ${pkErr instanceof Error ? pkErr.message : String(pkErr)}`);
         }
         try {
           foreignKeys = await queryForeignKeys(pool, table_name, schema);
         } catch (fkErr) {
-          const fkMsg = fkErr instanceof Error ? fkErr.message : String(fkErr);
-          if (FATAL_ERROR_PATTERN.test(fkMsg)) {
-            throw fkErr;
-          }
-          console.warn(`    Warning: Could not read FK constraints for ${table_name}: ${fkMsg}`);
+          if (isFatalConnectionError(fkErr)) throw fkErr;
+          console.warn(`    Warning: Could not read FK constraints for ${table_name}: ${fkErr instanceof Error ? fkErr.message : String(fkErr)}`);
         }
       }
 
@@ -537,11 +535,8 @@ export async function profilePostgres(
             );
             sample_values = sv.rows.map((r: { v: unknown }) => String(r.v));
           } catch (colErr) {
-            const colMsg = colErr instanceof Error ? colErr.message : String(colErr);
-            if (FATAL_ERROR_PATTERN.test(colMsg)) {
-              throw colErr;
-            }
-            console.warn(`    Warning: Could not profile column ${table_name}.${col.column_name}: ${colMsg}`);
+            if (isFatalConnectionError(colErr)) throw colErr;
+            console.warn(`    Warning: Could not profile column ${table_name}.${col.column_name}: ${colErr instanceof Error ? colErr.message : String(colErr)}`);
           }
         }
 
@@ -576,7 +571,8 @@ export async function profilePostgres(
       progress?.onTableDone(table_name, i, objectsToProfile.length);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (FATAL_ERROR_PATTERN.test(msg)) {
+      // Fail fast on connection-level errors that will affect all remaining tables
+      if (isFatalConnectionError(err)) {
         throw new Error(`Fatal database error while profiling ${table_name}: ${msg}`, { cause: err });
       }
       if (progress) {
@@ -611,11 +607,8 @@ export async function profilePostgres(
       partitionMap.set(r.relname, { strategy: r.strategy, key: r.partition_key });
     }
   } catch (partErr) {
-    const partMsg = partErr instanceof Error ? partErr.message : String(partErr);
-    if (FATAL_ERROR_PATTERN.test(partMsg)) {
-      throw partErr;
-    }
-    console.warn(`  Warning: Could not read partition metadata: ${partMsg}`);
+    if (isFatalConnectionError(partErr)) throw partErr;
+    console.warn(`  Warning: Could not read partition metadata: ${partErr instanceof Error ? partErr.message : String(partErr)}`);
   }
 
   const childrenMap = new Map<string, string[]>();
@@ -636,11 +629,8 @@ export async function profilePostgres(
       childrenMap.set(r.parent, children);
     }
   } catch (childErr) {
-    const childMsg = childErr instanceof Error ? childErr.message : String(childErr);
-    if (FATAL_ERROR_PATTERN.test(childMsg)) {
-      throw childErr;
-    }
-    console.warn(`  Warning: Could not read partition children: ${childMsg}`);
+    if (isFatalConnectionError(childErr)) throw childErr;
+    console.warn(`  Warning: Could not read partition children: ${childErr instanceof Error ? childErr.message : String(childErr)}`);
   }
 
   for (const profile of profiles) {
@@ -758,20 +748,14 @@ export async function profileMySQL(
         try {
           primaryKeyColumns = await queryMySQLPrimaryKeys(pool, table_name);
         } catch (pkErr) {
-          const pkMsg = pkErr instanceof Error ? pkErr.message : String(pkErr);
-          if (FATAL_ERROR_PATTERN.test(pkMsg)) {
-            throw pkErr;
-          }
-          console.warn(`    Warning: Could not read PK constraints for ${table_name}: ${pkMsg}`);
+          if (isFatalConnectionError(pkErr)) throw pkErr;
+          console.warn(`    Warning: Could not read PK constraints for ${table_name}: ${pkErr instanceof Error ? pkErr.message : String(pkErr)}`);
         }
         try {
           foreignKeys = await queryMySQLForeignKeys(pool, table_name);
         } catch (fkErr) {
-          const fkMsg = fkErr instanceof Error ? fkErr.message : String(fkErr);
-          if (FATAL_ERROR_PATTERN.test(fkMsg)) {
-            throw fkErr;
-          }
-          console.warn(`    Warning: Could not read FK constraints for ${table_name}: ${fkMsg}`);
+          if (isFatalConnectionError(fkErr)) throw fkErr;
+          console.warn(`    Warning: Could not read FK constraints for ${table_name}: ${fkErr instanceof Error ? fkErr.message : String(fkErr)}`);
         }
       }
 
@@ -834,11 +818,8 @@ export async function profileMySQL(
           );
           sample_values = (svRows as { v: unknown }[]).map((r) => String(r.v));
         } catch (colErr) {
-          const colMsg = colErr instanceof Error ? colErr.message : String(colErr);
-          if (FATAL_ERROR_PATTERN.test(colMsg)) {
-            throw colErr;
-          }
-          console.warn(`    Warning: Could not profile column ${table_name}.${col.COLUMN_NAME}: ${colMsg}`);
+          if (isFatalConnectionError(colErr)) throw colErr;
+          console.warn(`    Warning: Could not profile column ${table_name}.${col.COLUMN_NAME}: ${colErr instanceof Error ? colErr.message : String(colErr)}`);
         }
 
         columns.push({
@@ -872,7 +853,7 @@ export async function profileMySQL(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       // Fail fast on connection-level errors that will affect all remaining tables
-      if (/PROTOCOL_CONNECTION_LOST|ER_SERVER_SHUTDOWN|ER_NET_READ_ERROR|ER_NET_WRITE_ERROR/i.test(msg) || FATAL_ERROR_PATTERN.test(msg)) {
+      if (isFatalConnectionError(err) || /PROTOCOL_CONNECTION_LOST|ER_SERVER_SHUTDOWN|ER_NET_READ_ERROR|ER_NET_WRITE_ERROR/i.test(msg)) {
         throw new Error(`Fatal database error while profiling ${table_name}: ${msg}`, { cause: err });
       }
       if (progress) {
@@ -1027,11 +1008,8 @@ export async function profileClickHouse(
           try {
             primaryKeyColumns = await queryClickHousePrimaryKeys(client, table_name);
           } catch (pkErr) {
-            const pkMsg = pkErr instanceof Error ? pkErr.message : String(pkErr);
-            if (FATAL_ERROR_PATTERN.test(pkMsg)) {
-              throw pkErr;
-            }
-            console.warn(`    Warning: Could not read PK columns for ${table_name}: ${pkMsg}`);
+            if (isFatalConnectionError(pkErr)) throw pkErr;
+            console.warn(`    Warning: Could not read PK columns for ${table_name}: ${pkErr instanceof Error ? pkErr.message : String(pkErr)}`);
           }
         }
 
@@ -1089,11 +1067,8 @@ export async function profileClickHouse(
             );
             sample_values = svRows.map((r) => String(r.v));
           } catch (colErr) {
-            const colMsg = colErr instanceof Error ? colErr.message : String(colErr);
-            if (FATAL_ERROR_PATTERN.test(colMsg)) {
-              throw colErr;
-            }
-            console.warn(`    Warning: Could not profile column ${table_name}.${col.name}: ${colMsg}`);
+            if (isFatalConnectionError(colErr)) throw colErr;
+            console.warn(`    Warning: Could not profile column ${table_name}.${col.name}: ${colErr instanceof Error ? colErr.message : String(colErr)}`);
           }
 
           columns.push({
@@ -1126,7 +1101,8 @@ export async function profileClickHouse(
         progress?.onTableDone(table_name, i, objectsToProfile.length);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (FATAL_ERROR_PATTERN.test(msg)) {
+        // Fail fast on connection-level errors that will affect all remaining tables
+        if (isFatalConnectionError(err)) {
           throw new Error(`Fatal database error while profiling ${table_name}: ${msg}`, { cause: err });
         }
         if (progress) {
@@ -1337,20 +1313,14 @@ export async function profileSnowflake(
           try {
             primaryKeyColumns = await querySnowflakePrimaryKeys(pool, table_name, opts.database, opts.schema);
           } catch (pkErr) {
-            const pkMsg = pkErr instanceof Error ? pkErr.message : String(pkErr);
-            if (FATAL_ERROR_PATTERN.test(pkMsg)) {
-              throw pkErr;
-            }
-            console.warn(`    Warning: Could not read PK constraints for ${table_name}: ${pkMsg}`);
+            if (isFatalConnectionError(pkErr)) throw pkErr;
+            console.warn(`    Warning: Could not read PK constraints for ${table_name}: ${pkErr instanceof Error ? pkErr.message : String(pkErr)}`);
           }
           try {
             foreignKeys = await querySnowflakeForeignKeys(pool, table_name, opts.database, opts.schema);
           } catch (fkErr) {
-            const fkMsg = fkErr instanceof Error ? fkErr.message : String(fkErr);
-            if (FATAL_ERROR_PATTERN.test(fkMsg)) {
-              throw fkErr;
-            }
-            console.warn(`    Warning: Could not read FK constraints for ${table_name}: ${fkMsg}`);
+            if (isFatalConnectionError(fkErr)) throw fkErr;
+            console.warn(`    Warning: Could not read FK constraints for ${table_name}: ${fkErr instanceof Error ? fkErr.message : String(fkErr)}`);
           }
         }
 
@@ -1386,20 +1356,14 @@ export async function profileSnowflake(
               });
             }
           } catch (bulkErr) {
-            const bulkMsg = bulkErr instanceof Error ? bulkErr.message : String(bulkErr);
-            if (FATAL_ERROR_PATTERN.test(bulkMsg)) {
-              throw bulkErr;
-            }
-            console.warn(`    Warning: Bulk stats query failed for ${table_name}, falling back to row count only: ${bulkMsg}`);
+            if (isFatalConnectionError(bulkErr)) throw bulkErr;
+            console.warn(`    Warning: Bulk stats query failed for ${table_name}, falling back to row count only: ${bulkErr instanceof Error ? bulkErr.message : String(bulkErr)}`);
             try {
               const countResult = await snowflakeQuery(pool, `SELECT COUNT(*) as "RC" FROM "${escId(table_name)}"`);
               rowCount = parseInt(String(countResult.rows[0]?.RC ?? "0"), 10);
             } catch (countErr) {
-              const countMsg = countErr instanceof Error ? countErr.message : String(countErr);
-              if (FATAL_ERROR_PATTERN.test(countMsg)) {
-                throw countErr;
-              }
-              console.warn(`    Warning: Row count query also failed for ${table_name}: ${countMsg}`);
+              if (isFatalConnectionError(countErr)) throw countErr;
+              console.warn(`    Warning: Row count query also failed for ${table_name}: ${countErr instanceof Error ? countErr.message : String(countErr)}`);
             }
           }
         } else {
@@ -1407,11 +1371,8 @@ export async function profileSnowflake(
             const countResult = await snowflakeQuery(pool, `SELECT COUNT(*) as "RC" FROM "${escId(table_name)}"`);
             rowCount = parseInt(String(countResult.rows[0]?.RC ?? "0"), 10);
           } catch (countErr) {
-            const countMsg = countErr instanceof Error ? countErr.message : String(countErr);
-            if (FATAL_ERROR_PATTERN.test(countMsg)) {
-              throw countErr;
-            }
-            console.warn(`    Warning: Row count query failed for ${table_name}: ${countMsg}`);
+            if (isFatalConnectionError(countErr)) throw countErr;
+            console.warn(`    Warning: Row count query failed for ${table_name}: ${countErr instanceof Error ? countErr.message : String(countErr)}`);
           }
         }
 
@@ -1443,11 +1404,8 @@ export async function profileSnowflake(
               samplesMap.get(cn)!.push(String(row.V));
             }
           } catch (sampleErr) {
-            const sampleMsg = sampleErr instanceof Error ? sampleErr.message : String(sampleErr);
-            if (FATAL_ERROR_PATTERN.test(sampleMsg)) {
-              throw sampleErr;
-            }
-            console.warn(`    Warning: Batched sample values query failed for ${table_name} (${colMeta.length} columns affected): ${sampleMsg}`);
+            if (isFatalConnectionError(sampleErr)) throw sampleErr;
+            console.warn(`    Warning: Batched sample values query failed for ${table_name} (${colMeta.length} columns affected): ${sampleErr instanceof Error ? sampleErr.message : String(sampleErr)}`);
           }
         }
 
@@ -1487,7 +1445,9 @@ export async function profileSnowflake(
         progress?.onTableDone(table_name, i, objectsToProfile.length);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (FATAL_ERROR_PATTERN.test(msg) || /390100|390114|250001/.test(msg)) {
+        // Fail fast on connection-level errors that will affect all remaining tables
+        // Snowflake-specific: 390100 = auth token expired, 390114 = auth token invalid, 250001 = connection failure
+        if (isFatalConnectionError(err) || /390100|390114|250001/.test(msg)) {
           throw new Error(`Fatal database error while profiling ${table_name}: ${msg}`, { cause: err });
         }
         if (progress) {
@@ -1618,11 +1578,8 @@ export async function profileSalesforce(
             rowCount = parseInt(String(countVal ?? "0"), 10);
           }
         } catch (countErr) {
-          const countMsg = countErr instanceof Error ? countErr.message : String(countErr);
-          if (FATAL_ERROR_PATTERN.test(countMsg)) {
-            throw countErr;
-          }
-          console.warn(`    Warning: Could not get row count for ${objectName}: ${countMsg}`);
+          if (isFatalConnectionError(countErr)) throw countErr;
+          console.warn(`    Warning: Could not get row count for ${objectName}: ${countErr instanceof Error ? countErr.message : String(countErr)}`);
         }
 
         const foreignKeys: ForeignKey[] = [];
@@ -1681,7 +1638,8 @@ export async function profileSalesforce(
         progress?.onTableDone(objectName, i, objectsToProfile.length);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (FATAL_ERROR_PATTERN.test(msg)) {
+        // Fail fast on connection-level errors that will affect all remaining objects
+        if (isFatalConnectionError(err)) {
           throw new Error(`Fatal Salesforce error while profiling ${objectName}: ${msg}`, { cause: err });
         }
         if (progress) {
@@ -2787,12 +2745,9 @@ export async function profileDuckDB(
               sampleValues = sampleRows.map((r) => String(r.v));
             }
           } catch (colErr) {
-            const colMsg = colErr instanceof Error ? colErr.message : String(colErr);
-            if (FATAL_ERROR_PATTERN.test(colMsg)) {
-              throw colErr;
-            }
+            if (isFatalConnectionError(colErr)) throw colErr;
             console.warn(
-              `    Warning: Could not profile column ${tableName}.${col.column_name}: ${colMsg}`
+              `    Warning: Could not profile column ${tableName}.${col.column_name}: ${colErr instanceof Error ? colErr.message : String(colErr)}`
             );
           }
 
@@ -2830,7 +2785,7 @@ export async function profileDuckDB(
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         // Fail fast on connection-level errors that will affect all remaining tables
-        if (FATAL_ERROR_PATTERN.test(msg)) {
+        if (isFatalConnectionError(err)) {
           throw new Error(`Fatal database error while profiling ${tableName}: ${msg}`, { cause: err });
         }
         if (progress) {

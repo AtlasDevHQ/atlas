@@ -33,8 +33,8 @@ let _cached: AuthMode | null = null;
 let _source: AuthModeSource | null = null;
 
 /**
- * Detect auth mode from ATLAS_AUTH_MODE (explicit) or env var presence (auto).
- * Cached after first call.
+ * Detect auth mode using the three-tier priority chain:
+ * env var → config file → auto-detect. Cached after first call.
  */
 export function detectAuthMode(): AuthMode {
   if (_cached !== null) return _cached;
@@ -65,6 +65,11 @@ export function detectAuthMode(): AuthMode {
       log.info({ mode: _cached }, "Auth mode: %s (config)", _cached);
       return _cached;
     }
+    log.warn(
+      { configAuth: config.auth },
+      "Config auth value '%s' not recognized — falling through to auto-detection",
+      config.auth,
+    );
   }
 
   // Auto-detection fallback
@@ -84,7 +89,8 @@ export function detectAuthMode(): AuthMode {
 }
 
 /**
- * Return how the auth mode was resolved: "explicit" or "auto-detected".
+ * Return how the auth mode was resolved: "explicit" (env var),
+ * "config" (atlas.config.ts), or "auto-detected" (env var presence).
  * Returns null if detectAuthMode() has not been called yet.
  */
 export function getAuthModeSource(): AuthModeSource | null {

@@ -3,6 +3,7 @@ name: Publish @useatlas packages
 on:
   push:
     tags:
+      - 'types-v*'
       - 'create-v*'
       - 'create-plugin-v*'
       - 'sdk-v*'
@@ -49,6 +50,10 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       - run: bun install --frozen-lockfile
+
+      - name: Build and publish @useatlas/types
+        if: startsWith(github.ref, 'refs/tags/types-v')
+        run: cd packages/types && bun run build && npm publish --access public
 
       - name: Publish @useatlas/create
         if: startsWith(github.ref, 'refs/tags/create-v')

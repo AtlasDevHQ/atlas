@@ -632,10 +632,12 @@ describe("postMessage branding API", () => {
     expect(html).toContain("atlas:setBranding");
   });
 
-  it("includes atlas:ask handler in widget script", async () => {
+  it("includes atlas:ask handler that reads d.query and calls submitQuery", async () => {
     const res = await app.fetch(widgetRequest());
     const html = await res.text();
-    expect(html).toContain("atlas:ask");
+    expect(html).toContain('case"atlas:ask"');
+    expect(html).toContain("d.query");
+    expect(html).toContain("submitQuery(d.query)");
   });
 
   it("validates logo URL protocol in setBranding handler", async () => {

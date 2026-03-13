@@ -43,6 +43,13 @@ describe("parseChatError", () => {
     expect(info.detail).toBe(msg);
   });
 
+  // 1d. Non-JSON fallback — empty message is preserved (falsy, suppressed in UI)
+  it("empty non-JSON error message → detail is empty string", () => {
+    const info = parseChatError(new Error(""), "none");
+    expect(info.title).toBe("Something went wrong. Please try again.");
+    expect(info.detail).toBe("");
+  });
+
   // 2–5. auth_error × each auth mode
   it("auth_error + simple-key → API key message", () => {
     const info = parseChatError(jsonError({ error: "auth_error" }), "simple-key");

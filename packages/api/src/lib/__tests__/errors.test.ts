@@ -2,6 +2,7 @@ import { describe, it, expect } from "bun:test";
 import {
   parseChatError,
   authErrorMessage,
+  isChatErrorCode,
 } from "@atlas/api/lib/errors";
 
 /* ------------------------------------------------------------------ */
@@ -18,11 +19,28 @@ function jsonError(body: Record<string, unknown>): Error {
 /* ------------------------------------------------------------------ */
 
 describe("parseChatError", () => {
-  // 1. Non-JSON fallback
-  it("returns generic fallback when error.message is not JSON", () => {
+  // 1. Non-JSON fallback — includes original message as detail (#309)
+  it("returns generic fallback with detail when error.message is not JSON", () => {
     const info = parseChatError(new Error("network timeout"), "none");
     expect(info.title).toBe("Something went wrong. Please try again.");
+    expect(info.detail).toBe("network timeout");
     expect(info.code).toBeUndefined();
+  });
+
+  // 1b. Non-JSON fallback — long messages are truncated to 200 chars (#309)
+  it("truncates long non-JSON error messages to 200 chars", () => {
+    const longMsg = "x".repeat(300);
+    const info = parseChatError(new Error(longMsg), "none");
+    expect(info.title).toBe("Something went wrong. Please try again.");
+    expect(info.detail).toBe("x".repeat(200) + "...");
+    expect(info.detail!.length).toBe(203); // 200 + "..."
+  });
+
+  // 1c. Non-JSON fallback — exactly 200 chars is not truncated (#309)
+  it("does not truncate non-JSON error messages at exactly 200 chars", () => {
+    const msg = "y".repeat(200);
+    const info = parseChatError(new Error(msg), "none");
+    expect(info.detail).toBe(msg);
   });
 
   // 2–5. auth_error × each auth mode
@@ -196,7 +214,40 @@ describe("parseChatError", () => {
     expect(info.code).toBe("internal_error");
   });
 
-  // 20. Unknown code with message
+  // 20. validation_error (#308)
+  it("validation_error → correct title and detail", () => {
+    const info = parseChatError(
+      jsonError({ error: "validation_error", message: "Field 'name' is required." }),
+      "none",
+    );
+    expect(info.title).toBe("Validation error.");
+    expect(info.detail).toBe("Field 'name' is required.");
+    expect(info.code).toBe("validation_error");
+  });
+
+  // 21. not_found (#308)
+  it("not_found → correct title and detail", () => {
+    const info = parseChatError(
+      jsonError({ error: "not_found", message: "Conversation not found." }),
+      "none",
+    );
+    expect(info.title).toBe("Not found.");
+    expect(info.detail).toBe("Conversation not found.");
+    expect(info.code).toBe("not_found");
+  });
+
+  // 22. forbidden (#308)
+  it("forbidden → correct title and detail", () => {
+    const info = parseChatError(
+      jsonError({ error: "forbidden", message: "Admin role required." }),
+      "none",
+    );
+    expect(info.title).toBe("Access denied.");
+    expect(info.detail).toBe("Admin role required.");
+    expect(info.code).toBe("forbidden");
+  });
+
+  // 23. Unknown code with message
   it("unknown code with message → passes through server message", () => {
     const info = parseChatError(
       jsonError({ error: "something_new", message: "New error type" }),
@@ -230,6 +281,26 @@ describe("parseChatError", () => {
     const info = parseChatError(jsonError({}), "none");
     expect(info.title).toBe("Something went wrong. Please try again.");
     expect(info.code).toBeUndefined();
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  authErrorMessage                                                   */
+/* ------------------------------------------------------------------ */
+
+/* ------------------------------------------------------------------ */
+/*  isChatErrorCode                                                    */
+/* ------------------------------------------------------------------ */
+
+describe("isChatErrorCode", () => {
+  it("recognizes validation_error, not_found, forbidden (#308)", () => {
+    expect(isChatErrorCode("validation_error")).toBe(true);
+    expect(isChatErrorCode("not_found")).toBe(true);
+    expect(isChatErrorCode("forbidden")).toBe(true);
+  });
+
+  it("rejects unknown codes", () => {
+    expect(isChatErrorCode("something_new")).toBe(false);
   });
 });
 

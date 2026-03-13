@@ -4,8 +4,52 @@ description: Declarative configuration with atlas.config.ts for multi-datasource
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
+import { Tabs, Tab } from "fumadocs-ui/components/tabs";
 
-Atlas can be configured via environment variables (see [Environment Variables](/reference/environment-variables)) or a declarative `atlas.config.ts` file. When both are present, the config file takes precedence for datasource, auth, and tool configuration. Environment variables still work as fallbacks.
+Atlas can be configured via environment variables (see [Environment Variables](/reference/environment-variables)) or a declarative `atlas.config.ts` file. For multi-datasource setups, plugins, RLS, or actions, use the config file. For simple single-datasource deployments, env vars alone are sufficient.
+
+## File Location
+
+The config file lives at the **project root**, alongside `package.json`:
+
+```
+my-atlas-project/
+├── atlas.config.ts    # ← here
+├── package.json
+├── semantic/
+│   └── entities/
+└── .env
+```
+
+Atlas looks for `atlas.config.ts`, `atlas.config.js`, or `atlas.config.mjs` (checked in that order). If none is found, Atlas falls back to environment variables.
+
+<Callout type="info">
+Run [`atlas validate`](/reference/cli#validate) to check your config file and semantic layer for errors — no database or API key required.
+</Callout>
+
+## Precedence
+
+Config loading is **binary**: when a config file exists, it is used exclusively. Env vars like `ATLAS_DATASOURCE_URL` are **not** merged in. When no config file exists, all configuration comes from environment variables.
+
+1. **Config file found** → parsed and validated via Zod. Fields omitted from the config file get Zod schema defaults (e.g. `auth: "auto"`, `semanticLayer: "./semantic"`), not env var values
+2. **No config file** → all configuration comes from environment variables
+3. **Secrets should stay in env vars** — reference them via `process.env` in the config file (this is user code executing at import time, not a config-loader merge)
+
+<Callout type="info">
+Auth mode is always determined by environment variables (`ATLAS_AUTH_MODE` or auto-detection). The `auth` field in the config file is stored but not yet wired to the auth detection pipeline. See [Authentication](/deployment/authentication) for how auth mode is resolved.
+</Callout>
+
+```typescript
+// atlas.config.ts — secrets from env, structure in config
+import { defineConfig } from "@atlas/api/lib/config";
+
+export default defineConfig({
+  datasources: {
+    // URL from env var, structure in config
+    default: { url: process.env.ATLAS_DATASOURCE_URL! },
+  },
+});
+```
 
 ## When to Use Config File vs Env Vars
 
@@ -22,18 +66,21 @@ Atlas can be configured via environment variables (see [Environment Variables](/
 
 ## defineConfig
 
-Create an `atlas.config.ts` in your project root:
+`defineConfig()` is a type-safe helper that validates your config at build time (TypeScript) and at runtime (Zod). It accepts optional fields — defaults are applied when the config is loaded.
 
 ```typescript
+// atlas.config.ts — minimal config
 import { defineConfig } from "@atlas/api/lib/config";
 
 export default defineConfig({
   datasources: {
     default: { url: process.env.ATLAS_DATASOURCE_URL! },
   },
-  tools: ["explore", "executeSQL"],
-  auth: "auto",
-  semanticLayer: "./semantic",
+  // All other fields are optional with sensible defaults:
+  // tools: ["explore", "executeSQL"]
+  // auth: "auto"
+  // semanticLayer: "./semantic"
+  // maxTotalConnections: 100
 });
 ```
 
@@ -43,36 +90,121 @@ export default defineConfig({
 
 Configure one or more datasources. Each gets its own connection pool, table whitelist, and optional semantic layer partition.
 
+<Tabs items={["Single datasource", "Multi-datasource", "With rate limits"]}>
+<Tab value="Single datasource">
 ```typescript
+// atlas.config.ts — single Postgres datasource
 export default defineConfig({
   datasources: {
     default: {
+      // Connection string from env var
       url: process.env.ATLAS_DATASOURCE_URL!,
+      // PostgreSQL schema (omit for default search_path)
       schema: "public",
+      // Shown in the agent system prompt
       description: "Primary PostgreSQL database",
-    },
-    warehouse: {
-      url: "snowflake://user:pass@account/db/schema?warehouse=WH",
-      description: "Snowflake data warehouse",
-    },
-    analytics: {
-      url: "clickhouses://user:pass@host:8443/analytics",
-      description: "ClickHouse analytics cluster",
     },
   },
 });
 ```
+</Tab>
+<Tab value="Multi-datasource">
+```typescript
+// atlas.config.ts — multiple datasources (plugins required for non-PG/MySQL)
+import { clickhousePlugin } from "@useatlas/clickhouse";
+import { snowflakePlugin } from "@useatlas/snowflake";
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `url` | string | Yes | Connection string |
-| `schema` | string | No | Database schema (PostgreSQL only, default: `public`) |
-| `description` | string | No | Human-readable label |
-| `maxConnections` | number | No | Connection pool size |
-| `idleTimeoutMs` | number | No | Idle connection timeout |
-| `rateLimit` | object | No | Per-datasource rate limit: `{ queriesPerMinute: number, concurrency: number }` (defaults: 60 qpm, 5 concurrent) |
+export default defineConfig({
+  datasources: {
+    default: {
+      url: process.env.ATLAS_DATASOURCE_URL!,
+      description: "Primary PostgreSQL database",
+    },
+    warehouse: {
+      // Snowflake connection via plugin
+      url: process.env.WAREHOUSE_URL!,
+      description: "Snowflake data warehouse",
+    },
+    analytics: {
+      // ClickHouse connection via plugin
+      url: process.env.CLICKHOUSE_URL!,
+      description: "ClickHouse analytics cluster",
+    },
+  },
+  plugins: [
+    snowflakePlugin({ connectionId: "warehouse" }),
+    clickhousePlugin({ connectionId: "analytics" }),
+  ],
+});
+```
+</Tab>
+<Tab value="With rate limits">
+```typescript
+// atlas.config.ts — per-datasource rate limiting
+export default defineConfig({
+  datasources: {
+    default: {
+      url: process.env.ATLAS_DATASOURCE_URL!,
+      // Limit queries to this datasource
+      rateLimit: {
+        queriesPerMinute: 30,  // Max 30 queries/min (default: 60)
+        concurrency: 3,        // Max 3 concurrent queries (default: 5)
+      },
+    },
+  },
+});
+```
+</Tab>
+</Tabs>
 
-The `"default"` datasource is used when the agent's `executeSQL` tool is called without a `connectionId`. Each datasource can have its own semantic layer directory at `semantic/{sourceId}/entities/`.
+### Datasource fields
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `url` | `string` | Yes | — | Connection string (`postgresql://`, `mysql://`, or plugin schemes) |
+| `schema` | `string` | No | — | PostgreSQL schema name (sets `search_path`). When omitted, PostgreSQL's default `search_path` applies (typically `public`). Ignored for MySQL and plugins |
+| `description` | `string` | No | — | Human-readable label shown in the agent system prompt |
+| `maxConnections` | `number` | No | — | Connection pool size for this datasource |
+| `idleTimeoutMs` | `number` | No | — | Idle connection timeout in milliseconds |
+| `rateLimit` | `object` | No | — | `{ queriesPerMinute: number, concurrency: number }` (defaults: 60 qpm, 5 concurrent) |
+
+The `"default"` datasource is used when the agent's `executeSQL` tool is called without a `connectionId`.
+
+---
+
+## Semantic Layer Path
+
+Override the default semantic layer directory:
+
+```typescript
+// atlas.config.ts — custom semantic layer path
+export default defineConfig({
+  // Relative to project root (default: "./semantic")
+  semanticLayer: "./custom/semantic",
+});
+```
+
+### Per-datasource semantic layers
+
+Each named datasource can have its own semantic layer directory at `semantic/{sourceId}/entities/`. The CLI's `--connection` flag writes to the matching subdirectory automatically:
+
+```bash
+# Profile the "warehouse" datasource → writes to semantic/warehouse/entities/
+bun run atlas -- init --connection warehouse
+```
+
+```
+semantic/
+├── entities/            # Default datasource entities
+│   └── users.yml
+├── warehouse/
+│   └── entities/        # "warehouse" datasource entities
+│       └── inventory.yml
+├── metrics/
+└── glossary.yml
+```
+
+Atlas discovers per-source subdirectories automatically and maps entities to connections by directory name.
 
 ---
 
@@ -81,12 +213,14 @@ The `"default"` datasource is used when the agent's `executeSQL` tool is called 
 Set the authentication mode explicitly or let Atlas auto-detect:
 
 ```typescript
+// atlas.config.ts — pin auth mode
 export default defineConfig({
-  auth: "managed", // "none" | "api-key" | "managed" | "byot" | "auto"
+  // "auto" | "none" | "api-key" | "managed" | "byot"
+  auth: "managed",
 });
 ```
 
-When set to `"auto"` (or omitted), Atlas detects the mode from environment variables. See [Authentication](/deployment/authentication) for details.
+When set to `"auto"` (or omitted), Atlas detects the mode from environment variables. See [Authentication](/deployment/authentication) for full setup guides.
 
 ---
 
@@ -95,12 +229,14 @@ When set to `"auto"` (or omitted), Atlas detects the mode from environment varia
 Specify which tools the agent has access to:
 
 ```typescript
+// atlas.config.ts — default tool set
 export default defineConfig({
+  // These are the defaults when omitted
   tools: ["explore", "executeSQL"],
 });
 ```
 
-The default tools are `explore` (read semantic layer files) and `executeSQL` (run validated SQL queries). When the action framework is enabled, action tools are also registered.
+The default tools are `explore` (read semantic layer files) and `executeSQL` (run validated SQL queries). When the action framework is enabled, action tools are also registered. See [Actions](#actions) below.
 
 ---
 
@@ -109,18 +245,35 @@ The default tools are `explore` (read semantic layer files) and `executeSQL` (ru
 Register plugins with optional per-plugin configuration:
 
 ```typescript
+// atlas.config.ts — plugins
 import { clickhousePlugin } from "@useatlas/clickhouse";
 import { snowflakePlugin } from "@useatlas/snowflake";
 
 export default defineConfig({
   plugins: [
+    // Each plugin binds to a named datasource
     clickhousePlugin({ connectionId: "analytics" }),
     snowflakePlugin({ connectionId: "warehouse" }),
   ],
 });
 ```
 
-See [Plugin Authoring Guide](/plugins/authoring-guide) for building custom plugins.
+Plugins must have an `id`, `types` array, and `version`. Atlas validates these at startup. See [Plugin Authoring Guide](/plugins/authoring-guide) for building custom plugins.
+
+---
+
+## Connection Pool
+
+Control the total number of database connections across all datasources:
+
+```typescript
+// atlas.config.ts — connection pool limit
+export default defineConfig({
+  // Max total connections across all datasource pools (default: 100)
+  // When exceeded, least-recently-used datasources are evicted
+  maxTotalConnections: 50,
+});
+```
 
 ---
 
@@ -128,38 +281,85 @@ See [Plugin Authoring Guide](/plugins/authoring-guide) for building custom plugi
 
 Define RLS policies that inject WHERE clauses on every query based on user JWT claims. Each policy specifies which tables it applies to, which column to filter on, and which JWT claim provides the value.
 
-### Single Policy
+See [Row-Level Security](/security/row-level-security) for the full guide.
 
+<Tabs items={["Single policy", "Per-table policies", "All tables"]}>
+<Tab value="Single policy">
 ```typescript
+// atlas.config.ts — single RLS policy
 export default defineConfig({
   rls: {
     enabled: true,
     policies: [
-      { tables: ["orders", "customers"], column: "tenant_id", claim: "org_id" },
+      {
+        // Filter these tables by tenant_id
+        tables: ["orders", "customers"],
+        column: "tenant_id",
+        // Value comes from the user's org_id JWT claim
+        claim: "org_id",
+      },
     ],
   },
 });
 ```
-
-This injects `WHERE tenant_id = '<user's org_id claim>'` on every query against the `orders` or `customers` tables.
-
-### Per-Table Policies
-
+</Tab>
+<Tab value="Per-table policies">
 ```typescript
+// atlas.config.ts — different policies per table
 export default defineConfig({
   rls: {
     enabled: true,
     policies: [
+      // Orders filtered by org
       { tables: ["orders"], column: "tenant_id", claim: "org_id" },
+      // Support tickets filtered by account
       { tables: ["support_tickets"], column: "account_id", claim: "account" },
     ],
   },
 });
 ```
+</Tab>
+<Tab value="All tables">
+```typescript
+// atlas.config.ts — apply to all tables
+export default defineConfig({
+  rls: {
+    enabled: true,
+    policies: [
+      {
+        // Wildcard: applies to every table
+        tables: ["*"],
+        column: "tenant_id",
+        claim: "org_id",
+      },
+    ],
+  },
+});
+```
+</Tab>
+</Tabs>
 
-Use `["*"]` in the `tables` array to apply a policy to all tables.
+### RLS policy fields
 
-Equivalent env vars (for a single global policy only): `ATLAS_RLS_ENABLED=true`, `ATLAS_RLS_COLUMN=tenant_id`, `ATLAS_RLS_CLAIM=org_id`. For per-table policies, use the config file.
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `tables` | `string[]` | Yes | Tables this policy applies to. Use `["*"]` for all tables |
+| `column` | `string` | Yes | Column name to filter on (must be a valid SQL identifier) |
+| `claim` | `string` | Yes | Dot-delimited JWT claim path (e.g. `org_id`, `app_metadata.tenant`) |
+
+<Callout type="warn">
+When `rls.enabled` is `true`, at least one policy must be defined. RLS is fail-closed — if the user's claims are missing, the query is blocked.
+</Callout>
+
+**Env var shorthand** (single global policy only):
+
+```bash
+ATLAS_RLS_ENABLED=true
+ATLAS_RLS_COLUMN=tenant_id
+ATLAS_RLS_CLAIM=org_id
+```
+
+For per-table policies, use the config file.
 
 ---
 
@@ -168,14 +368,20 @@ Equivalent env vars (for a single global policy only): `ATLAS_RLS_ENABLED=true`,
 Configure the [action framework](/guides/actions) with default approval modes and per-action overrides.
 
 ```typescript
+// atlas.config.ts — action framework
 export default defineConfig({
   actions: {
+    // Default settings for all actions
     defaults: {
-      approval: "manual",
+      approval: "manual",          // "auto" | "manual" | "admin-only"
+      timeout: 300000,             // 5 min per-action timeout in ms
+      maxPerConversation: 10,      // Max actions per conversation
     },
+    // Per-action overrides (key = action type)
     "email:send": {
       approval: "admin-only",
       requiredRole: "admin",
+      // Credentials validated at startup
       credentials: {
         RESEND_API_KEY: { env: "RESEND_API_KEY" },
       },
@@ -188,37 +394,54 @@ export default defineConfig({
 });
 ```
 
+### Action fields
+
 | Field | Type | Description |
 |-------|------|-------------|
-| `defaults.approval` | string | Default approval mode: `auto`, `manual`, `admin-only` |
-| `defaults.timeout` | number | Per-action timeout in ms (reserved) |
-| `[actionType].approval` | string | Override approval mode for this action |
-| `[actionType].requiredRole` | string | Minimum role to approve: `viewer`, `analyst`, `admin` |
-| `[actionType].enabled` | boolean | Enable/disable this action |
-| `[actionType].credentials` | object | Required env vars (validated at startup) |
+| `defaults.approval` | `string` | Default approval mode: `auto`, `manual`, `admin-only` |
+| `defaults.timeout` | `number` | Per-action timeout in ms |
+| `defaults.maxPerConversation` | `number` | Max actions per conversation |
+| `[actionType].enabled` | `boolean` | Enable/disable this action |
+| `[actionType].approval` | `string` | Override approval mode for this action |
+| `[actionType].requiredRole` | `string` | Minimum role to approve: `viewer`, `analyst`, `admin` |
+| `[actionType].credentials` | `object` | Required env vars (`{ VAR_NAME: { env: "VAR_NAME" } }`) |
+| `[actionType].rateLimit` | `number` | Per-action rate limit |
 
 ---
 
-## Semantic Layer Path
+## Scheduler
 
-Override the default semantic layer directory:
+Configure recurring scheduled tasks. Requires `ATLAS_SCHEDULER_ENABLED=true`.
 
 ```typescript
+// atlas.config.ts — scheduler
 export default defineConfig({
-  semanticLayer: "./custom/semantic",
+  scheduler: {
+    // "bun" (in-process) | "webhook" (external cron) | "vercel" (Vercel Cron)
+    backend: "bun",
+    // Max concurrent task executions per tick (default: 5)
+    maxConcurrentTasks: 5,
+    // Per-task execution timeout in ms (default: 60000)
+    taskTimeout: 60_000,
+    // How often the scheduler checks for due tasks in seconds (default: 60)
+    tickIntervalSeconds: 60,
+  },
 });
 ```
 
-Default: `"./semantic"` relative to the project root.
+See [Scheduled Tasks](/guides/scheduled-tasks) for the full guide.
 
 ---
 
 ## Full Example
 
 ```typescript
+// atlas.config.ts — complete example
 import { defineConfig } from "@atlas/api/lib/config";
+import { snowflakePlugin } from "@useatlas/snowflake";
 
 export default defineConfig({
+  // Named datasources (at least "default")
   datasources: {
     default: {
       url: process.env.ATLAS_DATASOURCE_URL!,
@@ -228,13 +451,28 @@ export default defineConfig({
       url: process.env.WAREHOUSE_URL!,
       schema: "analytics",
       description: "Snowflake warehouse",
+      rateLimit: { queriesPerMinute: 20, concurrency: 2 },
     },
   },
 
+  // Agent tools
   tools: ["explore", "executeSQL"],
+
+  // Auth mode (auto-detect from env vars)
   auth: "auto",
+
+  // Semantic layer directory
   semanticLayer: "./semantic",
 
+  // Connection pool cap
+  maxTotalConnections: 50,
+
+  // Plugins
+  plugins: [
+    snowflakePlugin({ connectionId: "warehouse" }),
+  ],
+
+  // Row-Level Security
   rls: {
     enabled: true,
     policies: [
@@ -242,6 +480,7 @@ export default defineConfig({
     ],
   },
 
+  // Action framework
   actions: {
     defaults: { approval: "manual" },
     "email:send": {
@@ -251,5 +490,29 @@ export default defineConfig({
       },
     },
   },
+
+  // Scheduler
+  scheduler: {
+    backend: "bun",
+    maxConcurrentTasks: 3,
+    taskTimeout: 120_000,
+    tickIntervalSeconds: 30,
+  },
 });
 ```
+
+---
+
+## All Config Options
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `datasources` | `Record<string, DatasourceConfig>` | `{}` | Named datasource connections |
+| `tools` | `string[]` | `["explore", "executeSQL"]` | Agent tool names to enable |
+| `auth` | `"auto" \| "none" \| "api-key" \| "managed" \| "byot"` | `"auto"` | Authentication mode |
+| `semanticLayer` | `string` | `"./semantic"` | Path to semantic layer directory (relative to project root) |
+| `maxTotalConnections` | `number` | `100` | Max total pool slots across all datasources |
+| `plugins` | `unknown[]` | — | Plugin instances to register at boot |
+| `actions` | `ActionsConfig` | — | Action framework configuration |
+| `rls` | `RLSConfig` | — | Row-Level Security policies |
+| `scheduler` | `object` | — | Scheduled task configuration ([details](#scheduler)) |

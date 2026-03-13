@@ -236,7 +236,7 @@ describe("sendEmailReport — domain allowlist", () => {
       { toolCallId: "test-call", messages: [], abortSignal: undefined as unknown as AbortSignal },
     )) as { status: string; error?: string };
 
-    expect(result.status).toBe("error");
+    expect(result.status).toBe("failed");
     expect(result.error).toContain("not allowed");
     expect(result.error).toContain("blocked.com");
   });
@@ -283,7 +283,7 @@ describe("sendEmailReport — domain allowlist", () => {
       { toolCallId: "test-call", messages: [], abortSignal: undefined as unknown as AbortSignal },
     )) as { status: string; error?: string };
 
-    expect(result.status).toBe("error");
+    expect(result.status).toBe("failed");
     expect(result.error).toContain("not allowed");
   });
 
@@ -318,7 +318,7 @@ describe("sendEmailReport — domain allowlist", () => {
       { toolCallId: "test-call", messages: [], abortSignal: undefined as unknown as AbortSignal },
     )) as { status: string; error?: string };
 
-    expect(result.status).toBe("error");
+    expect(result.status).toBe("failed");
     expect(result.error).toContain("bad@external.com");
     expect(result.error).not.toContain("good@company.com");
   });

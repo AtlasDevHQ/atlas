@@ -6,7 +6,7 @@
  * - Expected vs received type display
  * - Smart suggestions for common auth misspellings
  * - Multi-error configs show all errors
- * - Various Zod issue types (invalid_type, invalid_union, too_small, custom)
+ * - Various Zod issue types (invalid_type, invalid_union, invalid_value, too_small)
  * - Field-specific hints (connection URL, auth mode)
  * - Integration: errors flow through validateAndResolve()
  */
@@ -168,6 +168,10 @@ describe("formatZodErrors", () => {
 
     const formatted = formatZodErrors(result.error, input);
     expect(formatted).toContain("scheduler.backend");
+    // Should list valid backend options
+    expect(formatted).toContain('"bun"');
+    expect(formatted).toContain('"webhook"');
+    expect(formatted).toContain('"vercel"');
   });
 
   it("no suggestion when auth value is not a common misspelling", () => {

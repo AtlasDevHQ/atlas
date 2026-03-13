@@ -434,10 +434,13 @@ try {
 | `provider_timeout` | 504 | LLM provider timed out |
 | `provider_unreachable` | 502 | Could not reach the AI provider |
 | `provider_error` | 502 | LLM provider error |
-| `internal_error` | 500 | Server error |
+| `internal_error` | 500 | Server error (includes `requestId` for log correlation) |
 | `network_error` | — | Could not reach the API |
 | `invalid_response` | — | Response could not be parsed |
 | `unknown_error` | — | Unrecognized error |
+
+All error responses include a `requestId` field (8-character prefix of a UUID) for correlating
+client errors with server logs. Quote this value when reporting issues.
 
 ### Handling Specific Error Codes
 

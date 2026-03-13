@@ -15,6 +15,7 @@
  * auto-initializes from ATLAS_DATASOURCE_URL on first access.
  */
 
+import { matchError } from "@useatlas/types";
 import { createLogger } from "@atlas/api/lib/logger";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import type { HealthStatus } from "@atlas/api/lib/connection-types";
@@ -520,10 +521,11 @@ export class ConnectionRegistry {
         status = "degraded";
       }
 
+      const matched = matchError(err);
       const result: HealthCheckResult = {
         status,
         latencyMs,
-        message: err instanceof Error ? err.message : String(err),
+        message: matched?.message ?? (err instanceof Error ? err.message : String(err)),
         checkedAt: new Date(),
       };
       entry.lastHealth = result;

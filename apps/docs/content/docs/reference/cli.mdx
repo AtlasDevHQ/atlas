@@ -1,6 +1,6 @@
 ---
 title: CLI Reference
-description: Complete reference for the Atlas CLI — init, diff, query, doctor, validate, mcp, and more.
+description: Complete reference for the Atlas CLI — init, diff, query, doctor, validate, mcp, completions, and more.
 ---
 
 The Atlas CLI (`atlas`) profiles databases, generates semantic layers, validates configuration, and queries data from the terminal.
@@ -345,3 +345,34 @@ bun run atlas -- benchmark [options]
 | `--db <name>` | Filter to a single database |
 | `--csv` | CSV output |
 | `--resume <file>` | Resume from existing JSONL results file |
+
+## completions
+
+Output a shell completion script for bash, zsh, or fish. Completions cover all commands and their flags.
+
+```bash
+bun run atlas -- completions <bash|zsh|fish>
+```
+
+No flags. The only argument is the target shell.
+
+**Installation:**
+
+| Shell | Setup |
+|-------|-------|
+| bash | Add `eval "$(atlas completions bash)"` to `~/.bashrc` |
+| zsh | Add `eval "$(atlas completions zsh)"` to `~/.zshrc` |
+| fish | Run `atlas completions fish > ~/.config/fish/completions/atlas.fish` once |
+
+**Examples:**
+
+```bash
+# Generate and activate bash completions for the current session
+eval "$(bun run atlas -- completions bash)"
+
+# Persist zsh completions across sessions
+echo 'eval "$(atlas completions zsh)"' >> ~/.zshrc
+
+# Install fish completions (saved to file, auto-loaded by fish)
+bun run atlas -- completions fish > ~/.config/fish/completions/atlas.fish
+```

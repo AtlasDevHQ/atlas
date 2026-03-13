@@ -93,22 +93,25 @@ function parseRecipients(task: ScheduledTask) {
   let recognized = 0;
 
   for (const r of task.recipients) {
-    const raw = r as Record<string, unknown>;
-    if (raw.type === "email" && typeof raw.address === "string") {
-      emailAddresses.push(raw.address);
-      recognized++;
-    } else if (raw.type === "slack") {
-      if (typeof raw.channel === "string") slackChannel = raw.channel;
-      if (typeof raw.teamId === "string") slackTeamId = raw.teamId;
-      recognized++;
-    } else if (raw.type === "webhook") {
-      if (typeof raw.url === "string") webhookUrl = raw.url;
-      if (raw.headers && typeof raw.headers === "object") {
-        webhookHeaders = Object.entries(raw.headers as Record<string, string>).map(
-          ([key, value]) => ({ key, value }),
-        );
-      }
-      recognized++;
+    switch (r.type) {
+      case "email":
+        emailAddresses.push(r.address);
+        recognized++;
+        break;
+      case "slack":
+        slackChannel = r.channel;
+        if (r.teamId) slackTeamId = r.teamId;
+        recognized++;
+        break;
+      case "webhook":
+        webhookUrl = r.url;
+        if (r.headers && typeof r.headers === "object") {
+          webhookHeaders = Object.entries(r.headers as Record<string, string>).map(
+            ([key, value]) => ({ key, value }),
+          );
+        }
+        recognized++;
+        break;
     }
   }
 

@@ -285,7 +285,7 @@ export async function handleAction(
         error: errorMsg,
       });
 
-      return { status: "error", actionId: request.id, error: errorMsg };
+      return { status: "failed", actionId: request.id, error: errorMsg };
     }
   }
 

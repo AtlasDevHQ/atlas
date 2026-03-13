@@ -167,7 +167,7 @@ export const sendEmailReport: AtlasAction = {
       const domainCheck = validateAllowedDomains(recipients);
       if (!domainCheck.valid) {
         return {
-          status: "error" as const,
+          status: "failed" as const,
           error: `Recipient domain not allowed: ${domainCheck.blocked.join(", ")}. Allowed domains: ${process.env.ATLAS_EMAIL_ALLOWED_DOMAINS}`,
         };
       }

@@ -141,8 +141,8 @@ describe("handleAction()", () => {
         }),
     );
 
-    expect(result.status).toBe("error");
-    if (result.status === "error") {
+    expect(result.status).toBe("failed");
+    if (result.status === "failed") {
       expect(result.error).toBe("Slack API down");
     }
   });

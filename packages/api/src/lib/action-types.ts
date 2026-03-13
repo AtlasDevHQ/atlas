@@ -46,7 +46,7 @@ export type ActionToolResult =
   | { status: "executed"; actionId: string; result: unknown }
   | { status: "denied"; actionId: string; reason?: string }
   | { status: "auto_approved"; actionId: string; result: unknown }
-  | { status: "error"; actionId?: string; error: string };
+  | { status: "failed"; actionId?: string; error: string };
 
 /**
  * Structural superset of AtlasTool with action-specific metadata.

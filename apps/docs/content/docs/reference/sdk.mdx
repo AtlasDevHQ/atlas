@@ -99,6 +99,7 @@ interface QueryResponse {
 Stream a chat response using the AI SDK UI Message Stream Protocol.
 
 ```typescript
+// Send messages in AI SDK UIMessage format and get a streaming SSE response
 const response = await atlas.chat([
   {
     id: "msg-1",
@@ -107,7 +108,8 @@ const response = await atlas.chat([
   },
 ]);
 
-// response is a raw Response with an SSE stream
+// Response is a raw fetch Response — read the SSE stream manually
+// or pass it to the AI SDK's useChat() for automatic parsing
 const reader = response.body?.getReader();
 ```
 
@@ -162,18 +164,23 @@ Each yielded event is a discriminated union:
 ### Usage
 
 ```typescript
+// Iterate over typed stream events as the agent works
 for await (const event of atlas.streamQuery("Revenue by region last quarter")) {
   switch (event.type) {
     case "text":
+      // Agent's narrative response — stream to the terminal character by character
       process.stdout.write(event.content);
       break;
     case "tool-call":
+      // Agent is invoking a tool (explore or executeSQL)
       console.log(`Calling ${event.name}`, event.args);
       break;
     case "result":
+      // Convenience event: SQL query returned tabular data
       console.table(event.rows);
       break;
     case "finish":
+      // Stream complete — common reasons: "stop", "length", "tool-calls", "error"
       console.log(`\nDone (${event.reason})`);
       break;
   }
@@ -185,8 +192,9 @@ for await (const event of atlas.streamQuery("Revenue by region last quarter")) {
 Pass an `AbortSignal` to cancel the stream mid-flight:
 
 ```typescript
+// Create an AbortController to cancel the stream after a timeout
 const controller = new AbortController();
-setTimeout(() => controller.abort(), 10_000);
+setTimeout(() => controller.abort(), 10_000); // Cancel after 10 seconds
 
 try {
   for await (const event of atlas.streamQuery("...", {
@@ -195,6 +203,7 @@ try {
     if (event.type === "text") process.stdout.write(event.content);
   }
 } catch (err) {
+  // AbortError is thrown when the signal fires — handle gracefully
   if (err instanceof Error && err.name === "AbortError") {
     console.log("Stream cancelled");
   }
@@ -208,22 +217,22 @@ try {
 List, retrieve, star, and delete conversations.
 
 ```typescript
-// List conversations
+// List conversations with pagination and optional filters
 const { conversations, total } = await atlas.conversations.list({
-  limit: 20,
-  offset: 0,
-  starred: true, // Optional: filter starred only
+  limit: 20,       // Max results per page
+  offset: 0,       // Skip N results for pagination
+  starred: true,   // Only return starred conversations
 });
 
-// Get a conversation with messages
+// Fetch a single conversation including its full message history
 const conversation = await atlas.conversations.get("conversation-id");
 console.log(conversation.messages);
 
-// Star / unstar
+// Pin important conversations for quick access
 await atlas.conversations.star("conversation-id");
 await atlas.conversations.unstar("conversation-id");
 
-// Delete
+// Permanently remove a conversation and all its messages
 await atlas.conversations.delete("conversation-id");
 ```
 
@@ -261,32 +270,32 @@ interface Message {
 Create and manage recurring queries. Requires `ATLAS_SCHEDULER_ENABLED=true` on the server.
 
 ```typescript
-// Create a scheduled task
+// Create a recurring task — runs the question on a cron schedule
 const task = await atlas.scheduledTasks.create({
   name: "Daily revenue check",
   question: "What was yesterday's total revenue?",
-  cronExpression: "0 9 * * *",
-  deliveryChannel: "email",
+  cronExpression: "0 9 * * *",       // Every day at 9:00 AM
+  deliveryChannel: "email",           // Deliver results via email
   recipients: [{ type: "email", address: "team@example.com" }],
 });
 
-// List tasks
+// List tasks — filter by enabled status
 const { tasks, total } = await atlas.scheduledTasks.list({ enabled: true });
 
-// Get task with recent runs
+// Get task details including its most recent execution history
 const taskDetail = await atlas.scheduledTasks.get(task.id);
 console.log(taskDetail.recentRuns);
 
-// Update
+// Pause a task without deleting it
 await atlas.scheduledTasks.update(task.id, { enabled: false });
 
-// Trigger immediate run
+// Run the task immediately (outside its normal schedule)
 await atlas.scheduledTasks.trigger(task.id);
 
-// List past runs
+// Fetch execution history for debugging or monitoring
 const { runs } = await atlas.scheduledTasks.listRuns(task.id, { limit: 10 });
 
-// Delete
+// Soft-delete the task (sets enabled=false)
 await atlas.scheduledTasks.delete(task.id);
 ```
 
@@ -299,31 +308,30 @@ See [Scheduled Tasks](/guides/scheduled-tasks) for full configuration details.
 Access admin-only endpoints. Requires the `admin` role.
 
 ```typescript
-// Dashboard overview
+// Get deployment health at a glance — connections, entities, plugin status
 const overview = await atlas.admin.overview();
-// { connections: 2, entities: 15, metrics: 8, glossaryTerms: 12, plugins: 1, pluginHealth: [...] }
 
-// Semantic layer
+// Browse the semantic layer — entities, metrics, glossary, catalog
 const { entities } = await atlas.admin.semantic.entities();
 const { entity } = await atlas.admin.semantic.entity("orders");
 const { metrics } = await atlas.admin.semantic.metrics();
 const { glossary } = await atlas.admin.semantic.glossary();
 const { catalog } = await atlas.admin.semantic.catalog();
-const stats = await atlas.admin.semantic.stats();
+const stats = await atlas.admin.semantic.stats(); // Entity counts and coverage gap counts
 
-// Connections
+// List datasource connections and test their health
 const { connections } = await atlas.admin.connections();
 const health = await atlas.admin.testConnection("default");
 
-// Audit log
+// Query the audit log — filter by date range and success/failure
 const { rows, total } = await atlas.admin.audit({
   limit: 50,
-  from: "2026-01-01",
-  success: false, // errors only
+  from: "2026-01-01",  // ISO date string
+  success: false,       // Only return failed queries
 });
 const auditStats = await atlas.admin.auditStats();
 
-// Plugins
+// Manage plugins — list installed plugins and run health probes
 const { plugins } = await atlas.admin.plugins();
 const pluginHealth = await atlas.admin.pluginHealth("clickhouse");
 ```

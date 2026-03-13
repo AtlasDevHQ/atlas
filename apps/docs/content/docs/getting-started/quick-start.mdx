@@ -90,27 +90,29 @@ Edit `.env` and set your LLM provider. The database URLs are pre-configured for 
 <Tabs items={["Anthropic", "OpenAI", "Bedrock / Ollama / Gateway"]}>
 <Tab value="Anthropic">
 ```bash
+# Set the provider and its API key — Atlas auto-selects the best available model
 ATLAS_PROVIDER=anthropic
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 </Tab>
 <Tab value="OpenAI">
 ```bash
+# Set the provider and its API key — Atlas auto-selects the best available model
 ATLAS_PROVIDER=openai
 OPENAI_API_KEY=sk-...
 ```
 </Tab>
 <Tab value="Bedrock / Ollama / Gateway">
 ```bash
-# AWS Bedrock
+# AWS Bedrock — uses IAM credentials from the environment
 ATLAS_PROVIDER=bedrock
 AWS_REGION=us-east-1
 
-# Local Ollama
+# Local Ollama — runs models on your machine (no API key needed)
 ATLAS_PROVIDER=ollama
 OLLAMA_BASE_URL=http://localhost:11434
 
-# AI Gateway (LiteLLM, Portkey, etc.)
+# AI Gateway — route through LiteLLM, Portkey, or similar proxy
 ATLAS_PROVIDER=gateway
 AI_GATEWAY_API_KEY=...
 ```
@@ -126,6 +128,7 @@ See [Environment Variables — LLM Provider](/reference/environment-variables#ll
 The [semantic layer](/getting-started/concepts) (a set of YAML entity files in `semantic/`) tells the agent what tables exist and what they mean. Generate it from the demo database:
 
 ```bash
+# Profile the database and generate YAML entity files in semantic/entities/
 bun run atlas -- init
 ```
 

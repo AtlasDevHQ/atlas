@@ -63,13 +63,10 @@ const atlas = createAtlasClient({
   apiKey: "your-api-key",
 });
 
-// Share with options
-const { token, url } = await atlas.conversations.share("conversation-id", {
-  expiresIn: "7d",
-  shareMode: "public",
-});
+// Generate a share link (options like expiresIn and shareMode are available via the REST API)
+const { token, url } = await atlas.conversations.share("conversation-id");
 
-// Unshare
+// Revoke the share link — it stops working immediately
 await atlas.conversations.unshare("conversation-id");
 ```
 

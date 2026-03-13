@@ -29,8 +29,8 @@ The simplest setup uses three environment variables for a single-policy configur
 
 ```bash
 ATLAS_RLS_ENABLED=true
-ATLAS_RLS_COLUMN=tenant_id        # Column to filter on
-ATLAS_RLS_CLAIM=org_id            # JWT claim to extract the value from
+ATLAS_RLS_COLUMN=tenant_id        # Column name to add to WHERE clauses
+ATLAS_RLS_CLAIM=org_id            # JWT claim path — resolved from the authenticated user's token
 ```
 
 This creates a wildcard policy that applies to **all tables** -- equivalent to:
@@ -59,13 +59,13 @@ export default defineConfig({
   rls: {
     enabled: true,
     policies: [
-      // All tables: filter by tenant
+      // Wildcard — applies tenant_id filter to every table in every query
       { tables: ["*"], column: "tenant_id", claim: "org_id" },
 
-      // Specific tables: filter by region
+      // Target specific tables — uses a nested JWT claim path (dot-delimited)
       { tables: ["orders", "shipments"], column: "region", claim: "app_metadata.region" },
 
-      // Schema-qualified table
+      // Schema-qualified table name — the full "schema.table" must match
       { tables: ["analytics.events"], column: "workspace_id", claim: "workspace" },
     ],
   },

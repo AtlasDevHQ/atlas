@@ -22,16 +22,16 @@ Your database schema evolves — columns get added, tables get dropped, types ch
 Run `atlas diff` to compare your live database schema against the entity YAMLs in `semantic/entities/`:
 
 ```bash
-# Compare all tables against semantic layer
+# Compare all tables against their entity YAML files
 bun run atlas -- diff
 
-# Compare specific tables only
+# Compare only specific tables (comma-separated)
 bun run atlas -- diff --tables orders,customers
 
-# Compare a non-public PostgreSQL schema
+# Target a non-public PostgreSQL schema
 bun run atlas -- diff --schema analytics
 
-# Compare a per-source subdirectory
+# Compare against a per-source subdirectory (semantic/warehouse/entities/)
 bun run atlas -- diff --source warehouse
 ```
 
@@ -342,14 +342,14 @@ When you run `atlas init`, it **deletes all existing YAML files** in `semantic/e
 **1. Back up before regenerating**
 
 ```bash
-# Copy semantic layer before regenerating
+# Back up existing semantic layer (preserves your enrichments)
 cp -r semantic/ semantic-backup/
 
-# Regenerate
+# Regenerate all entity files from the database
 bun run atlas -- init
 
-# Manually merge back your customizations
-# Compare: diff semantic-backup/entities/orders.yml semantic/entities/orders.yml
+# Compare old and new to manually merge back your customizations
+# diff semantic-backup/entities/orders.yml semantic/entities/orders.yml
 ```
 
 **2. Use manual edits for small changes**
@@ -377,12 +377,12 @@ As a rule of thumb: use `atlas init` for initial setup or major schema overhauls
 Run `atlas diff` in CI to catch schema drift before it causes agent errors. A non-zero exit when drift is detected lets you fail the pipeline or post a warning.
 
 ```yaml
-# Example: GitHub Actions step
+# Fail the CI pipeline if the semantic layer is out of sync with the database
 - name: Check schema drift
   env:
     ATLAS_DATASOURCE_URL: ${{ secrets.ATLAS_DATASOURCE_URL }}
   run: |
-    # atlas diff exits with code 0 when in sync, code 1 on drift
+    # Exit code 0 = in sync, exit code 1 = drift detected
     bun run atlas -- diff
 ```
 

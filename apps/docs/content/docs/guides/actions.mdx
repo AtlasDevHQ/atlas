@@ -113,18 +113,20 @@ import { defineConfig } from "@atlas/api/lib/config";
 
 export default defineConfig({
   actions: {
+    // Default approval mode for all actions unless overridden
     defaults: {
       approval: "manual",
     },
+    // Per-action overrides — key is the action type identifier
     "email:send": {
-      approval: "admin-only",
+      approval: "admin-only",       // Only admins can approve email sends
       requiredRole: "admin",
       credentials: {
-        RESEND_API_KEY: { env: "RESEND_API_KEY" },
+        RESEND_API_KEY: { env: "RESEND_API_KEY" },  // Validated at startup
       },
     },
     "jira:create": {
-      approval: "manual",
+      approval: "manual",           // Any analyst or admin can approve
       requiredRole: "analyst",
     },
   },
@@ -144,11 +146,11 @@ Pending actions appear in the chat UI with **Approve** and **Deny** buttons. Adm
 ### API
 
 ```bash
-# Approve
+# Approve a pending action
 curl -X POST http://localhost:3001/api/v1/actions/<id>/approve \
   -H "Authorization: Bearer <key>"
 
-# Deny with reason
+# Deny with an optional reason (recorded in the action log)
 curl -X POST http://localhost:3001/api/v1/actions/<id>/deny \
   -H "Authorization: Bearer <key>" \
   -H "Content-Type: application/json" \

@@ -20,6 +20,7 @@ Scheduled tasks run natural language queries on a cron schedule and deliver resu
 A scheduled task consists of a question, a cron schedule, and delivery configuration.
 
 ```bash
+# Create a task that runs every day at 9 AM and emails the results
 curl -X POST http://localhost:3001/api/v1/scheduled-tasks \
   -H "Authorization: Bearer <key>" \
   -H "Content-Type: application/json" \
@@ -138,6 +139,7 @@ ATLAS_SCHEDULER_SECRET=your-random-secret
 Configure your external cron to call:
 
 ```bash
+# External cron calls this endpoint to trigger a scheduler tick
 curl -X POST https://api.example.com/api/v1/scheduled-tasks/tick \
   -H "Authorization: Bearer $ATLAS_SCHEDULER_SECRET"
 ```
@@ -146,11 +148,11 @@ curl -X POST https://api.example.com/api/v1/scheduled-tasks/tick \
 
 Uses Vercel's built-in cron service. Configure in `vercel.json`:
 
-```json
+```jsonc
 {
   "crons": [{
-    "path": "/api/v1/scheduled-tasks/tick",
-    "schedule": "*/5 * * * *"
+    "path": "/api/v1/scheduled-tasks/tick",  // Vercel calls this endpoint on schedule
+    "schedule": "*/5 * * * *"                // Every 5 minutes
   }]
 }
 ```
@@ -204,6 +206,7 @@ The delivery status appears in run history and the admin UI. Runs that completed
 Preview what a delivery will look like before the task runs. The preview endpoint generates sample output using mock data:
 
 ```bash
+# Preview what a delivery will look like — uses mock data, does not run the agent
 curl -X POST http://localhost:3001/api/v1/scheduled-tasks/:id/preview \
   -H "Authorization: Bearer <key>" \
   -H "Content-Type: application/json"

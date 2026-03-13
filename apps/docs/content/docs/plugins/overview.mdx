@@ -36,12 +36,13 @@ Peer dependencies are optional at install time — the plugin loads them lazily 
 Import the plugin factory and add it to the `plugins` array:
 
 ```typescript
-// atlas.config.ts
+// atlas.config.ts — register plugins in the plugins array
 import { defineConfig } from "@atlas/api/lib/config";
 import { clickhousePlugin } from "@useatlas/clickhouse";
 
 export default defineConfig({
   plugins: [
+    // Each plugin is a factory function — config is validated at startup
     clickhousePlugin({ url: process.env.CLICKHOUSE_URL! }),
   ],
 });

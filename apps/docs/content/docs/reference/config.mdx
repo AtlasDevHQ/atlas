@@ -168,7 +168,7 @@ export default defineConfig({
 | `idleTimeoutMs` | `number` | No | — | Idle connection timeout in milliseconds |
 | `rateLimit` | `object` | No | — | `{ queriesPerMinute: number, concurrency: number }` (defaults: 60 qpm, 5 concurrent) |
 
-The `"default"` datasource is used when the agent's `executeSQL` tool is called without a `connectionId`.
+The `"default"` datasource is used when the agent's `executeSQL` tool is called without a `connectionId`. See [Multi-Datasource Routing](/guides/multi-datasource) for a full guide on how the agent selects and queries multiple datasources.
 
 ---
 

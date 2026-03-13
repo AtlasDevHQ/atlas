@@ -23,8 +23,9 @@ const log = createLogger("conversations");
 // Types
 // ---------------------------------------------------------------------------
 
-import type { MessageRole, Surface, Conversation, Message, ConversationWithMessages } from "@atlas/api/lib/conversation-types";
-export type { MessageRole, Surface, Conversation, Message, ConversationWithMessages };
+import type { MessageRole, Surface, Conversation, Message, ConversationWithMessages, ShareMode } from "@atlas/api/lib/conversation-types";
+import { SHARE_EXPIRY_MS, type ShareExpiry } from "@atlas/api/lib/conversation-types";
+export type { MessageRole, Surface, Conversation, Message, ConversationWithMessages, ShareMode, ShareExpiry };
 
 /** Failure reason for CRUD operations that need to distinguish no-DB / not-found / error. */
 export type CrudFailReason = "no_db" | "not_found" | "error";
@@ -285,23 +286,38 @@ function generateShareToken(): string {
 export async function shareConversation(
   id: string,
   userId?: string | null,
-): Promise<CrudDataResult<{ token: string }>> {
+  opts?: { expiresIn?: ShareExpiry; shareMode?: ShareMode },
+): Promise<CrudDataResult<{ token: string; expiresAt: string | null; shareMode: ShareMode }>> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
     const token = generateShareToken();
+    const mode: ShareMode = opts?.shareMode ?? "public";
+
+    // Compute absolute expiry timestamp
+    const expiryKey = opts?.expiresIn ?? "never";
+    const expiryMs = SHARE_EXPIRY_MS[expiryKey];
+    const expiresAt = expiryMs != null ? new Date(Date.now() + expiryMs).toISOString() : null;
+
     const rows = userId
-      ? await internalQuery<{ share_token: string }>(
-          `UPDATE conversations SET share_token = $1, updated_at = now()
-           WHERE id = $2 AND user_id = $3 RETURNING share_token`,
-          [token, id, userId],
+      ? await internalQuery<{ share_token: string; share_expires_at: string | null; share_mode: string }>(
+          `UPDATE conversations SET share_token = $1, share_expires_at = $2, share_mode = $3, updated_at = now()
+           WHERE id = $4 AND user_id = $5 RETURNING share_token, share_expires_at, share_mode`,
+          [token, expiresAt, mode, id, userId],
         )
-      : await internalQuery<{ share_token: string }>(
-          `UPDATE conversations SET share_token = $1, updated_at = now()
-           WHERE id = $2 RETURNING share_token`,
-          [token, id],
+      : await internalQuery<{ share_token: string; share_expires_at: string | null; share_mode: string }>(
+          `UPDATE conversations SET share_token = $1, share_expires_at = $2, share_mode = $3, updated_at = now()
+           WHERE id = $4 RETURNING share_token, share_expires_at, share_mode`,
+          [token, expiresAt, mode, id],
         );
     if (rows.length === 0) return { ok: false, reason: "not_found" };
-    return { ok: true, data: { token: rows[0].share_token } };
+    return {
+      ok: true,
+      data: {
+        token: rows[0].share_token,
+        expiresAt: rows[0].share_expires_at ? String(rows[0].share_expires_at) : null,
+        shareMode: rows[0].share_mode as ShareMode,
+      },
+    };
   } catch (err) {
     log.error({ err: err instanceof Error ? err.message : String(err) }, "shareConversation failed");
     return { ok: false, reason: "error" };
@@ -317,12 +333,12 @@ export async function unshareConversation(
   try {
     const rows = userId
       ? await internalQuery<{ id: string }>(
-          `UPDATE conversations SET share_token = NULL, share_expires_at = NULL, updated_at = now()
+          `UPDATE conversations SET share_token = NULL, share_expires_at = NULL, share_mode = 'public', updated_at = now()
            WHERE id = $1 AND user_id = $2 RETURNING id`,
           [id, userId],
         )
       : await internalQuery<{ id: string }>(
-          `UPDATE conversations SET share_token = NULL, share_expires_at = NULL, updated_at = now()
+          `UPDATE conversations SET share_token = NULL, share_expires_at = NULL, share_mode = 'public', updated_at = now()
            WHERE id = $1 RETURNING id`,
           [id],
         );
@@ -333,29 +349,44 @@ export async function unshareConversation(
   }
 }
 
+/** Failure reason for shared-conversation access — extends CrudFailReason with "expired". */
+export type SharedFailReason = CrudFailReason | "expired";
+
+/** Result type for shared conversation fetch — includes shareMode on success. */
+export type SharedConversationResult =
+  | { ok: true; data: ConversationWithMessages; shareMode: ShareMode }
+  | { ok: false; reason: SharedFailReason };
+
 /**
- * Fetch a shared conversation by token. Returns not_found if token is missing
- * or expired. No auth required.
+ * Fetch a shared conversation by token. Distinguishes between expired
+ * and not-found tokens so the API can return 410 vs 404.
  *
- * Note: `share_expires_at` is reserved for future use — `shareConversation`
- * does not currently set it, so the expiry check is a no-op for now.
+ * Returns `shareMode` on success so callers can enforce org-scoped access.
  */
 export async function getSharedConversation(
   token: string,
-): Promise<CrudDataResult<ConversationWithMessages>> {
+): Promise<SharedConversationResult> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
+    // Fetch without expiry filter so we can distinguish expired from not-found
     const convRows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, user_id, title, surface, connection_id, starred, created_at, updated_at
+      `SELECT id, user_id, title, surface, connection_id, starred, created_at, updated_at, share_expires_at, share_mode
        FROM conversations
-       WHERE share_token = $1
-         AND (share_expires_at IS NULL OR share_expires_at > now())`,
+       WHERE share_token = $1`,
       [token],
     );
 
     if (convRows.length === 0) return { ok: false, reason: "not_found" };
 
+    // Check expiry in code to distinguish expired vs not_found
+    const expiresAt = convRows[0].share_expires_at;
+    if (expiresAt != null && new Date(String(expiresAt)) <= new Date()) {
+      return { ok: false, reason: "expired" };
+    }
+
     const convId = convRows[0].id as string;
+    const shareMode = (convRows[0].share_mode as ShareMode) ?? "public";
+
     const msgRows = await internalQuery<Record<string, unknown>>(
       `SELECT id, conversation_id, role, content, created_at
        FROM messages WHERE conversation_id = $1 ORDER BY created_at ASC`,
@@ -364,6 +395,7 @@ export async function getSharedConversation(
 
     return {
       ok: true,
+      shareMode,
       data: {
         ...rowToConversation(convRows[0]),
         messages: msgRows.map((m) => ({

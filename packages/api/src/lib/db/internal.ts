@@ -332,6 +332,9 @@ export async function migrateInternalDB(): Promise<void> {
   await pool.query(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS share_token VARCHAR(64), ADD COLUMN IF NOT EXISTS share_expires_at TIMESTAMPTZ;`);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_share_token ON conversations(share_token) WHERE share_token IS NOT NULL;`);
 
+  // Share expiry controls: share_mode defaults to 'public' (anyone with link)
+  await pool.query(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS share_mode VARCHAR(10) NOT NULL DEFAULT 'public';`);
+
   // Scheduled tasks
   await pool.query(`
     CREATE TABLE IF NOT EXISTS scheduled_tasks (

@@ -17,7 +17,7 @@ export interface SharedConversation {
 
 export type FetchResult =
   | { ok: true; data: SharedConversation }
-  | { ok: false; reason: "not-found" | "server-error" | "network-error" };
+  | { ok: false; reason: "not-found" | "expired" | "auth-required" | "server-error" | "network-error" };
 
 export function getApiBaseUrl(): string {
   return (
@@ -40,6 +40,8 @@ export async function fetchSharedConversation(
     );
     if (!res.ok) {
       if (res.status === 404) return { ok: false, reason: "not-found" };
+      if (res.status === 410) return { ok: false, reason: "expired" };
+      if (res.status === 401) return { ok: false, reason: "auth-required" };
       console.error(
         `[shared-conversation] API returned ${res.status} for token=${token}`,
       );

@@ -26,6 +26,7 @@ import {
   getSharedConversation,
   type CrudFailReason,
 } from "@atlas/api/lib/conversations";
+import { SHARE_EXPIRY_MS, type ShareExpiry, type ShareMode } from "@atlas/api/lib/conversation-types";
 
 const log = createLogger("conversations");
 
@@ -46,6 +47,13 @@ export const ConversationSchema = z.object({
 
 export const StarConversationBodySchema = z.object({
   starred: z.boolean(),
+});
+
+const VALID_EXPIRY_KEYS = Object.keys(SHARE_EXPIRY_MS) as [ShareExpiry, ...ShareExpiry[]];
+
+export const ShareConversationBodySchema = z.object({
+  expiresIn: z.enum(VALID_EXPIRY_KEYS).optional().default("never"),
+  shareMode: z.enum(["public", "org"] as const).optional().default("public"),
 });
 
 export const MessageSchema = z.object({
@@ -258,7 +266,21 @@ conversations.post("/:id/share", async (c) => {
   }
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const result = await shareConversation(id, authResult.user?.id);
+    // Parse optional body for expiry and share mode
+    let expiresIn: ShareExpiry = "never";
+    let shareMode: ShareMode = "public";
+    try {
+      const body = await req.json();
+      const parsed = ShareConversationBodySchema.safeParse(body);
+      if (parsed.success) {
+        expiresIn = parsed.data.expiresIn;
+        shareMode = parsed.data.shareMode;
+      }
+    } catch {
+      // No body or invalid JSON — use defaults
+    }
+
+    const result = await shareConversation(id, authResult.user?.id, { expiresIn, shareMode });
     if (!result.ok) {
       const fail = crudFailResponse(result.reason);
       return c.json(fail.body, fail.status);
@@ -267,6 +289,8 @@ conversations.post("/:id/share", async (c) => {
     return c.json({
       token: result.data.token,
       url: `${baseUrl}/shared/${result.data.token}`,
+      expiresAt: result.data.expiresAt,
+      shareMode: result.data.shareMode,
     });
   });
 });
@@ -415,11 +439,27 @@ publicConversations.get("/:token", async (c) => {
 
   const result = await getSharedConversation(token);
   if (!result.ok) {
+    if (result.reason === "expired") {
+      return c.json({ error: "expired", message: "This shared conversation has expired." }, 410);
+    }
     if (result.reason === "error") {
       log.error({ requestId }, "Public conversation fetch failed due to DB error");
       return c.json({ error: "internal_error", message: "A server error occurred. Please try again." }, 500);
     }
     return c.json({ error: "not_found", message: "Conversation not found." }, 404);
+  }
+
+  // Org-scoped shares require authentication — check via auth header presence
+  if (result.shareMode === "org") {
+    let authResult;
+    try {
+      authResult = await authenticateRequest(c.req.raw);
+    } catch {
+      authResult = null;
+    }
+    if (!authResult || !authResult.authenticated) {
+      return c.json({ error: "auth_required", message: "This shared conversation is restricted to organization members. Please sign in." }, 401);
+    }
   }
 
   // Strip internal IDs — only expose conversation content

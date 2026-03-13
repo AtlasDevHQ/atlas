@@ -1,9 +1,17 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Share2, Copy, Check, Link2Off, AlertCircle, Code } from "lucide-react";
+import { Share2, Copy, Check, Link2Off, AlertCircle, Code, Globe, Building2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Dialog,
   DialogContent,
@@ -12,10 +20,19 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import type { ShareExpiry, ShareMode, ShareLink } from "../../lib/types";
+
+const EXPIRY_OPTIONS: { value: ShareExpiry; label: string }[] = [
+  { value: "1h", label: "1 hour" },
+  { value: "24h", label: "24 hours" },
+  { value: "7d", label: "7 days" },
+  { value: "30d", label: "30 days" },
+  { value: "never", label: "Never" },
+];
 
 interface ShareDialogProps {
   conversationId: string;
-  onShare: (id: string) => Promise<{ token: string; url: string } | null>;
+  onShare: (id: string, opts?: { expiresIn?: ShareExpiry; shareMode?: ShareMode }) => Promise<ShareLink | null>;
   onUnshare: (id: string) => Promise<boolean>;
 }
 
@@ -27,6 +44,10 @@ export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogP
   const [copiedEmbed, setCopiedEmbed] = useState(false);
   const [shared, setShared] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [expiresIn, setExpiresIn] = useState<ShareExpiry>("never");
+  const [shareMode, setShareMode] = useState<ShareMode>("public");
+  const [expiresAt, setExpiresAt] = useState<string | null>(null);
+  const [activeMode, setActiveMode] = useState<ShareMode>("public");
 
   // Reset state when conversation changes
   useEffect(() => {
@@ -37,16 +58,22 @@ export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogP
     setCopiedEmbed(false);
     setError(null);
     setOpen(false);
+    setExpiresIn("never");
+    setShareMode("public");
+    setExpiresAt(null);
+    setActiveMode("public");
   }, [conversationId]);
 
   async function handleShare() {
     setLoading(true);
     setError(null);
     try {
-      const result = await onShare(conversationId);
+      const result = await onShare(conversationId, { expiresIn, shareMode });
       if (result) {
         setShareUrl(result.url);
         setShared(true);
+        setExpiresAt(result.expiresAt);
+        setActiveMode(result.shareMode);
       } else {
         setError("Failed to create share link. Please try again.");
       }
@@ -65,6 +92,8 @@ export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogP
       if (ok) {
         setShareUrl(null);
         setShared(false);
+        setExpiresAt(null);
+        setActiveMode("public");
       } else {
         setError("Failed to remove share link. Please try again.");
       }
@@ -128,6 +157,10 @@ export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogP
     }
   }
 
+  const modeDescription = activeMode === "org"
+    ? "Only organization members with the link can view this conversation."
+    : "Anyone with the link can view this conversation.";
+
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
@@ -149,9 +182,7 @@ export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogP
         <DialogHeader>
           <DialogTitle>Share conversation</DialogTitle>
           <DialogDescription>
-            {shared
-              ? "Anyone with the link can view this conversation."
-              : "Create a public link to share this conversation."}
+            {shared ? modeDescription : "Create a link to share this conversation."}
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-3">
@@ -174,6 +205,27 @@ export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogP
                   <span className="ml-1">{copied ? "Copied" : "Copy"}</span>
                 </Button>
               </div>
+              {expiresAt && (
+                <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                  Expires{" "}
+                  {new Date(expiresAt).toLocaleString(undefined, {
+                    month: "short",
+                    day: "numeric",
+                    hour: "numeric",
+                    minute: "2-digit",
+                  })}
+                </p>
+              )}
+              <div className="flex items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400">
+                {activeMode === "org" ? (
+                  <Building2 className="h-3.5 w-3.5" />
+                ) : (
+                  <Globe className="h-3.5 w-3.5" />
+                )}
+                <span>
+                  {activeMode === "org" ? "Organization only" : "Anyone with link"}
+                </span>
+              </div>
               <Button
                 variant="outline"
                 size="sm"
@@ -194,10 +246,49 @@ export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogP
               </Button>
             </>
           ) : (
-            <Button onClick={handleShare} disabled={loading}>
-              <Share2 className="mr-2 h-4 w-4" />
-              {loading ? "Creating link..." : "Create share link"}
-            </Button>
+            <>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="share-expiry">Link expires after</Label>
+                <Select value={expiresIn} onValueChange={(v) => setExpiresIn(v as ShareExpiry)}>
+                  <SelectTrigger id="share-expiry" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {EXPIRY_OPTIONS.map((opt) => (
+                      <SelectItem key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="share-mode">Who can access</Label>
+                <Select value={shareMode} onValueChange={(v) => setShareMode(v as ShareMode)}>
+                  <SelectTrigger id="share-mode" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="public">
+                      <span className="flex items-center gap-2">
+                        <Globe className="h-3.5 w-3.5" />
+                        Anyone with link
+                      </span>
+                    </SelectItem>
+                    <SelectItem value="org">
+                      <span className="flex items-center gap-2">
+                        <Building2 className="h-3.5 w-3.5" />
+                        Organization only
+                      </span>
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <Button onClick={handleShare} disabled={loading}>
+                <Share2 className="mr-2 h-4 w-4" />
+                {loading ? "Creating link..." : "Create share link"}
+              </Button>
+            </>
           )}
         </div>
       </DialogContent>

@@ -40,9 +40,14 @@ export interface ConversationWithMessages extends Conversation {
 
 // --- Share types ---
 
+export type ShareMode = "public" | "org";
+export type ShareExpiry = "1h" | "24h" | "7d" | "30d" | "never";
+
 export interface ShareLink {
   token: string;
   url: string;
+  expiresAt: string | null;
+  shareMode: ShareMode;
 }
 
 // --- Scheduled task types (from @atlas/api/lib/scheduled-task-types) ---

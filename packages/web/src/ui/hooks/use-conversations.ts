@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef } from "react";
-import type { Conversation, ConversationWithMessages, Message } from "../lib/types";
+import type { Conversation, ConversationWithMessages, Message, ShareExpiry, ShareMode, ShareLink } from "../lib/types";
 import type { UIMessage } from "@ai-sdk/react";
 
 export interface UseConversationsOptions {
@@ -22,7 +22,7 @@ export interface UseConversationsReturn {
   loadConversation: (id: string) => Promise<UIMessage[] | null>;
   deleteConversation: (id: string) => Promise<boolean>;
   starConversation: (id: string, starred: boolean) => Promise<boolean>;
-  shareConversation: (id: string) => Promise<{ token: string; url: string } | null>;
+  shareConversation: (id: string, opts?: { expiresIn?: ShareExpiry; shareMode?: ShareMode }) => Promise<ShareLink | null>;
   unshareConversation: (id: string) => Promise<boolean>;
   refresh: () => Promise<void>;
 }
@@ -166,12 +166,19 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
     }
   }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);
 
-  const shareConversation = useCallback(async (id: string): Promise<{ token: string; url: string } | null> => {
+  const shareConversation = useCallback(async (
+    id: string,
+    shareOpts?: { expiresIn?: ShareExpiry; shareMode?: ShareMode },
+  ): Promise<ShareLink | null> => {
     try {
       const res = await fetch(`${opts.apiUrl}/api/v1/conversations/${id}/share`, {
         method: "POST",
         headers: { ...opts.getHeaders(), "Content-Type": "application/json" },
         credentials: opts.getCredentials(),
+        body: JSON.stringify({
+          expiresIn: shareOpts?.expiresIn ?? "never",
+          shareMode: shareOpts?.shareMode ?? "public",
+        }),
       });
       if (!res.ok) {
         console.warn(`shareConversation: HTTP ${res.status} for ${id}`);
@@ -185,6 +192,8 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
       return {
         token: data.token,
         url: `${window.location.origin}/shared/${data.token}`,
+        expiresAt: data.expiresAt ?? null,
+        shareMode: data.shareMode ?? "public",
       };
     } catch (err) {
       console.warn("shareConversation error:", err);

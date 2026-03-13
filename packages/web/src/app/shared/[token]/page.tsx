@@ -78,17 +78,30 @@ export default async function SharedConversationPage({
   const result = await fetchSharedConversation(token);
 
   if (!result.ok) {
-    const message =
-      result.reason === "not-found"
-        ? "This conversation may have been removed or the link may be invalid."
-        : "Could not load this conversation. Please try again later.";
+    let title: string;
+    let message: string;
+    switch (result.reason) {
+      case "expired":
+        title = "Link expired";
+        message = "This shared conversation link has expired. Ask the owner to share it again.";
+        break;
+      case "auth-required":
+        title = "Sign in required";
+        message = "This shared conversation is restricted to organization members. Please sign in to view it.";
+        break;
+      case "not-found":
+        title = "Conversation not found";
+        message = "This conversation may have been removed or the link may be invalid.";
+        break;
+      default:
+        title = "Something went wrong";
+        message = "Could not load this conversation. Please try again later.";
+    }
     return (
       <div className="flex min-h-screen items-center justify-center">
         <div className="text-center">
           <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-100">
-            {result.reason === "not-found"
-              ? "Conversation not found"
-              : "Something went wrong"}
+            {title}
           </h1>
           <p className="mt-2 text-zinc-500 dark:text-zinc-400">{message}</p>
         </div>

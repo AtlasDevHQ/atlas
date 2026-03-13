@@ -474,7 +474,7 @@ describe("error handling", () => {
     }
   });
 
-  test("200 with non-JSON body throws AtlasError with code invalid_response", async () => {
+  test("200 with non-JSON body throws AtlasError with code invalid_response and retryable false", async () => {
     installFetchMock(new Response("not json", { status: 200 }));
     const client = createAtlasClient({ baseUrl: "http://localhost:3001", apiKey: "k" });
 
@@ -487,6 +487,7 @@ describe("error handling", () => {
       expect(e.code).toBe("invalid_response");
       expect(e.status).toBe(200);
       expect(e.message).toContain("unparseable body");
+      expect(e.retryable).toBe(false);
     }
   });
 
@@ -589,5 +590,50 @@ describe("error handling", () => {
       expect(e.message).toContain("Bad Gateway");
       expect(e.message).toContain("<html>");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AtlasError constructor — direct tests
+// ---------------------------------------------------------------------------
+
+describe("AtlasError constructor", () => {
+  test("3-arg form defaults retryable from code (transient)", () => {
+    const e = new AtlasError("internal_error", "fail", 500);
+    expect(e.retryable).toBe(true);
+    expect(e.retryAfterSeconds).toBeUndefined();
+  });
+
+  test("3-arg form defaults retryable from code (permanent)", () => {
+    const e = new AtlasError("auth_error", "unauthorized", 401);
+    expect(e.retryable).toBe(false);
+    expect(e.retryAfterSeconds).toBeUndefined();
+  });
+
+  test("backward compat: positional number 4th arg sets retryAfterSeconds", () => {
+    const e = new AtlasError("rate_limited", "slow down", 429, 30);
+    expect(e.retryAfterSeconds).toBe(30);
+    expect(e.retryable).toBe(true);
+  });
+
+  test("opts object sets both retryAfterSeconds and retryable", () => {
+    const e = new AtlasError("rate_limited", "slow down", 429, { retryAfterSeconds: 15, retryable: true });
+    expect(e.retryAfterSeconds).toBe(15);
+    expect(e.retryable).toBe(true);
+  });
+
+  test("server retryable: false overrides code-based classification", () => {
+    const e = new AtlasError("internal_error", "fail", 500, { retryable: false });
+    expect(e.retryable).toBe(false);
+  });
+
+  test("network_error is retryable by default", () => {
+    const e = new AtlasError("network_error", "fetch failed", 0);
+    expect(e.retryable).toBe(true);
+  });
+
+  test("unknown_error is not retryable by default", () => {
+    const e = new AtlasError("unknown_error", "???", 0);
+    expect(e.retryable).toBe(false);
   });
 });

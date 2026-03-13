@@ -4,6 +4,8 @@ import type { AuthMode } from "./auth";
 // ChatErrorCode — all server error codes
 // ---------------------------------------------------------------------------
 
+// Note: `not_available` is intentionally excluded — it is an admin/CRUD code,
+// not a chat error code. The SDK defines it separately in AtlasErrorCode.
 export const CHAT_ERROR_CODES = [
   "auth_error",
   "rate_limited",
@@ -35,24 +37,34 @@ export function isChatErrorCode(value: string): value is ChatErrorCode {
 // ---------------------------------------------------------------------------
 
 /**
- * Error codes that represent transient failures where retrying may succeed.
+ * Exhaustive map from every `ChatErrorCode` to its retryable classification.
  *
- * - `rate_limited` — back off and retry after the indicated delay.
- * - `provider_timeout` / `provider_unreachable` / `provider_error` / `provider_rate_limit` — upstream issues that often self-resolve.
- * - `internal_error` — may be a transient server issue; retrying is reasonable.
+ * Using `Record<ChatErrorCode, boolean>` ensures a compile-time error if a
+ * new code is added to `CHAT_ERROR_CODES` without classifying it here.
  */
-const RETRYABLE_CODES: ReadonlySet<ChatErrorCode> = new Set([
-  "rate_limited",
-  "provider_timeout",
-  "provider_unreachable",
-  "provider_error",
-  "provider_rate_limit",
-  "internal_error",
-]);
+const RETRYABLE_MAP: Record<ChatErrorCode, boolean> = {
+  // Transient — retrying may succeed
+  rate_limited: true,
+  provider_timeout: true,
+  provider_unreachable: true,
+  provider_error: true,
+  provider_rate_limit: true,
+  internal_error: true,
+  // Permanent — retrying will not help
+  auth_error: false,
+  configuration_error: false,
+  no_datasource: false,
+  invalid_request: false,
+  provider_model_not_found: false,
+  provider_auth_error: false,
+  validation_error: false,
+  not_found: false,
+  forbidden: false,
+};
 
 /** Returns `true` if the given error code represents a transient, retryable failure. */
 export function isRetryableError(code: ChatErrorCode): boolean {
-  return RETRYABLE_CODES.has(code);
+  return RETRYABLE_MAP[code];
 }
 
 // ---------------------------------------------------------------------------
@@ -67,8 +79,11 @@ export function isRetryableError(code: ChatErrorCode): boolean {
  * - `retryAfterSeconds` — Seconds to wait before retrying (rate_limited only).
  *   Clamped to [0, 300].
  * - `code` — The server error code, if the response was valid JSON with a known code.
- * - `retryable` — Whether the client should offer to retry. Derived from the error code
- *   via `isRetryableError()`. `undefined` when the code is unknown.
+ * - `retryable` — Whether the client should offer to retry. Three states:
+ *   - `true` — transient error, retrying may succeed.
+ *   - `false` — permanent error, retrying will not help.
+ *   - `undefined` — error code is unknown or response was not valid JSON;
+ *     the client cannot determine retryability.
  * - `requestId` — Server-assigned request ID (UUID) for log correlation.
  */
 export interface ChatErrorInfo {

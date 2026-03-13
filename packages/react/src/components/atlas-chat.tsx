@@ -611,14 +611,18 @@ function AtlasChatInner({
                   <ErrorBanner
                     error={error}
                     authMode={authMode}
-                    onRetry={() => {
-                      const lastUserMsg = messages.toReversed().find((m) => m.role === "user");
-                      const text = lastUserMsg?.parts
-                        ?.filter((p): p is { type: "text"; text: string } => p.type === "text")
-                        .map((p) => p.text)
-                        .join(" ");
-                      if (text) handleSend(text);
-                    }}
+                    onRetry={
+                      messages.some((m) => m.role === "user")
+                        ? () => {
+                            const lastUserMsg = messages.toReversed().find((m) => m.role === "user");
+                            const text = lastUserMsg?.parts
+                              ?.filter((p): p is { type: "text"; text: string } => p.type === "text")
+                              .map((p) => p.text)
+                              .join(" ");
+                            if (text) handleSend(text);
+                          }
+                        : undefined
+                    }
                   />
                 )}
 

@@ -327,16 +327,16 @@ describe("isRetryableError", () => {
 describe("parseChatError retryable", () => {
   const authMode: AuthMode = "none";
 
-  test("retryable is true for transient error codes", () => {
-    for (const code of ["rate_limited", "provider_timeout", "provider_error", "internal_error"] as const) {
+  test("retryable is true for all transient error codes", () => {
+    for (const code of ["rate_limited", "provider_timeout", "provider_unreachable", "provider_error", "provider_rate_limit", "internal_error"] as const) {
       const err = new Error(JSON.stringify({ error: code, message: "fail" }));
       const info = parseChatError(err, authMode);
       expect(info.retryable).toBe(true);
     }
   });
 
-  test("retryable is false for permanent error codes", () => {
-    for (const code of ["auth_error", "configuration_error", "invalid_request", "validation_error", "forbidden"] as const) {
+  test("retryable is false for all permanent error codes", () => {
+    for (const code of ["auth_error", "configuration_error", "no_datasource", "invalid_request", "provider_model_not_found", "provider_auth_error", "validation_error", "not_found", "forbidden"] as const) {
       const err = new Error(JSON.stringify({ error: code, message: "fail" }));
       const info = parseChatError(err, authMode);
       expect(info.retryable).toBe(false);

@@ -426,11 +426,12 @@ export function AtlasChat() {
 
                 <ScrollArea viewportRef={scrollRef} className="min-h-0 flex-1">
                 <ErrorBoundary
-                  fallback={
-                    <div className="flex items-center justify-center p-6 text-sm text-red-600 dark:text-red-400">
-                      Failed to render messages. Try refreshing.
+                  fallbackRender={(_error, reset) => (
+                    <div className="flex flex-col items-center justify-center gap-2 p-6 text-sm text-red-600 dark:text-red-400">
+                      <p>Failed to render messages.</p>
+                      <button onClick={reset} className="text-xs underline">Try again</button>
                     </div>
-                  }
+                  )}
                 >
                 <div className="space-y-4 pb-4 pr-3">
                   {messages.length === 0 && !error && (

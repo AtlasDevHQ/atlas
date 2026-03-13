@@ -378,7 +378,7 @@ export default function ActionsPage() {
           )}
         </div>
 
-        <ErrorBoundary fallback={<div className="flex items-center justify-center p-6 text-sm text-red-600 dark:text-red-400">This section encountered an error.</div>}>
+        <ErrorBoundary>
         <div className="flex-1 overflow-auto">
           {error && <ErrorBanner message={friendlyError(error)} onRetry={() => setRefetchKey((k) => k + 1)} />}
           {mutationError && <ErrorBanner message={mutationError} onRetry={() => setMutationError(null)} />}

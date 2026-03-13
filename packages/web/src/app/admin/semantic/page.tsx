@@ -513,7 +513,7 @@ export default function SemanticPage() {
         </span>
       </div>
 
-      <ErrorBoundary fallback={<div className="flex items-center justify-center p-6 text-sm text-red-600 dark:text-red-400">This section encountered an error.</div>}>
+      <ErrorBoundary>
       <div className="flex flex-1 overflow-hidden">
         {/* File tree sidebar */}
         <SemanticFileTree

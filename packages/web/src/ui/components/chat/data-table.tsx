@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ComponentProps } from "react";
 import { formatCell } from "../../lib/helpers";
 import { ErrorBoundary } from "../error-boundary";
 
@@ -104,18 +104,15 @@ function DataTableInner({
   );
 }
 
-export function DataTable(props: {
-  columns: string[];
-  rows: (Record<string, unknown> | unknown[])[];
-  maxRows?: number;
-}) {
+export function DataTable(props: ComponentProps<typeof DataTableInner>) {
   return (
     <ErrorBoundary
-      fallback={
-        <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-400">
-          Unable to render results.
+      fallbackRender={(_error, reset) => (
+        <div className="flex items-center justify-between rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-400">
+          <span>Unable to render results.</span>
+          <button onClick={reset} className="underline">Retry</button>
         </div>
-      }
+      )}
     >
       <DataTableInner {...props} />
     </ErrorBoundary>

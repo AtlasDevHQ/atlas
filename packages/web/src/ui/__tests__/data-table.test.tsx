@@ -116,9 +116,10 @@ describe("DataTable", () => {
     expect(container.textContent).toContain("Bob");
   });
 
-  test("renders empty table without crashing", () => {
+  test("renders empty state message when rows are empty", () => {
     const { container } = render(<DataTable columns={["id"]} rows={[]} />);
-    expect(container.querySelector("table")).not.toBeNull();
-    expect(container.querySelectorAll("tbody tr").length).toBe(0);
+    expect(container.querySelector("table")).toBeNull();
+    expect(container.textContent).toContain("Query returned no results");
+    expect(container.textContent).toContain("Try adjusting your query filters or criteria");
   });
 });

@@ -461,7 +461,21 @@ export default function UsersPage() {
             <LoadingState message="Loading users..." />
           </div>
         ) : users.length === 0 ? (
-          <EmptyState icon={Users} message="No users found" />
+          params.search || params.role ? (
+            <EmptyState
+              icon={Search}
+              title="No users match your filters"
+              description="Try adjusting your search or role filter"
+              action={{ label: "Clear filters", onClick: () => setParams({ search: "", role: "", page: 1 }) }}
+            />
+          ) : (
+            <EmptyState
+              icon={Users}
+              title="No users yet"
+              description="Invite your first team member to get started"
+              action={{ label: "Invite user", onClick: () => { resetInviteDialog(); setInviteOpen(true); } }}
+            />
+          )
         ) : (
           <>
             <div className="rounded-md border">

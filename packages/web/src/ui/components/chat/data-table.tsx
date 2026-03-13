@@ -15,6 +15,19 @@ export function DataTable({
   const [sortCol, setSortCol] = useState<number | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
 
+  if (rows.length === 0) {
+    return (
+      <div className="rounded-lg border border-zinc-200 px-4 py-8 text-center dark:border-zinc-700">
+        <p className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
+          Query returned no results
+        </p>
+        <p className="mt-1 text-xs text-zinc-400 dark:text-zinc-500">
+          Try adjusting your query filters or criteria
+        </p>
+      </div>
+    );
+  }
+
   const hasMore = rows.length > maxRows;
 
   const cell = (row: Record<string, unknown> | unknown[], colIdx: number): unknown => {

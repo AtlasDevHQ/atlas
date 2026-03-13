@@ -637,7 +637,6 @@ function AtlasChatInner({
                   <label htmlFor="atlas-chat-input" className="sr-only">Chat message</label>
                   <input
                     id="atlas-chat-input"
-                    aria-label="Chat message input"
                     data-atlas-input
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
@@ -647,10 +646,10 @@ function AtlasChatInner({
                   />
                   <button
                     type="submit"
-                    disabled={isLoading || healthFailed || !input.trim()}
-                    aria-disabled={isLoading || healthFailed || !input.trim() || undefined}
+                    disabled={isLoading || healthFailed}
+                    aria-disabled={!(isLoading || healthFailed) && !input.trim() ? true : undefined}
                     aria-describedby={!input.trim() ? "atlas-chat-submit-hint" : undefined}
-                    className="shrink-0 rounded-lg bg-blue-600 px-5 py-3 text-sm font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-40"
+                    className="shrink-0 rounded-lg bg-blue-600 px-5 py-3 text-sm font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-40 aria-disabled:opacity-40"
                   >
                     Ask
                   </button>

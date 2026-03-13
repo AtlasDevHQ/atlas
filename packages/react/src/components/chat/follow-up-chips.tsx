@@ -18,16 +18,8 @@ export function FollowUpChips({
           key={`${i}-${s}`}
           variant="outline"
           size="sm"
-          role="button"
-          tabIndex={0}
           className="h-auto rounded-full px-3 py-1.5 text-xs font-normal text-zinc-600 dark:text-zinc-400"
           onClick={() => onSelect(s)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              onSelect(s);
-            }
-          }}
         >
           {s}
         </Button>

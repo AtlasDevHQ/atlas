@@ -46,6 +46,7 @@ import { LoadingState } from "@/ui/components/admin/loading-state";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import { Cable, Loader2, Plus, Pencil, Trash2, Eye, EyeOff } from "lucide-react";
 import { useAdminFetch, useInProgressSet, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 import {
@@ -529,6 +530,7 @@ export default function ConnectionsPage() {
         </Button>
       </div>
 
+      <ErrorBoundary>
       <div className="flex-1 overflow-auto">
         {error && <ErrorBanner message={friendlyError(error)} onRetry={refetch} />}
         {mutationError && <ErrorBanner message={mutationError} onRetry={() => setMutationError(null)} />}
@@ -613,6 +615,7 @@ export default function ConnectionsPage() {
           </Table>
         ) : null}
       </div>
+      </ErrorBoundary>
 
       <ConnectionFormDialog
         open={formOpen}

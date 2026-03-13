@@ -44,6 +44,7 @@ import {
   Inbox,
 } from "lucide-react";
 import { useInProgressSet, type FetchError, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { ErrorBoundary } from "@/ui/components/error-boundary";
 
 interface ActionLogEntry {
   id: string;
@@ -377,6 +378,7 @@ export default function ActionsPage() {
           )}
         </div>
 
+        <ErrorBoundary>
         <div className="flex-1 overflow-auto">
           {error && <ErrorBanner message={friendlyError(error)} onRetry={() => setRefetchKey((k) => k + 1)} />}
           {mutationError && <ErrorBanner message={mutationError} onRetry={() => setMutationError(null)} />}
@@ -577,6 +579,7 @@ export default function ActionsPage() {
             </Table>
           ) : null}
         </div>
+        </ErrorBoundary>
       </div>
     </TooltipProvider>
   );

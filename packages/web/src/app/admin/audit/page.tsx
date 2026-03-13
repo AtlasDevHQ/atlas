@@ -24,6 +24,7 @@ import { LoadingState } from "@/ui/components/admin/loading-state";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import { ScrollText, Search, AlertTriangle, Database, BarChart3 } from "lucide-react";
 import { useAdminFetch, friendlyError, type FetchError } from "@/ui/hooks/use-admin-fetch";
+import { ErrorBoundary } from "@/ui/components/error-boundary";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -147,6 +148,7 @@ export default function AuditPage() {
 
   return (
     <div className="flex h-[calc(100dvh-3rem)] flex-col">
+      <ErrorBoundary>
       <Tabs
         value={params.tab}
         onValueChange={(v) => setParams({ tab: v as "log" | "analytics" })}
@@ -375,6 +377,7 @@ export default function AuditPage() {
           )}
         </TabsContent>
       </Tabs>
+      </ErrorBoundary>
     </div>
   );
 }

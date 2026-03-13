@@ -1,6 +1,7 @@
 "use client";
 
-import { Component, type ReactNode, type ErrorInfo, useMemo, useId, useState } from "react";
+import { useMemo, useId, useState } from "react";
+import { ErrorBoundary } from "../error-boundary";
 import {
   ResponsiveContainer,
   BarChart,
@@ -31,39 +32,6 @@ import {
   type RechartsRow,
   type ChartDetectionResult,
 } from "./chart-detection";
-
-/* ------------------------------------------------------------------ */
-/*  Error boundary                                                       */
-/* ------------------------------------------------------------------ */
-
-class ChartErrorBoundary extends Component<
-  { children: ReactNode; fallback?: ReactNode },
-  { hasError: boolean }
-> {
-  constructor(props: { children: ReactNode; fallback?: ReactNode }) {
-    super(props);
-    this.state = { hasError: false };
-  }
-
-  static getDerivedStateFromError(): { hasError: boolean } {
-    return { hasError: true };
-  }
-
-  componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error("Chart rendering failed:", error, info.componentStack);
-  }
-
-  render() {
-    if (this.state.hasError) {
-      return this.props.fallback ?? (
-        <div className="rounded-lg border border-yellow-300 bg-yellow-50 px-3 py-2 text-xs text-yellow-700 dark:border-yellow-900/50 dark:bg-yellow-950/20 dark:text-yellow-400">
-          Chart could not be rendered. Switch to Table view to see your data.
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
 
 /* ------------------------------------------------------------------ */
 /*  Theme helpers                                                       */
@@ -576,7 +544,14 @@ export function ResultChart({
           onChange={setActiveType}
         />
       </div>
-      <ChartErrorBoundary key={currentType}>
+      <ErrorBoundary
+        key={currentType}
+        fallback={
+          <div className="rounded-lg border border-yellow-300 bg-yellow-50 px-3 py-2 text-xs text-yellow-700 dark:border-yellow-900/50 dark:bg-yellow-950/20 dark:text-yellow-400">
+            Unable to render chart. Switch to Table view to see your data.
+          </div>
+        }
+      >
         <ChartRenderer
           rows={rows}
           rec={currentRec}
@@ -584,7 +559,7 @@ export function ResultChart({
           defaultRec={result.recommendations[0]}
           dark={dark}
         />
-      </ChartErrorBoundary>
+      </ErrorBoundary>
     </div>
   );
 }

@@ -51,6 +51,7 @@ import {
   Eye,
 } from "lucide-react";
 import { useInProgressSet, type FetchError, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { DeliveryStatusBadge } from "@/ui/components/admin/delivery-status-badge";
 import { TaskFormDialog } from "./task-form-dialog";
 import type {
@@ -401,6 +402,7 @@ export default function ScheduledTasksPage() {
         )}
       </div>
 
+      <ErrorBoundary>
       <div className="flex-1 overflow-auto">
         {error && <ErrorBanner message={friendlyError(error)} onRetry={() => setError(null)} />}
         {mutationError && <ErrorBanner message={mutationError} onRetry={() => setMutationError(null)} />}
@@ -628,6 +630,7 @@ export default function ScheduledTasksPage() {
           </>
         ) : null}
       </div>
+      </ErrorBoundary>
 
       <TaskFormDialog
         open={formOpen}

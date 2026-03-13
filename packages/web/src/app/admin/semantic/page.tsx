@@ -19,6 +19,7 @@ import {
   type SemanticSelection,
 } from "@/ui/components/admin/semantic-file-tree";
 import { friendlyError, type FetchError } from "@/ui/hooks/use-admin-fetch";
+import { ErrorBoundary } from "@/ui/components/error-boundary";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -512,6 +513,7 @@ export default function SemanticPage() {
         </span>
       </div>
 
+      <ErrorBoundary>
       <div className="flex flex-1 overflow-hidden">
         {/* File tree sidebar */}
         <SemanticFileTree
@@ -575,6 +577,7 @@ export default function SemanticPage() {
           </div>
         </div>
       </div>
+      </ErrorBoundary>
     </div>
   );
 }

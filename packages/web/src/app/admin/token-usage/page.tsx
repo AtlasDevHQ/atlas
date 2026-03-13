@@ -23,6 +23,7 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import { Coins, TrendingUp, Users, MessageSquare, Search } from "lucide-react";
 import { useState } from "react";
+import { ErrorBoundary } from "@/ui/components/error-boundary";
 
 import type { TrendPoint } from "./token-chart";
 
@@ -110,6 +111,7 @@ export default function TokenUsagePage() {
   }
 
   return (
+    <ErrorBoundary>
     <div className="space-y-6">
       <div>
         <h1 className="text-lg font-semibold">Token Usage</h1>
@@ -269,5 +271,6 @@ export default function TokenUsagePage() {
         </CardContent>
       </Card>
     </div>
+    </ErrorBoundary>
   );
 }

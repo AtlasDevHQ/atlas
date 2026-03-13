@@ -113,7 +113,7 @@ const response = await fetch("http://localhost:3001/api/v1/query", {
 const result = await response.json();
 console.log(result.answer);     // Natural-language answer
 console.log(result.sql);        // SQL queries the agent executed
-console.log(result.data);       // Raw query results ({ columns, rows }[])
+console.log(result.data);       // Raw query results ({ columns, rows }[]) — empty if no SQL was needed
 ```
 </Tab>
 </Tabs>
@@ -211,7 +211,7 @@ while (true) {
 </Tab>
 </Tabs>
 
-The response streams as SSE events. The `x-conversation-id` header contains the conversation ID for follow-up messages.
+The response streams as SSE events. The `x-conversation-id` response header contains the conversation ID for follow-up messages (only present when `DATABASE_URL` is configured).
 
 **SSE event stream (abbreviated):**
 
@@ -233,7 +233,7 @@ data: d:{"finishReason":"stop"}
 
 ### Conversations
 
-Conversation endpoints require an internal database (`DATABASE_URL`). They return `404 not_available` if no internal database is configured.
+Conversation endpoints require an internal database (`DATABASE_URL`). They return HTTP 404 with error code `not_available` if no internal database is configured.
 
 #### List conversations
 
@@ -397,10 +397,10 @@ All error responses follow a consistent format:
 | `not_found` | 404 | Resource not found |
 | `not_available` | 404 | Feature not available (e.g., no internal DB) |
 | `provider_model_not_found` | 400 | Configured AI model does not exist |
-| `provider_auth_error` | 502 | AI provider authentication failed |
-| `provider_rate_limit` | 429 | AI provider rate limited |
+| `provider_auth_error` | 503 | AI provider authentication failed |
+| `provider_rate_limit` | 503 | AI provider rate limited |
 | `provider_timeout` | 504 | AI provider timed out |
-| `provider_unreachable` | 502 | Could not reach the AI provider |
+| `provider_unreachable` | 503 | Could not reach the AI provider |
 | `provider_error` | 502 | AI provider returned an error |
 | `internal_error` | 500 | Unexpected server error |
 

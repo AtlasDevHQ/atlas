@@ -110,6 +110,9 @@ for await (const event of atlas.streamQuery("How many users signed up last week?
     case "error":
       console.error(event.message);
       break;
+    case "parse-error":
+      console.warn("Malformed SSE frame", event.raw);
+      break;
     case "finish":
       console.log(`\nDone (${event.reason})`);
       break;
@@ -147,6 +150,7 @@ try {
 | `tool-result` | `toolCallId`, `name`, `result` | Tool returned a result |
 | `result` | `columns`, `rows` | Convenience event extracted from `tool-result` when `executeSQL` returns data. Both `tool-result` and `result` are emitted. |
 | `error` | `message` | Error during streaming |
+| `parse-error` | `raw`, `error` | Client-side: an SSE frame contained invalid JSON. The raw data is preserved for debugging. |
 | `finish` | `reason` | Stream completed |
 
 ## Error Handling

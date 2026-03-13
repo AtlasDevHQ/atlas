@@ -564,7 +564,7 @@ describe("streamQuery — SSE parsing", () => {
     expect(events).toEqual([{ type: "text", content: "Hello" }]);
   });
 
-  test("yields parse_error event for malformed JSON in SSE data", async () => {
+  test("yields parse-error event for malformed JSON in SSE data", async () => {
     installFetchMock(sseResponse([
       "not valid json",
       { type: "text-delta", textDelta: "ok" },
@@ -573,15 +573,15 @@ describe("streamQuery — SSE parsing", () => {
 
     const events = await collectEvents(makeClient().streamQuery("test"));
     expect(events).toHaveLength(3);
-    expect(events[0].type).toBe("parse_error");
-    const parseError = events[0] as StreamEvent & { type: "parse_error" };
+    expect(events[0].type).toBe("parse-error");
+    const parseError = events[0] as StreamEvent & { type: "parse-error" };
     expect(parseError.raw).toBe("not valid json");
     expect(typeof parseError.error).toBe("string");
     expect(events[1]).toEqual({ type: "text", content: "ok" });
     expect(events[2]).toEqual({ type: "finish", reason: "stop" });
   });
 
-  test("parse_error includes raw data for debugging truncated JSON", async () => {
+  test("parse-error includes raw data for debugging truncated JSON", async () => {
     const truncated = '{"type":"text-delta","textDelta":"hel';
     installFetchMock(sseResponse([
       truncated,
@@ -590,11 +590,35 @@ describe("streamQuery — SSE parsing", () => {
 
     const events = await collectEvents(makeClient().streamQuery("test"));
     expect(events).toHaveLength(2);
-    const parseError = events[0] as StreamEvent & { type: "parse_error" };
-    expect(parseError.type).toBe("parse_error");
+    const parseError = events[0] as StreamEvent & { type: "parse-error" };
+    expect(parseError.type).toBe("parse-error");
     expect(parseError.raw).toBe(truncated);
     expect(parseError.error).toBeTruthy();
     expect(events[1]).toEqual({ type: "finish", reason: "stop" });
+  });
+
+  test("multiple consecutive parse errors are all yielded", async () => {
+    installFetchMock(sseResponse([
+      "bad1",
+      "bad2",
+      { type: "text-delta", textDelta: "ok" },
+      { type: "finish", finishReason: "stop" },
+    ]));
+
+    const events = await collectEvents(makeClient().streamQuery("test"));
+    expect(events).toHaveLength(4);
+    expect(events[0]).toMatchObject({ type: "parse-error", raw: "bad1" });
+    expect(events[1]).toMatchObject({ type: "parse-error", raw: "bad2" });
+    expect(events[2]).toEqual({ type: "text", content: "ok" });
+    expect(events[3]).toEqual({ type: "finish", reason: "stop" });
+  });
+
+  test("all-unparseable stream yields only parse-error events", async () => {
+    installFetchMock(sseResponse(["garbage1", "garbage2"]));
+    const events = await collectEvents(makeClient().streamQuery("test"));
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({ type: "parse-error", raw: "garbage1" });
+    expect(events[1]).toMatchObject({ type: "parse-error", raw: "garbage2" });
   });
 
   test("empty stream with only [DONE] yields zero events", async () => {

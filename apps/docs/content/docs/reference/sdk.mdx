@@ -156,6 +156,7 @@ Each yielded event is a discriminated union:
 | `tool-result` | `toolCallId`, `name`, `result` | Tool returned a result |
 | `result` | `columns`, `rows` | Convenience event when `executeSQL` returns data (emitted alongside `tool-result`) |
 | `error` | `message` | Error during streaming |
+| `parse-error` | `raw`, `error` | Client-side: an SSE frame contained invalid JSON. The raw data is preserved for debugging. |
 | `finish` | `reason` | Stream completed (`"stop"`, `"length"`, `"tool-calls"`, etc.) |
 
 ### Usage

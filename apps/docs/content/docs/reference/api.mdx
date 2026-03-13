@@ -354,13 +354,13 @@ curl http://localhost:3001/api/health
   "components": {
     "datasource": { "status": "healthy", "latencyMs": 3, "lastCheckedAt": "2026-03-13T14:22:00.000Z" },
     "internalDb": { "status": "healthy", "latencyMs": 1, "lastCheckedAt": "2026-03-13T14:22:00.000Z" },
-    "provider": { "status": "healthy", "model": "claude-sonnet-4-20250514", "lastCheckedAt": "2026-03-13T14:22:00.000Z" },
+    "provider": { "status": "healthy", "model": "your-configured-model", "lastCheckedAt": "2026-03-13T14:22:00.000Z" },
     "sandbox": { "status": "healthy", "backend": "sidecar", "lastCheckedAt": "2026-03-13T14:22:00.000Z" },
     "scheduler": { "status": "disabled", "lastCheckedAt": "2026-03-13T14:22:00.000Z" }
   },
   "checks": {
     "datasource": { "status": "ok", "latencyMs": 3 },
-    "provider": { "status": "ok", "provider": "anthropic", "model": "claude-sonnet-4-20250514" },
+    "provider": { "status": "ok", "provider": "anthropic", "model": "your-configured-model" },
     "semanticLayer": { "status": "ok", "entityCount": 12 },
     "internalDb": { "status": "ok", "latencyMs": 1 },
     "explore": { "backend": "sidecar", "isolated": true },
@@ -388,7 +388,7 @@ All error responses follow a consistent format:
 
 | Code | Status | Description |
 |------|--------|-------------|
-| `auth_error` | 401 | Authentication failed or missing |
+| `auth_error` | 401/403 | Authentication failed or missing |
 | `rate_limited` | 429 | Too many requests. `Retry-After` header included |
 | `configuration_error` | 400 | Atlas is not fully configured (missing provider, etc.) |
 | `no_datasource` | 400 | No datasource URL configured |

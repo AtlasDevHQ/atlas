@@ -194,7 +194,33 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
           } else if (/Access denied/i.test(detail) || /ER_ACCESS_DENIED/i.test(detail)) {
             message = `Cannot connect to ${maskedUrl}. Authentication failed — check your username and password.`;
           } else if (/ER_BAD_DB_ERROR/i.test(detail)) {
-            message = `Cannot connect to ${maskedUrl}. The specified database does not exist.`;
+            let dbHint = "";
+            try {
+              const noDatabaseUrl = resolvedDatasourceUrl.replace(/\/[^/?#]+(?=[?#]|$)/, "/");
+              const listPool = mysql.createPool({
+                uri: noDatabaseUrl,
+                connectionLimit: 1,
+                connectTimeout: 5000,
+              });
+              try {
+                const listConn = await listPool.getConnection();
+                const [dbRows] = await listConn.query(
+                  "SELECT schema_name FROM information_schema.schemata " +
+                  "WHERE schema_name NOT IN ('mysql', 'sys', 'performance_schema', 'information_schema') " +
+                  "ORDER BY schema_name"
+                );
+                const schemas = (dbRows as Array<{ schema_name: string }>).map(r => r.schema_name);
+                if (schemas.length > 0) {
+                  dbHint = ` Available databases: ${schemas.join(", ")}.`;
+                }
+                listConn.release();
+              } finally {
+                await listPool.end().catch(() => {});
+              }
+            } catch {
+              // Database listing failed — fall back to generic message
+            }
+            message = `Cannot connect to ${maskedUrl}. The specified database does not exist.${dbHint}`;
           } else {
             message = `Cannot connect to ${maskedUrl}. Check the connection string and ensure the database is running.`;
           }
@@ -245,9 +271,26 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
                 [atlasSchema]
               );
               if (result.rows.length === 0) {
+                let schemaHint = "";
+                try {
+                  const schemasResult = await client.query(
+                    "SELECT schema_name FROM information_schema.schemata " +
+                    "WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast') " +
+                    "AND schema_name NOT LIKE 'pg_temp_%' AND schema_name NOT LIKE 'pg_toast_temp_%' " +
+                    "ORDER BY schema_name"
+                  );
+                  const schemas = schemasResult.rows.map(
+                    (r: { schema_name: string }) => r.schema_name
+                  );
+                  if (schemas.length > 0) {
+                    schemaHint = ` Available schemas: ${schemas.join(", ")}.`;
+                  }
+                } catch {
+                  // Schema listing failed — fall back to generic message
+                }
                 errors.push({
                   code: "INVALID_SCHEMA",
-                  message: `Schema "${atlasSchema}" does not exist in the database. Check ATLAS_SCHEMA in your .env file.`,
+                  message: `Schema "${atlasSchema}" does not exist in the database.${schemaHint} Check ATLAS_SCHEMA in your .env file.`,
                 });
               }
             } catch (schemaErr) {

@@ -46,7 +46,7 @@ const atlas = createAtlasClient({
 });
 ```
 
-### Options
+### Client options
 
 ```typescript
 type AtlasClientOptions = {
@@ -76,7 +76,7 @@ console.log(result.steps);      // 3
 console.log(result.usage);      // { totalTokens: 1523 }
 ```
 
-### Options
+### Query options
 
 ```typescript
 const result = await atlas.query("Revenue by region", {
@@ -129,7 +129,7 @@ const response = await atlas.chat([
 const reader = response.body?.getReader();
 ```
 
-### Options
+### Chat options
 
 ```typescript
 const response = await atlas.chat(messages, {
@@ -152,7 +152,7 @@ async *streamQuery(
 ): AsyncGenerator<StreamEvent>
 ```
 
-### Options
+### Stream query options
 
 ```typescript
 interface StreamQueryOptions {
@@ -177,7 +177,7 @@ Each yielded event is a discriminated union:
 | `parse-error` | `raw`, `error` | Client-side: an SSE frame contained invalid JSON. The raw data is preserved for debugging. |
 | `finish` | `reason` | Stream completed (`"stop"`, `"length"`, `"tool-calls"`, etc.) |
 
-### Usage
+### Stream event iteration
 
 ```typescript
 // Iterate over typed stream events as the agent works

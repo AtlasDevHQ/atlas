@@ -82,6 +82,8 @@ RUN if [ "$INSTALL_NSJAIL" = "true" ]; then \
       && rm -rf /var/lib/apt/lists/*; \
     fi
 COPY --from=nsjail-builder /nsjail-out/ /usr/local/bin/
+# Shared types (workspace symlink target — needed at runtime by API + plugins)
+COPY --from=builder --chown=atlas:atlas /app/packages/types ./packages/types
 # Widget bundle — built from @useatlas/react (referenced by widget route)
 COPY --from=builder --chown=atlas:atlas /app/packages/react/dist ./packages/react/dist
 # Hono API server source + dependencies

@@ -2619,6 +2619,7 @@ export async function profileDuckDB(
   const instance = await DuckDBInstance.create(dbPath, { access_mode: "READ_ONLY" });
   const conn = await instance.connect();
   const profiles: TableProfile[] = [];
+  const errors: { table: string; error: string }[] = [];
 
   try {
     let allObjects: DatabaseObject[];
@@ -2733,11 +2734,17 @@ export async function profileDuckDB(
         progress?.onTableDone(tableName, i, objectsToProfile.length);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
+        // Fail fast on connection-level errors that will affect all remaining tables
+        if (/ECONNRESET|ECONNREFUSED|EHOSTUNREACH|ENOTFOUND|EPIPE|ETIMEDOUT/i.test(msg)) {
+          throw new Error(`Fatal database error while profiling ${tableName}: ${msg}`, { cause: err });
+        }
         if (progress) {
           progress.onTableError(tableName, msg, i, objectsToProfile.length);
         } else {
-          console.warn(`  Warning: Failed to profile ${tableName}: ${msg}`);
+          console.error(`  Warning: Failed to profile ${tableName}: ${msg}`);
         }
+        errors.push({ table: tableName, error: msg });
+        continue;
       }
     }
   } finally {
@@ -2746,6 +2753,13 @@ export async function profileDuckDB(
     (conn as any).disconnectSync();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (instance as any).closeSync();
+  }
+
+  if (errors.length > 0 && !progress) {
+    console.log(`\nWarning: ${errors.length} table(s)/view(s) failed to profile:`);
+    for (const e of errors) {
+      console.log(`  - ${e.table}: ${e.error}`);
+    }
   }
 
   return profiles;

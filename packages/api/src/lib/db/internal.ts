@@ -331,6 +331,8 @@ export async function migrateInternalDB(): Promise<void> {
   // Conversation sharing (partial unique index is the real constraint — no column-level UNIQUE needed)
   await pool.query(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS share_token VARCHAR(64), ADD COLUMN IF NOT EXISTS share_expires_at TIMESTAMPTZ;`);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_share_token ON conversations(share_token) WHERE share_token IS NOT NULL;`);
+  await pool.query(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS share_mode VARCHAR(10) NOT NULL DEFAULT 'public';`);
+  await pool.query(`DO $$ BEGIN ALTER TABLE conversations ADD CONSTRAINT chk_share_mode CHECK (share_mode IN ('public', 'org')); EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
 
   // Scheduled tasks
   await pool.query(`

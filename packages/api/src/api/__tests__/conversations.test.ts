@@ -17,7 +17,9 @@ import type { AuthResult } from "@atlas/api/lib/auth/types";
 import type { CrudResult, CrudDataResult } from "@atlas/api/lib/conversations";
 import type { ConversationWithMessages } from "@atlas/api/lib/conversation-types";
 
-type ShareResult = CrudDataResult<{ token: string }>;
+import type { ShareMode } from "@useatlas/types/share";
+
+type ShareResult = CrudDataResult<{ token: string; expiresAt: string | null; shareMode: ShareMode }>;
 
 // --- Mocks ---
 
@@ -57,7 +59,7 @@ const mockGenerateTitle = mock(() => "Test title");
 const mockShareConversation = mock((): Promise<ShareResult> => Promise.resolve({ ok: false, reason: "not_found" }));
 const mockUnshareConversation = mock((): Promise<CrudResult> => Promise.resolve({ ok: false, reason: "not_found" }));
 const mockGetShareStatus = mock((): Promise<CrudDataResult<import("@atlas/api/lib/conversations").ShareStatusData>> => Promise.resolve({ ok: false, reason: "not_found" }));
-const mockGetSharedConversation = mock((): Promise<CrudDataResult<ConversationWithMessages>> => Promise.resolve({ ok: false, reason: "not_found" }));
+const mockGetSharedConversation = mock((): Promise<import("@atlas/api/lib/conversations").SharedConversationResult> => Promise.resolve({ ok: false, reason: "not_found" }));
 
 mock.module("@atlas/api/lib/conversations", () => ({
   listConversations: mockListConversations,
@@ -577,10 +579,10 @@ describe("conversations routes", () => {
   // -----------------------------------------------------------------------
 
   describe("GET /api/v1/conversations/:id/share", () => {
-    it("returns 200 with shared=true and url when conversation is shared", async () => {
+    it("returns 200 with shared=true, url, and shareMode when conversation is shared", async () => {
       mockGetShareStatus.mockResolvedValueOnce({
         ok: true,
-        data: { shared: true as const, token: "abc123def456", expiresAt: null },
+        data: { shared: true as const, token: "abc123def456", expiresAt: null, shareMode: "public" as const },
       });
 
       const response = await app.fetch(
@@ -594,12 +596,13 @@ describe("conversations routes", () => {
       expect(typeof body.url).toBe("string");
       expect((body.url as string)).toContain("/shared/abc123def456");
       expect(body.expiresAt).toBeNull();
+      expect(body.shareMode).toBe("public");
     });
 
     it("returns 200 with shared=false when conversation is not shared", async () => {
       mockGetShareStatus.mockResolvedValueOnce({
         ok: true,
-        data: { shared: false as const, token: null, expiresAt: null },
+        data: { shared: false as const, token: null, expiresAt: null, shareMode: null },
       });
 
       const response = await app.fetch(
@@ -632,7 +635,7 @@ describe("conversations routes", () => {
     it("passes userId for auth scoping", async () => {
       mockGetShareStatus.mockResolvedValueOnce({
         ok: true,
-        data: { shared: false as const, token: null, expiresAt: null },
+        data: { shared: false as const, token: null, expiresAt: null, shareMode: null },
       });
 
       await app.fetch(
@@ -684,8 +687,8 @@ describe("conversations routes", () => {
   // -----------------------------------------------------------------------
 
   describe("POST /api/v1/conversations/:id/share", () => {
-    it("returns 200 with token and url on success", async () => {
-      mockShareConversation.mockResolvedValueOnce({ ok: true, data: { token: "abc123def456" } });
+    it("returns 200 with token, url, expiresAt, and shareMode on success", async () => {
+      mockShareConversation.mockResolvedValueOnce({ ok: true, data: { token: "abc123def456", expiresAt: null, shareMode: "public" } });
 
       const response = await app.fetch(
         new Request(`http://localhost/api/v1/conversations/${VALID_ID}/share`, {
@@ -698,6 +701,23 @@ describe("conversations routes", () => {
       expect(body.token).toBe("abc123def456");
       expect(typeof body.url).toBe("string");
       expect((body.url as string)).toContain("/shared/abc123def456");
+      expect(body.expiresAt).toBeNull();
+      expect(body.shareMode).toBe("public");
+    });
+
+    it("passes expiresIn and shareMode from body to shareConversation", async () => {
+      mockShareConversation.mockResolvedValueOnce({ ok: true, data: { token: "tok", expiresAt: "2026-04-01T00:00:00Z", shareMode: "org" } });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/share`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ expiresIn: "7d", shareMode: "org" }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      const call = mockShareConversation.mock.calls[0] as unknown as [string, string | undefined, { expiresIn?: string; shareMode?: string }];
+      expect(call[2]).toEqual({ expiresIn: "7d", shareMode: "org" });
     });
 
     it("returns 404 when conversation not found", async () => {
@@ -721,14 +741,14 @@ describe("conversations routes", () => {
     });
 
     it("passes userId for auth scoping", async () => {
-      mockShareConversation.mockResolvedValueOnce({ ok: true, data: { token: "tok" } });
+      mockShareConversation.mockResolvedValueOnce({ ok: true, data: { token: "tok", expiresAt: null, shareMode: "public" } });
 
       await app.fetch(
         new Request(`http://localhost/api/v1/conversations/${VALID_ID}/share`, {
           method: "POST",
         }),
       );
-      const call = mockShareConversation.mock.calls[0] as unknown as [string, string | undefined];
+      const call = mockShareConversation.mock.calls[0] as unknown as [string, string | undefined, unknown];
       expect(call[0]).toBe(VALID_ID);
       expect(call[1]).toBe("u1");
     });
@@ -756,6 +776,50 @@ describe("conversations routes", () => {
 
       const body = await response.json() as Record<string, unknown>;
       expect(body.error).toBe("internal_error");
+    });
+
+    it("returns 400 for malformed JSON body", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/share`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "not-json",
+        }),
+      );
+      expect(response.status).toBe(400);
+
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.error).toBe("invalid_request");
+      expect(body.message).toContain("Invalid JSON body");
+    });
+
+    it("returns 400 for invalid expiresIn value", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/share`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ expiresIn: "99d" }),
+        }),
+      );
+      expect(response.status).toBe(400);
+
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.error).toBe("invalid_request");
+      expect(body.message).toContain("Invalid share options");
+    });
+
+    it("returns 400 for invalid shareMode value", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/share`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ shareMode: "team" }),
+        }),
+      );
+      expect(response.status).toBe(400);
+
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.error).toBe("invalid_request");
     });
   });
 
@@ -849,6 +913,7 @@ describe("conversations routes", () => {
           surface: "web",
           connectionId: null,
           starred: false,
+          shareMode: "public" as const,
           createdAt: "2024-01-01",
           updatedAt: "2024-01-01",
           messages: [
@@ -866,12 +931,13 @@ describe("conversations routes", () => {
       const body = await response.json() as Record<string, unknown>;
       expect(body.title).toBe("Shared chat");
       expect((body.messages as unknown[]).length).toBe(2);
+      expect(body.shareMode).toBe("public");
       // Should NOT expose internal IDs
       expect(body).not.toHaveProperty("id");
       expect(body).not.toHaveProperty("userId");
     });
 
-    it("does not require auth", async () => {
+    it("does not require auth for public shares", async () => {
       mockAuthenticateRequest.mockResolvedValueOnce({
         authenticated: false as const,
         mode: "simple-key" as const,
@@ -887,6 +953,7 @@ describe("conversations routes", () => {
           surface: "web",
           connectionId: null,
           starred: false,
+          shareMode: "public" as const,
           createdAt: "2024-01-01",
           updatedAt: "2024-01-01",
           messages: [],
@@ -907,13 +974,120 @@ describe("conversations routes", () => {
       expect(response.status).toBe(404);
     });
 
-    it("returns 404 when token not found or expired", async () => {
+    it("returns 404 when token not found", async () => {
       mockGetSharedConversation.mockResolvedValueOnce({ ok: false, reason: "not_found" });
 
       const response = await app.fetch(
         new Request("http://localhost/api/public/conversations/abcdefghij1234567890x"),
       );
       expect(response.status).toBe(404);
+
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.error).toBe("not_found");
+    });
+
+    it("returns 410 Gone when share link has expired", async () => {
+      mockGetSharedConversation.mockResolvedValueOnce({ ok: false, reason: "expired" });
+
+      const response = await app.fetch(
+        new Request("http://localhost/api/public/conversations/abcdefghij1234567890x"),
+      );
+      expect(response.status).toBe(410);
+
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.error).toBe("expired");
+      expect(body.message).toContain("expired");
+    });
+
+    it("returns 403 for org-scoped shares when unauthenticated", async () => {
+      mockGetSharedConversation.mockResolvedValueOnce({
+        ok: true,
+        data: {
+          id: VALID_ID,
+          userId: "u1",
+          title: "Org share",
+          surface: "web",
+          connectionId: null,
+          starred: false,
+          shareMode: "org" as const,
+          createdAt: "2024-01-01",
+          updatedAt: "2024-01-01",
+          messages: [],
+        },
+      });
+      mockAuthenticateRequest.mockResolvedValueOnce({
+        authenticated: false as const,
+        mode: "simple-key" as const,
+        status: 401 as const,
+        error: "API key required",
+      });
+
+      const response = await app.fetch(
+        new Request("http://localhost/api/public/conversations/abcdefghij1234567890x"),
+      );
+      expect(response.status).toBe(403);
+
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.error).toBe("auth_required");
+    });
+
+    it("returns 200 for org-scoped shares when authenticated", async () => {
+      mockGetSharedConversation.mockResolvedValueOnce({
+        ok: true,
+        data: {
+          id: VALID_ID,
+          userId: "u1",
+          title: "Org share",
+          surface: "web",
+          connectionId: null,
+          starred: false,
+          shareMode: "org" as const,
+          createdAt: "2024-01-01",
+          updatedAt: "2024-01-01",
+          messages: [],
+        },
+      });
+      mockAuthenticateRequest.mockResolvedValueOnce({
+        authenticated: true as const,
+        mode: "simple-key" as const,
+        user: { id: "u2", label: "org-user@test.com", mode: "simple-key" as const },
+      });
+
+      const response = await app.fetch(
+        new Request("http://localhost/api/public/conversations/abcdefghij1234567890x"),
+      );
+      expect(response.status).toBe(200);
+
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.title).toBe("Org share");
+      expect(body.shareMode).toBe("org");
+    });
+
+    it("returns 500 for org-scoped shares when authenticateRequest throws", async () => {
+      mockGetSharedConversation.mockResolvedValueOnce({
+        ok: true,
+        data: {
+          id: VALID_ID,
+          userId: "u1",
+          title: "Org share",
+          surface: "web",
+          connectionId: null,
+          starred: false,
+          shareMode: "org" as const,
+          createdAt: "2024-01-01",
+          updatedAt: "2024-01-01",
+          messages: [],
+        },
+      });
+      mockAuthenticateRequest.mockRejectedValueOnce(new Error("Auth DB crashed"));
+
+      const response = await app.fetch(
+        new Request("http://localhost/api/public/conversations/abcdefghij1234567890x"),
+      );
+      expect(response.status).toBe(500);
+
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.error).toBe("internal_error");
     });
 
     it("returns 500 when getSharedConversation returns error (DB failure)", async () => {
@@ -960,6 +1134,7 @@ describe("conversations routes", () => {
           surface: "web",
           connectionId: null,
           starred: false,
+          shareMode: "public" as const,
           createdAt: "2024-01-01",
           updatedAt: "2024-01-01",
           messages: [

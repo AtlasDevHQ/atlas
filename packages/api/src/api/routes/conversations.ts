@@ -27,7 +27,10 @@ import {
   getSharedConversation,
   cleanupExpiredShares,
   type CrudFailReason,
+  type SharedConversationFailReason,
 } from "@atlas/api/lib/conversations";
+import type { ShareExpiryKey } from "@useatlas/types/share";
+import { SHARE_MODES, SHARE_EXPIRY_OPTIONS } from "@useatlas/types/share";
 
 const log = createLogger("conversations");
 
@@ -66,6 +69,13 @@ export const ListConversationsResponseSchema = z.object({
   conversations: z.array(ConversationSchema),
   total: z.number().int().nonnegative(),
 });
+
+const EXPIRY_KEYS = Object.keys(SHARE_EXPIRY_OPTIONS) as [ShareExpiryKey, ...ShareExpiryKey[]];
+
+export const ShareConversationBodySchema = z.object({
+  expiresIn: z.enum(EXPIRY_KEYS).optional(),
+  shareMode: z.enum(SHARE_MODES).optional(),
+}).optional();
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -277,6 +287,7 @@ conversations.get("/:id/share", async (c) => {
       token: result.data.token,
       url: `${baseUrl}/shared/${result.data.token}`,
       expiresAt: result.data.expiresAt,
+      shareMode: result.data.shareMode,
     });
   });
 });
@@ -305,7 +316,25 @@ conversations.post("/:id/share", async (c) => {
   }
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const result = await shareConversation(id, authResult.user?.id);
+    let body: unknown = undefined;
+    try {
+      const text = await req.text();
+      if (text) body = JSON.parse(text);
+    } catch (err) {
+      log.debug({ err: err instanceof Error ? err.message : String(err) }, "Invalid JSON body in POST share");
+      return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+    }
+
+    const parsed = ShareConversationBodySchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: "invalid_request", message: "Invalid share options." }, 400);
+    }
+
+    const opts = parsed.data;
+    const result = await shareConversation(id, authResult.user?.id, {
+      expiresIn: opts?.expiresIn,
+      shareMode: opts?.shareMode,
+    });
     if (!result.ok) {
       const fail = crudFailResponse(result.reason);
       return c.json(fail.body, fail.status);
@@ -314,6 +343,8 @@ conversations.post("/:id/share", async (c) => {
     return c.json({
       token: result.data.token,
       url: `${baseUrl}/shared/${result.data.token}`,
+      expiresAt: result.data.expiresAt,
+      shareMode: result.data.shareMode,
     });
   });
 });
@@ -397,6 +428,7 @@ export const ShareStatusResponseSchema = z.discriminatedUnion("shared", [
     token: z.string(),
     url: z.string(),
     expiresAt: z.string().nullable(),
+    shareMode: z.enum(SHARE_MODES),
   }),
 ]);
 
@@ -410,6 +442,7 @@ export const SharedConversationResponseSchema = z.object({
   title: z.string().nullable(),
   surface: z.enum(["web", "api", "mcp", "slack"]),
   createdAt: z.string().datetime(),
+  shareMode: z.enum(SHARE_MODES),
   messages: z.array(SharedConversationMessageSchema),
 });
 
@@ -471,6 +504,24 @@ function checkPublicRateLimit(ip: string): boolean {
 
 const publicConversations = new Hono();
 
+/** Map a SharedConversationFailReason to a JSON response. */
+function sharedConversationFailResponse(reason: SharedConversationFailReason) {
+  switch (reason) {
+    case "expired":
+      return { body: { error: "expired", message: "This share link has expired." }, status: 410 as const };
+    case "no_db":
+      return { body: { error: "not_available", message: "Sharing is not available." }, status: 404 as const };
+    case "not_found":
+      return { body: { error: "not_found", message: "Conversation not found." }, status: 404 as const };
+    case "error":
+      return { body: { error: "internal_error", message: "A server error occurred. Please try again." }, status: 500 as const };
+    default: {
+      const _exhaustive: never = reason;
+      return { body: { error: "internal_error", message: `Unexpected failure: ${_exhaustive}` }, status: 500 as const };
+    }
+  }
+}
+
 publicConversations.get("/:token", async (c) => {
   const requestId = crypto.randomUUID();
 
@@ -495,19 +546,37 @@ publicConversations.get("/:token", async (c) => {
 
   const result = await getSharedConversation(token);
   if (!result.ok) {
+    const fail = sharedConversationFailResponse(result.reason);
     if (result.reason === "error") {
-      log.error({ requestId }, "Public conversation fetch failed due to DB error");
-      return c.json({ error: "internal_error", message: "A server error occurred. Please try again." }, 500);
+      log.error({ requestId, token }, "Public conversation fetch failed due to DB error");
     }
-    return c.json({ error: "not_found", message: "Conversation not found." }, 404);
+    return c.json(fail.body, fail.status);
+  }
+
+  // Org-scoped shares require the requester to be authenticated
+  if (result.data.shareMode === "org") {
+    let authResult: AuthResult;
+    try {
+      authResult = await authenticateRequest(c.req.raw);
+    } catch (err) {
+      log.error(
+        { err: err instanceof Error ? err.message : String(err), requestId, token },
+        "Auth check failed for org-scoped share",
+      );
+      return c.json({ error: "internal_error", message: "Authentication check failed. Please try again." }, 500);
+    }
+    if (!authResult.authenticated) {
+      return c.json({ error: "auth_required", message: "This shared conversation requires authentication." }, 403);
+    }
   }
 
   // Strip internal IDs — only expose conversation content
-  const { title, surface, createdAt, messages } = result.data;
+  const { title, surface, createdAt, messages, shareMode } = result.data;
   return c.json({
     title,
     surface,
     createdAt,
+    shareMode,
     messages: messages.map((m) => ({
       role: m.role,
       content: m.content,

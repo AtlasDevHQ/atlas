@@ -1,9 +1,18 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Share2, Copy, Check, Link2Off, AlertCircle, Code, RefreshCw } from "lucide-react";
+import { Share2, Copy, Check, Link2Off, AlertCircle, Code, RefreshCw, Globe, Lock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Dialog,
   DialogContent,
@@ -12,11 +21,20 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import type { ShareStatus } from "../../lib/types";
+import type { ShareStatus, ShareMode, ShareExpiryKey } from "../../lib/types";
+import { SHARE_EXPIRY_OPTIONS } from "../../lib/types";
+
+const EXPIRY_LABELS: Record<ShareExpiryKey, string> = {
+  "1h": "1 hour",
+  "24h": "24 hours",
+  "7d": "7 days",
+  "30d": "30 days",
+  never: "Never",
+};
 
 interface ShareDialogProps {
   conversationId: string;
-  onShare: (id: string) => Promise<{ token: string; url: string } | null>;
+  onShare: (id: string, opts?: { expiresIn?: ShareExpiryKey; shareMode?: ShareMode }) => Promise<{ token: string; url: string } | null>;
   onUnshare: (id: string) => Promise<boolean>;
   onGetShareStatus: (id: string) => Promise<ShareStatus | null>;
 }
@@ -30,6 +48,10 @@ export function ShareDialog({ conversationId, onShare, onUnshare, onGetShareStat
   const [copiedEmbed, setCopiedEmbed] = useState(false);
   const [shared, setShared] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [expiresIn, setExpiresIn] = useState<ShareExpiryKey>("7d");
+  const [shareMode, setShareMode] = useState<ShareMode>("public");
+  const [currentShareMode, setCurrentShareMode] = useState<ShareMode>("public");
+  const [expiresAt, setExpiresAt] = useState<string | null>(null);
 
   // Reset state when conversation changes
   useEffect(() => {
@@ -41,6 +63,10 @@ export function ShareDialog({ conversationId, onShare, onUnshare, onGetShareStat
     setCopiedEmbed(false);
     setError(null);
     setOpen(false);
+    setExpiresIn("7d");
+    setShareMode("public");
+    setCurrentShareMode("public");
+    setExpiresAt(null);
   }, [conversationId]);
 
   // Fetch share status when dialog opens
@@ -57,9 +83,12 @@ export function ShareDialog({ conversationId, onShare, onUnshare, onGetShareStat
         if (status?.shared) {
           setShared(true);
           setShareUrl(status.url);
+          setCurrentShareMode(status.shareMode);
+          setExpiresAt(status.expiresAt);
         } else {
           setShared(false);
           setShareUrl(null);
+          setExpiresAt(null);
         }
       } catch (err) {
         if (!cancelled) {
@@ -75,14 +104,22 @@ export function ShareDialog({ conversationId, onShare, onUnshare, onGetShareStat
     return () => { cancelled = true; };
   }, [open, conversationId, onGetShareStatus]);
 
+  function computeDisplayExpiry(key: ShareExpiryKey): string | null {
+    const seconds = SHARE_EXPIRY_OPTIONS[key];
+    if (seconds === null) return null;
+    return new Date(Date.now() + seconds * 1000).toISOString();
+  }
+
   async function handleShare() {
     setLoading(true);
     setError(null);
     try {
-      const result = await onShare(conversationId);
+      const result = await onShare(conversationId, { expiresIn, shareMode });
       if (result) {
         setShareUrl(result.url);
         setShared(true);
+        setCurrentShareMode(shareMode);
+        setExpiresAt(computeDisplayExpiry(expiresIn));
       } else {
         setError("Failed to create share link. Please try again.");
       }
@@ -102,6 +139,7 @@ export function ShareDialog({ conversationId, onShare, onUnshare, onGetShareStat
       if (ok) {
         setShareUrl(null);
         setShared(false);
+        setExpiresAt(null);
       } else {
         setError("Failed to remove share link. Please try again.");
       }
@@ -117,10 +155,12 @@ export function ShareDialog({ conversationId, onShare, onUnshare, onGetShareStat
     setLoading(true);
     setError(null);
     try {
-      const result = await onShare(conversationId);
+      const result = await onShare(conversationId, { expiresIn, shareMode });
       if (result) {
         setShareUrl(result.url);
         setShared(true);
+        setCurrentShareMode(shareMode);
+        setExpiresAt(computeDisplayExpiry(expiresIn));
       } else {
         setError("Failed to regenerate share link. Please try again.");
       }
@@ -186,6 +226,18 @@ export function ShareDialog({ conversationId, onShare, onUnshare, onGetShareStat
     }
   }
 
+  function formatExpiresAt(dateStr: string): string {
+    const date = new Date(dateStr);
+    const now = new Date();
+    const diffMs = date.getTime() - now.getTime();
+    if (diffMs <= 0) return "Expired";
+    const hours = Math.floor(diffMs / (1000 * 60 * 60));
+    if (hours < 1) return `${Math.ceil(diffMs / (1000 * 60))}m remaining`;
+    if (hours < 24) return `${hours}h remaining`;
+    const days = Math.floor(hours / 24);
+    return `${days}d remaining`;
+  }
+
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
@@ -208,8 +260,10 @@ export function ShareDialog({ conversationId, onShare, onUnshare, onGetShareStat
           <DialogTitle>Share conversation</DialogTitle>
           <DialogDescription>
             {shared
-              ? "Anyone with the link can view this conversation."
-              : "Create a public link to share this conversation."}
+              ? currentShareMode === "org"
+                ? "Only authenticated users in your organization can view this conversation."
+                : "Anyone with the link can view this conversation."
+              : "Create a link to share this conversation."}
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-3">
@@ -235,6 +289,22 @@ export function ShareDialog({ conversationId, onShare, onUnshare, onGetShareStat
                   {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
                   <span className="ml-1">{copied ? "Copied" : "Copy"}</span>
                 </Button>
+              </div>
+              <div className="flex items-center gap-3 text-sm text-zinc-500 dark:text-zinc-400">
+                <span className="flex items-center gap-1">
+                  {currentShareMode === "org" ? <Lock className="h-3.5 w-3.5" /> : <Globe className="h-3.5 w-3.5" />}
+                  {currentShareMode === "org" ? "Organization only" : "Public"}
+                </span>
+                {expiresAt && (
+                  <span className="text-zinc-400 dark:text-zinc-500">
+                    {formatExpiresAt(expiresAt)}
+                  </span>
+                )}
+                {!expiresAt && (
+                  <span className="text-zinc-400 dark:text-zinc-500">
+                    No expiry
+                  </span>
+                )}
               </div>
               <Button
                 variant="outline"
@@ -268,10 +338,49 @@ export function ShareDialog({ conversationId, onShare, onUnshare, onGetShareStat
               </div>
             </>
           ) : (
-            <Button onClick={handleShare} disabled={loading}>
-              <Share2 className="mr-2 h-4 w-4" />
-              {loading ? "Creating link..." : "Create share link"}
-            </Button>
+            <>
+              <div className="flex flex-col gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="flex-1">
+                    <Label htmlFor="share-expiry" className="text-sm font-medium">
+                      Link expires
+                    </Label>
+                    <Select value={expiresIn} onValueChange={(v) => setExpiresIn(v as ShareExpiryKey)}>
+                      <SelectTrigger id="share-expiry" className="mt-1">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {(Object.keys(EXPIRY_LABELS) as ShareExpiryKey[]).map((key) => (
+                          <SelectItem key={key} value={key}>{EXPIRY_LABELS[key]}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    {shareMode === "org" ? <Lock className="h-4 w-4 text-zinc-500" /> : <Globe className="h-4 w-4 text-zinc-500" />}
+                    <Label htmlFor="share-mode" className="text-sm font-medium">
+                      {shareMode === "org" ? "Organization only" : "Public link"}
+                    </Label>
+                  </div>
+                  <Switch
+                    id="share-mode"
+                    checked={shareMode === "org"}
+                    onCheckedChange={(checked) => setShareMode(checked ? "org" : "public")}
+                  />
+                </div>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                  {shareMode === "org"
+                    ? "Only authenticated users can view this shared conversation."
+                    : "Anyone with the link can view this shared conversation."}
+                </p>
+              </div>
+              <Button onClick={handleShare} disabled={loading}>
+                <Share2 className="mr-2 h-4 w-4" />
+                {loading ? "Creating link..." : "Create share link"}
+              </Button>
+            </>
           )}
         </div>
       </DialogContent>

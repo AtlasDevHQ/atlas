@@ -3,21 +3,30 @@ title: Demo Datasets
 description: Pre-built demo datasets for evaluation and development.
 ---
 
-Atlas ships with three demo datasets for evaluation and development.
+Atlas ships with three demo datasets for evaluation and development. Each targets a different use case — pick the one that matches your goal.
 
 ## Quick Comparison
 
 | | Simple | Cybersec | E-commerce |
 |---|---|---|---|
+| Company | — | Sentinel Security | NovaMart |
+| Domain | CRM (companies, people, accounts) | B2B cybersecurity SaaS | DTC home goods brand + marketplace |
 | Tables | 3 | 62 | 52 |
 | Rows | ~330 | ~500K | ~480K |
 | Database | Postgres only | Postgres only | Postgres only |
 | Tech debt patterns | None | 4 patterns | 4 patterns |
+| Schema evolution | No | No | 5 instances (old + new columns coexist) |
 | Best for | Quick start, tutorials | Realistic evaluation, profiler testing | Universally understood domain, production-scale evaluation |
+| Load time | ~5 seconds | ~30 seconds | ~30 seconds |
+| CLI flag | `--demo` or `--demo simple` | `--demo cybersec` | `--demo ecommerce` |
 
-**Use Simple** when you want a fast setup.
-**Use Cybersec** when you want to see how Atlas handles a real-world B2B SaaS database with messy data.
-**Use E-commerce** when you want a universally understood domain (orders, products, customers) at production scale.
+### Which dataset should I choose?
+
+**Use Simple** when you want a fast setup — three clean tables, no ambiguity, perfect for tutorials and first-run evaluation.
+
+**Use Cybersec** when you want to see how Atlas handles a real-world B2B SaaS database with messy data. Includes missing FK constraints, abandoned tables, inconsistent enums, and denormalized reporting tables. Good for testing the profiler and evaluating agent reasoning on complex schemas.
+
+**Use E-commerce** when you want a universally understood domain (orders, products, customers) at production scale. Includes the same four tech debt patterns as cybersec, plus five schema evolution artifacts where old and new columns coexist. Good for demos to non-technical stakeholders who already understand retail data.
 
 ---
 

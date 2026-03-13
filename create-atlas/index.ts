@@ -653,6 +653,14 @@ async function main() {
     });
 
     if (loadDemo) {
+      p.note(
+        [
+          `${pc.bold("Simple")}       3 tables, ~330 rows     Quick evaluation, tutorials`,
+          `${pc.bold("Cybersec")}     62 tables, ~500K rows   B2B SaaS with tech debt patterns`,
+          `${pc.bold("E-commerce")}   52 tables, ~480K rows   DTC brand + marketplace`,
+        ].join("\n"),
+        "Available demo datasets"
+      );
       demoDataset = await selectOrDefault({
         label: "Demo dataset",
         message: "Which demo dataset?",

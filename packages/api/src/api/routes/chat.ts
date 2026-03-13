@@ -222,8 +222,9 @@ chat.post("/", async (c) => {
             toolRegistry = result.registry;
             warnings.push(...result.warnings);
           } catch (err) {
+            const errObj = err instanceof Error ? err : new Error(String(err));
             log.error(
-              { err: err instanceof Error ? err : new Error(String(err)) },
+              { err: errObj },
               "Failed to build tool registry — falling back to default tools",
             );
             warnings.push(
@@ -233,13 +234,26 @@ chat.post("/", async (c) => {
         }
 
         // Merge plugin tools (if any) on top of the current registry
-        const { getPluginTools } = await import("@atlas/api/lib/plugins/tools");
-        const pluginTools = getPluginTools();
-        if (pluginTools) {
-          const { ToolRegistry, defaultRegistry } = await import("@atlas/api/lib/tools/registry");
-          const base = toolRegistry ?? defaultRegistry;
-          toolRegistry = ToolRegistry.merge(base, pluginTools);
-          toolRegistry.freeze();
+        const prePluginRegistry = toolRegistry;
+        try {
+          const { getPluginTools } = await import("@atlas/api/lib/plugins/tools");
+          const pluginTools = getPluginTools();
+          if (pluginTools) {
+            const { ToolRegistry, defaultRegistry } = await import("@atlas/api/lib/tools/registry");
+            const base = toolRegistry ?? defaultRegistry;
+            toolRegistry = ToolRegistry.merge(base, pluginTools);
+            toolRegistry.freeze();
+          }
+        } catch (err) {
+          toolRegistry = prePluginRegistry;
+          const errObj = err instanceof Error ? err : new Error(String(err));
+          log.error(
+            { err: errObj },
+            "Failed to merge plugin tools — continuing without plugin tools",
+          );
+          warnings.push(
+            `Plugin tools failed to load: ${errObj.message}. Chat will continue without plugin tools. Inform the user that plugin-provided tools are unavailable for this session.`,
+          );
         }
 
         const result = await runAgent({

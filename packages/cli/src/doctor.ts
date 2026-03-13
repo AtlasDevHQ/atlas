@@ -24,6 +24,9 @@ export interface CheckResult {
   fix?: string;
 }
 
+/** Check names that are non-critical — failures don't cause exit 1 in doctor mode. */
+export const NON_CRITICAL_CHECKS = new Set(["Sandbox", "Internal DB"]);
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -620,11 +623,7 @@ export async function runDoctor(): Promise<number> {
 
   // Exit 1 only for critical failures (env vars, DB connectivity, provider)
   const hasCriticalFailure = results.some(
-    (r) =>
-      r.status === "fail" &&
-      // Sandbox and Internal DB are optional
-      r.name !== "Sandbox" &&
-      r.name !== "Internal DB",
+    (r) => r.status === "fail" && !NON_CRITICAL_CHECKS.has(r.name),
   );
 
   return hasCriticalFailure ? 1 : 0;

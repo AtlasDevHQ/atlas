@@ -18,6 +18,7 @@ import pc from "picocolors";
 // Re-use check types from doctor
 import type { CheckStatus, CheckResult } from "./doctor";
 import {
+  NON_CRITICAL_CHECKS,
   checkDatasourceUrl,
   checkDatabaseConnectivity,
   checkProvider,
@@ -38,7 +39,7 @@ export interface ValidateResult {
 
 export interface ValidateOptions {
   offline?: boolean;
-  /** "strict" (default) exits 1 on any failure. "doctor" excludes Sandbox/Internal DB from exit 1. */
+  /** "strict" (default) exits 1 on any failure. "doctor" excludes NON_CRITICAL_CHECKS from exit 1. */
   mode?: "strict" | "doctor";
 }
 
@@ -816,6 +817,19 @@ function safeRunMulti<T>(
   }
 }
 
+/** Exit codes: 0 = all pass, 1 = any fail, 2 = warnings only.
+ *  In doctor mode, NON_CRITICAL_CHECKS failures do not contribute to exit 1. */
+export function computeExitCode(allResults: ValidateResult[], opts?: ValidateOptions): number {
+  const isDoctorMode = opts?.mode === "doctor";
+  const hasFail = allResults.some(
+    (r) => r.status === "fail" && !(isDoctorMode && NON_CRITICAL_CHECKS.has(r.label)),
+  );
+  const hasWarn = allResults.some((r) => r.status === "warn");
+  if (hasFail) return 1;
+  if (hasWarn) return 2;
+  return 0;
+}
+
 export async function runValidate(opts?: ValidateOptions): Promise<number> {
   const sections: ValidateSection[] = [];
 
@@ -879,19 +893,6 @@ export async function runValidate(opts?: ValidateOptions): Promise<number> {
 
   renderValidateSections(sections);
 
-  // Exit codes: 0 = all pass, 1 = any fail, 2 = warnings only
   const allResults = sections.flatMap((s) => s.results);
-
-  // In doctor mode, Sandbox and Internal DB failures are non-critical (exit 0)
-  const nonCriticalLabels = new Set(["Sandbox", "Internal DB"]);
-  const isDoctorMode = opts?.mode === "doctor";
-
-  const hasFail = allResults.some(
-    (r) => r.status === "fail" && !(isDoctorMode && nonCriticalLabels.has(r.label)),
-  );
-  const hasWarn = allResults.some((r) => r.status === "warn");
-
-  if (hasFail) return 1;
-  if (hasWarn) return 2;
-  return 0;
+  return computeExitCode(allResults, opts);
 }

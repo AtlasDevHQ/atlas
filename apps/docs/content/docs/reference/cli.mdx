@@ -152,22 +152,34 @@ bun run atlas -- query "warehouse inventory" --connection warehouse
 
 ## doctor
 
-Alias for [`validate`](#validate) with relaxed exit codes. Runs the same config, semantic layer, and connectivity checks, but Sandbox and Internal DB failures are treated as warnings instead of errors — the command still exits 0 for these non-critical failures.
+Alias for [`validate`](#validate) with relaxed exit codes. Runs the same config, semantic layer, and connectivity checks, but Sandbox and Internal DB failures do not cause exit 1 — they still appear in the output but are excluded from the exit code calculation.
 
 ```bash
 bun run atlas -- doctor
 ```
 
-No flags. Use `doctor` in CI pipelines where Sandbox or Internal DB are optional. Use `validate` when you want strict exit codes for all failures.
+No flags. Use `doctor` in environments where Sandbox or Internal DB are intentionally absent but other services (datasource, LLM provider) are available. Use `validate --offline` for fast CI checks that skip all connectivity. Use `validate` when you want strict exit codes for all failures.
+
+**Exit codes:** 0 = all pass (Sandbox/Internal DB failures excluded), 1 = any non-excluded failure, 2 = warnings only.
 
 **Example output:**
 
 ```
-✓ Environment: ATLAS_PROVIDER=anthropic, ANTHROPIC_API_KEY set
-✓ Database: Connected to PostgreSQL 16.1
-✓ Semantic layer: 5 entities, 2 metrics, 1 glossary
-✓ Sandbox: nsjail available
-✓ Auth: managed (Better Auth)
+  Config
+    ✓ atlas.config.ts  Valid (defineConfig)
+
+  Semantic Layer
+    ✓ semantic/entities/     5 entities parsed
+    ✓ semantic/glossary.yml  Valid (12 terms)
+    ✓ semantic/catalog.yml   Valid
+    ✓ semantic/metrics/      2 metrics parsed
+
+  Connectivity
+    ✓ ATLAS_DATASOURCE_URL  Set (postgresql://…@localhost:5432/atlas)
+    ✓ Database connectivity  Connected (PostgreSQL 16.1)
+    ✓ LLM provider           anthropic (ANTHROPIC_API_KEY set)
+    ✓ Sandbox                nsjail available
+    ✓ Internal DB            Connected
 ```
 
 ## validate

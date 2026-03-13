@@ -47,6 +47,7 @@ import * as p from "@clack/prompts";
 import pc from "picocolors";
 import { type DBType } from "@atlas/api/lib/db/connection";
 import { checkEnvFile } from "../src/env-check";
+import { type ProfileProgressCallbacks, createProgressTracker, formatDuration } from "../src/progress";
 
 /** CLI-local DB type detection — supports all URL schemes (core + plugin databases). */
 function detectDBType(url: string): DBType {
@@ -294,7 +295,8 @@ export async function profilePostgres(
   connectionString: string,
   filterTables?: string[],
   prefetchedObjects?: DatabaseObject[],
-  schema: string = "public"
+  schema: string = "public",
+  progress?: ProfileProgressCallbacks
 ): Promise<TableProfile[]> {
   const pool = new Pool({ connectionString, max: 3 });
   const profiles: TableProfile[] = [];
@@ -338,11 +340,17 @@ export async function profilePostgres(
     ? allObjects.filter((o) => filterTables.includes(o.name))
     : allObjects;
 
+  progress?.onStart(objectsToProfile.length);
+
   for (const [i, obj] of objectsToProfile.entries()) {
     const table_name = obj.name;
     const objectType = obj.type;
     const objectLabel = objectType === "view" ? " [view]" : objectType === "materialized_view" ? " [matview]" : "";
-    console.log(`  [${i + 1}/${objectsToProfile.length}] Profiling ${table_name}${objectLabel}...`);
+    if (progress) {
+      progress.onTableStart(table_name + objectLabel, i, objectsToProfile.length);
+    } else {
+      console.log(`  [${i + 1}/${objectsToProfile.length}] Profiling ${table_name}${objectLabel}...`);
+    }
 
     try {
       // Check matview populated status BEFORE COUNT(*) — unpopulated matviews throw on scan
@@ -498,9 +506,14 @@ export async function profilePostgres(
         table_flags: { possibly_abandoned: false, possibly_denormalized: false },
         ...(matview_populated !== undefined ? { matview_populated } : {}),
       });
+      progress?.onTableDone(table_name, i, objectsToProfile.length);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error(`  Warning: Failed to profile ${table_name}: ${msg}`);
+      if (progress) {
+        progress.onTableError(table_name, msg, i, objectsToProfile.length);
+      } else {
+        console.error(`  Warning: Failed to profile ${table_name}: ${msg}`);
+      }
       errors.push({ table: table_name, error: msg });
       continue;
     }
@@ -565,7 +578,7 @@ export async function profilePostgres(
 
   await pool.end();
 
-  if (errors.length > 0) {
+  if (errors.length > 0 && !progress) {
     console.log(`\nWarning: ${errors.length} table(s)/view(s) failed to profile:`);
     for (const e of errors) {
       console.log(`  - ${e.table}: ${e.error}`);
@@ -616,7 +629,8 @@ async function queryMySQLForeignKeys(
 export async function profileMySQL(
   connectionString: string,
   filterTables?: string[],
-  prefetchedObjects?: DatabaseObject[]
+  prefetchedObjects?: DatabaseObject[],
+  progress?: ProfileProgressCallbacks
 ): Promise<TableProfile[]> {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const mysql = require("mysql2/promise");
@@ -649,10 +663,17 @@ export async function profileMySQL(
     ? allObjects.filter((o) => filterTables.includes(o.name))
     : allObjects;
 
+  progress?.onStart(objectsToProfile.length);
+
   for (const [i, obj] of objectsToProfile.entries()) {
     const table_name = obj.name;
     const objectType = obj.type;
-    console.log(`  [${i + 1}/${objectsToProfile.length}] Profiling ${table_name}${objectType === "view" ? " [view]" : ""}...`);
+    const objectLabel = objectType === "view" ? " [view]" : "";
+    if (progress) {
+      progress.onTableStart(table_name + objectLabel, i, objectsToProfile.length);
+    } else {
+      console.log(`  [${i + 1}/${objectsToProfile.length}] Profiling ${table_name}${objectLabel}...`);
+    }
 
     try {
       const [countRows] = await pool.execute(
@@ -764,13 +785,18 @@ export async function profileMySQL(
         profiler_notes: [],
         table_flags: { possibly_abandoned: false, possibly_denormalized: false },
       });
+      progress?.onTableDone(table_name, i, objectsToProfile.length);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       // Fail fast on connection-level errors that will affect all remaining tables
       if (/PROTOCOL_CONNECTION_LOST|ER_SERVER_SHUTDOWN|ER_NET_READ_ERROR|ER_NET_WRITE_ERROR|ECONNRESET|ECONNREFUSED|EHOSTUNREACH|ENOTFOUND|EPIPE|ETIMEDOUT/i.test(msg)) {
         throw new Error(`Fatal database error while profiling ${table_name}: ${msg}`, { cause: err });
       }
-      console.error(`  Warning: Failed to profile ${table_name}: ${msg}`);
+      if (progress) {
+        progress.onTableError(table_name, msg, i, objectsToProfile.length);
+      } else {
+        console.error(`  Warning: Failed to profile ${table_name}: ${msg}`);
+      }
       errors.push({ table: table_name, error: msg });
       continue;
     }
@@ -782,7 +808,7 @@ export async function profileMySQL(
     });
   }
 
-  if (errors.length > 0) {
+  if (errors.length > 0 && !progress) {
     console.log(`\nWarning: ${errors.length} table(s)/view(s) failed to profile:`);
     for (const e of errors) {
       console.log(`  - ${e.table}: ${e.error}`);
@@ -866,7 +892,8 @@ function mapClickHouseType(chType: string): string {
 export async function profileClickHouse(
   connectionString: string,
   filterTables?: string[],
-  prefetchedObjects?: DatabaseObject[]
+  prefetchedObjects?: DatabaseObject[],
+  progress?: ProfileProgressCallbacks
 ): Promise<TableProfile[]> {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { createClient } = require("@clickhouse/client");
@@ -897,11 +924,18 @@ export async function profileClickHouse(
       ? allObjects.filter((o) => filterTables.includes(o.name))
       : allObjects;
 
+    progress?.onStart(objectsToProfile.length);
+
     for (const [i, obj] of objectsToProfile.entries()) {
       const table_name = obj.name;
       const objectType = obj.type;
       const safeTable = table_name.replace(/'/g, "''");
-      console.log(`  [${i + 1}/${objectsToProfile.length}] Profiling ${table_name}${objectType === "view" ? " [view]" : ""}...`);
+      const objectLabel = objectType === "view" ? " [view]" : "";
+      if (progress) {
+        progress.onTableStart(table_name + objectLabel, i, objectsToProfile.length);
+      } else {
+        console.log(`  [${i + 1}/${objectsToProfile.length}] Profiling ${table_name}${objectLabel}...`);
+      }
 
       try {
         const countRows = await clickhouseQuery<{ c: string }>(
@@ -1005,12 +1039,17 @@ export async function profileClickHouse(
           profiler_notes: [],
           table_flags: { possibly_abandoned: false, possibly_denormalized: false },
         });
+        progress?.onTableDone(table_name, i, objectsToProfile.length);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         if (/ECONNRESET|ECONNREFUSED|EHOSTUNREACH|ENOTFOUND|EPIPE|ETIMEDOUT/i.test(msg)) {
           throw new Error(`Fatal database error while profiling ${table_name}: ${msg}`, { cause: err });
         }
-        console.error(`  Warning: Failed to profile ${table_name}: ${msg}`);
+        if (progress) {
+          progress.onTableError(table_name, msg, i, objectsToProfile.length);
+        } else {
+          console.error(`  Warning: Failed to profile ${table_name}: ${msg}`);
+        }
         errors.push({ table: table_name, error: msg });
         continue;
       }
@@ -1021,7 +1060,7 @@ export async function profileClickHouse(
     });
   }
 
-  if (errors.length > 0) {
+  if (errors.length > 0 && !progress) {
     console.log(`\nWarning: ${errors.length} table(s)/view(s) failed to profile:`);
     for (const e of errors) {
       console.log(`  - ${e.table}: ${e.error}`);
@@ -1172,6 +1211,7 @@ export async function profileSnowflake(
   connectionString: string,
   filterTables?: string[],
   prefetchedObjects?: DatabaseObject[],
+  progress?: ProfileProgressCallbacks
 ): Promise<TableProfile[]> {
   const { pool, opts } = await createSnowflakePool(connectionString, 3);
 
@@ -1201,10 +1241,17 @@ export async function profileSnowflake(
       ? allObjects.filter((o) => filterTables.includes(o.name))
       : allObjects;
 
+    progress?.onStart(objectsToProfile.length);
+
     for (const [i, obj] of objectsToProfile.entries()) {
       const table_name = obj.name;
       const objectType = obj.type;
-      console.log(`  [${i + 1}/${objectsToProfile.length}] Profiling ${table_name}${objectType === "view" ? " [view]" : ""}...`);
+      const objectLabel = objectType === "view" ? " [view]" : "";
+      if (progress) {
+        progress.onTableStart(table_name + objectLabel, i, objectsToProfile.length);
+      } else {
+        console.log(`  [${i + 1}/${objectsToProfile.length}] Profiling ${table_name}${objectLabel}...`);
+      }
 
       try {
         let primaryKeyColumns: string[] = [];
@@ -1336,12 +1383,17 @@ export async function profileSnowflake(
           profiler_notes: [],
           table_flags: { possibly_abandoned: false, possibly_denormalized: false },
         });
+        progress?.onTableDone(table_name, i, objectsToProfile.length);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         if (/ECONNRESET|ECONNREFUSED|EHOSTUNREACH|ENOTFOUND|EPIPE|ETIMEDOUT|390100|390114|250001/i.test(msg)) {
           throw new Error(`Fatal database error while profiling ${table_name}: ${msg}`, { cause: err });
         }
-        console.error(`  Warning: Failed to profile ${table_name}: ${msg}`);
+        if (progress) {
+          progress.onTableError(table_name, msg, i, objectsToProfile.length);
+        } else {
+          console.error(`  Warning: Failed to profile ${table_name}: ${msg}`);
+        }
         errors.push({ table: table_name, error: msg });
         continue;
       }
@@ -1355,7 +1407,7 @@ export async function profileSnowflake(
     }
   }
 
-  if (errors.length > 0) {
+  if (errors.length > 0 && !progress) {
     console.log(`\nWarning: ${errors.length} table(s)/view(s) failed to profile:`);
     for (const e of errors) {
       console.log(`  - ${e.table}: ${e.error}`);
@@ -1422,6 +1474,7 @@ export async function profileSalesforce(
   connectionString: string,
   filterTables?: string[],
   prefetchedObjects?: DatabaseObject[],
+  progress?: ProfileProgressCallbacks
 ): Promise<TableProfile[]> {
   const { parseSalesforceURL, createSalesforceConnection } = await import("../../../plugins/salesforce/src/connection");
   const config = parseSalesforceURL(connectionString);
@@ -1447,9 +1500,15 @@ export async function profileSalesforce(
       ? allObjects.filter((o) => filterTables.includes(o.name))
       : allObjects;
 
+    progress?.onStart(objectsToProfile.length);
+
     for (const [i, obj] of objectsToProfile.entries()) {
       const objectName = obj.name;
-      console.log(`  [${i + 1}/${objectsToProfile.length}] Profiling ${objectName}...`);
+      if (progress) {
+        progress.onTableStart(objectName, i, objectsToProfile.length);
+      } else {
+        console.log(`  [${i + 1}/${objectsToProfile.length}] Profiling ${objectName}...`);
+      }
 
       try {
         const desc = await source.describe(objectName);
@@ -1521,12 +1580,17 @@ export async function profileSalesforce(
           profiler_notes: [],
           table_flags: { possibly_abandoned: false, possibly_denormalized: false },
         });
+        progress?.onTableDone(objectName, i, objectsToProfile.length);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         if (/ECONNRESET|ECONNREFUSED|EHOSTUNREACH|ENOTFOUND|EPIPE|ETIMEDOUT/i.test(msg)) {
           throw new Error(`Fatal Salesforce error while profiling ${objectName}: ${msg}`, { cause: err });
         }
-        console.error(`  Warning: Failed to profile ${objectName}: ${msg}`);
+        if (progress) {
+          progress.onTableError(objectName, msg, i, objectsToProfile.length);
+        } else {
+          console.error(`  Warning: Failed to profile ${objectName}: ${msg}`);
+        }
         errors.push({ table: objectName, error: msg });
         continue;
       }
@@ -1535,7 +1599,7 @@ export async function profileSalesforce(
     await source.close();
   }
 
-  if (errors.length > 0) {
+  if (errors.length > 0 && !progress) {
     console.log(`\nWarning: ${errors.length} object(s) failed to profile:`);
     for (const e of errors) {
       console.log(`  - ${e.table}: ${e.error}`);
@@ -2549,6 +2613,7 @@ export async function profileDuckDB(
   dbPath: string,
   filterTables?: string[],
   prefetchedObjects?: DatabaseObject[],
+  progress?: ProfileProgressCallbacks
 ): Promise<TableProfile[]> {
   const DuckDBInstance = await loadDuckDB();
   const instance = await DuckDBInstance.create(dbPath, { access_mode: "READ_ONLY" });
@@ -2567,10 +2632,17 @@ export async function profileDuckDB(
       ? allObjects.filter((o) => filterTables.includes(o.name))
       : allObjects;
 
+    progress?.onStart(objectsToProfile.length);
+
     for (const [i, obj] of objectsToProfile.entries()) {
       const tableName = obj.name;
       const objectType = obj.type;
-      console.log(`  [${i + 1}/${objectsToProfile.length}] Profiling ${tableName}${objectType === "view" ? " [view]" : ""}...`);
+      const objectLabel = objectType === "view" ? " [view]" : "";
+      if (progress) {
+        progress.onTableStart(tableName + objectLabel, i, objectsToProfile.length);
+      } else {
+        console.log(`  [${i + 1}/${objectsToProfile.length}] Profiling ${tableName}${objectLabel}...`);
+      }
 
       try {
         const countRows = await duckdbQuery<{ c: number | bigint }>(conn, `SELECT COUNT(*) as c FROM "${tableName}"`);
@@ -2658,8 +2730,14 @@ export async function profileDuckDB(
             possibly_denormalized: false,
           },
         });
+        progress?.onTableDone(tableName, i, objectsToProfile.length);
       } catch (err) {
-        console.warn(`  Warning: Failed to profile ${tableName}: ${err instanceof Error ? err.message : String(err)}`);
+        const msg = err instanceof Error ? err.message : String(err);
+        if (progress) {
+          progress.onTableError(tableName, msg, i, objectsToProfile.length);
+        } else {
+          console.warn(`  Warning: Failed to profile ${tableName}: ${msg}`);
+        }
       }
     }
   } finally {
@@ -4305,33 +4383,39 @@ async function profileDatasource(opts: ProfileDatasourceOpts): Promise<void> {
 
   console.log(`\nAtlas Init — profiling ${dbType} database...\n`);
 
+  const progress = createProgressTracker();
+  const profilingStart = Date.now();
+
   let profiles: TableProfile[];
   switch (dbType) {
     case "mysql":
-      profiles = await profileMySQL(connStr, selectedTables, prefetchedObjects);
+      profiles = await profileMySQL(connStr, selectedTables, prefetchedObjects, progress);
       break;
     case "postgres":
-      profiles = await profilePostgres(connStr, selectedTables, prefetchedObjects, schemaArg);
+      profiles = await profilePostgres(connStr, selectedTables, prefetchedObjects, schemaArg, progress);
       break;
     case "clickhouse":
-      profiles = await profileClickHouse(connStr, selectedTables, prefetchedObjects);
+      profiles = await profileClickHouse(connStr, selectedTables, prefetchedObjects, progress);
       break;
     case "snowflake":
-      profiles = await profileSnowflake(connStr, selectedTables, prefetchedObjects);
+      profiles = await profileSnowflake(connStr, selectedTables, prefetchedObjects, progress);
       break;
     case "duckdb": {
       const { parseDuckDBUrl } = await import("../../../plugins/duckdb/src/connection");
       const duckConfig = parseDuckDBUrl(connStr);
-      profiles = await profileDuckDB(duckConfig.path, selectedTables, prefetchedObjects);
+      profiles = await profileDuckDB(duckConfig.path, selectedTables, prefetchedObjects, progress);
       break;
     }
     case "salesforce":
-      profiles = await profileSalesforce(connStr, selectedTables, prefetchedObjects);
+      profiles = await profileSalesforce(connStr, selectedTables, prefetchedObjects, progress);
       break;
     default: {
       throw new Error(`Unknown database type: ${dbType}`);
     }
   }
+
+  const profilingElapsed = Date.now() - profilingStart;
+  progress.onComplete(profiles.length, profilingElapsed);
 
   if (profiles.length === 0) {
     throw new Error("No tables or views were successfully profiled. Check the warnings above and verify your database permissions.");
@@ -4456,7 +4540,7 @@ async function profileDatasource(opts: ProfileDatasourceOpts): Promise<void> {
 
   const relativeOutput = id === "default" ? "./semantic/" : `./semantic/${id}/`;
   console.log(`
-Done! Semantic layer for "${id}" is at ${relativeOutput}
+Done! Semantic layer written to ${relativeOutput} in ${formatDuration(profilingElapsed)}
 
 Generated:
   - ${profiles.length} entity YAMLs with dimensions, joins, measures, and query patterns${sourceId ? ` (connection: ${id})` : ""}
@@ -4810,7 +4894,11 @@ async function main() {
     // Profile the DuckDB database
     console.log("Profiling DuckDB tables...\n");
     const duckFilterTables = filterTables ?? tableNames;
-    const profiles = await profileDuckDB(dbPath, duckFilterTables);
+    const duckProgress = createProgressTracker();
+    const duckStart = Date.now();
+    const profiles = await profileDuckDB(dbPath, duckFilterTables, undefined, duckProgress);
+    duckProgress.onComplete(profiles.length, Date.now() - duckStart);
+
 
     if (profiles.length === 0) {
       console.error("\nError: No tables were successfully profiled.");

@@ -124,6 +124,17 @@ mock.module("@atlas/api/lib/conversations", () => ({
   getSharedConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
 }));
 
+const mockGetPluginTools: Mock<() => unknown> = mock(() => undefined);
+
+mock.module("@atlas/api/lib/plugins/tools", () => ({
+  getPluginTools: mockGetPluginTools,
+  setPluginTools: () => {},
+  getContextFragments: () => [],
+  setContextFragments: () => {},
+  getDialectHints: () => [],
+  setDialectHints: () => {},
+}));
+
 // Import after mocks are registered
 const { app } = await import("../index");
 
@@ -159,6 +170,8 @@ describe("POST /api/chat", () => {
     mockGetConversationChat.mockReset();
     mockGetConversationChat.mockResolvedValue({ ok: false, reason: "not_found" });
     delete process.env.ATLAS_ACTIONS_ENABLED;
+    mockGetPluginTools.mockReset();
+    mockGetPluginTools.mockReturnValue(undefined);
   });
 
   afterEach(() => {
@@ -408,5 +421,21 @@ describe("POST /api/chat", () => {
     const calls = mockRunAgent.mock.calls as unknown as unknown[][];
     const call = calls[0]![0] as { warnings?: string[] };
     expect(call.warnings).toBeUndefined();
+  });
+
+  it("passes warning to runAgent when plugin tools merge throws", async () => {
+    mockGetPluginTools.mockImplementation(() => {
+      throw new Error("plugin tool has empty name");
+    });
+
+    const response = await app.fetch(makeRequest());
+    expect(response.status).toBe(200);
+    expect(mockRunAgent).toHaveBeenCalledTimes(1);
+    const calls = mockRunAgent.mock.calls as unknown as unknown[][];
+    const call = calls[0]![0] as { warnings?: string[] };
+    expect(call.warnings).toBeDefined();
+    expect(call.warnings!.length).toBe(1);
+    expect(call.warnings![0]).toContain("Plugin tools failed to load");
+    expect(call.warnings![0]).toContain("plugin tool has empty name");
   });
 });

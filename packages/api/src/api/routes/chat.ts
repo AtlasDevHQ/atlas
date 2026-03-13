@@ -233,13 +233,25 @@ chat.post("/", async (c) => {
         }
 
         // Merge plugin tools (if any) on top of the current registry
-        const { getPluginTools } = await import("@atlas/api/lib/plugins/tools");
-        const pluginTools = getPluginTools();
-        if (pluginTools) {
-          const { ToolRegistry, defaultRegistry } = await import("@atlas/api/lib/tools/registry");
-          const base = toolRegistry ?? defaultRegistry;
-          toolRegistry = ToolRegistry.merge(base, pluginTools);
-          toolRegistry.freeze();
+        try {
+          const { getPluginTools } = await import("@atlas/api/lib/plugins/tools");
+          const pluginTools = getPluginTools();
+          if (pluginTools) {
+            const { ToolRegistry, defaultRegistry } = await import("@atlas/api/lib/tools/registry");
+            const base = toolRegistry ?? defaultRegistry;
+            toolRegistry = ToolRegistry.merge(base, pluginTools);
+            toolRegistry.freeze();
+          }
+        } catch (err) {
+          log.error(
+            { err: err instanceof Error ? err : new Error(String(err)) },
+            "Failed to merge plugin tools — continuing without plugin tools",
+          );
+          warnings.push(
+            "Plugin tools failed to load: " +
+              (err instanceof Error ? err.message : String(err)) +
+              ". Chat will continue without plugin tools.",
+          );
         }
 
         const result = await runAgent({

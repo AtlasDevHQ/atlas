@@ -519,6 +519,7 @@ export function AtlasChat() {
                                   conversationId={conversationId}
                                   onShare={convos.shareConversation}
                                   onUnshare={convos.unshareConversation}
+                                  onGetShareStatus={convos.getShareStatus}
                                 />
                               </div>
                             )}

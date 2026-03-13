@@ -333,6 +333,66 @@ export async function unshareConversation(
   }
 }
 
+/** Share status data — discriminated union keyed on `shared`. */
+export type ShareStatusData =
+  | { shared: false; token: null; expiresAt: null }
+  | { shared: true; token: string; expiresAt: string | null };
+
+/** Fetch the share status of a conversation. Auth-scoped when userId is provided. Expired tokens are treated as not shared. */
+export async function getShareStatus(
+  id: string,
+  userId?: string | null,
+): Promise<CrudDataResult<ShareStatusData>> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+  try {
+    const rows = userId
+      ? await internalQuery<Record<string, unknown>>(
+          `SELECT share_token, share_expires_at FROM conversations WHERE id = $1 AND user_id = $2`,
+          [id, userId],
+        )
+      : await internalQuery<Record<string, unknown>>(
+          `SELECT share_token, share_expires_at FROM conversations WHERE id = $1`,
+          [id],
+        );
+    if (rows.length === 0) return { ok: false, reason: "not_found" };
+    const token = (rows[0].share_token as string) ?? null;
+    const expiresAt = token && rows[0].share_expires_at ? String(rows[0].share_expires_at) : null;
+    const isExpired = expiresAt !== null && new Date(expiresAt) < new Date();
+    if (!token || isExpired) {
+      return { ok: true, data: { shared: false, token: null, expiresAt: null } };
+    }
+    return { ok: true, data: { shared: true, token, expiresAt } };
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err) }, "getShareStatus failed");
+    return { ok: false, reason: "error" };
+  }
+}
+
+/**
+ * Clean up expired share tokens by NULLing out `share_token` and
+ * `share_expires_at` for rows where the expiry has passed. Returns the
+ * number of rows cleaned, 0 if nothing to clean, or -1 on error.
+ */
+export async function cleanupExpiredShares(): Promise<number> {
+  if (!hasInternalDB()) return 0;
+  try {
+    const rows = await internalQuery<{ id: string }>(
+      `UPDATE conversations
+         SET share_token = NULL, share_expires_at = NULL
+       WHERE share_expires_at IS NOT NULL AND share_expires_at < NOW()
+       RETURNING id`,
+    );
+    const count = rows.length;
+    if (count > 0) {
+      log.info({ count }, "Cleaned up expired share tokens");
+    }
+    return count;
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err) }, "cleanupExpiredShares failed");
+    return -1;
+  }
+}
+
 /**
  * Fetch a shared conversation by token. Returns not_found if token is missing
  * or expired. No auth required.

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Share2, Copy, Check, Link2Off, AlertCircle, Code } from "lucide-react";
+import { Share2, Copy, Check, Link2Off, AlertCircle, Code, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -12,17 +12,20 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import type { ShareStatus } from "../../lib/types";
 
 interface ShareDialogProps {
   conversationId: string;
   onShare: (id: string) => Promise<{ token: string; url: string } | null>;
   onUnshare: (id: string) => Promise<boolean>;
+  onGetShareStatus: (id: string) => Promise<ShareStatus | null>;
 }
 
-export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogProps) {
+export function ShareDialog({ conversationId, onShare, onUnshare, onGetShareStatus }: ShareDialogProps) {
   const [open, setOpen] = useState(false);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [fetchingStatus, setFetchingStatus] = useState(false);
   const [copied, setCopied] = useState(false);
   const [copiedEmbed, setCopiedEmbed] = useState(false);
   const [shared, setShared] = useState(false);
@@ -33,11 +36,44 @@ export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogP
     setShareUrl(null);
     setShared(false);
     setLoading(false);
+    setFetchingStatus(false);
     setCopied(false);
     setCopiedEmbed(false);
     setError(null);
     setOpen(false);
   }, [conversationId]);
+
+  // Fetch share status when dialog opens
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+
+    async function fetchStatus() {
+      setFetchingStatus(true);
+      setError(null);
+      try {
+        const status = await onGetShareStatus(conversationId);
+        if (cancelled) return;
+        if (status?.shared) {
+          setShared(true);
+          setShareUrl(status.url);
+        } else {
+          setShared(false);
+          setShareUrl(null);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.warn("getShareStatus: fetch failed", err);
+          setError("Could not check existing share status. You can still create a new share link.");
+        }
+      } finally {
+        if (!cancelled) setFetchingStatus(false);
+      }
+    }
+    fetchStatus();
+
+    return () => { cancelled = true; };
+  }, [open, conversationId, onGetShareStatus]);
 
   async function handleShare() {
     setLoading(true);
@@ -50,7 +86,8 @@ export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogP
       } else {
         setError("Failed to create share link. Please try again.");
       }
-    } catch {
+    } catch (err) {
+      console.warn("handleShare error:", err);
       setError("Failed to create share link. Please try again.");
     } finally {
       setLoading(false);
@@ -68,8 +105,28 @@ export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogP
       } else {
         setError("Failed to remove share link. Please try again.");
       }
-    } catch {
+    } catch (err) {
+      console.warn("handleUnshare error:", err);
       setError("Failed to remove share link. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleRegenerate() {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await onShare(conversationId);
+      if (result) {
+        setShareUrl(result.url);
+        setShared(true);
+      } else {
+        setError("Failed to regenerate share link. Please try again.");
+      }
+    } catch (err) {
+      console.warn("handleRegenerate error:", err);
+      setError("Failed to regenerate share link. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -82,7 +139,7 @@ export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogP
     try {
       await navigator.clipboard.writeText(text);
       onSuccess();
-    } catch {
+    } catch (clipErr) {
       // Fallback for insecure contexts (e.g. non-HTTPS iframes)
       try {
         const input = document.createElement("input");
@@ -96,7 +153,8 @@ export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogP
         } else {
           setError("Could not copy to clipboard. Please select and copy manually.");
         }
-      } catch {
+      } catch (fallbackErr) {
+        console.warn("copyToClipboard: both methods failed", clipErr, fallbackErr);
         setError("Could not copy to clipboard. Please select and copy manually.");
       }
     }
@@ -161,7 +219,11 @@ export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogP
               {error}
             </div>
           )}
-          {shared && shareUrl ? (
+          {fetchingStatus ? (
+            <div className="flex items-center justify-center py-4 text-sm text-zinc-500">
+              Loading share status...
+            </div>
+          ) : shared && shareUrl ? (
             <>
               <div className="flex items-center gap-2">
                 <Input
@@ -182,16 +244,28 @@ export function ShareDialog({ conversationId, onShare, onUnshare }: ShareDialogP
                 {copiedEmbed ? <Check className="h-4 w-4" /> : <Code className="h-4 w-4" />}
                 <span className="ml-1">{copiedEmbed ? "Copied" : "Copy embed code"}</span>
               </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleUnshare}
-                disabled={loading}
-                className="text-red-500 hover:text-red-600 dark:text-red-400"
-              >
-                <Link2Off className="mr-1 h-4 w-4" />
-                Remove share link
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleRegenerate}
+                  disabled={loading}
+                  className="text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
+                >
+                  <RefreshCw className="mr-1 h-4 w-4" />
+                  {loading ? "Regenerating..." : "Regenerate link"}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleUnshare}
+                  disabled={loading}
+                  className="text-red-500 hover:text-red-600 dark:text-red-400"
+                >
+                  <Link2Off className="mr-1 h-4 w-4" />
+                  Remove share link
+                </Button>
+              </div>
             </>
           ) : (
             <Button onClick={handleShare} disabled={loading}>

@@ -56,6 +56,7 @@ const mockAddMessage = mock(() => {});
 const mockGenerateTitle = mock(() => "Test title");
 const mockShareConversation = mock((): Promise<ShareResult> => Promise.resolve({ ok: false, reason: "not_found" }));
 const mockUnshareConversation = mock((): Promise<CrudResult> => Promise.resolve({ ok: false, reason: "not_found" }));
+const mockGetShareStatus = mock((): Promise<CrudDataResult<import("@atlas/api/lib/conversations").ShareStatusData>> => Promise.resolve({ ok: false, reason: "not_found" }));
 const mockGetSharedConversation = mock((): Promise<CrudDataResult<ConversationWithMessages>> => Promise.resolve({ ok: false, reason: "not_found" }));
 
 mock.module("@atlas/api/lib/conversations", () => ({
@@ -65,6 +66,8 @@ mock.module("@atlas/api/lib/conversations", () => ({
   starConversation: mockStarConversation,
   shareConversation: mockShareConversation,
   unshareConversation: mockUnshareConversation,
+  getShareStatus: mockGetShareStatus,
+  cleanupExpiredShares: mock(() => Promise.resolve(0)),
   getSharedConversation: mockGetSharedConversation,
   createConversation: mockCreateConversation,
   addMessage: mockAddMessage,
@@ -138,6 +141,8 @@ describe("conversations routes", () => {
     mockShareConversation.mockResolvedValue({ ok: false, reason: "not_found" });
     mockUnshareConversation.mockReset();
     mockUnshareConversation.mockResolvedValue({ ok: false, reason: "not_found" });
+    mockGetShareStatus.mockReset();
+    mockGetShareStatus.mockResolvedValue({ ok: false, reason: "not_found" });
     mockGetSharedConversation.mockReset();
     mockGetSharedConversation.mockResolvedValue({ ok: false, reason: "not_found" });
   });
@@ -564,6 +569,113 @@ describe("conversations routes", () => {
       expect(call[0]).toBe(VALID_ID);
       expect(call[1]).toBe(true);
       expect(call[2]).toBe("u1");
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // GET /api/v1/conversations/:id/share — share status
+  // -----------------------------------------------------------------------
+
+  describe("GET /api/v1/conversations/:id/share", () => {
+    it("returns 200 with shared=true and url when conversation is shared", async () => {
+      mockGetShareStatus.mockResolvedValueOnce({
+        ok: true,
+        data: { shared: true as const, token: "abc123def456", expiresAt: null },
+      });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/share`),
+      );
+      expect(response.status).toBe(200);
+
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.shared).toBe(true);
+      expect(body.token).toBe("abc123def456");
+      expect(typeof body.url).toBe("string");
+      expect((body.url as string)).toContain("/shared/abc123def456");
+      expect(body.expiresAt).toBeNull();
+    });
+
+    it("returns 200 with shared=false when conversation is not shared", async () => {
+      mockGetShareStatus.mockResolvedValueOnce({
+        ok: true,
+        data: { shared: false as const, token: null, expiresAt: null },
+      });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/share`),
+      );
+      expect(response.status).toBe(200);
+
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.shared).toBe(false);
+      expect(body).not.toHaveProperty("token");
+      expect(body).not.toHaveProperty("url");
+    });
+
+    it("returns 404 when conversation not found", async () => {
+      mockGetShareStatus.mockResolvedValueOnce({ ok: false, reason: "not_found" });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/share`),
+      );
+      expect(response.status).toBe(404);
+    });
+
+    it("returns 400 for invalid ID format", async () => {
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/conversations/not-a-uuid/share"),
+      );
+      expect(response.status).toBe(400);
+    });
+
+    it("passes userId for auth scoping", async () => {
+      mockGetShareStatus.mockResolvedValueOnce({
+        ok: true,
+        data: { shared: false as const, token: null, expiresAt: null },
+      });
+
+      await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/share`),
+      );
+      const call = mockGetShareStatus.mock.calls[0] as unknown as [string, string | undefined];
+      expect(call[0]).toBe(VALID_ID);
+      expect(call[1]).toBe("u1");
+    });
+
+    it("returns 404 when no internal DB", async () => {
+      delete process.env.DATABASE_URL;
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/share`),
+      );
+      expect(response.status).toBe(404);
+    });
+
+    it("returns 500 on database error", async () => {
+      mockGetShareStatus.mockResolvedValueOnce({ ok: false, reason: "error" });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/share`),
+      );
+      expect(response.status).toBe(500);
+
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.error).toBe("internal_error");
+    });
+
+    it("returns 401 when unauthenticated", async () => {
+      mockAuthenticateRequest.mockResolvedValueOnce({
+        authenticated: false as const,
+        mode: "simple-key" as const,
+        status: 401 as const,
+        error: "API key required",
+      });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/share`),
+      );
+      expect(response.status).toBe(401);
     });
   });
 

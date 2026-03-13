@@ -23,7 +23,9 @@ import {
   starConversation,
   shareConversation,
   unshareConversation,
+  getShareStatus,
   getSharedConversation,
+  cleanupExpiredShares,
   type CrudFailReason,
 } from "@atlas/api/lib/conversations";
 
@@ -235,6 +237,51 @@ conversations.patch("/:id/star", async (c) => {
 });
 
 // ---------------------------------------------------------------------------
+// GET /:id/share — get share status
+// ---------------------------------------------------------------------------
+
+conversations.get("/:id/share", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
+  }
+
+  const preamble = await authPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  const id = c.req.param("id");
+  if (!UUID_RE.test(id)) {
+    return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const result = await getShareStatus(id, authResult.user?.id);
+    if (!result.ok) {
+      if (result.reason === "error") {
+        log.error({ requestId, conversationId: id }, "Share status fetch failed due to DB error");
+      }
+      const fail = crudFailResponse(result.reason);
+      return c.json(fail.body, fail.status);
+    }
+    if (!result.data.shared) {
+      return c.json({ shared: false as const });
+    }
+    const baseUrl = new URL(req.url).origin;
+    return c.json({
+      shared: true as const,
+      token: result.data.token,
+      url: `${baseUrl}/shared/${result.data.token}`,
+      expiresAt: result.data.expiresAt,
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // POST /:id/share — generate share link
 // ---------------------------------------------------------------------------
 
@@ -343,6 +390,16 @@ conversations.delete("/:id", async (c) => {
 
 const SHARE_TOKEN_RE = /^[A-Za-z0-9_-]{20,64}$/;
 
+export const ShareStatusResponseSchema = z.discriminatedUnion("shared", [
+  z.object({ shared: z.literal(false) }),
+  z.object({
+    shared: z.literal(true),
+    token: z.string(),
+    url: z.string(),
+    expiresAt: z.string().nullable(),
+  }),
+]);
+
 export const SharedConversationMessageSchema = z.object({
   role: z.enum(["user", "assistant", "system", "tool"]),
   content: z.unknown(),
@@ -377,6 +434,29 @@ function sweepPublicRateMap() {
 const _sweepInterval = setInterval(sweepPublicRateMap, PUBLIC_RATE_WINDOW_MS);
 // Don't prevent process exit
 if (typeof _sweepInterval === "object" && "unref" in _sweepInterval) _sweepInterval.unref();
+
+// Clean up expired share tokens every 60 minutes
+const SHARE_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+let shareCleanupConsecutiveFailures = 0;
+const _shareCleanupInterval = setInterval(async () => {
+  try {
+    const count = await cleanupExpiredShares();
+    if (count >= 0) {
+      shareCleanupConsecutiveFailures = 0;
+    } else {
+      shareCleanupConsecutiveFailures++;
+      if (shareCleanupConsecutiveFailures >= 5) {
+        log.error({ consecutiveFailures: shareCleanupConsecutiveFailures },
+          "Share cleanup has failed repeatedly — expired tokens may remain accessible");
+      }
+    }
+  } catch (err) {
+    shareCleanupConsecutiveFailures++;
+    log.error({ err: err instanceof Error ? err.message : String(err) },
+      "Unexpected error in share cleanup interval");
+  }
+}, SHARE_CLEANUP_INTERVAL_MS);
+if (typeof _shareCleanupInterval === "object" && "unref" in _shareCleanupInterval) _shareCleanupInterval.unref();
 
 function checkPublicRateLimit(ip: string): boolean {
   const now = Date.now();

@@ -119,6 +119,8 @@ mock.module("@atlas/api/lib/conversations", () => ({
   starConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
   shareConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
   unshareConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
+  getShareStatus: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
+  cleanupExpiredShares: mock(() => Promise.resolve(0)),
   getSharedConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
 }));
 

@@ -379,11 +379,10 @@ describe("POST /api/chat", () => {
     expect(call.tools).toBeUndefined();
   });
 
-  it("passes warnings to runAgent when action registry build fails", async () => {
+  it("passes warnings to runAgent when buildRegistry throws", async () => {
     process.env.ATLAS_ACTIONS_ENABLED = "true";
     // Trigger buildRegistry failure: ATLAS_PYTHON_ENABLED=true without
-    // ATLAS_SANDBOX_URL causes buildRegistry to throw before it reaches
-    // action registration.
+    // ATLAS_SANDBOX_URL causes buildRegistry to throw (fatal misconfiguration).
     process.env.ATLAS_PYTHON_ENABLED = "true";
     delete process.env.ATLAS_SANDBOX_URL;
 
@@ -395,7 +394,7 @@ describe("POST /api/chat", () => {
       const call = calls[0]![0] as { warnings?: string[] };
       expect(call.warnings).toBeDefined();
       expect(call.warnings!.length).toBe(1);
-      expect(call.warnings![0]).toContain("Actions were requested but failed to initialize");
+      expect(call.warnings![0]).toContain("tool registry failed to build");
     } finally {
       delete process.env.ATLAS_PYTHON_ENABLED;
     }

@@ -212,14 +212,16 @@ chat.post("/", async (c) => {
         if (includeActions) {
           try {
             const { buildRegistry } = await import("@atlas/api/lib/tools/registry");
-            toolRegistry = await buildRegistry({ includeActions });
+            const result = await buildRegistry({ includeActions });
+            toolRegistry = result.registry;
+            warnings.push(...result.warnings);
           } catch (err) {
             log.error(
               { err: err instanceof Error ? err : new Error(String(err)) },
               "Failed to build tool registry — falling back to default tools",
             );
             warnings.push(
-              "Actions were requested but failed to initialize. Action tools are unavailable for this session. Inform the user that actions are currently unavailable and suggest they check server logs or retry later.",
+              "Actions were requested but the tool registry failed to build. Action tools are unavailable for this session. Inform the user that actions are currently unavailable and suggest they check server logs or retry later.",
             );
           }
         }

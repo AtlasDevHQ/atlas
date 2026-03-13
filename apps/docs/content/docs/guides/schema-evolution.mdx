@@ -1,0 +1,391 @@
+---
+title: Keep Your Semantic Layer in Sync with Schema Changes
+description: Detect database schema drift, update entity YAMLs, and preserve manual enrichments using the Atlas CLI.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+import { Steps, Step } from "fumadocs-ui/components/steps";
+
+Your database schema evolves — columns get added, tables get dropped, types change. When the schema drifts from your [semantic layer](/getting-started/semantic-layer), the agent may generate incorrect SQL or miss new data entirely. This guide walks through detecting drift and updating your semantic layer to match.
+
+## Prerequisites
+
+- Atlas CLI installed (`bun install`)
+- A semantic layer already generated via `atlas init` (entity YAMLs exist in `semantic/entities/`)
+- `ATLAS_DATASOURCE_URL` set to your database connection string
+- Your database schema has changed since the last `atlas init`
+
+---
+
+## Detecting drift
+
+Run `atlas diff` to compare your live database schema against the entity YAMLs in `semantic/entities/`:
+
+```bash
+# Compare all tables against semantic layer
+bun run atlas -- diff
+
+# Compare specific tables only
+bun run atlas -- diff --tables orders,customers
+
+# Compare a non-public PostgreSQL schema
+bun run atlas -- diff --schema analytics
+
+# Compare a per-source subdirectory
+bun run atlas -- diff --source warehouse
+```
+
+The command connects to your database, profiles the current schema, and compares it against the YAML files. The output groups changes into three categories:
+
+### New tables
+
+Tables that exist in the database but have no corresponding entity YAML:
+
+```
+New tables (in DB, not in semantic layer):
+  + user_preferences (8 columns)
+  + audit_events (12 columns)
+```
+
+These tables are invisible to the agent — it cannot query them until you create entity files.
+
+### Removed tables
+
+Tables that have entity YAMLs but no longer exist in the database:
+
+```
+Removed tables (in semantic layer, not in DB):
+  - legacy_sessions
+```
+
+Queries referencing these tables will fail. Remove or archive the stale YAML files.
+
+### Changed tables
+
+Tables that exist in both but have column, type, foreign key, or metadata differences:
+
+```
+Changed tables:
+  orders
+    + added column: shipping_method (string)       # New column in DB, not in YAML
+    - removed column: legacy_status (string)        # Column in YAML, gone from DB
+    ~ type changed: amount — YAML: integer, DB: number  # Type mismatch
+    + added FK: warehouse_id→warehouses.id          # New relationship
+    - removed FK: old_ref_id→legacy_refs.id         # Relationship removed
+    ~ type changed: view → materialized_view        # Object type changed
+```
+
+Each line uses a prefix to indicate the change type:
+- `+` — something new in the database
+- `-` — something removed from the database
+- `~` — a value changed between YAML and database
+
+At the bottom, a summary line counts all changes:
+
+```
+Summary: 2 new tables, 1 removed, 3 changed (2 columns added, 1 removed, 1 type change, 1 FK added)
+```
+
+If everything is in sync, you'll see:
+
+```
+No drift detected — semantic layer is in sync with the database.
+```
+
+---
+
+## Update workflow
+
+<Steps>
+
+<Step>
+### Run `atlas diff` to see what changed
+
+```bash
+bun run atlas -- diff
+```
+
+Review the output carefully. Not every change requires action — some new columns may be internal and shouldn't be exposed to the agent.
+
+</Step>
+
+<Step>
+### Decide your update strategy
+
+You have two approaches:
+
+**Full regeneration** — re-run `atlas init` to regenerate all entity files from scratch. This is the simplest approach but overwrites all manual enrichments (descriptions, query patterns, measures, virtual dimensions).
+
+**Manual update** — edit the YAML files directly to add, remove, or modify dimensions. This preserves all your enrichments but requires more effort.
+
+<Callout type="warn">
+`atlas init` deletes all existing `.yml` files in `semantic/entities/` and `semantic/metrics/` before writing new ones. Any manual enrichments — custom descriptions, query patterns, measures, virtual dimensions — will be lost. See [Preserving customizations](#preserving-customizations) before regenerating.
+</Callout>
+
+</Step>
+
+<Step>
+### Apply the changes
+
+**Option A: Full regeneration**
+
+```bash
+# Regenerate all entity files
+bun run atlas -- init
+
+# Regenerate and add LLM-generated descriptions
+bun run atlas -- init --enrich
+```
+
+**Option B: Manual YAML edits**
+
+For a new column, add a dimension entry to the entity file:
+
+```yaml
+# semantic/entities/orders.yml — add the new column
+dimensions:
+  # ... existing dimensions ...
+  - name: shipping_method
+    sql: shipping_method
+    type: string
+    description: Delivery method selected by the customer
+    sample_values: [standard, express, overnight]
+```
+
+For a removed column, delete the corresponding dimension entry. For a type change, update the `type` field.
+
+</Step>
+
+<Step>
+### Validate the updated semantic layer
+
+Run `atlas validate` to check for syntax errors, missing fields, and broken cross-references — without needing a database connection:
+
+```bash
+bun run atlas -- validate
+```
+
+Example output:
+
+```
+Atlas Validate
+
+  ✓ atlas.config.ts          Valid (defineConfig)
+  ✓ semantic/entities/        12 entities parsed
+  ✓ semantic/glossary.yml     Valid (8 terms)
+  ✓ semantic/catalog.yml      Valid
+  ✓ semantic/metrics/         5 metrics parsed
+```
+
+Fix any errors before deploying.
+
+</Step>
+
+<Step>
+### Confirm drift is resolved
+
+Run `atlas diff` again to verify the semantic layer matches the database:
+
+```bash
+bun run atlas -- diff
+```
+
+You should see:
+
+```
+No drift detected — semantic layer is in sync with the database.
+```
+
+</Step>
+
+</Steps>
+
+---
+
+## Common scenarios
+
+### New table added to database
+
+A new `user_preferences` table was created. `atlas diff` reports:
+
+```
+New tables (in DB, not in semantic layer):
+  + user_preferences (8 columns)
+```
+
+**To fix:** Either regenerate with `atlas init`, or manually create `semantic/entities/user_preferences.yml`:
+
+```yaml
+name: UserPreferences
+type: dimension_table
+table: user_preferences
+grain: one row per user preference setting
+description: User-level configuration and preference settings.
+
+dimensions:
+  - name: id
+    sql: id
+    type: integer
+    description: Unique preference record identifier
+    primary_key: true
+  - name: user_id
+    sql: user_id
+    type: integer
+    description: Reference to the user
+  - name: theme
+    sql: theme
+    type: string
+    description: Selected UI theme
+    sample_values: [light, dark, system]
+
+joins:
+  - target_entity: Users
+    relationship: many_to_one
+    join_columns:
+      from: user_id
+      to: id
+    description: user_preferences.user_id → users.id
+```
+
+Then add the entity to `semantic/catalog.yml` so the agent knows when to use it.
+
+### Column renamed or type changed
+
+The `orders.amount` column was changed from `integer` to `numeric`. `atlas diff` reports:
+
+```
+Changed tables:
+  orders
+    ~ type changed: amount — YAML: integer, DB: number
+```
+
+**To fix:** Update the dimension type in `semantic/entities/orders.yml`:
+
+```yaml
+dimensions:
+  - name: amount
+    sql: amount
+    type: number  # Changed from integer to number
+    description: Order total in dollars
+```
+
+If a column was renamed (e.g., `status` to `order_status`), `atlas diff` shows it as a removed column plus an added column:
+
+```
+Changed tables:
+  orders
+    + added column: order_status (string)
+    - removed column: status (string)
+```
+
+**To fix:** Update the dimension's `name` and `sql` fields. Update any references in query patterns, measures, or the glossary.
+
+### Table dropped from database
+
+The `legacy_sessions` table was dropped. `atlas diff` reports:
+
+```
+Removed tables (in semantic layer, not in DB):
+  - legacy_sessions
+```
+
+**To fix:** Delete `semantic/entities/legacy_sessions.yml` and remove the entry from `semantic/catalog.yml`. Also remove any joins from other entities that reference it, and any metrics in `semantic/metrics/legacy_sessions.yml`. Run `atlas validate` to catch any broken cross-references.
+
+### New relationships (joins) added
+
+A new foreign key `orders.warehouse_id → warehouses.id` was added. `atlas diff` reports:
+
+```
+Changed tables:
+  orders
+    + added FK: warehouse_id→warehouses.id
+```
+
+**To fix:** Add a join entry to `semantic/entities/orders.yml`:
+
+```yaml
+joins:
+  # ... existing joins ...
+  - target_entity: Warehouses
+    relationship: many_to_one
+    join_columns:
+      from: warehouse_id
+      to: id
+    description: orders.warehouse_id → warehouses.id
+```
+
+Make sure `semantic/entities/warehouses.yml` exists — if the `warehouses` table is also new, create its entity file first.
+
+---
+
+## Preserving customizations
+
+When you run `atlas init`, it **deletes all existing YAML files** in `semantic/entities/` and `semantic/metrics/` before generating new ones. This means manual enrichments are lost:
+
+| Preserved across `atlas init` | Lost across `atlas init` |
+|-------------------------------|--------------------------|
+| Nothing — all files are regenerated | Custom descriptions |
+| | Query patterns |
+| | Virtual dimensions |
+| | Measures (regenerated from scratch) |
+| | Manually added sample values |
+| | Glossary terms (regenerated) |
+| | Catalog customizations (regenerated) |
+
+### Strategies to preserve enrichments
+
+**1. Back up before regenerating**
+
+```bash
+# Copy semantic layer before regenerating
+cp -r semantic/ semantic-backup/
+
+# Regenerate
+bun run atlas -- init
+
+# Manually merge back your customizations
+# Compare: diff semantic-backup/entities/orders.yml semantic/entities/orders.yml
+```
+
+**2. Use manual edits for small changes**
+
+If `atlas diff` shows only a few changes (a new column, a type change), edit the YAML files directly instead of regenerating. This preserves all your enrichments.
+
+**3. Use `--enrich` to restore LLM descriptions**
+
+After regenerating, run enrichment to fill in descriptions:
+
+```bash
+bun run atlas -- init --enrich
+```
+
+This adds LLM-generated descriptions for any fields that lack them. It won't restore your hand-written descriptions, but it provides a starting point.
+
+<Callout type="info">
+As a rule of thumb: use `atlas init` for initial setup or major schema overhauls. Use manual YAML edits for incremental changes. The more you've customized your semantic layer, the more reason to update manually.
+</Callout>
+
+---
+
+## CI integration
+
+Run `atlas diff` in CI to catch schema drift before it causes agent errors. A non-zero exit when drift is detected lets you fail the pipeline or post a warning.
+
+```yaml
+# Example: GitHub Actions step
+- name: Check schema drift
+  env:
+    ATLAS_DATASOURCE_URL: ${{ secrets.ATLAS_DATASOURCE_URL }}
+  run: |
+    # atlas diff exits 0 when in sync, non-zero on drift
+    bun run atlas -- diff
+```
+
+This is especially useful when:
+- Database migrations run in a separate pipeline from application deploys
+- Multiple teams modify the schema independently
+- You want to enforce that semantic layer updates are part of every migration PR
+
+<Callout type="info">
+`atlas diff` requires a live database connection (`ATLAS_DATASOURCE_URL`). For offline validation of YAML syntax and cross-references, use `atlas validate` instead — it works without any network access.
+</Callout>

@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://docs.useatlas.dev">Documentation</a> · <a href="https://app.useatlas.dev">Live Demo</a> · <a href="https://docs.useatlas.dev/docs/deployment/deploy">Deploy Guide</a> · <a href="https://github.com/AtlasDevHQ/atlas/issues">Issues</a>
+  <a href="https://docs.useatlas.dev">Documentation</a> · <a href="https://app.useatlas.dev">Live Demo</a> · <a href="https://docs.useatlas.dev/deployment/deploy">Deploy Guide</a> · <a href="https://github.com/AtlasDevHQ/atlas/issues">Issues</a>
 </p>
 
 <p align="center">
@@ -58,7 +58,7 @@ export default function App() {
 }
 ```
 
-The widget supports programmatic control (`Atlas.open()`, `Atlas.ask("...")`, `Atlas.destroy()`), event callbacks, and theming. See the [widget docs](https://docs.useatlas.dev/docs/guides/embedding-widget).
+The widget supports programmatic control (`Atlas.open()`, `Atlas.ask("...")`, `Atlas.destroy()`), event callbacks, and theming. See the [widget docs](https://docs.useatlas.dev/guides/embedding-widget).
 
 ## Why Atlas?
 
@@ -143,7 +143,7 @@ SQL validation runs through multiple layers. Your database credentials and query
 | Sandboxed execution | Filesystem access runs in nsjail / Firecracker / sidecar |
 | Row-level security | Optional RLS injection per-user |
 
-See [sandbox architecture](https://docs.useatlas.dev/docs/architecture/sandbox) for the full threat model.
+See [sandbox architecture](https://docs.useatlas.dev/architecture/sandbox) for the full threat model.
 
 ## Environment Variables
 
@@ -160,13 +160,13 @@ See [`.env.example`](.env.example) for all options.
 
 ## Documentation
 
-- [Quick Start](https://docs.useatlas.dev/docs/getting-started/quick-start) — Local dev from zero to asking questions
-- [Deploy Options](https://docs.useatlas.dev/docs/deployment/deploy) — Docker, Railway, Vercel, and more
-- [Connect Your Data](https://docs.useatlas.dev/docs/getting-started/connect-your-data) — Connect to an existing database safely
-- [Widget Embedding](https://docs.useatlas.dev/docs/guides/embedding-widget) — Script tag and React component
-- [Bring Your Own Frontend](https://docs.useatlas.dev/docs/frameworks/overview) — Nuxt, SvelteKit, React/Vite, TanStack Start
-- [Plugin Authoring](https://docs.useatlas.dev/docs/plugins/authoring-guide) — Build custom plugins
-- [Security & Sandbox](https://docs.useatlas.dev/docs/architecture/sandbox) — Threat model, isolation tiers
+- [Quick Start](https://docs.useatlas.dev/getting-started/quick-start) — Local dev from zero to asking questions
+- [Deploy Options](https://docs.useatlas.dev/deployment/deploy) — Docker, Railway, Vercel, and more
+- [Connect Your Data](https://docs.useatlas.dev/getting-started/connect-your-data) — Connect to an existing database safely
+- [Widget Embedding](https://docs.useatlas.dev/guides/embedding-widget) — Script tag and React component
+- [Bring Your Own Frontend](https://docs.useatlas.dev/frameworks/overview) — Nuxt, SvelteKit, React/Vite, TanStack Start
+- [Plugin Authoring](https://docs.useatlas.dev/plugins/authoring-guide) — Build custom plugins
+- [Security & Sandbox](https://docs.useatlas.dev/architecture/sandbox) — Threat model, isolation tiers
 
 ## Contributing
 

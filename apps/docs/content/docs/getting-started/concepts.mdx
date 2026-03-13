@@ -5,7 +5,9 @@ description: A glossary of Atlas-specific terms and how the semantic layer piece
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-The semantic layer is how you teach Atlas about your data. Before the agent writes any SQL, it reads a set of YAML files that describe your tables, columns, relationships, business terms, and key metrics. This page defines every term you'll encounter and explains how the pieces connect.
+The semantic layer is how you teach Atlas about your data — a set of YAML files in `semantic/` that describe your tables, columns, relationships, business terms, and key metrics. The agent reads these files before writing any SQL. This page defines the key terms and explains how the pieces connect.
+
+For the full YAML field reference and generation commands, see [Semantic Layer](/getting-started/semantic-layer).
 
 ## Glossary
 
@@ -20,6 +22,21 @@ Entities have a **type** that reflects their role in the data model:
 | `dimension_table` | Lookup or reference data — attributes you group and filter by | Customers, Products, Regions |
 | `fact_table` | Events or transactions — things you count and aggregate | Orders, Logins, Payments |
 | `view` | A database view — simplified profile with no PKs, FKs, or measures | `monthly_summary` |
+| `materialized_view` | A PostgreSQL materialized view — treated like a view but refreshable | `daily_stats` |
+
+<Callout type="info">
+`atlas init` assigns `fact_table` to all non-view tables by default. Set `dimension_table` manually for lookup/reference tables, or use `--enrich` to let the LLM classify them.
+</Callout>
+
+### Grain
+
+A short phrase on an entity that describes what one row represents. Grain helps the agent avoid double-counting and understand cardinality.
+
+```yaml
+grain: one row per subscription account
+```
+
+If the grain is "one row per order line item" and a user asks "how many orders?", the agent knows it needs `COUNT(DISTINCT order_id)`, not `COUNT(*)`.
 
 ### Dimension
 
@@ -61,7 +78,7 @@ dimensions:
 Use virtual dimensions for common groupings (revenue tiers, date buckets, status categories) that users ask about frequently but don't exist as raw columns.
 
 <Callout type="info">
-Virtual dimensions can also be defined in a separate `virtual_dimensions` section of the entity YAML. Both approaches work — inline `virtual: true` on a dimension, or a dedicated section — but they are functionally identical.
+Virtual dimensions can also be defined in a separate `virtual_dimensions` section of the entity YAML. Both approaches are functionally identical — the agent reads the raw YAML either way. The demo dataset and `atlas init` both use the inline `virtual: true` style.
 </Callout>
 
 ### Measure
@@ -78,7 +95,7 @@ measures:
 
 **Aggregation types:** `count_distinct`, `sum`, `avg`, `min`, `max`
 
-Measures guide the agent toward correct aggregations. Without them, the agent might `SUM` a column that should be counted, or `AVG` one that should be summed.
+Without measures, the agent might `SUM` a column that should be counted, or `AVG` one that should be summed.
 
 ### Join
 
@@ -96,7 +113,7 @@ joins:
 
 **Relationship types:** `many_to_one`, `one_to_many`, `one_to_one`, `many_to_many`
 
-The agent uses join definitions to generate correct `JOIN` clauses when a question spans multiple entities (e.g., "MRR by industry" requires joining accounts to companies).
+When a question spans multiple entities (e.g., "MRR by industry" requires joining accounts to companies), the agent uses these definitions to generate the correct `JOIN` clause.
 
 ### Cross-source join
 
@@ -110,6 +127,8 @@ cross_source_joins:
     relationship: one_to_many
     description: Join orders to event stream in warehouse
 ```
+
+Cross-source joins require a [multi-datasource configuration](/reference/config).
 
 ### Query pattern
 
@@ -172,7 +191,7 @@ metrics:
 | `breakdown` | A metric split by one or more dimensions | MRR by Plan, Churn by Region |
 
 <Callout type="warn">
-Metric SQL is authoritative — the agent uses it exactly as written, not as a suggestion. If a metric's SQL is wrong, the agent will produce wrong results. Treat metric files as source code.
+Metric SQL is authoritative — the agent executes it verbatim. If a metric's SQL is wrong, the agent will produce wrong results. Treat metric files as source code.
 </Callout>
 
 ### Glossary term
@@ -204,7 +223,7 @@ When a user asks about "revenue" and the glossary marks it as ambiguous, the age
 
 ### Catalog
 
-An index file (`semantic/catalog.yml`) that gives the agent a high-level map of the entire semantic layer. It lists every entity with its purpose, use cases, and common questions — so the agent can quickly find the right entity for a given question without reading every YAML file.
+An index file (`semantic/catalog.yml`) that gives the agent a high-level map of the entire semantic layer — every entity's purpose, use cases, and common questions. The agent reads the catalog first to decide which entity YAML files are relevant to a question.
 
 ```yaml
 version: "1.0"
@@ -226,35 +245,6 @@ metrics:
   - file: metrics/accounts.yml
     description: Subscription and revenue metrics
 ```
-
-### Grain
-
-A short phrase on an entity that describes the granularity — what one row represents. Grain helps the agent avoid double-counting and understand cardinality.
-
-```yaml
-grain: one row per subscription account
-```
-
-If the grain is "one row per order line item" and a user asks "how many orders?", the agent knows it needs `COUNT(DISTINCT order_id)`, not `COUNT(*)`.
-
-### Semantic layer
-
-The collection of all YAML files in the `semantic/` directory: entity files, catalog, glossary, and metrics. Together, they form a complete description of your data model that the agent reads before writing any SQL.
-
-```
-semantic/
-├── catalog.yml
-├── glossary.yml
-├── entities/
-│   ├── accounts.yml
-│   ├── companies.yml
-│   └── people.yml
-└── metrics/
-    ├── accounts.yml
-    └── companies.yml
-```
-
-The semantic layer also powers the [table whitelist](/security/sql-validation) — the agent can only query tables that have an entity YAML file.
 
 ---
 
@@ -300,83 +290,46 @@ Each layer of the semantic layer serves a distinct purpose:
 
 ## Annotated entity YAML
 
-Here's a complete entity file from the Atlas demo dataset with every field explained. This is `semantic/entities/accounts.yml` — a fact table tracking SaaS subscription accounts.
+Here's an annotated entity file based on the Atlas demo dataset (`semantic/entities/accounts.yml`), showing how the concepts above appear in practice. Some fields are simplified for clarity — see the [Semantic Layer reference](/getting-started/semantic-layer) for the full field reference.
 
 ```yaml
-# Display name shown in agent responses and catalog
-name: Accounts
+name: Accounts                         # Display name
+type: fact_table                        # dimension_table | fact_table | view | materialized_view
+table: accounts                         # Database table (can be schema-qualified: analytics.accounts)
+grain: one row per subscription account # What one row represents
+description: |                          # Multi-line context for the agent
+  Subscription accounts with plan tier, billing status, and MRR contribution.
 
-# Entity type: dimension_table (reference data), fact_table (transactions), or view
-type: fact_table
-
-# Exact database table name (can be schema-qualified, e.g. analytics.accounts)
-table: accounts
-
-# What one row represents — helps the agent avoid double-counting
-grain: one row per subscription account
-
-# Multi-line description the agent reads to understand this table's purpose
-description: |
-  Subscription accounts representing our billing relationship with each customer.
-  Each account belongs to one company and has a plan tier (Free, Starter, Pro,
-  Enterprise), a billing status (Active, Inactive, Suspended, Churned), and a
-  monthly_value representing MRR contribution.
-
-# --- Dimensions: columns and expressions the agent can filter/group by ---
 dimensions:
-  # Primary key — marked so the agent knows this column uniquely identifies rows
-  - name: id
+  - name: id                           # Primary key
     sql: id
     type: number
-    description: Primary key — unique account identifier
+    description: Unique account identifier
     primary_key: true
 
-  # Foreign key — the agent uses this to join to the Companies entity
-  - name: company_id
+  - name: company_id                   # Foreign key (used by joins below)
     sql: company_id
     type: number
-    description: Foreign key to companies — which customer owns this account
+    description: Which customer owns this account
 
-  # String dimension with sample_values — helps the agent write correct WHERE clauses
-  - name: plan
+  - name: plan                         # String with sample_values for correct WHERE clauses
     sql: plan
     type: string
-    description: |
-      Subscription tier. Determines pricing and feature access.
-      Free = $0, Starter = ~$49-89, Pro = ~$299-500, Enterprise = ~$5K-15K.
+    description: Subscription tier (Free, Starter, Pro, Enterprise)
     sample_values: [Enterprise, Pro, Starter, Free]
 
-  # Ambiguous term ("status") — the glossary flags this for clarification
-  - name: status
+  - name: status                       # Ambiguous term — glossary flags for clarification
     sql: status
     type: string
-    description: |
-      Current billing status. Active = paying, Inactive = paused,
-      Suspended = payment issue, Churned = cancelled.
+    description: Billing status (Active, Inactive, Suspended, Churned)
     sample_values: [Active, Churned, Inactive, Suspended]
 
-  # Numeric dimension — no sample_values needed for continuous values
-  - name: monthly_value
+  - name: monthly_value                # Numeric — no sample_values needed
     sql: monthly_value
     type: number
-    description: Monthly Recurring Revenue (MRR) from this account in dollars.
+    description: Monthly Recurring Revenue (MRR) in dollars
 
-  # Date dimensions — used for time-series analysis
-  - name: contract_start
-    sql: contract_start
-    type: date
-    description: Date the subscription began
-
-  - name: contract_end
-    sql: contract_end
-    type: date
-    description: |
-      Date the subscription ended. NULL means still under contract.
-
-  # --- Virtual dimensions: computed from SQL expressions, not raw columns ---
-
-  # CASE expression → categorical bucketing
-  - name: monthly_value_bucket
+  - name: monthly_value_bucket         # Virtual dimension — CASE expression
     sql: |-
       CASE
         WHEN monthly_value = 0 THEN 'Free'
@@ -385,81 +338,45 @@ dimensions:
         ELSE 'High'
       END
     type: string
-    description: MRR tier bucket — Free / Low / Mid / High
+    description: MRR tier bucket
     virtual: true
     sample_values: [Free, Low, Mid, High]
 
-  # Date extraction → cohort analysis
-  - name: contract_start_year
+  - name: contract_start_year          # Virtual dimension — date extraction
     sql: EXTRACT(YEAR FROM contract_start)
     type: number
-    description: Year the contract started — useful for cohort analysis
+    description: Contract start year for cohort analysis
     virtual: true
 
-  # Boolean expression → binary flag
-  - name: is_churned
-    sql: CASE WHEN status = 'Churned' THEN true ELSE false END
-    type: boolean
-    description: Whether this account has churned
-    virtual: true
-
-# --- Measures: pre-defined aggregations ---
 measures:
-  - name: account_count
-    sql: id
-    type: count_distinct
-    description: Number of unique accounts
-
-  - name: total_mrr
+  - name: total_mrr                    # SUM aggregation
     sql: monthly_value
     type: sum
     description: Total Monthly Recurring Revenue
 
-  - name: avg_mrr
-    sql: monthly_value
-    type: avg
-    description: Average MRR per account
+  - name: account_count                # COUNT_DISTINCT aggregation
+    sql: id
+    type: count_distinct
+    description: Number of unique accounts
 
-# --- Joins: relationships to other entities ---
 joins:
-  - target_entity: Companies
-    relationship: many_to_one          # Many accounts → one company
+  - target_entity: Companies           # many_to_one | one_to_many | one_to_one | many_to_many
+    relationship: many_to_one
     join_columns:
       from: company_id                 # Local FK
       to: id                           # Target PK
-    description: Each account belongs to one company (customer)
 
-# --- Use cases: what this entity is good for (read by the catalog) ---
-use_cases:
-  - MRR analysis — total, by plan, by status, over time
-  - Churn analysis — churned vs active accounts, churn rate by plan
-  - Revenue segmentation — which plans drive the most revenue
-  - Contract lifecycle — average duration, upcoming renewals
+use_cases:                             # Read by the catalog for routing
+  - MRR analysis by plan, status, and time period
+  - Churn and retention analysis
 
-# --- Query patterns: pre-written SQL for common questions ---
 query_patterns:
-  - name: mrr_by_plan
-    description: Total MRR and account count by plan tier
+  - name: mrr_by_plan                  # Pre-written SQL for a common question
+    description: Total MRR by plan tier
     sql: |-
-      SELECT plan,
-             SUM(monthly_value) AS total_mrr,
-             COUNT(*) AS account_count
-      FROM accounts
-      WHERE status = 'Active'
-      GROUP BY plan
-      ORDER BY total_mrr DESC
-
-  - name: churn_rate_by_plan
-    description: Churn rate by plan type
-    sql: |-
-      SELECT plan,
-             COUNT(*) FILTER (WHERE status = 'Churned') AS churned,
-             COUNT(*) AS total,
-             ROUND(100.0 * COUNT(*) FILTER (WHERE status = 'Churned')
-                   / COUNT(*), 1) AS churn_pct
-      FROM accounts
-      GROUP BY plan
-      ORDER BY churn_pct DESC
+      SELECT plan, SUM(monthly_value) AS total_mrr, COUNT(*) AS account_count
+      FROM accounts WHERE status = 'Active'
+      GROUP BY plan ORDER BY total_mrr DESC
 ```
 
 ---
@@ -472,7 +389,7 @@ If you've used other semantic layer or metrics tools, here's how Atlas terminolo
 |---------|-------|------|-----|-----------------|
 | Table description file | Entity YAML | Cube (model file) | Model (`.sql` + `.yml`) | View / Explore |
 | Column / attribute | Dimension | Dimension | Column (in `.yml`) | Dimension |
-| Computed column | Virtual dimension | Dimension (with `sql`) | — (use `surrogate_key` or SQL in model) | Dimension (with `sql`) |
+| Computed column | Virtual dimension | Dimension (with `sql`) | SQL expression in model | Dimension (with `sql`) |
 | Aggregation | Measure | Measure | Metric (semantic layer) | Measure |
 | Standalone KPI | Metric | — (use measures) | Metric (MetricFlow) | — (use measures) |
 | Table relationship | Join | Join | Relationship (`.yml`) | Explore join |

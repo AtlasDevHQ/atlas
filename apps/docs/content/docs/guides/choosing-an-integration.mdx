@@ -1,0 +1,142 @@
+---
+title: Choosing an Integration
+description: Comparison tables to help you pick the right integration surface and auth mode for your Atlas deployment.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas offers multiple ways to integrate and multiple authentication modes. These tables help you choose the right combination for your use case.
+
+## Widget vs SDK vs API
+
+Atlas has three integration surfaces. Each serves a different audience and customization level.
+
+| Dimension | Script Tag Widget | React Package (`@useatlas/react`) | TypeScript SDK (`@useatlas/sdk`) | REST API |
+|---|---|---|---|---|
+| **Use case** | Drop-in chat bubble for any website | Custom chat UI in a React/Next.js app | Server-side or Node.js automation | Any language, any platform |
+| **Setup effort** | ~2 minutes — one `<script>` tag | ~15 minutes — install package, wrap in provider | ~10 minutes — install package, create client | ~5 minutes — HTTP calls with auth header |
+| **Framework requirement** | None — plain HTML | React 18+ | Node.js / Bun (or any JS runtime) | None — any HTTP client |
+| **Auth approach** | `data-api-key` attribute or `Atlas.setAuthToken()` | Better Auth client or Bearer token via provider | API key or Bearer token passed to `createAtlasClient()` | `Authorization: Bearer <key>` header |
+| **Customization** | Theme (light/dark), position, accent color, logo, CSS variables | Full control — custom components, tool renderers, hooks | Programmatic — build any UI or pipeline on top | Full control — raw request/response |
+| **Streaming support** | Yes (built-in) | Yes (built-in via AI SDK) | Yes (`streamQuery()` returns async iterator) | Yes (SSE on `POST /api/v1/chat`) |
+| **Conversation management** | Automatic (widget handles state) | Automatic (`useConversations` hook) | Manual (`listConversations`, `getConversation`) | Manual (REST endpoints) |
+| **Best for** | Marketing sites, internal tools, quick demos | Product teams building a branded data experience | Backend services, scheduled reports, CI pipelines | Non-JS backends (Python, Go, Ruby), microservices |
+
+<Callout>
+**Not sure?** Start with the **script tag widget** for the fastest proof-of-concept. Move to the **React package** when you need custom UI, or the **SDK** when you need server-side automation.
+</Callout>
+
+### Quick examples
+
+**Script tag widget** — one line of HTML:
+
+```html
+<script
+  src="https://your-api.example.com/widget.js"
+  data-api-url="https://your-api.example.com"
+  data-api-key="sk-..."
+></script>
+```
+
+**React package** — wrap your app in the provider:
+
+```tsx
+import { AtlasChat, AtlasUIProvider } from "@useatlas/react";
+
+<AtlasUIProvider config={{ apiUrl: "https://your-api.example.com", authClient }}>
+  <AtlasChat />
+</AtlasUIProvider>
+```
+
+**TypeScript SDK** — programmatic queries:
+
+```ts
+import { createAtlasClient } from "@useatlas/sdk";
+
+const atlas = createAtlasClient({
+  baseUrl: "https://your-api.example.com",
+  apiKey: "sk-...",
+});
+const result = await atlas.query("How many users signed up last week?");
+```
+
+**REST API** — any language:
+
+```bash
+curl -X POST https://your-api.example.com/api/v1/query \
+  -H "Authorization: Bearer sk-..." \
+  -H "Content-Type: application/json" \
+  -d '{"question": "How many users signed up last week?"}'
+```
+
+## Auth Modes
+
+Atlas supports four authentication modes. The right choice depends on your deployment environment and user management needs.
+
+| Dimension | None | Simple Key (`api-key`) | Managed (`managed`) | BYOT (`byot`) |
+|---|---|---|---|---|
+| **Best for** | Local dev, internal tools behind a VPN | Headless integrations, CLI tools, SDKs | Multi-user web apps with login | Enterprises with existing SSO (Auth0, Clerk, Okta) |
+| **Session management** | None — all requests are anonymous | None — stateless key per request | Server-side sessions (7-day expiry, auto-renew) | Stateless — JWT verified per request via JWKS |
+| **User isolation** | No — all queries share one identity | No — single shared identity per key | Yes — each user has their own account and history | Yes — user identity extracted from JWT `sub` claim |
+| **Role support** | No roles | Single role for the key (`ATLAS_API_KEY_ROLE`) | Per-user roles (viewer, analyst, admin) | Role extracted from JWT claim (configurable path) |
+| **RLS (row-level security)** | Not available | Static claims only (`ATLAS_RLS_CLAIMS`) | Per-user claims from session | Per-user claims from JWT payload |
+| **Setup complexity** | Zero config | One env var (`ATLAS_API_KEY`) | 2-3 env vars + internal Postgres (`DATABASE_URL`) | 2-4 env vars pointing to your IdP's JWKS endpoint |
+| **Requires internal database** | No | No | Yes (`DATABASE_URL`) | No |
+| **Recommended for** | Getting started, demos | Automated pipelines, single-user tools | Production apps with user accounts | Production apps with existing identity provider |
+
+<Callout>
+**Not sure?** Use **none** for local development. When you're ready for production, choose **managed** if you want Atlas to handle user accounts, or **BYOT** if you already have an identity provider.
+</Callout>
+
+### Configuration examples
+
+**None** — no configuration needed:
+
+```bash
+# Just start the server — no auth env vars required
+bun run dev
+```
+
+**Simple Key**:
+
+```bash
+ATLAS_API_KEY=your-secret-key-here
+ATLAS_API_KEY_ROLE=analyst  # optional: viewer, analyst (default), admin
+```
+
+**Managed**:
+
+```bash
+BETTER_AUTH_SECRET=your-random-secret-at-least-32-characters-long
+DATABASE_URL=postgresql://user:pass@host:5432/atlas
+ATLAS_ADMIN_EMAIL=admin@example.com  # optional: first admin account
+```
+
+**BYOT**:
+
+```bash
+ATLAS_AUTH_JWKS_URL=https://your-idp.com/.well-known/jwks.json
+ATLAS_AUTH_ISSUER=https://your-idp.com/
+ATLAS_AUTH_AUDIENCE=your-atlas-api         # optional but recommended
+ATLAS_AUTH_ROLE_CLAIM=app_metadata.role    # optional, defaults to "role"
+```
+
+### Auto-detection
+
+When `ATLAS_AUTH_MODE` is not set, Atlas auto-detects from environment variables in this order:
+
+1. `ATLAS_AUTH_JWKS_URL` present → **BYOT**
+2. `BETTER_AUTH_SECRET` present → **Managed**
+3. `ATLAS_API_KEY` present → **Simple Key**
+4. None of the above → **None**
+
+Set `ATLAS_AUTH_MODE` explicitly to override auto-detection. Valid values: `none`, `api-key`, `managed`, `byot`. You can also set `auth` in `atlas.config.ts`.
+
+---
+
+## Related
+
+- [Embedding Widget](/guides/embedding-widget) — full widget configuration and customization guide
+- [Authentication](/deployment/authentication) — detailed auth setup, roles, rate limiting, and audit logging
+- [Environment Variables](/reference/environment-variables) — all configuration variables with defaults
+- [SDK documentation](https://www.npmjs.com/package/@useatlas/sdk) — `@useatlas/sdk` on npm

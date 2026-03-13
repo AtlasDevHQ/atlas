@@ -241,8 +241,13 @@ function buildSystemPrompt(registry: ToolRegistry): string {
 export function buildSystemParam(
   providerType: ProviderType,
   registry: ToolRegistry = defaultRegistry,
+  warnings?: string[],
 ): string | SystemModelMessage {
-  const content = buildSystemPrompt(registry);
+  let content = buildSystemPrompt(registry);
+
+  if (warnings && warnings.length > 0) {
+    content += "\n\n## Warnings\n\n" + warnings.map((w) => `- ${w}`).join("\n");
+  }
 
   switch (providerType) {
     case "anthropic":
@@ -344,10 +349,12 @@ export async function runAgent({
   messages,
   tools: toolRegistry = defaultRegistry,
   conversationId,
+  warnings,
 }: {
   messages: UIMessage[];
   tools?: ToolRegistry;
   conversationId?: string;
+  warnings?: string[];
 }) {
   const model = getModel();
   const providerType = getProviderType();
@@ -381,7 +388,7 @@ export async function runAgent({
   try {
     result = otelContext.with(agentCtx, () => streamText({
       model,
-      system: buildSystemParam(providerType, toolRegistry),
+      system: buildSystemParam(providerType, toolRegistry, warnings),
       messages: modelMessages,
       tools: toolRegistry.getAll(),
       temperature: 0.2,

@@ -192,7 +192,7 @@ describe("buildRegistry", () => {
     try {
       process.env.ATLAS_PYTHON_ENABLED = "true";
       process.env.ATLAS_SANDBOX_URL = "http://localhost:8080";
-      const registry = await buildRegistry();
+      const { registry } = await buildRegistry();
       const names = Object.keys(registry.getAll()).sort();
       expect(names).toEqual(["executePython", "executeSQL", "explore"]);
       expect(registry.describe()).toContain("### 4. Analyze Data with Python");
@@ -205,13 +205,13 @@ describe("buildRegistry", () => {
   });
 
   it("returns 2 core tools by default", async () => {
-    const registry = await buildRegistry();
+    const { registry } = await buildRegistry();
     const names = Object.keys(registry.getAll()).sort();
     expect(names).toEqual(["executeSQL", "explore"]);
   });
 
   it("with includeActions returns 4 tools including createJiraTicket and sendEmailReport", async () => {
-    const registry = await buildRegistry({ includeActions: true });
+    const { registry } = await buildRegistry({ includeActions: true });
     const names = Object.keys(registry.getAll()).sort();
     expect(names).toEqual([
       "createJiraTicket",
@@ -222,21 +222,26 @@ describe("buildRegistry", () => {
   });
 
   it("returned registry is frozen", async () => {
-    const registry = await buildRegistry();
+    const { registry } = await buildRegistry();
     expect(() =>
       registry.register({ name: "extra", description: "X", tool: makeTool("x") })
     ).toThrow("Cannot register tools on a frozen registry");
   });
 
   it("getActions returns action tools with correct metadata", async () => {
-    const registry = await buildRegistry({ includeActions: true });
+    const { registry } = await buildRegistry({ includeActions: true });
     const actions = registry.getActions();
     const actionTypes = actions.map((a) => a.actionType).sort();
     expect(actionTypes).toEqual(["email:send", "jira:create"]);
   });
 
   it("core-only registry has no actions", async () => {
-    const registry = await buildRegistry();
+    const { registry } = await buildRegistry();
     expect(registry.getActions()).toEqual([]);
+  });
+
+  it("returns empty warnings when all tools load successfully", async () => {
+    const { warnings } = await buildRegistry({ includeActions: true });
+    expect(warnings).toEqual([]);
   });
 });

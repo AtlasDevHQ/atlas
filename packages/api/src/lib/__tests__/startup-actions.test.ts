@@ -46,7 +46,10 @@ mock.module("@atlas/api/lib/tools/registry", () => ({
     validateActionCredentials: () => mockValidateActionCredentials(),
   },
   buildRegistry: async () => ({
-    validateActionCredentials: () => mockValidateActionCredentials(),
+    registry: {
+      validateActionCredentials: () => mockValidateActionCredentials(),
+    },
+    warnings: [],
   }),
 }));
 

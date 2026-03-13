@@ -64,7 +64,8 @@ export async function executeAgentQuery(
         const { buildRegistry } = await import(
           "@atlas/api/lib/tools/registry"
         );
-        toolRegistry = await buildRegistry({ includeActions });
+        const result = await buildRegistry({ includeActions });
+        toolRegistry = result.registry;
       } catch (err) {
         log.error(
           { err: err instanceof Error ? err : new Error(String(err)) },

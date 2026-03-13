@@ -170,16 +170,25 @@ defaultRegistry.register({
 
 defaultRegistry.freeze();
 
+export interface BuildRegistryResult {
+  registry: ToolRegistry;
+  warnings: string[];
+}
+
 /**
  * Build a dynamic ToolRegistry with optional action and Python support.
  *
  * Python tool is included when `ATLAS_PYTHON_ENABLED=true`.
  * Action tools are included when `includeActions` is true.
+ *
+ * Returns both the registry and any warnings about tools that failed to load.
+ * Fatal misconfigurations (e.g. Python enabled without sandbox URL) still throw.
  */
 export async function buildRegistry(options?: {
   includeActions?: boolean;
-}): Promise<ToolRegistry> {
+}): Promise<BuildRegistryResult> {
   const registry = new ToolRegistry();
+  const warnings: string[] = [];
 
   registry.register({
     name: "explore",
@@ -238,11 +247,14 @@ export async function buildRegistry(options?: {
         { err: err instanceof Error ? err : new Error(String(err)) },
         "Failed to load action tools — JIRA and email actions will be unavailable",
       );
+      warnings.push(
+        "Action tools (JIRA, email) failed to load and are unavailable for this session. Inform the user and suggest they check server logs or retry later.",
+      );
     }
   }
 
   registry.freeze();
-  return registry;
+  return { registry, warnings };
 }
 
 export { defaultRegistry };

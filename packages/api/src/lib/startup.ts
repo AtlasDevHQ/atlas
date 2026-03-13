@@ -517,7 +517,7 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
     // missing optional action credentials should not block chat queries)
     try {
       const { buildRegistry } = await import("@atlas/api/lib/tools/registry");
-      const actionRegistry = await buildRegistry({ includeActions: true });
+      const { registry: actionRegistry } = await buildRegistry({ includeActions: true });
       const missingCreds = actionRegistry.validateActionCredentials();
       for (const { action, missing } of missingCreds) {
         const msg = `Action "${action}" missing credentials: ${missing.join(", ")}`;

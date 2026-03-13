@@ -56,7 +56,6 @@ function bail(message?: string): never {
 const args = process.argv.slice(2);
 const useDefaults = args.includes("--defaults") || args.includes("-y");
 
-// Parse --skip-doctor flag to skip post-scaffold atlas doctor auto-run
 const skipDoctor = args.includes("--skip-doctor");
 
 // Parse --demo flag (optionally with dataset name)
@@ -1118,8 +1117,7 @@ export default defineConfig({
 
   p.note(noteBody, "Next steps");
 
-  // Step 5: Run atlas doctor to validate the setup
-  if (!skipDoctor) {
+  if (!skipDoctor && !setupFailed) {
     s.start("Running atlas doctor...");
     try {
       const doctorOutput = execSync("bun run atlas -- doctor", {
@@ -1134,19 +1132,36 @@ export default defineConfig({
         console.log(output);
       }
     } catch (err) {
-      s.stop("Health check found issues.");
-      // Doctor exits 1 on critical failures — show its output for actionable fixes
-      if (err && typeof err === "object" && "stdout" in err) {
-        const stdout = String((err as { stdout: unknown }).stdout).trim();
-        if (stdout) console.log(stdout);
+      const isExecError = err && typeof err === "object";
+      const signal = isExecError && "signal" in err ? (err as { signal: unknown }).signal : null;
+      const status = isExecError && "status" in err ? (err as { status: unknown }).status : null;
+
+      if (signal === "SIGTERM") {
+        s.stop("Health check timed out.");
+        p.log.warn(
+          `Atlas doctor timed out after 30s. Run ${pc.cyan("bun run atlas -- doctor")} manually.`
+        );
+      } else if (status === 1) {
+        s.stop("Health check found issues.");
+        if (isExecError && "stdout" in err) {
+          const stdout = String((err as { stdout: unknown }).stdout).trim();
+          if (stdout) console.log(stdout);
+        }
+        if (isExecError && "stderr" in err) {
+          const stderr = String((err as { stderr: unknown }).stderr).trim();
+          if (stderr) p.log.warn(stderr);
+        }
+        p.log.warn(
+          `Some checks failed. Run ${pc.cyan("bun run atlas -- doctor")} after fixing the issues above.`
+        );
+      } else {
+        s.stop("Could not run health check.");
+        const detail = err instanceof Error ? err.message : String(err);
+        p.log.warn(`Atlas doctor could not run: ${detail}`);
+        p.log.warn(
+          `Run ${pc.cyan("bun run atlas -- doctor")} manually to validate your setup.`
+        );
       }
-      if (err && typeof err === "object" && "stderr" in err) {
-        const stderr = String((err as { stderr: unknown }).stderr).trim();
-        if (stderr) console.log(stderr);
-      }
-      p.log.warn(
-        `Some checks failed. Run ${pc.cyan("bun run atlas -- doctor")} after fixing the issues above.`
-      );
     }
   }
 

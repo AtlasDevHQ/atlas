@@ -82,6 +82,10 @@ After the script loads, `window.Atlas` exposes the following methods:
 | `Atlas.setAuthToken(token)` | Send an auth token to the widget iframe |
 | `Atlas.setTheme(theme)` | Set theme (`"light"` or `"dark"`) |
 
+<Callout type="warn">
+`Atlas.ask()` currently opens the panel but does not submit the query due to a message type mismatch between the loader and the widget iframe ([#324](https://github.com/AtlasDevHQ/atlas/issues/324)). As a workaround, use the iframe `postMessage` API directly with `{type: "atlas:ask", query: "..."}`.
+</Callout>
+
 ### Example
 
 ```javascript
@@ -213,11 +217,20 @@ Applied via `.dark .atlas-root`:
 |----------|-----------------|-------------------|
 | `--background` | `oklch(0.145 0 0)` | Near-black surface |
 | `--foreground` | `oklch(0.985 0 0)` | Near-white text |
+| `--card` | `oklch(0.145 0 0)` | Near-black card surface |
+| `--card-foreground` | `oklch(0.985 0 0)` | Near-white card text |
+| `--popover` | `oklch(0.145 0 0)` | Near-black popover surface |
+| `--popover-foreground` | `oklch(0.985 0 0)` | Near-white popover text |
 | `--primary` | `oklch(0.985 0 0)` | Inverted: light on dark |
 | `--primary-foreground` | `oklch(0.205 0 0)` | Dark text on light primary |
 | `--secondary` | `oklch(0.269 0 0)` | Darker gray surface |
+| `--secondary-foreground` | `oklch(0.985 0 0)` | Near-white text on secondary |
 | `--muted` | `oklch(0.269 0 0)` | Darker muted background |
 | `--muted-foreground` | `oklch(0.708 0 0)` | Brighter muted text |
+| `--accent` | `oklch(0.269 0 0)` | Darker accent background |
+| `--accent-foreground` | `oklch(0.985 0 0)` | Near-white accent text |
+| `--destructive` | `oklch(0.396 0.141 25.723)` | Darker, less saturated red |
+| `--destructive-foreground` | `oklch(0.637 0.237 25.331)` | Brighter red for readability |
 | `--border` | `oklch(0.269 0 0)` | Darker borders |
 | `--input` | `oklch(0.269 0 0)` | Darker input borders |
 | `--ring` | `oklch(0.439 0 0)` | Darker focus ring |
@@ -794,8 +807,11 @@ If you override CORS at the proxy level, include these headers:
 Access-Control-Allow-Origin: *
 Access-Control-Allow-Methods: GET, POST, OPTIONS
 Access-Control-Allow-Headers: Content-Type, Authorization
-Access-Control-Allow-Credentials: true
 ```
+
+<Callout type="warn">
+Do not combine `Access-Control-Allow-Origin: *` with `Access-Control-Allow-Credentials: true` — browsers reject this per the CORS spec. Widget routes use wildcard origin and do not require credentialed requests.
+</Callout>
 
 ### iframe Sandbox Restrictions
 

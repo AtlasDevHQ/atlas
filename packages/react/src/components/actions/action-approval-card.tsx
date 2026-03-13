@@ -53,7 +53,8 @@ function borderColor(status: ActionDisplayStatus): string {
     case "denied":
     case "failed":
       return "border-red-300 dark:border-red-900/50";
-    default:
+    case "rolled_back":
+    case "timed_out":
       return "border-zinc-200 dark:border-zinc-700";
   }
 }
@@ -131,8 +132,10 @@ export function ActionApprovalCard({ part }: { part: unknown }) {
       } catch {
         throw new Error("Action was already resolved, but the response could not be read. Refresh the page.");
       }
-      const status = typeof data.status === "string" ? data.status as ResolvedDisplayStatus : "failed" as ResolvedDisplayStatus;
-      const label = status.replace(/_/g, " ");
+      if (typeof data.status !== "string" || !RESOLVED_STATUSES.has(data.status as ActionDisplayStatus)) {
+        throw new Error("Action was already resolved with an unrecognized status. Refresh the page.");
+      }
+      const label = data.status.replace(/_/g, " ");
       throw new Error(`This action was already ${label} by another user or policy.`);
     }
 
@@ -147,8 +150,8 @@ export function ActionApprovalCard({ part }: { part: unknown }) {
     } catch {
       throw new Error("Action succeeded, but the response could not be read. Refresh the page.");
     }
-    if (typeof data.status !== "string") {
-      throw new Error("Action succeeded, but the server returned an invalid status. Refresh the page.");
+    if (typeof data.status !== "string" || !RESOLVED_STATUSES.has(data.status as ActionDisplayStatus)) {
+      throw new Error("Action succeeded, but the server returned an unrecognized status. Refresh the page.");
     }
     setCardState({ phase: "resolved", status: data.status as ResolvedDisplayStatus, result: data.result });
   }

@@ -49,7 +49,7 @@ export const RESOLVED_STATUSES: ReadonlySet<ActionDisplayStatus> = new Set<Actio
 export type ActionToolResultShape =
   | { status: "pending_approval"; actionId: string; summary: string; details?: Record<string, unknown> }
   | { status: "approved" | "executed" | "auto_approved"; actionId: string; result: unknown; summary?: string; details?: Record<string, unknown> }
-  | { status: "denied"; actionId: string; reason: string; summary?: string; details?: Record<string, unknown> }
+  | { status: "denied"; actionId: string; reason?: string; summary?: string; details?: Record<string, unknown> }
   | { status: "failed"; actionId: string; error: string; summary?: string; details?: Record<string, unknown> }
   | { status: "rolled_back" | "timed_out"; actionId: string; summary?: string; details?: Record<string, unknown> };
 

@@ -8,8 +8,10 @@
  * ActionLogEntry represents the persisted audit row.
  */
 
-export const ACTION_APPROVAL_MODES = ["auto", "manual", "admin-only"] as const;
-export type ActionApprovalMode = (typeof ACTION_APPROVAL_MODES)[number];
+export { ACTION_APPROVAL_MODES } from "@useatlas/types/action";
+export type { ActionApprovalMode } from "@useatlas/types/action";
+
+import type { ActionApprovalMode } from "@useatlas/types/action";
 
 export const ACTION_STATUSES = [
   "pending",

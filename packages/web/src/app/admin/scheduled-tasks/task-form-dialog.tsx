@@ -34,7 +34,7 @@ import {
 import type {
   ScheduledTask,
   DeliveryChannel,
-  ApprovalMode,
+  ActionApprovalMode,
 } from "@/ui/lib/types";
 
 // ── Types ─────────────────────────────────────────────────────────────
@@ -51,7 +51,7 @@ interface FormState {
   cronPreset: string;
   cronExpression: string;
   deliveryChannel: DeliveryChannel;
-  approvalMode: ApprovalMode;
+  approvalMode: ActionApprovalMode;
   connectionId: string;
   enabled: boolean;
   // Email recipients
@@ -575,7 +575,7 @@ export function TaskFormDialog({
             <Label>Approval mode</Label>
             <Select
               value={form.approvalMode}
-              onValueChange={(v) => updateField("approvalMode", v as ApprovalMode)}
+              onValueChange={(v) => updateField("approvalMode", v as ActionApprovalMode)}
             >
               <SelectTrigger>
                 <SelectValue />

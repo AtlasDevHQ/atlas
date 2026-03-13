@@ -23,7 +23,7 @@
     "build:docs": "bun run --filter '@atlas/docs' build",
     "start": "sh scripts/start.sh",
     "lint": "eslint packages/",
-    "type": "bun run --filter '@useatlas/plugin-sdk' build && bun run --filter '@useatlas/sdk' build && tsgo --noEmit",
+    "type": "bun run --filter '@useatlas/types' build && bun run --filter '@useatlas/plugin-sdk' build && bun run --filter '@useatlas/sdk' build && tsgo --noEmit",
     "atlas": "bun packages/cli/bin/atlas.ts",
     "mcp": "bun packages/mcp/bin/serve.ts",
     "db:up": "bash scripts/db-up.sh",

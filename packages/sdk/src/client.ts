@@ -6,7 +6,47 @@
  */
 
 // ---------------------------------------------------------------------------
-// Types
+// Re-exports from @useatlas/types (canonical shared types)
+// ---------------------------------------------------------------------------
+
+export type {
+  AuthMode,
+  Conversation,
+  Message,
+  ConversationWithMessages,
+  DBType,
+  HealthStatus,
+  ConnectionHealth,
+  ConnectionInfo,
+  ConnectionDetail,
+  ActionApprovalMode,
+  DeliveryChannel,
+  RunStatus,
+  Recipient,
+  ScheduledTask,
+  ScheduledTaskWithRuns,
+  ScheduledTaskRun,
+} from "@useatlas/types";
+
+import type {
+  AuthMode,
+  Conversation,
+  ConversationWithMessages,
+  ConnectionHealth,
+  ConnectionInfo,
+  DeliveryChannel,
+  ActionApprovalMode,
+  Recipient,
+  ScheduledTask,
+  ScheduledTaskWithRuns,
+  ScheduledTaskRun,
+} from "@useatlas/types";
+
+/** @deprecated Use `Recipient` instead. */
+export type ScheduledTaskRecipient = Recipient;
+
+// ---------------------------------------------------------------------------
+// SDK-specific types
 // ---------------------------------------------------------------------------
 
 /**
@@ -92,29 +132,6 @@ export interface QueryResponse {
   }>;
 }
 
-export interface Conversation {
-  id: string;
-  userId: string | null;
-  title: string | null;
-  surface: "web" | "api" | "mcp" | "slack";
-  connectionId: string | null;
-  starred: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface Message {
-  id: string;
-  conversationId: string;
-  role: "user" | "assistant" | "system" | "tool";
-  content: unknown;
-  createdAt: string;
-}
-
-export interface ConversationWithMessages extends Conversation {
-  messages: Message[];
-}
-
 export interface ListConversationsResponse {
   conversations: Conversation[];
   total: number;
@@ -132,56 +149,8 @@ export interface ShareConversationResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Scheduled Task types
+// Scheduled Task SDK types
 // ---------------------------------------------------------------------------
-
-export type DeliveryChannel = "email" | "slack" | "webhook";
-export type RunStatus = "running" | "success" | "failed" | "skipped";
-
-/**
- * Inlined from `@atlas/api/lib/action-types` to avoid a runtime dependency.
- * Keep in sync with `ACTION_APPROVAL_MODES` in `packages/api/src/lib/action-types.ts`.
- */
-export type ActionApprovalMode = "auto" | "manual" | "admin-only";
-
-export type ScheduledTaskRecipient =
-  | { type: "email"; address: string }
-  | { type: "slack"; channel: string; teamId?: string }
-  | { type: "webhook"; url: string; headers?: Record<string, string> };
-
-export interface ScheduledTask {
-  id: string;
-  ownerId: string;
-  name: string;
-  question: string;
-  cronExpression: string;
-  deliveryChannel: DeliveryChannel;
-  recipients: ScheduledTaskRecipient[];
-  connectionId: string | null;
-  approvalMode: ActionApprovalMode;
-  enabled: boolean;
-  lastRunAt: string | null;
-  nextRunAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface ScheduledTaskWithRuns extends ScheduledTask {
-  recentRuns: ScheduledTaskRun[];
-}
-
-export interface ScheduledTaskRun {
-  id: string;
-  taskId: string;
-  startedAt: string;
-  completedAt: string | null;
-  status: RunStatus;
-  conversationId: string | null;
-  actionId: string | null;
-  error: string | null;
-  tokensUsed: number | null;
-  createdAt: string;
-}
 
 export interface ListScheduledTasksResponse {
   tasks: ScheduledTask[];
@@ -199,7 +168,7 @@ export interface CreateScheduledTaskInput {
   question: string;
   cronExpression: string;
   deliveryChannel?: DeliveryChannel;
-  recipients?: ScheduledTaskRecipient[];
+  recipients?: Recipient[];
   connectionId?: string | null;
   approvalMode?: ActionApprovalMode;
 }
@@ -209,51 +178,18 @@ export interface UpdateScheduledTaskInput {
   question?: string;
   cronExpression?: string;
   deliveryChannel?: DeliveryChannel;
-  recipients?: ScheduledTaskRecipient[];
+  recipients?: Recipient[];
   connectionId?: string | null;
   approvalMode?: ActionApprovalMode;
   enabled?: boolean;
 }
 
 // ---------------------------------------------------------------------------
-// Admin types — shared enums
+// Admin types
 // ---------------------------------------------------------------------------
-
-/**
- * Inlined from `@atlas/api/lib/connection-types` to avoid a runtime dependency.
- * Keep in sync — `packages/sdk/src/__tests__/type-compat.test.ts` enforces this
- * via compile-time assignability checks.
- */
-export type DBType = "postgres" | "mysql" | "clickhouse" | "snowflake" | "duckdb" | "salesforce";
-export type HealthStatus = "healthy" | "degraded" | "unhealthy";
-
-export interface ConnectionHealth {
-  status: HealthStatus;
-  latencyMs: number;
-  message?: string;
-  checkedAt: string;
-}
-
-export interface ConnectionInfo {
-  id: string;
-  dbType: DBType;
-  description?: string | null;
-  health?: ConnectionHealth;
-}
-
-export interface ConnectionDetail {
-  id: string;
-  dbType: string;
-  description: string | null;
-  health: ConnectionHealth | null;
-  maskedUrl: string | null;
-  schema: string | null;
-  managed: boolean;
-}
 
 export type PluginType = "datasource" | "context" | "interaction" | "action" | "sandbox";
 export type PluginStatus = "registered" | "initializing" | "healthy" | "unhealthy" | "teardown";
-export type AuthMode = "none" | "simple-key" | "managed" | "byot";
 
 // ---------------------------------------------------------------------------
 // Admin types — response shapes
@@ -291,7 +227,7 @@ export interface SemanticStats {
   };
 }
 
-/** @deprecated Use `ConnectionHealth` instead. */
+/** @deprecated Use `ConnectionHealth` from `@useatlas/types` instead. */
 export type ConnectionHealthCheck = ConnectionHealth;
 
 export interface AuditLogEntry {

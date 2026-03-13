@@ -103,6 +103,7 @@
         "@opentelemetry/resources": "^2.6.0",
         "@opentelemetry/sdk-node": "^0.213.0",
         "@opentelemetry/semantic-conventions": "^1.40.0",
+        "@useatlas/types": "workspace:*",
         "ai": "^6.0.97",
         "better-auth": "^1.5.1",
         "croner": "^9.0.0",
@@ -183,6 +184,7 @@
       "version": "0.0.1",
       "dependencies": {
         "@radix-ui/react-slot": "^1.2.3",
+        "@useatlas/types": "workspace:*",
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
         "radix-ui": "^1.4.3",
@@ -239,9 +241,13 @@
     "packages/sdk": {
       "name": "@useatlas/sdk",
       "version": "0.0.6",
-      "devDependencies": {
-        "@atlas/api": "workspace:*",
+      "dependencies": {
+        "@useatlas/types": "workspace:*",
       },
+    },
+    "packages/types": {
+      "name": "@useatlas/types",
+      "version": "0.0.1",
     },
     "packages/web": {
       "name": "@atlas/web",
@@ -255,6 +261,7 @@
         "@opentelemetry/sdk-node": "^0.213.0",
         "@opentelemetry/semantic-conventions": "^1.40.0",
         "@useatlas/react": "workspace:*",
+        "@useatlas/types": "workspace:*",
         "ai": "^6.0.97",
         "better-auth": "^1.5.1",
         "class-variance-authority": "^0.7.1",
@@ -1749,6 +1756,8 @@
     "@useatlas/slack": ["@useatlas/slack@workspace:plugins/slack"],
 
     "@useatlas/snowflake": ["@useatlas/snowflake@workspace:plugins/snowflake"],
+
+    "@useatlas/types": ["@useatlas/types@workspace:packages/types"],
 
     "@useatlas/vercel-sandbox": ["@useatlas/vercel-sandbox@workspace:plugins/vercel-sandbox"],
 

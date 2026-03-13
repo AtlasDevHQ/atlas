@@ -4758,12 +4758,21 @@ interface SubcommandHelp {
   description: string;
   usage: string;
   flags?: Array<{ flag: string; description: string }>;
+  subcommands?: Array<{ name: string; description: string }>;
   examples?: string[];
 }
 
-function printSubcommandHelp(name: string, help: SubcommandHelp): void {
+function printSubcommandHelp(help: SubcommandHelp): void {
   console.log(`${help.description}\n`);
   console.log(`Usage: atlas ${help.usage}\n`);
+  if (help.subcommands?.length) {
+    console.log("Subcommands:");
+    const maxLen = Math.max(...help.subcommands.map((s) => s.name.length));
+    for (const s of help.subcommands) {
+      console.log(`  ${s.name.padEnd(maxLen + 2)}${s.description}`);
+    }
+    console.log();
+  }
   if (help.flags?.length) {
     console.log("Options:");
     const maxLen = Math.max(...help.flags.map((f) => f.flag.length));
@@ -4788,10 +4797,10 @@ const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
     flags: [
       { flag: "--tables <t1,t2>", description: "Profile only specific tables/views (comma-separated)" },
       { flag: "--schema <name>", description: "PostgreSQL schema name (default: public)" },
-      { flag: "--source <name>", description: "Write to semantic/{name}/ subdirectory (per-source layout)" },
-      { flag: "--connection <name>", description: "Profile a named datasource from atlas.config.ts" },
-      { flag: "--csv <file1.csv,...>", description: "Load CSV files via DuckDB (no DB server needed)" },
-      { flag: "--parquet <f1.parquet,...>", description: "Load Parquet files via DuckDB" },
+      { flag: "--source <name>", description: "Write to semantic/{name}/ subdirectory (mutually exclusive with --connection)" },
+      { flag: "--connection <name>", description: "Profile a named datasource from atlas.config.ts (mutually exclusive with --source)" },
+      { flag: "--csv <file1.csv,...>", description: "Load CSV files via DuckDB (no DB server needed, requires @duckdb/node-api)" },
+      { flag: "--parquet <f1.parquet,...>", description: "Load Parquet files via DuckDB (requires @duckdb/node-api)" },
       { flag: "--enrich", description: "Add LLM-enriched descriptions and query patterns (requires API key)" },
       { flag: "--no-enrich", description: "Explicitly skip LLM enrichment" },
       { flag: "--force", description: "Continue even if more than 20% of tables fail to profile" },
@@ -4810,7 +4819,7 @@ const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
     usage: "diff [options]",
     flags: [
       { flag: "--tables <t1,t2>", description: "Diff only specific tables/views" },
-      { flag: "--schema <name>", description: "PostgreSQL schema (default: public, or ATLAS_SCHEMA env var)" },
+      { flag: "--schema <name>", description: "PostgreSQL schema (falls back to ATLAS_SCHEMA, then public)" },
       { flag: "--source <name>", description: "Read from semantic/{name}/ subdirectory" },
     ],
     examples: [
@@ -4875,10 +4884,10 @@ const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
   plugin: {
     description: "Manage Atlas plugins.",
     usage: "plugin <list|create|add>",
-    flags: [
-      { flag: "list", description: "List installed plugins from atlas.config.ts" },
-      { flag: "create <name> --type <type>", description: "Scaffold a new plugin (datasource|context|interaction|action|sandbox)" },
-      { flag: "add <package-name>", description: "Install a plugin package" },
+    subcommands: [
+      { name: "list", description: "List installed plugins from atlas.config.ts" },
+      { name: "create <name> --type <type>", description: "Scaffold a new plugin (datasource|context|interaction|action|sandbox)" },
+      { name: "add <package-name>", description: "Install a plugin package" },
     ],
     examples: [
       "atlas plugin list",
@@ -4890,7 +4899,7 @@ const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
     description: "Run the evaluation pipeline against demo schemas to measure text-to-SQL accuracy.",
     usage: "eval [options]",
     flags: [
-      { flag: "--schema <name>", description: "Filter by demo dataset name (e.g. simple, cybersec, ecommerce)" },
+      { flag: "--schema <name>", description: "Filter by demo dataset (not a PostgreSQL schema; e.g. simple, cybersec, ecommerce)" },
       { flag: "--category <name>", description: "Filter by category" },
       { flag: "--difficulty <level>", description: "Filter by difficulty (simple|medium|complex)" },
       { flag: "--id <case-id>", description: "Run a single case" },
@@ -4988,7 +4997,7 @@ async function main() {
 
   // Per-subcommand --help
   if (wantsHelp(args) && command in SUBCOMMAND_HELP) {
-    printSubcommandHelp(command, SUBCOMMAND_HELP[command]);
+    printSubcommandHelp(SUBCOMMAND_HELP[command]);
     process.exit(0);
   }
 

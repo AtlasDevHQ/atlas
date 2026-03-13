@@ -256,6 +256,468 @@ function ThemeToggle() {
 
 ---
 
+## Patterns
+
+### Conversation History
+
+Use `useAtlasConversations` with `useAtlasChat` to load past conversations and manage message state. The conversation list requires an internal database (`DATABASE_URL`) — the `available` flag tells you whether the API supports it.
+
+```tsx
+import { useState } from "react";
+import { AtlasProvider, useAtlasChat, useAtlasConversations } from "@useatlas/react/hooks";
+
+function App() {
+  return (
+    <AtlasProvider apiUrl="https://your-atlas-api.example.com" apiKey="sk-...">
+      <ChatWithHistory />
+    </AtlasProvider>
+  );
+}
+
+function ChatWithHistory() {
+  // Destructure conversations first — refresh() is used in onConversationIdChange below
+  const {
+    conversations,
+    total,
+    isLoading: listLoading,
+    available,
+    selectedId,
+    setSelectedId,
+    loadConversation,
+    deleteConversation,
+    starConversation,
+    refresh,
+  } = useAtlasConversations();
+
+  const {
+    messages,
+    sendMessage,
+    input,
+    setInput,
+    isLoading,
+    setMessages,
+    setConversationId,
+    conversationId,
+  } = useAtlasChat({
+    // Called when the server assigns a conversation ID to a new chat
+    onConversationIdChange: (id) => {
+      // Refresh the sidebar so the new conversation appears
+      refresh();
+    },
+  });
+
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  // Load a past conversation into the chat view
+  async function selectConversation(id: string) {
+    setLoadError(null);
+    const msgs = await loadConversation(id);
+    if (msgs) {
+      setMessages(msgs);        // Replace current messages with loaded history
+      setConversationId(id);    // Link future messages to this conversation
+      setSelectedId(id);        // Highlight in the sidebar
+    } else {
+      setLoadError("Could not load conversation. It may have been deleted.");
+    }
+  }
+
+  // Start a fresh conversation
+  function handleNewChat() {
+    setMessages([]);             // Clear message history
+    setConversationId(null);     // Detach from any previous conversation
+    setSelectedId(null);         // Deselect in the sidebar
+  }
+
+  // Conversations require an internal DB — show a message if unavailable
+  if (!available) {
+    return <p>Conversation history requires DATABASE_URL to be configured.</p>;
+  }
+
+  return (
+    <div style={{ display: "flex", gap: "1rem" }}>
+      {/* Sidebar: conversation list with star/delete actions */}
+      <aside style={{ width: 250 }}>
+        <button onClick={handleNewChat}>New Chat</button>
+        {listLoading && <p>Loading conversations...</p>}
+        <ul>
+          {conversations.map((c) => (
+            <li key={c.id}>
+              <button
+                onClick={() => selectConversation(c.id)}
+                // Highlight the active conversation
+                style={{ fontWeight: selectedId === c.id ? "bold" : "normal" }}
+              >
+                {c.title ?? "Untitled"}
+              </button>
+              {/* Toggle starred state — pinned conversations sort first */}
+              <button onClick={() => starConversation(c.id, !c.starred)}>
+                {c.starred ? "Unstar" : "Star"}
+              </button>
+              <button onClick={() => deleteConversation(c.id)}>Delete</button>
+            </li>
+          ))}
+        </ul>
+        {/* Show total for pagination awareness */}
+        <p>{conversations.length} of {total} conversations</p>
+      </aside>
+
+      {/* Main chat area */}
+      <main style={{ flex: 1 }}>
+        {loadError && <p style={{ color: "red" }}>{loadError}</p>}
+        <div>
+          {messages.map((msg) => (
+            <div key={msg.id}>
+              <strong>{msg.role}:</strong>
+              {msg.parts?.map((p, i) =>
+                p.type === "text" ? <span key={i}>{p.text}</span> : null
+              )}
+            </div>
+          ))}
+        </div>
+        <form onSubmit={(e) => { e.preventDefault(); sendMessage(input); }}>
+          <input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Ask a question..."
+          />
+          <button type="submit" disabled={isLoading}>Send</button>
+        </form>
+      </main>
+    </div>
+  );
+}
+```
+
+### Custom Styling
+
+The `AtlasChat` component uses CSS custom properties scoped to `.atlas-root`, data attributes on key elements, and Tailwind utility classes. You can customize the look without forking the component.
+
+#### CSS Custom Properties
+
+Override design tokens by targeting `.atlas-root`. These map to shadcn/ui's token system:
+
+```css
+/* Override Atlas design tokens in your app's CSS */
+.atlas-root {
+  --background: oklch(0.98 0.01 240);     /* Light blue-tinted background */
+  --foreground: oklch(0.15 0.02 260);     /* Slightly blue-shifted text */
+  --primary: oklch(0.45 0.2 260);         /* Custom primary (indigo) */
+  --primary-foreground: oklch(0.98 0 0);  /* White text on primary */
+  --radius: 0.75rem;                       /* Rounder corners */
+  --atlas-brand: oklch(0.6 0.2 260);      /* Brand accent color (indigo) */
+}
+
+/* Dark mode overrides — applied when <html> has the "dark" class */
+.dark .atlas-root {
+  --background: oklch(0.15 0.02 260);
+  --foreground: oklch(0.95 0.01 240);
+  --primary: oklch(0.7 0.15 260);
+}
+```
+
+#### Data Attribute Selectors
+
+Key elements expose `data-*` attributes for targeted styling:
+
+```css
+/* Style the message input field */
+[data-atlas-input] {
+  font-family: "Inter", sans-serif;
+  font-size: 16px;                /* Prevent iOS zoom on focus */
+}
+
+/* Style the input form container */
+[data-atlas-form] {
+  padding-top: 1rem;
+  border-top: 2px solid var(--border);
+}
+
+/* Style the message list container */
+[data-atlas-messages] {
+  gap: 1.5rem;                    /* More space between messages */
+}
+
+/* Style the Atlas logo */
+[data-atlas-logo] {
+  color: var(--atlas-brand);      /* Tint logo with brand color */
+}
+```
+
+#### Programmatic Brand Color
+
+Use `applyBrandColor` from `useAtlasTheme` to set the brand color at runtime — for example, to match your product's theme:
+
+```tsx
+import { useAtlasTheme } from "@useatlas/react/hooks";
+
+function BrandPicker() {
+  const { applyBrandColor } = useAtlasTheme();
+
+  // applyBrandColor sets the --atlas-brand CSS custom property on :root.
+  // Use oklch format for consistency with the built-in theme tokens.
+  return (
+    <div>
+      <button onClick={() => applyBrandColor("oklch(0.6 0.2 260)")}>
+        Indigo
+      </button>
+      <button onClick={() => applyBrandColor("oklch(0.65 0.2 150)")}>
+        Emerald
+      </button>
+      <button onClick={() => applyBrandColor("oklch(0.6 0.25 30)")}>
+        Coral
+      </button>
+    </div>
+  );
+}
+```
+
+### Error Boundaries
+
+Atlas hooks throw when used outside their provider. Wrap Atlas components in an error boundary to catch initialization errors gracefully. For runtime errors during streaming, check the `error` state from `useAtlasChat` and render inline feedback:
+
+```tsx
+import { Component, type ReactNode } from "react";
+import { AtlasProvider, useAtlasChat } from "@useatlas/react/hooks";
+
+// Error boundary that catches render errors from Atlas hooks
+class AtlasErrorBoundary extends Component<
+  { children: ReactNode; fallback?: ReactNode },
+  { error: Error | null }
+> {
+  state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  render() {
+    if (this.state.error) {
+      // Show fallback UI when an Atlas component throws
+      return this.props.fallback ?? (
+        <div role="alert" style={{ padding: "1rem", border: "1px solid red" }}>
+          <h2>Something went wrong</h2>
+          <p>{this.state.error.message}</p>
+          <button onClick={() => this.setState({ error: null })}>
+            Try again
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// Usage — wrap the chat UI so provider or network errors don't crash the page
+function App() {
+  return (
+    <AtlasErrorBoundary
+      fallback={
+        <div style={{ padding: "2rem", textAlign: "center" }}>
+          <p>Atlas is temporarily unavailable.</p>
+          <p>Please refresh the page to try again.</p>
+        </div>
+      }
+    >
+      <AtlasProvider apiUrl="https://your-atlas-api.example.com" apiKey="sk-...">
+        <ChatUI />
+      </AtlasProvider>
+    </AtlasErrorBoundary>
+  );
+}
+
+function ChatUI() {
+  // useAtlasChat throws if used outside AtlasProvider — the error
+  // boundary above catches this and shows the fallback UI
+  const { messages, sendMessage, error, status } = useAtlasChat();
+
+  return (
+    <div>
+      {/* Show runtime errors (network, streaming) inline instead of crashing */}
+      {error && (
+        <div role="alert" style={{ color: "red", padding: "0.5rem" }}>
+          Error: {error.message}
+        </div>
+      )}
+      {messages.map((msg) => (
+        <div key={msg.id}>
+          {msg.parts?.map((p, i) =>
+            p.type === "text" ? <p key={i}>{p.text}</p> : null
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+```
+
+---
+
+## TypeScript Types
+
+The `@useatlas/react/hooks` entry point re-exports all types you need. These are canonical from `@useatlas/types` — no local type duplication needed.
+
+### Message Types
+
+Atlas uses the AI SDK's `UIMessage` format for chat messages. When loading conversation history, server-side `Message` objects are transformed into `UIMessage` automatically.
+
+```typescript
+import type { UIMessage } from "@ai-sdk/react";
+
+// UIMessage — the format returned by useAtlasChat().messages
+// Each message contains an array of typed parts (text, tool calls, etc.)
+interface UIMessage {
+  id: string;
+  role: "system" | "user" | "assistant";
+  parts: Array<
+    | { type: "text"; text: string }         // Plain text content
+    | { type: "tool-invocation"; /* ... */ }  // Tool call (executeSQL, explore, etc.)
+  >;
+}
+
+// Message — server-side format from the conversations API
+// Transformed into UIMessage by loadConversation()
+interface Message {
+  id: string;
+  conversationId: string;
+  role: "user" | "assistant" | "system" | "tool";
+  content: unknown;   // String for user/assistant, structured object for tool results
+  createdAt: string;  // ISO 8601 timestamp
+}
+```
+
+### Conversation Types
+
+```typescript
+// Conversation — metadata returned by useAtlasConversations().conversations
+interface Conversation {
+  id: string;
+  userId: string | null;
+  title: string | null;        // Auto-generated from first message, or null
+  surface: "web" | "api" | "mcp" | "slack";
+  connectionId: string | null; // Datasource used for this conversation
+  starred: boolean;            // Pinned by user
+  createdAt: string;           // ISO 8601 timestamp
+  updatedAt: string;           // ISO 8601 timestamp
+}
+
+// ConversationWithMessages — returned by the GET /api/v1/conversations/:id endpoint
+interface ConversationWithMessages extends Conversation {
+  messages: Message[];
+}
+
+```
+
+### Tool Result Types
+
+Custom tool renderers receive typed results via `ToolRendererProps`. The package exports specific result shapes for built-in tools:
+
+```typescript
+import type {
+  ToolRendererProps,
+  ToolRenderers,
+  SQLToolResult,
+  ExploreToolResult,
+  PythonToolResult,
+} from "@useatlas/react/hooks";
+
+// ToolRendererProps<T> — props passed to custom tool renderer components
+interface ToolRendererProps<T = unknown> {
+  toolName: string;                  // Name of the tool (e.g. "executeSQL")
+  args: Record<string, unknown>;     // Input arguments passed to the tool
+  result: T;                         // Tool output (null while still running)
+  isLoading: boolean;                // Whether the tool invocation is in progress
+}
+
+// SQLToolResult — result from the executeSQL tool
+type SQLToolResult =
+  | { success: true; columns: string[]; rows: Record<string, unknown>[]; truncated?: boolean; explanation?: string; row_count?: number }
+  | { success: false; error: string };
+
+// ExploreToolResult — result from the explore tool (plain text output)
+type ExploreToolResult = string;
+
+// PythonToolResult — result from the executePython tool
+type PythonToolResult =
+  | { success: true; output?: string; explanation?: string; table?: { columns: string[]; rows: unknown[][] }; charts?: { base64: string; mimeType: "image/png" }[]; rechartsCharts?: { type: "line" | "bar" | "pie"; data: Record<string, unknown>[]; categoryKey: string; valueKeys: string[] }[] }
+  | { success: false; error: string; output?: string };
+
+// ToolRenderers — map of tool names to custom renderer components
+// Known tools get typed result generics; arbitrary tool names use `unknown`
+type ToolRenderers = {
+  executeSQL?: ComponentType<ToolRendererProps<SQLToolResult | null>>;
+  explore?: ComponentType<ToolRendererProps<ExploreToolResult | null>>;
+  executePython?: ComponentType<ToolRendererProps<PythonToolResult | null>>;
+} & {
+  [toolName: string]: ComponentType<ToolRendererProps> | undefined;
+};
+```
+
+### Auth & Error Types
+
+```typescript
+// AuthMode — detected from the server's /api/health endpoint
+type AuthMode = "none" | "simple-key" | "managed" | "byot";
+
+// AtlasChatStatus — chat state from useAtlasChat()
+type AtlasChatStatus = "ready" | "submitted" | "streaming" | "error";
+
+// ThemeMode — theme setting from useAtlasTheme()
+type ThemeMode = "light" | "dark" | "system";
+
+// ChatErrorCode — structured error codes from the chat API
+type ChatErrorCode =
+  | "auth_error"
+  | "rate_limited"
+  | "configuration_error"
+  | "no_datasource"
+  | "invalid_request"
+  | "provider_model_not_found"
+  | "provider_auth_error"
+  | "provider_rate_limit"
+  | "provider_timeout"
+  | "provider_unreachable"
+  | "provider_error"
+  | "internal_error"
+  | "validation_error"
+  | "not_found"
+  | "forbidden";
+
+// ChatErrorInfo — parsed error details (use parseChatError() to extract)
+interface ChatErrorInfo {
+  title: string;               // Primary user-facing message
+  detail?: string;             // Optional secondary context
+  retryAfterSeconds?: number;  // Seconds until retry (rate_limited only, clamped 0–300)
+  code?: ChatErrorCode;        // Server error code, if parseable
+}
+```
+
+### Hook Option & Return Types
+
+All hooks export their option and return types for use in wrapper components:
+
+```typescript
+import type {
+  // Provider
+  AtlasProviderProps,
+  AtlasContextValue,
+  AtlasAuthClient,
+  // useAtlasChat
+  UseAtlasChatOptions,
+  UseAtlasChatReturn,
+  AtlasChatStatus,
+  // useAtlasAuth
+  UseAtlasAuthReturn,
+  // useAtlasConversations
+  UseAtlasConversationsOptions,
+  UseAtlasConversationsReturn,
+  // useAtlasTheme
+  UseAtlasThemeReturn,
+  ThemeMode,
+} from "@useatlas/react/hooks";
+```
+
+---
+
 ## Full Example: Custom Chat UI
 
 A minimal working example combining multiple hooks:

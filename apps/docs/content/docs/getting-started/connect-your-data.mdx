@@ -63,7 +63,7 @@ The `pg` driver (v8+) treats `sslmode=require` as `verify-full`. Atlas normalize
 ATLAS_SCHEMA=analytics
 ```
 
-Atlas validates the schema name at startup and checks that it exists via `pg_namespace`.
+Atlas validates the schema name at startup (must be a valid SQL identifier — letters, digits, and underscores only) and checks that it exists via `pg_namespace`.
 </Step>
 
 <Step>
@@ -75,7 +75,7 @@ ATLAS_DATASOURCE_URL="your-connection-string" bun run atlas -- init
 
 <Callout type="info" title="You should see">
 ```
-Profiling postgres database...
+Atlas Init — profiling postgres database...
   [1/N] Profiling table_name...
 Done! Semantic layer for "default" is at ./semantic/
 ```
@@ -94,7 +94,7 @@ bun run dev
 curl http://localhost:3001/api/health
 ```
 
-Confirm `datasource.status` is `"ok"` and `sources.default.dbType` is `"postgres"`.
+Confirm `checks.datasource.status` is `"ok"` and `sources.default.dbType` is `"postgres"`.
 </Step>
 </Steps>
 
@@ -167,7 +167,7 @@ bun run dev
 curl http://localhost:3001/api/health
 ```
 
-Confirm `datasource.status` is `"ok"` and `sources.default.dbType` is `"mysql"`.
+Confirm `checks.datasource.status` is `"ok"` and `sources.default.dbType` is `"mysql"`.
 </Step>
 </Steps>
 
@@ -265,6 +265,8 @@ ADC works automatically in GCE, Cloud Run, and GKE. For local development, run `
 | `location` | `string` | — | Query job location (`US`, `EU`, `us-east1`, etc.) |
 | `keyFilename` | `string` | — | Path to service account JSON key file |
 | `credentials` | `object` | — | Parsed service account JSON key |
+| `costApproval` | `"auto" \| "threshold" \| "always"` | `"threshold"` | When to gate queries on estimated cost |
+| `costThreshold` | `number` | `1.0` | USD threshold for `"threshold"` mode |
 </Step>
 
 <Step>
@@ -318,7 +320,7 @@ bun run dev
 curl http://localhost:3001/api/health
 ```
 
-Confirm `sources.default.dbType` is `"bigquery"`.
+Confirm the health response includes a source with `dbType` set to `"bigquery"` (the plugin registers as `"bigquery-datasource"` in the `sources` object).
 
 <Callout type="info">
 BigQuery runs a dry-run cost estimate before every query. By default, queries estimated above $1.00 USD are blocked. Configure this with the `costThreshold` and `costApproval` plugin options.
@@ -414,7 +416,7 @@ bun run dev
 curl http://localhost:3001/api/health
 ```
 
-Confirm `sources.default.dbType` is `"clickhouse"`.
+Confirm the health response includes a source with `dbType` set to `"clickhouse"` (the plugin registers as `"clickhouse-datasource"` in the `sources` object).
 </Step>
 </Steps>
 
@@ -515,7 +517,7 @@ bun run dev
 curl http://localhost:3001/api/health
 ```
 
-Confirm `sources.default.dbType` is `"snowflake"`.
+Confirm the health response includes a source with `dbType` set to `"snowflake"` (the plugin registers as `"snowflake-datasource"` in the `sources` object).
 </Step>
 </Steps>
 
@@ -608,7 +610,7 @@ bun run dev
 curl http://localhost:3001/api/health
 ```
 
-Confirm `sources.default.dbType` is `"duckdb"`.
+Confirm the health response includes a source with `dbType` set to `"duckdb"` (the plugin registers as `"duckdb-datasource"` in the `sources` object).
 </Step>
 </Steps>
 
@@ -690,7 +692,7 @@ bun run dev
 curl http://localhost:3001/api/health
 ```
 
-Confirm `sources.default.dbType` is `"salesforce"`.
+Confirm the health response includes a source with `dbType` set to `"salesforce"` (the plugin registers as `"salesforce-datasource"` in the `sources` object).
 </Step>
 </Steps>
 
@@ -703,7 +705,7 @@ Confirm `sources.default.dbType` is `"salesforce"`.
 <Accordion title="SOQL differences from SQL">
 - No `SELECT *` — always list specific fields
 - No `JOIN` — use relationship queries: `SELECT Account.Name FROM Contact`
-- Date literals: `TODAY`, `LAST_WEEK`, `LAST_N_DAYS:30`
+- Date literals: `YESTERDAY`, `TODAY`, `THIS_MONTH`, `LAST_WEEK`, `LAST_N_DAYS:30`
 - The agent uses `querySalesforce` instead of `executeSQL`
 </Accordion>
 </Accordions>
@@ -766,7 +768,7 @@ export default defineConfig({
 });
 ```
 
-The agent's `executeSQL` tool accepts an optional `connectionId` parameter to target a specific datasource. The `"default"` datasource is used when no ID is specified.
+The agent's `executeSQL` tool accepts an optional `connectionId` parameter to target a specific datasource. The `"default"` datasource is used when no ID is specified. Plugins register under their own IDs: `"clickhouse-datasource"`, `"snowflake-datasource"`, `"duckdb-datasource"`, etc.
 
 ---
 
@@ -778,7 +780,7 @@ Atlas enforces several safety limits. Tune them via environment variables:
 |----------|---------|-------------|
 | `ATLAS_TABLE_WHITELIST` | `true` | Only allow queries against tables in `semantic/entities/*.yml` |
 | `ATLAS_ROW_LIMIT` | `1000` | Maximum rows returned per query (auto-appended as `LIMIT`) |
-| `ATLAS_QUERY_TIMEOUT` | `30000` | Per-query timeout in milliseconds |
+| `ATLAS_QUERY_TIMEOUT` | `30000` | Per-query timeout in milliseconds. Enforced via `SET statement_timeout` (PostgreSQL), `MAX_EXECUTION_TIME` (MySQL), `max_execution_time` (ClickHouse), or `STATEMENT_TIMEOUT_IN_SECONDS` (Snowflake) |
 
 Non-SELECT SQL (INSERT, UPDATE, DELETE, DROP, etc.) is always rejected. There is no toggle to disable this.
 

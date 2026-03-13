@@ -277,7 +277,7 @@ export function parseChatError(error: Error, authMode: AuthMode): ChatErrorInfo 
         title: "Too many requests.",
         detail: clamped !== undefined
           ? `Try again in ${clamped} seconds.`
-          : "Please wait before trying again.",
+          : serverMessage ?? "Please wait before trying again.",
         retryAfterSeconds: clamped,
         code: rawCode,
         retryable,

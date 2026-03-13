@@ -269,6 +269,18 @@ describe("POST /api/chat", () => {
     expect(mockRunAgent).not.toHaveBeenCalled();
   });
 
+  it("returns 429 with Retry-After for pool exhaustion errors", async () => {
+    mockRunAgent.mockRejectedValueOnce(new Error("sorry, too many clients already"));
+    const response = await app.fetch(makeRequest());
+    expect(response.status).toBe(429);
+    expect(response.headers.get("Retry-After")).toBe("5");
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.error).toBe("rate_limited");
+    expect(body.retryable).toBe(true);
+    expect(body.retryAfterSeconds).toBe(5);
+    expect(body.message).toContain("pool exhausted");
+  });
+
   it("returns 400 when ATLAS_DATASOURCE_URL is not set", async () => {
     delete process.env.ATLAS_DATASOURCE_URL;
 

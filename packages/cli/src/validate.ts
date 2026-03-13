@@ -861,12 +861,12 @@ export async function runValidate(opts?: ValidateOptions): Promise<number> {
 
   // --- Connectivity section (skipped in offline mode) ---
   if (!opts?.offline) {
-    const [dsUrl, dbConn, provider, internalDb, sandbox] = await Promise.all([
+    const [dsUrl, dbConn, provider, sandbox, internalDb] = await Promise.all([
       safeRunAsync(() => fromCheckResult(checkDatasourceUrl()), "ATLAS_DATASOURCE_URL"),
       safeRunAsync(async () => fromCheckResult(await checkDatabaseConnectivity()), "Database connectivity"),
       safeRunAsync(() => fromCheckResult(checkProvider()), "LLM provider"),
-      safeRunAsync(async () => fromCheckResult(await checkInternalDb()), "Internal DB"),
       safeRunAsync(() => fromCheckResult(checkSandbox()), "Sandbox"),
+      safeRunAsync(async () => fromCheckResult(await checkInternalDb()), "Internal DB"),
     ]);
 
     sections.push({

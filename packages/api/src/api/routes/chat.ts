@@ -440,9 +440,15 @@ chat.post("/", async (c) => {
             : code === "provider_timeout"
               ? "The request timed out. The LLM provider took too long to respond. Try again, or if using a local model, ensure it has sufficient resources."
               : matched.message;
-          // Pool exhaustion is transient — warn, don't error
-          const logFn = code === "rate_limited" ? log.warn : log.error;
-          logFn.call(log, { err: errObj, category: code }, "Matched error: %s", code);
+          if (code === "rate_limited") {
+            // Pool exhaustion is transient — warn, don't error
+            log.warn({ err: errObj, category: code }, "Matched error: %s", code);
+            return c.json(
+              { error: code, message: userMessage, retryable: true, retryAfterSeconds: 5, requestId },
+              { status: 429, headers: { "Retry-After": "5" } },
+            );
+          }
+          log.error({ err: errObj, category: code }, "Matched error: %s", code);
           return c.json(
             { error: code, message: userMessage, retryable: isRetryableError(code), requestId },
             httpStatus as 500,

@@ -396,3 +396,46 @@ describe("parseChatError retryable", () => {
     expect(info.retryable).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// parseChatError — rate_limited detail uses server message for pool exhaustion
+// ---------------------------------------------------------------------------
+
+describe("parseChatError rate_limited detail", () => {
+  const authMode: AuthMode = "none";
+
+  test("uses retryAfterSeconds when present (API rate limit)", () => {
+    const err = new Error(
+      JSON.stringify({
+        error: "rate_limited",
+        message: "Too many requests. Please wait before trying again.",
+        retryAfterSeconds: 30,
+      }),
+    );
+    const info = parseChatError(err, authMode);
+    expect(info.detail).toBe("Try again in 30 seconds.");
+    expect(info.retryAfterSeconds).toBe(30);
+  });
+
+  test("uses server message when retryAfterSeconds is absent (pool exhaustion)", () => {
+    const err = new Error(
+      JSON.stringify({
+        error: "rate_limited",
+        message: "Database connection pool exhausted — try again in a few seconds, or reduce concurrent queries",
+      }),
+    );
+    const info = parseChatError(err, authMode);
+    expect(info.detail).toContain("pool exhausted");
+    expect(info.retryAfterSeconds).toBeUndefined();
+  });
+
+  test("falls back to generic message when no server message and no retryAfterSeconds", () => {
+    const err = new Error(
+      JSON.stringify({
+        error: "rate_limited",
+      }),
+    );
+    const info = parseChatError(err, authMode);
+    expect(info.detail).toBe("Please wait before trying again.");
+  });
+});

@@ -4845,17 +4845,21 @@ const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
     ],
   },
   doctor: {
-    description: "Validate the environment, connectivity, and configuration.",
+    description: "Alias for 'atlas validate' — validate config, semantic layer, and connectivity.",
     usage: "doctor",
     examples: [
       "atlas doctor",
     ],
   },
   validate: {
-    description: "Check semantic layer YAML files for errors. Runs offline — no database or API key required.",
-    usage: "validate",
+    description: "Validate config, semantic layer, and connectivity. Use --offline to skip connectivity checks.",
+    usage: "validate [options]",
+    flags: [
+      { flag: "--offline", description: "Skip connectivity checks (datasource, provider, internal DB)" },
+    ],
     examples: [
       "atlas validate",
+      "atlas validate --offline",
     ],
   },
   mcp: {
@@ -4965,8 +4969,8 @@ function printOverviewHelp(): void {
     "  init          Profile DB and generate semantic layer\n" +
     "  diff          Compare DB schema against existing semantic layer\n" +
     "  query         Ask a question via the Atlas API\n" +
-    "  doctor        Validate environment, connectivity, and configuration\n" +
-    "  validate      Check config and semantic layer YAML files (offline)\n" +
+    "  validate      Validate config, semantic layer, and connectivity\n" +
+    "  doctor        Alias for validate\n" +
     "  eval          Run eval pipeline against demo schemas\n" +
     "  smoke         Run E2E smoke tests against a running Atlas deployment\n" +
     "  migrate       Generate/apply plugin schema migrations\n" +
@@ -5029,14 +5033,16 @@ async function main() {
   }
 
   if (command === "doctor") {
-    const { runDoctor } = await import("../src/doctor");
-    const exitCode = await runDoctor();
+    // doctor is an alias for validate (with connectivity)
+    const { runValidate } = await import("../src/validate");
+    const exitCode = await runValidate();
     process.exit(exitCode);
   }
 
   if (command === "validate") {
     const { runValidate } = await import("../src/validate");
-    const exitCode = await runValidate();
+    const offline = args.includes("--offline");
+    const exitCode = await runValidate({ offline });
     process.exit(exitCode);
   }
 

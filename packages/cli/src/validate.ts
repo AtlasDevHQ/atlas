@@ -1,10 +1,12 @@
 /**
- * Atlas Validate — check config and semantic layer YAML files offline.
+ * Atlas Validate — unified validation for config, semantic layer, and connectivity.
  *
- * Validates YAML syntax, required fields, and cross-references without
- * connecting to a database or network.
+ * Combines offline checks (YAML syntax, required fields, cross-references) with
+ * connectivity checks (datasource, provider, internal DB, sandbox) from doctor.
  *
- * Exit 0 if all checks pass (warnings are OK), exit 1 on errors.
+ * Use --offline to skip connectivity checks and run purely local validation.
+ *
+ * Exit codes: 0 = all pass, 1 = any fail, 2 = warnings only.
  */
 
 import * as fs from "fs";
@@ -14,7 +16,14 @@ import * as p from "@clack/prompts";
 import pc from "picocolors";
 
 // Re-use check types from doctor
-import type { CheckStatus } from "./doctor";
+import type { CheckStatus, CheckResult } from "./doctor";
+import {
+  checkDatasourceUrl,
+  checkDatabaseConnectivity,
+  checkProvider,
+  checkSandbox,
+  checkInternalDb,
+} from "./doctor";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -25,6 +34,25 @@ export interface ValidateResult {
   label: string;
   detail: string;
   fix?: string;
+}
+
+export interface ValidateOptions {
+  offline?: boolean;
+}
+
+export interface ValidateSection {
+  category: string;
+  results: ValidateResult[];
+}
+
+/** Convert a doctor CheckResult to a ValidateResult. */
+function fromCheckResult(check: CheckResult): ValidateResult {
+  return {
+    status: check.status,
+    label: check.name,
+    detail: check.detail,
+    fix: check.fix,
+  };
 }
 
 interface EntityInfo {
@@ -711,6 +739,31 @@ export function renderValidateResults(results: ValidateResult[]): void {
   console.log();
 }
 
+export function renderValidateSections(sections: ValidateSection[]): void {
+  p.intro(pc.bold("Atlas Validate"));
+
+  const nonEmpty = sections.filter((s) => s.results.length > 0);
+  if (nonEmpty.length === 0) {
+    console.log("  No checks were run.\n");
+    return;
+  }
+
+  for (const section of nonEmpty) {
+    console.log(`  ${pc.bold(section.category)}`);
+    const maxLabelLen = Math.max(...section.results.map((r) => r.label.length));
+
+    for (const result of section.results) {
+      const icon = statusIcon(result.status);
+      const label = result.label.padEnd(maxLabelLen);
+      console.log(`    ${icon} ${label}  ${result.detail}`);
+      if (result.fix) {
+        console.log(`      ${pc.dim("→")} ${pc.dim(result.fix)}`);
+      }
+    }
+    console.log();
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Main entry point
 // ---------------------------------------------------------------------------
@@ -722,6 +775,23 @@ function safeRunSingle(
 ): ValidateResult {
   try {
     return fn();
+  } catch (err) {
+    return {
+      status: "fail",
+      label: fallbackLabel,
+      detail: `Unexpected error: ${err instanceof Error ? err.message : String(err)}`,
+      fix: "This check crashed unexpectedly — please report this as a bug",
+    };
+  }
+}
+
+/** Wrap an async check so unexpected throws become fail results. */
+async function safeRunAsync(
+  fn: () => ValidateResult | Promise<ValidateResult>,
+  fallbackLabel: string,
+): Promise<ValidateResult> {
+  try {
+    return await fn();
   } catch (err) {
     return {
       status: "fail",
@@ -744,13 +814,17 @@ function safeRunMulti<T>(
   }
 }
 
-export async function runValidate(): Promise<number> {
-  const results: ValidateResult[] = [];
+export async function runValidate(opts?: ValidateOptions): Promise<number> {
+  const sections: ValidateSection[] = [];
 
-  // 1. Config file
-  results.push(safeRunSingle(() => checkConfig(), "atlas.config.ts"));
+  // --- Config section ---
+  const configResults: ValidateResult[] = [];
+  configResults.push(safeRunSingle(() => checkConfig(), "atlas.config.ts"));
+  sections.push({ category: "Config", results: configResults });
 
-  // 2. Entity YAMLs
+  // --- Semantic Layer section ---
+  const semanticResults: ValidateResult[] = [];
+
   const { results: entityResults, entities } = safeRunMulti(
     () => checkEntities(),
     "semantic/entities/",
@@ -759,13 +833,11 @@ export async function runValidate(): Promise<number> {
       entities: [],
     }),
   );
-  results.push(...entityResults);
+  semanticResults.push(...entityResults);
 
-  // 3. Glossary and Catalog
-  results.push(safeRunSingle(() => checkGlossary(), "semantic/glossary.yml"));
-  results.push(safeRunSingle(() => checkCatalog(), "semantic/catalog.yml"));
+  semanticResults.push(safeRunSingle(() => checkGlossary(), "semantic/glossary.yml"));
+  semanticResults.push(safeRunSingle(() => checkCatalog(), "semantic/catalog.yml"));
 
-  // 4. Metrics
   const { results: metricResults, metrics } = safeRunMulti(
     () => checkMetrics(),
     "semantic/metrics/",
@@ -774,20 +846,43 @@ export async function runValidate(): Promise<number> {
       metrics: [],
     }),
   );
-  results.push(...metricResults);
+  semanticResults.push(...metricResults);
 
-  // 5. Cross-references (only if we have entities)
   if (entities.length > 0) {
     const crossRefResults = safeRunMulti(
       () => checkCrossReferences(entities, metrics),
       "cross-references",
       (err) => [{ status: "fail" as const, label: "cross-references", detail: `Unexpected error: ${err.message}`, fix: "Please report this as a bug" }],
     );
-    results.push(...crossRefResults);
+    semanticResults.push(...crossRefResults);
   }
 
-  renderValidateResults(results);
+  sections.push({ category: "Semantic Layer", results: semanticResults });
 
-  const hasError = results.some((r) => r.status === "fail");
-  return hasError ? 1 : 0;
+  // --- Connectivity section (skipped in offline mode) ---
+  if (!opts?.offline) {
+    const [dsUrl, dbConn, provider, internalDb, sandbox] = await Promise.all([
+      safeRunAsync(() => fromCheckResult(checkDatasourceUrl()), "ATLAS_DATASOURCE_URL"),
+      safeRunAsync(async () => fromCheckResult(await checkDatabaseConnectivity()), "Database connectivity"),
+      safeRunAsync(() => fromCheckResult(checkProvider()), "LLM provider"),
+      safeRunAsync(async () => fromCheckResult(await checkInternalDb()), "Internal DB"),
+      safeRunAsync(() => fromCheckResult(checkSandbox()), "Sandbox"),
+    ]);
+
+    sections.push({
+      category: "Connectivity",
+      results: [dsUrl, dbConn, provider, sandbox, internalDb],
+    });
+  }
+
+  renderValidateSections(sections);
+
+  // Exit codes: 0 = all pass, 1 = any fail, 2 = warnings only
+  const allResults = sections.flatMap((s) => s.results);
+  const hasFail = allResults.some((r) => r.status === "fail");
+  const hasWarn = allResults.some((r) => r.status === "warn");
+
+  if (hasFail) return 1;
+  if (hasWarn) return 2;
+  return 0;
 }

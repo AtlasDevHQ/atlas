@@ -18,16 +18,31 @@ bun add @useatlas/sdk
 ```typescript
 import { createAtlasClient } from "@useatlas/sdk";
 
-// Simple API key auth
+// Simple API key auth — pass the key issued in the admin console
 const atlas = createAtlasClient({
   baseUrl: "https://api.example.com",
   apiKey: "your-api-key",
 });
+```
 
-// Bearer token auth (managed sessions or BYOT JWTs)
+### Bearer Token Auth
+
+Use a bearer token for managed sessions (Better Auth) or bring-your-own-token (BYOT) JWTs:
+
+```typescript
+import { createAtlasClient } from "@useatlas/sdk";
+
+// Bearer token auth — pass a JWT or session token from your auth provider
 const atlas = createAtlasClient({
   baseUrl: "https://api.example.com",
   bearerToken: "your-jwt-or-session-token",
+});
+
+// Both can be provided — apiKey takes precedence for the Authorization header
+const atlas = createAtlasClient({
+  baseUrl: "https://api.example.com",
+  apiKey: "your-api-key",         // Used for Authorization header
+  bearerToken: "your-jwt-token",  // Ignored when apiKey is present
 });
 ```
 
@@ -236,6 +251,41 @@ await atlas.conversations.unstar("conversation-id");
 await atlas.conversations.delete("conversation-id");
 ```
 
+### Pagination
+
+Conversations use offset-based pagination. Pass `limit` and `offset` to page through results:
+
+```typescript
+// Fetch the first page of conversations (20 per page)
+const page1 = await atlas.conversations.list({ limit: 20, offset: 0 });
+console.log(page1.conversations); // First 20 conversations
+console.log(page1.total);         // Total number of conversations
+```
+
+To iterate through all conversations:
+
+```typescript
+// Collect all conversations by advancing the offset each page
+const all: Conversation[] = [];
+const pageSize = 50;
+let offset = 0;
+
+while (true) {
+  const { conversations, total } = await atlas.conversations.list({
+    limit: pageSize,
+    offset,
+  });
+
+  all.push(...conversations);
+
+  // Stop when we've fetched everything
+  if (all.length >= total) break;
+  offset += pageSize;
+}
+
+console.log(`Fetched ${all.length} conversations`);
+```
+
 ### Types
 
 ```typescript
@@ -384,6 +434,109 @@ try {
 | `network_error` | — | Could not reach the API |
 | `invalid_response` | — | Response could not be parsed |
 | `unknown_error` | — | Unrecognized error |
+
+### Handling Specific Error Codes
+
+Different error codes require different recovery strategies:
+
+```typescript
+import { AtlasError } from "@useatlas/sdk";
+
+// Helper: sleep for a given number of milliseconds
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function queryWithRetry(atlas: AtlasClient, question: string) {
+  try {
+    return await atlas.query(question);
+  } catch (error) {
+    if (!(error instanceof AtlasError)) throw error;
+
+    switch (error.code) {
+      case "rate_limited": {
+        // Server tells you exactly how long to wait
+        const delay = (error.retryAfterSeconds ?? 10) * 1000;
+        console.log(`Rate limited — retrying in ${delay / 1000}s`);
+        await sleep(delay);
+        return atlas.query(question);
+      }
+
+      case "invalid_request":
+        // Bad input — fix the request, don't retry
+        console.error(`Bad request: ${error.message}`);
+        throw error;
+
+      case "provider_error":
+      case "provider_timeout":
+      case "provider_unreachable": {
+        // Transient LLM provider issue — retry with exponential backoff
+        console.log(`Provider issue (${error.code}) — retrying in 5s`);
+        await sleep(5000);
+        return atlas.query(question);
+      }
+
+      case "internal_error":
+        // Server error — log for support, include the status for triage
+        console.error(
+          `Internal error (HTTP ${error.status}): ${error.message}`
+        );
+        throw error;
+
+      default:
+        throw error;
+    }
+  }
+}
+```
+
+---
+
+## Batch Patterns
+
+Run multiple queries in parallel using `Promise.all`. Each call is independent, so they execute concurrently:
+
+```typescript
+// Run three independent queries at the same time
+const [revenue, users, topProducts] = await Promise.all([
+  atlas.query("What was last month's revenue?"),
+  atlas.query("How many active users this week?"),
+  atlas.query("Top 5 products by sales volume"),
+]);
+
+// Each result has the standard QueryResponse shape
+console.log(revenue.answer);
+console.log(users.data);
+console.log(topProducts.sql);
+```
+
+For large batches, limit concurrency to avoid rate limits:
+
+```typescript
+// Process questions in chunks to stay within rate limits
+const questions = [
+  "Revenue by region",
+  "Customer churn rate",
+  "Average order value",
+  "Support ticket volume",
+  "Monthly active users",
+  "Top referral sources",
+];
+
+const chunkSize = 3; // Max concurrent requests
+const results: QueryResponse[] = [];
+
+for (let i = 0; i < questions.length; i += chunkSize) {
+  // Slice the next chunk and run in parallel
+  const chunk = questions.slice(i, i + chunkSize);
+  const chunkResults = await Promise.all(
+    chunk.map((q) => atlas.query(q))
+  );
+  results.push(...chunkResults);
+}
+
+console.log(`Completed ${results.length} queries`);
+```
 
 ---
 

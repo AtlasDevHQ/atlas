@@ -18,6 +18,7 @@
     {
       "label": "Published packages use wide peer dep ranges for compatibility",
       "packages": [
+        "@useatlas/types",
         "@useatlas/react",
         "@useatlas/plugin-sdk",
         "@useatlas/bigquery",

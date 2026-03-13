@@ -33,6 +33,7 @@ export {
   type StreamFinishReason,
   type StreamQueryOptions,
   type DeliveryChannel,
+  type Recipient,
   type ScheduledTaskRecipient,
   type ScheduledTask,
   type ScheduledTaskWithRuns,

@@ -1,0 +1,77 @@
+{
+  "name": "@useatlas/types",
+  "version": "0.0.1",
+  "description": "Shared types for the Atlas text-to-SQL agent",
+  "type": "module",
+  "scripts": {
+    "build": "rm -rf dist && bun build src/index.ts src/auth.ts src/conversation.ts src/connection.ts src/action.ts src/scheduled-task.ts src/errors.ts src/semantic.ts src/share.ts --outdir dist --root src --target node --packages external && npx tsc -p tsconfig.build.json"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./auth": {
+      "types": "./dist/auth.d.ts",
+      "import": "./dist/auth.js",
+      "default": "./dist/auth.js"
+    },
+    "./conversation": {
+      "types": "./dist/conversation.d.ts",
+      "import": "./dist/conversation.js",
+      "default": "./dist/conversation.js"
+    },
+    "./connection": {
+      "types": "./dist/connection.d.ts",
+      "import": "./dist/connection.js",
+      "default": "./dist/connection.js"
+    },
+    "./action": {
+      "types": "./dist/action.d.ts",
+      "import": "./dist/action.js",
+      "default": "./dist/action.js"
+    },
+    "./scheduled-task": {
+      "types": "./dist/scheduled-task.d.ts",
+      "import": "./dist/scheduled-task.js",
+      "default": "./dist/scheduled-task.js"
+    },
+    "./errors": {
+      "types": "./dist/errors.d.ts",
+      "import": "./dist/errors.js",
+      "default": "./dist/errors.js"
+    },
+    "./semantic": {
+      "types": "./dist/semantic.d.ts",
+      "import": "./dist/semantic.js",
+      "default": "./dist/semantic.js"
+    },
+    "./share": {
+      "types": "./dist/share.d.ts",
+      "import": "./dist/share.js",
+      "default": "./dist/share.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist/"
+  ],
+  "keywords": [
+    "atlas",
+    "text-to-sql",
+    "types",
+    "typescript"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AtlasDevHQ/atlas",
+    "directory": "packages/types"
+  },
+  "homepage": "https://useatlas.dev",
+  "bugs": {
+    "url": "https://github.com/AtlasDevHQ/atlas/issues"
+  },
+  "license": "MIT"
+}

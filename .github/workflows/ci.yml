@@ -47,7 +47,7 @@ jobs:
         run: bash scripts/check-template-drift.sh
 
       - name: Build SDK packages
-        run: bun run --filter '@useatlas/plugin-sdk' build && bun run --filter '@useatlas/sdk' build
+        run: bun run --filter '@useatlas/types' build && bun run --filter '@useatlas/plugin-sdk' build && bun run --filter '@useatlas/sdk' build
 
       - name: Build widget bundle
         run: bun run --filter '@useatlas/react' build

@@ -457,7 +457,7 @@ describe("error handling", () => {
     }
   });
 
-  test("network failure throws AtlasError with code network_error", async () => {
+  test("network failure throws AtlasError with code network_error and retryable true", async () => {
     installFetchError(new TypeError("fetch failed"));
     const client = createAtlasClient({ baseUrl: "http://localhost:3001", apiKey: "k" });
 
@@ -470,10 +470,11 @@ describe("error handling", () => {
       expect(e.code).toBe("network_error");
       expect(e.message).toBe("fetch failed");
       expect(e.status).toBe(0);
+      expect(e.retryable).toBe(true);
     }
   });
 
-  test("200 with non-JSON body throws AtlasError with code invalid_response", async () => {
+  test("200 with non-JSON body throws AtlasError with code invalid_response and retryable false", async () => {
     installFetchMock(new Response("not json", { status: 200 }));
     const client = createAtlasClient({ baseUrl: "http://localhost:3001", apiKey: "k" });
 
@@ -486,12 +487,13 @@ describe("error handling", () => {
       expect(e.code).toBe("invalid_response");
       expect(e.status).toBe(200);
       expect(e.message).toContain("unparseable body");
+      expect(e.retryable).toBe(false);
     }
   });
 
   test("429 response includes retryAfterSeconds on AtlasError", async () => {
     installFetchMock(
-      jsonResponse({ error: "rate_limited", message: "Slow down", retryAfterSeconds: 30 }, 429),
+      jsonResponse({ error: "rate_limited", message: "Slow down", retryAfterSeconds: 30, retryable: true }, 429),
     );
     const client = createAtlasClient({ baseUrl: "http://localhost:3001", apiKey: "k" });
 
@@ -503,6 +505,72 @@ describe("error handling", () => {
       const e = err as AtlasError;
       expect(e.code).toBe("rate_limited");
       expect(e.retryAfterSeconds).toBe(30);
+      expect(e.retryable).toBe(true);
+    }
+  });
+
+  test("retryable is true for transient errors", async () => {
+    installFetchMock(
+      jsonResponse({ error: "provider_timeout", message: "Timed out", retryable: true }, 504),
+    );
+    const client = createAtlasClient({ baseUrl: "http://localhost:3001", apiKey: "k" });
+
+    try {
+      await client.query("test");
+      expect(true).toBe(false);
+    } catch (err) {
+      expect(err).toBeInstanceOf(AtlasError);
+      const e = err as AtlasError;
+      expect(e.retryable).toBe(true);
+    }
+  });
+
+  test("retryable is false for permanent errors", async () => {
+    installFetchMock(
+      jsonResponse({ error: "auth_error", message: "Unauthorized", retryable: false }, 401),
+    );
+    const client = createAtlasClient({ baseUrl: "http://localhost:3001", apiKey: "k" });
+
+    try {
+      await client.query("test");
+      expect(true).toBe(false);
+    } catch (err) {
+      expect(err).toBeInstanceOf(AtlasError);
+      const e = err as AtlasError;
+      expect(e.retryable).toBe(false);
+    }
+  });
+
+  test("retryable computed from code when server omits the field", async () => {
+    installFetchMock(
+      jsonResponse({ error: "internal_error", message: "fail" }, 500),
+    );
+    const client = createAtlasClient({ baseUrl: "http://localhost:3001", apiKey: "k" });
+
+    try {
+      await client.query("test");
+      expect(true).toBe(false);
+    } catch (err) {
+      expect(err).toBeInstanceOf(AtlasError);
+      const e = err as AtlasError;
+      // internal_error is transient — SDK computes retryable from code
+      expect(e.retryable).toBe(true);
+    }
+  });
+
+  test("retryable computed as false for permanent code when server omits the field", async () => {
+    installFetchMock(
+      jsonResponse({ error: "configuration_error", message: "bad config" }, 400),
+    );
+    const client = createAtlasClient({ baseUrl: "http://localhost:3001", apiKey: "k" });
+
+    try {
+      await client.query("test");
+      expect(true).toBe(false);
+    } catch (err) {
+      expect(err).toBeInstanceOf(AtlasError);
+      const e = err as AtlasError;
+      expect(e.retryable).toBe(false);
     }
   });
 
@@ -522,5 +590,50 @@ describe("error handling", () => {
       expect(e.message).toContain("Bad Gateway");
       expect(e.message).toContain("<html>");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AtlasError constructor — direct tests
+// ---------------------------------------------------------------------------
+
+describe("AtlasError constructor", () => {
+  test("3-arg form defaults retryable from code (transient)", () => {
+    const e = new AtlasError("internal_error", "fail", 500);
+    expect(e.retryable).toBe(true);
+    expect(e.retryAfterSeconds).toBeUndefined();
+  });
+
+  test("3-arg form defaults retryable from code (permanent)", () => {
+    const e = new AtlasError("auth_error", "unauthorized", 401);
+    expect(e.retryable).toBe(false);
+    expect(e.retryAfterSeconds).toBeUndefined();
+  });
+
+  test("backward compat: positional number 4th arg sets retryAfterSeconds", () => {
+    const e = new AtlasError("rate_limited", "slow down", 429, 30);
+    expect(e.retryAfterSeconds).toBe(30);
+    expect(e.retryable).toBe(true);
+  });
+
+  test("opts object sets both retryAfterSeconds and retryable", () => {
+    const e = new AtlasError("rate_limited", "slow down", 429, { retryAfterSeconds: 15, retryable: true });
+    expect(e.retryAfterSeconds).toBe(15);
+    expect(e.retryable).toBe(true);
+  });
+
+  test("server retryable: false overrides code-based classification", () => {
+    const e = new AtlasError("internal_error", "fail", 500, { retryable: false });
+    expect(e.retryable).toBe(false);
+  });
+
+  test("network_error is retryable by default", () => {
+    const e = new AtlasError("network_error", "fetch failed", 0);
+    expect(e.retryable).toBe(true);
+  });
+
+  test("unknown_error is not retryable by default", () => {
+    const e = new AtlasError("unknown_error", "???", 0);
+    expect(e.retryable).toBe(false);
   });
 });

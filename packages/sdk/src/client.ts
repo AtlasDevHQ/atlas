@@ -42,6 +42,7 @@ import type {
   ScheduledTaskWithRuns,
   ScheduledTaskRun,
 } from "@useatlas/types";
+import { isChatErrorCode, isRetryableError } from "@useatlas/types";
 
 /** @deprecated Use `Recipient` instead. */
 export type ScheduledTaskRecipient = Recipient;
@@ -66,17 +67,30 @@ export type AtlasErrorCode =
   | "invalid_response"
   | "unknown_error";
 
+/** SDK-only codes that represent transient failures where retrying may succeed. */
+const SDK_RETRYABLE_CODES: ReadonlySet<string> = new Set(["network_error"]);
+
 export class AtlasError extends Error {
   readonly code: AtlasErrorCode;
   readonly status: number;
   readonly retryAfterSeconds?: number;
+  /** Whether retrying the request may succeed. Derived from the server's `retryable` field, or computed from the error code when the server does not provide it. */
+  readonly retryable: boolean;
 
-  constructor(code: AtlasErrorCode, message: string, status: number, retryAfterSeconds?: number) {
+  constructor(code: AtlasErrorCode, message: string, status: number, opts?: number | { retryAfterSeconds?: number; retryable?: boolean }) {
     super(message);
     this.name = "AtlasError";
     this.code = code;
     this.status = status;
-    this.retryAfterSeconds = retryAfterSeconds;
+    if (typeof opts === "number") {
+      // Backward compatibility: positional retryAfterSeconds (pre-0.0.x callers)
+      this.retryAfterSeconds = opts;
+      this.retryable = SDK_RETRYABLE_CODES.has(code) || (isChatErrorCode(code) && isRetryableError(code));
+    } else {
+      this.retryAfterSeconds = opts?.retryAfterSeconds;
+      // Use server value when provided, otherwise compute from code
+      this.retryable = opts?.retryable ?? (SDK_RETRYABLE_CODES.has(code) || (isChatErrorCode(code) && isRetryableError(code)));
+    }
   }
 }
 
@@ -358,6 +372,7 @@ export function createAtlasClient(options: AtlasClientOptions) {
       let code: AtlasErrorCode = "unknown_error";
       let msg = res.statusText;
       let retryAfterSeconds: number | undefined;
+      let retryable: boolean | undefined;
       try {
         const text = await res.text();
         try {
@@ -366,13 +381,14 @@ export function createAtlasClient(options: AtlasClientOptions) {
           if (typeof body.message === "string") msg = body.message;
           else if (typeof body.error === "string" && !body.message) msg = body.error;
           if (typeof body.retryAfterSeconds === "number") retryAfterSeconds = body.retryAfterSeconds;
+          if (typeof body.retryable === "boolean") retryable = body.retryable;
         } catch {
           if (text) msg = `${res.statusText}: ${text.slice(0, 200)}`;
         }
       } catch {
         // Could not read body at all
       }
-      throw new AtlasError(code, msg, res.status, retryAfterSeconds);
+      throw new AtlasError(code, msg, res.status, { retryAfterSeconds, retryable });
     }
   }
 

@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
-import { render } from "@testing-library/react";
+import { describe, expect, test, mock } from "bun:test";
+import { render, fireEvent } from "@testing-library/react";
 import { ErrorBanner } from "../components/chat/error-banner";
 
 function makeError(json: Record<string, unknown>): Error {
@@ -96,5 +96,35 @@ describe("ErrorBanner", () => {
     );
     const div = container.firstElementChild as HTMLElement;
     expect(div.className).toContain("border-red");
+  });
+
+  test("shows Try again button for retryable errors when onRetry provided", () => {
+    const onRetry = mock(() => {});
+    const err = makeError({ error: "provider_timeout", message: "timed out" });
+    const { container } = render(
+      <ErrorBanner error={err} authMode="none" onRetry={onRetry} />,
+    );
+    const button = container.querySelector("button");
+    expect(button).not.toBeNull();
+    expect(button!.textContent).toContain("Try again");
+    fireEvent.click(button!);
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  test("does not show Try again button for non-retryable errors", () => {
+    const onRetry = mock(() => {});
+    const err = makeError({ error: "auth_error" });
+    const { container } = render(
+      <ErrorBanner error={err} authMode="none" onRetry={onRetry} />,
+    );
+    expect(container.querySelector("button")).toBeNull();
+  });
+
+  test("does not show Try again button when onRetry is not provided", () => {
+    const err = makeError({ error: "provider_error", message: "500" });
+    const { container } = render(
+      <ErrorBanner error={err} authMode="none" />,
+    );
+    expect(container.querySelector("button")).toBeNull();
   });
 });

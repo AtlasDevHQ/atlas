@@ -9,7 +9,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { type UIMessage } from "ai";
 import { APICallError, LoadAPIKeyError, NoSuchModelError } from "ai";
-import { matchError } from "@useatlas/types";
+import { matchError, isRetryableError } from "@useatlas/types";
 import { runAgent } from "@atlas/api/lib/agent";
 import { validateEnvironment } from "@atlas/api/lib/startup";
 import { GatewayModelNotFoundError } from "@ai-sdk/gateway";
@@ -66,14 +66,14 @@ chat.post("/", async (c) => {
       "Auth dispatch failed",
     );
     return c.json(
-      { error: "auth_error", message: "Authentication system error", requestId },
+      { error: "auth_error", message: "Authentication system error", retryable: false, requestId },
       500,
     );
   }
   if (!authResult.authenticated) {
     log.warn({ requestId, status: authResult.status }, "Authentication failed");
     return c.json(
-      { error: "auth_error", message: authResult.error, requestId },
+      { error: "auth_error", message: authResult.error, retryable: false, requestId },
       authResult.status as 401 | 403 | 500,
     );
   }
@@ -95,6 +95,7 @@ chat.post("/", async (c) => {
         error: "rate_limited",
         message: "Too many requests. Please wait before trying again.",
         retryAfterSeconds,
+        retryable: true,
         requestId,
       },
       { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } },
@@ -114,6 +115,7 @@ chat.post("/", async (c) => {
             error: "configuration_error",
             message: diagnostics.map((d) => d.message).join("\n\n"),
             diagnostics,
+            retryable: false,
             requestId,
           },
           400,
@@ -128,6 +130,7 @@ chat.post("/", async (c) => {
             error: "no_datasource",
             message:
               "No analytics datasource configured. Set ATLAS_DATASOURCE_URL to query your data.",
+            retryable: false,
             requestId,
           },
           400,
@@ -147,6 +150,7 @@ chat.post("/", async (c) => {
           {
             error: "invalid_request",
             message: "Invalid JSON body.",
+            retryable: false,
             requestId,
           },
           400,
@@ -160,6 +164,7 @@ chat.post("/", async (c) => {
             error: "validation_error",
             message: "Invalid request body.",
             details: parsed.error.issues,
+            retryable: false,
             requestId,
           },
           422,
@@ -175,7 +180,7 @@ chat.post("/", async (c) => {
           // Ownership verification — NOT best-effort, this is a security check
           const existing = await getConversation(conversationId, authResult.user?.id);
           if (!existing.ok) {
-            return c.json({ error: "not_found", message: "Conversation not found.", requestId }, 404);
+            return c.json({ error: "not_found", message: "Conversation not found.", retryable: false, requestId }, 404);
           }
           // Persist the latest user message
           try {
@@ -301,6 +306,7 @@ chat.post("/", async (c) => {
               error: "provider_model_not_found",
               message:
                 "Model not found on the AI Gateway. Check that your ATLAS_MODEL uses the correct provider/model format (e.g., anthropic/claude-sonnet-4.6).",
+              retryable: isRetryableError("provider_model_not_found"),
               requestId,
             },
             400,
@@ -317,6 +323,7 @@ chat.post("/", async (c) => {
               error: "provider_model_not_found",
               message:
                 "The configured model was not found. Check ATLAS_MODEL and ATLAS_PROVIDER settings.",
+              retryable: isRetryableError("provider_model_not_found"),
               requestId,
             },
             400,
@@ -333,6 +340,7 @@ chat.post("/", async (c) => {
               error: "provider_auth_error",
               message:
                 "LLM provider API key could not be loaded. Check that the required API key environment variable is set.",
+              retryable: isRetryableError("provider_auth_error"),
               requestId,
             },
             503,
@@ -353,6 +361,7 @@ chat.post("/", async (c) => {
                 error: "provider_auth_error",
                 message:
                   "LLM provider authentication failed. Check that your API key is valid and has not expired.",
+                retryable: isRetryableError("provider_auth_error"),
                 requestId,
               },
               503,
@@ -369,6 +378,7 @@ chat.post("/", async (c) => {
                 error: "provider_rate_limit",
                 message:
                   "LLM provider rate limit reached. Wait a moment and try again.",
+                retryable: isRetryableError("provider_rate_limit"),
                 requestId,
               },
               503,
@@ -386,6 +396,7 @@ chat.post("/", async (c) => {
                 message:
                   "The request timed out. The LLM provider took too long to respond. " +
                   "Try again, or if using a local model, ensure it has sufficient resources.",
+                retryable: isRetryableError("provider_timeout"),
                 requestId,
               },
               504,
@@ -401,6 +412,7 @@ chat.post("/", async (c) => {
             {
               error: "provider_error",
               message: `The LLM provider returned an error (HTTP ${status}). This is usually a temporary issue. Try again in a moment.`,
+              retryable: isRetryableError("provider_error"),
               requestId,
             },
             502,
@@ -429,7 +441,7 @@ chat.post("/", async (c) => {
               : matched.message;
           log.error({ err: errObj, category: code }, "Matched error: %s", code);
           return c.json(
-            { error: code, message: userMessage, requestId },
+            { error: code, message: userMessage, retryable: isRetryableError(code), requestId },
             httpStatus as 500,
           );
         }
@@ -445,6 +457,7 @@ chat.post("/", async (c) => {
           {
             error: "internal_error",
             message: `An unexpected error occurred. Quote ref ${requestId.slice(0, 8)} when reporting this issue.`,
+            retryable: isRetryableError("internal_error"),
             requestId,
           },
           500,

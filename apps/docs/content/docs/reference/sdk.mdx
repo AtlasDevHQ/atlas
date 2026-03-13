@@ -404,9 +404,10 @@ try {
   await atlas.query("...");
 } catch (error) {
   if (error instanceof AtlasError) {
-    console.log(error.code);    // "rate_limited"
-    console.log(error.status);  // 429
-    console.log(error.message); // "Too many requests"
+    console.log(error.code);      // "rate_limited"
+    console.log(error.status);    // 429
+    console.log(error.message);   // "Too many requests"
+    console.log(error.retryable); // true
 
     if (error.code === "rate_limited") {
       console.log(error.retryAfterSeconds); // 12
@@ -417,34 +418,37 @@ try {
 
 ### Error Codes
 
-| Code | Status | Description |
-|------|--------|-------------|
-| `auth_error` | 401 | Authentication failed |
-| `forbidden` | 403 | Insufficient permissions |
-| `rate_limited` | 429 | Too many requests (check `retryAfterSeconds`) |
-| `configuration_error` | 400 | Server misconfigured |
-| `no_datasource` | 400 | No datasource connected |
-| `invalid_request` | 400 | Invalid request body |
-| `validation_error` | 422 | Request validation failed (see `details` for field errors) |
-| `not_found` | 404 | Resource not found |
-| `not_available` | 404 | Feature not available (e.g., no internal DB) |
-| `provider_model_not_found` | 400 | Configured AI model does not exist |
-| `provider_auth_error` | 502 | LLM provider auth failed |
-| `provider_rate_limit` | 429 | LLM provider rate limited |
-| `provider_timeout` | 504 | LLM provider timed out |
-| `provider_unreachable` | 502 | Could not reach the AI provider |
-| `provider_error` | 502 | LLM provider error |
-| `internal_error` | 500 | Server error (includes `requestId` for log correlation) |
-| `network_error` | — | Could not reach the API |
-| `invalid_response` | — | Response could not be parsed |
-| `unknown_error` | — | Unrecognized error |
+| Code | Status | Retryable | Description |
+|------|--------|-----------|-------------|
+| `auth_error` | 401 | No | Authentication failed |
+| `forbidden` | 403 | No | Insufficient permissions |
+| `rate_limited` | 429 | Yes | Too many requests (check `retryAfterSeconds`) |
+| `configuration_error` | 400 | No | Server misconfigured |
+| `no_datasource` | 400 | No | No datasource connected |
+| `invalid_request` | 400 | No | Invalid request body |
+| `validation_error` | 422 | No | Request validation failed (see `details` for field errors) |
+| `not_found` | 404 | No | Resource not found |
+| `not_available` | 404 | No | Feature not available (e.g., no internal DB) |
+| `provider_model_not_found` | 400 | No | Configured AI model does not exist |
+| `provider_auth_error` | 502 | No | LLM provider auth failed |
+| `provider_rate_limit` | 429 | Yes | LLM provider rate limited |
+| `provider_timeout` | 504 | Yes | LLM provider timed out |
+| `provider_unreachable` | 502 | Yes | Could not reach the AI provider |
+| `provider_error` | 502 | Yes | LLM provider error |
+| `internal_error` | 500 | Yes | Server error (includes `requestId` for log correlation) |
+| `network_error` | — | — | Could not reach the API (SDK-only) |
+| `invalid_response` | — | — | Response could not be parsed (SDK-only) |
+| `unknown_error` | — | — | Unrecognized error (SDK-only) |
 
 All error responses include a `requestId` field (UUID) for correlating client errors with
 server logs. Quote this value when reporting issues.
 
+The `retryable` boolean on `AtlasError` tells you whether retrying the same request may succeed.
+Use it to build generic retry logic without hard-coding error codes:
+
 ### Handling Specific Error Codes
 
-Different error codes require different recovery strategies:
+Use `error.retryable` to decide whether to retry, then refine behavior for specific codes:
 
 ```typescript
 import { AtlasError, type AtlasClient } from "@useatlas/sdk";
@@ -460,39 +464,21 @@ async function queryWithRetry(atlas: AtlasClient, question: string) {
   } catch (error) {
     if (!(error instanceof AtlasError)) throw error;
 
-    switch (error.code) {
-      case "rate_limited": {
-        // Server tells you exactly how long to wait
-        const delay = (error.retryAfterSeconds ?? 10) * 1000;
-        console.log(`Rate limited — retrying in ${delay / 1000}s`);
-        await sleep(delay);
-        return atlas.query(question);
-      }
+    // Permanent error — no point retrying
+    if (!error.retryable) throw error;
 
-      case "invalid_request":
-        // Bad input — fix the request, don't retry
-        console.error(`Bad request: ${error.message}`);
-        throw error;
-
-      case "provider_error":
-      case "provider_timeout":
-      case "provider_unreachable": {
-        // Transient LLM provider issue — retry with exponential backoff
-        console.log(`Provider issue (${error.code}) — retrying in 5s`);
-        await sleep(5000);
-        return atlas.query(question);
-      }
-
-      case "internal_error":
-        // Server error — log for support, include the status for triage
-        console.error(
-          `Internal error (HTTP ${error.status}): ${error.message}`
-        );
-        throw error;
-
-      default:
-        throw error;
+    // Rate limited — use the server-provided delay
+    if (error.code === "rate_limited") {
+      const delay = (error.retryAfterSeconds ?? 10) * 1000;
+      console.log(`Rate limited — retrying in ${delay / 1000}s`);
+      await sleep(delay);
+      return atlas.query(question);
     }
+
+    // Other transient errors — retry with a fixed backoff
+    console.log(`Transient error (${error.code}) — retrying in 5s`);
+    await sleep(5000);
+    return atlas.query(question);
   }
 }
 ```

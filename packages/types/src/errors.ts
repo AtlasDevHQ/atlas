@@ -4,6 +4,8 @@ import type { AuthMode } from "./auth";
 // ChatErrorCode — all server error codes
 // ---------------------------------------------------------------------------
 
+// Note: `not_available` is intentionally excluded — it is an admin/CRUD code,
+// not a chat error code. The SDK defines it separately in AtlasErrorCode.
 export const CHAT_ERROR_CODES = [
   "auth_error",
   "rate_limited",
@@ -31,6 +33,41 @@ export function isChatErrorCode(value: string): value is ChatErrorCode {
 }
 
 // ---------------------------------------------------------------------------
+// Retryable classification — transient vs permanent errors
+// ---------------------------------------------------------------------------
+
+/**
+ * Exhaustive map from every `ChatErrorCode` to its retryable classification.
+ *
+ * Using `Record<ChatErrorCode, boolean>` ensures a compile-time error if a
+ * new code is added to `CHAT_ERROR_CODES` without classifying it here.
+ */
+const RETRYABLE_MAP: Record<ChatErrorCode, boolean> = {
+  // Transient — retrying may succeed
+  rate_limited: true,
+  provider_timeout: true,
+  provider_unreachable: true,
+  provider_error: true,
+  provider_rate_limit: true,
+  internal_error: true,
+  // Permanent — retrying will not help
+  auth_error: false,
+  configuration_error: false,
+  no_datasource: false,
+  invalid_request: false,
+  provider_model_not_found: false,
+  provider_auth_error: false,
+  validation_error: false,
+  not_found: false,
+  forbidden: false,
+};
+
+/** Returns `true` if the given error code represents a transient, retryable failure. */
+export function isRetryableError(code: ChatErrorCode): boolean {
+  return RETRYABLE_MAP[code];
+}
+
+// ---------------------------------------------------------------------------
 // ChatErrorInfo
 // ---------------------------------------------------------------------------
 
@@ -42,6 +79,11 @@ export function isChatErrorCode(value: string): value is ChatErrorCode {
  * - `retryAfterSeconds` — Seconds to wait before retrying (rate_limited only).
  *   Clamped to [0, 300].
  * - `code` — The server error code, if the response was valid JSON with a known code.
+ * - `retryable` — Whether the client should offer to retry. Three states:
+ *   - `true` — transient error, retrying may succeed.
+ *   - `false` — permanent error, retrying will not help.
+ *   - `undefined` — error code is unknown or response was not valid JSON;
+ *     the client cannot determine retryability.
  * - `requestId` — Server-assigned request ID (UUID) for log correlation.
  */
 export interface ChatErrorInfo {
@@ -49,6 +91,7 @@ export interface ChatErrorInfo {
   detail?: string;
   retryAfterSeconds?: number;
   code?: ChatErrorCode;
+  retryable?: boolean;
   requestId?: string;
 }
 
@@ -213,9 +256,11 @@ export function parseChatError(error: Error, authMode: AuthMode): ChatErrorInfo 
     return { title: serverMessage ?? "Something went wrong. Please try again.", requestId };
   }
 
+  const retryable = isRetryableError(rawCode);
+
   switch (rawCode) {
     case "auth_error":
-      return { title: authErrorMessage(authMode), code: rawCode, requestId };
+      return { title: authErrorMessage(authMode), code: rawCode, retryable, requestId };
 
     case "rate_limited": {
       const raw = typeof parsed.retryAfterSeconds === "number" ? parsed.retryAfterSeconds : undefined;
@@ -227,48 +272,49 @@ export function parseChatError(error: Error, authMode: AuthMode): ChatErrorInfo 
           : "Please wait before trying again.",
         retryAfterSeconds: clamped,
         code: rawCode,
+        retryable,
         requestId,
       };
     }
 
     case "configuration_error":
-      return { title: "Atlas is not fully configured.", detail: serverMessage, code: rawCode, requestId };
+      return { title: "Atlas is not fully configured.", detail: serverMessage, code: rawCode, retryable, requestId };
 
     case "no_datasource":
-      return { title: "No data source configured.", detail: serverMessage, code: rawCode, requestId };
+      return { title: "No data source configured.", detail: serverMessage, code: rawCode, retryable, requestId };
 
     case "invalid_request":
-      return { title: "Invalid request.", detail: serverMessage, code: rawCode, requestId };
+      return { title: "Invalid request.", detail: serverMessage, code: rawCode, retryable, requestId };
 
     case "provider_model_not_found":
-      return { title: "The configured AI model was not found.", detail: serverMessage, code: rawCode, requestId };
+      return { title: "The configured AI model was not found.", detail: serverMessage, code: rawCode, retryable, requestId };
 
     case "provider_auth_error":
-      return { title: "The AI provider could not authenticate.", detail: serverMessage, code: rawCode, requestId };
+      return { title: "The AI provider could not authenticate.", detail: serverMessage, code: rawCode, retryable, requestId };
 
     case "provider_rate_limit":
-      return { title: "The AI provider is rate limiting requests.", detail: serverMessage, code: rawCode, requestId };
+      return { title: "The AI provider is rate limiting requests.", detail: serverMessage, code: rawCode, retryable, requestId };
 
     case "provider_timeout":
-      return { title: "The AI provider timed out.", detail: serverMessage, code: rawCode, requestId };
+      return { title: "The AI provider timed out.", detail: serverMessage, code: rawCode, retryable, requestId };
 
     case "provider_unreachable":
-      return { title: "Could not reach the AI provider.", detail: serverMessage, code: rawCode, requestId };
+      return { title: "Could not reach the AI provider.", detail: serverMessage, code: rawCode, retryable, requestId };
 
     case "provider_error":
-      return { title: "The AI provider returned an error.", detail: serverMessage, code: rawCode, requestId };
+      return { title: "The AI provider returned an error.", detail: serverMessage, code: rawCode, retryable, requestId };
 
     case "internal_error":
-      return { title: serverMessage ?? "An unexpected error occurred.", code: rawCode, requestId };
+      return { title: serverMessage ?? "An unexpected error occurred.", code: rawCode, retryable, requestId };
 
     case "validation_error":
-      return { title: "Validation error.", detail: serverMessage, code: rawCode, requestId };
+      return { title: "Validation error.", detail: serverMessage, code: rawCode, retryable, requestId };
 
     case "not_found":
-      return { title: "Not found.", detail: serverMessage, code: rawCode, requestId };
+      return { title: "Not found.", detail: serverMessage, code: rawCode, retryable, requestId };
 
     case "forbidden":
-      return { title: "Access denied.", detail: serverMessage, code: rawCode, requestId };
+      return { title: "Access denied.", detail: serverMessage, code: rawCode, retryable, requestId };
 
     default: {
       const _exhaustive: never = rawCode;

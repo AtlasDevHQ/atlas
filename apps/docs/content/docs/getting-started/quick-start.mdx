@@ -1,138 +1,226 @@
 ---
 title: Quick Start
-description: Get Atlas running locally in minutes.
+description: Get Atlas running locally in under 5 minutes with the demo dataset.
 ---
+
+import { Callout } from "fumadocs-ui/components/callout";
+import { Steps, Step } from "fumadocs-ui/components/steps";
+import { Tabs, Tab } from "fumadocs-ui/components/tabs";
+import { Accordions, Accordion } from "fumadocs-ui/components/accordion";
 
 ## Prerequisites
 
-- [Bun](https://bun.sh/) v1.3.10+
-- [Docker](https://docs.docker.com/get-docker/) -- required for local PostgreSQL and sandbox sidecar (matches production setup)
-- An LLM API key (Anthropic, OpenAI, or another supported provider)
+Before you start, make sure you have:
+
+- **[Bun](https://bun.sh/) v1.3.10+** — check with `bun --version`
+- **[Docker](https://docs.docker.com/get-docker/)** — check with `docker --version` (Docker Desktop must be running)
+- **An LLM API key** — [Anthropic](https://console.anthropic.com/), [OpenAI](https://platform.openai.com/), or another [supported provider](/reference/environment-variables#llm-provider)
+
+<Accordions>
+<Accordion title="Don't have Bun installed?">
+```bash
+curl -fsSL https://bun.sh/install | bash
+```
+
+Restart your terminal after installing. Verify with `bun --version` — you need v1.3.10 or later.
+</Accordion>
+</Accordions>
 
 ## Setup
+
+<Steps>
+<Step>
+### Clone and install
 
 ```bash
 git clone https://github.com/AtlasDevHQ/atlas.git
 cd atlas
 bun install
-bun run db:up                        # Start Postgres + sandbox sidecar
 ```
 
-This launches two containers via Docker Compose:
-- **Postgres** (`postgres:16-alpine`) with two databases: `atlas` (internals) and `atlas_demo` (demo analytics data)
-- **Sandbox sidecar** -- isolated container for the explore tool (shell + Python execution), matching production isolation
+<Accordions>
+<Accordion title="Starting a new project instead of cloning?">
+Use `bun create @useatlas my-app` for interactive setup with template selection, DB config, and provider setup — no need to clone the monorepo.
+</Accordion>
+</Accordions>
+</Step>
 
-> **Note:** `db:up` already seeds the simple demo data -- you do not need `--demo` when using it. For a larger, production-like dataset, use `bun run atlas -- init --demo cybersec` or `bun run atlas -- init --demo ecommerce` instead. See [Demo Datasets](/getting-started/demo-datasets) for all available demos.
+<Step>
+### Start the database
 
-Configure your environment:
+```bash
+bun run db:up
+```
+
+This launches two Docker containers:
+- **Postgres** with the simple demo dataset pre-seeded (3 tables, ~330 rows)
+- **Sandbox sidecar** for isolated code execution
+
+For a larger, production-like dataset, see [Demo Datasets](/getting-started/demo-datasets) (`--demo cybersec` or `--demo ecommerce`).
+
+<Callout type="info" title="You should see">
+```
+[+] Running 2/2
+ ✔ Container atlas-postgres-1  Started
+ ✔ Container atlas-sandbox-1   Started
+```
+
+Verify with `docker compose ps` — both containers should show status `Up` or `running`.
+</Callout>
+
+<Accordions>
+<Accordion title="Docker not running?">
+Make sure Docker Desktop is running. On Linux, check the daemon with `systemctl status docker`. The `db:up` command requires Docker Compose.
+</Accordion>
+<Accordion title="Port 5432 already in use?">
+Another Postgres instance is using port 5432. Stop it with `docker stop <container>`, or if it's a local install, stop the service (`brew services stop postgresql` on macOS, `sudo systemctl stop postgresql` on Linux).
+</Accordion>
+</Accordions>
+</Step>
+
+<Step>
+### Configure your environment
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` -- set your LLM provider (the database URLs are pre-configured for local Docker):
+Edit `.env` and set your LLM provider. The database URLs are pre-configured for the local Docker setup — you only need to add your API key:
 
+<Tabs items={["Anthropic", "OpenAI", "Bedrock / Ollama / Gateway"]}>
+<Tab value="Anthropic">
 ```bash
 ATLAS_PROVIDER=anthropic
 ANTHROPIC_API_KEY=sk-ant-...
 ```
-
-Generate the semantic layer and start:
-
+</Tab>
+<Tab value="OpenAI">
 ```bash
-bun run atlas -- init                # Profile DB and generate YAMLs
-bun run dev                          # http://localhost:3000 (assumes containers are running)
+ATLAS_PROVIDER=openai
+OPENAI_API_KEY=sk-...
+```
+</Tab>
+<Tab value="Bedrock / Ollama / Gateway">
+```bash
+# AWS Bedrock
+ATLAS_PROVIDER=bedrock
+AWS_REGION=us-east-1
+
+# Local Ollama
+ATLAS_PROVIDER=ollama
+OLLAMA_BASE_URL=http://localhost:11434
+
+# AI Gateway (LiteLLM, Portkey, etc.)
+ATLAS_PROVIDER=gateway
+AI_GATEWAY_API_KEY=...
 ```
 
-Or use the one-command shortcut that ensures containers are up first:
+See [Environment Variables — LLM Provider](/reference/environment-variables#llm-provider) for all supported providers and their required variables.
+</Tab>
+</Tabs>
+</Step>
 
-```bash
-bun run dev:local                    # Start containers + dev servers
-```
+<Step>
+### Generate the semantic layer
 
-> **Dev admin account:** When using managed auth with the local Docker setup, a dev admin account is seeded automatically: `admin@atlas.dev` / `atlas-dev`.
-
-> **New project scaffolding:** `bun create @useatlas my-app` provides interactive setup with template selection, DB config, provider setup, and optional semantic layer generation.
-
-## Ask your first question
-
-Open [http://localhost:3000](http://localhost:3000) in your browser. The chat UI shows suggested starter questions derived from the semantic layer. Try one of these:
-
-- "How many companies are there by industry?"
-- "What is the average revenue across all companies?"
-- "Which departments have the most people?"
-
-The agent will explore the semantic layer YAMLs, write validated SQL, execute it against your database, and return an interpreted answer.
-
-## Using your own database
-
-To connect Atlas to your own database instead of the demo:
-
-1. Set `ATLAS_DATASOURCE_URL` in `.env`:
-   - PostgreSQL: `postgresql://user:pass@host:5432/dbname`
-   - MySQL: `mysql://user:pass@host:3306/dbname` (also accepts `mysql2://`)
-2. Generate a semantic layer from your schema:
+The semantic layer (a set of YAML entity files in `semantic/`) tells the agent what tables exist and what they mean. Generate it from the demo database:
 
 ```bash
 bun run atlas -- init
 ```
 
-To profile only specific tables:
+<Callout type="info" title="You should see">
+```
+Profiling postgres database...
 
-```bash
-bun run atlas -- init --tables users,orders,products
+  [1/3] Profiling companies...
+  [2/3] Profiling people...
+  [3/3] Profiling accounts...
+
+Done! Semantic layer for "default" is at ./semantic/
 ```
 
-To add LLM-enriched descriptions and query patterns (requires a configured API key):
+Check the files: `ls semantic/entities/` should list `companies.yml`, `people.yml`, and `accounts.yml`.
+</Callout>
+
+<Accordions>
+<Accordion title="init fails with connection error?">
+Verify the containers are running (`docker compose ps`). If you see `ECONNREFUSED`, the Postgres container may still be starting — wait a few seconds and retry. Run `bun run atlas -- doctor` for a full diagnostic.
+</Accordion>
+<Accordion title="init fails with missing API key?">
+Database profiling does not require an API key. If you see an API key error, it may be from optional LLM enrichment — run `bun run atlas -- init --no-enrich` to skip it. Also check that `.env` exists and `ATLAS_DATASOURCE_URL` is set (`.env.example` has the correct value pre-filled for local Docker).
+</Accordion>
+</Accordions>
+</Step>
+
+<Step>
+### Start the dev servers
 
 ```bash
-bun run atlas -- init --enrich
+bun run dev
 ```
 
-See [CLI Reference](/reference/cli#init) for all `init` flags.
+This starts:
+- **API server** at [http://localhost:3001](http://localhost:3001)
+- **Web UI** at [http://localhost:3000](http://localhost:3000)
 
-See [Connect Your Data](/getting-started/connect-your-data) for production database setup including read-only users, SSL, and safety configuration.
+<Callout type="info" title="You should see">
+Both URLs should respond. Open [http://localhost:3000](http://localhost:3000) in your browser — you should see the Atlas chat interface with suggested starter questions.
+</Callout>
+
+<Callout>
+**Dev admin account:** `admin@atlas.dev` / `atlas-dev` — seeded automatically with the local Docker setup.
+</Callout>
+
+<Accordions>
+<Accordion title="Port 3000 or 3001 already in use?">
+Another dev server is using the port. Find it with `lsof -i :3000` (or `:3001`), then stop it. Alternatively, use `bun run dev:local` which starts containers and dev servers together.
+</Accordion>
+</Accordions>
+</Step>
+</Steps>
+
+## Ask your first question
+
+The chat UI shows suggested questions based on the demo dataset. Try one:
+
+- "How many companies are there by industry?"
+- "What are the top 5 companies by revenue?"
+- "Which department has the most people?"
+
+<Callout type="info" title="You should see">
+The agent will:
+1. Explore the semantic layer to understand the schema
+2. Write a SQL query
+3. Execute it against the demo database
+4. Return an interpreted answer with a data table
+
+The entire flow takes a few seconds. You'll see each step in the chat as the agent works.
+</Callout>
+
+You're up and running. The agent can answer questions about the demo dataset using natural language.
 
 ## Useful commands
 
 | Command | Description |
 |---------|-------------|
-| `bun run dev:local` | Start containers (Postgres + sidecar) + dev servers |
-| `bun run dev` | Start API (:3001) + Next.js (:3000) -- assumes containers are running |
-| `bun run build` | Production build |
-| `bun run start` | Start production server |
-| `bun run lint` | ESLint |
-| `bun run type` | TypeScript type-check |
-| `bun run test` | Run tests |
-| `bun run db:up` | Start local Postgres + sandbox sidecar |
+| `bun run dev:local` | Start containers + dev servers (all-in-one) |
+| `bun run dev` | Start API + Next.js (assumes containers are running) |
+| `bun run db:up` | Start Postgres + sandbox sidecar |
 | `bun run db:down` | Stop containers |
 | `bun run db:reset` | Nuke volume and re-seed from scratch |
-| `bun run atlas -- validate` | Check semantic layer YAMLs for errors (offline, no DB needed) |
 | `bun run atlas -- doctor` | Validate environment and connectivity |
+| `bun run atlas -- validate` | Check semantic layer YAMLs for errors (offline, no DB needed) |
 | `bun run atlas -- diff` | Compare DB schema against semantic layer |
 
 See [CLI Reference](/reference/cli) for all commands and flags.
 
-## Troubleshooting
-
-**Docker not running**
-If `bun run db:up` fails, make sure Docker Desktop is running. The local Postgres container requires Docker Compose.
-
-**Port 3000 or 3001 already in use**
-Check for other dev servers occupying those ports. Use `lsof -i :3000` (or `:3001`) to find the process, then stop it or choose a different port.
-
-**`bun run atlas -- init` fails**
-Verify that `ATLAS_DATASOURCE_URL` is set in your `.env` and that the database is reachable. Run `bun run atlas -- doctor` to check connectivity.
-
-**Semantic layer errors**
-Run `bun run atlas -- validate` to check for YAML syntax issues, missing fields, or invalid references. This runs offline -- no database or API key required.
-
 ## Next steps
 
-- [Connect your own database](/getting-started/connect-your-data) -- production setup with read-only users, SSL, and safety config
-- [Deploy to production](/deployment/deploy) -- Railway, Vercel, or Docker
-- [Set up authentication](/deployment/authentication) -- API key, managed auth, or bring-your-own-token
-- [Integrate with Slack](/guides/slack) -- query data from Slack channels
-- [Use as MCP server](/guides/mcp) -- connect Atlas to Claude Desktop or Cursor
-- [CLI Reference](/reference/cli) -- all commands and flags
-- [Troubleshooting](/guides/troubleshooting) -- common errors and debug logging
+- **[Connect your own database](/getting-started/connect-your-data)** — replace the demo with your PostgreSQL, MySQL, or other datasource
+- **[Deploy to production](/deployment/deploy)** — Railway, Vercel, or Docker
+- **[Set up authentication](/deployment/authentication)** — API key, managed auth, or bring-your-own-token
+- **[Embed in your app](/guides/embedding-widget)** — add Atlas as a chat widget in any web app
+- **[Integrate with Slack](/guides/slack)** — query data from Slack channels
+- **[Use as MCP server](/guides/mcp)** — connect Atlas to Claude Desktop or Cursor
+- **[Troubleshooting](/guides/troubleshooting)** — full error reference and debug logging

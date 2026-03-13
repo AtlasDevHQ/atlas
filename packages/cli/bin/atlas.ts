@@ -46,6 +46,7 @@ import * as yaml from "js-yaml";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import { type DBType } from "@atlas/api/lib/db/connection";
+import { checkEnvFile } from "../src/env-check";
 
 /** CLI-local DB type detection — supports all URL schemes (core + plugin databases). */
 function detectDBType(url: string): DBType {
@@ -4589,6 +4590,8 @@ async function handleMigrate(args: string[]): Promise<void> {
 async function main() {
   const args = process.argv.slice(2);
   const command = args[0];
+
+  await checkEnvFile(command);
 
   if (command === "query") {
     return handleQuery(args);

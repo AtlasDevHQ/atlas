@@ -1,7 +1,11 @@
 ---
 title: Embedding Widget
-description: Add an Atlas chat widget to any website with a single script tag.
+description: Add an Atlas chat widget to any website with a single script tag — then customize its theme, layout, and behavior.
 ---
+
+import { Callout } from "fumadocs-ui/components/callout";
+import { Tabs, Tab } from "fumadocs-ui/components/tabs";
+import { Steps, Step } from "fumadocs-ui/components/steps";
 
 Atlas provides a drop-in chat widget that adds a floating chat bubble to any webpage. Users click the bubble to open a panel and ask questions about your data — no React or build tooling required.
 
@@ -42,9 +46,11 @@ Bind callbacks by setting `data-on-*` attributes to the name of a global functio
 
 ```html
 <script>
+  // Called when the widget panel opens
   function onAtlasOpen() {
     console.log("Widget opened");
   }
+  // Called on widget errors — code identifies the error type
   function onAtlasError(detail) {
     console.error("Widget error:", detail.code, detail.message);
   }
@@ -100,7 +106,9 @@ You can queue commands before the widget script finishes loading. Initialize `wi
 
 ```html
 <script>
+  // Initialize the command queue before widget.js loads
   window.Atlas = window.Atlas || [];
+  // Commands are replayed in order once the widget initializes
   Atlas.push(["open"]);
   Atlas.push(["ask", "How many users signed up today?"]);
 </script>
@@ -111,85 +119,6 @@ You can queue commands before the widget script finishes loading. Initialize `wi
 ```
 
 Queued commands are replayed in order once the widget initializes.
-
-## Widget Branding
-
-The widget host page (`/widget`) accepts query parameters for custom branding. These are applied automatically when using the script tag loader — you typically don't set them directly unless using the iframe approach below.
-
-| Parameter | Description |
-|-----------|-------------|
-| `theme` | `"light"`, `"dark"`, or `"system"` (default: `"system"`) |
-| `logo` | HTTPS URL to a custom logo image |
-| `accent` | Hex color without `#` (e.g. `4f46e5`) — overrides send button, input focus, and link colors |
-| `welcome` | Welcome message shown before the first user message |
-| `initialQuery` | Auto-sends this query on first open |
-
-## Direct Iframe Embedding
-
-If you want full control over placement, embed the widget directly as an iframe instead of using the floating bubble:
-
-```html
-<iframe
-  src="https://your-atlas-api.example.com/widget?theme=light"
-  title="Atlas Chat"
-  allow="clipboard-write"
-  style="width: 400px; height: 600px; border: none; border-radius: 12px;"
-></iframe>
-```
-
-### Iframe with Branding
-
-```html
-<iframe
-  src="https://your-atlas-api.example.com/widget?theme=dark&accent=4f46e5&welcome=Ask%20me%20anything&logo=https%3A%2F%2Fexample.com%2Flogo.png"
-  title="Atlas Chat"
-  allow="clipboard-write"
-  style="width: 100%; height: 600px; border: none; border-radius: 12px;"
-></iframe>
-```
-
-### Communicating with the Iframe
-
-The iframe accepts `postMessage` commands from the parent window:
-
-```javascript
-const iframe = document.querySelector("iframe");
-
-// Set theme
-iframe.contentWindow.postMessage({ type: "theme", value: "dark" }, "*");
-
-// Pass auth token
-iframe.contentWindow.postMessage({ type: "auth", token: "user-jwt" }, "*");
-
-// Send a query
-iframe.contentWindow.postMessage({ type: "atlas:ask", query: "Show revenue by region" }, "*");
-
-// Update branding at runtime
-iframe.contentWindow.postMessage({
-  type: "atlas:setBranding",
-  logo: "https://example.com/new-logo.png",
-  accent: "dc2626",
-  welcome: "Welcome! Ask me about your data.",
-}, "*");
-```
-
-The iframe sends messages back to the parent:
-
-| Message Type | Description |
-|--------------|-------------|
-| `atlas:ready` | Widget loaded successfully |
-| `atlas:error` | Error occurred (includes `code` and `message`) |
-
-```javascript
-window.addEventListener("message", (event) => {
-  if (event.data?.type === "atlas:ready") {
-    console.log("Widget is ready");
-  }
-  if (event.data?.type === "atlas:error") {
-    console.error("Widget error:", event.data.code, event.data.message);
-  }
-});
-```
 
 ## TypeScript Support
 
@@ -204,12 +133,699 @@ Add it to your project to get type-safe access to the Atlas API:
 ```typescript
 /// <reference path="./atlas-widget.d.ts" />
 
+// Full type safety for Atlas methods and event payloads
 window.Atlas?.ask("What's the churn rate?");
 ```
 
-## Security Considerations
+The type declarations define these interfaces:
 
-**Content Security Policy (CSP):** If your site uses CSP headers, add the Atlas API domain to your policy:
+```typescript
+interface AtlasWidgetEventMap {
+  /** Emitted when the widget panel opens */
+  open: Record<string, never>;
+  /** Emitted when the widget panel closes */
+  close: Record<string, never>;
+  /** Emitted when a query completes (reserved — not yet emitted) */
+  queryComplete: { sql?: string; rowCount?: number };
+  /** Emitted on widget errors */
+  error: { code?: string; message?: string };
+}
+
+interface AtlasWidget {
+  open(): void;
+  close(): void;
+  toggle(): void;
+  ask(question: string): void;
+  destroy(): void;
+  on<K extends keyof AtlasWidgetEventMap>(
+    event: K,
+    handler: (detail: AtlasWidgetEventMap[K]) => void,
+  ): void;
+  setAuthToken(token: string): void;
+  setTheme(theme: "light" | "dark"): void;
+}
+
+interface Window {
+  /** Atlas widget API — or a command queue array before widget.js loads */
+  Atlas?: AtlasWidget | Array<[string, ...unknown[]]>;
+}
+```
+
+---
+
+## CSS Variables
+
+The Atlas widget renders inside an `.atlas-root` container that defines all design tokens as CSS custom properties. These use the [OKLCH color space](https://developer.mozilla.org/en-US/docs/Web/CSS/color_value/oklch) and follow the shadcn/ui neutral base.
+
+### Light Theme Tokens
+
+All variables are scoped to `.atlas-root`:
+
+| Variable | Default (OKLCH) | Purpose |
+|----------|-----------------|---------|
+| `--radius` | `0.625rem` | Base border-radius for cards, inputs, buttons |
+| `--background` | `oklch(1 0 0)` | Page / container background |
+| `--foreground` | `oklch(0.145 0 0)` | Primary text color |
+| `--card` | `oklch(1 0 0)` | Card surface background |
+| `--card-foreground` | `oklch(0.145 0 0)` | Card text color |
+| `--popover` | `oklch(1 0 0)` | Popover / dropdown background |
+| `--popover-foreground` | `oklch(0.145 0 0)` | Popover text color |
+| `--primary` | `oklch(0.205 0 0)` | Primary action color (buttons, links) |
+| `--primary-foreground` | `oklch(0.985 0 0)` | Text on primary-colored surfaces |
+| `--secondary` | `oklch(0.97 0 0)` | Secondary surface color |
+| `--secondary-foreground` | `oklch(0.205 0 0)` | Text on secondary surfaces |
+| `--muted` | `oklch(0.97 0 0)` | Muted / disabled backgrounds |
+| `--muted-foreground` | `oklch(0.556 0 0)` | Muted text (placeholders, hints) |
+| `--accent` | `oklch(0.97 0 0)` | Accent highlight background |
+| `--accent-foreground` | `oklch(0.205 0 0)` | Text on accent surfaces |
+| `--destructive` | `oklch(0.577 0.245 27.325)` | Error / destructive action color |
+| `--destructive-foreground` | `oklch(0.577 0.245 27.325)` | Text for destructive elements |
+| `--border` | `oklch(0.922 0 0)` | Border color for inputs, cards, dividers |
+| `--input` | `oklch(0.922 0 0)` | Input field border color |
+| `--ring` | `oklch(0.708 0 0)` | Focus ring color |
+| `--atlas-brand` | `oklch(0.759 0.148 167.71)` | Brand accent (Atlas teal) — drives `--primary` in the full app |
+
+### Dark Theme Tokens
+
+Applied via `.dark .atlas-root`:
+
+| Variable | Default (OKLCH) | Change from Light |
+|----------|-----------------|-------------------|
+| `--background` | `oklch(0.145 0 0)` | Near-black surface |
+| `--foreground` | `oklch(0.985 0 0)` | Near-white text |
+| `--primary` | `oklch(0.985 0 0)` | Inverted: light on dark |
+| `--primary-foreground` | `oklch(0.205 0 0)` | Dark text on light primary |
+| `--secondary` | `oklch(0.269 0 0)` | Darker gray surface |
+| `--muted` | `oklch(0.269 0 0)` | Darker muted background |
+| `--muted-foreground` | `oklch(0.708 0 0)` | Brighter muted text |
+| `--border` | `oklch(0.269 0 0)` | Darker borders |
+| `--input` | `oklch(0.269 0 0)` | Darker input borders |
+| `--ring` | `oklch(0.439 0 0)` | Darker focus ring |
+
+### Overriding CSS Variables
+
+Override variables by targeting `.atlas-root` in your page's CSS. Place your overrides **after** the Atlas stylesheet loads:
+
+<Tabs items={["Inline style tag", "External stylesheet"]}>
+<Tab value="Inline style tag">
+```html
+<!-- Override Atlas design tokens to match your brand -->
+<style>
+  .atlas-root {
+    /* Warmer border radius for a softer look */
+    --radius: 0.75rem;
+    /* Custom background and text colors */
+    --background: oklch(0.98 0.005 250);
+    --foreground: oklch(0.15 0.02 250);
+    /* Custom border color */
+    --border: oklch(0.90 0.01 250);
+    /* Brand color — used for primary actions */
+    --atlas-brand: oklch(0.65 0.19 250);
+  }
+
+  /* Dark mode overrides — applied when <html> has class="dark" */
+  .dark .atlas-root {
+    --background: oklch(0.16 0.01 250);
+    --foreground: oklch(0.96 0.005 250);
+    --border: oklch(0.28 0.01 250);
+  }
+</style>
+```
+</Tab>
+<Tab value="External stylesheet">
+```css
+/* atlas-overrides.css — load after Atlas styles */
+.atlas-root {
+  /* Match your design system's radius */
+  --radius: 0.5rem;
+  /* Use your brand's primary color */
+  --primary: oklch(0.55 0.2 260);
+  --primary-foreground: oklch(0.98 0 0);
+  /* Custom muted tones */
+  --muted: oklch(0.96 0.01 260);
+  --muted-foreground: oklch(0.5 0.02 260);
+}
+
+.dark .atlas-root {
+  --primary: oklch(0.75 0.15 260);
+  --primary-foreground: oklch(0.15 0 0);
+  --muted: oklch(0.25 0.01 260);
+  --muted-foreground: oklch(0.65 0.02 260);
+}
+```
+</Tab>
+</Tabs>
+
+### Widget-Specific CSS Variables
+
+When using the script tag or iframe embed, the widget host page defines one additional variable:
+
+| Variable | Set By | Purpose |
+|----------|--------|---------|
+| `--atlas-widget-accent` | `accent` query param or `atlas:setBranding` postMessage | Overrides submit button background, input focus border, and link colors |
+
+This is separate from the `.atlas-root` tokens — it uses `!important` overrides on specific elements to apply accent coloring without requiring CSS variable changes.
+
+---
+
+## Theming
+
+Atlas supports `"light"`, `"dark"`, and `"system"` themes. The `"system"` mode follows the user's OS preference via `prefers-color-scheme`.
+
+### Theme via Script Tag
+
+```html
+<!-- Set a fixed dark theme -->
+<script
+  src="https://your-atlas-api.example.com/widget.js"
+  data-api-url="https://your-atlas-api.example.com"
+  data-theme="dark"
+></script>
+```
+
+<Callout type="info">
+The script tag loader only supports `"light"` and `"dark"`. For `"system"` theme support, use the iframe embed directly with `?theme=system`.
+</Callout>
+
+### Theme via Programmatic API
+
+```javascript
+// Switch theme at runtime — e.g. when user toggles your app's theme
+Atlas.setTheme("dark");
+```
+
+### Theme via iframe postMessage
+
+```javascript
+const iframe = document.querySelector("iframe");
+
+// Send a theme change to the iframe — only "light" and "dark" are valid
+iframe.contentWindow.postMessage(
+  { type: "theme", value: "dark" },
+  "https://your-atlas-api.example.com",
+);
+```
+
+### Brand Colors
+
+Atlas supports two brand color mechanisms depending on the embedding approach:
+
+**For the React component (`@useatlas/react`):**
+
+The `--atlas-brand` CSS variable accepts an OKLCH color value. In the full Atlas app, `--atlas-brand` drives the `--primary` token, affecting buttons, links, and focus rings. The Atlas API's `/api/health` endpoint can return a `brandColor` field which the component applies automatically via `applyBrandColor()`.
+
+```css
+/* Override the brand color in your stylesheet */
+.atlas-root {
+  --atlas-brand: oklch(0.62 0.2 275); /* Purple brand */
+}
+```
+
+**For the widget embed (script tag / iframe):**
+
+The `accent` parameter takes a 3- or 6-digit hex color (without `#`). This sets `--atlas-widget-accent` and overrides the submit button, input focus border, and link colors.
+
+```html
+<!-- Indigo accent via iframe query parameter -->
+<iframe
+  src="https://your-atlas-api.example.com/widget?accent=4f46e5&theme=dark"
+  title="Atlas Chat"
+  allow="clipboard-write"
+  style="width: 400px; height: 600px; border: none; border-radius: 12px;"
+></iframe>
+```
+
+### Complete Brand Theming Example
+
+This example combines a custom logo, accent color, welcome message, and dark theme to match a fictional "Acme Analytics" brand:
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Acme Analytics</title>
+  <style>
+    body {
+      margin: 0;
+      background: #0f172a;
+      font-family: system-ui, sans-serif;
+    }
+
+    /* Container for the embedded Atlas widget */
+    .analytics-panel {
+      max-width: 480px;
+      height: 700px;
+      margin: 2rem auto;
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    }
+
+    .analytics-panel iframe {
+      width: 100%;
+      height: 100%;
+      border: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="analytics-panel">
+    <!-- Embed with full brand customization:
+         - theme=dark: dark background
+         - accent=6366f1: indigo buttons and focus rings
+         - logo: custom Acme logo (must be HTTPS)
+         - welcome: greeting shown before first message -->
+    <iframe
+      src="https://api.acme.com/widget?theme=dark&accent=6366f1&logo=https%3A%2F%2Facme.com%2Flogo-white.png&welcome=Hi%21%20Ask%20me%20anything%20about%20your%20Acme%20data."
+      title="Acme Analytics Chat"
+      allow="clipboard-write"
+    ></iframe>
+  </div>
+
+  <script>
+    // Update branding at runtime (e.g. after loading user preferences)
+    const iframe = document.querySelector("iframe");
+    window.addEventListener("message", (event) => {
+      // Wait for the widget to signal it's ready
+      if (event.data?.type === "atlas:ready") {
+        // Now safe to send branding updates
+        iframe.contentWindow.postMessage({
+          type: "atlas:setBranding",
+          accent: "6366f1",             // Indigo accent
+          welcome: "Welcome back!",     // Updated greeting
+        }, "https://api.acme.com");
+      }
+    });
+  </script>
+</body>
+</html>
+```
+
+---
+
+## postMessage API Reference
+
+The widget communicates with its parent page via the [`postMessage`](https://developer.mozilla.org/en-US/docs/Web/API/Window/postMessage) API. There are two communication channels:
+
+1. **Host page → Widget iframe** — control the widget from your application
+2. **Widget iframe → Host page** — receive events from the widget
+
+<Callout type="warn">
+Always specify the target origin instead of `"*"` in production. Using `"*"` allows any page to send messages to your widget, which could be exploited if the page is embedded elsewhere.
+</Callout>
+
+### Host → Widget Messages
+
+These messages are sent from your page to the widget iframe via `iframe.contentWindow.postMessage(message, origin)`.
+
+#### `theme` — Set the color theme
+
+```typescript
+// Set the widget to dark mode
+iframe.contentWindow.postMessage(
+  {
+    type: "theme",       // Message discriminator
+    value: "dark",       // "light" or "dark" — "system" is not supported via postMessage
+  },
+  "https://your-atlas-api.example.com",  // Target origin — must match your API URL
+);
+```
+
+#### `auth` — Pass an authentication token
+
+```typescript
+// Send a JWT or API key to the widget — it becomes the Bearer token for API requests
+iframe.contentWindow.postMessage(
+  {
+    type: "auth",        // Message discriminator
+    token: "eyJhbG...",  // Your auth token string — sent as Authorization: Bearer <token>
+  },
+  "https://your-atlas-api.example.com",
+);
+```
+
+#### `toggle` — Show or hide the widget
+
+```typescript
+// Toggle the widget's visibility (shown/hidden)
+iframe.contentWindow.postMessage(
+  {
+    type: "toggle",      // No additional fields needed
+  },
+  "https://your-atlas-api.example.com",
+);
+```
+
+#### `atlas:ask` — Send a query programmatically
+
+```typescript
+// Programmatically type and submit a question
+iframe.contentWindow.postMessage(
+  {
+    type: "atlas:ask",                    // Must include the "atlas:" prefix
+    query: "Show revenue by region",      // The question to send
+  },
+  "https://your-atlas-api.example.com",
+);
+```
+
+#### `atlas:setBranding` — Update branding at runtime
+
+```typescript
+// Update logo, accent color, or welcome message without reloading
+iframe.contentWindow.postMessage(
+  {
+    type: "atlas:setBranding",
+    logo: "https://example.com/logo.png",       // Optional — HTTPS URLs only
+    accent: "dc2626",                            // Optional — hex without #, 3 or 6 digits
+    welcome: "Welcome! Ask me about your data.", // Optional — max 500 characters
+  },
+  "https://your-atlas-api.example.com",
+);
+```
+
+<Callout type="info">
+Each field in `atlas:setBranding` is optional — only include the fields you want to update. Logo URLs must use HTTPS or they will be silently ignored.
+</Callout>
+
+### Widget → Host Messages
+
+The widget sends these messages to the parent window via `window.parent.postMessage()`. Listen for them with `window.addEventListener("message", handler)`.
+
+#### `atlas:ready` — Widget loaded successfully
+
+```typescript
+window.addEventListener("message", (event) => {
+  // Always check the origin to prevent spoofed messages
+  if (event.origin !== "https://your-atlas-api.example.com") return;
+
+  if (event.data?.type === "atlas:ready") {
+    console.log("Atlas widget is ready");
+    // Safe to send postMessage commands now (auth, branding, queries)
+  }
+});
+```
+
+#### `atlas:error` — Error occurred
+
+```typescript
+window.addEventListener("message", (event) => {
+  if (event.origin !== "https://your-atlas-api.example.com") return;
+
+  if (event.data?.type === "atlas:error") {
+    // Error codes: "UNCAUGHT", "UNHANDLED_REJECTION", "RENDER_FAILED", "LOAD_FAILED"
+    console.error(
+      `Atlas error [${event.data.code}]:`,
+      event.data.message,
+    );
+  }
+});
+```
+
+### TypeScript Types for postMessage
+
+Use these types in your application for type-safe message handling:
+
+```typescript
+// ---- Host → Widget messages ----
+
+/** Set the widget theme */
+interface AtlasThemeMessage {
+  type: "theme";
+  value: "light" | "dark";  // "system" not supported via postMessage
+}
+
+/** Pass an auth token to the widget */
+interface AtlasAuthMessage {
+  type: "auth";
+  token: string;  // Sent as Authorization: Bearer <token>
+}
+
+/** Toggle widget visibility */
+interface AtlasToggleMessage {
+  type: "toggle";
+}
+
+/** Send a query to the widget */
+interface AtlasAskMessage {
+  type: "atlas:ask";
+  query: string;
+}
+
+/** Update branding at runtime — all fields optional */
+interface AtlasSetBrandingMessage {
+  type: "atlas:setBranding";
+  logo?: string;     // HTTPS URL only
+  accent?: string;   // Hex color without # (3 or 6 digits)
+  welcome?: string;  // Max 500 characters
+}
+
+type HostToWidgetMessage =
+  | AtlasThemeMessage
+  | AtlasAuthMessage
+  | AtlasToggleMessage
+  | AtlasAskMessage
+  | AtlasSetBrandingMessage;
+
+// ---- Widget → Host messages ----
+
+/** Widget loaded successfully */
+interface AtlasReadyMessage {
+  type: "atlas:ready";
+}
+
+/** Widget error — includes error code and human-readable message */
+interface AtlasErrorMessage {
+  type: "atlas:error";
+  code: "UNCAUGHT" | "UNHANDLED_REJECTION" | "RENDER_FAILED" | "LOAD_FAILED";
+  message: string;
+}
+
+type WidgetToHostMessage = AtlasReadyMessage | AtlasErrorMessage;
+```
+
+### Complete postMessage Example
+
+```html
+<iframe
+  id="atlas-widget"
+  src="https://your-atlas-api.example.com/widget?theme=light"
+  title="Atlas Chat"
+  allow="clipboard-write"
+  style="width: 400px; height: 600px; border: none; border-radius: 12px;"
+></iframe>
+
+<script>
+  const iframe = document.getElementById("atlas-widget");
+  const ATLAS_ORIGIN = "https://your-atlas-api.example.com";
+
+  // Listen for messages from the widget
+  window.addEventListener("message", (event) => {
+    // Security: always check origin
+    if (event.origin !== ATLAS_ORIGIN) return;
+
+    switch (event.data?.type) {
+      case "atlas:ready":
+        // Widget is initialized — send auth token and initial config
+        iframe.contentWindow.postMessage(
+          { type: "auth", token: getAuthToken() },
+          ATLAS_ORIGIN,
+        );
+        iframe.contentWindow.postMessage(
+          { type: "atlas:setBranding", accent: "4f46e5" },
+          ATLAS_ORIGIN,
+        );
+        break;
+
+      case "atlas:error":
+        // Log errors to your monitoring service
+        reportError({
+          source: "atlas-widget",
+          code: event.data.code,
+          message: event.data.message,
+        });
+        break;
+    }
+  });
+
+  // Sync theme when your app's theme changes
+  function onAppThemeChange(newTheme) {
+    iframe.contentWindow.postMessage(
+      { type: "theme", value: newTheme },  // "light" or "dark"
+      ATLAS_ORIGIN,
+    );
+  }
+</script>
+```
+
+---
+
+## Layout Options
+
+The widget supports three layout modes: floating bubble (default for the script tag), inline embed, and full-page.
+
+### Floating Bubble (Default)
+
+The script tag loader creates a floating bubble in the bottom corner. Clicking it opens a 400×600 panel.
+
+<Tabs items={["Bottom-right (default)", "Bottom-left"]}>
+<Tab value="Bottom-right (default)">
+```html
+<!-- Floating bubble in the bottom-right corner (default) -->
+<script
+  src="https://your-atlas-api.example.com/widget.js"
+  data-api-url="https://your-atlas-api.example.com"
+></script>
+```
+</Tab>
+<Tab value="Bottom-left">
+```html
+<!-- Floating bubble in the bottom-left corner -->
+<script
+  src="https://your-atlas-api.example.com/widget.js"
+  data-api-url="https://your-atlas-api.example.com"
+  data-position="bottom-left"
+></script>
+```
+</Tab>
+</Tabs>
+
+The bubble has these fixed properties:
+- **Size:** 56×56px circle
+- **Z-index:** 2147483646 (just below maximum)
+- **Panel size:** 400×600px, capped at `calc(100vh - 108px)` height and `calc(100vw - 40px)` width
+- **Animation:** Scale + opacity entrance, cubic-bezier open/close transition
+- **Keyboard:** Escape key closes the panel
+
+### Inline Embed
+
+Embed the widget directly as an iframe with explicit dimensions. This gives you full control over placement — put it in a sidebar, a modal, or anywhere in your layout.
+
+```html
+<!-- Inline embed — sized to fit a sidebar or card -->
+<iframe
+  src="https://your-atlas-api.example.com/widget?theme=light"
+  title="Atlas Chat"
+  allow="clipboard-write"
+  style="width: 400px; height: 600px; border: none; border-radius: 12px;"
+></iframe>
+```
+
+With branding:
+
+```html
+<!-- Inline embed with full branding customization -->
+<iframe
+  src="https://your-atlas-api.example.com/widget?theme=dark&accent=4f46e5&welcome=Ask%20me%20anything&logo=https%3A%2F%2Fexample.com%2Flogo.png"
+  title="Atlas Chat"
+  allow="clipboard-write"
+  style="width: 100%; height: 600px; border: none; border-radius: 12px;"
+></iframe>
+```
+
+#### Widget Query Parameters
+
+These parameters are set on the `/widget` iframe URL:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `theme` | `"system"` | `"light"`, `"dark"`, or `"system"` — the iframe supports all three |
+| `apiUrl` | iframe origin | Atlas API base URL (must be `http://` or `https://`) |
+| `position` | `"inline"` | `"bottomRight"`, `"bottomLeft"`, or `"inline"` — set by the script loader |
+| `logo` | -- | HTTPS URL to a custom logo image (replaces the default Atlas logo) |
+| `accent` | -- | Hex color without `#` (e.g. `4f46e5`) — overrides submit button, focus ring, and link colors |
+| `welcome` | -- | Welcome message shown before the first user message (max 500 chars) |
+| `initialQuery` | -- | Auto-sends this query when the widget first opens (max 500 chars) |
+
+### Full-Page Mode
+
+Make the iframe fill the entire viewport for a dedicated analytics page:
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Analytics — Powered by Atlas</title>
+  <style>
+    /* Remove all margins and make iframe fill the viewport */
+    * { margin: 0; padding: 0; }
+    html, body { height: 100%; overflow: hidden; }
+    iframe { width: 100%; height: 100%; border: none; }
+  </style>
+</head>
+<body>
+  <!-- Full-viewport Atlas chat — no border-radius for edge-to-edge display -->
+  <iframe
+    src="https://your-atlas-api.example.com/widget?theme=system&welcome=What%20would%20you%20like%20to%20know%3F"
+    title="Atlas Analytics"
+    allow="clipboard-write"
+  ></iframe>
+</body>
+</html>
+```
+
+---
+
+## Common Failures
+
+### CORS Errors
+
+**Symptom:** Browser console shows `Access to fetch at 'https://your-api...' has been blocked by CORS policy`.
+
+**Cause:** The Atlas API sets `Access-Control-Allow-Origin: *` on widget routes, but your reverse proxy or CDN may strip or override these headers.
+
+**Fix:** Ensure your reverse proxy forwards CORS headers from the Atlas API. If you use nginx:
+
+```nginx
+# nginx — forward CORS headers from the Atlas API for widget routes
+location /widget {
+    proxy_pass http://atlas-api:3001;
+    # Don't strip Access-Control headers set by Atlas
+    proxy_pass_request_headers on;
+}
+```
+
+If you override CORS at the proxy level, include these headers:
+
+```
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, OPTIONS
+Access-Control-Allow-Headers: Content-Type, Authorization
+Access-Control-Allow-Credentials: true
+```
+
+### iframe Sandbox Restrictions
+
+**Symptom:** Widget loads but shows a blank page, or JavaScript errors appear in the iframe's console.
+
+**Cause:** If you add a `sandbox` attribute to the iframe, it blocks scripts, forms, and same-origin access by default.
+
+**Fix:** If you must use `sandbox`, include the required permissions:
+
+```html
+<!-- Minimum sandbox permissions for Atlas to function -->
+<iframe
+  src="https://your-atlas-api.example.com/widget"
+  sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+  title="Atlas Chat"
+  allow="clipboard-write"
+></iframe>
+```
+
+<Callout type="warn">
+`allow-scripts` and `allow-same-origin` together effectively disable sandboxing. If security isolation is your goal, host the widget on a separate subdomain instead.
+</Callout>
+
+### Content Security Policy (CSP)
+
+**Symptom:** Widget script or iframe blocked. Console shows `Refused to load the script` or `Refused to frame`.
+
+**Cause:** Your site's CSP headers don't allow loading resources from the Atlas API domain.
+
+**Fix:** Add the Atlas API domain to your CSP:
 
 ```
 Content-Security-Policy:
@@ -218,6 +834,98 @@ Content-Security-Policy:
   connect-src 'self' https://your-atlas-api.example.com;
 ```
 
+If you use a `<meta>` tag for CSP:
+
+```html
+<meta http-equiv="Content-Security-Policy"
+  content="script-src 'self' https://your-atlas-api.example.com;
+           frame-src 'self' https://your-atlas-api.example.com;
+           connect-src 'self' https://your-atlas-api.example.com;">
+```
+
+### Auth Token Not Reaching the Widget
+
+**Symptom:** Widget loads but shows "Unauthorized" or API key prompt even though you passed a token.
+
+**Causes and fixes:**
+
+<Steps>
+<Step>
+### Check: Token sent before widget is ready
+
+The widget iframe must finish loading before it can receive postMessage commands. Always wait for the `atlas:ready` event:
+
+```javascript
+// WRONG — widget may not be ready yet
+iframe.contentWindow.postMessage({ type: "auth", token: myToken }, origin);
+
+// CORRECT — wait for the widget to signal readiness
+window.addEventListener("message", (event) => {
+  if (event.origin !== ATLAS_ORIGIN) return;
+  if (event.data?.type === "atlas:ready") {
+    // Widget is ready — now send the token
+    iframe.contentWindow.postMessage(
+      { type: "auth", token: myToken },
+      ATLAS_ORIGIN,
+    );
+  }
+});
+```
+</Step>
+<Step>
+### Check: Origin mismatch
+
+The widget only accepts messages from `window.parent`. If your iframe is nested inside another iframe, the parent origin check will fail. Ensure your page is the direct parent of the Atlas iframe.
+
+Also verify the origin you pass to `postMessage` matches the actual widget URL:
+
+```javascript
+// The origin must match the iframe's src domain exactly
+const ATLAS_ORIGIN = "https://your-atlas-api.example.com"; // No trailing slash
+iframe.contentWindow.postMessage(
+  { type: "auth", token: myToken },
+  ATLAS_ORIGIN,
+);
+```
+</Step>
+<Step>
+### Check: Using HTTPS
+
+Auth tokens are transmitted via postMessage. If either the host page or the widget is served over HTTP, tokens can be intercepted. Use HTTPS for both in production.
+</Step>
+<Step>
+### Check: Script tag with data-api-key
+
+If using the script tag loader, verify the `data-api-key` attribute is set on the correct `<script>` element and the key is valid:
+
+```html
+<!-- The API key goes on the widget.js script tag, not a separate script -->
+<script
+  src="https://your-atlas-api.example.com/widget.js"
+  data-api-url="https://your-atlas-api.example.com"
+  data-api-key="sk-your-actual-key"
+></script>
+```
+</Step>
+</Steps>
+
+### Widget Shows "Unable to Load Atlas Chat"
+
+**Symptom:** Widget displays a gray error message instead of the chat interface.
+
+**Causes:**
+- The widget JS bundle is not built — run `bun run build` in `packages/react/`
+- The `/widget/atlas-widget.js` or `/widget/atlas-widget.css` assets return 404
+- A JavaScript error occurred during initialization (check the iframe's console)
+
+**Diagnosis:** Open browser DevTools, switch to the iframe's context, and check the console for errors. The widget logs all errors with the `[Atlas Widget]` prefix and sends them to the parent via `atlas:error` postMessage.
+
+## Security Considerations
+
 **Allowed Origins:** The widget script and iframe routes set `Access-Control-Allow-Origin: *` and `Content-Security-Policy: frame-ancestors *` to allow embedding from any domain. If you need to restrict origins, configure your reverse proxy or CDN to override these headers.
 
 **Auth Tokens:** When using `data-api-key` or `Atlas.setAuthToken()`, the token is sent to the widget iframe via `postMessage`. Use HTTPS to prevent token interception. Prefer short-lived tokens over long-lived API keys for production deployments.
+
+**Logo URLs:** Custom logos must use HTTPS. Non-HTTPS URLs are silently rejected to prevent mixed content and `javascript:` / `data:` URI attacks.
+
+**Accent Colors:** The `accent` parameter is validated as a 3- or 6-digit hex string. Invalid values are silently ignored.

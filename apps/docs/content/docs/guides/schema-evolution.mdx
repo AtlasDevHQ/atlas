@@ -67,12 +67,13 @@ Tables that exist in both but have column, type, foreign key, or metadata differ
 ```
 Changed tables:
   orders
-    + added column: shipping_method (string)       # New column in DB, not in YAML
-    - removed column: legacy_status (string)        # Column in YAML, gone from DB
-    ~ type changed: amount — YAML: integer, DB: number  # Type mismatch
-    + added FK: warehouse_id→warehouses.id          # New relationship
-    - removed FK: old_ref_id→legacy_refs.id         # Relationship removed
-    ~ type changed: view → materialized_view        # Object type changed
+    + added column: shipping_method (string)
+    - removed column: legacy_status (string)
+    ~ type changed: amount — YAML: integer, DB: number
+    + added FK: warehouse_id→warehouses.id
+    - removed FK: old_ref_id→legacy_refs.id
+    ~ type changed: view → materialized_view
+    ~ partition strategy added: RANGE
 ```
 
 Each line uses a prefix to indicate the change type:
@@ -80,15 +81,19 @@ Each line uses a prefix to indicate the change type:
 - `-` — something removed from the database
 - `~` — a value changed between YAML and database
 
-At the bottom, a summary line counts all changes:
+Metadata changes include object type drift (e.g., table to view), partition strategy, and partition key changes.
+
+At the bottom, a summary line counts all changes present in the diff:
 
 ```
-Summary: 2 new tables, 1 removed, 3 changed (2 columns added, 1 removed, 1 type change, 1 FK added)
+Summary: 2 new tables, 1 removed, 3 changed (2 columns added, 1 removed, 1 type change, 1 FK added, 1 metadata change)
 ```
 
 If everything is in sync, you'll see:
 
 ```
+Atlas Diff — comparing database against semantic/entities/
+
 No drift detected — semantic layer is in sync with the database.
 ```
 
@@ -119,7 +124,7 @@ You have two approaches:
 **Manual update** — edit the YAML files directly to add, remove, or modify dimensions. This preserves all your enrichments but requires more effort.
 
 <Callout type="warn">
-`atlas init` deletes all existing `.yml` files in `semantic/entities/` and `semantic/metrics/` before writing new ones. Any manual enrichments — custom descriptions, query patterns, measures, virtual dimensions — will be lost. See [Preserving customizations](#preserving-customizations) before regenerating.
+`atlas init` deletes all existing `.yml` files in `semantic/entities/` and `semantic/metrics/`, and overwrites `catalog.yml` and `glossary.yml`. Any manual enrichments — custom descriptions, query patterns, measures, virtual dimensions — will be lost. See [Preserving customizations](#preserving-customizations) before regenerating.
 </Callout>
 
 </Step>
@@ -177,7 +182,7 @@ Atlas Validate
   ✓ semantic/metrics/         5 metrics parsed
 ```
 
-Fix any errors before deploying.
+Individual warnings (missing descriptions, unused entities, broken join references) appear as additional lines with `⚠` or `✗` icons. Fix any errors before deploying.
 
 </Step>
 
@@ -377,7 +382,7 @@ Run `atlas diff` in CI to catch schema drift before it causes agent errors. A no
   env:
     ATLAS_DATASOURCE_URL: ${{ secrets.ATLAS_DATASOURCE_URL }}
   run: |
-    # atlas diff exits 0 when in sync, non-zero on drift
+    # atlas diff exits with code 0 when in sync, code 1 on drift
     bun run atlas -- diff
 ```
 

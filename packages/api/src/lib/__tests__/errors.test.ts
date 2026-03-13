@@ -194,7 +194,18 @@ describe("parseChatError", () => {
     expect(info.code).toBe("provider_unreachable");
   });
 
-  // 18. internal_error with message
+  // 18. provider_error
+  it("provider_error → correct title", () => {
+    const info = parseChatError(
+      jsonError({ error: "provider_error", message: "Model overloaded" }),
+      "none",
+    );
+    expect(info.title).toBe("The AI provider returned an error.");
+    expect(info.detail).toBe("Model overloaded");
+    expect(info.code).toBe("provider_error");
+  });
+
+  // 19–20. internal_error with/without message
   it("internal_error with message → passes through server message", () => {
     const info = parseChatError(
       jsonError({ error: "internal_error", message: "DB pool exhausted" }),
@@ -204,7 +215,6 @@ describe("parseChatError", () => {
     expect(info.code).toBe("internal_error");
   });
 
-  // 19. internal_error without message
   it("internal_error without message → generic fallback", () => {
     const info = parseChatError(
       jsonError({ error: "internal_error" }),
@@ -214,7 +224,7 @@ describe("parseChatError", () => {
     expect(info.code).toBe("internal_error");
   });
 
-  // 20. validation_error (#308)
+  // 21–23. validation_error, not_found, forbidden (#308)
   it("validation_error → correct title and detail", () => {
     const info = parseChatError(
       jsonError({ error: "validation_error", message: "Field 'name' is required." }),
@@ -225,7 +235,13 @@ describe("parseChatError", () => {
     expect(info.code).toBe("validation_error");
   });
 
-  // 21. not_found (#308)
+  it("validation_error without message → detail is undefined", () => {
+    const info = parseChatError(jsonError({ error: "validation_error" }), "none");
+    expect(info.title).toBe("Validation error.");
+    expect(info.detail).toBeUndefined();
+    expect(info.code).toBe("validation_error");
+  });
+
   it("not_found → correct title and detail", () => {
     const info = parseChatError(
       jsonError({ error: "not_found", message: "Conversation not found." }),
@@ -236,7 +252,13 @@ describe("parseChatError", () => {
     expect(info.code).toBe("not_found");
   });
 
-  // 22. forbidden (#308)
+  it("not_found without message → detail is undefined", () => {
+    const info = parseChatError(jsonError({ error: "not_found" }), "none");
+    expect(info.title).toBe("Not found.");
+    expect(info.detail).toBeUndefined();
+    expect(info.code).toBe("not_found");
+  });
+
   it("forbidden → correct title and detail", () => {
     const info = parseChatError(
       jsonError({ error: "forbidden", message: "Admin role required." }),
@@ -247,7 +269,14 @@ describe("parseChatError", () => {
     expect(info.code).toBe("forbidden");
   });
 
-  // 23. Unknown code with message
+  it("forbidden without message → detail is undefined", () => {
+    const info = parseChatError(jsonError({ error: "forbidden" }), "none");
+    expect(info.title).toBe("Access denied.");
+    expect(info.detail).toBeUndefined();
+    expect(info.code).toBe("forbidden");
+  });
+
+  // 24. Unknown code with message
   it("unknown code with message → passes through server message", () => {
     const info = parseChatError(
       jsonError({ error: "something_new", message: "New error type" }),
@@ -257,7 +286,7 @@ describe("parseChatError", () => {
     expect(info.code).toBeUndefined();
   });
 
-  // 21. Unknown code without message
+  // 25. Unknown code without message
   it("unknown code without message → generic fallback", () => {
     const info = parseChatError(
       jsonError({ error: "something_new" }),
@@ -266,7 +295,7 @@ describe("parseChatError", () => {
     expect(info.title).toBe("Something went wrong. Please try again.");
   });
 
-  // 22. Valid JSON but error field is not a string
+  // 26. Valid JSON but error field is not a string
   it("error field is a number → default case", () => {
     const info = parseChatError(
       jsonError({ error: 42, message: "Unexpected" }),
@@ -276,17 +305,13 @@ describe("parseChatError", () => {
     expect(info.code).toBeUndefined();
   });
 
-  // 23. Valid JSON but empty object
+  // 27. Valid JSON but empty object
   it("empty JSON object → default case", () => {
     const info = parseChatError(jsonError({}), "none");
     expect(info.title).toBe("Something went wrong. Please try again.");
     expect(info.code).toBeUndefined();
   });
 });
-
-/* ------------------------------------------------------------------ */
-/*  authErrorMessage                                                   */
-/* ------------------------------------------------------------------ */
 
 /* ------------------------------------------------------------------ */
 /*  isChatErrorCode                                                    */

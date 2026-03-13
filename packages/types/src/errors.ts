@@ -88,8 +88,9 @@ export function authErrorMessage(authMode: AuthMode): string {
  * Parse an AI SDK chat error into a user-friendly `ChatErrorInfo`.
  *
  * Expects `error.message` to contain a JSON string with `{ error, message, retryAfterSeconds? }`.
- * Falls back to a generic message when the body is not valid JSON (e.g. network failures,
- * HTML error pages, or unexpected formats).
+ * Falls back to a generic title when the body is not valid JSON (e.g. network failures,
+ * HTML error pages, or unexpected formats), preserving the original message as `detail`
+ * (truncated to 200 characters).
  */
 export function parseChatError(error: Error, authMode: AuthMode): ChatErrorInfo {
   let parsed: Record<string, unknown>;

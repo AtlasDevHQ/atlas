@@ -101,13 +101,17 @@ import {
 let mockPoolQueryResult: { rows: Record<string, unknown>[] } = { rows: [] };
 let mockPoolConnectShouldFail = false;
 let mockPoolConnectError = new Error("connection refused");
+let mockPoolQueryFn: ((sql: string, params?: unknown[]) => { rows: Record<string, unknown>[] }) | null = null;
 
 function MockPool() {
   return {
     connect: async () => {
       if (mockPoolConnectShouldFail) throw mockPoolConnectError;
       return {
-        query: async () => mockPoolQueryResult,
+        query: async (sql: string, params?: unknown[]) => {
+          if (mockPoolQueryFn) return mockPoolQueryFn(sql, params);
+          return mockPoolQueryResult;
+        },
         release: () => {},
       };
     },
@@ -118,13 +122,19 @@ function MockPool() {
 let mockMysqlQueryResult: unknown[] = [[]];
 let mockMysqlConnectShouldFail = false;
 let mockMysqlConnectError = new Error("connection refused");
+let mockMysqlPoolCallCount = 0;
+let mockMysqlSecondPoolShouldFail = false;
+let mockMysqlSecondPoolQueryResult: unknown[] = [[]];
 
 function mockMysqlCreatePool() {
+  mockMysqlPoolCallCount++;
+  const poolNum = mockMysqlPoolCallCount;
   return {
     getConnection: async () => {
-      if (mockMysqlConnectShouldFail) throw mockMysqlConnectError;
+      if (poolNum === 1 && mockMysqlConnectShouldFail) throw mockMysqlConnectError;
+      if (poolNum > 1 && mockMysqlSecondPoolShouldFail) throw new Error("second pool failed");
       return {
-        query: async () => mockMysqlQueryResult,
+        query: async () => poolNum === 1 ? mockMysqlQueryResult : mockMysqlSecondPoolQueryResult,
         release: () => {},
       };
     },
@@ -143,8 +153,12 @@ beforeEach(() => {
   savedEnv = { ...process.env };
   mockPoolConnectShouldFail = false;
   mockPoolQueryResult = { rows: [] };
+  mockPoolQueryFn = null;
   mockMysqlConnectShouldFail = false;
   mockMysqlQueryResult = [[]];
+  mockMysqlPoolCallCount = 0;
+  mockMysqlSecondPoolShouldFail = false;
+  mockMysqlSecondPoolQueryResult = [[]];
 });
 
 afterEach(() => {
@@ -340,6 +354,88 @@ describe("checkDatabaseConnectivity", () => {
     expect(result.status).toBe("fail");
     expect(result.detail).toContain("Access denied");
     expect(result.fix).toContain("Authentication");
+  });
+
+  test("pass when postgres connects and ATLAS_SCHEMA exists", async () => {
+    process.env.ATLAS_DATASOURCE_URL = "postgresql://user:pass@localhost:5432/db";
+    process.env.ATLAS_SCHEMA = "analytics";
+    mockPoolQueryFn = (sql: string) => {
+      if (sql.includes("pg_namespace")) return { rows: [{ "?column?": 1 }] };
+      return { rows: [{ version: "PostgreSQL 16.1" }] };
+    };
+    const result = await checkDatabaseConnectivity();
+    expect(result.status).toBe("pass");
+    expect(result.detail).toContain("PostgreSQL 16.1");
+  });
+
+  test("fail when postgres ATLAS_SCHEMA does not exist, shows available schemas", async () => {
+    process.env.ATLAS_DATASOURCE_URL = "postgresql://user:pass@localhost:5432/db";
+    process.env.ATLAS_SCHEMA = "analytics";
+    mockPoolQueryFn = (sql: string) => {
+      if (sql.includes("pg_namespace")) return { rows: [] };
+      if (sql.includes("information_schema.schemata")) {
+        return { rows: [{ schema_name: "public" }, { schema_name: "reporting" }] };
+      }
+      return { rows: [{ version: "PostgreSQL 16.1" }] };
+    };
+    const result = await checkDatabaseConnectivity();
+    expect(result.status).toBe("fail");
+    expect(result.detail).toContain("analytics");
+    expect(result.fix).toContain("public");
+    expect(result.fix).toContain("reporting");
+  });
+
+  test("fail when postgres ATLAS_SCHEMA does not exist and schema listing fails", async () => {
+    process.env.ATLAS_DATASOURCE_URL = "postgresql://user:pass@localhost:5432/db";
+    process.env.ATLAS_SCHEMA = "analytics";
+    mockPoolQueryFn = (sql: string) => {
+      if (sql.includes("pg_namespace")) return { rows: [] };
+      if (sql.includes("information_schema.schemata")) throw new Error("permission denied");
+      return { rows: [{ version: "PostgreSQL 16.1" }] };
+    };
+    const result = await checkDatabaseConnectivity();
+    expect(result.status).toBe("fail");
+    expect(result.detail).toContain("analytics");
+    expect(result.fix).not.toContain("Available");
+  });
+
+  test("skips schema check when ATLAS_SCHEMA is public", async () => {
+    process.env.ATLAS_DATASOURCE_URL = "postgresql://user:pass@localhost:5432/db";
+    process.env.ATLAS_SCHEMA = "public";
+    mockPoolQueryResult = { rows: [{ version: "PostgreSQL 16.1" }] };
+    const result = await checkDatabaseConnectivity();
+    expect(result.status).toBe("pass");
+  });
+
+  test("skips schema check when ATLAS_SCHEMA is not set", async () => {
+    process.env.ATLAS_DATASOURCE_URL = "postgresql://user:pass@localhost:5432/db";
+    delete process.env.ATLAS_SCHEMA;
+    mockPoolQueryResult = { rows: [{ version: "PostgreSQL 16.1" }] };
+    const result = await checkDatabaseConnectivity();
+    expect(result.status).toBe("pass");
+  });
+
+  test("fail when mysql ER_BAD_DB_ERROR, shows available databases", async () => {
+    process.env.ATLAS_DATASOURCE_URL = "mysql://user:pass@localhost:3306/nonexistent";
+    mockMysqlConnectShouldFail = true;
+    mockMysqlConnectError = new Error("ER_BAD_DB_ERROR: Unknown database 'nonexistent'");
+    mockMysqlSecondPoolShouldFail = false;
+    mockMysqlSecondPoolQueryResult = [[{ schema_name: "mydb" }, { schema_name: "testdb" }]];
+    const result = await checkDatabaseConnectivity();
+    expect(result.status).toBe("fail");
+    expect(result.fix).toContain("mydb");
+    expect(result.fix).toContain("testdb");
+  });
+
+  test("fail when mysql ER_BAD_DB_ERROR and database listing fails", async () => {
+    process.env.ATLAS_DATASOURCE_URL = "mysql://user:pass@localhost:3306/nonexistent";
+    mockMysqlConnectShouldFail = true;
+    mockMysqlConnectError = new Error("ER_BAD_DB_ERROR: Unknown database 'nonexistent'");
+    mockMysqlSecondPoolShouldFail = true;
+    const result = await checkDatabaseConnectivity();
+    expect(result.status).toBe("fail");
+    expect(result.fix).toContain("Database not found");
+    expect(result.fix).not.toContain("Available");
   });
 });
 

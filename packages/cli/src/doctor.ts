@@ -147,6 +147,52 @@ export async function checkDatabaseConnectivity(): Promise<CheckResult> {
         // Extract short version like "PostgreSQL 16.1"
         const match = versionStr.match(/^(PostgreSQL\s+[\d.]+)/);
         const version = match ? match[1] : versionStr.slice(0, 40);
+
+        // Verify ATLAS_SCHEMA exists if configured
+        const atlasSchema = process.env.ATLAS_SCHEMA;
+        if (atlasSchema && atlasSchema !== "public") {
+          try {
+            const schemaResult = await client.query(
+              "SELECT 1 FROM pg_namespace WHERE nspname = $1",
+              [atlasSchema]
+            );
+            if (schemaResult.rows.length === 0) {
+              let schemaHint = "";
+              try {
+                const schemasResult = await client.query(
+                  "SELECT schema_name FROM information_schema.schemata " +
+                  "WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast') " +
+                  "AND schema_name NOT LIKE 'pg_temp_%' AND schema_name NOT LIKE 'pg_toast_temp_%' " +
+                  "ORDER BY schema_name"
+                );
+                const schemas = schemasResult.rows.map(
+                  (r: { schema_name: string }) => r.schema_name
+                );
+                if (schemas.length > 0) {
+                  schemaHint = ` Available schemas: ${schemas.join(", ")}.`;
+                }
+              } catch {
+                // Schema listing failed — fall back to generic message
+              }
+              client.release();
+              return {
+                status: "fail",
+                name: "Database connectivity",
+                detail: `Schema "${atlasSchema}" does not exist`,
+                fix: `Check ATLAS_SCHEMA in your .env file.${schemaHint}`,
+              };
+            }
+          } catch {
+            client.release();
+            return {
+              status: "fail",
+              name: "Database connectivity",
+              detail: `Could not verify schema "${atlasSchema}"`,
+              fix: "Check ATLAS_SCHEMA and database permissions",
+            };
+          }
+        }
+
         client.release();
         return {
           status: "pass",
@@ -187,6 +233,34 @@ export async function checkDatabaseConnectivity(): Promise<CheckResult> {
       fix = "Connection timed out — check network/firewall settings";
     } else if (/authentication|password|access denied/i.test(errMsg)) {
       fix = "Authentication failed — check username and password in your connection string";
+    } else if (dbType === "mysql" && /ER_BAD_DB_ERROR/i.test(errMsg)) {
+      fix = "Database not found — check the database name in your connection string";
+      try {
+        const mysql = await import("mysql2/promise");
+        const noDatabaseUrl = url.replace(/\/[^/?#]+(?=[?#]|$)/, "/");
+        const listPool = mysql.createPool({
+          uri: noDatabaseUrl,
+          connectionLimit: 1,
+          connectTimeout: 5000,
+        });
+        try {
+          const listConn = await listPool.getConnection();
+          const [dbRows] = await listConn.query(
+            "SELECT schema_name FROM information_schema.schemata " +
+            "WHERE schema_name NOT IN ('mysql', 'sys', 'performance_schema', 'information_schema') " +
+            "ORDER BY schema_name"
+          );
+          const schemas = (dbRows as Array<{ schema_name: string }>).map(r => r.schema_name);
+          if (schemas.length > 0) {
+            fix = `Database not found. Available databases: ${schemas.join(", ")}.`;
+          }
+          listConn.release();
+        } finally {
+          await listPool.end().catch(() => {});
+        }
+      } catch {
+        // Database listing failed — keep generic fix message
+      }
     }
     return {
       status: "fail",

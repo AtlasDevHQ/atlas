@@ -193,8 +193,25 @@ function createPostgresDB(config: ConnectionConfig): DBConnection {
             );
             if (check.rows.length === 0) {
               schemaCheckPromise = null; // allow retry after error
+              let schemaHint = "";
+              try {
+                const schemasResult = await client.query(
+                  "SELECT schema_name FROM information_schema.schemata " +
+                  "WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast') " +
+                  "AND schema_name NOT LIKE 'pg_temp_%' AND schema_name NOT LIKE 'pg_toast_temp_%' " +
+                  "ORDER BY schema_name"
+                );
+                const schemas = schemasResult.rows.map(
+                  (r: { schema_name: string }) => r.schema_name
+                );
+                if (schemas.length > 0) {
+                  schemaHint = ` Available schemas: ${schemas.join(", ")}.`;
+                }
+              } catch {
+                // Schema listing failed (permissions) — fall back to generic message
+              }
               throw new Error(
-                `Schema "${pgSchema}" does not exist in the database. Check ATLAS_SCHEMA in your .env file.`
+                `Schema "${pgSchema}" does not exist in the database.${schemaHint} Check ATLAS_SCHEMA in your .env file.`
               );
             }
           })();

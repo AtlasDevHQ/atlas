@@ -24,7 +24,7 @@ Pick your database below and follow the steps. Each section is self-contained.
 
 <Steps>
 <Step>
-### Create a read-only user
+### Create a read-only PostgreSQL user
 
 Atlas enforces SELECT-only via a multi-layer SQL validation pipeline. For defense-in-depth, connect with a read-only user:
 
@@ -39,7 +39,7 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public
 </Step>
 
 <Step>
-### Set the connection string
+### Set the PostgreSQL connection string
 
 ```bash
 ATLAS_DATASOURCE_URL=postgresql://atlas_reader:your-strong-password@your-host:5432/your_db
@@ -67,7 +67,7 @@ Atlas validates the schema name at startup (must be a valid SQL identifier — l
 </Step>
 
 <Step>
-### Generate the semantic layer
+### Generate the PostgreSQL semantic layer
 
 ```bash
 ATLAS_DATASOURCE_URL="your-connection-string" bun run atlas -- init
@@ -85,7 +85,7 @@ Verify: `ls semantic/entities/` should list your tables as `.yml` files.
 </Step>
 
 <Step>
-### Verify
+### Verify PostgreSQL connectivity
 
 Start the dev server and check the health endpoint:
 
@@ -126,7 +126,7 @@ Your PostgreSQL server is rejecting the connection based on client IP. Add a lin
 
 <Steps>
 <Step>
-### Create a read-only user
+### Create a read-only MySQL user
 
 ```sql
 CREATE USER 'atlas_reader'@'%' IDENTIFIED BY 'your-strong-password';
@@ -138,7 +138,7 @@ Atlas also enforces `SET SESSION TRANSACTION READ ONLY` on every connection as a
 </Step>
 
 <Step>
-### Set the connection string
+### Set the MySQL connection string
 
 ```bash
 ATLAS_DATASOURCE_URL=mysql://atlas_reader:your-strong-password@your-host:3306/your_db
@@ -150,7 +150,7 @@ Both `mysql://` and `mysql2://` prefixes are accepted.
 </Step>
 
 <Step>
-### Generate the semantic layer
+### Generate the MySQL semantic layer
 
 ```bash
 ATLAS_DATASOURCE_URL="your-connection-string" bun run atlas -- init
@@ -160,7 +160,7 @@ Verify: `ls semantic/entities/` should list your tables.
 </Step>
 
 <Step>
-### Verify
+### Verify MySQL connectivity
 
 ```bash
 bun run dev
@@ -195,7 +195,7 @@ BigQuery is a plugin-based datasource. Install the plugin and configure it in `a
 
 <Steps>
 <Step>
-### Install the plugin
+### Install the BigQuery plugin
 
 ```bash
 bun add @useatlas/bigquery @google-cloud/bigquery
@@ -203,7 +203,7 @@ bun add @useatlas/bigquery @google-cloud/bigquery
 </Step>
 
 <Step>
-### Configure in atlas.config.ts
+### Configure BigQuery in atlas.config.ts
 
 <Tabs items={["Service Account Key File", "Inline Credentials", "Application Default Credentials"]}>
 <Tab value="Service Account Key File">
@@ -303,7 +303,7 @@ Never commit service account key files to version control. Add `*.json` key file
 </Step>
 
 <Step>
-### Generate the semantic layer
+### Generate the BigQuery semantic layer
 
 ```bash
 bun run atlas -- init
@@ -313,7 +313,7 @@ The plugin registers as the default datasource. Atlas will profile your BigQuery
 </Step>
 
 <Step>
-### Verify
+### Verify BigQuery connectivity
 
 ```bash
 bun run dev
@@ -352,7 +352,7 @@ ClickHouse is a plugin-based datasource using the HTTP transport.
 
 <Steps>
 <Step>
-### Create a read-only user
+### Create a read-only ClickHouse user
 
 ```sql
 CREATE USER atlas_reader IDENTIFIED BY 'your-strong-password';
@@ -363,7 +363,7 @@ Atlas enforces `readonly: 1` on every query via ClickHouse settings, preventing 
 </Step>
 
 <Step>
-### Install the plugin
+### Install the ClickHouse plugin
 
 ```bash
 bun add @useatlas/clickhouse @clickhouse/client
@@ -371,7 +371,7 @@ bun add @useatlas/clickhouse @clickhouse/client
 </Step>
 
 <Step>
-### Configure in atlas.config.ts
+### Configure ClickHouse in atlas.config.ts
 
 ```typescript
 import { defineConfig } from "@atlas/api/lib/config";
@@ -401,7 +401,7 @@ If you use `clickhouse://` with port 8443, Atlas will warn that you likely inten
 </Step>
 
 <Step>
-### Generate the semantic layer
+### Generate the ClickHouse semantic layer
 
 ```bash
 bun run atlas -- init
@@ -409,7 +409,7 @@ bun run atlas -- init
 </Step>
 
 <Step>
-### Verify
+### Verify ClickHouse connectivity
 
 ```bash
 bun run dev
@@ -464,7 +464,7 @@ GRANT ROLE atlas_readonly TO USER atlas_reader;
 </Step>
 
 <Step>
-### Install the plugin
+### Install the Snowflake plugin
 
 ```bash
 bun add @useatlas/snowflake snowflake-sdk
@@ -472,7 +472,7 @@ bun add @useatlas/snowflake snowflake-sdk
 </Step>
 
 <Step>
-### Configure in atlas.config.ts
+### Configure Snowflake in atlas.config.ts
 
 ```typescript
 import { defineConfig } from "@atlas/api/lib/config";
@@ -502,7 +502,7 @@ Atlas sets `STATEMENT_TIMEOUT_IN_SECONDS` per session and tags all queries with 
 </Step>
 
 <Step>
-### Generate the semantic layer
+### Generate the Snowflake semantic layer
 
 ```bash
 bun run atlas -- init
@@ -510,7 +510,7 @@ bun run atlas -- init
 </Step>
 
 <Step>
-### Verify
+### Verify Snowflake connectivity
 
 ```bash
 bun run dev
@@ -543,7 +543,7 @@ DuckDB is an in-process analytical engine — no external database server requir
 
 <Steps>
 <Step>
-### Install the plugin
+### Install the DuckDB plugin
 
 ```bash
 bun add @useatlas/duckdb @duckdb/node-api
@@ -603,7 +603,7 @@ bun run atlas -- init
 </Step>
 
 <Step>
-### Verify
+### Verify DuckDB connectivity
 
 ```bash
 bun run dev
@@ -638,7 +638,7 @@ Salesforce uses **SOQL**, not SQL. Atlas provides a separate `querySalesforce` t
 
 <Steps>
 <Step>
-### Install the plugin
+### Install the Salesforce plugin
 
 ```bash
 bun add @useatlas/salesforce jsforce
@@ -646,7 +646,7 @@ bun add @useatlas/salesforce jsforce
 </Step>
 
 <Step>
-### Configure in atlas.config.ts
+### Configure Salesforce in atlas.config.ts
 
 ```typescript
 import { defineConfig } from "@atlas/api/lib/config";
@@ -675,7 +675,7 @@ Store credentials in environment variables: `salesforcePlugin({ url: process.env
 </Step>
 
 <Step>
-### Generate the semantic layer
+### Generate the Salesforce semantic layer
 
 ```bash
 bun run atlas -- init
@@ -685,7 +685,7 @@ Object discovery uses `describe()` and `listObjects()` API calls rather than sys
 </Step>
 
 <Step>
-### Verify
+### Verify Salesforce connectivity
 
 ```bash
 bun run dev

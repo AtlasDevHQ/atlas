@@ -42,7 +42,7 @@ No user identity is available. Rate limiting still works (keyed by IP). Audit lo
 
 A single shared secret for API access. Best for headless integrations, CLI tools, and automation.
 
-### Setup
+### Simple key setup
 
 ```bash
 # .env
@@ -84,7 +84,7 @@ ATLAS_RLS_CLAIMS='{"tenant_id": "acme-corp"}'
 
 Full user management with email/password login, sessions, and role-based access. Built on [Better Auth](https://www.better-auth.com/). Requires an internal Postgres database (`DATABASE_URL`).
 
-### Setup
+### Managed auth setup
 
 ```bash
 # .env
@@ -171,7 +171,7 @@ await auth.signIn.email({
 
 Stateless JWT verification against an external identity provider. Best for enterprises with existing SSO (Auth0, Clerk, Okta, Supabase Auth, etc.).
 
-### Setup
+### BYOT setup
 
 ```bash
 # .env

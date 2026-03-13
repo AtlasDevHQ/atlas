@@ -45,7 +45,7 @@ bun run atlas -- init
 bun run atlas -- init --demo
 ```
 
-### Suggested Questions
+### Simple demo questions
 
 Try these in the Atlas chat UI to exercise different patterns:
 
@@ -67,7 +67,7 @@ Try these in the Atlas chat UI to exercise different patterns:
 
 A 62-table B2B cybersecurity SaaS company database. ~500K rows spanning 2019-2025. Covers vulnerability management, threat detection, compliance, billing, and reporting.
 
-### Loading
+### Loading the cybersec dataset
 
 Requires PostgreSQL (uses `GENERATE_SERIES` for data generation). Note that `bun run db:up` seeds the simple demo only -- the `--demo cybersec` flag seeds the cybersec dataset on top.
 
@@ -89,7 +89,7 @@ bun run db:reset
 bun run atlas -- init --demo cybersec
 ```
 
-### Suggested Questions
+### Cybersec demo questions
 
 Try these in the Atlas chat UI to exercise different patterns:
 
@@ -117,7 +117,7 @@ Try these in the Atlas chat UI to exercise different patterns:
 - "What tables exist that look abandoned?" (agent reads profiler_notes)
 - "Compare scan_results_denormalized with scan_results" (denormalized flag)
 
-### Tech Debt Patterns
+### Cybersec tech debt patterns
 
 The cybersec dataset was designed to include four real-world tech debt patterns that the profiler detects automatically:
 
@@ -169,7 +169,7 @@ Four reporting/cache tables duplicate data from other tables:
 
 The profiler flags these with `possibly_denormalized`.
 
-### Schema Overview
+### Cybersec schema overview
 
 **Table groups:**
 - Core Business (7 tables): organizations, users, teams, roles
@@ -191,7 +191,7 @@ The profiler flags these with `possibly_denormalized`.
 
 A 52-table DTC (direct-to-consumer) home goods brand database. ~480K rows spanning 2020-2025. NovaMart was founded during the pandemic, started with bedding, expanded to kitchen/bath/outdoor, and launched a small marketplace in 2022.
 
-### Loading
+### Loading the e-commerce dataset
 
 Requires PostgreSQL (uses `GENERATE_SERIES` for data generation). Note that `bun run db:up` seeds the simple demo only -- the `--demo ecommerce` flag seeds the ecommerce dataset on top.
 
@@ -213,7 +213,7 @@ bun run db:reset
 bun run atlas -- init --demo ecommerce
 ```
 
-### Suggested Questions
+### E-commerce demo questions
 
 Try these in the Atlas chat UI to exercise different patterns:
 
@@ -246,7 +246,7 @@ Try these in the Atlas chat UI to exercise different patterns:
 - "What tables look abandoned?" (agent reads profiler_notes)
 - "Compare orders_denormalized with orders" (denormalized flag)
 
-### Tech Debt Patterns
+### E-commerce tech debt patterns
 
 The e-commerce dataset includes the same four tech-debt patterns as the cybersec demo (missing FK constraints, abandoned tables, inconsistent enums, denormalized tables). E-commerce-specific examples:
 
@@ -267,7 +267,7 @@ The dataset includes five schema evolution instances where old and new columns c
 | `orders` | `shipping_cost` | -- | dollars pre-2023-06, cents after |
 | `product_reviews` | `rating` (int) | `rating_decimal` (numeric) | ~70% NULL rating_decimal |
 
-### Schema Overview
+### E-commerce schema overview
 
 **Table groups:**
 - Core Commerce (6 tables): customers, addresses, segments, loyalty

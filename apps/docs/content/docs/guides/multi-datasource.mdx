@@ -228,7 +228,7 @@ The agent sees each datasource's ID, database type, description, and health stat
 
 ### How the agent picks a datasource
 
-1. The agent reads entity YAMLs via the `explore` tool to understand the data model
+1. The agent reads entity YAMLs via the `explore` tool to understand the semantic layer
 2. Entity files indicate which datasource owns each table (via directory or `connection` field)
 3. When writing SQL, the agent includes `connectionId` to target the correct datasource
 4. If the user's question only involves tables from one datasource, routing is straightforward

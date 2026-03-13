@@ -360,21 +360,22 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
   const authSource = getAuthModeSource();
   log.info({ authMode, source: authSource }, "Auth mode: %s (%s)", authMode, authSource);
 
-  // When mode is explicit, verify prerequisite env vars are present
-  if (authSource === "explicit") {
+  // When mode is pinned (explicit env var or config file), verify prerequisite env vars
+  if (authSource === "explicit" || authSource === "config") {
+    const source = authSource === "config" ? "atlas.config.ts" : "ATLAS_AUTH_MODE";
     if (authMode === "simple-key" && !process.env.ATLAS_API_KEY) {
       errors.push({
         code: "MISSING_AUTH_PREREQ",
         message:
-          "ATLAS_AUTH_MODE is set to 'api-key' but ATLAS_API_KEY is not set. " +
-          "Set ATLAS_API_KEY to a shared secret, or remove ATLAS_AUTH_MODE to use auto-detection.",
+          `Auth mode is 'api-key' (from ${source}) but ATLAS_API_KEY is not set. ` +
+          "Set ATLAS_API_KEY to a shared secret, or change auth to 'auto'.",
       });
     }
     if (authMode === "managed" && !process.env.BETTER_AUTH_SECRET) {
       errors.push({
         code: "MISSING_AUTH_PREREQ",
         message:
-          "ATLAS_AUTH_MODE is set to 'managed' but BETTER_AUTH_SECRET is not set. " +
+          `Auth mode is 'managed' (from ${source}) but BETTER_AUTH_SECRET is not set. ` +
           "Set BETTER_AUTH_SECRET to a random string of at least 32 characters.",
       });
     }
@@ -382,7 +383,7 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
       errors.push({
         code: "MISSING_AUTH_PREREQ",
         message:
-          "ATLAS_AUTH_MODE is set to 'byot' but ATLAS_AUTH_JWKS_URL is not set. " +
+          `Auth mode is 'byot' (from ${source}) but ATLAS_AUTH_JWKS_URL is not set. ` +
           "Set ATLAS_AUTH_JWKS_URL to your identity provider's JWKS endpoint.",
       });
     }
@@ -464,9 +465,10 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
 
   // Warn about orphaned auth env vars that suggest misconfiguration
   if (authMode !== "byot" && process.env.ATLAS_AUTH_ISSUER) {
-    const msg = authSource === "explicit"
-      ? `ATLAS_AUTH_ISSUER is set but auth mode is '${authMode}' (explicit). ` +
-        "Remove ATLAS_AUTH_ISSUER, or set ATLAS_AUTH_MODE=byot to use it."
+    const pinned = authSource === "explicit" || authSource === "config";
+    const msg = pinned
+      ? `ATLAS_AUTH_ISSUER is set but auth mode is '${authMode}' (${authSource}). ` +
+        "Remove ATLAS_AUTH_ISSUER, or change auth to 'byot' to use it."
       : "ATLAS_AUTH_ISSUER is set but ATLAS_AUTH_JWKS_URL is not — BYOT auth mode is not active. " +
         "Set ATLAS_AUTH_JWKS_URL to enable BYOT, or remove ATLAS_AUTH_ISSUER.";
     if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
@@ -474,9 +476,10 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
   }
 
   if (authMode !== "managed" && (process.env.BETTER_AUTH_URL || process.env.BETTER_AUTH_TRUSTED_ORIGINS)) {
-    const msg = authSource === "explicit"
-      ? `BETTER_AUTH_URL or BETTER_AUTH_TRUSTED_ORIGINS is set but auth mode is '${authMode}' (explicit). ` +
-        "Remove these env vars, or set ATLAS_AUTH_MODE=managed to use them."
+    const pinned = authSource === "explicit" || authSource === "config";
+    const msg = pinned
+      ? `BETTER_AUTH_URL or BETTER_AUTH_TRUSTED_ORIGINS is set but auth mode is '${authMode}' (${authSource}). ` +
+        "Remove these env vars, or change auth to 'managed' to use them."
       : "BETTER_AUTH_URL or BETTER_AUTH_TRUSTED_ORIGINS is set but BETTER_AUTH_SECRET is not — " +
         "managed auth mode is not active. Set BETTER_AUTH_SECRET to enable managed auth.";
     if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);

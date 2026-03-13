@@ -700,3 +700,8 @@ export async function initializeConfig(
 export function _resetConfig(): void {
   _resolved = null;
 }
+
+/** Set the cached config directly. For testing only. */
+export function _setConfigForTest(config: ResolvedConfig | null): void {
+  _resolved = config;
+}

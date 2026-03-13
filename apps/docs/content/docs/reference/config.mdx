@@ -36,7 +36,7 @@ Config loading is **binary**: when a config file exists, it is used exclusively.
 3. **Secrets should stay in env vars** — reference them via `process.env` in the config file (this is user code executing at import time, not a config-loader merge)
 
 <Callout type="info">
-Auth mode is always determined by environment variables (`ATLAS_AUTH_MODE` or auto-detection). The `auth` field in the config file is stored but not yet wired to the auth detection pipeline. See [Authentication](/deployment/authentication) for how auth mode is resolved.
+Auth mode resolution priority: `ATLAS_AUTH_MODE` env var (highest) → config file `auth` field → auto-detection from env var presence (lowest). Setting `auth: "managed"` in the config file pins the auth mode without needing `ATLAS_AUTH_MODE`, but the env var still overrides if set. See [Authentication](/deployment/authentication) for details.
 </Callout>
 
 ```typescript

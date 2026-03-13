@@ -1,16 +1,19 @@
 /**
  * Auth mode detection.
  *
- * Resolves the active auth mode from environment variables.
+ * Resolves the active auth mode from environment variables and config.
  *
- * When `ATLAS_AUTH_MODE` is set, it is used directly (explicit mode).
- * When unset, auto-detection reads env vars with priority:
- *   JWKS (byot) > Better Auth (managed) > API key (simple-key) > none.
+ * Priority (highest → lowest):
+ *   1. `ATLAS_AUTH_MODE` env var (explicit override)
+ *   2. `auth` field in atlas.config.ts (when not "auto")
+ *   3. Auto-detection from env var presence:
+ *      JWKS (byot) > Better Auth (managed) > API key (simple-key) > none
  *
  * Result is cached — call resetAuthModeCache() in tests.
  */
 
 import type { AuthMode } from "@atlas/api/lib/auth/types";
+import { getConfig } from "@atlas/api/lib/config";
 import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("auth");
@@ -24,14 +27,14 @@ const MODE_ALIASES: Record<string, AuthMode> = {
   "byot": "byot",
 };
 
-export type AuthModeSource = "explicit" | "auto-detected";
+export type AuthModeSource = "explicit" | "config" | "auto-detected";
 
 let _cached: AuthMode | null = null;
 let _source: AuthModeSource | null = null;
 
 /**
- * Detect auth mode from ATLAS_AUTH_MODE (explicit) or env var presence (auto).
- * Cached after first call.
+ * Detect auth mode using the three-tier priority chain:
+ * env var → config file → auto-detect. Cached after first call.
  */
 export function detectAuthMode(): AuthMode {
   if (_cached !== null) return _cached;
@@ -52,6 +55,23 @@ export function detectAuthMode(): AuthMode {
     );
   }
 
+  // Config file auth (middle priority)
+  const config = getConfig();
+  if (config?.auth && config.auth !== "auto") {
+    const resolved = MODE_ALIASES[config.auth];
+    if (resolved) {
+      _cached = resolved;
+      _source = "config";
+      log.info({ mode: _cached }, "Auth mode: %s (config)", _cached);
+      return _cached;
+    }
+    log.warn(
+      { configAuth: config.auth },
+      "Config auth value '%s' not recognized — falling through to auto-detection",
+      config.auth,
+    );
+  }
+
   // Auto-detection fallback
   if (process.env.ATLAS_AUTH_JWKS_URL) {
     _cached = "byot";
@@ -69,7 +89,8 @@ export function detectAuthMode(): AuthMode {
 }
 
 /**
- * Return how the auth mode was resolved: "explicit" or "auto-detected".
+ * Return how the auth mode was resolved: "explicit" (env var),
+ * "config" (atlas.config.ts), or "auto-detected" (env var presence).
  * Returns null if detectAuthMode() has not been called yet.
  */
 export function getAuthModeSource(): AuthModeSource | null {

@@ -1,15 +1,11 @@
 /**
- * Atlas Doctor — validate environment, connectivity, and configuration.
+ * Atlas Doctor — individual check functions for environment, connectivity, and configuration.
  *
- * Runs independent checks and reports results with pass/fail/warn indicators.
- * Exit 0 if all checks pass (warnings are OK), exit 1 if any critical check fails.
+ * These checks are consumed by validate.ts which handles rendering and exit codes.
  */
 
 import * as fs from "fs";
 import * as path from "path";
-import * as yaml from "js-yaml";
-import * as p from "@clack/prompts";
-import pc from "picocolors";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -313,101 +309,6 @@ export function checkProvider(): CheckResult {
   };
 }
 
-export function checkSemanticLayer(): CheckResult {
-  const semanticDir = path.resolve("semantic");
-  const entitiesDir = path.join(semanticDir, "entities");
-  const metricsDir = path.join(semanticDir, "metrics");
-
-  if (!fs.existsSync(semanticDir)) {
-    return {
-      status: "fail",
-      name: "Semantic layer",
-      detail: "semantic/ directory not found",
-      fix: "Run 'bun run atlas -- init' to generate a semantic layer, or 'bun run atlas -- init --demo' for demo data",
-    };
-  }
-
-  let entityCount = 0;
-  let metricCount = 0;
-  const parseErrors: string[] = [];
-
-  // Helper to validate a single entity file
-  const validateEntityFile = (filePath: string, displayName: string) => {
-    try {
-      const content = fs.readFileSync(filePath, "utf-8");
-      const doc = yaml.load(content);
-      if (doc && typeof doc === "object" && "table" in doc) {
-        entityCount++;
-      } else {
-        parseErrors.push(`${displayName}: missing 'table' field`);
-      }
-    } catch (err) {
-      parseErrors.push(`${displayName}: ${err instanceof Error ? err.message : "parse error"}`);
-    }
-  };
-
-  // Count and validate entities
-  if (fs.existsSync(entitiesDir)) {
-    const entityFiles = fs.readdirSync(entitiesDir).filter((f) => f.endsWith(".yml"));
-    for (const file of entityFiles) {
-      validateEntityFile(path.join(entitiesDir, file), file);
-    }
-  }
-
-  // Count metrics
-  if (fs.existsSync(metricsDir)) {
-    metricCount = fs.readdirSync(metricsDir).filter((f) => f.endsWith(".yml")).length;
-  }
-
-  // Also check per-source subdirectories for entities and metrics
-  try {
-    const entries = fs.readdirSync(semanticDir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isDirectory() && entry.name !== "entities" && entry.name !== "metrics") {
-        const subEntities = path.join(semanticDir, entry.name, "entities");
-        if (fs.existsSync(subEntities)) {
-          const subFiles = fs.readdirSync(subEntities).filter((f) => f.endsWith(".yml"));
-          for (const file of subFiles) {
-            validateEntityFile(path.join(subEntities, file), `${entry.name}/${file}`);
-          }
-        }
-        const subMetrics = path.join(semanticDir, entry.name, "metrics");
-        if (fs.existsSync(subMetrics)) {
-          metricCount += fs.readdirSync(subMetrics).filter((f) => f.endsWith(".yml")).length;
-        }
-      }
-    }
-  } catch (err) {
-    parseErrors.push(`Error scanning subdirectories: ${err instanceof Error ? err.message : String(err)}`);
-  }
-
-  if (entityCount === 0) {
-    return {
-      status: "fail",
-      name: "Semantic layer",
-      detail: "No entity files found",
-      fix: "Run 'bun run atlas -- init' to generate entity YAMLs from your database",
-    };
-  }
-
-  if (parseErrors.length > 0) {
-    const shown = parseErrors.slice(0, 3);
-    const extra = parseErrors.length > 3 ? ` (and ${parseErrors.length - 3} more)` : "";
-    return {
-      status: "warn",
-      name: "Semantic layer",
-      detail: `${entityCount} entities, ${metricCount} metrics (${parseErrors.length} parse error${parseErrors.length > 1 ? "s" : ""})`,
-      fix: shown.join("; ") + extra,
-    };
-  }
-
-  return {
-    status: "pass",
-    name: "Semantic layer",
-    detail: `${entityCount} entities, ${metricCount} metrics`,
-  };
-}
-
 export function checkSandbox(): CheckResult {
   // Vercel runtime
   if (process.env.ATLAS_RUNTIME === "vercel" || process.env.VERCEL) {
@@ -545,86 +446,3 @@ function findOnPath(binary: string): string | null {
   return null;
 }
 
-// ---------------------------------------------------------------------------
-// Rendering
-// ---------------------------------------------------------------------------
-
-function statusIcon(status: CheckStatus): string {
-  switch (status) {
-    case "pass":
-      return pc.green("✓");
-    case "fail":
-      return pc.red("✗");
-    case "warn":
-      return pc.yellow("⚠");
-  }
-}
-
-export function renderResults(results: CheckResult[]): void {
-  p.intro(pc.bold("Atlas Doctor"));
-
-  if (results.length === 0) {
-    console.log("  No checks were run.\n");
-    return;
-  }
-
-  const maxNameLen = Math.max(...results.map((r) => r.name.length));
-
-  for (const result of results) {
-    const icon = statusIcon(result.status);
-    const name = result.name.padEnd(maxNameLen);
-    console.log(`  ${icon} ${name}  ${result.detail}`);
-    if (result.fix) {
-      console.log(`    ${pc.dim("→")} ${pc.dim(result.fix)}`);
-    }
-  }
-
-  console.log();
-}
-
-// ---------------------------------------------------------------------------
-// Main entry point
-// ---------------------------------------------------------------------------
-
-/** Wrap a check so unexpected throws become fail results instead of crashing. */
-async function safeRun(
-  fn: () => CheckResult | Promise<CheckResult>,
-  fallbackName: string,
-): Promise<CheckResult> {
-  try {
-    return await fn();
-  } catch (err) {
-    return {
-      status: "fail",
-      name: fallbackName,
-      detail: `Unexpected error: ${err instanceof Error ? err.message : String(err)}`,
-      fix: "This check crashed unexpectedly — please report this as a bug",
-    };
-  }
-}
-
-export async function runDoctor(): Promise<number> {
-  // Run async checks concurrently (no async waterfalls)
-  const [dbConnectivity, internalDb] = await Promise.all([
-    safeRun(() => checkDatabaseConnectivity(), "Database connectivity"),
-    safeRun(() => checkInternalDb(), "Internal DB"),
-  ]);
-
-  const results: CheckResult[] = [
-    await safeRun(() => checkDatasourceUrl(), "ATLAS_DATASOURCE_URL"),
-    dbConnectivity,
-    await safeRun(() => checkProvider(), "LLM provider"),
-    await safeRun(() => checkSemanticLayer(), "Semantic layer"),
-    await safeRun(() => checkSandbox(), "Sandbox"),
-    internalDb,
-  ];
-
-  renderResults(results);
-
-  // Exit 1 only for critical failures (env vars, DB connectivity, provider)
-  const hasCriticalFailure = results.some(
-    (r) => r.status === "fail" && !NON_CRITICAL_CHECKS.has(r.name),
-  );
-
-  return hasCriticalFailure ? 1 : 0;
-}

@@ -112,7 +112,7 @@ export function ConversationItem({
             conversation.starred
               ? "text-amber-400 opacity-100 hover:text-amber-500 dark:text-amber-400 dark:hover:text-amber-300"
               : "text-zinc-400 opacity-0 hover:text-amber-400 group-hover:opacity-100 dark:hover:text-amber-400"
-          } ${starPending ? "opacity-50" : ""}`}
+          }`}
           aria-label={conversation.starred ? "Unstar conversation" : "Star conversation"}
         >
           {starPending ? (

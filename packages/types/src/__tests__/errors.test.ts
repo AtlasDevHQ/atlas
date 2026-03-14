@@ -2,10 +2,13 @@ import { describe, expect, test } from "bun:test";
 import {
   matchError,
   parseChatError,
+  classifyClientError,
   isChatErrorCode,
   isRetryableError,
   CHAT_ERROR_CODES,
+  CLIENT_ERROR_CODES,
   type ChatErrorCode,
+  type ClientErrorCode,
   type MatchedError,
   type AuthMode,
 } from "../index";
@@ -437,5 +440,177 @@ describe("parseChatError rate_limited detail", () => {
     );
     const info = parseChatError(err, authMode);
     expect(info.detail).toBe("Please wait before trying again.");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// classifyClientError — client-side error detection
+// ---------------------------------------------------------------------------
+
+describe("classifyClientError", () => {
+  test("returns null for unrecognized errors", () => {
+    expect(classifyClientError(new Error("something random"))).toBeNull();
+  });
+
+  test("detects TypeError as api_unreachable", () => {
+    const err = new TypeError("fetch failed");
+    expect(classifyClientError(err)).toBe("api_unreachable");
+  });
+
+  test("detects 'Failed to fetch' as api_unreachable", () => {
+    expect(classifyClientError(new Error("Failed to fetch"))).toBe("api_unreachable");
+  });
+
+  test("detects 'NetworkError' as api_unreachable", () => {
+    expect(classifyClientError(new Error("NetworkError when attempting to fetch resource"))).toBe("api_unreachable");
+  });
+
+  test("detects ECONNREFUSED as api_unreachable", () => {
+    expect(classifyClientError(new Error("connect ECONNREFUSED 127.0.0.1:3001"))).toBe("api_unreachable");
+  });
+
+  test("detects ENOTFOUND as api_unreachable", () => {
+    expect(classifyClientError(new Error("getaddrinfo ENOTFOUND api.example.com"))).toBe("api_unreachable");
+  });
+
+  test("detects 401 Unauthorized as auth_failure", () => {
+    expect(classifyClientError(new Error("401 Unauthorized"))).toBe("auth_failure");
+  });
+
+  test("detects bare 'Unauthorized' as auth_failure", () => {
+    expect(classifyClientError(new Error("Unauthorized"))).toBe("auth_failure");
+  });
+
+  test("detects 429 Too Many Requests as rate_limited_http", () => {
+    expect(classifyClientError(new Error("429 Too Many Requests"))).toBe("rate_limited_http");
+  });
+
+  test("detects 500 Internal Server Error as server_error", () => {
+    expect(classifyClientError(new Error("500 Internal Server Error"))).toBe("server_error");
+  });
+
+  test("detects 502 Bad Gateway as server_error", () => {
+    expect(classifyClientError(new Error("502 Bad Gateway"))).toBe("server_error");
+  });
+
+  test("detects 503 Service Unavailable as server_error", () => {
+    expect(classifyClientError(new Error("503 Service Unavailable"))).toBe("server_error");
+  });
+
+  test("every CLIENT_ERROR_CODES entry is a valid ClientErrorCode", () => {
+    // Ensure the const array matches the type
+    const codes: readonly ClientErrorCode[] = CLIENT_ERROR_CODES;
+    expect(codes.length).toBeGreaterThan(0);
+  });
+
+  test("returns null for JSON-shaped messages (server response bodies)", () => {
+    // A JSON error body like '{"error":"rate_limited","message":"Too Many Requests"}'
+    // should NOT be classified by regex — parseChatError handles it via JSON.parse.
+    const jsonBody = new Error('{"error":"rate_limited","message":"Too Many Requests"}');
+    expect(classifyClientError(jsonBody)).toBeNull();
+
+    const jsonArray = new Error('[{"error":"something"}]');
+    expect(classifyClientError(jsonArray)).toBeNull();
+  });
+
+  test("detects navigator.onLine === false as offline", () => {
+    const origNav = globalThis.navigator;
+    const origWin = (globalThis as Record<string, unknown>).window;
+    try {
+      Object.defineProperty(globalThis, "navigator", {
+        value: { onLine: false },
+        configurable: true,
+      });
+      // window must be defined for the browser-environment check
+      if (typeof (globalThis as Record<string, unknown>).window === "undefined") {
+        Object.defineProperty(globalThis, "window", {
+          value: {},
+          configurable: true,
+        });
+      }
+      expect(classifyClientError(new Error("any error"))).toBe("offline");
+    } finally {
+      Object.defineProperty(globalThis, "navigator", {
+        value: origNav,
+        configurable: true,
+      });
+      if (origWin === undefined) {
+        delete (globalThis as Record<string, unknown>).window;
+      }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseChatError — client-side error classification
+// ---------------------------------------------------------------------------
+
+describe("parseChatError client-side errors", () => {
+  const authMode: AuthMode = "none";
+
+  test("classifies TypeError as api_unreachable with friendly message", () => {
+    const err = new TypeError("fetch failed");
+    const info = parseChatError(err, authMode);
+    expect(info.clientCode).toBe("api_unreachable");
+    expect(info.title).toContain("Unable to connect");
+    expect(info.retryable).toBe(true);
+  });
+
+  test("classifies 'Failed to fetch' as api_unreachable", () => {
+    const err = new Error("Failed to fetch");
+    const info = parseChatError(err, authMode);
+    expect(info.clientCode).toBe("api_unreachable");
+    expect(info.title).toContain("Unable to connect");
+  });
+
+  test("classifies 401 non-JSON response as auth_failure", () => {
+    const err = new Error("401 Unauthorized");
+    const info = parseChatError(err, authMode);
+    expect(info.clientCode).toBe("auth_failure");
+    expect(info.retryable).toBe(false);
+  });
+
+  test("auth_failure uses authMode-specific message", () => {
+    const err = new Error("401 Unauthorized");
+    const infoSimpleKey = parseChatError(err, "simple-key");
+    expect(infoSimpleKey.title).toContain("API key");
+
+    const infoManaged = parseChatError(err, "managed");
+    expect(infoManaged.title).toContain("session");
+  });
+
+  test("classifies 429 non-JSON response as rate_limited_http with countdown", () => {
+    const err = new Error("429 Too Many Requests");
+    const info = parseChatError(err, authMode);
+    expect(info.clientCode).toBe("rate_limited_http");
+    expect(info.retryAfterSeconds).toBe(30);
+    expect(info.retryable).toBe(true);
+  });
+
+  test("classifies 500 non-JSON response as server_error", () => {
+    const err = new Error("500 Internal Server Error");
+    const info = parseChatError(err, authMode);
+    expect(info.clientCode).toBe("server_error");
+    expect(info.title).toContain("Something went wrong");
+    expect(info.retryable).toBe(true);
+  });
+
+  test("server JSON errors still use server code (not client classification)", () => {
+    // When the server returns valid JSON, server code takes precedence
+    const err = new Error(JSON.stringify({
+      error: "auth_error",
+      message: "Invalid API key",
+    }));
+    const info = parseChatError(err, authMode);
+    expect(info.code).toBe("auth_error");
+    // clientCode is not set because JSON parse succeeded and server code took over
+    expect(info.clientCode).toBeUndefined();
+  });
+
+  test("plain text non-matching error falls through to generic", () => {
+    const err = new Error("some random error text");
+    const info = parseChatError(err, authMode);
+    expect(info.clientCode).toBeUndefined();
+    expect(info.title).toBe("Something went wrong. Please try again.");
   });
 });

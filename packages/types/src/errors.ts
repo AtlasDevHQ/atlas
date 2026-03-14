@@ -1,5 +1,10 @@
 import type { AuthMode } from "./auth";
 
+// Browser globals — declared here so the module compiles without `lib: ["dom"]`.
+// At runtime these are only accessed behind `typeof` guards.
+declare const window: unknown;
+declare const navigator: { onLine?: boolean } | undefined;
+
 // ---------------------------------------------------------------------------
 // ChatErrorCode — all server error codes
 // ---------------------------------------------------------------------------
@@ -68,6 +73,24 @@ export function isRetryableError(code: ChatErrorCode): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// ClientErrorCode — client-side error classification
+// ---------------------------------------------------------------------------
+
+/**
+ * Client-side error codes for conditions detected before/without a server response.
+ * These are distinct from `ChatErrorCode` (server-originated codes).
+ */
+export const CLIENT_ERROR_CODES = [
+  "api_unreachable",
+  "auth_failure",
+  "rate_limited_http",
+  "server_error",
+  "offline",
+] as const;
+
+export type ClientErrorCode = (typeof CLIENT_ERROR_CODES)[number];
+
+// ---------------------------------------------------------------------------
 // ChatErrorInfo
 // ---------------------------------------------------------------------------
 
@@ -79,6 +102,8 @@ export function isRetryableError(code: ChatErrorCode): boolean {
  * - `retryAfterSeconds` — Seconds to wait before retrying (rate_limited only).
  *   Clamped to [0, 300].
  * - `code` — The server error code, if the response was valid JSON with a known code.
+ * - `clientCode` — Client-side error classification (network/offline/HTTP status).
+ *   Present when the error is detected client-side before parsing a server response.
  * - `retryable` — Whether the client should offer to retry. Three states:
  *   - `true` — transient error, retrying may succeed.
  *   - `false` — permanent error, retrying will not help.
@@ -91,6 +116,7 @@ export interface ChatErrorInfo {
   detail?: string;
   retryAfterSeconds?: number;
   code?: ChatErrorCode;
+  clientCode?: ClientErrorCode;
   retryable?: boolean;
   requestId?: string;
 }
@@ -239,6 +265,112 @@ export function authErrorMessage(authMode: AuthMode): string {
 // parseChatError
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// classifyClientError — detect network/offline/HTTP errors before JSON parsing
+// ---------------------------------------------------------------------------
+
+/**
+ * Detect client-side error conditions from the raw Error object.
+ *
+ * The AI SDK wraps fetch failures in an Error whose message is the response body
+ * (for HTTP errors) or the fetch error message (for network failures). We detect:
+ *
+ * - `TypeError` / "fetch failed" / "Failed to fetch" / "NetworkError" → `api_unreachable`
+ * - `navigator.onLine === false` → `offline`
+ * - HTTP status text patterns: "401" → `auth_failure`, "429" → `rate_limited_http`,
+ *   "5xx" → `server_error`
+ */
+export function classifyClientError(error: Error): ClientErrorCode | null {
+  const msg = error.message;
+
+  // Skip classification if the message looks like a JSON response body —
+  // parseChatError will extract the server error code from the JSON instead.
+  if (msg.startsWith("{") || msg.startsWith("[")) {
+    return null;
+  }
+
+  // Offline detection — only in browser environments (window + navigator.onLine).
+  // Server-side runtimes (bun, node) may define `navigator` without a meaningful
+  // `onLine` property, so we require `window` to exist and `navigator.onLine`
+  // to be explicitly `false` (not just falsy/undefined).
+  if (
+    typeof window !== "undefined" &&
+    typeof navigator !== "undefined" &&
+    navigator.onLine === false
+  ) {
+    return "offline";
+  }
+
+  // Network failures — TypeError from fetch, or common network error messages
+  if (
+    error.name === "TypeError" ||
+    /fetch failed|failed to fetch|networkerror|network\s+request\s+failed|ECONNREFUSED|ENOTFOUND|ERR_CONNECTION_REFUSED/i.test(msg)
+  ) {
+    return "api_unreachable";
+  }
+
+  // HTTP status detection — AI SDK sometimes puts status in the error message
+  // Match patterns like "401", "Unauthorized", "429 Too Many Requests", "500 Internal Server Error"
+  if (/\b401\b|Unauthorized/i.test(msg) && !/\bretry/i.test(msg)) {
+    return "auth_failure";
+  }
+  if (/\b429\b|Too Many Requests/i.test(msg)) {
+    return "rate_limited_http";
+  }
+  if (/\b50[0-9]\b|Internal Server Error|Bad Gateway|Service Unavailable/i.test(msg)) {
+    return "server_error";
+  }
+
+  return null;
+}
+
+/**
+ * Map a client-side error code to a user-friendly `ChatErrorInfo`.
+ */
+function clientErrorInfo(clientCode: ClientErrorCode, authMode: AuthMode): ChatErrorInfo {
+  switch (clientCode) {
+    case "offline":
+      return {
+        title: "You appear to be offline.",
+        detail: "Reconnecting when your network is restored...",
+        clientCode,
+        retryable: true,
+      };
+    case "api_unreachable":
+      return {
+        title: "Unable to connect to Atlas.",
+        detail: "Check your API URL configuration and ensure the server is running.",
+        clientCode,
+        retryable: true,
+      };
+    case "auth_failure":
+      return {
+        title: authErrorMessage(authMode),
+        clientCode,
+        retryable: false,
+      };
+    case "rate_limited_http":
+      return {
+        title: "Too many requests.",
+        detail: "Please try again in a moment.",
+        retryAfterSeconds: 30,
+        clientCode,
+        retryable: true,
+      };
+    case "server_error":
+      return {
+        title: "Something went wrong on our end.",
+        detail: "Please try again.",
+        clientCode,
+        retryable: true,
+      };
+    default: {
+      const _exhaustive: never = clientCode;
+      return { title: `Unknown error (${_exhaustive}).` };
+    }
+  }
+}
+
 /**
  * Parse an AI SDK chat error into a user-friendly `ChatErrorInfo`.
  *
@@ -246,12 +378,22 @@ export function authErrorMessage(authMode: AuthMode): string {
  * Falls back to a generic title when the body is not valid JSON (e.g. network failures,
  * HTML error pages, or unexpected formats), preserving the original message as `detail`
  * (truncated to 200 characters).
+ *
+ * Also classifies client-side errors (network failures, offline, HTTP status) before
+ * attempting JSON parse, setting the `clientCode` field on the result.
  */
 export function parseChatError(error: Error, authMode: AuthMode): ChatErrorInfo {
+  // --- Client-side classification (network/offline/HTTP) ---
+  const clientCode = classifyClientError(error);
+
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(error.message);
   } catch {
+    // Could not parse JSON — classify based on client-side detection
+    if (clientCode) {
+      return clientErrorInfo(clientCode, authMode);
+    }
     const raw = error.message.length > 200 ? error.message.slice(0, 200) + "..." : error.message;
     return { title: "Something went wrong. Please try again.", detail: raw };
   }

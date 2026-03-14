@@ -4,7 +4,7 @@
  * All types are canonical from @useatlas/types — no local duplication.
  */
 
-export { AUTH_MODES, DB_TYPES, CHAT_ERROR_CODES } from "@useatlas/types";
+export { AUTH_MODES, DB_TYPES, CHAT_ERROR_CODES, CLIENT_ERROR_CODES } from "@useatlas/types";
 export type {
   AuthMode,
   MessageRole,
@@ -18,6 +18,7 @@ export type {
   ConnectionInfo,
   ChatErrorCode,
   ChatErrorInfo,
+  ClientErrorCode,
   Dimension,
   Join,
   Measure,
@@ -26,4 +27,4 @@ export type {
   SemanticEntityDetail,
   EntityData,
 } from "@useatlas/types";
-export { authErrorMessage, parseChatError } from "@useatlas/types/errors";
+export { authErrorMessage, parseChatError, classifyClientError } from "@useatlas/types/errors";

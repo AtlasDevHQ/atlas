@@ -12,13 +12,13 @@ export function DeleteConfirmation({
       <span className="text-zinc-500 dark:text-zinc-400">Delete?</span>
       <button
         onClick={onCancel}
-        className="rounded px-2 py-0.5 text-zinc-500 transition-colors hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 dark:text-zinc-400 dark:hover:text-zinc-200"
+        className="rounded px-2 py-0.5 text-zinc-500 transition-colors hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 dark:text-zinc-400 dark:hover:text-zinc-200"
       >
         Cancel
       </button>
       <button
         onClick={onConfirm}
-        className="rounded bg-red-600 px-2 py-0.5 text-white transition-colors hover:bg-red-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/50 focus-visible:ring-offset-1"
+        className="rounded bg-red-600 px-2 py-0.5 text-white transition-colors hover:bg-red-500 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-red-500/50 "
       >
         Delete
       </button>

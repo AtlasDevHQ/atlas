@@ -52,23 +52,15 @@ First 60 seconds made perfect. `atlas init` gained a progress spinner with ETA a
 
 ARIA labels on chat input, message bubbles, and skip links. Lighthouse/axe audit with automated accessibility checks added to CI. Full keyboard navigation for all interactive elements. Loading state audit ensuring every async operation has a visible indicator. Meaningful empty states, error boundaries with graceful fallback UI, and inline error feedback for conversation actions. Mobile polish pass at 375px–768px, chart responsiveness at all container sizes, and unified admin console table styles. Widget gained TypeScript type exports for embedders, CSS customization docs, and graceful error states for API down and auth failures.
 
----
+### 0.5.4 — SDK & Integration Polish
 
-## 0.5.4 — SDK & Integration Polish
-
-The current milestone. Making every integration surface production-ready.
-
-- **SDK** — `listTables()` convenience method, error code catalog with retry guidance, streaming timeout and retry documentation
-- **Testing** — End-to-end widget embed browser test, SDK streaming integration test, MCP server smoke test
-- **Docs cross-cuts** — Prerequisites and troubleshooting on every guide, ~~cross-link audit~~ ([#439](https://github.com/AtlasDevHQ/atlas/pull/439)), reference page code examples audit
-- **Quality** — Semantic discovery warnings surfaced in API responses ([#438](https://github.com/AtlasDevHQ/atlas/pull/438))
-- **Plugins** — Obsidian plugin docs page
+SDK gained `listTables()` convenience method and a complete error code catalog with retry guidance. Streaming docs added for timeout/resume behavior and `retryAfterSeconds` null-safety. End-to-end integration tests added for the widget embed flow, SDK streaming, and MCP server. Every docs guide gained prerequisites and troubleshooting sections, reference pages were audited for code-first content, and a cross-link audit connected all related pages. Semantic discovery API now surfaces warnings when YAML parsing returns partial results. Obsidian plugin gained a README and docs page.
 
 ---
 
 ## 0.6.0 — Governance & Integrations
 
-Access control, audit, and third-party integrations for production teams.
+The current milestone. Access control, audit, and third-party integrations for production teams.
 
 - **Access control** — Advanced RLS policies (multi-column, array claims), session management, OIDC/OAuth provider docs
 - **Audit** — Audit log export and search, data classification tags on query trails

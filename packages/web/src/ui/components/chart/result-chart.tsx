@@ -142,6 +142,7 @@ function BarChartView({
             angle={-45}
             textAnchor="end"
             height={60}
+            interval="preserveStartEnd"
           />
           <YAxis tick={{ fill: t.axis, fontSize: 11 }} tickFormatter={formatNumber} />
           <Tooltip content={<ChartTooltip dark={dark} />} />
@@ -188,6 +189,7 @@ function LineChartView({
             angle={-45}
             textAnchor="end"
             height={60}
+            interval="preserveStartEnd"
           />
           <YAxis tick={{ fill: t.axis, fontSize: 11 }} tickFormatter={formatNumber} />
           <Tooltip content={<ChartTooltip dark={dark} />} />
@@ -285,42 +287,45 @@ function AreaChartView({
   const valKeys = rec.valueColumns.map((c) => c.header);
 
   return (
-    <ResponsiveContainer width="100%" height={300}>
-      <AreaChart data={data} margin={{ top: 8, right: 8, bottom: 40, left: 8 }}>
-        <defs>
-          {valKeys.map((key, i) => (
-            <linearGradient key={key} id={`area-grad-${chartId}-${i}`} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor={colors[i % colors.length]} stopOpacity={0.3} />
-              <stop offset="95%" stopColor={colors[i % colors.length]} stopOpacity={0.05} />
-            </linearGradient>
-          ))}
-        </defs>
-        <CartesianGrid strokeDasharray="3 3" stroke={t.grid} />
-        <XAxis
-          dataKey={catKey}
-          tick={{ fill: t.axis, fontSize: 11 }}
-          tickFormatter={(v: string) => truncateLabel(v)}
-          angle={-45}
-          textAnchor="end"
-          height={60}
-        />
-        <YAxis tick={{ fill: t.axis, fontSize: 11 }} tickFormatter={formatNumber} />
-        <Tooltip content={<ChartTooltip dark={dark} />} />
-        {valKeys.length > 1 && (
-          <Legend wrapperStyle={{ fontSize: 12, color: t.legendText }} />
-        )}
-        {valKeys.map((key, i) => (
-          <Area
-            key={key}
-            type="monotone"
-            dataKey={key}
-            stroke={colors[i % colors.length]}
-            strokeWidth={2}
-            fill={`url(#area-grad-${chartId}-${i})`}
+    <div className="aspect-[4/3] sm:aspect-[16/9]">
+      <ResponsiveContainer width="100%" height="100%">
+        <AreaChart data={data} margin={{ top: 8, right: 8, bottom: 40, left: 8 }}>
+          <defs>
+            {valKeys.map((key, i) => (
+              <linearGradient key={key} id={`area-grad-${chartId}-${i}`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor={colors[i % colors.length]} stopOpacity={0.3} />
+                <stop offset="95%" stopColor={colors[i % colors.length]} stopOpacity={0.05} />
+              </linearGradient>
+            ))}
+          </defs>
+          <CartesianGrid strokeDasharray="3 3" stroke={t.grid} />
+          <XAxis
+            dataKey={catKey}
+            tick={{ fill: t.axis, fontSize: 11 }}
+            tickFormatter={(v: string) => truncateLabel(v)}
+            angle={-45}
+            textAnchor="end"
+            height={60}
+            interval="preserveStartEnd"
           />
-        ))}
-      </AreaChart>
-    </ResponsiveContainer>
+          <YAxis tick={{ fill: t.axis, fontSize: 11 }} tickFormatter={formatNumber} />
+          <Tooltip content={<ChartTooltip dark={dark} />} />
+          {valKeys.length > 1 && (
+            <Legend wrapperStyle={{ fontSize: 12, color: t.legendText }} />
+          )}
+          {valKeys.map((key, i) => (
+            <Area
+              key={key}
+              type="monotone"
+              dataKey={key}
+              stroke={colors[i % colors.length]}
+              strokeWidth={2}
+              fill={`url(#area-grad-${chartId}-${i})`}
+            />
+          ))}
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
 
@@ -343,31 +348,34 @@ function StackedBarChartView({
   const valKeys = rec.valueColumns.map((c) => c.header);
 
   return (
-    <ResponsiveContainer width="100%" height={300}>
-      <BarChart data={data} margin={{ top: 8, right: 8, bottom: 40, left: 8 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke={t.grid} />
-        <XAxis
-          dataKey={catKey}
-          tick={{ fill: t.axis, fontSize: 11 }}
-          tickFormatter={(v: string) => truncateLabel(v)}
-          angle={-45}
-          textAnchor="end"
-          height={60}
-        />
-        <YAxis tick={{ fill: t.axis, fontSize: 11 }} tickFormatter={formatNumber} />
-        <Tooltip content={<ChartTooltip dark={dark} />} />
-        <Legend wrapperStyle={{ fontSize: 12, color: t.legendText }} />
-        {valKeys.map((key, i) => (
-          <Bar
-            key={key}
-            dataKey={key}
-            stackId="a"
-            fill={colors[i % colors.length]}
-            radius={i === valKeys.length - 1 ? [4, 4, 0, 0] : undefined}
+    <div className="aspect-[4/3] sm:aspect-[16/9]">
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={data} margin={{ top: 8, right: 8, bottom: 40, left: 8 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke={t.grid} />
+          <XAxis
+            dataKey={catKey}
+            tick={{ fill: t.axis, fontSize: 11 }}
+            tickFormatter={(v: string) => truncateLabel(v)}
+            angle={-45}
+            textAnchor="end"
+            height={60}
+            interval="preserveStartEnd"
           />
-        ))}
-      </BarChart>
-    </ResponsiveContainer>
+          <YAxis tick={{ fill: t.axis, fontSize: 11 }} tickFormatter={formatNumber} />
+          <Tooltip content={<ChartTooltip dark={dark} />} />
+          <Legend wrapperStyle={{ fontSize: 12, color: t.legendText }} />
+          {valKeys.map((key, i) => (
+            <Bar
+              key={key}
+              dataKey={key}
+              stackId="a"
+              fill={colors[i % colors.length]}
+              radius={i === valKeys.length - 1 ? [4, 4, 0, 0] : undefined}
+            />
+          ))}
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
 
@@ -391,34 +399,36 @@ function ScatterChartView({
   const zKey = rec.valueColumns.length > 1 ? rec.valueColumns[1].header : undefined;
 
   return (
-    <ResponsiveContainer width="100%" height={300}>
-      <ScatterChart margin={{ top: 8, right: 8, bottom: 40, left: 8 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke={t.grid} />
-        <XAxis
-          dataKey={xKey}
-          type="number"
-          name={xKey}
-          tick={{ fill: t.axis, fontSize: 11 }}
-          tickFormatter={formatNumber}
-        />
-        <YAxis
-          dataKey={yKey}
-          type="number"
-          name={yKey}
-          tick={{ fill: t.axis, fontSize: 11 }}
-          tickFormatter={formatNumber}
-        />
-        {zKey && <ZAxis dataKey={zKey} type="number" name={zKey} range={[40, 400]} />}
-        <Tooltip
-          content={<ChartTooltip dark={dark} />}
-          cursor={{ strokeDasharray: "3 3" }}
-        />
-        <Scatter
-          data={data}
-          fill={colors[0]}
-        />
-      </ScatterChart>
-    </ResponsiveContainer>
+    <div className="aspect-[4/3] sm:aspect-[16/9]">
+      <ResponsiveContainer width="100%" height="100%">
+        <ScatterChart margin={{ top: 8, right: 8, bottom: 40, left: 8 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke={t.grid} />
+          <XAxis
+            dataKey={xKey}
+            type="number"
+            name={xKey}
+            tick={{ fill: t.axis, fontSize: 11 }}
+            tickFormatter={formatNumber}
+          />
+          <YAxis
+            dataKey={yKey}
+            type="number"
+            name={yKey}
+            tick={{ fill: t.axis, fontSize: 11 }}
+            tickFormatter={formatNumber}
+          />
+          {zKey && <ZAxis dataKey={zKey} type="number" name={zKey} range={[40, 400]} />}
+          <Tooltip
+            content={<ChartTooltip dark={dark} />}
+            cursor={{ strokeDasharray: "3 3" }}
+          />
+          <Scatter
+            data={data}
+            fill={colors[0]}
+          />
+        </ScatterChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
 
@@ -462,7 +472,7 @@ function ChartTypeSelector({
           key={rec.type}
           onClick={() => onChange(rec.type)}
           aria-pressed={active === rec.type}
-          className={`rounded px-2 py-0.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 ${
+          className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 ${
             active === rec.type
               ? "bg-blue-100 text-blue-700 dark:bg-blue-600/20 dark:text-blue-400"
               : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200"

@@ -37,6 +37,7 @@ import {
 } from "lucide-react";
 import type { FetchError } from "@/ui/hooks/use-admin-fetch";
 import { friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { DeliveryStatusBadge } from "@/ui/components/admin/delivery-status-badge";
 import type { ScheduledTask, ScheduledTaskRunWithTaskName } from "@/ui/lib/types";
 
@@ -214,7 +215,7 @@ export default function RunHistoryPage() {
       </div>
 
       {/* Filters */}
-      <div className="flex flex-wrap items-center gap-2 border-b px-6 py-3">
+      <div className="flex flex-wrap items-end gap-3 border-b px-6 py-3">
         <Select
           value={taskFilter ?? "all"}
           onValueChange={(val) => setParams({ task: val === "all" ? null : val, page: 1, expandedRun: null })}
@@ -276,15 +277,19 @@ export default function RunHistoryPage() {
         )}
       </div>
 
-      <div className="flex-1 overflow-auto">
+      <ErrorBoundary>
+      <div className="flex-1 overflow-auto p-6 space-y-6">
         {error && <ErrorBanner message={friendlyError(error)} onRetry={() => setRefetchKey((k) => k + 1)} />}
 
         {loading ? (
-          <LoadingState message="Loading run history..." />
+          <div className="flex h-64 items-center justify-center">
+            <LoadingState message="Loading run history..." />
+          </div>
         ) : runs.length === 0 && !error ? (
-          <EmptyState icon={History} message="No runs found" />
+          <EmptyState icon={History} title="No runs found" />
         ) : runs.length > 0 ? (
           <>
+            <div className="rounded-md border">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -429,33 +434,37 @@ export default function RunHistoryPage() {
                 })}
               </TableBody>
             </Table>
+            </div>
 
             {total > PAGE_SIZE && (
-              <div className="flex items-center justify-between border-t px-6 py-3">
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  disabled={page <= 1}
-                  onClick={() => setParams((p) => ({ page: p.page - 1 }))}
-                >
-                  Previous
-                </Button>
-                <span className="text-xs text-muted-foreground">
-                  {offset + 1}–{Math.min(offset + PAGE_SIZE, total)} of {total}
-                </span>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  disabled={offset + PAGE_SIZE >= total}
-                  onClick={() => setParams((p) => ({ page: p.page + 1 }))}
-                >
-                  Next
-                </Button>
+              <div className="flex items-center justify-between">
+                <p className="text-sm text-muted-foreground">
+                  Page {page} of {Math.max(1, Math.ceil(total / PAGE_SIZE))} ({total} total)
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={page <= 1}
+                    onClick={() => setParams((p) => ({ page: p.page - 1 }))}
+                  >
+                    Previous
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={offset + PAGE_SIZE >= total}
+                    onClick={() => setParams((p) => ({ page: p.page + 1 }))}
+                  >
+                    Next
+                  </Button>
+                </div>
               </div>
             )}
           </>
         ) : null}
       </div>
+      </ErrorBoundary>
     </div>
   );
 }

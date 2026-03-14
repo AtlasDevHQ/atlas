@@ -112,14 +112,15 @@ export default function TokenUsagePage() {
 
   return (
     <ErrorBoundary>
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-lg font-semibold">Token Usage</h1>
+    <div className="flex h-[calc(100dvh-3rem)] flex-col">
+      <div className="border-b px-6 py-4">
+        <h1 className="text-2xl font-bold tracking-tight">Token Usage</h1>
         <p className="text-sm text-muted-foreground">
           Track LLM token consumption across users and conversations.
         </p>
       </div>
 
+      <div className="flex-1 overflow-auto p-6 space-y-6">
       {/* Date range filter */}
       <Card className="shadow-none">
         <CardContent className="flex flex-wrap items-end gap-3 pt-4">
@@ -210,7 +211,7 @@ export default function TokenUsagePage() {
               <LoadingState message="Loading trends..." />
             </div>
           ) : !trendsData?.trends?.length ? (
-            <EmptyState icon={TrendingUp} message="No token usage data for this period" />
+            <EmptyState icon={TrendingUp} title="No token usage data for this period" />
           ) : (
             <TokenChart data={trendsData.trends} dark={dark} />
           )}
@@ -233,7 +234,7 @@ export default function TokenUsagePage() {
               <LoadingState message="Loading..." />
             </div>
           ) : !usersData?.users?.length ? (
-            <EmptyState icon={Users} message="No user data for this period" />
+            <EmptyState icon={Users} title="No user data for this period" />
           ) : (
             <div className="rounded-md border">
               <Table>
@@ -270,6 +271,7 @@ export default function TokenUsagePage() {
           )}
         </CardContent>
       </Card>
+      </div>
     </div>
     </ErrorBoundary>
   );

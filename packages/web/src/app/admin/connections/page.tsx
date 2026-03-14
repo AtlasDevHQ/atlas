@@ -532,91 +532,93 @@ export default function ConnectionsPage() {
       </div>
 
       <ErrorBoundary>
-      <div className="flex-1 overflow-auto">
+      <div className="flex-1 overflow-auto p-6 space-y-6">
         {error && <ErrorBanner message={friendlyError(error)} onRetry={refetch} />}
         {mutationError && <ErrorBanner message={mutationError} onRetry={() => setMutationError(null)} />}
 
         {loading ? (
-          <LoadingState message="Loading connections..." />
-        ) : displayConnections.length === 0 && !error ? (
-          <div className="p-6">
-            <EmptyState
-              icon={Cable}
-              title="No datasource connections"
-              description="Add a connection to start querying your data"
-              action={{ label: "Add connection", onClick: handleAdd }}
-            />
+          <div className="flex h-64 items-center justify-center">
+            <LoadingState message="Loading connections..." />
           </div>
+        ) : displayConnections.length === 0 && !error ? (
+          <EmptyState
+            icon={Cable}
+            title="No datasource connections"
+            description="Add a connection to start querying your data"
+            action={{ label: "Add connection", onClick: handleAdd }}
+          />
         ) : displayConnections.length > 0 ? (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>ID</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Description</TableHead>
-                <TableHead>Health</TableHead>
-                <TableHead>Latency</TableHead>
-                <TableHead className="w-[180px]"><span className="sr-only">Actions</span></TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {displayConnections.map((conn) => (
-                <TableRow key={conn.id}>
-                  <TableCell className="font-mono text-xs">{conn.id}</TableCell>
-                  <TableCell>
-                    <Badge variant="secondary">{conn.dbType}</Badge>
-                  </TableCell>
-                  <TableCell className="text-sm text-muted-foreground">
-                    {conn.description ?? "\u2014"}
-                  </TableCell>
-                  <TableCell>
-                    <HealthBadge status={mapHealthStatus(conn.health?.status)} />
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {conn.health ? `${conn.health.latencyMs}ms` : "\u2014"}
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex items-center gap-1">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={testing.has(conn.id)}
-                        onClick={() => testConnection(conn.id)}
-                        aria-label={testing.has(conn.id) ? `Testing connection ${conn.id}…` : undefined}
-                      >
-                        {testing.has(conn.id) ? (
-                          <Loader2 className="size-3.5 animate-spin" />
-                        ) : (
-                          "Test"
-                        )}
-                      </Button>
-                      {conn.id !== "default" && (
-                        <>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleEdit(conn.id)}
-                            disabled={loadingDetail}
-                            aria-label={`Edit connection ${conn.id}`}
-                          >
-                            <Pencil className="size-3.5" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleDelete(conn.id)}
-                            aria-label={`Delete connection ${conn.id}`}
-                          >
-                            <Trash2 className="size-3.5 text-destructive" />
-                          </Button>
-                        </>
-                      )}
-                    </div>
-                  </TableCell>
+          <div className="rounded-md border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>ID</TableHead>
+                  <TableHead>Type</TableHead>
+                  <TableHead>Description</TableHead>
+                  <TableHead>Health</TableHead>
+                  <TableHead>Latency</TableHead>
+                  <TableHead className="w-[180px]"><span className="sr-only">Actions</span></TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {displayConnections.map((conn) => (
+                  <TableRow key={conn.id}>
+                    <TableCell className="font-mono text-xs">{conn.id}</TableCell>
+                    <TableCell>
+                      <Badge variant="secondary">{conn.dbType}</Badge>
+                    </TableCell>
+                    <TableCell className="text-sm text-muted-foreground">
+                      {conn.description ?? "\u2014"}
+                    </TableCell>
+                    <TableCell>
+                      <HealthBadge status={mapHealthStatus(conn.health?.status)} />
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {conn.health ? `${conn.health.latencyMs}ms` : "\u2014"}
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex items-center justify-end gap-1">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={testing.has(conn.id)}
+                          onClick={() => testConnection(conn.id)}
+                          aria-label={testing.has(conn.id) ? `Testing connection ${conn.id}…` : undefined}
+                        >
+                          {testing.has(conn.id) ? (
+                            <Loader2 className="size-3.5 animate-spin" />
+                          ) : (
+                            "Test"
+                          )}
+                        </Button>
+                        {conn.id !== "default" && (
+                          <>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleEdit(conn.id)}
+                              disabled={loadingDetail}
+                              aria-label={`Edit connection ${conn.id}`}
+                            >
+                              <Pencil className="size-3.5" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleDelete(conn.id)}
+                              aria-label={`Delete connection ${conn.id}`}
+                            >
+                              <Trash2 className="size-3.5 text-destructive" />
+                            </Button>
+                          </>
+                        )}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
         ) : null}
       </div>
       </ErrorBoundary>

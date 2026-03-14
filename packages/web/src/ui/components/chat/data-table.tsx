@@ -92,7 +92,7 @@ function DataTableInner({
                     handleSort(i);
                   }
                 }}
-                className="group cursor-pointer select-none whitespace-nowrap px-3 py-2 text-left font-medium text-zinc-500 transition-colors hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 dark:text-zinc-400 dark:hover:text-zinc-200"
+                className="group cursor-pointer select-none whitespace-nowrap px-3 py-3 text-left font-medium text-zinc-500 transition-colors hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 dark:text-zinc-400 dark:hover:text-zinc-200"
               >
                 {col}
                 {sortCol === i

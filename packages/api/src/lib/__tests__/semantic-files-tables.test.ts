@@ -141,15 +141,29 @@ describe("discoverTables", () => {
     expect(warnings).toEqual([]);
   });
 
-  it("returns empty array for non-existent root", () => {
-    const { tables } = discoverTables("/tmp/nonexistent-atlas-tables-test");
-    expect(tables).toEqual([]);
+  it("returns warnings for malformed YAML in per-source subdirectory", () => {
+    const root = makeRoot("sub-warn");
+    writeEntity(root, "ok", "table: ok_table\ndescription: Fine\n");
+    writeEntity(root, "bad", "{{{not valid yaml", "warehouse");
+
+    const { tables, warnings } = discoverTables(root);
+    expect(tables).toHaveLength(1);
+    expect(tables[0].table).toBe("ok_table");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/Failed to parse entity:.*bad\.yml/);
   });
 
-  it("returns empty array for empty entities directory", () => {
-    const root = makeRoot("empty");
-    const { tables } = discoverTables(root);
+  it("returns empty array and no warnings for non-existent root", () => {
+    const { tables, warnings } = discoverTables("/tmp/nonexistent-atlas-tables-test");
     expect(tables).toEqual([]);
+    expect(warnings).toEqual([]);
+  });
+
+  it("returns empty array and no warnings for empty entities directory", () => {
+    const root = makeRoot("empty");
+    const { tables, warnings } = discoverTables(root);
+    expect(tables).toEqual([]);
+    expect(warnings).toEqual([]);
   });
 
   it("defaults missing type to 'string' and missing description to ''", () => {

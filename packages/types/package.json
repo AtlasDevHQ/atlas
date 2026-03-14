@@ -8,46 +8,55 @@
   },
   "exports": {
     ".": {
+      "bun": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
     "./auth": {
+      "bun": "./src/auth.ts",
       "types": "./dist/auth.d.ts",
       "import": "./dist/auth.js",
       "default": "./dist/auth.js"
     },
     "./conversation": {
+      "bun": "./src/conversation.ts",
       "types": "./dist/conversation.d.ts",
       "import": "./dist/conversation.js",
       "default": "./dist/conversation.js"
     },
     "./connection": {
+      "bun": "./src/connection.ts",
       "types": "./dist/connection.d.ts",
       "import": "./dist/connection.js",
       "default": "./dist/connection.js"
     },
     "./action": {
+      "bun": "./src/action.ts",
       "types": "./dist/action.d.ts",
       "import": "./dist/action.js",
       "default": "./dist/action.js"
     },
     "./scheduled-task": {
+      "bun": "./src/scheduled-task.ts",
       "types": "./dist/scheduled-task.d.ts",
       "import": "./dist/scheduled-task.js",
       "default": "./dist/scheduled-task.js"
     },
     "./errors": {
+      "bun": "./src/errors.ts",
       "types": "./dist/errors.d.ts",
       "import": "./dist/errors.js",
       "default": "./dist/errors.js"
     },
     "./semantic": {
+      "bun": "./src/semantic.ts",
       "types": "./dist/semantic.d.ts",
       "import": "./dist/semantic.js",
       "default": "./dist/semantic.js"
     },
     "./share": {
+      "bun": "./src/share.ts",
       "types": "./dist/share.d.ts",
       "import": "./dist/share.js",
       "default": "./dist/share.js"

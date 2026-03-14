@@ -41,6 +41,7 @@ export function ConversationItem({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [starPending, setStarPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   if (confirmDelete) {
     return (
@@ -55,8 +56,9 @@ export function ConversationItem({
               if (success) {
                 setConfirmDelete(false);
               }
-            } catch (err) {
-              console.warn("Failed to delete conversation:", err);
+            } catch {
+              setError("Failed to delete");
+              setTimeout(() => setError(null), 3000);
             } finally {
               setDeleting(false);
             }
@@ -87,9 +89,13 @@ export function ConversationItem({
         <p className="truncate text-sm font-medium">
           {conversation.title || "New conversation"}
         </p>
-        <p className="text-xs text-zinc-400 dark:text-zinc-500">
-          {relativeTime(conversation.updatedAt)}
-        </p>
+        {error ? (
+          <p className="text-xs text-red-500 dark:text-red-400">{error}</p>
+        ) : (
+          <p className="text-xs text-zinc-400 dark:text-zinc-500">
+            {relativeTime(conversation.updatedAt)}
+          </p>
+        )}
       </div>
       <div className="flex shrink-0 items-center gap-0.5">
         <Button
@@ -101,8 +107,9 @@ export function ConversationItem({
             setStarPending(true);
             try {
               await onStar(!conversation.starred);
-            } catch (err) {
-              console.warn("Failed to update star:", err);
+            } catch {
+              setError("Failed to update");
+              setTimeout(() => setError(null), 3000);
             } finally {
               setStarPending(false);
             }

@@ -34,3 +34,11 @@ export type {
 // Hooks
 export { useConversations } from "./hooks/use-conversations";
 export type { UseConversationsOptions, UseConversationsReturn } from "./hooks/use-conversations";
+
+// Widget types (for script-tag embedders)
+export type {
+  AtlasWidget,
+  AtlasWidgetEventMap,
+  AtlasWidgetConfig,
+  AtlasWidgetCommand,
+} from "./lib/widget-types";

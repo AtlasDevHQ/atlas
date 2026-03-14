@@ -136,9 +136,37 @@ for await (const event of atlas.streamQuery("How many users signed up last week?
 }
 ```
 
+### Connection Drops & Partial Results
+
+`streamQuery()` uses a one-shot SSE connection over `fetch`. If the connection drops mid-stream:
+
+- Events already yielded **are still valid** — the async generator delivers each event to your `for await` loop before advancing, so any `text`, `result`, or `tool-result` events you've already processed are safe to keep.
+- The generator throws an `AtlasError` with code `network_error` and a message starting with `"Stream interrupted: ..."`.
+- There is no automatic reconnect or resume — start a new `streamQuery()` call to retry.
+
+```typescript
+import { AtlasError } from "@useatlas/sdk";
+
+const collected: string[] = [];
+
+try {
+  for await (const event of atlas.streamQuery("Revenue by region")) {
+    if (event.type === "text") collected.push(event.content);
+    if (event.type === "result") console.table(event.rows);
+  }
+} catch (err) {
+  if (err instanceof AtlasError && err.code === "network_error") {
+    console.warn("Stream dropped — partial text:", collected.join(""));
+    // Decide whether to retry or use the partial data you have
+  } else {
+    throw err;
+  }
+}
+```
+
 ### Cancellation
 
-Pass an `AbortSignal` to cancel the stream:
+Pass an `AbortSignal` to cancel the stream. The signal aborts the underlying reader, and an `AbortError` is thrown from the `for await` loop. Events yielded before cancellation are already consumed by your code.
 
 ```typescript
 const controller = new AbortController();
@@ -171,7 +199,7 @@ try {
 
 ## Error Handling
 
-All methods throw `AtlasError` on failure. See the full [Error Codes Reference](https://docs.useatlas.dev/reference/error-codes) for every error code, HTTP status, and retry guidance.
+All methods throw `AtlasError` on failure. See the full [Error Codes Reference](https://docs.useatlas.dev/reference/error-codes) for every error code, HTTP status, retry guidance, and a complete retry-with-backoff example.
 
 ```typescript
 import { AtlasError } from "@useatlas/sdk";
@@ -180,15 +208,42 @@ try {
   await atlas.query("...");
 } catch (err) {
   if (err instanceof AtlasError) {
-    console.error(err.code);    // e.g. "rate_limited", "auth_error"
-    console.error(err.status);  // HTTP status code
-    console.error(err.message); // Human-readable message
-
-    if (err.code === "rate_limited") {
-      // Retry after the suggested delay
-      await sleep(err.retryAfterSeconds! * 1000);
-    }
+    console.error(err.code);     // e.g. "rate_limited", "auth_error"
+    console.error(err.status);   // HTTP status code
+    console.error(err.message);  // Human-readable message
+    console.error(err.retryable); // true if retrying may help
   }
+}
+```
+
+### `AtlasError` Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `code` | `AtlasErrorCode` | Error code (e.g. `rate_limited`, `network_error`) |
+| `status` | `number` | HTTP status code (0 for client-side errors like `network_error`) |
+| `message` | `string` | Human-readable description |
+| `retryable` | `boolean` | Whether retrying the same request may succeed |
+| `retryAfterSeconds` | `number \| undefined` | Server-suggested delay — only populated when the server includes `retryAfterSeconds` in the error response body (currently only for `rate_limited`). **Always guard against `undefined`** |
+
+### Retry with Backoff
+
+Use `retryable` for generic retry logic. For `rate_limited`, prefer the server-suggested delay when available, falling back to exponential backoff:
+
+```typescript
+import { AtlasError } from "@useatlas/sdk";
+
+try {
+  await atlas.query("...");
+} catch (err) {
+  if (!(err instanceof AtlasError) || !err.retryable) throw err;
+
+  // Use server delay if available, otherwise exponential backoff
+  const delay = err.retryAfterSeconds != null
+    ? err.retryAfterSeconds * 1000
+    : 5000;
+  await new Promise((r) => setTimeout(r, delay));
+  await atlas.query("...");
 }
 ```
 

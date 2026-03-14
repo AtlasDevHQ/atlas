@@ -409,7 +409,6 @@ function ScatterChartView({
             name={xKey}
             tick={{ fill: t.axis, fontSize: 11 }}
             tickFormatter={formatNumber}
-            interval="preserveStartEnd"
           />
           <YAxis
             dataKey={yKey}

@@ -37,6 +37,7 @@ import {
 } from "lucide-react";
 import type { FetchError } from "@/ui/hooks/use-admin-fetch";
 import { friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { DeliveryStatusBadge } from "@/ui/components/admin/delivery-status-badge";
 import type { ScheduledTask, ScheduledTaskRunWithTaskName } from "@/ui/lib/types";
 
@@ -276,6 +277,7 @@ export default function RunHistoryPage() {
         )}
       </div>
 
+      <ErrorBoundary>
       <div className="flex-1 overflow-auto p-6 space-y-6">
         {error && <ErrorBanner message={friendlyError(error)} onRetry={() => setRefetchKey((k) => k + 1)} />}
 
@@ -462,6 +464,7 @@ export default function RunHistoryPage() {
           </>
         ) : null}
       </div>
+      </ErrorBoundary>
     </div>
   );
 }

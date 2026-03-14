@@ -44,21 +44,15 @@ Embeddable widget infrastructure: `@useatlas/react` component with headless hook
 
 Systematic docs overhaul for human and LLM consumption. Quick start rewritten with verification checkpoints. New how-to guides for widget customization, multi-datasource routing, schema evolution, and rate limiting. Reference pages gained inline-commented code examples, curl/fetch snippets, pagination and error handling patterns. Explanation pages added for SQL validation, semantic layer concepts, and integration comparisons. Agent optimization audit unified terminology, stabilized headings, and ensured no information exists only in images. Demo dataset comparison added to CLI and docs.
 
----
+### 0.5.2 — Onboarding & CLI Polish
 
-## 0.5.2 — Onboarding & CLI Polish
-
-The current milestone. Making the first 60 seconds perfect — every error a new user could hit gets a clear, actionable message.
-
-- **Onboarding** — `atlas init` progress spinner with ETA, failure threshold for table profiling, first-run `.env` detection
-- **Error handling** — Pattern-matched errors replacing generic fallbacks (connection refused, provider unavailable, query timeout), request IDs on internal errors, transient vs permanent error hints
-- **CLI** — Proper `--help` for all subcommands, better config validation messages
+First 60 seconds made perfect. `atlas init` gained a progress spinner with ETA and a failure threshold for table profiling. First-run `.env` detection prompts users through setup. Pattern-matched errors replaced generic fallbacks for connection refused, provider unavailable, and query timeout scenarios. Internal errors now carry request IDs, and transient vs permanent error hints guide retry decisions. All CLI subcommands gained proper `--help` text and config validation messages became human-readable.
 
 ---
 
 ## 0.5.3 — UI & Accessibility Polish
 
-No new features — making everything feel right across the existing surface area.
+The current milestone. No new features — making everything feel right across the existing surface area.
 
 - **Accessibility** — ARIA labels on chat input and message bubbles, skip links, keyboard navigation audit, Lighthouse/axe compliance
 - **UI** — Loading state audit, meaningful empty states, error boundaries, mobile polish pass, chart responsiveness

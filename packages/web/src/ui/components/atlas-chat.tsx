@@ -461,7 +461,7 @@ export function AtlasChat() {
                   {messages.map((m, msgIndex) => {
                     if (m.role === "user") {
                       return (
-                        <div key={m.id} className="flex justify-end" role="article" aria-label={`Message from you${m.createdAt ? ` at ${new Date(m.createdAt).toLocaleTimeString()}` : ""}`}>
+                        <div key={m.id} className="flex justify-end" role="article" aria-label="Message from you">
                           <div className="max-w-[85%] rounded-xl bg-blue-600 px-4 py-3 text-sm text-white">
                             {m.parts?.map((part, i) =>
                               part.type === "text" ? (
@@ -488,7 +488,7 @@ export function AtlasChat() {
                       : [];
 
                     return (
-                      <div key={m.id} className="space-y-2" role="article" aria-label={`Message from Atlas${m.createdAt ? ` at ${new Date(m.createdAt).toLocaleTimeString()}` : ""}`}>
+                      <div key={m.id} className="space-y-2" role="article" aria-label="Message from Atlas">
                         {m.parts?.map((part, i) => {
                           if (part.type === "text" && part.text.trim()) {
                             const displayText = parseSuggestions(part.text).text;

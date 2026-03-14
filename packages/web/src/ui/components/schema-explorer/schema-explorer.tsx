@@ -27,6 +27,7 @@ import {
   Search,
   ArrowLeft,
   ArrowRight,
+  Loader2,
   TableProperties,
   Eye,
   Columns3,
@@ -471,7 +472,8 @@ export function SchemaExplorer({
 
         <div className="flex-1 overflow-hidden pt-3">
           {loading ? (
-            <div className="flex h-full items-center justify-center">
+            <div className="flex h-full items-center justify-center gap-2">
+              <Loader2 className="size-4 animate-spin text-zinc-400" />
               <p className="text-xs text-zinc-400">Loading schema...</p>
             </div>
           ) : error ? (
@@ -494,7 +496,8 @@ export function SchemaExplorer({
                 onInsertQuery={handleInsertQuery}
               />
             ) : (
-              <div className="flex h-full items-center justify-center">
+              <div className="flex h-full items-center justify-center gap-2">
+                <Loader2 className="size-4 animate-spin text-zinc-400" />
                 <p className="text-xs text-zinc-400">Loading {selectedName}...</p>
               </div>
             )

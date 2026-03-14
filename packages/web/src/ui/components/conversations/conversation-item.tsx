@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Star, Trash2 } from "lucide-react";
+import { Loader2, Star, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { Conversation } from "../../lib/types";
 import { DeleteConfirmation } from "./delete-confirmation";
@@ -46,6 +46,7 @@ export function ConversationItem({
     return (
       <div className="rounded-lg border border-red-200 bg-red-50/50 dark:border-red-900/30 dark:bg-red-950/10">
         <DeleteConfirmation
+          deleting={deleting}
           onCancel={() => setConfirmDelete(false)}
           onConfirm={async () => {
             setDeleting(true);
@@ -111,10 +112,14 @@ export function ConversationItem({
             conversation.starred
               ? "text-amber-400 opacity-100 hover:text-amber-500 dark:text-amber-400 dark:hover:text-amber-300"
               : "text-zinc-400 opacity-0 hover:text-amber-400 group-hover:opacity-100 dark:hover:text-amber-400"
-          } ${starPending ? "opacity-50" : ""}`}
+          }`}
           aria-label={conversation.starred ? "Unstar conversation" : "Star conversation"}
         >
-          <Star className="h-3.5 w-3.5" fill={conversation.starred ? "currentColor" : "none"} />
+          {starPending ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Star className="h-3.5 w-3.5" fill={conversation.starred ? "currentColor" : "none"} />
+          )}
         </Button>
         <Button
           variant="ghost"

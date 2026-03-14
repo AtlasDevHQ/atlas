@@ -16,6 +16,7 @@ import { StatCard } from "@/ui/components/admin/stat-card";
 import { HealthBadge } from "@/ui/components/admin/health-badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 
 type ComponentStatus = "healthy" | "degraded" | "down" | "disabled";
 
@@ -276,7 +277,29 @@ export default function AdminOverview() {
         </div>
       )}
 
-      {data.components && (
+      {loading ? (
+        <div className="mb-6">
+          <h2 className="mb-3 text-sm font-medium text-muted-foreground">
+            Component Health
+          </h2>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <Card key={i} className="shadow-none">
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <Skeleton className="h-4 w-24" />
+                  <Skeleton className="h-5 w-16 rounded-full" />
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-2">
+                    <Skeleton className="h-7 w-16" />
+                    <Skeleton className="h-3 w-20" />
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
+      ) : data.components ? (
         <div className="mb-6">
           <h2 className="mb-3 text-sm font-medium text-muted-foreground">
             Component Health
@@ -296,30 +319,47 @@ export default function AdminOverview() {
             })}
           </div>
         </div>
-      )}
+      ) : null}
 
       <h2 className="mb-3 text-sm font-medium text-muted-foreground">
         Resources
       </h2>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <StatCard
-          title="Connections"
-          value={loading ? "—" : data.connections}
-          icon={<Server className="size-4" />}
-          description="Active datasource connections"
-        />
-        <StatCard
-          title="Entities"
-          value={loading ? "—" : data.entities}
-          icon={<Database className="size-4" />}
-          description="Tables & views in semantic layer"
-        />
-        <StatCard
-          title="Plugins"
-          value={loading ? "—" : data.plugins}
-          icon={<Puzzle className="size-4" />}
-          description="Installed plugins"
-        />
+        {loading ? (
+          Array.from({ length: 3 }).map((_, i) => (
+            <Card key={i} className="shadow-none">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <Skeleton className="h-4 w-24" />
+                <Skeleton className="size-4 rounded" />
+              </CardHeader>
+              <CardContent>
+                <Skeleton className="h-8 w-12" />
+                <Skeleton className="mt-1 h-3 w-32" />
+              </CardContent>
+            </Card>
+          ))
+        ) : (
+          <>
+            <StatCard
+              title="Connections"
+              value={data.connections}
+              icon={<Server className="size-4" />}
+              description="Active datasource connections"
+            />
+            <StatCard
+              title="Entities"
+              value={data.entities}
+              icon={<Database className="size-4" />}
+              description="Tables & views in semantic layer"
+            />
+            <StatCard
+              title="Plugins"
+              value={data.plugins}
+              icon={<Puzzle className="size-4" />}
+              description="Installed plugins"
+            />
+          </>
+        )}
       </div>
     </div>
   );

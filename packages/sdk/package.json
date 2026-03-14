@@ -6,7 +6,7 @@
   "scripts": {
     "build": "rm -rf dist && bun build src/index.ts src/client.ts --outdir dist --target node --packages external && bun x tsc -p tsconfig.build.json",
     "prepublishOnly": "bun run build",
-    "test": "bun test src/__tests__/client.test.ts src/__tests__/stream.test.ts src/__tests__/integration.test.ts"
+    "test": "bun test src/__tests__/client.test.ts src/__tests__/stream.test.ts src/__tests__/integration.test.ts src/__tests__/stream-integration.test.ts"
   },
   "exports": {
     ".": {

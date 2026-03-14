@@ -258,19 +258,6 @@ function hangingStream(): ReadableStream<Uint8Array> {
   });
 }
 
-/** Stream that emits one event then errors — for network failure testing. */
-function networkErrorStream(): ReadableStream<Uint8Array> {
-  const encoder = new TextEncoder();
-  return new ReadableStream({
-    start(controller) {
-      controller.enqueue(encoder.encode('data: {"type":"text-delta","textDelta":"Partial data"}\n\n'));
-    },
-    pull(controller) {
-      controller.error(new Error("Connection reset by peer"));
-    },
-  });
-}
-
 /** SSE stream that yields an error event then finishes — for server-side error testing. */
 function errorEventStream(): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
@@ -392,9 +379,6 @@ async function handleRequest(req: Request): Promise<Response> {
         break;
       case "__hanging_stream__":
         stream = hangingStream();
-        break;
-      case "__network_error__":
-        stream = networkErrorStream();
         break;
       case "__error_event__":
         stream = errorEventStream();

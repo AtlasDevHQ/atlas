@@ -1,0 +1,221 @@
+---
+title: Error Codes
+description: Complete reference for every error code Atlas returns — server-side chat errors, client-side detection codes, and SDK error handling.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas uses structured error codes across its API, SDK, and chat interface. Every error response includes a `code` field identifying the failure, a human-readable `message`, and a `retryable` flag indicating whether the client should retry.
+
+<Callout>
+Error codes are defined in [`@useatlas/types/errors`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/types/src/errors.ts) and shared across all Atlas packages.
+</Callout>
+
+---
+
+## Server Error Codes (ChatErrorCode)
+
+These codes are returned by the Atlas API in JSON error responses. Each maps to an HTTP status code and a retryable classification.
+
+### Retryable Errors
+
+Transient failures where retrying the same request may succeed. Use exponential backoff for retries.
+
+| Code | HTTP Status | Description | Common Cause | Fix |
+|------|-------------|-------------|--------------|-----|
+| `rate_limited` | 429 | Too many requests | Client exceeding the per-user rate limit | Wait for `retryAfterSeconds` then retry. Reduce request frequency |
+| `provider_rate_limit` | 429 | AI provider rate limited | Upstream LLM provider (Anthropic, OpenAI, etc.) throttling requests | Wait and retry with backoff. Consider upgrading your provider plan |
+| `provider_timeout` | 504 | AI provider timed out | LLM took too long to respond, or query exceeded `ATLAS_QUERY_TIMEOUT` | Retry with a simpler question. Increase `ATLAS_QUERY_TIMEOUT` if queries are complex |
+| `provider_unreachable` | 502 | Cannot reach the AI provider | Network issue between Atlas and the LLM provider, or provider outage | Check provider status page. Retry after a short delay |
+| `provider_error` | 502 | AI provider returned an error | Unexpected error from the LLM provider (500, malformed response, etc.) | Retry after a short delay. Check provider status if persistent |
+| `internal_error` | 500 | Server error | Unhandled exception, database connection failure, or pool exhaustion | Retry after a short delay. Check server logs using the `requestId` |
+
+### Permanent Errors
+
+Retrying these will not help — the request or configuration must be changed.
+
+| Code | HTTP Status | Description | Common Cause | Fix |
+|------|-------------|-------------|--------------|-----|
+| `auth_error` | 401 | Authentication failed | Invalid API key, expired session, or revoked token | Check your API key or sign in again. See [Authentication](/deployment/authentication) |
+| `forbidden` | 403 | Access denied | User lacks the required role (e.g., admin endpoints require `admin` role) | Request the appropriate role from your Atlas administrator |
+| `configuration_error` | 400 | Atlas is not fully configured | Missing environment variables, invalid config file, or startup diagnostics failed | Run `atlas doctor` to identify the issue. See [Troubleshooting](/guides/troubleshooting) |
+| `no_datasource` | 400 | No datasource configured | `ATLAS_DATASOURCE_URL` is not set | Set `ATLAS_DATASOURCE_URL` in your environment. See [Environment Variables](/reference/environment-variables) |
+| `invalid_request` | 400 | Invalid request | Malformed JSON body or missing required fields | Check the request body format. See [API Reference](/reference/api) |
+| `validation_error` | 422 | Request validation failed | Request body doesn't match the expected schema (wrong types, missing fields) | Check the `details` field for specific field errors |
+| `not_found` | 404 | Resource not found | Conversation, entity, or other resource doesn't exist or isn't owned by the caller | Verify the resource ID. The resource may have been deleted |
+| `provider_model_not_found` | 400 | AI model not found | The model specified in `ATLAS_MODEL` doesn't exist at the configured provider | Check `ATLAS_MODEL` and `ATLAS_PROVIDER` values. See [Environment Variables](/reference/environment-variables) |
+| `provider_auth_error` | 502 | AI provider authentication failed | Invalid or expired LLM provider API key (e.g., `ANTHROPIC_API_KEY`) | Verify your provider API key. Regenerate it if expired |
+
+---
+
+## Client Error Codes (ClientErrorCode)
+
+These codes are detected **client-side** by the SDK and chat UI before parsing a server response. They represent network-level failures or HTTP status patterns.
+
+| Code | Description | Common Cause | Fix | Retryable |
+|------|-------------|--------------|-----|-----------|
+| `api_unreachable` | Cannot connect to the Atlas API | Network failure, DNS resolution error, server not running, or CORS issue | Check the API URL configuration and ensure the server is running | Yes |
+| `auth_failure` | HTTP 401 detected before JSON parsing | API key not sent, expired session token, or wrong auth header format | Check your API key or sign in again | No |
+| `rate_limited_http` | HTTP 429 detected before JSON parsing | Rate limit hit — the response wasn't valid JSON (e.g., from a reverse proxy) | Wait 30 seconds and retry | Yes |
+| `server_error` | HTTP 5xx detected before JSON parsing | Server crashed or upstream proxy error (502, 503) | Retry after a short delay | Yes |
+| `offline` | Browser reports no network connection | Device is offline (detected via `navigator.onLine === false`) | Reconnect to the network — the client will auto-retry | Yes |
+
+<Callout>
+Client error codes appear in the `clientCode` field of `ChatErrorInfo`, while server error codes appear in the `code` field. When the server returns valid JSON with a known error code, the server code takes precedence.
+</Callout>
+
+---
+
+## SDK Error Codes
+
+The `@useatlas/sdk` adds three SDK-specific codes to the `AtlasErrorCode` type. These are never returned by the server — they represent client-side conditions detected by the SDK itself.
+
+| Code | Description | Retryable |
+|------|-------------|-----------|
+| `network_error` | `fetch()` threw an error (connection refused, DNS failure, stream interrupted) | Yes |
+| `invalid_response` | Server returned a 2xx status but the body wasn't valid JSON | No |
+| `unknown_error` | Server returned an error response with an unrecognized error code | No |
+| `not_available` | Feature not available (e.g., conversation history without `DATABASE_URL`) | No |
+
+---
+
+## Error Response Format
+
+All Atlas API error responses follow a consistent JSON structure:
+
+```json
+{
+  "error": "rate_limited",
+  "message": "Too many requests. Please wait before trying again.",
+  "retryAfterSeconds": 12,
+  "retryable": true,
+  "requestId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `error` | `string` | The error code (one of the codes listed above) |
+| `message` | `string` | Human-readable description of the error |
+| `retryable` | `boolean` | Whether retrying the same request may succeed |
+| `retryAfterSeconds` | `number?` | Seconds to wait before retrying (only for `rate_limited`, clamped to 0–300) |
+| `requestId` | `string?` | Server-assigned UUID for log correlation. Quote this when reporting issues |
+| `details` | `object?` | Additional context (e.g., Zod validation issues for `validation_error`) |
+| `diagnostics` | `object[]?` | Startup diagnostic results (only for `configuration_error`) |
+
+---
+
+## How Server Codes Map to SDK Errors
+
+When you use the `@useatlas/sdk`, server error responses are automatically parsed into `AtlasError` instances:
+
+```
+Server JSON Response          →  SDK AtlasError
+─────────────────────          ──────────────────
+{ error: "rate_limited" }     →  error.code = "rate_limited"
+{ message: "Too many..." }    →  error.message = "Too many..."
+HTTP 429                       →  error.status = 429
+{ retryable: true }           →  error.retryable = true
+{ retryAfterSeconds: 12 }    →  error.retryAfterSeconds = 12
+```
+
+If the server response isn't valid JSON, or the `error` field isn't a known code, the SDK classifies the error as `network_error`, `invalid_response`, or `unknown_error` depending on the failure mode.
+
+---
+
+## Error Handling with Retry Logic
+
+Use the `retryable` flag on `AtlasError` to build generic retry logic without hard-coding error codes:
+
+```typescript
+import { AtlasError, createAtlasClient } from "@useatlas/sdk";
+
+const atlas = createAtlasClient({
+  baseUrl: "https://api.example.com",
+  apiKey: "your-api-key",
+});
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function queryWithRetry(
+  question: string,
+  maxRetries = 3,
+): Promise<Awaited<ReturnType<typeof atlas.query>>> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await atlas.query(question);
+    } catch (error) {
+      if (!(error instanceof AtlasError)) throw error;
+
+      // Permanent error — retrying won't help
+      if (!error.retryable) throw error;
+
+      // Last attempt — no more retries
+      if (attempt === maxRetries) throw error;
+
+      // Rate limited — use the server-provided delay
+      if (error.code === "rate_limited" && error.retryAfterSeconds) {
+        console.log(`Rate limited — waiting ${error.retryAfterSeconds}s`);
+        await sleep(error.retryAfterSeconds * 1000);
+        continue;
+      }
+
+      // Other transient errors — exponential backoff
+      const delay = Math.min(1000 * 2 ** attempt, 30_000);
+      console.log(`${error.code} — retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`);
+      await sleep(delay);
+    }
+  }
+
+  // Unreachable, but satisfies TypeScript
+  throw new Error("Retry loop exited unexpectedly");
+}
+```
+
+### Handling Specific Codes
+
+Refine behavior for specific error codes after checking `retryable`:
+
+```typescript
+try {
+  await atlas.query("Revenue by region");
+} catch (error) {
+  if (!(error instanceof AtlasError)) throw error;
+
+  switch (error.code) {
+    case "auth_error":
+      // Redirect to login or prompt for a new API key
+      redirectToLogin();
+      break;
+    case "configuration_error":
+    case "no_datasource":
+      // Show setup instructions — the server isn't ready
+      showSetupGuide(error.message);
+      break;
+    case "provider_model_not_found":
+    case "provider_auth_error":
+      // Admin needs to fix server config
+      showAdminAlert(error.message);
+      break;
+    default:
+      if (error.retryable) {
+        // Generic transient error — show retry UI
+        showRetryButton(error.message);
+      } else {
+        // Permanent error — show the message to the user
+        showError(error.message);
+      }
+  }
+}
+```
+
+---
+
+## Related
+
+- [Troubleshooting](/guides/troubleshooting) — Startup errors, connection issues, and diagnostic codes
+- [SDK Reference](/reference/sdk) — Full SDK API with error handling examples
+- [Rate Limiting & Retry](/guides/rate-limiting) — Rate limit configuration and backoff patterns
+- [Environment Variables](/reference/environment-variables) — Configuration that affects error behavior

@@ -8,6 +8,7 @@
     "config",
     "sdk",
     "react",
-    "api"
+    "api",
+    "error-codes"
   ]
 }

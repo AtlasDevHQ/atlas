@@ -54,6 +54,7 @@
   "scripts": {
     "build": "tsup && cp src/styles.css dist/styles.css && cp src/global.d.ts dist/global.d.ts && mkdir -p dist/lib && cp src/lib/widget-types.ts dist/lib/widget-types.d.ts && bun x @tailwindcss/cli -i src/widget.css -o dist/widget.css --minify",
     "dev": "tsup --watch",
+    "test": "bun scripts/test-isolated.ts",
     "type": "tsc --noEmit"
   },
   "peerDependencies": {

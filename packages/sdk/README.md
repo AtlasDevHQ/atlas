@@ -155,7 +155,7 @@ try {
 
 ## Error Handling
 
-All methods throw `AtlasError` on failure:
+All methods throw `AtlasError` on failure. See the full [Error Codes Reference](https://docs.useatlas.dev/reference/error-codes) for every error code, HTTP status, and retry guidance.
 
 ```typescript
 import { AtlasError } from "@useatlas/sdk";

@@ -54,9 +54,9 @@ const atlas = createAtlasClient({ baseUrl: "...", bearerToken: "eyJ..." });
 
 ```typescript
 const { tables } = await atlas.listTables();
-for (const table of tables) {
-  console.log(`${table.name}: ${table.description}`);
-  for (const col of table.columns) {
+for (const t of tables) {
+  console.log(`${t.table}: ${t.description}`);
+  for (const col of t.columns) {
     console.log(`  ${col.name} (${col.type}) — ${col.description}`);
   }
 }

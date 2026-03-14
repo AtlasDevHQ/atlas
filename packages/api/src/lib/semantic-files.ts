@@ -135,11 +135,8 @@ function loadEntitiesFromDir(dir: string, source: string, out: EntitySummary[]):
 // Table discovery (with columns)
 // ---------------------------------------------------------------------------
 
-export interface TableInfo {
-  name: string;
-  description: string;
-  columns: Array<{ name: string; type: string; description: string }>;
-}
+import type { TableInfo, TableColumn } from "@useatlas/types";
+export type { TableInfo };
 
 /**
  * Discover all entity YAML files and return a simplified table view
@@ -186,7 +183,7 @@ function loadTablesFromDir(dir: string, out: TableInfo[]): void {
       const raw = readYamlFile(path.join(dir, file)) as Record<string, unknown>;
       if (!raw || typeof raw !== "object" || !raw.table) continue;
 
-      const columns: TableInfo["columns"] = [];
+      const columns: TableColumn[] = [];
       const dims = raw.dimensions;
       if (dims && typeof dims === "object") {
         if (Array.isArray(dims)) {
@@ -212,7 +209,7 @@ function loadTablesFromDir(dir: string, out: TableInfo[]): void {
       }
 
       out.push({
-        name: String(raw.table),
+        table: String(raw.table),
         description: typeof raw.description === "string" ? raw.description : "",
         columns,
       });

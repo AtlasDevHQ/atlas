@@ -300,7 +300,7 @@ describe("listTables", () => {
   const tablesResponse = {
     tables: [
       {
-        name: "users",
+        table: "users",
         description: "Application users",
         columns: [
           { name: "id", type: "number", description: "Primary key" },
@@ -308,7 +308,7 @@ describe("listTables", () => {
         ],
       },
       {
-        name: "orders",
+        table: "orders",
         description: "Customer orders",
         columns: [
           { name: "id", type: "number", description: "Order ID" },
@@ -326,7 +326,7 @@ describe("listTables", () => {
     expect(lastRequest!.method).toBe("GET");
     expect(new URL(lastRequest!.url).pathname).toBe("/api/v1/tables");
     expect(result.tables).toHaveLength(2);
-    expect(result.tables[0].name).toBe("users");
+    expect(result.tables[0].table).toBe("users");
     expect(result.tables[0].columns).toHaveLength(2);
     expect(result.tables[0].columns[0].name).toBe("id");
   });

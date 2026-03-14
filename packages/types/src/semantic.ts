@@ -57,13 +57,16 @@ export interface EntityData extends SemanticEntityDetail {
 /** Column info returned by the public tables endpoint. */
 export interface TableColumn {
   name: string;
-  type: string;
+  type: DimensionType | (string & {});
   description: string;
 }
 
-/** Table info returned by the public tables endpoint. */
+/**
+ * Simplified table info returned by the public `GET /api/v1/tables` endpoint.
+ * A projection of `SemanticEntityDetail` exposing only dimensions (as columns).
+ */
 export interface TableInfo {
-  name: string;
+  table: string;
   description: string;
   columns: TableColumn[];
 }

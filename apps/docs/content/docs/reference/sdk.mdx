@@ -448,7 +448,7 @@ try {
 | `status` | `number` | HTTP status code (0 for client-side errors like `network_error`) |
 | `message` | `string` | Human-readable description |
 | `retryable` | `boolean` | Whether retrying the same request may succeed |
-| `retryAfterSeconds` | `number \| undefined` | Server-suggested delay — only populated for `rate_limited` errors with a `Retry-After` header. **Always guard against `undefined`** |
+| `retryAfterSeconds` | `number \| undefined` | Server-suggested delay — only populated when the server includes `retryAfterSeconds` in the error response body (currently only for `rate_limited`). **Always guard against `undefined`** |
 
 ### Retry with Backoff
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useQueryStates } from "nuqs";
 import { semanticSearchParams, fileParamToSelection, selectionToFileParam } from "./search-params";
 import { useAtlasConfig } from "@/ui/context";
@@ -318,7 +318,7 @@ export default function SemanticPage() {
   const [detailError, setDetailError] = useState<string | null>(null);
   const [{ file: fileParam, view: viewMode }, setParams] = useQueryStates(semanticSearchParams);
   const [, startTransition] = useTransition();
-  const selection = useMemo(() => fileParamToSelection(fileParam), [fileParam]);
+  const selection = fileParamToSelection(fileParam);
   const [rawYaml, setRawYaml] = useState<string | null>(null);
   const [rawYamlLoading, setRawYamlLoading] = useState(false);
 
@@ -380,14 +380,11 @@ export default function SemanticPage() {
     return () => { cancelled = true; };
   }, [apiUrl]);
 
-  const handleSelect = useCallback(
-    (sel: SemanticSelection) => {
-      startTransition(() => {
-        setParams({ file: selectionToFileParam(sel), view: "pretty" });
-      });
-    },
-    [setParams, startTransition],
-  );
+  const handleSelect = (sel: SemanticSelection) => {
+    startTransition(() => {
+      setParams({ file: selectionToFileParam(sel), view: "pretty" });
+    });
+  };
 
   // Fetch entity detail when selection changes (including from URL on mount)
   useEffect(() => {
@@ -452,14 +449,14 @@ export default function SemanticPage() {
     return () => { cancelled = true; };
   }, [viewMode, selection, rawYaml, apiUrl]);
 
-  const entityNames = useMemo(() => entities.map((e) => e.table).sort(), [entities]);
-  const metricFileNames = useMemo(() => {
+  const entityNames = entities.map((e) => e.table).toSorted();
+  const metricFileNames = (() => {
     const files = new Set<string>();
     for (const m of metrics) {
       if (m.file) files.add(m.file);
     }
-    return [...files].sort();
-  }, [metrics]);
+    return [...files].toSorted();
+  })();
 
   if (loading) {
     return (

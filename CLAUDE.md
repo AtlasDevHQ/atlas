@@ -40,7 +40,7 @@ Guidance for Claude Code when working in this repository.
 
 ### Agent Tools
 - [ ] **Tools return structured data** — `executeSQL` returns `{ columns, rows }`
-- [ ] **Explore is read-only** — Only `ls`, `cat`, `grep`, `find` on `semantic/`. No writes, no shell escapes
+- [ ] **Explore is read-only** — Only `ls`, `cat`, `grep`, `find` on `semantic/`. No writes, no shell escapes. Sandbox backends: Vercel sandbox > nsjail > sidecar > just-bash (dev fallback)
 - [ ] **Agent max 25 steps** — `stopWhen: stepCountIs(25)` in `streamText`
 - [ ] **Semantic layer drives the agent** — Read entity YAMLs before writing SQL
 
@@ -138,15 +138,22 @@ Applied at execution: RLS injection (optional) → Auto LIMIT → Statement time
 table: table_name
 description: What this table contains
 dimensions:
-  column_name:
+  - name: column_name
+    sql: column_name
     type: string|number|date|boolean|timestamp
     description: What this column means
     sample_values: [value1, value2]
+measures:
+  - name: metric_name
+    sql: COUNT(DISTINCT id)
+    type: count_distinct|sum|avg|count
+    description: What this measure calculates
 joins:
-  to_other_table:
+  - name: to_other_table
+    sql: table_name.col = other_table.col
     description: table_name.col → other_table.col
 query_patterns:
-  pattern_name:
+  - name: pattern_name
     description: What this pattern does
     sql: SELECT ... FROM table_name ...
 ```

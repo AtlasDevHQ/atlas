@@ -129,6 +129,14 @@ const plugins: Plugin[] = [
       "Model Context Protocol server — expose Atlas tools to Claude Desktop, Cursor, etc. Monorepo-only (not yet published to npm).",
   },
   {
+    name: "Obsidian",
+    href: "/plugins/interactions/obsidian",
+    type: "interaction",
+    package: "obsidian-atlas",
+    description:
+      "Obsidian plugin — query databases with natural language and embed results in your notes.",
+  },
+  {
     name: "Slack",
     href: "/plugins/interactions/slack",
     type: "interaction",

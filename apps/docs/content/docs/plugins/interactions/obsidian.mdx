@@ -1,0 +1,106 @@
+---
+title: Obsidian
+description: Query databases with natural language from Obsidian and embed results in your notes.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The Obsidian plugin connects your [Obsidian](https://obsidian.md) vault to an Atlas instance. Ask natural-language questions about your data through a modal or embedded code blocks, and insert the results directly into your notes as Markdown tables.
+
+Unlike server-side interaction plugins (Slack, MCP), the Obsidian plugin is a **standalone Obsidian community plugin** that communicates with Atlas over HTTP. It does not require `atlas.config.ts` registration — just point it at your Atlas URL.
+
+## Installation
+
+### From Community Plugins (coming soon)
+
+Search for **Atlas** in **Settings → Community Plugins → Browse** and enable it.
+
+### Manual Install
+
+1. Download `main.js`, `manifest.json`, and `styles.css` from the [latest release](https://github.com/AtlasDevHQ/atlas/releases).
+2. Create a folder at `<your-vault>/.obsidian/plugins/atlas/`.
+3. Copy the three files into that folder.
+4. Open **Settings → Community Plugins** and enable **Atlas**.
+
+### Build from Source
+
+```bash
+cd plugins/obsidian
+bun install
+bun run build
+```
+
+Copy the built `main.js`, `manifest.json`, and `styles.css` into your vault's plugin directory.
+
+## Configuration
+
+Open **Settings → Atlas** in Obsidian:
+
+| Setting | Description |
+|---------|-------------|
+| **Atlas URL** | Base URL of your Atlas instance (e.g. `https://api.example.com`). Trailing slashes are stripped automatically. |
+| **API key** | API key for authentication. Leave empty if your Atlas instance has auth disabled. The key is stored as a password field. |
+
+<Callout type="info">
+The plugin communicates with your Atlas API over HTTP. Make sure your Atlas instance is reachable from your machine — for local development that's usually `http://localhost:3001`.
+</Callout>
+
+## Usage
+
+### Query Modal
+
+Open the query modal in one of two ways:
+
+- Click the **database icon** in the left ribbon bar.
+- Run **Atlas: Ask a question** from the command palette (`Ctrl/Cmd+P`).
+
+Type a natural-language question and click **Ask** (or press `Ctrl/Cmd+Enter`). The agent's response streams in real time — text appears as it's generated, and data tables render below.
+
+Once the response completes, click **Insert into note** to paste the question, answer, and any data tables as Markdown at your cursor position.
+
+### Embedded Code Blocks
+
+Embed live queries directly in your notes using fenced code blocks with the `atlas` language tag:
+
+````markdown
+```atlas
+Revenue by region last quarter
+```
+````
+
+In reading mode, the block renders with a **Run query** button. Click it to execute — the agent's answer and data tables appear inline. Results are cached for the current session. Click **Refresh** to re-run the query.
+
+<Callout type="warn">
+Each code block query runs independently — there is no conversation context between blocks. For multi-turn exploration, use the query modal.
+</Callout>
+
+### Data Table Display
+
+Both the modal and code blocks display query results as HTML tables. Tables are capped at **100 rows** with an overflow indicator. The full dataset is available when you insert into a note (as a Markdown table).
+
+## How It Works
+
+The plugin uses a lightweight SSE streaming client (`src/client.ts`) that connects to the Atlas `/api/chat` endpoint. It parses the Vercel AI SDK data stream protocol and emits typed events:
+
+| Event | Description |
+|-------|-------------|
+| `text` | Text chunk from the agent's response |
+| `result` | Tabular data (`columns` + `rows`) from an `executeSQL` tool call |
+| `error` | Error message from the server |
+| `finish` | Stream complete |
+
+Results are converted to Markdown tables using a built-in `resultToMarkdown()` helper that escapes pipe characters and newlines.
+
+## Troubleshooting
+
+### "Configure Atlas in Settings → Atlas"
+
+The Atlas URL is not set. Open **Settings → Atlas** and enter your Atlas instance URL.
+
+### Connection failed
+
+Verify your Atlas instance is running and reachable. For local development, ensure `bun run dev` is running and the URL is `http://localhost:3001`.
+
+### Authentication errors
+
+If your Atlas instance requires authentication, make sure the API key in settings matches a valid key. Check the Atlas admin console for key management.

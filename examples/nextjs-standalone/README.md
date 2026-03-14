@@ -40,7 +40,7 @@ The deploy button provisions a Neon Postgres database, seeds demo data, and conf
 
 Demo data (companies, people, accounts) is seeded into the Neon database at build time, along with a pre-built semantic layer — no configuration needed.
 
-See [Deploy Guides](https://docs.useatlas.dev/docs/deployment/deploy#vercel) for full instructions.
+See [Deploy Guides](https://docs.useatlas.dev/deployment/deploy#vercel) for full instructions.
 
 **Live deployment:** [next.useatlas.dev](https://next.useatlas.dev)
 

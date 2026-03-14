@@ -32,4 +32,4 @@ export default defineConfig({
 ## Reference
 
 - [Plugin SDK docs](https://docs.useatlas.dev/plugins/sdk)
-- [Authoring guide](https://docs.useatlas.dev/docs/plugins/authoring-guide)
+- [Authoring guide](https://docs.useatlas.dev/plugins/authoring-guide)

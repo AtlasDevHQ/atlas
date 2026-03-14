@@ -8,12 +8,12 @@ import { Steps, Step } from "fumadocs-ui/components/steps";
 
 Your database schema evolves — columns get added, tables get dropped, types change. When the schema drifts from your [semantic layer](/getting-started/semantic-layer) (see [key concepts](/getting-started/concepts) for definitions), the agent may generate incorrect SQL or miss new data entirely. This guide walks through detecting drift and updating your semantic layer to match.
 
-## Prerequisites
-
+<Callout title="Prerequisites">
 - Atlas CLI installed (`bun install`)
 - A semantic layer already generated via `atlas init` (entity YAMLs exist in `semantic/entities/`)
 - `ATLAS_DATASOURCE_URL` set to your database connection string
 - Your database schema has changed since the last `atlas init`
+</Callout>
 
 ---
 

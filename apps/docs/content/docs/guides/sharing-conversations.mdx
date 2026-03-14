@@ -3,11 +3,13 @@ title: Sharing Conversations
 description: Share Atlas conversations via public or org-scoped links with configurable expiry.
 ---
 
+import { Callout } from "fumadocs-ui/components/callout";
+
 Atlas lets you share conversations via links with configurable expiry and access controls. Public shares are visible to anyone with the link. Organization-scoped shares require authentication. Shared conversations include rich OpenGraph metadata for social previews.
 
-## Prerequisites
-
-Conversation sharing requires an internal database (`DATABASE_URL`). Without it, conversation history and sharing are unavailable.
+<Callout title="Prerequisites">
+- Internal database (`DATABASE_URL`) — conversation history and sharing are unavailable without it
+</Callout>
 
 ## Creating a Shared Link
 

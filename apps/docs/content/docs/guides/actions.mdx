@@ -9,7 +9,7 @@ The action framework lets the Atlas agent perform write operations -- sending em
 
 <Callout title="Prerequisites">
 - Authentication enabled (any mode except `none`)
-- Internal database (`DATABASE_URL`) for action persistence and audit log
+- Internal database (`DATABASE_URL`) recommended for persistent action log (in-memory fallback available but lost on restart)
 - For email actions: `RESEND_API_KEY`
 - For JIRA actions: `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`
 </Callout>

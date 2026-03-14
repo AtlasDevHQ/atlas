@@ -10,7 +10,7 @@ Atlas provides two layers of rate limiting: **per-user request limits** (RPM) an
 
 <Callout title="Prerequisites">
 - Atlas server running (`bun run dev`)
-- At least one authenticated client or API key for testing rate limit behavior
+- An authenticated client or API key recommended for testing (unauthenticated requests are rate-limited per IP)
 - For per-datasource limits: an `atlas.config.ts` configuration file
 </Callout>
 

@@ -102,7 +102,7 @@ The agent decides when to use Python based on the question -- statistical analys
 
 ## Troubleshooting
 
-### "Python execution is not available"
+### "Python execution requires a sandbox"
 
 **Cause:** No sandbox backend is configured. Unlike the `explore` tool, Python has no `just-bash` fallback — it requires an isolated sandbox.
 
@@ -112,7 +112,7 @@ The agent decides when to use Python based on the question -- statistical analys
 
 **Cause:** The Python code generated a chart but used an unsupported output method, or the sandbox timed out before the chart was written.
 
-**Fix:** Ensure charts use `matplotlib.pyplot.savefig()` or `plotly.io.to_json()`. Check `ATLAS_PYTHON_TIMEOUT` if the script is compute-heavy. Charts rendered in Recharts format appear as interactive components; matplotlib charts appear as static images.
+**Fix:** Ensure matplotlib charts use `plt.savefig(chart_path(0))` — the sandbox provides a `chart_path()` helper that returns the correct output path. Check `ATLAS_PYTHON_TIMEOUT` if the script is compute-heavy. Charts rendered in Recharts format appear as interactive components; matplotlib charts appear as static images.
 
 ### "Blocked import" error
 

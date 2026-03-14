@@ -173,3 +173,13 @@ See [Troubleshooting](/guides/troubleshooting) for general diagnostic steps.
 ## Atlas MCP vs Raw Database MCP
 
 Wondering why you'd use Atlas's MCP server instead of connecting Claude Desktop directly to your database with a tool like DBHub? Atlas's MCP server routes every query through the [SQL validation pipeline](/security/sql-validation) and gives the AI your semantic layer for context — not just raw schema metadata. See [Atlas vs Raw MCP](/comparisons/raw-mcp) for a full comparison.
+
+---
+
+## See Also
+
+- [CLI Reference](/reference/cli#mcp) — `atlas mcp` command flags and transport options
+- [Environment Variables](/reference/environment-variables) — Variables used by the MCP server
+- [SQL Validation Pipeline](/security/sql-validation) — How queries from MCP clients are validated
+- [Sandbox Architecture](/architecture/sandbox) — How the explore tool is isolated
+- [Troubleshooting](/guides/troubleshooting) — General diagnostic steps

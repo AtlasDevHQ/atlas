@@ -353,3 +353,13 @@ The generated YAML is a starting point. Improve agent accuracy by:
 - **Writing metrics** for KPIs the team tracks -- the agent will use the exact SQL you provide
 
 Re-run `atlas init --enrich` after manual edits to fill in any missing fields with LLM-generated content. Existing values are preserved.
+
+---
+
+## See Also
+
+- [Key Concepts](/getting-started/concepts) — Definitions of entities, dimensions, measures, joins, and metrics
+- [Schema Evolution](/guides/schema-evolution) — Detect database drift and update your semantic layer
+- [CLI Reference](/reference/cli#init) — `atlas init` command flags for profiling databases
+- [Configuration](/reference/config#semantic-layer-path) — Override the default semantic layer directory
+- [SQL Validation Pipeline](/security/sql-validation) — How entity YAMLs define the table whitelist

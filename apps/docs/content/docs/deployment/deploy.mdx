@@ -240,3 +240,13 @@ GET /api/health
 ```
 
 Returns `{"status":"ok"}`, `{"status":"degraded"}`, or `{"status":"error"}` with sub-checks for datasource, provider, semantic layer, internal DB, explore (sandbox backend), auth, and slack. Returns HTTP 200 for `ok`/`degraded`, HTTP 503 for `error`. Always public (no auth required).
+
+---
+
+## See Also
+
+- [Environment Variables](/reference/environment-variables) — Full reference for all deployment variables
+- [Authentication](/deployment/authentication) — Auth mode configuration for production
+- [Configuration](/reference/config) — Declarative `atlas.config.ts` for advanced setups
+- [Sandbox Architecture](/architecture/sandbox) — How the explore tool is isolated per platform
+- [Troubleshooting](/guides/troubleshooting) — Diagnosing deployment issues

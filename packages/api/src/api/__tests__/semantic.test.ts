@@ -394,3 +394,51 @@ describe("GET /api/v1/semantic/entities/:name", () => {
     expect(body.error).toBe("internal_error");
   });
 });
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/tables
+// ---------------------------------------------------------------------------
+
+describe("GET /api/v1/tables", () => {
+  beforeEach(() => {
+    mockAuthenticateRequest.mockReset();
+    mockCheckRateLimit.mockReset();
+    setAuthenticated();
+  });
+
+  it("returns tables with column details", async () => {
+    const res = await app.fetch(apiRequest("/api/v1/tables"));
+    expect(res.status).toBe(200);
+
+    const body = (await res.json()) as { tables: Array<Record<string, unknown>> };
+    expect(body.tables).toBeDefined();
+
+    // companies + orders from fixtures (broken.yml is skipped)
+    const companies = body.tables.find((t) => t.table === "companies");
+    expect(companies).toBeDefined();
+    expect(companies!.description).toBe("All company records");
+    expect(Array.isArray(companies!.columns)).toBe(true);
+    const cols = companies!.columns as Array<{ name: string; type: string; description: string }>;
+    expect(cols.length).toBe(3);
+    expect(cols.find((c) => c.name === "id")).toBeDefined();
+
+    const orders = body.tables.find((t) => t.table === "orders");
+    expect(orders).toBeDefined();
+  });
+
+  it("returns 401 when unauthenticated", async () => {
+    setUnauthenticated();
+    const res = await app.fetch(apiRequest("/api/v1/tables"));
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("auth_error");
+  });
+
+  it("returns 429 when rate limited", async () => {
+    setAuthenticated();
+    mockCheckRateLimit.mockReturnValue({ allowed: false, retryAfterMs: 15000 });
+    const res = await app.fetch(apiRequest("/api/v1/tables"));
+    expect(res.status).toBe(429);
+    expect(res.headers.get("Retry-After")).toBe("15");
+  });
+});

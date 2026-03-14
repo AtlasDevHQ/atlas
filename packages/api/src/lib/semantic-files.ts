@@ -131,6 +131,94 @@ function loadEntitiesFromDir(dir: string, source: string, out: EntitySummary[]):
   }
 }
 
+// ---------------------------------------------------------------------------
+// Table discovery (with columns)
+// ---------------------------------------------------------------------------
+
+import type { TableInfo, TableColumn } from "@useatlas/types";
+export type { TableInfo };
+
+/**
+ * Discover all entity YAML files and return a simplified table view
+ * with column details. Used by the public `GET /api/v1/tables` endpoint.
+ */
+export function discoverTables(root: string): TableInfo[] {
+  const tables: TableInfo[] = [];
+
+  const defaultDir = path.join(root, "entities");
+  if (fs.existsSync(defaultDir)) {
+    loadTablesFromDir(defaultDir, tables);
+  }
+
+  const RESERVED_DIRS = new Set(["entities", "metrics"]);
+  if (fs.existsSync(root)) {
+    try {
+      const entries = fs.readdirSync(root, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory() || RESERVED_DIRS.has(entry.name)) continue;
+        const subEntities = path.join(root, entry.name, "entities");
+        if (fs.existsSync(subEntities)) {
+          loadTablesFromDir(subEntities, tables);
+        }
+      }
+    } catch (err) {
+      log.warn({ err: err instanceof Error ? err : new Error(String(err)), root }, "Failed to scan semantic root for tables");
+    }
+  }
+
+  return tables;
+}
+
+function loadTablesFromDir(dir: string, out: TableInfo[]): void {
+  let files: string[];
+  try {
+    files = fs.readdirSync(dir).filter((f) => f.endsWith(".yml"));
+  } catch (err) {
+    log.warn({ err: err instanceof Error ? err : new Error(String(err)), dir }, "Failed to read entities directory for tables");
+    return;
+  }
+
+  for (const file of files) {
+    try {
+      const raw = readYamlFile(path.join(dir, file)) as Record<string, unknown>;
+      if (!raw || typeof raw !== "object" || !raw.table) continue;
+
+      const columns: TableColumn[] = [];
+      const dims = raw.dimensions;
+      if (dims && typeof dims === "object") {
+        if (Array.isArray(dims)) {
+          for (const d of dims) {
+            if (d && typeof d === "object" && typeof d.name === "string") {
+              columns.push({
+                name: d.name,
+                type: typeof d.type === "string" ? d.type : "string",
+                description: typeof d.description === "string" ? d.description : "",
+              });
+            }
+          }
+        } else {
+          for (const [key, val] of Object.entries(dims)) {
+            const dim = val as Record<string, unknown> | undefined;
+            columns.push({
+              name: key,
+              type: typeof dim?.type === "string" ? dim.type : "string",
+              description: typeof dim?.description === "string" ? dim.description : "",
+            });
+          }
+        }
+      }
+
+      out.push({
+        table: String(raw.table),
+        description: typeof raw.description === "string" ? raw.description : "",
+        columns,
+      });
+    } catch (err) {
+      log.warn({ err: err instanceof Error ? err : new Error(String(err)), file, dir }, "Failed to parse entity YAML for tables");
+    }
+  }
+}
+
 /**
  * Find a specific entity YAML file by table name. Searches default
  * entities/ and all per-source subdirectories.

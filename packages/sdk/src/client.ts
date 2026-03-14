@@ -26,6 +26,8 @@ export type {
   ScheduledTask,
   ScheduledTaskWithRuns,
   ScheduledTaskRun,
+  TableInfo,
+  TableColumn,
 } from "@useatlas/types";
 
 import type {
@@ -41,6 +43,7 @@ import type {
   ScheduledTask,
   ScheduledTaskWithRuns,
   ScheduledTaskRun,
+  TableInfo,
 } from "@useatlas/types";
 import { isChatErrorCode, isRetryableError } from "@useatlas/types";
 
@@ -150,6 +153,10 @@ export interface ListConversationsOptions {
 export interface ShareConversationResponse {
   token: string;
   url: string;
+}
+
+export interface ListTablesResponse {
+  tables: TableInfo[];
 }
 
 // ---------------------------------------------------------------------------
@@ -567,6 +574,15 @@ export function createAtlasClient(options: AtlasClientOptions) {
         conversationId: opts?.conversationId,
       });
       return unwrap<QueryResponse>(res);
+    },
+
+    /**
+     * List all queryable tables from the semantic layer, including column
+     * details. Does not require admin role.
+     */
+    async listTables(): Promise<ListTablesResponse> {
+      const res = await get("/api/v1/tables");
+      return unwrap<ListTablesResponse>(res);
     },
 
     /**

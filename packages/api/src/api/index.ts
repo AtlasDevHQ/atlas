@@ -25,6 +25,7 @@ import { query } from "./routes/query";
 import { openapi } from "./routes/openapi";
 import { conversations, publicConversations } from "./routes/conversations";
 import { semantic } from "./routes/semantic";
+import { tables } from "./routes/tables";
 import { widget } from "./routes/widget";
 import { widgetLoader, widgetTypesLoader } from "./routes/widget-loader";
 
@@ -105,6 +106,7 @@ app.route("/api/v1/openapi.json", openapi);
 app.route("/api/v1/conversations", conversations);
 app.route("/api/public/conversations", publicConversations);
 app.route("/api/v1/semantic", semantic);
+app.route("/api/v1/tables", tables);
 app.route("/widget", widget);
 app.route("/widget.js", widgetLoader);
 app.route("/widget.d.ts", widgetTypesLoader);

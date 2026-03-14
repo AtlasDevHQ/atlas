@@ -9,12 +9,6 @@
 import * as path from "path";
 import { Hono } from "hono";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
-import type { AuthResult } from "@atlas/api/lib/auth/types";
-import {
-  authenticateRequest,
-  checkRateLimit,
-  getClientIP,
-} from "@atlas/api/lib/auth/middleware";
 import {
   getSemanticRoot,
   isValidEntityName,
@@ -22,50 +16,11 @@ import {
   discoverEntities,
   findEntityFile,
 } from "@atlas/api/lib/semantic-files";
+import { authPreamble } from "./auth-preamble";
 
 const log = createLogger("semantic-routes");
 
 export const semantic = new Hono();
-
-// ---------------------------------------------------------------------------
-// Auth preamble — standard auth (no admin role required).
-// ---------------------------------------------------------------------------
-
-/**
- * Authenticate the request and check rate limits. Returns
- * `{ error, status, headers? }` on failure (401/403/429/500)
- * or `{ authResult }` on success.
- */
-async function authPreamble(req: Request, requestId: string) {
-  let authResult: AuthResult;
-  try {
-    authResult = await authenticateRequest(req);
-  } catch (err) {
-    log.error(
-      { err: err instanceof Error ? err : new Error(String(err)), requestId },
-      "Auth dispatch failed",
-    );
-    return { error: { error: "auth_error", message: "Authentication system error" }, status: 500 as const };
-  }
-  if (!authResult.authenticated) {
-    log.warn({ requestId, status: authResult.status }, "Authentication failed");
-    return { error: { error: "auth_error", message: authResult.error }, status: authResult.status as 401 | 403 | 500 };
-  }
-
-  const ip = getClientIP(req);
-  const rateLimitKey = authResult.user?.id ?? (ip ? `ip:${ip}` : "anon");
-  const rateCheck = checkRateLimit(rateLimitKey);
-  if (!rateCheck.allowed) {
-    const retryAfterSeconds = Math.ceil((rateCheck.retryAfterMs ?? 60000) / 1000);
-    return {
-      error: { error: "rate_limited", message: "Too many requests. Please wait before trying again.", retryAfterSeconds },
-      status: 429 as const,
-      headers: { "Retry-After": String(retryAfterSeconds) },
-    };
-  }
-
-  return { authResult };
-}
 
 // ---------------------------------------------------------------------------
 // Routes

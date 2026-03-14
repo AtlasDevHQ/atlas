@@ -355,7 +355,7 @@ export function AtlasChat() {
           />
         )}
 
-        <main id="main" className="flex flex-1 flex-col overflow-hidden">
+        <main id="main" tabIndex={-1} className="flex flex-1 flex-col overflow-hidden">
           <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col overflow-hidden p-4">
             <header className="mb-4 flex-none border-b border-zinc-100 pb-3 dark:border-zinc-800">
               <div className="flex items-center justify-between">
@@ -445,7 +445,7 @@ export function AtlasChat() {
                         <p className="text-lg font-medium text-zinc-500 dark:text-zinc-400">
                           What would you like to know?
                         </p>
-                        <p className="mt-1 text-sm text-zinc-400 dark:text-zinc-600">
+                        <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-500">
                           Ask a question about your data to get started
                         </p>
                       </div>

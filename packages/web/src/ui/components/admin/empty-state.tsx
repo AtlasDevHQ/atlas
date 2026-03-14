@@ -26,7 +26,7 @@ export function EmptyState({
         <Icon className="mx-auto size-10 opacity-50" />
         {heading && <p className="mt-3 text-sm font-medium">{heading}</p>}
         {description && (
-          <p className="mt-1 text-xs text-muted-foreground/70">{description}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{description}</p>
         )}
         {action && (
           <Button

@@ -37,22 +37,26 @@ export function AdminLayout({ children }: { children: ReactNode }) {
   // Loading session
   if (session.isPending) {
     return (
-      <div className="flex h-dvh items-center justify-center">
+      <main id="main" tabIndex={-1} className="flex h-dvh items-center justify-center">
         <LoadingState message="Checking authentication..." />
-      </div>
+      </main>
     );
   }
 
   // Not signed in
   if (!session.data?.user) {
-    return <ManagedAuthCard />;
+    return (
+      <main id="main" tabIndex={-1}>
+        <ManagedAuthCard />
+      </main>
+    );
   }
 
   // Signed in but not admin
   const role = (session.data.user as Record<string, unknown>).role;
   if (role !== "admin") {
     return (
-      <div className="flex h-dvh items-center justify-center">
+      <main id="main" tabIndex={-1} className="flex h-dvh items-center justify-center">
         <div className="w-full max-w-sm space-y-3 rounded-lg border border-zinc-200 bg-zinc-50 p-6 text-center dark:border-zinc-700 dark:bg-zinc-900">
           <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">
             Access Denied
@@ -68,14 +72,14 @@ export function AdminLayout({ children }: { children: ReactNode }) {
             Sign out
           </button>
         </div>
-      </div>
+      </main>
     );
   }
 
   return (
     <SidebarProvider>
       <AdminSidebar />
-      <SidebarInset>
+      <SidebarInset id="main" tabIndex={-1}>
         <header className="flex h-16 shrink-0 items-center gap-2 transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-12">
           <div className="flex items-center gap-2 px-4">
             <SidebarTrigger className="-ml-1" />

@@ -22,7 +22,7 @@ export function ConversationList({
 }) {
   if (conversations.length === 0) {
     return (
-      <div className="px-3 py-6 text-center text-xs text-zinc-400 dark:text-zinc-500">
+      <div className="px-3 py-6 text-center text-xs text-zinc-500 dark:text-zinc-400">
         {emptyMessage ?? "No conversations yet"}
       </div>
     );

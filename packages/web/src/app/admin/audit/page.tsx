@@ -177,8 +177,9 @@ export default function AuditPage() {
           {/* Date range for analytics */}
           <div className="flex flex-wrap items-end gap-3">
             <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">From</label>
+              <label htmlFor="analytics-from" className="text-xs font-medium text-muted-foreground">From</label>
               <Input
+                id="analytics-from"
                 type="date"
                 value={filters.from}
                 onChange={(e) => setFilters((f) => ({ ...f, from: e.target.value }))}
@@ -186,8 +187,9 @@ export default function AuditPage() {
               />
             </div>
             <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">To</label>
+              <label htmlFor="analytics-to" className="text-xs font-medium text-muted-foreground">To</label>
               <Input
+                id="analytics-to"
                 type="date"
                 value={filters.to}
                 onChange={(e) => setFilters((f) => ({ ...f, to: e.target.value }))}
@@ -233,8 +235,9 @@ export default function AuditPage() {
           {/* Filter row */}
           <div className="flex flex-wrap items-end gap-3">
             <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">From</label>
+              <label htmlFor="log-from" className="text-xs font-medium text-muted-foreground">From</label>
               <Input
+                id="log-from"
                 type="date"
                 value={filters.from}
                 onChange={(e) => setFilters((f) => ({ ...f, from: e.target.value }))}
@@ -242,8 +245,9 @@ export default function AuditPage() {
               />
             </div>
             <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">To</label>
+              <label htmlFor="log-to" className="text-xs font-medium text-muted-foreground">To</label>
               <Input
+                id="log-to"
                 type="date"
                 value={filters.to}
                 onChange={(e) => setFilters((f) => ({ ...f, to: e.target.value }))}
@@ -251,8 +255,9 @@ export default function AuditPage() {
               />
             </div>
             <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">User</label>
+              <label htmlFor="log-user" className="text-xs font-medium text-muted-foreground">User</label>
               <Input
+                id="log-user"
                 type="text"
                 placeholder="Filter by user..."
                 value={filters.user}

@@ -58,7 +58,7 @@ These codes are detected **client-side** by the SDK and chat UI before parsing a
 | `auth_failure` | HTTP 401 detected before JSON parsing | API key not sent, expired session token, or wrong auth header format | Check your API key or sign in again | No |
 | `rate_limited_http` | HTTP 429 detected before JSON parsing | Rate limit hit — the response wasn't valid JSON (e.g., from a reverse proxy) | Wait 30 seconds and retry | Yes |
 | `server_error` | HTTP 5xx detected before JSON parsing | Server crashed or upstream proxy error (502, 503) | Retry after a short delay | Yes |
-| `offline` | Browser reports no network connection | Device is offline (detected via `navigator.onLine === false`) | Reconnect to the network — the client will auto-retry | Yes |
+| `offline` | Browser reports no network connection | Device is offline (detected via `navigator.onLine === false`) | Reconnect to the network — the client may auto-retry when connectivity is restored | Yes |
 
 <Callout>
 Client error codes appear in the `clientCode` field of `ChatErrorInfo`, while server error codes appear in the `code` field. When the server returns valid JSON with a known error code, the server code takes precedence.
@@ -98,7 +98,7 @@ All Atlas API error responses follow a consistent JSON structure:
 | `error` | `string` | The error code (one of the codes listed above) |
 | `message` | `string` | Human-readable description of the error |
 | `retryable` | `boolean` | Whether retrying the same request may succeed |
-| `retryAfterSeconds` | `number?` | Seconds to wait before retrying (only for `rate_limited`, clamped to 0–300) |
+| `retryAfterSeconds` | `number?` | Seconds to wait before retrying (only for `rate_limited`; client-side parsing clamps to 0–300) |
 | `requestId` | `string?` | Server-assigned UUID for log correlation. Quote this when reporting issues |
 | `details` | `object?` | Additional context (e.g., Zod validation issues for `validation_error`) |
 | `diagnostics` | `object[]?` | Startup diagnostic results (only for `configuration_error`) |

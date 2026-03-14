@@ -569,6 +569,13 @@ function AtlasChatInner({
                       m.role === "assistant" &&
                       msgIndex === messages.length - 1;
 
+                    // Skip rendering assistant messages with no visible content
+                    // (happens when stream errors before producing any text)
+                    const hasVisibleParts = m.parts?.some(
+                      (p) => (p.type === "text" && p.text.trim()) || isToolUIPart(p),
+                    );
+                    if (!hasVisibleParts && !isLastAssistant) return null;
+
                     const lastTextWithSuggestions = m.parts
                       ?.filter((p): p is typeof p & { type: "text"; text: string } => p.type === "text" && !!p.text.trim())
                       .findLast((p) => parseSuggestions(p.text).suggestions.length > 0);
@@ -599,7 +606,15 @@ function AtlasChatInner({
                           }
                           return null;
                         })}
-                        {isLastAssistant && !isLoading && (
+                        {/* Show inline error when the last assistant message is empty (stream failed before producing content) */}
+                        {isLastAssistant && !hasVisibleParts && !isLoading && error && (
+                          <div className="max-w-[90%]">
+                            <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-950/30 dark:text-red-400">
+                              Something went wrong generating a response. Try sending your message again.
+                            </div>
+                          </div>
+                        )}
+                        {isLastAssistant && !isLoading && hasVisibleParts && (
                           <>
                             <FollowUpChips
                               suggestions={suggestions}

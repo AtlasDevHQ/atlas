@@ -278,14 +278,20 @@ chat.post("/", async (c) => {
         if (conversationId) {
           streamResponse.headers.set("x-conversation-id", conversationId);
 
-          // Fire-and-forget: persist assistant response after stream completes
+          // Fire-and-forget: persist assistant response after stream completes.
+          // result.text rejects when the stream itself errors (provider failure,
+          // timeout, etc.) — distinguish that from an addMessage persistence failure.
           const cid = conversationId;
           void Promise.resolve(result.text)
             .then((text) => {
-              addMessage({ conversationId: cid, role: "assistant", content: [{ type: "text", text }] });
+              try {
+                addMessage({ conversationId: cid, role: "assistant", content: [{ type: "text", text }] });
+              } catch (persistErr) {
+                log.warn({ err: persistErr instanceof Error ? persistErr.message : String(persistErr), conversationId: cid }, "Failed to persist assistant message");
+              }
             })
             .catch((err: unknown) => {
-              log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to persist assistant message");
+              log.error({ err: err instanceof Error ? err.message : String(err), conversationId: cid }, "Agent stream failed — assistant response not available");
             });
         }
 

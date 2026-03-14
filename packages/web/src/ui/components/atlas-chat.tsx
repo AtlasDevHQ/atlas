@@ -27,6 +27,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { parseSuggestions } from "../lib/helpers";
 import { ErrorBoundary } from "./error-boundary";
@@ -360,13 +361,15 @@ export function AtlasChat() {
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   {convos.available && (
-                    <button
+                    <Button
+                      variant="ghost"
+                      size="icon"
                       onClick={() => setMobileMenuOpen(true)}
-                      className="flex size-11 items-center justify-center rounded text-zinc-400 hover:text-zinc-700 md:hidden dark:hover:text-zinc-200"
+                      className="size-11 text-zinc-400 hover:text-zinc-700 md:hidden dark:hover:text-zinc-200"
                       aria-label="Open conversation history"
                     >
                       {MenuIcon}
-                    </button>
+                    </Button>
                   )}
                   <div className="flex items-center gap-2.5">
                     {AtlasLogo}
@@ -392,7 +395,9 @@ export function AtlasChat() {
                       <span className="hidden text-xs text-zinc-500 sm:inline dark:text-zinc-400">
                         {managedSession.data?.user?.email}
                       </span>
-                      <button
+                      <Button
+                        variant="outline"
+                        size="sm"
                         onClick={() => {
                           authClient.signOut().catch((err: unknown) => {
                             console.error("Sign out failed:", err);
@@ -400,10 +405,10 @@ export function AtlasChat() {
                             setTimeout(() => setHealthWarning(""), 5000);
                           });
                         }}
-                        className="rounded border border-zinc-200 px-3 py-2 text-xs text-zinc-500 transition-colors hover:border-zinc-400 hover:text-zinc-800 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
+                        className="text-xs text-zinc-500 dark:text-zinc-400"
                       >
                         Sign out
-                      </button>
+                      </Button>
                     </>
                   )}
                 </div>
@@ -429,7 +434,7 @@ export function AtlasChat() {
                   fallbackRender={(_error, reset) => (
                     <div className="flex flex-col items-center justify-center gap-2 p-6 text-sm text-red-600 dark:text-red-400">
                       <p>Failed to render messages.</p>
-                      <button onClick={reset} className="text-xs underline">Try again</button>
+                      <Button variant="link" size="sm" onClick={reset} className="text-xs">Try again</Button>
                     </div>
                   )}
                 >
@@ -446,13 +451,14 @@ export function AtlasChat() {
                       </div>
                       <div className="grid w-full max-w-lg grid-cols-1 gap-2 sm:grid-cols-2">
                         {STARTER_PROMPTS.map((prompt) => (
-                          <button
+                          <Button
                             key={prompt}
+                            variant="outline"
                             onClick={() => handleSend(prompt)}
-                            className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-left text-sm text-zinc-500 transition-colors hover:border-zinc-400 hover:bg-zinc-100 hover:text-zinc-800 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:border-zinc-600 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+                            className="h-auto justify-start rounded-lg bg-zinc-50 px-3 py-2.5 text-left text-sm text-zinc-500 hover:text-zinc-800 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-200"
                           >
                             {prompt}
-                          </button>
+                          </Button>
                         ))}
                       </div>
                     </div>
@@ -569,25 +575,22 @@ export function AtlasChat() {
                   }}
                   className="flex flex-none gap-2 border-t border-zinc-100 pt-4 dark:border-zinc-800"
                 >
-                  <label htmlFor="atlas-chat-input" className="sr-only">Chat message</label>
-                  <input
-                    id="atlas-chat-input"
+                  <Input
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     placeholder="Ask a question about your data..."
-                    className="min-w-0 flex-1 rounded-lg border border-zinc-200 bg-zinc-50 px-4 py-3 text-base text-zinc-900 placeholder-zinc-400 outline-none focus:border-blue-500 sm:text-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder-zinc-600"
+                    className="min-w-0 flex-1 py-3 text-base sm:text-sm"
                     disabled={isLoading}
+                    aria-label="Chat message"
                   />
-                  <button
+                  <Button
                     type="submit"
                     disabled={isLoading}
                     aria-disabled={!isLoading && !input.trim() ? true : undefined}
-                    aria-describedby={!input.trim() ? "atlas-chat-submit-hint" : undefined}
-                    className="shrink-0 rounded-lg bg-blue-600 px-5 py-3 text-sm font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-40 aria-disabled:opacity-40"
+                    className="shrink-0 px-5"
                   >
                     Ask
-                  </button>
-                  <span id="atlas-chat-submit-hint" className="sr-only">Type a message to enable sending</span>
+                  </Button>
                 </form>
               </ActionAuthProvider>
             )}

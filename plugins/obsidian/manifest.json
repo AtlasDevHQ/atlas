@@ -1,0 +1,10 @@
+{
+  "id": "atlas",
+  "name": "Atlas",
+  "version": "0.1.0",
+  "minAppVersion": "1.0.0",
+  "description": "Query your databases with natural language using Atlas, a text-to-SQL AI agent.",
+  "author": "Atlas",
+  "authorUrl": "https://useatlas.dev",
+  "isDesktopOnly": false
+}

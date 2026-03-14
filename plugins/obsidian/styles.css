@@ -1,0 +1,123 @@
+/* Query modal */
+.atlas-modal {
+  max-width: 700px;
+}
+
+.atlas-input {
+  width: 100%;
+  min-height: 60px;
+  resize: vertical;
+  font-family: var(--font-interface);
+  font-size: var(--font-ui-small);
+  padding: var(--size-4-2);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  margin-bottom: var(--size-4-2);
+}
+
+.atlas-btn-row {
+  display: flex;
+  gap: var(--size-4-2);
+  margin-bottom: var(--size-4-3);
+}
+
+.atlas-results {
+  max-height: 400px;
+  overflow-y: auto;
+  padding: var(--size-4-2);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+}
+
+.atlas-response-text {
+  white-space: pre-wrap;
+  font-size: var(--font-ui-small);
+  color: var(--text-normal);
+  margin-bottom: var(--size-4-2);
+  line-height: 1.5;
+}
+
+.atlas-error {
+  color: var(--text-error);
+  font-size: var(--font-ui-small);
+  padding: var(--size-4-2);
+  border-radius: var(--radius-s);
+  margin-top: var(--size-4-2);
+}
+
+/* Tables (shared between modal and code blocks) */
+.atlas-table-wrapper {
+  overflow-x: auto;
+  margin: var(--size-4-2) 0;
+}
+
+.atlas-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-ui-smaller);
+}
+
+.atlas-table th {
+  text-align: left;
+  font-weight: var(--font-semibold);
+  padding: var(--size-4-1) var(--size-4-2);
+  border-bottom: 2px solid var(--background-modifier-border);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.atlas-table td {
+  padding: var(--size-4-1) var(--size-4-2);
+  border-bottom: 1px solid var(--background-modifier-border);
+  color: var(--text-normal);
+}
+
+.atlas-table tbody tr:hover {
+  background: var(--background-modifier-hover);
+}
+
+.atlas-table-overflow {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  padding: var(--size-4-1) var(--size-4-2);
+  font-style: italic;
+}
+
+/* Code block */
+.atlas-block {
+  padding: var(--size-4-3);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-secondary);
+}
+
+.atlas-block-question {
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+  margin-bottom: var(--size-4-2);
+  font-style: italic;
+}
+
+.atlas-block-question::before {
+  content: "Q: ";
+  font-weight: var(--font-semibold);
+  color: var(--text-normal);
+  font-style: normal;
+}
+
+.atlas-block-text {
+  white-space: pre-wrap;
+  font-size: var(--font-ui-small);
+  color: var(--text-normal);
+  margin-bottom: var(--size-4-2);
+  line-height: 1.5;
+}
+
+.atlas-block-btn {
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+  margin-top: var(--size-4-2);
+}

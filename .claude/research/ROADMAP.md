@@ -303,9 +303,9 @@ No feature adds — just making everything feel right. Accessibility is table st
 
 ### Widget Polish
 - [x] Export TypeScript types for `globalThis.AtlasWidget` — enable IDE autocomplete for embedders (#386, PR #400)
-- [ ] Widget README expansion — error handling examples, auth fallback, what happens when API unreachable (#387)
-- [ ] Custom renderer docs — document all available fields on each tool result type (#388)
-- [ ] CSS customization guide — document CSS variables for widget styling (#389)
+- [x] Widget README expansion — error handling examples, auth fallback, what happens when API unreachable (#387, PR #404)
+- [x] Custom renderer docs — document all available fields on each tool result type (#388, PR #404)
+- [x] CSS customization guide — document CSS variables for widget styling (#389, PR #404)
 - [x] Widget error states — graceful degradation when API is down or auth fails (#390, PR #401)
 
 ---

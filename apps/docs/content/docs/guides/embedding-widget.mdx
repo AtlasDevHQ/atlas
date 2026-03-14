@@ -940,6 +940,651 @@ If using the script tag loader, verify the `data-api-key` attribute is set on th
 
 **Diagnosis:** Open browser DevTools, switch to the iframe's context, and check the console for errors. The widget logs all errors with the `[Atlas Widget]` prefix and sends them to the parent via `atlas:error` postMessage.
 
+## Error Handling
+
+The widget handles errors automatically with contextual UI. This section documents what happens for each error type and how to listen for errors from your host page.
+
+### Error States
+
+| Condition | User-facing message | Icon | Recovery |
+|-----------|-------------------|------|----------|
+| API unreachable | "Unable to connect to Atlas." | ServerCrash | Retry button (manual) |
+| Auth failure | Auth-mode-specific (e.g. "Your session has expired.") | ShieldAlert | Re-authenticate |
+| Browser offline | "You appear to be offline." | WifiOff | Auto-retries when `navigator.onLine` restores |
+| Rate limited | "Too many requests." + countdown | Clock | Auto-retries after countdown reaches 0 |
+| Server error (5xx) | "Something went wrong on our end." | ServerCrash | Retry button (manual) |
+| Unknown error | "Something went wrong. Please try again." | AlertTriangle | Retry button (manual) |
+
+Errors are classified client-side before the server response is parsed. The `ClientErrorCode` type covers five cases:
+
+```typescript
+type ClientErrorCode =
+  | "api_unreachable"     // fetch failed, ECONNREFUSED, ENOTFOUND
+  | "auth_failure"        // HTTP 401
+  | "rate_limited_http"   // HTTP 429
+  | "server_error"        // HTTP 5xx
+  | "offline";            // navigator.onLine === false
+```
+
+Server-side errors are parsed from the JSON response body and mapped to a `ChatErrorCode`. See the [React Hooks reference](/reference/react#auth--error-types) for the full list.
+
+### Listening for Errors
+
+#### Script Tag (Programmatic API)
+
+```javascript
+// Listen for errors via the Atlas.on() method
+Atlas.on("error", (detail) => {
+  // detail: { code?: string, message?: string }
+  console.error("Widget error:", detail.code, detail.message);
+
+  // Report to your monitoring service
+  myErrorTracker.capture("atlas-widget-error", detail);
+});
+```
+
+#### Script Tag (Data Attribute Callback)
+
+```html
+<script>
+  function onAtlasError(detail) {
+    console.error("Widget error:", detail.code, detail.message);
+  }
+</script>
+
+<script
+  src="https://your-atlas-api.example.com/widget.js"
+  data-api-url="https://your-atlas-api.example.com"
+  data-on-error="onAtlasError"
+></script>
+```
+
+#### iframe postMessage
+
+The widget emits `atlas:error` messages to the parent window for every error. The payload includes the error code, title, detail, and retryability:
+
+```javascript
+window.addEventListener("message", (event) => {
+  // Always check origin to prevent spoofed messages
+  if (event.origin !== "https://your-atlas-api.example.com") return;
+
+  if (event.data?.type === "atlas:error") {
+    const { code, message, detail, retryable } = event.data.error;
+    // code: ClientErrorCode or ChatErrorCode (e.g. "api_unreachable", "auth_error")
+    // message: user-facing title (e.g. "Unable to connect to Atlas.")
+    // detail: optional secondary context
+    // retryable: true for transient errors, false for permanent ones
+
+    if (!retryable) {
+      // Permanent error — show your own fallback UI or redirect to login
+      showFallbackUI(message);
+    }
+  }
+});
+```
+
+#### React Component
+
+When using the `AtlasChat` React component, errors are rendered inline automatically. For programmatic access, use the `useAtlasChat` hook:
+
+```tsx
+import { useAtlasChat, parseChatError } from "@useatlas/react/hooks";
+
+function ChatUI() {
+  const { error, status } = useAtlasChat();
+
+  if (error) {
+    // parseChatError extracts structured info from the AI SDK error
+    const info = parseChatError(error, "simple-key");
+    console.log(info.title);         // "Unable to connect to Atlas."
+    console.log(info.clientCode);    // "api_unreachable"
+    console.log(info.retryable);     // true
+  }
+
+  // ... render chat UI
+}
+```
+
+### Auth Token Refresh
+
+When a token expires mid-session, the widget shows an auth error. To refresh the token without reloading the page:
+
+<Tabs items={["Script tag", "iframe postMessage"]}>
+<Tab value="Script tag">
+```javascript
+// When your app refreshes a token, push it to the widget
+function onTokenRefresh(newToken) {
+  Atlas.setAuthToken(newToken);
+}
+
+// Example: refresh before expiry using a JWT decode
+const payload = JSON.parse(atob(token.split(".")[1]));
+const expiresIn = payload.exp * 1000 - Date.now();
+setTimeout(async () => {
+  const newToken = await refreshAuthToken();
+  Atlas.setAuthToken(newToken);
+}, expiresIn - 60_000); // Refresh 1 minute before expiry
+```
+</Tab>
+<Tab value="iframe postMessage">
+```javascript
+const iframe = document.querySelector("iframe");
+const ATLAS_ORIGIN = "https://your-atlas-api.example.com";
+
+// Send a fresh token when the old one expires
+function onTokenRefresh(newToken) {
+  iframe.contentWindow.postMessage(
+    { type: "auth", token: newToken },
+    ATLAS_ORIGIN,
+  );
+}
+
+// Proactive refresh: send a new token before expiry
+setInterval(async () => {
+  const newToken = await myApp.refreshToken();
+  onTokenRefresh(newToken);
+}, 15 * 60 * 1000); // Every 15 minutes
+```
+</Tab>
+</Tabs>
+
+### API Unreachable Behavior
+
+When the Atlas API is unreachable (server down, network error, DNS failure), the widget:
+
+1. Shows an inline error banner with the `ServerCrash` icon and "Unable to connect to Atlas."
+2. Displays the detail "Check your API URL configuration and ensure the server is running."
+3. Shows a "Try again" button for manual retry
+4. Emits an `atlas:error` postMessage to the parent window with `code: "api_unreachable"` and `retryable: true`
+
+The widget does **not** auto-retry on API unreachable — the user must click "Try again" or you must programmatically retry by re-sending the query.
+
+---
+
+## Custom Tool Renderers
+
+Override how tool results render inside the widget using the `toolRenderers` prop on `<AtlasChat>` (React component) or via the headless hooks. This is useful for matching your product's design system or adding custom interactions like CSV export buttons.
+
+### How It Works
+
+Every tool invocation in the agent's response is rendered by a component. Custom renderers take precedence over built-in defaults. If no custom renderer is provided, the widget falls back to its built-in cards (SQL result table, explore output, Python charts).
+
+```tsx
+import { AtlasChat } from "@useatlas/react";
+import "@useatlas/react/styles.css";
+
+function App() {
+  return (
+    <AtlasChat
+      apiUrl="https://your-atlas-api.example.com"
+      apiKey="sk-..."
+      toolRenderers={{
+        executeSQL: MySQLRenderer,       // Override SQL result display
+        executePython: MyPythonRenderer,  // Override Python output display
+        // explore uses the built-in default (not overridden)
+      }}
+    />
+  );
+}
+```
+
+### Renderer Props
+
+Every custom renderer receives `ToolRendererProps<T>`:
+
+```typescript
+interface ToolRendererProps<T = unknown> {
+  toolName: string;                  // Name of the tool (e.g. "executeSQL")
+  args: Record<string, unknown>;     // Input arguments passed to the tool
+  result: T;                         // Tool output — null while the tool is running
+  isLoading: boolean;                // Whether the tool invocation is still in progress
+}
+```
+
+### Tool Result Field Reference
+
+#### `executeSQL` — SQL query results
+
+Type: `SQLToolResult | null` (null while loading)
+
+**Success shape:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `success` | `true` | Discriminant — always `true` on success |
+| `columns` | `string[]` | Column names in query order |
+| `rows` | `Record<string, unknown>[]` | Array of row objects keyed by column name |
+| `truncated` | `boolean \| undefined` | Whether results were truncated by the row limit |
+| `explanation` | `string \| undefined` | Agent's natural-language explanation of the query |
+| `row_count` | `number \| undefined` | Total row count before truncation |
+
+**Error shape:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `success` | `false` | Discriminant — always `false` on error |
+| `error` | `string` | Error message from the database or validator |
+
+**Example custom renderer:**
+
+```tsx
+import type { ToolRendererProps, SQLToolResult } from "@useatlas/react";
+
+function MySQLRenderer({ result, isLoading, args }: ToolRendererProps<SQLToolResult | null>) {
+  if (isLoading || !result) {
+    return <div className="animate-pulse p-4">Running query...</div>;
+  }
+
+  if (!result.success) {
+    return <div className="text-red-500 p-4">Query failed: {result.error}</div>;
+  }
+
+  return (
+    <div className="border rounded-lg overflow-hidden">
+      {/* Show the SQL that was executed */}
+      {args.sql && (
+        <pre className="bg-gray-100 p-2 text-xs overflow-x-auto">
+          {String(args.sql)}
+        </pre>
+      )}
+
+      {/* Result count */}
+      <div className="px-3 py-1 text-sm text-gray-500">
+        {result.rows.length} rows{result.truncated ? " (truncated)" : ""}
+      </div>
+
+      {/* Data table */}
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b bg-gray-50">
+            {result.columns.map((col) => (
+              <th key={col} className="px-3 py-2 text-left font-medium">{col}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {result.rows.map((row, i) => (
+            <tr key={i} className="border-b">
+              {result.columns.map((col) => (
+                <td key={col} className="px-3 py-2">{String(row[col] ?? "")}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {/* Agent explanation */}
+      {result.explanation && (
+        <p className="px-3 py-2 text-sm text-gray-600 italic">{result.explanation}</p>
+      )}
+    </div>
+  );
+}
+```
+
+#### `explore` — Semantic layer exploration
+
+Type: `ExploreToolResult | null` (null while loading)
+
+The explore tool returns a plain string — the output of the semantic layer file read or search command.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| (entire result) | `string` | Raw text output from the explore command |
+
+**Example custom renderer:**
+
+```tsx
+import type { ToolRendererProps, ExploreToolResult } from "@useatlas/react";
+
+function MyExploreRenderer({ result, isLoading, args }: ToolRendererProps<ExploreToolResult | null>) {
+  if (isLoading || result === null) {
+    return <div className="animate-pulse p-4">Exploring schema...</div>;
+  }
+
+  return (
+    <details className="border rounded-lg">
+      <summary className="px-3 py-2 cursor-pointer text-sm font-medium">
+        {/* args.command contains the explore command that was run */}
+        Explore: {String(args.command ?? "semantic layer")}
+      </summary>
+      <pre className="p-3 text-xs overflow-x-auto whitespace-pre-wrap bg-gray-50">
+        {result}
+      </pre>
+    </details>
+  );
+}
+```
+
+#### `executePython` — Python code execution
+
+Type: `PythonToolResult | null` (null while loading)
+
+**Success shape:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `success` | `true` | Discriminant — always `true` on success |
+| `output` | `string \| undefined` | stdout/stderr text output |
+| `explanation` | `string \| undefined` | Agent's natural-language explanation |
+| `table` | `{ columns: string[]; rows: unknown[][] } \| undefined` | Tabular output (column-ordered, not keyed) |
+| `charts` | `{ base64: string; mimeType: "image/png" }[] \| undefined` | Static chart images (matplotlib, etc.) |
+| `rechartsCharts` | `Array<{ type: "line" \| "bar" \| "pie"; data: Record<string, unknown>[]; categoryKey: string; valueKeys: string[] }> \| undefined` | Interactive chart data for Recharts rendering |
+
+**Error shape:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `success` | `false` | Discriminant — always `false` on error |
+| `error` | `string` | Error message from the Python runtime |
+| `output` | `string \| undefined` | Any stdout captured before the error |
+
+**Example custom renderer:**
+
+```tsx
+import type { ToolRendererProps, PythonToolResult } from "@useatlas/react";
+
+function MyPythonRenderer({ result, isLoading }: ToolRendererProps<PythonToolResult | null>) {
+  if (isLoading || !result) {
+    return <div className="animate-pulse p-4">Running Python...</div>;
+  }
+
+  if (!result.success) {
+    return (
+      <div className="border border-red-200 rounded-lg p-4">
+        <p className="text-red-600 font-medium">Execution failed</p>
+        <pre className="text-xs mt-2">{result.error}</pre>
+        {result.output && <pre className="text-xs mt-2 text-gray-500">{result.output}</pre>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {/* Text output */}
+      {result.output && (
+        <pre className="bg-gray-50 p-3 rounded text-xs overflow-x-auto">{result.output}</pre>
+      )}
+
+      {/* Static chart images */}
+      {result.charts?.map((chart, i) => (
+        <img
+          key={i}
+          src={`data:${chart.mimeType};base64,${chart.base64}`}
+          alt={`Chart ${i + 1}`}
+          className="max-w-full rounded"
+        />
+      ))}
+
+      {/* Interactive Recharts data — render with your preferred chart library */}
+      {result.rechartsCharts?.map((chart, i) => (
+        <div key={i} className="border rounded p-3">
+          <p className="text-sm font-medium mb-2">
+            {chart.type} chart — {chart.categoryKey} vs {chart.valueKeys.join(", ")}
+          </p>
+          {/* Plug in your own chart component here */}
+          <pre className="text-xs">{JSON.stringify(chart.data.slice(0, 3), null, 2)}</pre>
+        </div>
+      ))}
+
+      {/* Tabular output */}
+      {result.table && (
+        <table className="w-full text-sm border">
+          <thead>
+            <tr>
+              {result.table.columns.map((col) => (
+                <th key={col} className="px-2 py-1 border-b bg-gray-50 text-left">{col}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {result.table.rows.map((row, i) => (
+              <tr key={i}>
+                {row.map((cell, j) => (
+                  <td key={j} className="px-2 py-1 border-b">{String(cell ?? "")}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+```
+
+#### Custom / Plugin Tools
+
+Any tool name can have a custom renderer. Plugin tools (e.g. from BigQuery, Salesforce, or custom plugins) are passed through with `ToolRendererProps<unknown>`:
+
+```tsx
+import type { ToolRendererProps } from "@useatlas/react";
+
+// Renderer for a custom "searchDocs" plugin tool
+function DocsSearchRenderer({ result, isLoading, args }: ToolRendererProps) {
+  if (isLoading || !result) return <div>Searching docs...</div>;
+
+  // Cast to your expected shape
+  const data = result as { results: { title: string; url: string }[] };
+  return (
+    <ul>
+      {data.results.map((doc, i) => (
+        <li key={i}>
+          <a href={doc.url} target="_blank" rel="noopener noreferrer">{doc.title}</a>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// Register in toolRenderers
+<AtlasChat
+  apiUrl="..."
+  toolRenderers={{
+    searchDocs: DocsSearchRenderer,
+  }}
+/>
+```
+
+### Using Custom Renderers with Headless Hooks
+
+The headless hooks expose tool invocations via the `parts` array on each message. Use `ToolRendererProps` types to build your own rendering logic:
+
+```tsx
+import { useAtlasChat } from "@useatlas/react/hooks";
+import type { SQLToolResult } from "@useatlas/react/hooks";
+
+function ChatUI() {
+  const { messages } = useAtlasChat();
+
+  return (
+    <div>
+      {messages.map((msg) =>
+        msg.parts?.map((part, i) => {
+          if (part.type === "text") return <p key={i}>{part.text}</p>;
+          if (part.type === "tool-invocation") {
+            // Access tool name, args, and result from the part
+            const { toolName, args, result, state } = part.toolInvocation;
+            const isLoading = state !== "result";
+
+            if (toolName === "executeSQL" && result) {
+              const sqlResult = result as SQLToolResult;
+              // Render your custom SQL table here
+            }
+          }
+          return null;
+        }),
+      )}
+    </div>
+  );
+}
+```
+
+---
+
+## CSS Customization Guide
+
+The Atlas widget uses CSS custom properties (variables) scoped to `.atlas-root` for all visual design tokens. These follow the [shadcn/ui](https://ui.shadcn.com/) neutral base with the [OKLCH color space](https://developer.mozilla.org/en-US/docs/Web/CSS/color_value/oklch).
+
+### Quick Reference
+
+All variables are listed in the [CSS Variables](#css-variables) section above. Here are the most common customization recipes.
+
+### Brand Color Override
+
+Change the primary brand color across the widget — affects buttons, links, and focus rings:
+
+<Tabs items={["Script tag (iframe)", "React component", "CSS only"]}>
+<Tab value="Script tag (iframe)">
+```html
+<!-- Use the accent query parameter (hex without #) -->
+<iframe
+  src="https://your-atlas-api.example.com/widget?accent=6366f1"
+  title="Atlas Chat"
+  allow="clipboard-write"
+  style="width: 400px; height: 600px; border: none;"
+></iframe>
+
+<!-- Or update at runtime via postMessage -->
+<script>
+  iframe.contentWindow.postMessage(
+    { type: "atlas:setBranding", accent: "6366f1" },
+    "https://your-atlas-api.example.com",
+  );
+</script>
+```
+</Tab>
+<Tab value="React component">
+```tsx
+import { useEffect } from "react";
+import { AtlasChat } from "@useatlas/react";
+import "@useatlas/react/styles.css";
+
+// Override via CSS — the brand color drives --primary in the full app
+// Place this in your app's CSS, after the Atlas styles import
+// .atlas-root { --atlas-brand: oklch(0.55 0.2 275); }
+
+// Or override at runtime via the useAtlasTheme hook
+import { useAtlasTheme } from "@useatlas/react/hooks";
+function BrandSetup() {
+  const { applyBrandColor } = useAtlasTheme();
+  // Call once on mount — sets --atlas-brand on :root
+  useEffect(() => applyBrandColor("oklch(0.55 0.2 275)"), []);
+  return null;
+}
+```
+</Tab>
+<Tab value="CSS only">
+```css
+/* Brand color — indigo */
+.atlas-root {
+  --atlas-brand: oklch(0.55 0.2 275);
+  --primary: oklch(0.55 0.2 275);
+  --primary-foreground: oklch(0.98 0 0);
+}
+
+.dark .atlas-root {
+  --primary: oklch(0.7 0.15 275);
+  --primary-foreground: oklch(0.15 0 0);
+}
+```
+</Tab>
+</Tabs>
+
+### Dark Mode Override
+
+Force dark mode regardless of user preference, or customize the dark theme colors:
+
+```css
+/* Force dark mode on the Atlas widget */
+.atlas-root {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.145 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --border: oklch(0.269 0 0);
+  --input: oklch(0.269 0 0);
+}
+```
+
+Or use the `data-theme` attribute / `Atlas.setTheme()` / `?theme=dark` query parameter to let the widget handle dark mode with its built-in tokens.
+
+### Font Override
+
+The widget inherits `font-family` from its container. Override it by targeting `.atlas-root` or specific elements:
+
+```css
+/* Set a custom font for the entire widget */
+.atlas-root {
+  font-family: "Inter", system-ui, sans-serif;
+}
+
+/* Or target just the input field */
+[data-atlas-input] {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 14px;
+}
+
+/* Override message text font */
+[data-atlas-messages] {
+  font-family: "Merriweather", serif;
+  line-height: 1.7;
+}
+```
+
+### Complete Brand Theming Example
+
+Combine all customizations for a fully branded widget:
+
+```css
+/* Acme Analytics — branded Atlas widget */
+.atlas-root {
+  /* Brand indigo */
+  --atlas-brand: oklch(0.55 0.2 275);
+  --primary: oklch(0.55 0.2 275);
+  --primary-foreground: oklch(0.98 0 0);
+
+  /* Warmer background */
+  --background: oklch(0.99 0.005 275);
+  --foreground: oklch(0.12 0.02 275);
+
+  /* Rounded corners */
+  --radius: 0.75rem;
+
+  /* Subtle brand-tinted borders */
+  --border: oklch(0.92 0.01 275);
+  --input: oklch(0.92 0.01 275);
+
+  /* Custom font */
+  font-family: "Inter", system-ui, sans-serif;
+}
+
+.dark .atlas-root {
+  --primary: oklch(0.7 0.15 275);
+  --primary-foreground: oklch(0.15 0 0);
+  --background: oklch(0.13 0.02 275);
+  --foreground: oklch(0.96 0.005 275);
+  --border: oklch(0.25 0.01 275);
+  --input: oklch(0.25 0.01 275);
+}
+```
+
+### Data Attribute Selectors
+
+Key widget elements expose `data-*` attributes for targeted styling:
+
+| Selector | Element |
+|----------|---------|
+| `[data-atlas-input]` | The chat text input field |
+| `[data-atlas-form]` | The input form container |
+| `[data-atlas-messages]` | The scrollable messages container |
+| `[data-atlas-logo]` | The Atlas logo SVG |
+| `.atlas-root` | The root container (all design tokens live here) |
+
+---
+
 ## Security Considerations
 
 **Allowed Origins:** The widget script and iframe routes set `Access-Control-Allow-Origin: *` and `Content-Security-Policy: frame-ancestors *` to allow embedding from any domain. If you need to restrict origins, configure your reverse proxy or CDN to override these headers.

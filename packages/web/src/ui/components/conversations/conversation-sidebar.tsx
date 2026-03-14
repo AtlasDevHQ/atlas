@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Star } from "lucide-react";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
 import type { Conversation } from "../../lib/types";
 import { ConversationList } from "./conversation-list";
 
@@ -71,8 +72,15 @@ export function ConversationSidebar({
 
       <div className="flex-1 overflow-y-auto p-2">
         {loading && conversations.length === 0 ? (
-          <div className="flex items-center justify-center py-8">
-            <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-600 dark:border-zinc-600 dark:border-t-zinc-300" />
+          <div className="space-y-2 p-1">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <div key={i} className="flex items-center gap-2 rounded-lg px-3 py-2.5">
+                <div className="min-w-0 flex-1 space-y-2">
+                  <Skeleton className="h-3.5 w-3/4" />
+                  <Skeleton className="h-2.5 w-1/3" />
+                </div>
+              </div>
+            ))}
           </div>
         ) : (
           <ConversationList

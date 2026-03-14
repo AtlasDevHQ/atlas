@@ -2,6 +2,7 @@
   "name": "@atlas/cli",
   "version": "0.1.0",
   "private": true,
+  "license": "AGPL-3.0-or-later",
   "scripts": {
     "atlas": "bun bin/atlas.ts",
     "test": "bun run scripts/test-isolated.ts"

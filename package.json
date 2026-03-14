@@ -2,6 +2,7 @@
   "name": "atlas",
   "version": "0.1.0",
   "private": true,
+  "license": "AGPL-3.0-or-later",
   "description": "Deploy-anywhere text-to-SQL agent with auto-generated semantic layer and production-grade security",
   "workspaces": [
     "packages/*",

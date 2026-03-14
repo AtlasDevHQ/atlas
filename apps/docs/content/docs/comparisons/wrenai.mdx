@@ -11,7 +11,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 | | Atlas | WrenAI |
 |---|---|---|
-| **License** | MIT | AGPL-3.0 |
+| **License** | AGPL-3.0 core, MIT client libs | AGPL-3.0 |
 | **Semantic layer** | YAML files (code-first, git-versioned) | UI-based MDL (Modeling Definition Language) |
 | **Embeddable** | Script tag, React component, API | API only (no pre-built widget) |
 | **Deployment** | Self-hosted, embedded, Vercel, Railway, Docker | Self-hosted, Docker |
@@ -47,12 +47,12 @@ WrenAI offers API access for embedding text-to-SQL capabilities into other appli
 
 ## Licensing
 
-Atlas uses **MIT**, which allows unrestricted commercial use, modification, and distribution without copyleft obligations.
+Both Atlas and WrenAI use **AGPL-3.0** for the server. The difference is that Atlas's client libraries (`@useatlas/sdk`, `@useatlas/react`, `@useatlas/types`) and all plugins are **MIT** — you can embed them in commercial products without copyleft concerns.
 
-WrenAI uses **AGPL-3.0**, which requires that any modified version of the software — and in some interpretations, any software that interacts with it over a network — must also be released under AGPL-3.0. This can be a concern for commercial SaaS products that want to embed text-to-SQL without open-sourcing their own code.
+WrenAI is fully AGPL-3.0, which requires that any modified version of the software — and in some interpretations, any software that interacts with it over a network — must also be released under AGPL-3.0.
 
 <Callout type="info">
-  License choice matters most when you're embedding a tool inside a commercial product. If you're deploying WrenAI as a standalone internal tool, AGPL may not be a practical concern.
+  Atlas's split license means you can embed the MIT client libraries in a proprietary app while self-hosting the AGPL server as-is. Modifications to the server must be shared, but your application code stays private.
 </Callout>
 
 ## When to Choose WrenAI

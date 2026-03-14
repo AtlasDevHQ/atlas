@@ -2,6 +2,7 @@
   "name": "@atlas/mcp",
   "version": "0.1.0",
   "private": true,
+  "license": "AGPL-3.0-or-later",
   "exports": {
     "./server": "./src/server.ts",
     "./sse": "./src/sse.ts"

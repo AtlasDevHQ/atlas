@@ -214,4 +214,4 @@ bun run lint             # Lint with ESLint
 
 ## License
 
-MIT
+MIT — see [LICENSE](./LICENSE)

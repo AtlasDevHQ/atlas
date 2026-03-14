@@ -28,7 +28,7 @@ Atlas is an embeddable text-to-SQL agent. The tools below solve overlapping prob
 | Snowflake | Plugin | Yes | Yes | Yes |
 | Salesforce | Plugin | No | No | No |
 | **Auth model** | Managed, BYOT, API key, none | API key | BYOT (`UserResolver`) | Managed, SSO (paid) |
-| **License** | MIT | AGPL-3.0 | MIT | AGPL-3.0 (Pro is proprietary) |
+| **License** | AGPL-3.0 core, MIT client libs | AGPL-3.0 | MIT | AGPL-3.0 (Pro is proprietary) |
 | **Python tool** | Sandboxed execution with charts | No | Python-native | No |
 | **Admin console** | Built-in | Basic UI | No | Full admin UI |
 | **MCP server** | Official plugin | No | No | No |
@@ -42,7 +42,7 @@ Atlas is an embeddable text-to-SQL agent. The tools below solve overlapping prob
 - **Embed data querying in your own product** -- Atlas is designed as a component, not a standalone tool. Script tag, React component, or raw API.
 - **Control the AI's reasoning with code** -- The YAML semantic layer lives in your repo, versioned with git, reviewed in PRs.
 - **Support multiple datasources with plugins** -- Connect Postgres, MySQL, BigQuery, Snowflake, ClickHouse, DuckDB, and Salesforce from a single deployment.
-- **Run under MIT** -- No AGPL copyleft concerns for commercial products.
+- **Embed under MIT** -- The client libraries (`@useatlas/sdk`, `@useatlas/react`) are MIT. Embed them in commercial products with no copyleft concerns.
 
 ### Choose WrenAI if you need to...
 
@@ -52,7 +52,7 @@ Atlas is an embeddable text-to-SQL agent. The tools below solve overlapping prob
 ### Choose Vanna if you need to...
 
 - **A Python-native workflow** -- Vanna is a Python package. Train it in a notebook, call it from scripts, integrate with existing Python data pipelines.
-- **MIT license** -- Permissive license with no copyleft restrictions.
+- **Fully MIT license** -- Permissive license with no copyleft restrictions on any component.
 - **Quick prototyping** -- Minimal setup for experimenting with text-to-SQL in a Python environment.
 
 ### Choose Metabase if you need to...

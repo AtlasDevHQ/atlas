@@ -11,7 +11,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 | | Atlas | Metabase |
 |---|---|---|
-| **License** | MIT | AGPL-3.0 (Pro/Enterprise is proprietary) |
+| **License** | AGPL-3.0 core, MIT client libs | AGPL-3.0 (Pro/Enterprise is proprietary) |
 | **Category** | Embeddable text-to-SQL agent | Full BI platform |
 | **Embeddable** | Script tag, React component, API | Embedding SDK + public links (SDK requires Pro/Enterprise) |
 | **AI querying** | Core feature (agent-based) | Add-on feature |
@@ -52,12 +52,12 @@ Both tools use a semantic layer to add business context to raw database schemas,
 
 ## Licensing
 
-Atlas is **MIT** with no proprietary tiers. All features are available in the open-source version.
+Atlas uses a split license: the server core (`@atlas/api`, `@atlas/cli`, `@atlas/web`) is **AGPL-3.0**, while the client libraries (`@useatlas/sdk`, `@useatlas/react`, `@useatlas/types`) and all plugins are **MIT**. All features are available in the open-source version — there are no proprietary tiers.
 
 Metabase's open-source edition is **AGPL-3.0**. Interactive embedding, SSO, row-level permissions, and other enterprise features require the proprietary Pro or Enterprise license.
 
 <Callout type="info">
-  If embedding is important to your use case, note that Metabase requires a paid license for interactive embedding, while Atlas's embedding is available under MIT.
+  Both Atlas and Metabase use AGPL-3.0 for the server. The key difference: Atlas's embeddable client libraries are MIT, so you can integrate them into commercial products without copyleft concerns. Metabase's interactive embedding requires a paid Pro/Enterprise license.
 </Callout>
 
 ## When to Choose Metabase

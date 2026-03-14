@@ -68,7 +68,7 @@ The widget supports programmatic control (`Atlas.open()`, `Atlas.ask("...")`, `A
 | **Deploy anywhere** | Docker, Railway, Vercel, or your own infra | Vendor-hosted | Vendor-hosted |
 | **Semantic layer** | YAML on disk, version-controlled, LLM-enriched | Proprietary metadata | None or limited |
 | **Plugin ecosystem** | 16 plugins across 5 types — extend anything | Closed | Limited |
-| **Open source** | MIT license, full codebase | Proprietary | Varies |
+| **Open source** | AGPL-3.0 core, MIT client libs | Proprietary | Varies |
 | **Multi-database** | PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, BigQuery, Salesforce | Usually one | Usually one |
 
 ## Deploy
@@ -186,4 +186,6 @@ Atlas was inspired by [Abhi Sivasailam](https://x.com/_abhisivasailam)'s work on
 
 ## License
 
-MIT
+The Atlas server and core packages (`@atlas/api`, `@atlas/cli`, `@atlas/web`, `@atlas/mcp`, `@atlas/sandbox-sidecar`) are licensed under [AGPL-3.0](LICENSE). If you modify the server and serve it to users, you must share those modifications.
+
+The client libraries (`@useatlas/sdk`, `@useatlas/react`, `@useatlas/types`, `@useatlas/plugin-sdk`) and all plugins are licensed under [MIT](packages/sdk/LICENSE). Embed them in proprietary apps with no restrictions.

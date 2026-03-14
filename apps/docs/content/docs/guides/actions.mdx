@@ -7,6 +7,13 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 The action framework lets the Atlas agent perform write operations -- sending emails, creating JIRA tickets, and more -- with configurable approval gates. Actions go through a request-approve-execute lifecycle that gives humans control over what the agent does.
 
+<Callout title="Prerequisites">
+- Authentication enabled (any mode except `none`)
+- Internal database (`DATABASE_URL`) for action persistence and audit log
+- For email actions: `RESEND_API_KEY`
+- For JIRA actions: `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`
+</Callout>
+
 ## Enable
 
 ```bash

@@ -394,3 +394,27 @@ This is especially useful when:
 <Callout type="info">
 `atlas diff` requires a live database connection (`ATLAS_DATASOURCE_URL`). For offline validation of YAML syntax and cross-references, use `atlas validate` instead — it works without any network access.
 </Callout>
+
+---
+
+## Troubleshooting
+
+### `atlas diff` shows no changes but agent queries fail
+
+**Cause:** The entity YAML has the correct columns but the `type` field doesn't match the database column type (e.g., YAML says `integer` but the column is `numeric`). If `atlas diff` was run against a different database than the agent uses, the mismatch may not appear.
+
+**Fix:** Run `atlas diff` against the same database the agent queries (`ATLAS_DATASOURCE_URL`). Check for type mismatches in the diff output and update the YAML accordingly.
+
+### `atlas init` overwrites my custom descriptions
+
+**Cause:** `atlas init` deletes all existing YAML files before regenerating. Custom descriptions, query patterns, measures, and virtual dimensions are lost.
+
+**Fix:** Back up your semantic layer before regenerating: `cp -r semantic/ semantic-backup/`. After regeneration, manually merge back your customizations. For small changes, prefer manual YAML edits over full regeneration. See [Preserving customizations](#preserving-customizations).
+
+### `atlas validate` passes but queries still fail
+
+**Cause:** `atlas validate` checks YAML syntax and cross-references offline — it doesn't verify that tables and columns actually exist in the database.
+
+**Fix:** Run `atlas diff` (requires a database connection) to verify that your YAML matches the live schema. `validate` catches structural issues; `diff` catches drift.
+
+For more, see [Troubleshooting](/guides/troubleshooting).

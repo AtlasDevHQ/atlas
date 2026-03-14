@@ -7,6 +7,12 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 Atlas includes built-in support for OpenTelemetry distributed tracing and structured JSON logging via Pino. Both are zero-overhead when disabled.
 
+<Callout title="Prerequisites">
+- Atlas server running (`bun run dev`)
+- For tracing: an OpenTelemetry-compatible collector (Jaeger, Grafana Tempo, Datadog, etc.)
+- No additional packages required — tracing and structured logging are built-in
+</Callout>
+
 ## OpenTelemetry Tracing
 
 Atlas uses the `@opentelemetry/api` package to create spans around key operations. When the OpenTelemetry SDK is not initialized, the API returns no-op tracers with zero runtime overhead.
@@ -160,6 +166,30 @@ Atlas creates child loggers per component using `createLogger("component-name")`
 - `scheduler` -- Scheduled task execution
 - `conversations` -- Conversation persistence
 - `actions` -- Action approval and execution
+
+---
+
+## Troubleshooting
+
+### No traces appearing in the collector
+
+**Cause:** `OTEL_EXPORTER_OTLP_ENDPOINT` is not set, or the collector is unreachable from the Atlas server.
+
+**Fix:** Verify the environment variable is set and the endpoint is reachable: `curl http://localhost:4318/v1/traces`. Check that the collector is running and accepting OTLP HTTP connections on the configured port.
+
+### Logs are JSON in development
+
+**Cause:** `NODE_ENV` is set to `production` (or a non-development value). Pino uses JSON output in production and pretty-printed output in development.
+
+**Fix:** Ensure `NODE_ENV` is unset or set to `development` for local work. In production, pipe JSON logs through `pino-pretty` for readable output: `bun run dev:api | bun x pino-pretty`.
+
+### Missing `requestId` or `userId` in log entries
+
+**Cause:** The log was emitted outside of a request context (e.g., during startup or in a background task like the scheduler).
+
+**Fix:** This is expected. Context fields (`requestId`, `userId`) are only present for logs emitted inside an HTTP request handler. Startup and scheduler logs include `component` but not request-scoped fields.
+
+For more, see [Troubleshooting](/guides/troubleshooting).
 
 ---
 

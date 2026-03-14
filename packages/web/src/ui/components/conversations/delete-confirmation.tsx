@@ -17,14 +17,14 @@ export function DeleteConfirmation({
       <button
         onClick={onCancel}
         disabled={deleting}
-        className="rounded px-2 py-0.5 text-zinc-500 transition-colors hover:text-zinc-800 disabled:opacity-50 dark:text-zinc-400 dark:hover:text-zinc-200"
+        className="rounded px-2 py-0.5 text-zinc-500 transition-colors hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-50 dark:text-zinc-400 dark:hover:text-zinc-200"
       >
         Cancel
       </button>
       <button
         onClick={onConfirm}
         disabled={deleting}
-        className="inline-flex items-center gap-1 rounded bg-red-600 px-2 py-0.5 text-white transition-colors hover:bg-red-500 disabled:opacity-50"
+        className="inline-flex items-center gap-1 rounded bg-red-600 px-2 py-0.5 text-white transition-colors hover:bg-red-500 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-red-500/50 disabled:opacity-50"
       >
         {deleting && <Loader2 className="size-3 animate-spin" />}
         Delete

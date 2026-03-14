@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Star } from "lucide-react";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Badge } from "@/components/ui/badge";
@@ -32,6 +32,17 @@ export function ConversationSidebar({
   onMobileClose: () => void;
 }) {
   const [filter, setFilter] = useState<SidebarFilter>("all");
+
+  // Close mobile sidebar on Escape
+  useEffect(() => {
+    if (!mobileOpen) return;
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") onMobileClose();
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [mobileOpen, onMobileClose]);
+
   const starredConversations = conversations.filter((c) => c.starred);
   const filteredConversations = filter === "saved" ? starredConversations : conversations;
 
@@ -41,7 +52,7 @@ export function ConversationSidebar({
         <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">History</span>
         <button
           onClick={onNewChat}
-          className="rounded-lg border border-zinc-200 px-3 py-1.5 text-xs font-medium text-zinc-600 transition-colors hover:border-zinc-400 hover:text-zinc-900 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
+          className="rounded-lg border border-zinc-200 px-3 py-1.5 text-xs font-medium text-zinc-600 transition-colors hover:border-zinc-400 hover:text-zinc-900 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
         >
           + New
         </button>

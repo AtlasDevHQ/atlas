@@ -82,8 +82,17 @@ function DataTableInner({
             {columns.map((col, i) => (
               <th
                 key={i}
+                tabIndex={0}
+                role="columnheader"
+                aria-sort={sortCol === i ? (sortDir === "asc" ? "ascending" : "descending") : "none"}
                 onClick={() => handleSort(i)}
-                className="group cursor-pointer select-none whitespace-nowrap px-3 py-2 text-left font-medium text-zinc-500 transition-colors hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    handleSort(i);
+                  }
+                }}
+                className="group cursor-pointer select-none whitespace-nowrap px-3 py-2 text-left font-medium text-zinc-500 transition-colors hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 dark:text-zinc-400 dark:hover:text-zinc-200"
               >
                 {col}
                 {sortCol === i

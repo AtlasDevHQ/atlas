@@ -247,7 +247,7 @@ export function ActionApprovalCard({ part }: { part: unknown }) {
             <button
               onClick={handleApprove}
               disabled={isSubmitting}
-              className="inline-flex items-center gap-1.5 rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-40"
+              className="inline-flex items-center gap-1.5 rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-500 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-blue-500/50 disabled:opacity-40"
             >
               {isSubmitting && cardState.action === "approve" && (
                 <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-white/30 border-t-white" />
@@ -259,7 +259,7 @@ export function ActionApprovalCard({ part }: { part: unknown }) {
               <button
                 onClick={() => setShowDenyInput(true)}
                 disabled={isSubmitting}
-                className="rounded border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600 transition-colors hover:border-zinc-400 hover:text-zinc-800 disabled:opacity-40 dark:border-zinc-600 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
+                className="rounded border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600 transition-colors hover:border-zinc-400 hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-40 dark:border-zinc-600 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
               >
                 Deny
               </button>
@@ -269,13 +269,13 @@ export function ActionApprovalCard({ part }: { part: unknown }) {
                   value={denyReason}
                   onChange={(e) => setDenyReason(e.target.value)}
                   placeholder="Reason (optional)"
-                  className="flex-1 rounded border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-900 placeholder-zinc-400 outline-none focus:border-red-400 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:placeholder-zinc-600"
+                  className="flex-1 rounded border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-900 placeholder-zinc-400 outline-none focus-visible:border-red-400 focus-visible:ring-[3px] focus-visible:ring-red-400/30 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:placeholder-zinc-600"
                   disabled={isSubmitting}
                 />
                 <button
                   onClick={handleDeny}
                   disabled={isSubmitting}
-                  className="inline-flex items-center gap-1.5 rounded bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-red-500 disabled:opacity-40"
+                  className="inline-flex items-center gap-1.5 rounded bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-red-500 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-red-500/50 disabled:opacity-40"
                 >
                   {isSubmitting && cardState.action === "deny" && (
                     <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-white/30 border-t-white" />
@@ -288,7 +288,7 @@ export function ActionApprovalCard({ part }: { part: unknown }) {
                     setDenyReason("");
                   }}
                   disabled={isSubmitting}
-                  className="text-xs text-zinc-400 hover:text-zinc-600 disabled:opacity-40 dark:hover:text-zinc-300"
+                  className="rounded text-xs text-zinc-400 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-40 dark:hover:text-zinc-300"
                 >
                   Cancel
                 </button>

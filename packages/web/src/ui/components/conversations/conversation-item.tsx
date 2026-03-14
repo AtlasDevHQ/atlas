@@ -77,7 +77,7 @@ export function ConversationItem({
           onSelect();
         }
       }}
-      className={`group flex w-full cursor-pointer items-center gap-2 rounded-lg px-3 py-2.5 text-left text-sm transition-colors ${
+      className={`group flex w-full cursor-pointer items-center gap-2 rounded-lg px-3 py-2.5 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 ${
         isActive
           ? "bg-blue-50 text-blue-700 dark:bg-blue-600/10 dark:text-blue-400"
           : "text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"

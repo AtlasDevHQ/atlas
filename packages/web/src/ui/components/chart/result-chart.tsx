@@ -461,7 +461,8 @@ function ChartTypeSelector({
         <button
           key={rec.type}
           onClick={() => onChange(rec.type)}
-          className={`rounded px-2 py-0.5 text-xs font-medium transition-colors ${
+          aria-pressed={active === rec.type}
+          className={`rounded px-2 py-0.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 ${
             active === rec.type
               ? "bg-blue-100 text-blue-700 dark:bg-blue-600/20 dark:text-blue-400"
               : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200"

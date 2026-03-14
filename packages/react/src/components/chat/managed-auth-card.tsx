@@ -61,7 +61,7 @@ export function ManagedAuthCard() {
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="Name (optional)"
-              className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 placeholder-zinc-400 outline-none focus:border-blue-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:placeholder-zinc-600"
+              className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 placeholder-zinc-400 outline-none focus-visible:border-blue-500 focus-visible:ring-[3px] focus-visible:ring-blue-500/30 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:placeholder-zinc-600"
             />
           )}
           <input
@@ -70,7 +70,7 @@ export function ManagedAuthCard() {
             onChange={(e) => setEmail(e.target.value)}
             placeholder="Email"
             required
-            className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 placeholder-zinc-400 outline-none focus:border-blue-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:placeholder-zinc-600"
+            className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 placeholder-zinc-400 outline-none focus-visible:border-blue-500 focus-visible:ring-[3px] focus-visible:ring-blue-500/30 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:placeholder-zinc-600"
           />
           <input
             type="password"
@@ -79,7 +79,7 @@ export function ManagedAuthCard() {
             placeholder="Password"
             required
             minLength={8}
-            className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 placeholder-zinc-400 outline-none focus:border-blue-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:placeholder-zinc-600"
+            className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 placeholder-zinc-400 outline-none focus-visible:border-blue-500 focus-visible:ring-[3px] focus-visible:ring-blue-500/30 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:placeholder-zinc-600"
           />
           {error && (
             <p className="text-xs text-red-600 dark:text-red-400">{error}</p>
@@ -87,7 +87,7 @@ export function ManagedAuthCard() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-40"
+            className="w-full rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-500 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-blue-500/50 disabled:opacity-40"
           >
             {loading ? "..." : view === "login" ? "Sign in" : "Create account"}
           </button>
@@ -97,14 +97,14 @@ export function ManagedAuthCard() {
           {view === "login" ? (
             <>
               No account?{" "}
-              <button onClick={() => { setView("signup"); setError(""); }} className="text-blue-600 hover:underline dark:text-blue-400">
+              <button onClick={() => { setView("signup"); setError(""); }} className="rounded text-blue-600 hover:underline focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-blue-500/50 dark:text-blue-400">
                 Create one
               </button>
             </>
           ) : (
             <>
               Already have an account?{" "}
-              <button onClick={() => { setView("login"); setError(""); }} className="text-blue-600 hover:underline dark:text-blue-400">
+              <button onClick={() => { setView("login"); setError(""); }} className="rounded text-blue-600 hover:underline focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-blue-500/50 dark:text-blue-400">
                 Sign in
               </button>
             </>

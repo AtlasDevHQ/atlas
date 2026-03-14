@@ -24,9 +24,9 @@ Transient failures where retrying the same request may succeed. Use exponential 
 | Code | HTTP Status | Description | Common Cause | Fix |
 |------|-------------|-------------|--------------|-----|
 | `rate_limited` | 429 | Too many requests | Client exceeding the per-user rate limit | Wait for `retryAfterSeconds` then retry. Reduce request frequency |
-| `provider_rate_limit` | 429 | AI provider rate limited | Upstream LLM provider (Anthropic, OpenAI, etc.) throttling requests | Wait and retry with backoff. Consider upgrading your provider plan |
+| `provider_rate_limit` | 503 | AI provider rate limited | Upstream LLM provider (Anthropic, OpenAI, etc.) throttling requests | Wait and retry with backoff. Consider upgrading your provider plan |
 | `provider_timeout` | 504 | AI provider timed out | LLM took too long to respond, or query exceeded `ATLAS_QUERY_TIMEOUT` | Retry with a simpler question. Increase `ATLAS_QUERY_TIMEOUT` if queries are complex |
-| `provider_unreachable` | 502 | Cannot reach the AI provider | Network issue between Atlas and the LLM provider, or provider outage | Check provider status page. Retry after a short delay |
+| `provider_unreachable` | 503 | Cannot reach the AI provider | Network issue between Atlas and the LLM provider, or provider outage | Check provider status page. Retry after a short delay |
 | `provider_error` | 502 | AI provider returned an error | Unexpected error from the LLM provider (500, malformed response, etc.) | Retry after a short delay. Check provider status if persistent |
 | `internal_error` | 500 | Server error | Unhandled exception, database connection failure, or pool exhaustion | Retry after a short delay. Check server logs using the `requestId` |
 
@@ -44,7 +44,7 @@ Retrying these will not help — the request or configuration must be changed.
 | `validation_error` | 422 | Request validation failed | Request body doesn't match the expected schema (wrong types, missing fields) | Check the `details` field for specific field errors |
 | `not_found` | 404 | Resource not found | Conversation, entity, or other resource doesn't exist or isn't owned by the caller | Verify the resource ID. The resource may have been deleted |
 | `provider_model_not_found` | 400 | AI model not found | The model specified in `ATLAS_MODEL` doesn't exist at the configured provider | Check `ATLAS_MODEL` and `ATLAS_PROVIDER` values. See [Environment Variables](/reference/environment-variables) |
-| `provider_auth_error` | 502 | AI provider authentication failed | Invalid or expired LLM provider API key (e.g., `ANTHROPIC_API_KEY`) | Verify your provider API key. Regenerate it if expired |
+| `provider_auth_error` | 503 | AI provider authentication failed | Invalid or expired LLM provider API key (e.g., `ANTHROPIC_API_KEY`) | Verify your provider API key. Regenerate it if expired |
 
 ---
 
@@ -68,14 +68,14 @@ Client error codes appear in the `clientCode` field of `ChatErrorInfo`, while se
 
 ## SDK Error Codes
 
-The `@useatlas/sdk` adds three SDK-specific codes to the `AtlasErrorCode` type. These are never returned by the server — they represent client-side conditions detected by the SDK itself.
+The `@useatlas/sdk` includes additional codes in the `AtlasErrorCode` type beyond `ChatErrorCode`. Three are client-side codes detected by the SDK itself (never returned by the server). One (`not_available`) is returned by server admin and conversation endpoints.
 
-| Code | Description | Retryable |
-|------|-------------|-----------|
-| `network_error` | `fetch()` threw an error (connection refused, DNS failure, stream interrupted) | Yes |
-| `invalid_response` | Server returned a 2xx status but the body wasn't valid JSON | No |
-| `unknown_error` | Server returned an error response with an unrecognized error code | No |
-| `not_available` | Feature not available (e.g., conversation history without `DATABASE_URL`) | No |
+| Code | Description | Origin | Retryable |
+|------|-------------|--------|-----------|
+| `network_error` | `fetch()` threw an error (connection refused, DNS failure, stream interrupted) | SDK client-side | Yes |
+| `invalid_response` | Server returned a 2xx status but the body wasn't valid JSON | SDK client-side | No |
+| `unknown_error` | Server returned an error response with an unrecognized error code | SDK client-side | No |
+| `not_available` | Feature not available (e.g., conversation history without `DATABASE_URL`) | Server (admin/CRUD routes) | No |
 
 ---
 
@@ -128,7 +128,7 @@ If the server response isn't valid JSON, or the `error` field isn't a known code
 Use the `retryable` flag on `AtlasError` to build generic retry logic without hard-coding error codes:
 
 ```typescript
-import { AtlasError, createAtlasClient } from "@useatlas/sdk";
+import { AtlasError, createAtlasClient, type QueryResponse } from "@useatlas/sdk";
 
 const atlas = createAtlasClient({
   baseUrl: "https://api.example.com",
@@ -142,7 +142,7 @@ function sleep(ms: number): Promise<void> {
 async function queryWithRetry(
   question: string,
   maxRetries = 3,
-): Promise<Awaited<ReturnType<typeof atlas.query>>> {
+): Promise<QueryResponse> {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       return await atlas.query(question);

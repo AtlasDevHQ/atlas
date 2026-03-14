@@ -3,11 +3,13 @@ title: Sharing Conversations
 description: Share Atlas conversations via public or org-scoped links with configurable expiry.
 ---
 
+import { Callout } from "fumadocs-ui/components/callout";
+
 Atlas lets you share conversations via links with configurable expiry and access controls. Public shares are visible to anyone with the link. Organization-scoped shares require authentication. Shared conversations include rich OpenGraph metadata for social previews.
 
-## Prerequisites
-
-Conversation sharing requires an internal database (`DATABASE_URL`). Without it, conversation history and sharing are unavailable.
+<Callout title="Prerequisites">
+- Internal database (`DATABASE_URL`) — conversation history and sharing are unavailable without it
+</Callout>
 
 ## Creating a Shared Link
 
@@ -191,3 +193,27 @@ Returns the conversation with messages. Public shares require no authentication.
 - **Revocation is instant** — unsharing clears the token from the database. Cached responses (Next.js 60s revalidate) will expire shortly after.
 - **No write access** — shared conversation views are completely read-only. Viewers cannot modify or interact with the conversation.
 - **Rate limited** — the public endpoint has a per-IP rate limiter (60 requests per minute, separate from the authenticated rate limiter) to prevent scraping.
+
+---
+
+## Troubleshooting
+
+### Share button doesn't appear
+
+**Cause:** Conversation sharing requires an internal database (`DATABASE_URL`). Without it, conversation history and sharing are unavailable.
+
+**Fix:** Set `DATABASE_URL` to a PostgreSQL connection string and restart the server. The share button appears in the conversation header once the internal database is connected.
+
+### Shared link returns 410 Gone
+
+**Cause:** The share link has expired. Links have a configurable expiry (1 hour to 30 days, or never).
+
+**Fix:** Create a new share link with a longer expiry. When sharing via the API, set `expiresIn` to `"never"` for permanent links, or `"30d"` for longer-lived ones.
+
+### Social preview shows generic title
+
+**Cause:** The conversation has no user messages, or the first assistant response contains only tool calls (no text). OpenGraph metadata falls back to generic values in these cases.
+
+**Fix:** Ensure the conversation has at least one user message before sharing. The OG title is derived from the first user message (truncated to 60 characters).
+
+For more, see [Troubleshooting](/guides/troubleshooting).

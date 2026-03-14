@@ -8,11 +8,11 @@ import { Tabs, Tab } from "fumadocs-ui/components/tabs";
 
 When your data lives in more than one database — a PostgreSQL application DB, a Snowflake warehouse, a ClickHouse analytics cluster — Atlas can query all of them from a single deployment. This guide explains how the agent selects which datasource to query and how you control that routing.
 
-## Prerequisites
-
+<Callout title="Prerequisites">
 - Atlas installed (`bun install`)
 - Two or more datasources you want to connect (see [Connect Your Data](/getting-started/connect-your-data) for per-database setup)
 - `atlas.config.ts` — multi-datasource requires the config file (env vars only support a single datasource)
+</Callout>
 
 ---
 
@@ -405,3 +405,5 @@ datasources: {
   },
 },
 ```
+
+For more, see [Troubleshooting](/guides/troubleshooting).

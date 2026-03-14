@@ -7,6 +7,12 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 Atlas can execute Python code in a sandboxed environment for data analysis, statistical computation, and chart generation. The agent writes Python after running SQL queries to produce visualizations and deeper analysis.
 
+<Callout title="Prerequisites">
+- Atlas server running (`bun run dev`)
+- A sandbox backend configured: `ATLAS_SANDBOX_URL` (sidecar), nsjail, or Vercel sandbox
+- Python will not work without an isolated sandbox — there is no `just-bash` fallback
+</Callout>
+
 ## Enable
 
 ```bash
@@ -91,3 +97,27 @@ The sandbox itself is configured via the standard sandbox variables. See [Enviro
 5. Output (text, tables, or charts) is returned to the agent and displayed in the chat UI
 
 The agent decides when to use Python based on the question -- statistical analysis, trend detection, and visualization requests typically trigger Python execution.
+
+---
+
+## Troubleshooting
+
+### "Python execution requires a sandbox"
+
+**Cause:** No sandbox backend is configured. Unlike the `explore` tool, Python has no `just-bash` fallback — it requires an isolated sandbox.
+
+**Fix:** Set `ATLAS_SANDBOX_URL` to point to the sidecar (`bun run db:up` starts one), or configure nsjail or Vercel sandbox. See [Sandbox Backends](#sandbox-backends) above.
+
+### Chart doesn't render in the chat UI
+
+**Cause:** The Python code generated a chart but used an unsupported output method, or the sandbox timed out before the chart was written.
+
+**Fix:** Ensure matplotlib charts use `plt.savefig(chart_path(0))` — the sandbox provides a `chart_path()` helper that returns the correct output path. Check `ATLAS_PYTHON_TIMEOUT` if the script is compute-heavy. Charts rendered in Recharts format appear as interactive components; matplotlib charts appear as static images.
+
+### "Blocked import" error
+
+**Cause:** The Python code tried to import a module on the blocklist (`subprocess`, `os`, `socket`, `requests`, etc.). This is a defense-in-depth guard — the sandbox would block these anyway.
+
+**Fix:** Rewrite the code to avoid blocked modules. For data analysis, use `pandas`, `numpy`, `matplotlib`, and `plotly` — these are available and sufficient for most tasks.
+
+For more, see [Troubleshooting](/guides/troubleshooting).

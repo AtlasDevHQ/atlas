@@ -7,6 +7,13 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 Atlas integrates with Slack via a slash command (`/atlas`) and threaded follow-ups. Ask questions in any channel, get answers with formatted data tables, and continue the conversation in a thread.
 
+<Callout title="Prerequisites">
+- Atlas API server running and accessible over HTTPS (required by Slack)
+- A [Slack workspace](https://api.slack.com/apps) with permissions to create apps
+- `SLACK_SIGNING_SECRET` from your Slack app's Basic Information page
+- For multi-workspace OAuth: internal database (`DATABASE_URL`)
+</Callout>
+
 ## Setup Modes
 
 | Mode | Env Vars | Best For |

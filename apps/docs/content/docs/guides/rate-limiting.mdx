@@ -8,6 +8,12 @@ import { Tabs, Tab } from "fumadocs-ui/components/tabs";
 
 Atlas provides two layers of rate limiting: **per-user request limits** (RPM) and **per-datasource query limits** (QPM + concurrency). This guide covers how to configure both, handle 429 responses, and implement retry logic in your client code.
 
+<Callout title="Prerequisites">
+- Atlas server running (`bun run dev`)
+- An authenticated client or API key recommended for testing (unauthenticated requests are rate-limited per IP)
+- For per-datasource limits: an `atlas.config.ts` configuration file
+</Callout>
+
 ---
 
 ## Server-Side Configuration
@@ -274,6 +280,8 @@ These are independent layers:
 | Per-datasource concurrency | How many SQL queries run simultaneously against a database | `atlas.config.ts` `rateLimit.concurrency` |
 
 A request can pass the per-user check but still fail at the per-datasource layer if the database is under heavy load.
+
+For more, see [Troubleshooting](/guides/troubleshooting).
 
 ---
 

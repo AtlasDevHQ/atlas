@@ -7,13 +7,10 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 The admin console is a built-in web UI for managing your Atlas deployment. Access it at `/admin` in the Atlas web app.
 
-## Prerequisites
-
+<Callout title="Prerequisites">
 - [Managed auth](/deployment/authentication#managed-auth) enabled (or auth mode `none` for local dev)
 - A user with the `admin` role
-
-<Callout type="info">
-When auth mode is `none` (local development), all users have implicit admin access.
+- When auth mode is `none` (local development), all users have implicit admin access
 </Callout>
 
 ---
@@ -325,3 +322,27 @@ All admin endpoints are at `/api/v1/admin/` and require the `admin` role. See th
 | `POST` | `/users/invite` | Invite user by email |
 | `GET` | `/users/invitations` | List invitations |
 | `DELETE` | `/users/invitations/:id` | Revoke invitation |
+
+---
+
+## Troubleshooting
+
+### Admin page shows "not enabled" message
+
+**Cause:** The feature requires a dependency that isn't configured — Audit Log and Token Usage need `DATABASE_URL`, Actions needs `ATLAS_ACTIONS_ENABLED=true`, Scheduled Tasks needs `ATLAS_SCHEDULER_ENABLED=true`.
+
+**Fix:** Set the required environment variable and restart the server. The feature gate message on each page tells you exactly what's missing.
+
+### Cannot access `/admin` — 403 or redirect to login
+
+**Cause:** Your user account doesn't have the `admin` role, or authentication isn't configured.
+
+**Fix:** In managed auth, have an existing admin promote your account via Admin > Users. In BYOT mode, ensure your JWT includes the correct role claim. In `none` auth mode, all users have implicit admin access.
+
+### Settings changes don't take effect
+
+**Cause:** Some settings (Security, Agent) require a server restart, while others (Query Limits, Rate Limiting) apply immediately. The settings page shows a **Live** or **Requires restart** badge on each setting.
+
+**Fix:** Check the badge next to the setting you changed. If it says **Requires restart**, restart the Atlas server for the change to apply.
+
+For more, see [Troubleshooting](/guides/troubleshooting).

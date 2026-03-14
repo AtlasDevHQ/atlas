@@ -3,7 +3,16 @@ title: MCP Server
 description: Use Atlas as a Model Context Protocol server in Claude Desktop, Cursor, and other MCP clients.
 ---
 
+import { Callout } from "fumadocs-ui/components/callout";
+
 Atlas exposes a [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that gives any MCP-compatible client access to your semantic layer and validated SQL execution.
+
+<Callout title="Prerequisites">
+- Atlas project set up (`bun install`)
+- `ATLAS_DATASOURCE_URL` pointing to your analytics database
+- An MCP-compatible client (Claude Desktop, Cursor, or any stdio/SSE client)
+- LLM provider API key configured in the **client** (the MCP server itself does not call an LLM)
+</Callout>
 
 ## Quick Start
 

@@ -13,6 +13,13 @@ Atlas provides a drop-in chat widget that adds a floating chat bubble to any web
 Not sure if the widget is the right fit? See [Choosing an Integration](/guides/choosing-an-integration) to compare the widget, React package, SDK, and REST API.
 </Callout>
 
+<Callout title="Prerequisites">
+- Atlas API server running and accessible over the network
+- For React integration: `@useatlas/react` installed in your project
+- For script tag: your Atlas API URL (no build tooling required)
+- An API key or auth token for authentication (optional in `none` auth mode)
+</Callout>
+
 ## Quick Start
 
 Add a single `<script>` tag before `</body>`:
@@ -1594,3 +1601,27 @@ Key widget elements expose `data-*` attributes for targeted styling:
 **Logo URLs:** Custom logos must use HTTPS. Non-HTTPS URLs are silently rejected to prevent mixed content and `javascript:` / `data:` URI attacks.
 
 **Accent Colors:** The `accent` parameter is validated as a 3- or 6-digit hex string. Invalid values are silently ignored.
+
+---
+
+## Troubleshooting
+
+### Widget loads but shows "Unable to connect to Atlas"
+
+**Cause:** The `data-api-url` attribute (script tag) or `apiUrl` query parameter (iframe) doesn't match your running Atlas API server, or CORS headers are being stripped by a reverse proxy.
+
+**Fix:** Verify the URL is correct and reachable from the browser. Check the browser console for CORS errors. See [CORS Errors](#cors-errors) above for proxy configuration.
+
+### Widget appears but chat input is unresponsive
+
+**Cause:** The widget JavaScript bundle failed to load or a Content Security Policy is blocking scripts from the Atlas API domain.
+
+**Fix:** Open browser DevTools, check the Console and Network tabs for blocked requests. Add the Atlas API domain to your CSP `script-src` and `connect-src` directives. See [Content Security Policy (CSP)](#content-security-policy-csp) above.
+
+### Widget doesn't match your site's theme
+
+**Cause:** The widget defaults to `light` theme (script tag) or `system` theme (iframe). It doesn't automatically inherit your site's CSS.
+
+**Fix:** Set `data-theme="dark"` on the script tag, or use `?theme=dark` on the iframe URL. For dynamic theming, use `Atlas.setTheme()` or the `theme` postMessage. See [Theming](#theming) for details.
+
+For more, see [Troubleshooting](/guides/troubleshooting).

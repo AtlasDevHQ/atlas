@@ -293,6 +293,84 @@ describe("conversations.delete", () => {
 });
 
 // ---------------------------------------------------------------------------
+// listTables()
+// ---------------------------------------------------------------------------
+
+describe("listTables", () => {
+  const tablesResponse = {
+    tables: [
+      {
+        name: "users",
+        description: "Application users",
+        columns: [
+          { name: "id", type: "number", description: "Primary key" },
+          { name: "email", type: "string", description: "User email" },
+        ],
+      },
+      {
+        name: "orders",
+        description: "Customer orders",
+        columns: [
+          { name: "id", type: "number", description: "Order ID" },
+          { name: "created_at", type: "timestamp", description: "Order date" },
+        ],
+      },
+    ],
+  };
+
+  test("calls GET /api/v1/tables", async () => {
+    installFetchMock(jsonResponse(tablesResponse));
+    const client = createAtlasClient({ baseUrl: "http://localhost:3001", apiKey: "k" });
+    const result = await client.listTables();
+
+    expect(lastRequest!.method).toBe("GET");
+    expect(new URL(lastRequest!.url).pathname).toBe("/api/v1/tables");
+    expect(result.tables).toHaveLength(2);
+    expect(result.tables[0].name).toBe("users");
+    expect(result.tables[0].columns).toHaveLength(2);
+    expect(result.tables[0].columns[0].name).toBe("id");
+  });
+
+  test("returns empty tables array when no entities exist", async () => {
+    installFetchMock(jsonResponse({ tables: [] }));
+    const client = createAtlasClient({ baseUrl: "http://localhost:3001", apiKey: "k" });
+    const result = await client.listTables();
+
+    expect(result.tables).toEqual([]);
+  });
+
+  test("throws AtlasError on auth failure", async () => {
+    installFetchMock(jsonResponse({ error: "auth_error", message: "Unauthorized" }, 401));
+    const client = createAtlasClient({ baseUrl: "http://localhost:3001", apiKey: "bad" });
+
+    try {
+      await client.listTables();
+      expect(true).toBe(false);
+    } catch (err) {
+      expect(err).toBeInstanceOf(AtlasError);
+      const e = err as AtlasError;
+      expect(e.code).toBe("auth_error");
+      expect(e.status).toBe(401);
+    }
+  });
+
+  test("throws AtlasError on server error", async () => {
+    installFetchMock(jsonResponse({ error: "internal_error", message: "Failed to load table list." }, 500));
+    const client = createAtlasClient({ baseUrl: "http://localhost:3001", apiKey: "k" });
+
+    try {
+      await client.listTables();
+      expect(true).toBe(false);
+    } catch (err) {
+      expect(err).toBeInstanceOf(AtlasError);
+      const e = err as AtlasError;
+      expect(e.code).toBe("internal_error");
+      expect(e.status).toBe(500);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // chat()
 // ---------------------------------------------------------------------------
 

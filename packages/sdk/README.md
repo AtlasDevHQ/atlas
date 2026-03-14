@@ -46,6 +46,22 @@ const atlas = createAtlasClient({ baseUrl: "...", bearerToken: "eyJ..." });
 | `atlas.streamQuery(question, opts?)` | Stream a query as an async iterator of typed `StreamEvent`s |
 | `atlas.chat(messages, opts?)` | Start a streaming chat session. Returns a raw `Response` with SSE body (AI SDK UI Message Stream Protocol) |
 
+### Schema
+
+| Method | Description |
+|--------|-------------|
+| `atlas.listTables()` | List all queryable tables with column details. Returns `{ tables: TableInfo[] }` |
+
+```typescript
+const { tables } = await atlas.listTables();
+for (const table of tables) {
+  console.log(`${table.name}: ${table.description}`);
+  for (const col of table.columns) {
+    console.log(`  ${col.name} (${col.type}) — ${col.description}`);
+  }
+}
+```
+
 ### Conversations
 
 | Method | Description |

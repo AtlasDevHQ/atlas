@@ -29,8 +29,11 @@ tables.get("/", async (c) => {
   return withRequestContext({ requestId, user: authResult.user }, () => {
     const root = getSemanticRoot();
     try {
-      const tableList = discoverTables(root);
-      return c.json({ tables: tableList });
+      const result = discoverTables(root);
+      return c.json({
+        tables: result.tables,
+        ...(result.warnings.length > 0 && { warnings: result.warnings }),
+      });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), root, requestId }, "Failed to discover tables");
       return c.json({ error: "internal_error", message: "Failed to load table list." }, 500);

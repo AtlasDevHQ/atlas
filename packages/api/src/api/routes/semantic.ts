@@ -40,11 +40,14 @@ semantic.get("/entities", async (c) => {
   return withRequestContext({ requestId, user: authResult.user }, () => {
     const root = getSemanticRoot();
     try {
-      const all = discoverEntities(root);
-      const entities = all.map(({ table, description, columnCount, joinCount, type }) => ({
+      const result = discoverEntities(root);
+      const entities = result.entities.map(({ table, description, columnCount, joinCount, type }) => ({
         table, description, columnCount, joinCount, type,
       }));
-      return c.json({ entities });
+      return c.json({
+        entities,
+        ...(result.warnings.length > 0 && { warnings: result.warnings }),
+      });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), root }, "Failed to discover entities");
       return c.json({ error: "internal_error", message: "Failed to load entity list." }, 500);

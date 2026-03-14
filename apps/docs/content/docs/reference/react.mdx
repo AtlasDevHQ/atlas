@@ -688,7 +688,18 @@ interface ChatErrorInfo {
   detail?: string;             // Optional secondary context
   retryAfterSeconds?: number;  // Seconds until retry (rate_limited only, clamped 0–300)
   code?: ChatErrorCode;        // Server error code, if parseable
+  clientCode?: ClientErrorCode; // Client-side classification (network/offline/HTTP status)
+  retryable?: boolean;         // true = transient, false = permanent, undefined = unknown
+  requestId?: string;          // Server-assigned request ID (UUID) for log correlation
 }
+
+// ClientErrorCode — client-side error classification
+type ClientErrorCode =
+  | "api_unreachable"     // fetch failed, ECONNREFUSED, ENOTFOUND
+  | "auth_failure"        // HTTP 401
+  | "rate_limited_http"   // HTTP 429
+  | "server_error"        // HTTP 5xx
+  | "offline";            // navigator.onLine === false
 ```
 
 ### Hook Option & Return Types

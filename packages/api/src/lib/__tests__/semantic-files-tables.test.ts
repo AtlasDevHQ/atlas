@@ -100,14 +100,16 @@ describe("discoverTables", () => {
     expect(tables[0].columns).toEqual([]);
   });
 
-  it("skips entities with missing table field", () => {
+  it("skips entities with missing table field and emits warning", () => {
     const root = makeRoot("no-table");
     writeEntity(root, "bad", "description: no table field\ndimensions:\n  id:\n    type: number\n");
     writeEntity(root, "good", "table: good_table\ndescription: Valid\n");
 
-    const { tables } = discoverTables(root);
+    const { tables, warnings } = discoverTables(root);
     expect(tables).toHaveLength(1);
     expect(tables[0].table).toBe("good_table");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/missing required 'table' field:.*bad\.yml/);
   });
 
   it("skips malformed YAML files without crashing", () => {

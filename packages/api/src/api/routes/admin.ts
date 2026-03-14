@@ -202,7 +202,7 @@ admin.get("/overview", async (c) => {
 
   return withRequestContext({ requestId, user: authResult.user }, () => {
     const root = getSemanticRoot();
-    const { entities } = discoverEntities(root);
+    const { entities, warnings } = discoverEntities(root);
     const metrics = discoverMetrics(root);
     const glossary = loadGlossary(root);
     const connList = connections.describe();
@@ -231,6 +231,7 @@ admin.get("/overview", async (c) => {
         types: p.types,
         status: p.status,
       })),
+      ...(warnings.length > 0 && { warnings }),
     });
   });
 });
@@ -436,7 +437,7 @@ admin.get("/semantic/stats", async (c) => {
 
   return withRequestContext({ requestId, user: authResult.user }, () => {
     const root = getSemanticRoot();
-    const { entities } = discoverEntities(root);
+    const { entities, warnings } = discoverEntities(root);
 
     const totalColumns = entities.reduce((sum, e) => sum + e.columnCount, 0);
     const totalJoins = entities.reduce((sum, e) => sum + e.joinCount, 0);
@@ -456,6 +457,7 @@ admin.get("/semantic/stats", async (c) => {
         noColumns,
         noJoins,
       },
+      ...(warnings.length > 0 && { warnings }),
     });
   });
 });

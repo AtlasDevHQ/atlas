@@ -68,6 +68,18 @@ describe("discoverEntities", () => {
     expect(warnings[0]).toMatch(/Failed to parse entity:.*bad\.yml/);
   });
 
+  it("returns warning for entity file missing table field", () => {
+    const root = makeRoot("no-table");
+    writeEntity(root, "bad", "description: No table field\ndimensions:\n  id:\n    type: number\n");
+    writeEntity(root, "good", "table: good_table\ndescription: Valid\n");
+
+    const { entities, warnings } = discoverEntities(root);
+    expect(entities).toHaveLength(1);
+    expect(entities[0].table).toBe("good_table");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/missing required 'table' field:.*bad\.yml/);
+  });
+
   it("returns empty entities and no warnings for non-existent root", () => {
     const { entities, warnings } = discoverEntities("/tmp/nonexistent-atlas-entities-test");
     expect(entities).toEqual([]);

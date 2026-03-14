@@ -455,7 +455,7 @@ export function AtlasChat() {
                             key={prompt}
                             variant="outline"
                             onClick={() => handleSend(prompt)}
-                            className="h-auto justify-start rounded-lg bg-zinc-50 px-3 py-2.5 text-left text-sm text-zinc-500 hover:text-zinc-800 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-200"
+                            className="h-auto whitespace-normal justify-start rounded-lg bg-zinc-50 px-3 py-2.5 text-left text-sm text-zinc-500 hover:text-zinc-800 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-200"
                           >
                             {prompt}
                           </Button>

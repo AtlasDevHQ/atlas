@@ -48,7 +48,7 @@ describe("discoverTables", () => {
       "    description: User email address",
     ].join("\n"));
 
-    const tables = discoverTables(root);
+    const { tables } = discoverTables(root);
     expect(tables).toHaveLength(1);
     expect(tables[0].table).toBe("users");
     expect(tables[0].description).toBe("Application users");
@@ -71,7 +71,7 @@ describe("discoverTables", () => {
       "    description: Order date",
     ].join("\n"));
 
-    const tables = discoverTables(root);
+    const { tables } = discoverTables(root);
     expect(tables).toHaveLength(1);
     expect(tables[0].table).toBe("orders");
     expect(tables[0].columns).toHaveLength(2);
@@ -84,7 +84,7 @@ describe("discoverTables", () => {
     writeEntity(root, "users", "table: users\ndescription: Default users\ndimensions:\n  id:\n    type: number\n    description: PK\n");
     writeEntity(root, "events", "table: events\ndescription: Warehouse events\ndimensions:\n  id:\n    type: number\n    description: Event ID\n", "warehouse");
 
-    const tables = discoverTables(root);
+    const { tables } = discoverTables(root);
     expect(tables).toHaveLength(2);
     const names = tables.map((t) => t.table).sort();
     expect(names).toEqual(["events", "users"]);
@@ -94,20 +94,22 @@ describe("discoverTables", () => {
     const root = makeRoot("no-dims");
     writeEntity(root, "settings", "table: settings\ndescription: App settings\n");
 
-    const tables = discoverTables(root);
+    const { tables } = discoverTables(root);
     expect(tables).toHaveLength(1);
     expect(tables[0].table).toBe("settings");
     expect(tables[0].columns).toEqual([]);
   });
 
-  it("skips entities with missing table field", () => {
+  it("skips entities with missing table field and emits warning", () => {
     const root = makeRoot("no-table");
     writeEntity(root, "bad", "description: no table field\ndimensions:\n  id:\n    type: number\n");
     writeEntity(root, "good", "table: good_table\ndescription: Valid\n");
 
-    const tables = discoverTables(root);
+    const { tables, warnings } = discoverTables(root);
     expect(tables).toHaveLength(1);
     expect(tables[0].table).toBe("good_table");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/missing required 'table' field:.*bad\.yml/);
   });
 
   it("skips malformed YAML files without crashing", () => {
@@ -115,20 +117,55 @@ describe("discoverTables", () => {
     writeEntity(root, "bad", "{{{not valid yaml");
     writeEntity(root, "good", "table: valid\ndescription: Valid table\n");
 
-    const tables = discoverTables(root);
+    const { tables } = discoverTables(root);
     expect(tables).toHaveLength(1);
     expect(tables[0].table).toBe("valid");
   });
 
-  it("returns empty array for non-existent root", () => {
-    const tables = discoverTables("/tmp/nonexistent-atlas-tables-test");
-    expect(tables).toEqual([]);
+  it("returns warnings for malformed YAML files", () => {
+    const root = makeRoot("warn-malformed");
+    writeEntity(root, "broken", "{{{not valid yaml");
+    writeEntity(root, "good", "table: good_table\ndescription: Valid\n");
+
+    const { tables, warnings } = discoverTables(root);
+    expect(tables).toHaveLength(1);
+    expect(tables[0].table).toBe("good_table");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/Failed to parse entity:.*broken\.yml/);
   });
 
-  it("returns empty array for empty entities directory", () => {
-    const root = makeRoot("empty");
-    const tables = discoverTables(root);
+  it("returns no warnings when all files parse successfully", () => {
+    const root = makeRoot("no-warnings");
+    writeEntity(root, "ok", "table: ok_table\ndescription: Fine\n");
+
+    const { tables, warnings } = discoverTables(root);
+    expect(tables).toHaveLength(1);
+    expect(warnings).toEqual([]);
+  });
+
+  it("returns warnings for malformed YAML in per-source subdirectory", () => {
+    const root = makeRoot("sub-warn");
+    writeEntity(root, "ok", "table: ok_table\ndescription: Fine\n");
+    writeEntity(root, "bad", "{{{not valid yaml", "warehouse");
+
+    const { tables, warnings } = discoverTables(root);
+    expect(tables).toHaveLength(1);
+    expect(tables[0].table).toBe("ok_table");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/Failed to parse entity:.*bad\.yml/);
+  });
+
+  it("returns empty array and no warnings for non-existent root", () => {
+    const { tables, warnings } = discoverTables("/tmp/nonexistent-atlas-tables-test");
     expect(tables).toEqual([]);
+    expect(warnings).toEqual([]);
+  });
+
+  it("returns empty array and no warnings for empty entities directory", () => {
+    const root = makeRoot("empty");
+    const { tables, warnings } = discoverTables(root);
+    expect(tables).toEqual([]);
+    expect(warnings).toEqual([]);
   });
 
   it("defaults missing type to 'string' and missing description to ''", () => {
@@ -139,7 +176,7 @@ describe("discoverTables", () => {
       "  status:",
     ].join("\n"));
 
-    const tables = discoverTables(root);
+    const { tables } = discoverTables(root);
     expect(tables).toHaveLength(1);
     expect(tables[0].columns).toHaveLength(1);
     expect(tables[0].columns[0]).toEqual({ name: "status", type: "string", description: "" });
@@ -157,7 +194,7 @@ describe("discoverTables", () => {
       "    description: Has name",
     ].join("\n"));
 
-    const tables = discoverTables(root);
+    const { tables } = discoverTables(root);
     expect(tables).toHaveLength(1);
     expect(tables[0].columns).toHaveLength(1);
     expect(tables[0].columns[0].name).toBe("valid_col");

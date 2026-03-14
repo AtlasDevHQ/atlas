@@ -67,12 +67,18 @@ export interface EntitySummary {
  * directory are tagged with source "default"; those under
  * semantic/{name}/entities/ use the subdirectory name as source.
  */
-export function discoverEntities(root: string): EntitySummary[] {
+export interface DiscoverEntitiesResult {
+  entities: EntitySummary[];
+  warnings: string[];
+}
+
+export function discoverEntities(root: string): DiscoverEntitiesResult {
   const entities: EntitySummary[] = [];
+  const warnings: string[] = [];
 
   const defaultDir = path.join(root, "entities");
   if (fs.existsSync(defaultDir)) {
-    loadEntitiesFromDir(defaultDir, "default", entities);
+    loadEntitiesFromDir(defaultDir, "default", root, entities, warnings);
   }
 
   // Per-source subdirectories (e.g. semantic/warehouse/entities/)
@@ -84,30 +90,36 @@ export function discoverEntities(root: string): EntitySummary[] {
         if (!entry.isDirectory() || RESERVED_DIRS.has(entry.name)) continue;
         const subEntities = path.join(root, entry.name, "entities");
         if (fs.existsSync(subEntities)) {
-          loadEntitiesFromDir(subEntities, entry.name, entities);
+          loadEntitiesFromDir(subEntities, entry.name, root, entities, warnings);
         }
       }
     } catch (err) {
       log.warn({ err: err instanceof Error ? err : new Error(String(err)), root }, "Failed to scan semantic root for per-source directories");
+      warnings.push("Failed to read semantic root directory");
     }
   }
 
-  return entities;
+  return { entities, warnings };
 }
 
-function loadEntitiesFromDir(dir: string, source: string, out: EntitySummary[]): void {
+function loadEntitiesFromDir(dir: string, source: string, root: string, out: EntitySummary[], warnings: string[]): void {
   let files: string[];
   try {
     files = fs.readdirSync(dir).filter((f) => f.endsWith(".yml"));
   } catch (err) {
     log.warn({ err: err instanceof Error ? err : new Error(String(err)), dir, source }, "Failed to read entities directory");
+    warnings.push(`Failed to read directory: ${path.relative(root, dir)}`);
     return;
   }
 
   for (const file of files) {
     try {
       const raw = readYamlFile(path.join(dir, file)) as Record<string, unknown>;
-      if (!raw || typeof raw !== "object" || !raw.table) continue;
+      if (!raw || typeof raw !== "object") continue;
+      if (!raw.table) {
+        warnings.push(`Entity file missing required 'table' field: ${path.relative(root, path.join(dir, file))}`);
+        continue;
+      }
 
       const dimensions = raw.dimensions && typeof raw.dimensions === "object"
         ? Object.keys(raw.dimensions)
@@ -127,6 +139,7 @@ function loadEntitiesFromDir(dir: string, source: string, out: EntitySummary[]):
       });
     } catch (err) {
       log.warn({ err: err instanceof Error ? err : new Error(String(err)), file, dir, source }, "Failed to parse entity YAML file");
+      warnings.push(`Failed to parse entity: ${path.relative(root, path.join(dir, file))}`);
     }
   }
 }
@@ -142,12 +155,18 @@ export type { TableInfo };
  * Discover all entity YAML files and return a simplified table view
  * with column details. Used by the public `GET /api/v1/tables` endpoint.
  */
-export function discoverTables(root: string): TableInfo[] {
+export interface DiscoverTablesResult {
+  tables: TableInfo[];
+  warnings: string[];
+}
+
+export function discoverTables(root: string): DiscoverTablesResult {
   const tables: TableInfo[] = [];
+  const warnings: string[] = [];
 
   const defaultDir = path.join(root, "entities");
   if (fs.existsSync(defaultDir)) {
-    loadTablesFromDir(defaultDir, tables);
+    loadTablesFromDir(defaultDir, root, tables, warnings);
   }
 
   const RESERVED_DIRS = new Set(["entities", "metrics"]);
@@ -158,30 +177,36 @@ export function discoverTables(root: string): TableInfo[] {
         if (!entry.isDirectory() || RESERVED_DIRS.has(entry.name)) continue;
         const subEntities = path.join(root, entry.name, "entities");
         if (fs.existsSync(subEntities)) {
-          loadTablesFromDir(subEntities, tables);
+          loadTablesFromDir(subEntities, root, tables, warnings);
         }
       }
     } catch (err) {
       log.warn({ err: err instanceof Error ? err : new Error(String(err)), root }, "Failed to scan semantic root for tables");
+      warnings.push("Failed to read semantic root directory");
     }
   }
 
-  return tables;
+  return { tables, warnings };
 }
 
-function loadTablesFromDir(dir: string, out: TableInfo[]): void {
+function loadTablesFromDir(dir: string, root: string, out: TableInfo[], warnings: string[]): void {
   let files: string[];
   try {
     files = fs.readdirSync(dir).filter((f) => f.endsWith(".yml"));
   } catch (err) {
     log.warn({ err: err instanceof Error ? err : new Error(String(err)), dir }, "Failed to read entities directory for tables");
+    warnings.push(`Failed to read directory: ${path.relative(root, dir)}`);
     return;
   }
 
   for (const file of files) {
     try {
       const raw = readYamlFile(path.join(dir, file)) as Record<string, unknown>;
-      if (!raw || typeof raw !== "object" || !raw.table) continue;
+      if (!raw || typeof raw !== "object") continue;
+      if (!raw.table) {
+        warnings.push(`Entity file missing required 'table' field: ${path.relative(root, path.join(dir, file))}`);
+        continue;
+      }
 
       const columns: TableColumn[] = [];
       const dims = raw.dimensions;
@@ -215,6 +240,7 @@ function loadTablesFromDir(dir: string, out: TableInfo[]): void {
       });
     } catch (err) {
       log.warn({ err: err instanceof Error ? err : new Error(String(err)), file, dir }, "Failed to parse entity YAML for tables");
+      warnings.push(`Failed to parse entity: ${path.relative(root, path.join(dir, file))}`);
     }
   }
 }

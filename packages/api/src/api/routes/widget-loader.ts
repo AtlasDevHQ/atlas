@@ -285,9 +285,22 @@ for(var i=0;i<q.length;i++){
 /**
  * TypeScript ambient declarations for window.Atlas.
  * Served from GET /widget.d.ts for host page type safety.
+ *
+ * NOTE: The canonical TypeScript types live in @useatlas/react.
+ * Prefer `/// <reference types="@useatlas/react/widget" />` when using
+ * the npm package. This served .d.ts is a fallback for embedders who
+ * load only the script tag without installing @useatlas/react.
+ *
+ * Keep this in sync with packages/react/src/lib/widget-types.ts.
  */
 function buildTypeDeclarations(): string {
-  return `export {};
+  return `/**
+ * Atlas widget type declarations.
+ *
+ * For full types with JSDoc, install @useatlas/react and add:
+ *   /// <reference types="@useatlas/react/widget" />
+ */
+export {};
 declare global {
   interface AtlasWidgetEventMap {
     open: Record<string, never>;

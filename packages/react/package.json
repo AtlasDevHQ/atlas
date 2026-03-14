@@ -10,6 +10,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./hooks": "./src/hooks/index.ts",
+    "./widget": "./src/global.d.ts",
     "./styles.css": "./src/styles.css"
   },
   "publishConfig": {
@@ -37,6 +38,9 @@
           "default": "./dist/hooks.cjs"
         }
       },
+      "./widget": {
+        "types": "./dist/global.d.ts"
+      },
       "./styles.css": "./dist/styles.css"
     }
   },
@@ -48,7 +52,7 @@
     "*.css"
   ],
   "scripts": {
-    "build": "tsup && cp src/styles.css dist/styles.css && bun x @tailwindcss/cli -i src/widget.css -o dist/widget.css --minify",
+    "build": "tsup && cp src/styles.css dist/styles.css && cp src/global.d.ts dist/global.d.ts && mkdir -p dist/lib && cp src/lib/widget-types.ts dist/lib/widget-types.d.ts && bun x @tailwindcss/cli -i src/widget.css -o dist/widget.css --minify",
     "dev": "tsup --watch",
     "type": "tsc --noEmit"
   },

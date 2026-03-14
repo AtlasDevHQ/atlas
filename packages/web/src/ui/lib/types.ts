@@ -6,7 +6,7 @@
 
 import type { ShareMode } from "@useatlas/types";
 
-export { AUTH_MODES, DB_TYPES, CHAT_ERROR_CODES } from "@useatlas/types";
+export { AUTH_MODES, DB_TYPES, CHAT_ERROR_CODES, CLIENT_ERROR_CODES } from "@useatlas/types";
 export type {
   AuthMode,
   MessageRole,
@@ -31,6 +31,7 @@ export type {
   ConnectionDetail,
   ChatErrorCode,
   ChatErrorInfo,
+  ClientErrorCode,
   Dimension,
   Join,
   Measure,
@@ -41,7 +42,7 @@ export type {
   ActionApprovalMode,
 } from "@useatlas/types";
 export { SHARE_MODES, SHARE_EXPIRY_OPTIONS } from "@useatlas/types";
-export { authErrorMessage, parseChatError } from "@useatlas/types/errors";
+export { authErrorMessage, parseChatError, classifyClientError } from "@useatlas/types/errors";
 
 // --- Web-only types (not in @useatlas/types) ---
 

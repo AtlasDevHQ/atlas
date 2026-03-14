@@ -48,21 +48,15 @@ Systematic docs overhaul for human and LLM consumption. Quick start rewritten wi
 
 First 60 seconds made perfect. `atlas init` gained a progress spinner with ETA and a failure threshold for table profiling. First-run `.env` detection prompts users through setup. Pattern-matched errors replaced generic fallbacks for connection refused, provider unavailable, and query timeout scenarios. Internal errors now carry request IDs, and transient vs permanent error hints guide retry decisions. All CLI subcommands gained proper `--help` text and config validation messages became human-readable.
 
----
+### 0.5.3 — UI & Accessibility Polish
 
-## 0.5.3 — UI & Accessibility Polish
-
-The current milestone. No new features — making everything feel right across the existing surface area.
-
-- **Accessibility** — ARIA labels on chat input and message bubbles, skip links, keyboard navigation audit, Lighthouse/axe compliance
-- **UI** — Loading state audit, meaningful empty states, error boundaries, mobile polish pass, chart responsiveness
-- **Widget** — TypeScript type exports for embedders, CSS customization docs, graceful error states
+ARIA labels on chat input, message bubbles, and skip links. Lighthouse/axe audit with automated accessibility checks added to CI. Full keyboard navigation for all interactive elements. Loading state audit ensuring every async operation has a visible indicator. Meaningful empty states, error boundaries with graceful fallback UI, and inline error feedback for conversation actions. Mobile polish pass at 375px–768px, chart responsiveness at all container sizes, and unified admin console table styles. Widget gained TypeScript type exports for embedders, CSS customization docs, and graceful error states for API down and auth failures.
 
 ---
 
 ## 0.5.4 — SDK & Integration Polish
 
-Making every integration surface production-ready.
+The current milestone. Making every integration surface production-ready.
 
 - **SDK** — `listTables()` convenience method, error code catalog with retry guidance, streaming timeout documentation
 - **Testing** — End-to-end widget embed test, SDK streaming test, MCP server smoke test

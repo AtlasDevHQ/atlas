@@ -579,7 +579,7 @@ export function AtlasChat() {
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     placeholder="Ask a question about your data..."
-                    className="min-w-0 flex-1 rounded-lg border border-zinc-200 bg-zinc-50 px-4 py-3 text-base text-zinc-900 placeholder-zinc-400 outline-none focus:border-blue-500 sm:text-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder-zinc-600"
+                    className="min-w-0 flex-1 py-3 text-base sm:text-sm"
                     disabled={isLoading}
                     aria-label="Chat message"
                   />
@@ -587,7 +587,7 @@ export function AtlasChat() {
                     type="submit"
                     disabled={isLoading}
                     aria-disabled={!isLoading && !input.trim() ? true : undefined}
-                    className="shrink-0 rounded-lg bg-blue-600 px-5 py-3 text-sm font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-40 aria-disabled:opacity-40"
+                    className="shrink-0 px-5"
                   >
                     Ask
                   </Button>

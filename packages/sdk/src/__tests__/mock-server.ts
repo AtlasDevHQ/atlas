@@ -220,6 +220,76 @@ function sseStream(): ReadableStream<Uint8Array> {
   });
 }
 
+/** Full lifecycle stream: text → tool-call → tool-result → result → text → finish. */
+function fullLifecycleStream(): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream({
+    start(controller) {
+      const events = [
+        'data: {"type":"text-delta","textDelta":"Analyzing"}\n\n',
+        'data: {"type":"text-delta","textDelta":" your data..."}\n\n',
+        'data: {"type":"tool-input-start","toolCallId":"tc1","toolName":"explore"}\n\n',
+        'data: {"type":"tool-input-available","toolCallId":"tc1","input":{"command":"ls"}}\n\n',
+        'data: {"type":"tool-output-available","toolCallId":"tc1","output":{"content":"entities/"}}\n\n',
+        'data: {"type":"tool-input-start","toolCallId":"tc2","toolName":"executeSQL"}\n\n',
+        'data: {"type":"tool-input-available","toolCallId":"tc2","input":{"sql":"SELECT count(*) FROM users"}}\n\n',
+        'data: {"type":"tool-output-available","toolCallId":"tc2","output":{"columns":["count"],"rows":[{"count":42}]}}\n\n',
+        'data: {"type":"text-delta","textDelta":"There are 42 users."}\n\n',
+        'data: {"type":"finish","finishReason":"stop"}\n\n',
+        "data: [DONE]\n\n",
+      ];
+      for (const event of events) {
+        controller.enqueue(encoder.encode(event));
+      }
+      controller.close();
+    },
+  });
+}
+
+/** Stream that emits 2 events then hangs forever — for abort testing. */
+function hangingStream(): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode('data: {"type":"text-delta","textDelta":"Event one"}\n\n'));
+      controller.enqueue(encoder.encode('data: {"type":"text-delta","textDelta":"Event two"}\n\n'));
+      // Intentionally never close — simulates a long-running stream
+    },
+  });
+}
+
+/** Stream that emits one event then errors — for network failure testing. */
+function networkErrorStream(): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode('data: {"type":"text-delta","textDelta":"Partial data"}\n\n'));
+    },
+    pull(controller) {
+      controller.error(new Error("Connection reset by peer"));
+    },
+  });
+}
+
+/** SSE stream that yields an error event then finishes — for server-side error testing. */
+function errorEventStream(): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream({
+    start(controller) {
+      const events = [
+        'data: {"type":"text-delta","textDelta":"Starting analysis..."}\n\n',
+        'data: {"type":"error","errorText":"Internal server error: model rate limited"}\n\n',
+        'data: {"type":"finish","finishReason":"error"}\n\n',
+        "data: [DONE]\n\n",
+      ];
+      for (const event of events) {
+        controller.enqueue(encoder.encode(event));
+      }
+      controller.close();
+    },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Route helpers
 // ---------------------------------------------------------------------------
@@ -303,7 +373,37 @@ async function handleRequest(req: Request): Promise<Response> {
     const authErr = checkAuth(req);
     if (authErr) return authErr;
 
-    return new Response(sseStream(), {
+    const chatBodyOrErr = await parseJsonBody(req);
+    if (chatBodyOrErr instanceof Response) return chatBodyOrErr;
+    const chatBody = chatBodyOrErr;
+    const chatMessages = chatBody.messages as Array<Record<string, unknown>> | undefined;
+    const firstPart = (chatMessages?.[0]?.parts as Array<Record<string, unknown>> | undefined)?.[0];
+    const messageText = (firstPart?.text as string) ?? "";
+
+    // HTTP-level errors (return before streaming)
+    if (messageText === "__trigger_500__") {
+      return json({ error: "internal_error", message: "Chat server error" }, 500);
+    }
+
+    let stream: ReadableStream<Uint8Array>;
+    switch (messageText) {
+      case "__full_lifecycle__":
+        stream = fullLifecycleStream();
+        break;
+      case "__hanging_stream__":
+        stream = hangingStream();
+        break;
+      case "__network_error__":
+        stream = networkErrorStream();
+        break;
+      case "__error_event__":
+        stream = errorEventStream();
+        break;
+      default:
+        stream = sseStream();
+    }
+
+    return new Response(stream, {
       status: 200,
       headers: {
         "Content-Type": "text/event-stream",

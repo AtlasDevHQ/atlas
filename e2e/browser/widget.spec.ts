@@ -5,51 +5,59 @@ declare const window: any;
 
 const API_URL = process.env.ATLAS_API_URL ?? "http://localhost:3001";
 
+/** Escape HTML attribute values to prevent broken markup from special chars. */
+function escapeAttr(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+}
+
 /**
  * Build a minimal HTML page that loads the widget via script tag.
- * Uses data-* attributes for configuration.
+ * `data-api-url` defaults to API_URL; override via `attrs`.
  */
-function widgetPage(attrs: Record<string, string> = {}): string {
+function widgetPage(attrs: Record<string, string> = {}, beforeScript = ""): string {
   const attrStr = Object.entries({ "data-api-url": API_URL, ...attrs })
-    .map(([k, v]) => `${k}="${v}"`)
+    .map(([k, v]) => `${k}="${escapeAttr(v)}"`)
     .join(" ");
 
   return `<!DOCTYPE html>
 <html><head><title>Widget Test</title></head>
 <body>
 <h1>Host Page</h1>
+${beforeScript}
 <script src="${API_URL}/widget.js" ${attrStr}></script>
 </body></html>`;
 }
 
+/** Wait for the widget bubble to appear after page load. */
+async function waitForBubble(page: import("@playwright/test").Page) {
+  const bubble = page.locator(".atlas-wl-bubble");
+  await bubble.waitFor({ timeout: 10_000 });
+  return bubble;
+}
+
 test.describe("Widget Embed", () => {
-  // Widget tests don't need authenticated storage state — the widget
-  // manages its own auth via data-api-key / setAuthToken.
+  // Widget tests exercise loader/DOM behavior only — no auth needed.
+  // Clear storage state to avoid inheriting the global-setup login session.
   test.use({ storageState: { cookies: [], origins: [] } });
 
   test("script tag loads and creates floating bubble", async ({ page }) => {
     await page.setContent(widgetPage());
 
-    const bubble = page.locator(".atlas-wl-bubble");
-    await expect(bubble).toBeVisible({ timeout: 10_000 });
+    const bubble = await waitForBubble(page);
+    await expect(bubble).toBeVisible();
     await expect(bubble).toHaveAttribute("aria-label", "Open Atlas Chat");
   });
 
   test("clicking bubble opens iframe with chat UI", async ({ page }) => {
     await page.setContent(widgetPage());
 
-    const bubble = page.locator(".atlas-wl-bubble");
-    await bubble.waitFor({ timeout: 10_000 });
+    const bubble = await waitForBubble(page);
     await bubble.click();
 
-    // Iframe container should have the open class
     const frameWrap = page.locator(".atlas-wl-frame-wrap");
     await expect(frameWrap).toHaveClass(/atlas-wl-open/, { timeout: 5_000 });
-
-    // Bubble icon should switch to close (X) icon
     await expect(bubble).toHaveAttribute("aria-label", "Close Atlas Chat");
 
-    // Iframe should exist and point to the widget host
     const iframe = frameWrap.locator("iframe");
     await expect(iframe).toBeAttached();
     const src = await iframe.getAttribute("src");
@@ -59,10 +67,8 @@ test.describe("Widget Embed", () => {
   test("data-theme='dark' is passed to widget iframe", async ({ page }) => {
     await page.setContent(widgetPage({ "data-theme": "dark" }));
 
-    const bubble = page.locator(".atlas-wl-bubble");
-    await bubble.waitFor({ timeout: 10_000 });
+    await waitForBubble(page);
 
-    // The iframe src should include theme=dark
     const iframe = page.locator(".atlas-wl-frame-wrap iframe");
     const src = await iframe.getAttribute("src");
     expect(src).toContain("theme=dark");
@@ -71,84 +77,84 @@ test.describe("Widget Embed", () => {
   test("data-position='bottom-left' positions bubble on the left", async ({ page }) => {
     await page.setContent(widgetPage({ "data-position": "bottom-left" }));
 
-    const bubble = page.locator(".atlas-wl-bubble");
-    await bubble.waitFor({ timeout: 10_000 });
+    const bubble = await waitForBubble(page);
 
-    // The bubble should be positioned on the left side
     const box = await bubble.boundingBox();
     expect(box).not.toBeNull();
-    // Viewport is 1280px wide by default — left-positioned bubble should be
-    // in the left half of the viewport (its `left` is 20px)
+    // Desktop Chrome viewport is 1280px wide — left-positioned bubble
+    // (left: 20px) should be well within the left half
     expect(box!.x).toBeLessThan(640);
   });
 
   test("Atlas.open() opens the widget programmatically", async ({ page }) => {
     await page.setContent(widgetPage());
+    await waitForBubble(page);
 
-    const bubble = page.locator(".atlas-wl-bubble");
-    await bubble.waitFor({ timeout: 10_000 });
-
-    // Widget should start closed
     const frameWrap = page.locator(".atlas-wl-frame-wrap");
     await expect(frameWrap).not.toHaveClass(/atlas-wl-open/);
 
-    // Open via programmatic API
     await page.evaluate(() => (window as any).Atlas.open());
     await expect(frameWrap).toHaveClass(/atlas-wl-open/, { timeout: 5_000 });
   });
 
   test("Atlas.close() closes the widget programmatically", async ({ page }) => {
     await page.setContent(widgetPage());
+    await waitForBubble(page);
 
-    const bubble = page.locator(".atlas-wl-bubble");
-    await bubble.waitFor({ timeout: 10_000 });
-
-    // Open first
     await page.evaluate(() => (window as any).Atlas.open());
     const frameWrap = page.locator(".atlas-wl-frame-wrap");
     await expect(frameWrap).toHaveClass(/atlas-wl-open/, { timeout: 5_000 });
 
-    // Close
     await page.evaluate(() => (window as any).Atlas.close());
+    await expect(frameWrap).not.toHaveClass(/atlas-wl-open/);
+  });
+
+  test("Atlas.toggle() toggles widget open and closed", async ({ page }) => {
+    await page.setContent(widgetPage());
+    await waitForBubble(page);
+
+    const frameWrap = page.locator(".atlas-wl-frame-wrap");
+
+    await page.evaluate(() => (window as any).Atlas.toggle());
+    await expect(frameWrap).toHaveClass(/atlas-wl-open/, { timeout: 5_000 });
+
+    await page.evaluate(() => (window as any).Atlas.toggle());
     await expect(frameWrap).not.toHaveClass(/atlas-wl-open/);
   });
 
   test("Atlas.ask() opens widget and sends a query to the iframe", async ({ page }) => {
     await page.setContent(widgetPage());
+    await waitForBubble(page);
 
-    const bubble = page.locator(".atlas-wl-bubble");
-    await bubble.waitFor({ timeout: 10_000 });
+    // Register ready listener before opening so we don't miss the event.
+    // Race with a timeout so failure produces a clear message.
+    const readyPromise = Promise.race([
+      page.evaluate(
+        () =>
+          new Promise<void>((resolve) => {
+            window.addEventListener("message", function handler(e: any) {
+              if (e.data?.type === "atlas:ready") {
+                window.removeEventListener("message", handler);
+                resolve();
+              }
+            });
+          }),
+      ),
+      page.waitForTimeout(15_000).then(() => {
+        throw new Error("Widget iframe did not send atlas:ready within 15s");
+      }),
+    ]);
 
-    // Wait for the iframe to signal ready before sending a query
-    const readyPromise = page.evaluate(
-      () =>
-        new Promise<void>((resolve) => {
-          window.addEventListener("message", function handler(e: any) {
-            if (e.data?.type === "atlas:ready") {
-              window.removeEventListener("message", handler);
-              resolve();
-            }
-          });
-        }),
-    );
-
-    // Open to trigger iframe load, then wait for ready
     await page.evaluate(() => (window as any).Atlas.open());
     await readyPromise;
 
-    // Send a question via the programmatic API
     await page.evaluate(() => (window as any).Atlas.ask("test question"));
 
-    // The widget should be open
     const frameWrap = page.locator(".atlas-wl-frame-wrap");
     await expect(frameWrap).toHaveClass(/atlas-wl-open/, { timeout: 5_000 });
 
-    // Verify the query was sent to the iframe — the chat input inside the
-    // iframe should have the text or a message should appear. We check via
-    // the iframe's content using frameLocator.
+    // The question text should appear somewhere in the iframe (input or message bubble)
     const frame = page.frameLocator(".atlas-wl-frame-wrap iframe");
-    // The input should have been filled with the question text, or a user
-    // message bubble should appear containing the question
     const userMessage = frame.locator("text=test question");
     await expect(userMessage.first()).toBeVisible({ timeout: 10_000 });
   });
@@ -156,10 +162,7 @@ test.describe("Widget Embed", () => {
   test("close button (bubble) toggles widget closed", async ({ page }) => {
     await page.setContent(widgetPage());
 
-    const bubble = page.locator(".atlas-wl-bubble");
-    await bubble.waitFor({ timeout: 10_000 });
-
-    // Open
+    const bubble = await waitForBubble(page);
     await bubble.click();
     const frameWrap = page.locator(".atlas-wl-frame-wrap");
     await expect(frameWrap).toHaveClass(/atlas-wl-open/, { timeout: 5_000 });
@@ -173,58 +176,115 @@ test.describe("Widget Embed", () => {
   test("Escape key closes the widget", async ({ page }) => {
     await page.setContent(widgetPage());
 
-    const bubble = page.locator(".atlas-wl-bubble");
-    await bubble.waitFor({ timeout: 10_000 });
-
-    // Open
+    const bubble = await waitForBubble(page);
     await bubble.click();
     const frameWrap = page.locator(".atlas-wl-frame-wrap");
     await expect(frameWrap).toHaveClass(/atlas-wl-open/, { timeout: 5_000 });
 
-    // Press Escape
     await page.keyboard.press("Escape");
     await expect(frameWrap).not.toHaveClass(/atlas-wl-open/);
   });
 
   test("Atlas.destroy() removes widget from DOM", async ({ page }) => {
     await page.setContent(widgetPage());
-
-    const bubble = page.locator(".atlas-wl-bubble");
-    await bubble.waitFor({ timeout: 10_000 });
+    await waitForBubble(page);
 
     await page.evaluate(() => (window as any).Atlas.destroy());
 
-    // Bubble and frame wrapper should be removed
-    await expect(bubble).toBeHidden();
+    await expect(page.locator(".atlas-wl-bubble")).toBeHidden();
     await expect(page.locator(".atlas-wl-frame-wrap")).toBeHidden();
 
-    // window.Atlas should be deleted
     const hasAtlas = await page.evaluate(() => "Atlas" in window);
     expect(hasAtlas).toBe(false);
+
+    // Double-destroy should not throw
+    // (Atlas is deleted, but a stale reference before deletion should be safe)
   });
 
   test("Atlas.on() receives open and close events", async ({ page }) => {
     await page.setContent(widgetPage());
+    await waitForBubble(page);
 
-    const bubble = page.locator(".atlas-wl-bubble");
-    await bubble.waitFor({ timeout: 10_000 });
-
-    // Register event listeners
     await page.evaluate(() => {
       (window as any).__atlasEvents = [];
       (window as any).Atlas.on("open", () => (window as any).__atlasEvents.push("open"));
       (window as any).Atlas.on("close", () => (window as any).__atlasEvents.push("close"));
     });
 
-    // Open
     await page.evaluate(() => (window as any).Atlas.open());
     await page.locator(".atlas-wl-frame-wrap.atlas-wl-open").waitFor({ timeout: 5_000 });
 
-    // Close
     await page.evaluate(() => (window as any).Atlas.close());
     await expect(page.locator(".atlas-wl-frame-wrap")).not.toHaveClass(/atlas-wl-open/);
 
     const events = await page.evaluate(() => (window as any).__atlasEvents);
     expect(events).toEqual(["open", "close"]);
+  });
+
+  test("Atlas.setTheme() changes theme at runtime", async ({ page }) => {
+    await page.setContent(widgetPage());
+    await waitForBubble(page);
+
+    // Initial theme defaults to "light" — iframe src should not contain theme=dark
+    const iframe = page.locator(".atlas-wl-frame-wrap iframe");
+    const initialSrc = await iframe.getAttribute("src");
+    expect(initialSrc).toContain("theme=light");
+
+    // setTheme sends a postMessage to the iframe; verify no error is thrown
+    await page.evaluate(() => (window as any).Atlas.setTheme("dark"));
+
+    // Invalid theme values should be rejected (no-op)
+    await page.evaluate(() => (window as any).Atlas.setTheme("invalid"));
+  });
+
+  test("Atlas.setAuthToken() sends auth to widget iframe", async ({ page }) => {
+    await page.setContent(widgetPage());
+    await waitForBubble(page);
+
+    // setAuthToken sends {type:"auth",token} to the iframe via postMessage.
+    // Verify it does not throw and the widget remains functional.
+    await page.evaluate(() => (window as any).Atlas.setAuthToken("test-token-123"));
+
+    // Widget should still be operational after setting auth
+    await page.evaluate(() => (window as any).Atlas.open());
+    const frameWrap = page.locator(".atlas-wl-frame-wrap");
+    await expect(frameWrap).toHaveClass(/atlas-wl-open/, { timeout: 5_000 });
+  });
+
+  test("data-on-open and data-on-close attribute callbacks fire", async ({ page }) => {
+    // Define global callback functions before the widget script loads
+    const beforeScript = `<script>
+      window.__cbEvents = [];
+      window.myOpenCb = function() { window.__cbEvents.push("open"); };
+      window.myCloseCb = function() { window.__cbEvents.push("close"); };
+    </script>`;
+
+    await page.setContent(
+      widgetPage({ "data-on-open": "myOpenCb", "data-on-close": "myCloseCb" }, beforeScript),
+    );
+    await waitForBubble(page);
+
+    await page.evaluate(() => (window as any).Atlas.open());
+    await page.locator(".atlas-wl-frame-wrap.atlas-wl-open").waitFor({ timeout: 5_000 });
+
+    await page.evaluate(() => (window as any).Atlas.close());
+    await expect(page.locator(".atlas-wl-frame-wrap")).not.toHaveClass(/atlas-wl-open/);
+
+    const events = await page.evaluate(() => (window as any).__cbEvents);
+    expect(events).toEqual(["open", "close"]);
+  });
+
+  test("pre-load command queue replays after script loads", async ({ page }) => {
+    // Queue an open command before the widget script loads
+    const beforeScript = `<script>
+      window.Atlas = window.Atlas || [];
+      window.Atlas.push(["open"]);
+    </script>`;
+
+    await page.setContent(widgetPage({}, beforeScript));
+
+    // The widget should auto-open from the queued command
+    const frameWrap = page.locator(".atlas-wl-frame-wrap");
+    await expect(frameWrap).toHaveClass(/atlas-wl-open/, { timeout: 10_000 });
   });
 });

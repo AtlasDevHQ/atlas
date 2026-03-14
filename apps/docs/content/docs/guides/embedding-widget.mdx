@@ -1028,8 +1028,7 @@ window.addEventListener("message", (event) => {
 When using the `AtlasChat` React component, errors are rendered inline automatically. For programmatic access, use the `useAtlasChat` hook:
 
 ```tsx
-import { AtlasProvider, useAtlasChat } from "@useatlas/react/hooks";
-import { parseChatError } from "@useatlas/react/hooks";
+import { useAtlasChat, parseChatError } from "@useatlas/react/hooks";
 
 function ChatUI() {
   const { error, status } = useAtlasChat();
@@ -1061,7 +1060,7 @@ function onTokenRefresh(newToken) {
 // Example: refresh before expiry using a JWT decode
 const payload = JSON.parse(atob(token.split(".")[1]));
 const expiresIn = payload.exp * 1000 - Date.now();
-setTimeout(() => {
+setTimeout(async () => {
   const newToken = await refreshAuthToken();
   Atlas.setAuthToken(newToken);
 }, expiresIn - 60_000); // Refresh 1 minute before expiry
@@ -1457,6 +1456,7 @@ Change the primary brand color across the widget — affects buttons, links, and
 </Tab>
 <Tab value="React component">
 ```tsx
+import { useEffect } from "react";
 import { AtlasChat } from "@useatlas/react";
 import "@useatlas/react/styles.css";
 

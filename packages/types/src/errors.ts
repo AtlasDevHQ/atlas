@@ -283,6 +283,12 @@ export function authErrorMessage(authMode: AuthMode): string {
 export function classifyClientError(error: Error): ClientErrorCode | null {
   const msg = error.message;
 
+  // Skip classification if the message looks like a JSON response body —
+  // parseChatError will extract the server error code from the JSON instead.
+  if (msg.startsWith("{") || msg.startsWith("[")) {
+    return null;
+  }
+
   // Offline detection — only in browser environments (window + navigator.onLine).
   // Server-side runtimes (bun, node) may define `navigator` without a meaningful
   // `onLine` property, so we require `window` to exist and `navigator.onLine`

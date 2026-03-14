@@ -2,11 +2,11 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { Button } from "../ui/button";
-import { parseChatError, type AuthMode } from "../../lib/types";
+import { parseChatError, type AuthMode, type ClientErrorCode } from "../../lib/types";
 import { WifiOff, ServerCrash, ShieldAlert, Clock, AlertTriangle } from "lucide-react";
 
 /** Icon for each client error code */
-function ErrorIcon({ clientCode }: { clientCode?: string }) {
+function ErrorIcon({ clientCode }: { clientCode?: ClientErrorCode }) {
   switch (clientCode) {
     case "offline":
       return <WifiOff className="size-4 shrink-0" />;

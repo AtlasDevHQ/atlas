@@ -502,6 +502,43 @@ describe("classifyClientError", () => {
     const codes: readonly ClientErrorCode[] = CLIENT_ERROR_CODES;
     expect(codes.length).toBeGreaterThan(0);
   });
+
+  test("returns null for JSON-shaped messages (server response bodies)", () => {
+    // A JSON error body like '{"error":"rate_limited","message":"Too Many Requests"}'
+    // should NOT be classified by regex — parseChatError handles it via JSON.parse.
+    const jsonBody = new Error('{"error":"rate_limited","message":"Too Many Requests"}');
+    expect(classifyClientError(jsonBody)).toBeNull();
+
+    const jsonArray = new Error('[{"error":"something"}]');
+    expect(classifyClientError(jsonArray)).toBeNull();
+  });
+
+  test("detects navigator.onLine === false as offline", () => {
+    const origNav = globalThis.navigator;
+    const origWin = (globalThis as Record<string, unknown>).window;
+    try {
+      Object.defineProperty(globalThis, "navigator", {
+        value: { onLine: false },
+        configurable: true,
+      });
+      // window must be defined for the browser-environment check
+      if (typeof (globalThis as Record<string, unknown>).window === "undefined") {
+        Object.defineProperty(globalThis, "window", {
+          value: {},
+          configurable: true,
+        });
+      }
+      expect(classifyClientError(new Error("any error"))).toBe("offline");
+    } finally {
+      Object.defineProperty(globalThis, "navigator", {
+        value: origNav,
+        configurable: true,
+      });
+      if (origWin === undefined) {
+        delete (globalThis as Record<string, unknown>).window;
+      }
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

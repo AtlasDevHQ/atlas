@@ -295,18 +295,18 @@ No feature adds — just making everything feel right. Accessibility is table st
 - [x] Empty states — meaningful messages when no conversations, no saved queries, no results (#382, PR #392)
 
 ### Incidental Findings
-- [ ] Fix hardcoded ARIA IDs in @useatlas/react — collision risk with multiple instances (#394)
-- [ ] Add DataTable tests to @useatlas/react package (#395)
+- [x] Fix hardcoded ARIA IDs in @useatlas/react — collision risk with multiple instances (#394)
+- [x] Add DataTable tests to @useatlas/react package (#395, PR #403)
 - [ ] Mobile polish pass — test all flows on small screens, fix any overflow/truncation issues (#383)
 - [ ] Chart responsiveness — ensure all chart types render correctly at all container sizes (#384)
 - [ ] Admin console consistency — unified table styles, consistent action button placement (#385)
 
 ### Widget Polish
-- [ ] Export TypeScript types for `globalThis.AtlasWidget` — enable IDE autocomplete for embedders (#386)
+- [x] Export TypeScript types for `globalThis.AtlasWidget` — enable IDE autocomplete for embedders (#386, PR #400)
 - [ ] Widget README expansion — error handling examples, auth fallback, what happens when API unreachable (#387)
 - [ ] Custom renderer docs — document all available fields on each tool result type (#388)
 - [ ] CSS customization guide — document CSS variables for widget styling (#389)
-- [ ] Widget error states — graceful degradation when API is down or auth fails (#390)
+- [x] Widget error states — graceful degradation when API is down or auth fails (#390, PR #401)
 
 ---
 

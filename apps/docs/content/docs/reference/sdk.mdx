@@ -491,9 +491,9 @@ try {
 | `provider_unreachable` | 502 | Yes | Could not reach the AI provider |
 | `provider_error` | 502 | Yes | LLM provider error |
 | `internal_error` | 500 | Yes | Server error (includes `requestId` for log correlation) |
-| `network_error` | — | — | Could not reach the API (SDK-only) |
-| `invalid_response` | — | — | Response could not be parsed (SDK-only) |
-| `unknown_error` | — | — | Unrecognized error (SDK-only) |
+| `network_error` | 0 | Yes | Could not reach the API (SDK-only) |
+| `invalid_response` | (varies) | No | Response could not be parsed (SDK-only) |
+| `unknown_error` | (varies) | No | Unrecognized error (SDK-only) |
 
 All error responses include a `requestId` field (UUID) for correlating client errors with
 server logs. Quote this value when reporting issues.

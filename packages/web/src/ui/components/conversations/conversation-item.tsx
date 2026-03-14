@@ -111,8 +111,8 @@ export function ConversationItem({
           className={`size-8 transition-all ${
             conversation.starred
               ? "text-amber-400 opacity-100 hover:text-amber-500 dark:text-amber-400 dark:hover:text-amber-300"
-              : "text-zinc-400 opacity-0 hover:text-amber-400 group-hover:opacity-100 dark:hover:text-amber-400"
-          }`}
+              : "text-zinc-400 opacity-100 md:opacity-0 hover:text-amber-400 md:group-hover:opacity-100 dark:hover:text-amber-400"
+          } ${starPending ? "opacity-50" : ""}`}
           aria-label={conversation.starred ? "Unstar conversation" : "Star conversation"}
         >
           {starPending ? (
@@ -129,7 +129,7 @@ export function ConversationItem({
             setConfirmDelete(true);
           }}
           disabled={deleting}
-          className="size-8 shrink-0 text-zinc-400 opacity-0 transition-all hover:bg-red-50 hover:text-red-500 group-hover:opacity-100 dark:hover:bg-red-950/20 dark:hover:text-red-400"
+          className="size-8 shrink-0 text-zinc-400 opacity-100 md:opacity-0 transition-all hover:bg-red-50 hover:text-red-500 md:group-hover:opacity-100 dark:hover:bg-red-950/20 dark:hover:text-red-400"
           aria-label="Delete conversation"
         >
           <Trash2 className="h-3.5 w-3.5" />

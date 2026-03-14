@@ -379,16 +379,18 @@ export default function ActionsPage() {
         </div>
 
         <ErrorBoundary>
-        <div className="flex-1 overflow-auto">
+        <div className="flex-1 overflow-auto p-6 space-y-6">
           {error && <ErrorBanner message={friendlyError(error)} onRetry={() => setRefetchKey((k) => k + 1)} />}
           {mutationError && <ErrorBanner message={mutationError} onRetry={() => setMutationError(null)} />}
 
           {loading ? (
-            <LoadingState message="Loading actions..." />
+            <div className="flex h-64 items-center justify-center">
+              <LoadingState message="Loading actions..." />
+            </div>
           ) : actions.length === 0 && !error ? (
             <EmptyState
               icon={statusFilter === "pending" ? Inbox : Zap}
-              message={EMPTY_MESSAGES[statusFilter]}
+              title={EMPTY_MESSAGES[statusFilter]}
             >
               {statusFilter === "pending" && (
                 <p className="mt-1 text-xs text-muted-foreground/70">
@@ -397,6 +399,7 @@ export default function ActionsPage() {
               )}
             </EmptyState>
           ) : actions.length > 0 ? (
+            <div className="rounded-md border">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -577,6 +580,7 @@ export default function ActionsPage() {
                 })}
               </TableBody>
             </Table>
+            </div>
           ) : null}
         </div>
         </ErrorBoundary>

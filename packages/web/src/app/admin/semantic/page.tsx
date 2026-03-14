@@ -489,7 +489,9 @@ export default function SemanticPage() {
           <h1 className="text-2xl font-bold tracking-tight">Semantic Layer</h1>
           <p className="text-sm text-muted-foreground">Browse entities, glossary, metrics, and catalog</p>
         </div>
-        <ErrorBanner message={friendlyError(error)} />
+        <div className="p-6">
+          <ErrorBanner message={friendlyError(error)} />
+        </div>
       </div>
     );
   }
@@ -534,7 +536,7 @@ export default function SemanticPage() {
 
           <div className="flex-1 overflow-hidden">
           {detailError ? (
-            <ErrorBanner message={detailError} />
+            <div className="p-6"><ErrorBanner message={detailError} /></div>
           ) : !selection ? (
             <div className="flex h-full items-center justify-center text-muted-foreground">
               <div className="text-center">

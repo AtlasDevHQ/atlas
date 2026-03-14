@@ -26,6 +26,7 @@ COPY plugins/mcp/package.json plugins/mcp/package.json
 COPY plugins/jira/package.json plugins/jira/package.json
 COPY plugins/mysql/package.json plugins/mysql/package.json
 COPY plugins/nsjail/package.json plugins/nsjail/package.json
+COPY plugins/obsidian/package.json plugins/obsidian/package.json
 COPY plugins/sidecar/package.json plugins/sidecar/package.json
 COPY plugins/slack/package.json plugins/slack/package.json
 COPY plugins/snowflake/package.json plugins/snowflake/package.json

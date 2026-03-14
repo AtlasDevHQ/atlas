@@ -320,6 +320,9 @@ Make every integration surface production-ready.
 - [ ] `retryAfterSeconds` null-safety — document when property is populated, fix README example
 - [ ] Error code catalog — document every error code with cause, fix, and retry guidance
 
+### Plugins
+- [x] Obsidian plugin — natural-language database queries from Obsidian (#396)
+
 ### Integration Testing
 - [ ] End-to-end widget embed test — script tag → load → auth → query → result in browser test
 - [ ] SDK streaming test — connect → stream → abort → reconnect

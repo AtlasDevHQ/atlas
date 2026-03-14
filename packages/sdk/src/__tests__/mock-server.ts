@@ -220,7 +220,7 @@ function sseStream(): ReadableStream<Uint8Array> {
   });
 }
 
-/** Full lifecycle stream: text → tool-call → tool-result → result → text → finish. */
+/** Full lifecycle stream exercising all event types: text deltas, explore tool call, executeSQL tool call with result convenience event, and finish (9 SDK events total). */
 function fullLifecycleStream(): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
   return new ReadableStream({
@@ -258,7 +258,7 @@ function hangingStream(): ReadableStream<Uint8Array> {
   });
 }
 
-/** SSE stream that yields an error event then finishes — for server-side error testing. */
+/** SSE stream that yields a text event, then an error event, then finishes — for server-side error testing. */
 function errorEventStream(): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
   return new ReadableStream({

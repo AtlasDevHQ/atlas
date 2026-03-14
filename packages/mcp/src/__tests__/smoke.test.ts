@@ -3,14 +3,15 @@
  * and server lifecycle.
  *
  * Uses InMemoryTransport with mocked tool implementations.
- * Complements server.test.ts (which only tests the failure path).
+ * Complements server.test.ts by adding success-path executeSQL round-trips,
+ * SQL validation error handling, and server lifecycle tests.
  */
 import { describe, expect, it, mock } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 // ---------------------------------------------------------------------------
-// Module mocks — must mock ALL named exports
+// Module mocks — mock the named exports consumed by the server module
 // ---------------------------------------------------------------------------
 
 mock.module("@atlas/api/lib/config", () => ({
@@ -78,7 +79,14 @@ async function createTestPair() {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport);
   await client.connect(clientTransport);
-  return { server, client };
+  return {
+    server,
+    client,
+    async cleanup() {
+      await client.close();
+      await server.close();
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -87,10 +95,11 @@ async function createTestPair() {
 
 describe("MCP smoke — tool listing", () => {
   it("registers explore and executeSQL tools", async () => {
-    const { client } = await createTestPair();
+    const { client, cleanup } = await createTestPair();
     const result = await client.listTools();
     const names = result.tools.map((t) => t.name).sort();
     expect(names).toEqual(["executeSQL", "explore"]);
+    await cleanup();
   });
 });
 
@@ -100,7 +109,7 @@ describe("MCP smoke — tool listing", () => {
 
 describe("MCP smoke — executeSQL round-trip", () => {
   it("returns structured { columns, rows } for valid SELECT", async () => {
-    const { client } = await createTestPair();
+    const { client, cleanup } = await createTestPair();
 
     const result = await client.callTool({
       name: "executeSQL",
@@ -119,6 +128,7 @@ describe("MCP smoke — executeSQL round-trip", () => {
     expect(parsed.rows).toEqual([{ count: 42 }]);
     expect(parsed.row_count).toBe(1);
     expect(parsed.truncated).toBe(false);
+    await cleanup();
   });
 });
 
@@ -128,7 +138,7 @@ describe("MCP smoke — executeSQL round-trip", () => {
 
 describe("MCP smoke — error handling", () => {
   it("returns isError with descriptive message for forbidden SQL", async () => {
-    const { client } = await createTestPair();
+    const { client, cleanup } = await createTestPair();
 
     const result = await client.callTool({
       name: "executeSQL",
@@ -141,10 +151,11 @@ describe("MCP smoke — error handling", () => {
     expect(result.isError).toBe(true);
     const text = (result.content as Array<{ type: string; text: string }>)[0].text;
     expect(text).toContain("Only SELECT statements are allowed");
+    await cleanup();
   });
 
   it("returns isError with descriptive message for unknown table", async () => {
-    const { client } = await createTestPair();
+    const { client, cleanup } = await createTestPair();
 
     const result = await client.callTool({
       name: "executeSQL",
@@ -157,6 +168,7 @@ describe("MCP smoke — error handling", () => {
     expect(result.isError).toBe(true);
     const text = (result.content as Array<{ type: string; text: string }>)[0].text;
     expect(text).toContain("not in the allowed table list");
+    await cleanup();
   });
 });
 
@@ -179,5 +191,6 @@ describe("MCP smoke — server lifecycle", () => {
 
     // Clean shutdown — should not throw
     await client.close();
+    await server.close();
   });
 });

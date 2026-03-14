@@ -44,7 +44,7 @@ async function collectEvents(iter: AsyncIterable<StreamEvent>): Promise<StreamEv
 // ---------------------------------------------------------------------------
 
 describe("streamQuery integration — full lifecycle", () => {
-  test("yields all event types in order: text, tool-call, tool-result, result, finish", async () => {
+  test("yields text, tool-call, tool-result, result, and finish events in correct order", async () => {
     const events = await collectEvents(client().streamQuery("__full_lifecycle__"));
 
     // Expected sequence:
@@ -148,7 +148,7 @@ describe("streamQuery integration — mid-stream abort", () => {
           controller.abort();
         }
       }
-      expect(true).toBe(false); // should not reach
+      expect.unreachable("should have thrown");
     } catch (err) {
       expect((err as Error).name).toBe("AbortError");
     }
@@ -164,7 +164,7 @@ describe("streamQuery integration — mid-stream abort", () => {
 
     try {
       await collectEvents(client().streamQuery("__full_lifecycle__", { signal: controller.signal }));
-      expect(true).toBe(false);
+      expect.unreachable("should have thrown");
     } catch (err) {
       expect((err as Error).name).toBe("AbortError");
     }
@@ -185,8 +185,8 @@ describe("streamQuery integration — client reuse after abort", () => {
       for await (const _event of c.streamQuery("__hanging_stream__", { signal: controller.signal })) {
         controller.abort();
       }
-    } catch {
-      // Expected AbortError — ignore
+    } catch (err) {
+      expect((err as Error).name).toBe("AbortError");
     }
 
     // Second stream: should complete successfully on the same client
@@ -206,7 +206,7 @@ describe("streamQuery integration — network error", () => {
 
     try {
       await collectEvents(c.streamQuery("test"));
-      expect(true).toBe(false);
+      expect.unreachable("should have thrown");
     } catch (err) {
       expect(err).toBeInstanceOf(AtlasError);
       const e = err as AtlasError;
@@ -218,7 +218,7 @@ describe("streamQuery integration — network error", () => {
   test("HTTP 500 on streaming endpoint throws AtlasError", async () => {
     try {
       await collectEvents(client().streamQuery("__trigger_500__"));
-      expect(true).toBe(false);
+      expect.unreachable("should have thrown");
     } catch (err) {
       expect(err).toBeInstanceOf(AtlasError);
       const e = err as AtlasError;

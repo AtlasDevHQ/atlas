@@ -270,6 +270,7 @@ function ConnectionFormDialog({
                 size="sm"
                 className="absolute right-0 top-0 h-full px-3"
                 onClick={() => setShowUrl(!showUrl)}
+                aria-label={showUrl ? "Hide connection URL" : "Show connection URL"}
               >
                 {showUrl ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
               </Button>
@@ -555,7 +556,7 @@ export default function ConnectionsPage() {
                 <TableHead>Description</TableHead>
                 <TableHead>Health</TableHead>
                 <TableHead>Latency</TableHead>
-                <TableHead className="w-[180px]" />
+                <TableHead className="w-[180px]"><span className="sr-only">Actions</span></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -581,6 +582,7 @@ export default function ConnectionsPage() {
                         size="sm"
                         disabled={testing.has(conn.id)}
                         onClick={() => testConnection(conn.id)}
+                        aria-label={testing.has(conn.id) ? `Testing connection ${conn.id}…` : undefined}
                       >
                         {testing.has(conn.id) ? (
                           <Loader2 className="size-3.5 animate-spin" />
@@ -595,6 +597,7 @@ export default function ConnectionsPage() {
                             size="sm"
                             onClick={() => handleEdit(conn.id)}
                             disabled={loadingDetail}
+                            aria-label={`Edit connection ${conn.id}`}
                           >
                             <Pencil className="size-3.5" />
                           </Button>
@@ -602,6 +605,7 @@ export default function ConnectionsPage() {
                             variant="ghost"
                             size="sm"
                             onClick={() => handleDelete(conn.id)}
+                            aria-label={`Delete connection ${conn.id}`}
                           >
                             <Trash2 className="size-3.5 text-destructive" />
                           </Button>

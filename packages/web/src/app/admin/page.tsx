@@ -271,8 +271,8 @@ export default function AdminOverview() {
       </div>
 
       {error && (
-        <div className="mb-4 rounded-md border border-destructive/50 bg-destructive/10 px-4 py-3">
-          <p className="text-sm text-destructive">{error}</p>
+        <div role="alert" className="mb-4 rounded-md border border-destructive/50 bg-destructive/10 px-4 py-3">
+          <p className="text-sm text-red-800 dark:text-red-300">{error}</p>
         </div>
       )}
 

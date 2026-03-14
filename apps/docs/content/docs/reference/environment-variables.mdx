@@ -424,3 +424,13 @@ See [Slack guide](/guides/slack) for the full setup.
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OpenTelemetry collector endpoint (e.g. `http://localhost:4318`). When set, the API server (`atlas-api`) and web frontend (`atlas`) emit distributed trace spans for HTTP requests, agent steps, SQL queries, and explore commands |
 
 See [Observability](/guides/observability) for the full setup guide.
+
+---
+
+## See Also
+
+- [Configuration](/reference/config) — Declarative `atlas.config.ts` for multi-datasource, plugins, and RLS
+- [Deploy](/deployment/deploy) — Platform-specific env var setup for Railway, Vercel, and Docker
+- [Authentication](/deployment/authentication) — Auth mode setup and required variables
+- [CLI Reference](/reference/cli) — `atlas doctor` validates your environment configuration
+- [Troubleshooting](/guides/troubleshooting) — Diagnosing startup errors from missing or invalid variables

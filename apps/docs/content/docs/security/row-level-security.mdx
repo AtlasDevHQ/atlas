@@ -224,3 +224,13 @@ ATLAS_LOG_LEVEL=debug
 Look for `"RLS conditions injected into SQL"` log messages to see the exact WHERE clauses applied to each query.
 
 See [Troubleshooting](/guides/troubleshooting#row-level-security) for more diagnostic steps.
+
+---
+
+## See Also
+
+- [Authentication](/deployment/authentication) — Auth mode setup (RLS requires an auth mode that provides user claims)
+- [Configuration](/reference/config#rls-row-level-security) — Declarative RLS policies in `atlas.config.ts`
+- [Environment Variables](/reference/environment-variables#row-level-security) — Env var shorthand for a single RLS policy
+- [SQL Validation Pipeline](/security/sql-validation) — How RLS injection fits into the 7-layer validation pipeline
+- [Troubleshooting](/guides/troubleshooting#row-level-security) — Common RLS issues and fixes

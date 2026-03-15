@@ -406,11 +406,16 @@ export async function approveAction(
         const latencyMs = Date.now() - startMs;
 
         if (err instanceof ActionTimeoutError) {
-          const timedOutRows = await internalQuery(
-            `UPDATE action_log SET status = 'timed_out', error = $1 WHERE id = $2 RETURNING *`,
-            [err.message, actionId],
-          ) as unknown as ActionLogEntry[];
-          const timedOut = timedOutRows[0] ?? { ...entry, status: "timed_out" as ActionStatus, error: err.message };
+          const timedOut: ActionLogEntry = { ...entry, status: "timed_out" as ActionStatus, error: err.message };
+          try {
+            const timedOutRows = await internalQuery(
+              `UPDATE action_log SET status = 'timed_out', error = $1 WHERE id = $2 RETURNING *`,
+              [err.message, actionId],
+            ) as unknown as ActionLogEntry[];
+            if (timedOutRows[0]) Object.assign(timedOut, timedOutRows[0]);
+          } catch (dbErr) {
+            log.error({ err: dbErr, actionId }, "Failed to persist timed_out status to DB — memory store updated");
+          }
           memoryStore.set(actionId, timedOut);
 
           logActionAudit({

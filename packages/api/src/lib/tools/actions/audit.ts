@@ -39,9 +39,9 @@ export function logActionAudit(entry: ActionAuditEntry): void {
     ...(error && { error }),
   };
 
-  if (status === "failed") {
+  if (status === "failed" || status === "timed_out") {
     log.error(fields, `action_${status}`);
-  } else if (status === "denied" || status === "timed_out") {
+  } else if (status === "denied") {
     log.warn(fields, `action_${status}`);
   } else {
     log.info(fields, `action_${status}`);

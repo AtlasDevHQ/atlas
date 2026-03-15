@@ -213,7 +213,7 @@ describe("logActionAudit()", () => {
   // timed_out status routing and timeoutMs field
   // -------------------------------------------------------------------------
 
-  it("calls log.warn for status 'timed_out'", () => {
+  it("calls log.error for status 'timed_out'", () => {
     logActionAudit({
       actionId: "a13",
       actionType: "slow:action",
@@ -222,11 +222,11 @@ describe("logActionAudit()", () => {
       timeoutMs: 5000,
     });
 
-    expect(mockWarn).toHaveBeenCalledTimes(1);
+    expect(mockError).toHaveBeenCalledTimes(1);
     expect(mockInfo).not.toHaveBeenCalled();
-    expect(mockError).not.toHaveBeenCalled();
+    expect(mockWarn).not.toHaveBeenCalled();
 
-    const [fields, message] = mockWarn.mock.calls[0] as unknown as [Record<string, unknown>, string];
+    const [fields, message] = mockError.mock.calls[0] as unknown as [Record<string, unknown>, string];
     expect(message).toBe("action_timed_out");
     expect(fields.actionId).toBe("a13");
     expect(fields.status).toBe("timed_out");
@@ -242,7 +242,7 @@ describe("logActionAudit()", () => {
       timeoutMs: 30000,
     });
 
-    const [fields] = mockWarn.mock.calls[0] as unknown as [Record<string, unknown>, string];
+    const [fields] = mockError.mock.calls[0] as unknown as [Record<string, unknown>, string];
     expect(fields.timeoutMs).toBe(30000);
   });
 

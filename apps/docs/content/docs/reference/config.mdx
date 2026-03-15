@@ -433,6 +433,58 @@ See [Scheduled Tasks](/guides/scheduled-tasks) for the full guide.
 
 ---
 
+## Sandbox
+
+Override the default explore backend selection priority. By default, Atlas tries backends in this order: plugin > Vercel sandbox > nsjail (explicit) > sidecar > nsjail (auto-detect) > just-bash. Plugin backends always take highest priority regardless of config.
+
+<Tabs items={["Prefer sidecar", "nsjail only", "Minimal (dev)"]}>
+<Tab value="Prefer sidecar">
+```typescript
+// atlas.config.ts — sidecar first, fall back to nsjail then bash
+export default defineConfig({
+  sandbox: {
+    priority: ["sidecar", "nsjail", "just-bash"],
+  },
+});
+```
+</Tab>
+<Tab value="nsjail only">
+```typescript
+// atlas.config.ts — only try nsjail, fall back to bash
+export default defineConfig({
+  sandbox: {
+    priority: ["nsjail", "just-bash"],
+  },
+});
+```
+</Tab>
+<Tab value="Minimal (dev)">
+```typescript
+// atlas.config.ts — skip sandbox entirely (dev only)
+export default defineConfig({
+  sandbox: {
+    priority: ["just-bash"],
+  },
+});
+```
+</Tab>
+</Tabs>
+
+### Sandbox fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `priority` | `string[]` | No | Ordered list of backends to try. Valid values: `"vercel-sandbox"`, `"nsjail"`, `"sidecar"`, `"just-bash"` |
+
+**Env var shorthand:**
+
+```bash
+# Comma-separated backend names
+ATLAS_SANDBOX_PRIORITY=sidecar,nsjail,just-bash
+```
+
+---
+
 ## Full Example
 
 ```typescript
@@ -498,6 +550,11 @@ export default defineConfig({
     taskTimeout: 120_000,
     tickIntervalSeconds: 30,
   },
+
+  // Sandbox backend priority
+  sandbox: {
+    priority: ["sidecar", "nsjail", "just-bash"],
+  },
 });
 ```
 
@@ -516,6 +573,7 @@ export default defineConfig({
 | `actions` | `ActionsConfig` | — | Action framework configuration |
 | `rls` | `RLSConfig` | — | Row-Level Security policies |
 | `scheduler` | `object` | — | Scheduled task configuration ([details](#scheduler)) |
+| `sandbox` | `object` | — | Sandbox backend priority ([details](#sandbox)) |
 
 ---
 

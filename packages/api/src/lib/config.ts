@@ -32,6 +32,17 @@ import type { ToolRegistry } from "./tools/registry";
 import { ACTION_APPROVAL_MODES, type ActionApprovalMode } from "@atlas/api/lib/action-types";
 import { ATLAS_ROLES } from "@atlas/api/lib/auth/types";
 
+// ---------------------------------------------------------------------------
+// Sandbox backend names (used in config validation and explore backend selection)
+// ---------------------------------------------------------------------------
+
+/**
+ * Backend names operators can use in `sandbox.priority`.
+ * Plugin backends are always tried first and are not included here.
+ */
+export const SANDBOX_BACKEND_NAMES = ["vercel-sandbox", "nsjail", "sidecar", "just-bash"] as const;
+export type SandboxBackendName = (typeof SANDBOX_BACKEND_NAMES)[number];
+
 const log = createLogger("config");
 
 // ---------------------------------------------------------------------------
@@ -128,6 +139,25 @@ const RLSConfigSchema = z.object({
 
 export type RLSConfig = z.infer<typeof RLSConfigSchema>;
 
+const SandboxConfigSchema = z.object({
+  /**
+   * Ordered list of explore backends to try. The first available backend is
+   * used. Plugin backends are always tried first (not listed here).
+   *
+   * Valid values: "vercel-sandbox", "nsjail", "sidecar", "just-bash".
+   *
+   * @example ["sidecar", "nsjail", "just-bash"]
+   */
+  priority: z.array(z.enum(SANDBOX_BACKEND_NAMES)).min(1)
+    .refine(
+      (arr) => new Set(arr).size === arr.length,
+      { message: "sandbox.priority must not contain duplicate backend names" },
+    )
+    .optional(),
+});
+
+export type SandboxConfig = z.infer<typeof SandboxConfigSchema>;
+
 const AtlasConfigSchema = z.object({
   /**
    * Named datasource connections. The "default" key is used when no
@@ -197,6 +227,12 @@ const AtlasConfigSchema = z.object({
    * automatic WHERE clause injection based on the authenticated user's claims.
    */
   rls: RLSConfigSchema.optional(),
+
+  /**
+   * Sandbox / explore backend configuration. Override the default backend
+   * selection priority for the explore tool.
+   */
+  sandbox: SandboxConfigSchema.optional(),
 });
 
 /** The output type after Zod parsing (defaults applied, all fields present). */
@@ -206,7 +242,7 @@ export type AtlasConfig = z.infer<typeof AtlasConfigSchema>;
 export type AtlasConfigInput = z.input<typeof AtlasConfigSchema>;
 
 /** Expose schemas and formatter for external validation (e.g. tests, CLI). */
-export { AtlasConfigSchema, RateLimitConfigSchema, RLSPolicySchema, RLSConfigSchema };
+export { AtlasConfigSchema, RateLimitConfigSchema, RLSPolicySchema, RLSConfigSchema, SandboxConfigSchema };
 
 /**
  * The resolved config after merging the config file with env var defaults.
@@ -232,6 +268,8 @@ export interface ResolvedConfig {
   };
   /** Row-Level Security configuration. */
   rls?: RLSConfig;
+  /** Sandbox / explore backend configuration. */
+  sandbox?: SandboxConfig;
   /** Whether the config was loaded from a file or synthesized from env vars. */
   source: "file" | "env";
 }
@@ -336,6 +374,27 @@ export function configFromEnv(): ResolvedConfig {
     rls = { enabled: true, policies: [{ tables: ["*"], column, claim }] };
   }
 
+  // Sandbox priority from env var (comma-separated backend names)
+  let sandbox: SandboxConfig | undefined;
+  const rawPriority = process.env.ATLAS_SANDBOX_PRIORITY;
+  if (rawPriority) {
+    const names = rawPriority.split(",").map((s) => s.trim()).filter(Boolean);
+    if (names.length === 0) {
+      throw new Error(
+        `ATLAS_SANDBOX_PRIORITY is set but empty after parsing. ` +
+        `Expected comma-separated backend names: ${SANDBOX_BACKEND_NAMES.join(", ")}`,
+      );
+    }
+    const parseResult = SandboxConfigSchema.safeParse({ priority: names });
+    if (!parseResult.success) {
+      throw new Error(
+        `Invalid ATLAS_SANDBOX_PRIORITY: ${parseResult.error.issues.map((i) => i.message).join("; ")}. ` +
+        `Valid backends: ${SANDBOX_BACKEND_NAMES.join(", ")}`,
+      );
+    }
+    sandbox = parseResult.data;
+  }
+
   return {
     datasources,
     tools: ["explore", "executeSQL"],
@@ -345,6 +404,7 @@ export function configFromEnv(): ResolvedConfig {
     maxTotalConnections: 100,
     ...(scheduler ? { scheduler } : {}),
     ...(rls ? { rls } : {}),
+    ...(sandbox ? { sandbox } : {}),
     source: "env",
   };
 }
@@ -688,6 +748,7 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
     ...(config.plugins?.length ? { plugins: config.plugins } : {}),
     ...(config.scheduler ? { scheduler: config.scheduler } : {}),
     ...(config.rls ? { rls: config.rls } : {}),
+    ...(config.sandbox ? { sandbox: config.sandbox } : {}),
     source: "file",
   };
 }

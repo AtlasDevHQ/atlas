@@ -1111,3 +1111,127 @@ describe("plugin validation", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Sandbox config (sandbox.priority)
+// ---------------------------------------------------------------------------
+
+describe("sandbox config", () => {
+  it("accepts valid sandbox.priority array", () => {
+    const resolved = validateAndResolve({
+      sandbox: { priority: ["sidecar", "nsjail", "just-bash"] },
+    });
+    expect(resolved.sandbox).toEqual({
+      priority: ["sidecar", "nsjail", "just-bash"],
+    });
+  });
+
+  it("accepts all valid backend names", () => {
+    const resolved = validateAndResolve({
+      sandbox: {
+        priority: ["vercel-sandbox", "nsjail", "sidecar", "just-bash"],
+      },
+    });
+    expect(resolved.sandbox!.priority).toHaveLength(4);
+  });
+
+  it("accepts single-element priority", () => {
+    const resolved = validateAndResolve({
+      sandbox: { priority: ["just-bash"] },
+    });
+    expect(resolved.sandbox!.priority).toEqual(["just-bash"]);
+  });
+
+  it("throws on invalid backend name", () => {
+    expect(() =>
+      validateAndResolve({
+        sandbox: { priority: ["docker"] },
+      }),
+    ).toThrow("Invalid atlas.config.ts");
+  });
+
+  it("throws on empty priority array", () => {
+    expect(() =>
+      validateAndResolve({
+        sandbox: { priority: [] },
+      }),
+    ).toThrow("Invalid atlas.config.ts");
+  });
+
+  it("throws on duplicate backend names", () => {
+    expect(() =>
+      validateAndResolve({
+        sandbox: { priority: ["sidecar", "sidecar", "just-bash"] },
+      }),
+    ).toThrow("duplicate");
+  });
+
+  it("omits sandbox from resolved config when not provided", () => {
+    const resolved = validateAndResolve({});
+    expect(resolved.sandbox).toBeUndefined();
+  });
+
+  it("accepts sandbox without priority (empty object)", () => {
+    const resolved = validateAndResolve({ sandbox: {} });
+    // sandbox is present but priority is undefined
+    expect(resolved.sandbox).toEqual({});
+  });
+
+  it("passes through defineConfig", () => {
+    const config = defineConfig({
+      sandbox: { priority: ["sidecar", "just-bash"] },
+    });
+    expect(config.sandbox!.priority).toEqual(["sidecar", "just-bash"]);
+  });
+});
+
+describe("configFromEnv ATLAS_SANDBOX_PRIORITY", () => {
+  const origPriority = process.env.ATLAS_SANDBOX_PRIORITY;
+  const origUrl = process.env.ATLAS_DATASOURCE_URL;
+
+  beforeEach(() => {
+    delete process.env.ATLAS_SANDBOX_PRIORITY;
+    delete process.env.ATLAS_DATASOURCE_URL;
+  });
+
+  afterEach(() => {
+    if (origPriority !== undefined) process.env.ATLAS_SANDBOX_PRIORITY = origPriority;
+    else delete process.env.ATLAS_SANDBOX_PRIORITY;
+    if (origUrl !== undefined) process.env.ATLAS_DATASOURCE_URL = origUrl;
+    else delete process.env.ATLAS_DATASOURCE_URL;
+  });
+
+  it("parses comma-separated backend names", () => {
+    process.env.ATLAS_SANDBOX_PRIORITY = "sidecar,nsjail,just-bash";
+    const config = configFromEnv();
+    expect(config.sandbox).toEqual({
+      priority: ["sidecar", "nsjail", "just-bash"],
+    });
+  });
+
+  it("trims whitespace around backend names", () => {
+    process.env.ATLAS_SANDBOX_PRIORITY = " sidecar , just-bash ";
+    const config = configFromEnv();
+    expect(config.sandbox!.priority).toEqual(["sidecar", "just-bash"]);
+  });
+
+  it("throws on invalid backend name in env var", () => {
+    process.env.ATLAS_SANDBOX_PRIORITY = "sidecar,docker";
+    expect(() => configFromEnv()).toThrow("Invalid ATLAS_SANDBOX_PRIORITY");
+  });
+
+  it("throws on duplicate backend names in env var", () => {
+    process.env.ATLAS_SANDBOX_PRIORITY = "sidecar,sidecar,just-bash";
+    expect(() => configFromEnv()).toThrow("duplicate");
+  });
+
+  it("throws on effectively empty value", () => {
+    process.env.ATLAS_SANDBOX_PRIORITY = " , , ";
+    expect(() => configFromEnv()).toThrow("empty after parsing");
+  });
+
+  it("omits sandbox when env var not set", () => {
+    const config = configFromEnv();
+    expect(config.sandbox).toBeUndefined();
+  });
+});

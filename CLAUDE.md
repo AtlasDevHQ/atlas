@@ -18,7 +18,7 @@ Guidance for Claude Code when working in this repository.
 - [ ] **Path traversal protection** — Each explore backend enforces read-only access scoped to `semantic/`
 - [ ] **No secrets in responses** — Never expose connection strings, API keys, or stack traces to the user or agent
 - [ ] **Readonly DB connections** — PostgreSQL uses read-only queries enforced by validation; MySQL uses a read-only session variable; ClickHouse uses `readonly: 1`
-- [ ] **Explore tool isolation** — Five-tier priority: Vercel sandbox > nsjail explicit > sidecar > nsjail auto-detect > just-bash (dev fallback). When `ATLAS_SANDBOX_URL` is set, sidecar is the intended backend — nsjail auto-detection is skipped
+- [ ] **Explore tool isolation** — Default priority: plugin > Vercel sandbox > nsjail explicit > sidecar > nsjail auto-detect > just-bash (dev fallback). Operators can override via `sandbox.priority` in `atlas.config.ts` or `ATLAS_SANDBOX_PRIORITY` env var. Plugin backends always take highest priority. When `ATLAS_SANDBOX_URL` is set, sidecar is the intended backend — nsjail auto-detection is skipped
 
 ### Code Style
 - [ ] **bun only** — Package manager and runtime. Never npm, yarn, or node

@@ -9,7 +9,9 @@
  * - sidecar: HTTP-isolated container with no secrets (Railway)
  * - just-bash: OverlayFs ensures read-only access; writes stay in memory (dev, or production fallback)
  *
- * Runtime selection priority: sandbox plugin > Vercel sandbox > nsjail (explicit) > sidecar > nsjail (auto-detect) > just-bash.
+ * Default selection priority: sandbox plugin > Vercel sandbox > nsjail (explicit) > sidecar > nsjail (auto-detect) > just-bash.
+ * Operators can override the built-in priority via `sandbox.priority` in atlas.config.ts
+ * or `ATLAS_SANDBOX_PRIORITY` env var. Plugin backends always take highest priority.
  * A production warning is logged when falling back to just-bash.
  */
 
@@ -18,6 +20,7 @@ import { z } from "zod";
 import * as path from "path";
 import { createLogger } from "@atlas/api/lib/logger";
 import { withSpan } from "@atlas/api/lib/tracing";
+import { getConfig, type SandboxBackendName } from "@atlas/api/lib/config";
 
 const log = createLogger("explore");
 
@@ -132,7 +135,7 @@ let _nsjailFailed = false;
 /** Track sidecar init failures so the health endpoint reports accurately. */
 let _sidecarFailed = false;
 
-export type ExploreBackendType = "vercel-sandbox" | "nsjail" | "sidecar" | "just-bash" | "plugin";
+export type ExploreBackendType = SandboxBackendName | "plugin";
 
 /** Name of the active sandbox plugin (if any). Set during backend init. */
 let _activeSandboxPluginId: string | null = null;
@@ -143,14 +146,45 @@ export function getActiveSandboxPluginId(): string | null {
 }
 
 /**
+ * Check if a specific backend is available (sync, for health reporting).
+ */
+function isBackendAvailable(name: SandboxBackendName): boolean {
+  switch (name) {
+    case "vercel-sandbox":
+      return useVercelSandbox();
+    case "nsjail":
+      if (_nsjailFailed) return false;
+      return process.env.ATLAS_SANDBOX === "nsjail" || useNsjail();
+    case "sidecar":
+      return useSidecar() && !_sidecarFailed;
+    case "just-bash":
+      return true;
+  }
+}
+
+/**
  * Returns which explore backend is active (for health endpoint).
  *
  * Plugin detection is lazy — _activeSandboxPluginId is only set after the
  * first explore command triggers getExploreBackend(). Before that, this
  * function falls through to the built-in detection chain.
+ *
+ * When `sandbox.priority` is configured, the first available backend in the
+ * priority list is returned instead of the hardcoded chain.
  */
 export function getExploreBackendType(): ExploreBackendType {
   if (_activeSandboxPluginId) return "plugin";
+
+  // Config-driven priority
+  const configPriority = getConfig()?.sandbox?.priority;
+  if (configPriority && configPriority.length > 0) {
+    for (const name of configPriority) {
+      if (isBackendAvailable(name)) return name;
+    }
+    return "just-bash";
+  }
+
+  // Default chain
   if (useVercelSandbox()) return "vercel-sandbox";
   // Explicit nsjail (ATLAS_SANDBOX=nsjail) — hard-fail if unavailable
   if (process.env.ATLAS_SANDBOX === "nsjail" && !_nsjailFailed) return "nsjail";
@@ -159,6 +193,81 @@ export function getExploreBackendType(): ExploreBackendType {
   // nsjail auto-detect (binary on PATH)
   if (!_nsjailFailed && useNsjail()) return "nsjail";
   return "just-bash";
+}
+
+/**
+ * Try to create a specific backend by name. Returns null if the backend
+ * is not available (env vars not set, binary not found, etc.).
+ */
+async function tryCreateBackend(name: SandboxBackendName): Promise<ExploreBackend | null> {
+  switch (name) {
+    case "vercel-sandbox": {
+      if (!useVercelSandbox()) return null;
+      try {
+        const { createSandboxBackend } = await import("./explore-sandbox");
+        return createSandboxBackend(SEMANTIC_ROOT);
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        log.warn(
+          { error: detail },
+          "vercel-sandbox backend failed to initialize — trying next in priority",
+        );
+        return null;
+      }
+    }
+
+    case "nsjail": {
+      if (_nsjailFailed) return null;
+      // Check if nsjail is available (explicit or auto-detect)
+      if (process.env.ATLAS_SANDBOX !== "nsjail" && !useNsjail()) return null;
+      try {
+        const { createNsjailBackend } = await import("./explore-nsjail");
+        return await createNsjailBackend(SEMANTIC_ROOT, {
+          onInfrastructureError: invalidateExploreBackend,
+          onNsjailFailed: markNsjailFailed,
+        });
+      } catch (err) {
+        _nsjailFailed = true;
+        const detail = err instanceof Error ? err.message : String(err);
+        log.warn(
+          { error: detail },
+          "nsjail backend failed to initialize — trying next in priority",
+        );
+        return null;
+      }
+    }
+
+    case "sidecar": {
+      if (!useSidecar() || _sidecarFailed) return null;
+      try {
+        const { createSidecarBackend } = await import("./explore-sidecar");
+        return createSidecarBackend(process.env.ATLAS_SANDBOX_URL!);
+      } catch (err) {
+        _sidecarFailed = true;
+        const detail = err instanceof Error ? err.message : String(err);
+        log.warn(
+          { error: detail },
+          "sidecar backend failed to initialize — trying next in priority",
+        );
+        return null;
+      }
+    }
+
+    case "just-bash": {
+      if (process.env.NODE_ENV === "production") {
+        log.warn(
+          "SECURITY DEGRADATION: Explore tool running without process isolation (just-bash fallback). " +
+            "In production, this means shell commands execute directly on the host with only OverlayFs " +
+            "read-only protection — no namespace, network, or resource isolation. " +
+            "Install nsjail, configure a sidecar (ATLAS_SANDBOX_URL), or deploy on Vercel for sandboxed execution. " +
+            "See: https://github.com/google/nsjail",
+        );
+      } else {
+        log.debug("Explore tool using just-bash backend (acceptable for development)");
+      }
+      return createBashBackend(SEMANTIC_ROOT);
+    }
+  }
 }
 
 let backendPromise: Promise<ExploreBackend> | null = null;
@@ -213,6 +322,45 @@ function getExploreBackend(): Promise<ExploreBackend> {
           }
         }
       }
+
+      // --- Config-driven priority ---
+      const configPriority = getConfig()?.sandbox?.priority;
+      if (configPriority && configPriority.length > 0) {
+        log.info(
+          { priority: configPriority },
+          "Using configured sandbox priority: %s",
+          configPriority.join(" > "),
+        );
+        for (const name of configPriority) {
+          const backend = await tryCreateBackend(name);
+          if (backend) {
+            log.info(
+              { backend: name, source: "config" },
+              "Explore backend selected: %s (config priority)",
+              name,
+            );
+            return backend;
+          }
+          log.debug({ backend: name }, "Backend %s unavailable — trying next in priority", name);
+        }
+        // All config backends failed
+        if (configPriority.includes("just-bash")) {
+          // just-bash was in the list but somehow failed (should not happen) — try once more
+          log.warn(
+            { priority: configPriority },
+            "All higher-priority backends in sandbox.priority unavailable — using just-bash",
+          );
+          return createBashBackend(SEMANTIC_ROOT);
+        }
+        // Operator did NOT include just-bash — respect their intent
+        throw new Error(
+          `All backends in sandbox.priority (${configPriority.join(", ")}) failed to initialize. ` +
+          "Add 'just-bash' to the priority list if you want an unsandboxed fallback, " +
+          "or fix the backend configuration.",
+        );
+      }
+
+      // --- Default priority chain ---
 
       // Priority 1: Vercel Sandbox (Firecracker VM)
       if (useVercelSandbox()) {

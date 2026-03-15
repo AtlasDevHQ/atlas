@@ -148,7 +148,12 @@ const SandboxConfigSchema = z.object({
    *
    * @example ["sidecar", "nsjail", "just-bash"]
    */
-  priority: z.array(z.enum(SANDBOX_BACKEND_NAMES)).min(1).optional(),
+  priority: z.array(z.enum(SANDBOX_BACKEND_NAMES)).min(1)
+    .refine(
+      (arr) => new Set(arr).size === arr.length,
+      { message: "sandbox.priority must not contain duplicate backend names" },
+    )
+    .optional(),
 });
 
 export type SandboxConfig = z.infer<typeof SandboxConfigSchema>;
@@ -380,16 +385,14 @@ export function configFromEnv(): ResolvedConfig {
         `Expected comma-separated backend names: ${SANDBOX_BACKEND_NAMES.join(", ")}`,
       );
     }
-    const invalid = names.filter(
-      (n) => !(SANDBOX_BACKEND_NAMES as readonly string[]).includes(n),
-    );
-    if (invalid.length > 0) {
+    const parseResult = SandboxConfigSchema.safeParse({ priority: names });
+    if (!parseResult.success) {
       throw new Error(
-        `Invalid ATLAS_SANDBOX_PRIORITY value(s): ${invalid.join(", ")}. ` +
+        `Invalid ATLAS_SANDBOX_PRIORITY: ${parseResult.error.issues.map((i) => i.message).join("; ")}. ` +
         `Valid backends: ${SANDBOX_BACKEND_NAMES.join(", ")}`,
       );
     }
-    sandbox = { priority: names as SandboxBackendName[] };
+    sandbox = parseResult.data;
   }
 
   return {

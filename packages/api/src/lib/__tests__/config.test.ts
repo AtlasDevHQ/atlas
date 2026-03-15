@@ -1158,6 +1158,14 @@ describe("sandbox config", () => {
     ).toThrow("Invalid atlas.config.ts");
   });
 
+  it("throws on duplicate backend names", () => {
+    expect(() =>
+      validateAndResolve({
+        sandbox: { priority: ["sidecar", "sidecar", "just-bash"] },
+      }),
+    ).toThrow("duplicate");
+  });
+
   it("omits sandbox from resolved config when not provided", () => {
     const resolved = validateAndResolve({});
     expect(resolved.sandbox).toBeUndefined();
@@ -1210,7 +1218,11 @@ describe("configFromEnv ATLAS_SANDBOX_PRIORITY", () => {
   it("throws on invalid backend name in env var", () => {
     process.env.ATLAS_SANDBOX_PRIORITY = "sidecar,docker";
     expect(() => configFromEnv()).toThrow("Invalid ATLAS_SANDBOX_PRIORITY");
-    expect(() => configFromEnv()).toThrow("docker");
+  });
+
+  it("throws on duplicate backend names in env var", () => {
+    process.env.ATLAS_SANDBOX_PRIORITY = "sidecar,sidecar,just-bash";
+    expect(() => configFromEnv()).toThrow("duplicate");
   });
 
   it("throws on effectively empty value", () => {

@@ -135,7 +135,7 @@ let _nsjailFailed = false;
 /** Track sidecar init failures so the health endpoint reports accurately. */
 let _sidecarFailed = false;
 
-export type ExploreBackendType = "vercel-sandbox" | "nsjail" | "sidecar" | "just-bash" | "plugin";
+export type ExploreBackendType = SandboxBackendName | "plugin";
 
 /** Name of the active sandbox plugin (if any). Set during backend init. */
 let _activeSandboxPluginId: string | null = null;
@@ -203,8 +203,17 @@ async function tryCreateBackend(name: SandboxBackendName): Promise<ExploreBacken
   switch (name) {
     case "vercel-sandbox": {
       if (!useVercelSandbox()) return null;
-      const { createSandboxBackend } = await import("./explore-sandbox");
-      return createSandboxBackend(SEMANTIC_ROOT);
+      try {
+        const { createSandboxBackend } = await import("./explore-sandbox");
+        return createSandboxBackend(SEMANTIC_ROOT);
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        log.warn(
+          { error: detail },
+          "vercel-sandbox backend failed to initialize — trying next in priority",
+        );
+        return null;
+      }
     }
 
     case "nsjail": {
@@ -229,9 +238,19 @@ async function tryCreateBackend(name: SandboxBackendName): Promise<ExploreBacken
     }
 
     case "sidecar": {
-      if (!useSidecar()) return null;
-      const { createSidecarBackend } = await import("./explore-sidecar");
-      return createSidecarBackend(process.env.ATLAS_SANDBOX_URL!);
+      if (!useSidecar() || _sidecarFailed) return null;
+      try {
+        const { createSidecarBackend } = await import("./explore-sidecar");
+        return createSidecarBackend(process.env.ATLAS_SANDBOX_URL!);
+      } catch (err) {
+        _sidecarFailed = true;
+        const detail = err instanceof Error ? err.message : String(err);
+        log.warn(
+          { error: detail },
+          "sidecar backend failed to initialize — trying next in priority",
+        );
+        return null;
+      }
     }
 
     case "just-bash": {
@@ -324,12 +343,21 @@ function getExploreBackend(): Promise<ExploreBackend> {
           }
           log.debug({ backend: name }, "Backend %s unavailable — trying next in priority", name);
         }
-        // All config backends failed — fall back to just-bash
-        log.warn(
-          { priority: configPriority },
-          "All backends in sandbox.priority exhausted — falling back to just-bash",
+        // All config backends failed
+        if (configPriority.includes("just-bash")) {
+          // just-bash was in the list but somehow failed (should not happen) — try once more
+          log.warn(
+            { priority: configPriority },
+            "All higher-priority backends in sandbox.priority unavailable — using just-bash",
+          );
+          return createBashBackend(SEMANTIC_ROOT);
+        }
+        // Operator did NOT include just-bash — respect their intent
+        throw new Error(
+          `All backends in sandbox.priority (${configPriority.join(", ")}) failed to initialize. ` +
+          "Add 'just-bash' to the priority list if you want an unsandboxed fallback, " +
+          "or fix the backend configuration.",
         );
-        return createBashBackend(SEMANTIC_ROOT);
       }
 
       // --- Default priority chain ---

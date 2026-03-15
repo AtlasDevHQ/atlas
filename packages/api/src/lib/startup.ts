@@ -651,8 +651,15 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
         sandboxPriority.join(" > "),
       );
     }
-  } catch {
-    // Config module unavailable — skip
+  } catch (err) {
+    const isModuleErr = err != null && typeof err === "object" && "code" in err
+      && (err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND";
+    if (!isModuleErr) {
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        "Failed to read sandbox priority from config",
+      );
+    }
   }
 
   const isVercel = process.env.ATLAS_RUNTIME === "vercel" || !!process.env.VERCEL;

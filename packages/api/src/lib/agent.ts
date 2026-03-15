@@ -342,16 +342,21 @@ export function applyCacheControl(
  * Wrap each tool's execute function with beforeToolCall / afterToolCall
  * plugin hook dispatch. No-op when no plugins are registered.
  *
+ * Execution order for tools that have domain-specific hooks (e.g. executeSQL):
+ *   beforeToolCall → beforeQuery → execute → afterQuery → afterToolCall
+ *
  * - beforeToolCall: can return `{ args }` to modify args, or throw to reject
- * - afterToolCall: can return `{ result }` to modify the result
+ * - afterToolCall: can return `{ result }` to modify the result, or throw to reject
  */
 function wrapToolsWithHooks(
   toolSet: ToolSet,
   hookCtx: { userId?: string; conversationId?: string },
 ): ToolSet {
+  // Optimization: skip wrapping when no plugins are registered at request time.
+  // Plugins are initialized at boot before any requests — this is safe.
   if (plugins.size === 0) return toolSet;
 
-  const stepCounter = { value: 0 };
+  const callCounter = { value: 0 };
   const wrapped: ToolSet = {};
 
   for (const [name, t] of Object.entries(toolSet)) {
@@ -367,11 +372,11 @@ function wrapToolsWithHooks(
         args: Record<string, unknown>,
         options: Parameters<NonNullable<typeof t.execute>>[1],
       ) => {
-        stepCounter.value++;
+        callCounter.value++;
         const ctx = {
           toolName: name,
           args,
-          context: { ...hookCtx, stepCount: stepCounter.value },
+          context: { ...hookCtx, toolCallCount: callCounter.value },
         };
 
         // beforeToolCall — can modify args or throw to reject
@@ -390,21 +395,23 @@ function wrapToolsWithHooks(
           return `Tool call rejected by plugin: ${err instanceof Error ? err.message : String(err)}`;
         }
 
+        const start = Date.now();
         const result = await origExecute(finalArgs, options);
+        const durationMs = Date.now() - start;
 
-        // afterToolCall — can modify result
+        // afterToolCall — can modify result or throw to reject
         try {
           return await dispatchMutableHook(
             "afterToolCall",
-            { ...ctx, args: finalArgs, result, context: { ...hookCtx, stepCount: stepCounter.value } },
+            { ...ctx, args: finalArgs, result, durationMs, context: { ...hookCtx, toolCallCount: callCounter.value } },
             "result",
           );
         } catch (err) {
-          log.warn(
+          log.error(
             { toolName: name, err: err instanceof Error ? err : new Error(String(err)) },
-            "afterToolCall hook error — returning original result",
+            "Tool result rejected by plugin",
           );
-          return result;
+          return `Tool result rejected by plugin: ${err instanceof Error ? err.message : String(err)}`;
         }
       },
     };

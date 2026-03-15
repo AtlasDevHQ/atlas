@@ -703,7 +703,7 @@ export default definePlugin({
           tool: ctx.toolName,
           userId: ctx.context.userId,
           conversationId: ctx.context.conversationId,
-          stepCount: ctx.context.stepCount,
+          stepCount: ctx.context.toolCallCount,
           timestamp: new Date().toISOString(),
         }));
       },
@@ -733,7 +733,7 @@ export default definePlugin({
   hooks: {
     beforeToolCall: [{
       handler: (ctx) => {
-        if (ctx.context.stepCount > MAX_TOOL_CALLS) {
+        if (ctx.context.toolCallCount > MAX_TOOL_CALLS) {
           throw new Error(
             `Tool call limit exceeded (${MAX_TOOL_CALLS}). ` +
             "Please refine your question to require fewer queries.",

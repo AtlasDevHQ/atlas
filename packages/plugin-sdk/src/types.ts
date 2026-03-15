@@ -191,19 +191,35 @@ export interface AfterExploreHookContext extends ExploreHookContext {
   output: string;
 }
 
+/** Session context available to tool call hooks. */
+export interface ToolCallSessionContext {
+  userId?: string;
+  conversationId?: string;
+  /** 1-based count of tool invocations in the current agent run (across all tools). */
+  toolCallCount: number;
+}
+
 /** Context passed to beforeToolCall / afterToolCall hooks. */
 export interface ToolCallHookContext {
   toolName: string;
   args: Record<string, unknown>;
-  context: {
-    userId?: string;
-    conversationId?: string;
-    stepCount: number;
-  };
+  context: ToolCallSessionContext;
 }
 
 export interface AfterToolCallHookContext extends ToolCallHookContext {
+  /**
+   * The tool's return value. Typed as `unknown` because different tools
+   * return different shapes. Narrow based on `toolName`:
+   *
+   * ```ts
+   * if (ctx.toolName === "executeSQL") {
+   *   const qr = ctx.result as { columns: string[]; rows: Record<string, unknown>[] };
+   * }
+   * ```
+   */
   result: unknown;
+  /** Wall-clock duration of the tool execution in milliseconds. */
+  durationMs: number;
 }
 
 /** Mutation return type for beforeToolCall hooks. Return to rewrite the args. */
@@ -249,7 +265,7 @@ export interface PluginHooks {
   afterExplore?: PluginHookEntry<AfterExploreHookContext>[];
   /** Fires before each tool call. Return `{ args }` to rewrite args, throw to reject. */
   beforeToolCall?: PluginHookEntry<ToolCallHookContext, ToolCallArgsMutation>[];
-  /** Fires after each tool call. Return `{ result }` to rewrite the result. */
+  /** Fires after each tool call. Return `{ result }` to rewrite the result, throw to reject. */
   afterToolCall?: PluginHookEntry<AfterToolCallHookContext, ToolCallResultMutation>[];
   /** HTTP-level: fires before routing a request. */
   onRequest?: PluginHookEntry<RequestHookContext>[];

@@ -50,7 +50,7 @@ describe("beforeToolCall hooks", () => {
     const args = { sql: "SELECT 1", explanation: "test" };
     const result = await dispatchMutableHook(
       "beforeToolCall",
-      { toolName: "executeSQL", args, context: { stepCount: 1 } },
+      { toolName: "executeSQL", args, context: { toolCallCount: 1 } },
       "args",
       registry,
     );
@@ -67,7 +67,7 @@ describe("beforeToolCall hooks", () => {
     const args = { sql: "SELECT 1" };
     await dispatchMutableHook(
       "beforeToolCall",
-      { toolName: "executeSQL", args, context: { stepCount: 1 } },
+      { toolName: "executeSQL", args, context: { toolCallCount: 1 } },
       "args",
       registry,
     );
@@ -85,7 +85,7 @@ describe("beforeToolCall hooks", () => {
     const args = { sql: "SELECT 1" };
     const result = await dispatchMutableHook(
       "beforeToolCall",
-      { toolName: "executeSQL", args, context: { stepCount: 1 } },
+      { toolName: "executeSQL", args, context: { toolCallCount: 1 } },
       "args",
       registry,
     );
@@ -103,7 +103,7 @@ describe("beforeToolCall hooks", () => {
 
     const result = await dispatchMutableHook(
       "beforeToolCall",
-      { toolName: "executeSQL", args: { sql: "SELECT 1" } as Record<string, unknown>, context: { stepCount: 1 } },
+      { toolName: "executeSQL", args: { sql: "SELECT 1" } as Record<string, unknown>, context: { toolCallCount: 1 } },
       "args",
       registry,
     );
@@ -122,7 +122,7 @@ describe("beforeToolCall hooks", () => {
     await expect(
       dispatchMutableHook(
         "beforeToolCall",
-        { toolName: "executeSQL", args: { sql: "SELECT 1" }, context: { stepCount: 1 } },
+        { toolName: "executeSQL", args: { sql: "SELECT 1" }, context: { toolCallCount: 1 } },
         "args",
         registry,
       ),
@@ -141,7 +141,7 @@ describe("beforeToolCall hooks", () => {
     // Should NOT throw — matcher returns false (different tool)
     const result = await dispatchMutableHook(
       "beforeToolCall",
-      { toolName: "explore", args: { command: "ls" }, context: { stepCount: 1 } },
+      { toolName: "explore", args: { command: "ls" }, context: { toolCallCount: 1 } },
       "args",
       registry,
     );
@@ -151,7 +151,7 @@ describe("beforeToolCall hooks", () => {
     await expect(
       dispatchMutableHook(
         "beforeToolCall",
-        { toolName: "executeSQL", args: { sql: "SELECT 1" }, context: { stepCount: 1 } },
+        { toolName: "executeSQL", args: { sql: "SELECT 1" }, context: { toolCallCount: 1 } },
         "args",
         registry,
       ),
@@ -183,7 +183,7 @@ describe("beforeToolCall hooks", () => {
 
     const result = await dispatchMutableHook(
       "beforeToolCall",
-      { toolName: "executeSQL", args: { sql: "SELECT 1" } as Record<string, unknown>, context: { stepCount: 1 } },
+      { toolName: "executeSQL", args: { sql: "SELECT 1" } as Record<string, unknown>, context: { toolCallCount: 1 } },
       "args",
       registry,
     );
@@ -204,7 +204,7 @@ describe("beforeToolCall hooks", () => {
     const args = { sql: "SELECT 1" };
     const result = await dispatchMutableHook(
       "beforeToolCall",
-      { toolName: "executeSQL", args, context: { stepCount: 1 } },
+      { toolName: "executeSQL", args, context: { toolCallCount: 1 } },
       "args",
       registry,
     );
@@ -226,7 +226,7 @@ describe("beforeToolCall hooks", () => {
       {
         toolName: "executeSQL",
         args: { sql: "SELECT 1" },
-        context: { userId: "user-123", conversationId: "conv-456", stepCount: 3 },
+        context: { userId: "user-123", conversationId: "conv-456", toolCallCount: 3 },
       },
       "args",
       registry,
@@ -235,7 +235,7 @@ describe("beforeToolCall hooks", () => {
     const ctx = receivedCtx as Record<string, unknown>;
     expect(ctx.toolName).toBe("executeSQL");
     expect(ctx.args).toEqual({ sql: "SELECT 1" });
-    expect(ctx.context).toEqual({ userId: "user-123", conversationId: "conv-456", stepCount: 3 });
+    expect(ctx.context).toEqual({ userId: "user-123", conversationId: "conv-456", toolCallCount: 3 });
   });
 });
 
@@ -254,7 +254,7 @@ describe("afterToolCall hooks", () => {
     const result = { columns: ["id"], rows: [{ id: 1 }] };
     const final = await dispatchMutableHook(
       "afterToolCall",
-      { toolName: "executeSQL", args: { sql: "SELECT 1" }, result, context: { stepCount: 1 } },
+      { toolName: "executeSQL", args: { sql: "SELECT 1" }, result, context: { toolCallCount: 1 } },
       "result",
       registry,
     );
@@ -271,7 +271,7 @@ describe("afterToolCall hooks", () => {
     const result = { success: true, data: [1, 2, 3] };
     const final = await dispatchMutableHook(
       "afterToolCall",
-      { toolName: "executeSQL", args: {}, result, context: { stepCount: 1 } },
+      { toolName: "executeSQL", args: {}, result, context: { toolCallCount: 1 } },
       "result",
       registry,
     );
@@ -299,7 +299,7 @@ describe("afterToolCall hooks", () => {
     const original = { columns: ["id", "email"], rows: [{ id: 1, email: "test@example.com" }] };
     const final = await dispatchMutableHook(
       "afterToolCall",
-      { toolName: "executeSQL", args: {}, result: original, context: { stepCount: 1 } },
+      { toolName: "executeSQL", args: {}, result: original, context: { toolCallCount: 1 } },
       "result",
       registry,
     );
@@ -323,7 +323,7 @@ describe("afterToolCall hooks", () => {
     // Should NOT fire — different tool
     await dispatchMutableHook(
       "afterToolCall",
-      { toolName: "explore", args: {}, result: "original", context: { stepCount: 1 } },
+      { toolName: "explore", args: {}, result: "original", context: { toolCallCount: 1 } },
       "result",
       registry,
     );
@@ -332,7 +332,7 @@ describe("afterToolCall hooks", () => {
     // Should fire — matches tool name
     const final = await dispatchMutableHook(
       "afterToolCall",
-      { toolName: "executeSQL", args: {}, result: "original", context: { stepCount: 1 } },
+      { toolName: "executeSQL", args: {}, result: "original", context: { toolCallCount: 1 } },
       "result",
       registry,
     );
@@ -365,7 +365,7 @@ describe("afterToolCall hooks", () => {
 
     const final = await dispatchMutableHook(
       "afterToolCall",
-      { toolName: "executeSQL", args: {}, result: 5, context: { stepCount: 1 } },
+      { toolName: "executeSQL", args: {}, result: 5, context: { toolCallCount: 1 } },
       "result",
       registry,
     );
@@ -386,7 +386,7 @@ describe("afterToolCall hooks", () => {
     await expect(
       dispatchMutableHook(
         "afterToolCall",
-        { toolName: "executeSQL", args: {}, result: "ok", context: { stepCount: 1 } },
+        { toolName: "executeSQL", args: {}, result: "ok", context: { toolCallCount: 1 } },
         "result",
         registry,
       ),
@@ -409,7 +409,7 @@ describe("afterToolCall hooks", () => {
         toolName: "executeSQL",
         args: { sql: "SELECT 1" },
         result,
-        context: { userId: "u1", conversationId: "c1", stepCount: 2 },
+        context: { userId: "u1", conversationId: "c1", toolCallCount: 2 },
       },
       "result",
       registry,
@@ -419,7 +419,7 @@ describe("afterToolCall hooks", () => {
     expect(ctx.toolName).toBe("executeSQL");
     expect(ctx.args).toEqual({ sql: "SELECT 1" });
     expect(ctx.result).toBe(result);
-    expect(ctx.context).toEqual({ userId: "u1", conversationId: "c1", stepCount: 2 });
+    expect(ctx.context).toEqual({ userId: "u1", conversationId: "c1", toolCallCount: 2 });
   });
 });
 
@@ -454,7 +454,7 @@ describe("beforeToolCall / afterToolCall cross-cutting", () => {
 
     await dispatchMutableHook(
       "beforeToolCall",
-      { toolName: "explore", args: { command: "ls" }, context: { stepCount: 1 } },
+      { toolName: "explore", args: { command: "ls" }, context: { toolCallCount: 1 } },
       "args",
       registry,
     );
@@ -473,7 +473,7 @@ describe("beforeToolCall / afterToolCall cross-cutting", () => {
     // dispatchHook (void) — handler fires but return is ignored
     await dispatchHook(
       "beforeToolCall",
-      { toolName: "explore", args: { command: "ls" }, context: { stepCount: 1 } },
+      { toolName: "explore", args: { command: "ls" }, context: { toolCallCount: 1 } },
       registry,
     );
 

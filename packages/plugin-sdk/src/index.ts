@@ -20,6 +20,7 @@ export type {
   ExploreHookContext,
   ExploreHookMutation,
   AfterExploreHookContext,
+  ToolCallSessionContext,
   ToolCallHookContext,
   AfterToolCallHookContext,
   ToolCallArgsMutation,

@@ -41,7 +41,7 @@ Guidance for Claude Code when working in this repository.
 ### Agent Tools
 - [ ] **Tools return structured data** — `executeSQL` returns `{ columns, rows }`
 - [ ] **Explore is read-only** — Only `ls`, `cat`, `grep`, `find` on `semantic/`. No writes, no shell escapes. Sandbox backends: Vercel sandbox > nsjail > sidecar > just-bash (dev fallback)
-- [ ] **Agent max 25 steps** — `stopWhen: stepCountIs(25)` in `streamText`
+- [ ] **Agent max steps** — `stopWhen: stepCountIs(getAgentMaxSteps())` in `streamText`. Default 25, configurable via `ATLAS_AGENT_MAX_STEPS` (range 1–100)
 - [ ] **Semantic layer drives the agent** — Read entity YAMLs before writing SQL
 
 ### Semantic Layer
@@ -111,7 +111,7 @@ bun run atlas -- diff    # Compare DB schema vs semantic layer
 ```
 POST /api/chat → authenticateRequest → checkRateLimit → withRequestContext → validateEnvironment
     → runAgent(messages)
-    → streamText (AI SDK, ToolRegistry, stopWhen: stepCountIs(25))
+    → streamText (AI SDK, ToolRegistry, stopWhen: stepCountIs(getAgentMaxSteps()))
         ├── explore → read semantic/*.yml (path-traversal protected)
         └── executeSQL → validate (4 layers) → query via ConnectionRegistry → { columns, rows }
     → Data Stream Response → Chat UI

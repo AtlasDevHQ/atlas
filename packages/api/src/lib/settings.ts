@@ -125,6 +125,15 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
 
   // Agent
   {
+    key: "ATLAS_AGENT_MAX_STEPS",
+    section: "Agent",
+    label: "Agent Max Steps",
+    description: "Maximum tool-call steps per agent run (1–100)",
+    type: "number",
+    default: "25",
+    envVar: "ATLAS_AGENT_MAX_STEPS",
+  },
+  {
     key: "ATLAS_PROVIDER",
     section: "Agent",
     label: "LLM Provider",

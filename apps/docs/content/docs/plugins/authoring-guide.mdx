@@ -373,8 +373,8 @@ Here is a complete example that creates a support ticket:
 
 ```typescript
 import { z } from "zod";
-import { tool } from "ai";
 import { createPlugin } from "@useatlas/plugin-sdk";
+import { tool } from "@useatlas/plugin-sdk/ai";
 import type { AtlasActionPlugin, PluginAction } from "@useatlas/plugin-sdk";
 
 const ticketConfigSchema = z.object({

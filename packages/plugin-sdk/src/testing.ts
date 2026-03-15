@@ -14,6 +14,8 @@
  * ```
  */
 
+import type { ToolSet } from "ai";
+
 import type {
   AtlasPluginContext,
   PluginDBConnection,
@@ -231,7 +233,7 @@ export interface MockContextOverrides {
 export interface RegisteredTool {
   name: string;
   description: string;
-  tool: unknown;
+  tool: ToolSet[string];
 }
 
 export interface MockContextResult {
@@ -274,8 +276,8 @@ export function createMockContext(
     tools: {
       register:
         overrides.tools?.register ??
-        ((tool: { name: string; description: string; tool: unknown }) => {
-          registeredTools.push(tool as RegisteredTool);
+        ((tool: { name: string; description: string; tool: ToolSet[string] }) => {
+          registeredTools.push(tool);
         }),
     },
     logger: overrides.logger ?? logger,

@@ -485,6 +485,72 @@ ATLAS_SANDBOX_PRIORITY=sidecar,nsjail,just-bash
 
 ---
 
+## Python Import Guard
+
+Customize the defense-in-depth import checker for the Python execution tool. The import guard runs before the sandbox — it is not the security boundary, but catches obvious mistakes early.
+
+<Tabs items={["Allow specific modules", "Block additional modules", "Combined"]}>
+<Tab value="Allow specific modules">
+```typescript
+// atlas.config.ts — allow requests for internal API calls (sandboxed environments)
+export default defineConfig({
+  python: {
+    allowModules: ["requests", "httpx"],
+  },
+});
+```
+</Tab>
+<Tab value="Block additional modules">
+```typescript
+// atlas.config.ts — block additional modules beyond defaults
+export default defineConfig({
+  python: {
+    blockedModules: ["boto3", "fabric", "paramiko"],
+  },
+});
+```
+</Tab>
+<Tab value="Combined">
+```typescript
+// atlas.config.ts — allow HTTP clients, block cloud SDKs
+export default defineConfig({
+  python: {
+    allowModules: ["requests"],
+    blockedModules: ["boto3", "google"],
+  },
+});
+```
+</Tab>
+</Tabs>
+
+Module matching operates on **top-level package names** only (the first component before any dot). For example, to block `google.cloud.storage`, use `"google"` — not `"google.cloud"`.
+
+### Python config fields
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `blockedModules` | `string[]` | No | `[]` | Additional modules to add to the default blocked list |
+| `allowModules` | `string[]` | No | `[]` | Modules to remove from the default blocked list |
+
+<Callout type="warn">
+Critical modules (`os`, `subprocess`, `sys`, `shutil`) **cannot be unblocked** — Atlas rejects the config at startup if they appear in `allowModules`. These provide direct OS/process access that no configuration should override.
+</Callout>
+
+### Default blocked modules
+
+These modules are blocked by default. Use `allowModules` to selectively unblock non-critical ones in sandboxed environments.
+
+| Category | Modules |
+|----------|---------|
+| OS / process | `subprocess`, `os`\*, `sys`\*, `shutil`\*, `signal`, `multiprocessing`, `threading`, `pty`, `fcntl`, `termios`, `resource`, `posixpath` |
+| Code injection | `ctypes`, `importlib`, `code` |
+| Network | `http`, `urllib`, `requests`, `httpx`, `aiohttp`, `webbrowser` |
+| Serialization / filesystem | `pickle`, `tempfile`, `pathlib` |
+
+\* Critical — cannot be unblocked via `allowModules`.
+
+---
+
 ## Full Example
 
 ```typescript
@@ -555,6 +621,12 @@ export default defineConfig({
   sandbox: {
     priority: ["sidecar", "nsjail", "just-bash"],
   },
+
+  // Python import guard (allow HTTP clients for sandboxed internal API access)
+  python: {
+    allowModules: ["requests"],
+    blockedModules: ["boto3"],
+  },
 });
 ```
 
@@ -574,6 +646,7 @@ export default defineConfig({
 | `rls` | `RLSConfig` | — | Row-Level Security policies |
 | `scheduler` | `object` | — | Scheduled task configuration ([details](#scheduler)) |
 | `sandbox` | `object` | — | Sandbox backend priority ([details](#sandbox)) |
+| `python` | `object` | — | Python import guard overrides ([details](#python-import-guard)) |
 
 ---
 

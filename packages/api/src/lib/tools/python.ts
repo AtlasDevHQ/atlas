@@ -16,12 +16,14 @@ import { tool } from "ai";
 import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
 import { withSpan } from "@atlas/api/lib/tracing";
+import { getConfig } from "@atlas/api/lib/config";
 
 const log = createLogger("python");
 
 // --- Import guard (defense-in-depth) ---
 
-const BLOCKED_MODULES = new Set([
+/** Default blocked modules — the baseline when no config overrides are set. */
+export const DEFAULT_BLOCKED_MODULES = new Set([
   "subprocess",
   "os",
   "socket",
@@ -50,6 +52,46 @@ const BLOCKED_MODULES = new Set([
   "tempfile",
   "pathlib",
 ]);
+
+/**
+ * Critical modules that can never be unblocked, even with `python.allowModules`.
+ * These provide direct OS/process access that no sandbox config should override.
+ */
+export const CRITICAL_MODULES = new Set(["os", "subprocess", "sys", "shutil"]);
+
+/**
+ * Build the effective blocked module set from the default list + config overrides.
+ * Called on each validation so config changes (hot-reload) take effect immediately.
+ */
+export function getEffectiveBlockedModules(): Set<string> {
+  const config = getConfig();
+  const pythonConfig = config?.python;
+
+  if (!pythonConfig) return DEFAULT_BLOCKED_MODULES;
+
+  const { blockedModules = [], allowModules = [] } = pythonConfig;
+
+  // Reject attempts to unblock critical modules
+  const criticalViolations = allowModules.filter((m) => CRITICAL_MODULES.has(m));
+  if (criticalViolations.length > 0) {
+    throw new Error(
+      `Cannot unblock critical Python modules: ${criticalViolations.join(", ")}. ` +
+      `These modules (${[...CRITICAL_MODULES].join(", ")}) are blocked regardless of configuration.`,
+    );
+  }
+
+  const allowSet = new Set(allowModules);
+  const effective = new Set<string>();
+
+  for (const mod of DEFAULT_BLOCKED_MODULES) {
+    if (!allowSet.has(mod)) effective.add(mod);
+  }
+  for (const mod of blockedModules) {
+    effective.add(mod);
+  }
+
+  return effective;
+}
 
 const BLOCKED_BUILTINS = new Set([
   "compile",
@@ -158,8 +200,16 @@ json.dump({"imports": imports, "calls": calls}, sys.stdout)
   }
 
   // Check imports
+  let blockedModules: Set<string>;
+  try {
+    blockedModules = getEffectiveBlockedModules();
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    return { safe: false, reason: detail };
+  }
+
   for (const mod of result.imports ?? []) {
-    if (BLOCKED_MODULES.has(mod)) {
+    if (blockedModules.has(mod)) {
       return { safe: false, reason: `Blocked import: "${mod}" is not allowed` };
     }
   }

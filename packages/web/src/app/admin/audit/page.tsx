@@ -1,20 +1,17 @@
 "use client";
 
+import * as React from "react";
 import { useEffect, useState } from "react";
-import { useQueryStates } from "nuqs";
-import { auditSearchParams } from "./search-params";
+import { useQueryState } from "nuqs";
+import { parseAsStringLiteral } from "nuqs";
 import { AnalyticsPanel } from "./analytics-panel";
+import { getAuditColumns, type AuditRow } from "./columns";
 import { useAtlasConfig } from "@/ui/context";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import { DataTable } from "@/components/data-table/data-table";
+import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
+import { DataTableSortList } from "@/components/data-table/data-table-sort-list";
+import { useDataTable } from "@/hooks/use-data-table";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { StatCard } from "@/ui/components/admin/stat-card";
@@ -28,18 +25,6 @@ import { ErrorBoundary } from "@/ui/components/error-boundary";
 
 // ── Types ─────────────────────────────────────────────────────────
 
-interface AuditRow {
-  id: string;
-  user_id: string;
-  sql: string;
-  success: boolean;
-  duration_ms: number;
-  row_count: number;
-  timestamp: string;
-  user_email?: string | null;
-  error?: string;
-}
-
 interface AuditStats {
   totalQueries: number;
   totalErrors: number;
@@ -47,14 +32,8 @@ interface AuditStats {
   queriesPerDay: { day: string; count: number }[];
 }
 
-interface Filters {
-  user: string;
-  from: string;
-  to: string;
-  errorOnly: boolean;
-}
-
 const LIMIT = 50;
+const auditTabs = ["log", "analytics"] as const;
 
 export default function AuditPage() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
@@ -65,15 +44,29 @@ export default function AuditPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<FetchError | null>(null);
 
-  const [params, setParams] = useQueryStates(auditSearchParams);
-  const offset = (params.page - 1) * LIMIT;
+  const [tab, setTab] = useQueryState(
+    "tab",
+    parseAsStringLiteral(auditTabs).withDefault("log"),
+  );
 
-  // Local form state — pushed to URL on "Apply"
-  const [filters, setFilters] = useState<Filters>({
-    user: params.user,
-    from: params.from,
-    to: params.to,
-    errorOnly: params.errorOnly,
+  // Analytics date range (separate from data-table filters)
+  const [analyticsFrom, setAnalyticsFrom] = useState("");
+  const [analyticsTo, setAnalyticsTo] = useState("");
+
+  // Column definitions (stable reference)
+  const columns = React.useMemo(() => getAuditColumns(), []);
+
+  // Data table with nuqs-managed pagination, sorting, column visibility
+  const pageCount = Math.max(1, Math.ceil(total / LIMIT));
+  const { table } = useDataTable({
+    data: rows,
+    columns,
+    pageCount,
+    initialState: {
+      sorting: [{ id: "timestamp", desc: true }],
+      pagination: { pageSize: LIMIT },
+    },
+    getRowId: (row) => row.id,
   });
 
   // Stats — non-critical, shown when available
@@ -84,24 +77,43 @@ export default function AuditPage() {
   // Clear stale error when switching tabs
   useEffect(() => {
     setError(null);
-  }, [params.tab]);
+  }, [tab]);
 
-  // Fetch rows on mount and when URL params change (only for log tab)
+  // Read pagination from table state for fetching
+  const { pageIndex, pageSize } = table.getState().pagination;
+  const offset = pageIndex * pageSize;
+
+  // Read filters from table state
+  const columnFilters = table.getState().columnFilters;
+  const userFilter = columnFilters.find((f) => f.id === "user")?.value as string | undefined;
+  const successFilter = columnFilters.find((f) => f.id === "success")?.value as string[] | undefined;
+
+  // Derive errorOnly from success filter
+  const errorOnly = successFilter?.length === 1 && successFilter[0] === "false";
+
+  // Read sorting from table state
+  const sorting = table.getState().sorting;
+  const sortId = sorting[0]?.id;
+  const sortDesc = sorting[0]?.desc;
+
+  // Fetch rows on mount and when table state changes (only for log tab)
   useEffect(() => {
-    if (params.tab === "analytics") return;
+    if (tab === "analytics") return;
     let cancelled = false;
     async function fetchRows() {
       setLoading(true);
       setError(null);
       try {
         const qs = new URLSearchParams({
-          limit: String(LIMIT),
+          limit: String(pageSize),
           offset: String(offset),
         });
-        if (params.user) qs.set("user", params.user);
-        if (params.from) qs.set("from", params.from);
-        if (params.to) qs.set("to", params.to);
-        if (params.errorOnly) qs.set("success", "false");
+        if (userFilter) qs.set("user", String(userFilter));
+        if (errorOnly) qs.set("success", "false");
+        if (sortId) {
+          qs.set("sort", sortId);
+          qs.set("order", sortDesc ? "desc" : "asc");
+        }
 
         const res = await fetch(`${apiUrl}/api/v1/admin/audit?${qs}`, { credentials });
         if (!res.ok) {
@@ -125,11 +137,7 @@ export default function AuditPage() {
     }
     fetchRows();
     return () => { cancelled = true; };
-  }, [apiUrl, offset, params.user, params.from, params.to, params.errorOnly, params.tab, credentials]);
-
-  function handleApply() {
-    setParams({ ...filters, page: 1 });
-  }
+  }, [apiUrl, offset, pageSize, userFilter, errorOnly, sortId, sortDesc, tab, credentials]);
 
   // Gate: 401/403/404 (applies to both tabs via stats endpoint)
   if (!loading && error?.status && [401, 403, 404].includes(error.status)) {
@@ -144,15 +152,12 @@ export default function AuditPage() {
     );
   }
 
-  const page = params.page;
-  const totalPages = Math.max(1, Math.ceil(total / LIMIT));
-
   return (
     <div className="flex h-[calc(100dvh-3rem)] flex-col">
       <ErrorBoundary>
       <Tabs
-        value={params.tab}
-        onValueChange={(v) => setParams({ tab: v as "log" | "analytics" })}
+        value={tab}
+        onValueChange={(v) => setTab(v as "log" | "analytics")}
       >
         {/* Header */}
         <div className="border-b px-6 py-4">
@@ -182,8 +187,8 @@ export default function AuditPage() {
               <Input
                 id="analytics-from"
                 type="date"
-                value={filters.from}
-                onChange={(e) => setFilters((f) => ({ ...f, from: e.target.value }))}
+                value={analyticsFrom}
+                onChange={(e) => setAnalyticsFrom(e.target.value)}
                 className="h-9 w-40"
               />
             </div>
@@ -192,17 +197,17 @@ export default function AuditPage() {
               <Input
                 id="analytics-to"
                 type="date"
-                value={filters.to}
-                onChange={(e) => setFilters((f) => ({ ...f, to: e.target.value }))}
+                value={analyticsTo}
+                onChange={(e) => setAnalyticsTo(e.target.value)}
                 className="h-9 w-40"
               />
             </div>
-            <Button size="sm" className="h-9" onClick={handleApply}>
+            <Button size="sm" className="h-9">
               <Search className="mr-1.5 size-3.5" />
               Apply
             </Button>
           </div>
-          <AnalyticsPanel from={params.from} to={params.to} />
+          <AnalyticsPanel from={analyticsFrom} to={analyticsTo} />
         </TabsContent>
 
         <TabsContent value="log" className="flex-1 overflow-auto p-6 space-y-6">
@@ -233,153 +238,25 @@ export default function AuditPage() {
             </div>
           ) : null}
 
-          {/* Filter row */}
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="space-y-1">
-              <label htmlFor="log-from" className="text-xs font-medium text-muted-foreground">From</label>
-              <Input
-                id="log-from"
-                type="date"
-                value={filters.from}
-                onChange={(e) => setFilters((f) => ({ ...f, from: e.target.value }))}
-                className="h-9 w-40"
-              />
-            </div>
-            <div className="space-y-1">
-              <label htmlFor="log-to" className="text-xs font-medium text-muted-foreground">To</label>
-              <Input
-                id="log-to"
-                type="date"
-                value={filters.to}
-                onChange={(e) => setFilters((f) => ({ ...f, to: e.target.value }))}
-                className="h-9 w-40"
-              />
-            </div>
-            <div className="space-y-1">
-              <label htmlFor="log-user" className="text-xs font-medium text-muted-foreground">User</label>
-              <Input
-                id="log-user"
-                type="text"
-                placeholder="Filter by user..."
-                value={filters.user}
-                onChange={(e) => setFilters((f) => ({ ...f, user: e.target.value }))}
-                className="h-9 w-48"
-              />
-            </div>
-            <Button
-              variant={filters.errorOnly ? "default" : "outline"}
-              size="sm"
-              className="h-9"
-              onClick={() => setFilters((f) => ({ ...f, errorOnly: !f.errorOnly }))}
-            >
-              <AlertTriangle className="mr-1.5 size-3.5" />
-              Errors only
-            </Button>
-            <Button size="sm" className="h-9" onClick={handleApply}>
-              <Search className="mr-1.5 size-3.5" />
-              Apply
-            </Button>
-          </div>
-
           {/* Content */}
           {error ? (
-            <ErrorBanner message={friendlyError(error)} onRetry={() => { setParams({ page: 1 }); }} />
+            <ErrorBanner message={friendlyError(error)} onRetry={() => { table.setPageIndex(0); }} />
           ) : loading ? (
             <div className="flex h-64 items-center justify-center">
               <LoadingState message="Loading audit log..." />
             </div>
-          ) : rows.length === 0 ? (
-            params.user || params.from || params.to || params.errorOnly ? (
-              <EmptyState
-                icon={Search}
-                title="No results match your filters"
-                description="Try adjusting your date range or clearing filters"
-                action={{ label: "Clear filters", onClick: () => { setFilters({ user: "", from: "", to: "", errorOnly: false }); setParams({ user: "", from: "", to: "", errorOnly: false, page: 1 }); } }}
-              />
-            ) : (
-              <EmptyState
-                icon={ScrollText}
-                title="No query activity recorded yet"
-                description="Query activity will appear here once users start asking questions"
-              />
-            )
+          ) : rows.length === 0 && !table.getState().columnFilters.length ? (
+            <EmptyState
+              icon={ScrollText}
+              title="No query activity recorded yet"
+              description="Query activity will appear here once users start asking questions"
+            />
           ) : (
-            <>
-              <div className="rounded-md border">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="w-44">Timestamp</TableHead>
-                      <TableHead className="w-32">User</TableHead>
-                      <TableHead>SQL</TableHead>
-                      <TableHead className="w-24 text-right">Duration</TableHead>
-                      <TableHead className="w-20 text-right">Rows</TableHead>
-                      <TableHead className="w-24">Status</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {rows.map((row) => (
-                      <TableRow key={row.id}>
-                        <TableCell className="text-xs text-muted-foreground">
-                          {new Date(row.timestamp).toLocaleString(undefined, {
-                            month: "short",
-                            day: "numeric",
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })}
-                        </TableCell>
-                        <TableCell className="text-sm">{row.user_email ?? row.user_id ?? "Anonymous"}</TableCell>
-                        <TableCell className="max-w-xs truncate font-mono text-xs">
-                          {row.sql}
-                        </TableCell>
-                        <TableCell className="text-right text-xs tabular-nums">
-                          {row.duration_ms}ms
-                        </TableCell>
-                        <TableCell className="text-right text-xs tabular-nums">
-                          {row.row_count}
-                        </TableCell>
-                        <TableCell>
-                          {row.success ? (
-                            <Badge variant="outline" className="border-green-300 text-green-700 dark:border-green-700 dark:text-green-400">
-                              Success
-                            </Badge>
-                          ) : (
-                            <Badge variant="outline" className="border-red-300 text-red-700 dark:border-red-700 dark:text-red-400">
-                              Error
-                            </Badge>
-                          )}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-
-              {/* Pagination */}
-              <div className="flex items-center justify-between">
-                <p className="text-sm text-muted-foreground">
-                  Page {page} of {totalPages} ({total} total)
-                </p>
-                <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={page <= 1}
-                    onClick={() => setParams((p) => ({ page: p.page - 1 }))}
-                  >
-                    Previous
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={page >= totalPages}
-                    onClick={() => setParams((p) => ({ page: p.page + 1 }))}
-                  >
-                    Next
-                  </Button>
-                </div>
-              </div>
-            </>
+            <DataTable table={table}>
+              <DataTableToolbar table={table}>
+                <DataTableSortList table={table} />
+              </DataTableToolbar>
+            </DataTable>
           )}
         </TabsContent>
       </Tabs>

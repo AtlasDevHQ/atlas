@@ -35,7 +35,7 @@ interface AuditRow {
   success: boolean;
   duration_ms: number;
   row_count: number;
-  created_at: string;
+  timestamp: string;
   error?: string;
 }
 
@@ -320,7 +320,7 @@ export default function AuditPage() {
                     {rows.map((row) => (
                       <TableRow key={row.id}>
                         <TableCell className="text-xs text-muted-foreground">
-                          {new Date(row.created_at).toLocaleString(undefined, {
+                          {new Date(row.timestamp).toLocaleString(undefined, {
                             month: "short",
                             day: "numeric",
                             hour: "2-digit",

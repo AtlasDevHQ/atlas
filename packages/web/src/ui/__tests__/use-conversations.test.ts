@@ -42,14 +42,40 @@ describe("transformMessages", () => {
     expect(result.map((m) => (m.parts[0] as { type: "text"; text: string }).text)).toEqual(["first", "second", "third"]);
   });
 
-  test("stringifies object content", () => {
-    const objContent = { text: "hello", data: [1, 2] };
+  test("extracts text from content parts array", () => {
     const messages: Message[] = [
-      msg({ id: "1", role: "user", content: objContent }),
+      msg({ id: "1", role: "user", content: [{ type: "text", text: "hello world" }] }),
     ];
 
     const result = transformMessages(messages);
-    expect((result[0].parts[0] as { type: "text"; text: string }).text).toBe(JSON.stringify(objContent));
+    expect(result[0].parts).toEqual([{ type: "text", text: "hello world" }]);
+  });
+
+  test("extracts multiple text parts from content array", () => {
+    const messages: Message[] = [
+      msg({ id: "1", role: "assistant", content: [
+        { type: "text", text: "first paragraph" },
+        { type: "text", text: "second paragraph" },
+      ] }),
+    ];
+
+    const result = transformMessages(messages);
+    expect(result[0].parts).toEqual([
+      { type: "text", text: "first paragraph" },
+      { type: "text", text: "second paragraph" },
+    ]);
+  });
+
+  test("filters out non-text parts from content array", () => {
+    const messages: Message[] = [
+      msg({ id: "1", role: "assistant", content: [
+        { type: "text", text: "answer" },
+        { type: "tool-invocation", toolName: "executeSQL" },
+      ] }),
+    ];
+
+    const result = transformMessages(messages);
+    expect(result[0].parts).toEqual([{ type: "text", text: "answer" }]);
   });
 
   test("preserves string content as-is", () => {

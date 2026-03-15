@@ -32,14 +32,16 @@ export function transformMessages(messages: Message[]): UIMessage[] {
   return messages
     .filter((m) => m.role === "user" || m.role === "assistant")
     .map((m) => {
-      const content = typeof m.content === "string"
+      const parts: UIMessage["parts"] = Array.isArray(m.content)
         ? m.content
-        : JSON.stringify(m.content);
+            .filter((p: { type?: string }) => p.type === "text")
+            .map((p: { text?: string }) => ({ type: "text" as const, text: p.text ?? "" }))
+        : [{ type: "text" as const, text: String(m.content) }];
 
       return {
         id: m.id,
         role: m.role as "user" | "assistant",
-        parts: [{ type: "text" as const, text: content }],
+        parts,
       };
     });
 }

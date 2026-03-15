@@ -1,15 +1,8 @@
 "use client";
 
+import * as React from "react";
+import type { ColumnDef } from "@tanstack/react-table";
 import { useAtlasConfig } from "@/ui/context";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -39,11 +32,14 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { HealthBadge } from "@/ui/components/admin/health-badge";
 import { EmptyState } from "@/ui/components/admin/empty-state";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
+import { DataTable } from "@/components/data-table/data-table";
+import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
+import { getConnectionColumns } from "./columns";
+import { useDataTable } from "@/hooks/use-data-table";
 import { Cable, Loader2, Plus, Pencil, Trash2, Eye, EyeOff } from "lucide-react";
 import { useAdminFetch, useInProgressSet, friendlyError } from "@/ui/hooks/use-admin-fetch";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
@@ -55,16 +51,6 @@ import {
   type ConnectionInfo,
   type ConnectionDetail,
 } from "@/ui/lib/types";
-
-// ── Helpers ───────────────────────────────────────────────────────
-
-function mapHealthStatus(
-  status?: ConnectionHealth["status"]
-): "healthy" | "degraded" | "down" | "unknown" {
-  if (!status) return "unknown";
-  if (status === "unhealthy") return "down";
-  return status;
-}
 
 // ── Connection Form Dialog ───────────────────────────────────────
 
@@ -440,6 +426,68 @@ export default function ConnectionsPage() {
   const [localConnections, setLocalConnections] = useState<ConnectionInfo[] | null>(null);
   const displayConnections = localConnections ?? connections ?? [];
 
+  // Data table columns (actions column uses component callbacks)
+  const columns = React.useMemo<ColumnDef<ConnectionInfo>[]>(() => {
+    const base = getConnectionColumns();
+    const actionsCol: ColumnDef<ConnectionInfo> = {
+      id: "actions",
+      header: () => <span className="sr-only">Actions</span>,
+      cell: ({ row }) => {
+        const conn = row.original;
+        return (
+          <div className="flex items-center justify-end gap-1">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={testing.has(conn.id)}
+              onClick={() => testConnection(conn.id)}
+              aria-label={testing.has(conn.id) ? `Testing connection ${conn.id}…` : undefined}
+            >
+              {testing.has(conn.id) ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                "Test"
+              )}
+            </Button>
+            {conn.id !== "default" && (
+              <>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => handleEdit(conn.id)}
+                  disabled={loadingDetail}
+                  aria-label={`Edit connection ${conn.id}`}
+                >
+                  <Pencil className="size-3.5" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => handleDelete(conn.id)}
+                  aria-label={`Delete connection ${conn.id}`}
+                >
+                  <Trash2 className="size-3.5 text-destructive" />
+                </Button>
+              </>
+            )}
+          </div>
+        );
+      },
+      enableSorting: false,
+      enableHiding: false,
+      size: 180,
+    };
+    return [...base, actionsCol];
+  }, [testing, loadingDetail]);
+
+  const { table: connTable } = useDataTable({
+    data: displayConnections,
+    columns,
+    pageCount: 1,
+    initialState: { pagination: { pageSize: 100 } },
+    getRowId: (row) => row.id,
+  });
+
   if (connections && localConnections !== null && connections !== localConnections) {
     setLocalConnections(null);
   }
@@ -548,77 +596,9 @@ export default function ConnectionsPage() {
             action={{ label: "Add connection", onClick: handleAdd }}
           />
         ) : displayConnections.length > 0 ? (
-          <div className="rounded-md border">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>ID</TableHead>
-                  <TableHead>Type</TableHead>
-                  <TableHead>Description</TableHead>
-                  <TableHead>Health</TableHead>
-                  <TableHead>Latency</TableHead>
-                  <TableHead className="w-[180px]"><span className="sr-only">Actions</span></TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {displayConnections.map((conn) => (
-                  <TableRow key={conn.id}>
-                    <TableCell className="font-mono text-xs">{conn.id}</TableCell>
-                    <TableCell>
-                      <Badge variant="secondary">{conn.dbType}</Badge>
-                    </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
-                      {conn.description ?? "\u2014"}
-                    </TableCell>
-                    <TableCell>
-                      <HealthBadge status={mapHealthStatus(conn.health?.status)} />
-                    </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
-                      {conn.health ? `${conn.health.latencyMs}ms` : "\u2014"}
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center justify-end gap-1">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          disabled={testing.has(conn.id)}
-                          onClick={() => testConnection(conn.id)}
-                          aria-label={testing.has(conn.id) ? `Testing connection ${conn.id}…` : undefined}
-                        >
-                          {testing.has(conn.id) ? (
-                            <Loader2 className="size-3.5 animate-spin" />
-                          ) : (
-                            "Test"
-                          )}
-                        </Button>
-                        {conn.id !== "default" && (
-                          <>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => handleEdit(conn.id)}
-                              disabled={loadingDetail}
-                              aria-label={`Edit connection ${conn.id}`}
-                            >
-                              <Pencil className="size-3.5" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => handleDelete(conn.id)}
-                              aria-label={`Delete connection ${conn.id}`}
-                            >
-                              <Trash2 className="size-3.5 text-destructive" />
-                            </Button>
-                          </>
-                        )}
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+          <DataTable table={connTable}>
+            <DataTableToolbar table={connTable} />
+          </DataTable>
         ) : null}
       </div>
       </ErrorBoundary>

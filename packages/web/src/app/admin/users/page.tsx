@@ -1,18 +1,22 @@
 "use client";
 
+import * as React from "react";
 import { useEffect, useState } from "react";
 import { useQueryStates } from "nuqs";
 import { usersSearchParams } from "./search-params";
+import type { ColumnDef } from "@tanstack/react-table";
 import { useAtlasConfig } from "@/ui/context";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { DataTable } from "@/components/data-table/data-table";
+import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
+import { DataTableSortList } from "@/components/data-table/data-table-sort-list";
+import { useDataTable } from "@/hooks/use-data-table";
+import {
+  getUserColumns,
+  getInvitationColumns,
+  type User,
+  type Invitation,
+} from "./columns";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -81,33 +85,10 @@ import {
 
 // -- Types --
 
-interface User {
-  id: string;
-  email: string;
-  name: string | null;
-  role: string;
-  banned: boolean;
-  banReason: string | null;
-  banExpires: string | null;
-  createdAt: string;
-}
-
 interface UserStats {
   total: number;
   banned: number;
   byRole: Record<string, number>;
-}
-
-interface Invitation {
-  id: string;
-  email: string;
-  role: string;
-  status: string;
-  invited_by: string | null;
-  invited_by_email: string | null;
-  expires_at: string;
-  accepted_at: string | null;
-  created_at: string;
 }
 
 type ConfirmAction =
@@ -117,19 +98,6 @@ type ConfirmAction =
 
 const LIMIT = 50;
 const ROLES = ["viewer", "analyst", "admin"] as const;
-
-const roleBadge: Record<string, { variant: "outline"; className: string }> = {
-  admin: { variant: "outline", className: "border-red-300 text-red-700 dark:border-red-700 dark:text-red-400" },
-  analyst: { variant: "outline", className: "border-blue-300 text-blue-700 dark:border-blue-700 dark:text-blue-400" },
-  viewer: { variant: "outline", className: "border-zinc-300 text-zinc-600 dark:border-zinc-600 dark:text-zinc-400" },
-};
-
-const inviteStatusBadge: Record<string, { variant: "outline"; className: string }> = {
-  pending: { variant: "outline", className: "border-amber-300 text-amber-700 dark:border-amber-700 dark:text-amber-400" },
-  accepted: { variant: "outline", className: "border-green-300 text-green-700 dark:border-green-700 dark:text-green-400" },
-  revoked: { variant: "outline", className: "border-zinc-300 text-zinc-600 dark:border-zinc-600 dark:text-zinc-400" },
-  expired: { variant: "outline", className: "border-zinc-300 text-zinc-500 dark:border-zinc-600 dark:text-zinc-500" },
-};
 
 export default function UsersPage() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
@@ -166,6 +134,118 @@ export default function UsersPage() {
   const { data: stats, error: statsError } = useAdminFetch<UserStats>(
     "/api/v1/admin/users/stats",
   );
+
+  // Data table columns (actions column uses component callbacks)
+  const userColumns = React.useMemo<ColumnDef<User>[]>(() => {
+    const base = getUserColumns();
+    const actionsCol: ColumnDef<User> = {
+      id: "actions",
+      header: () => null,
+      cell: ({ row }) => {
+        const user = row.original;
+        return (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="sm" className="size-8 p-0">
+                <MoreHorizontal className="size-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              {ROLES.map((r) =>
+                r !== user.role ? (
+                  <DropdownMenuItem
+                    key={r}
+                    onClick={() => handleRoleChange(user.id, r)}
+                  >
+                    <Shield className="mr-2 size-4" />
+                    Set {r}
+                  </DropdownMenuItem>
+                ) : null,
+              )}
+              <DropdownMenuSeparator />
+              {user.banned ? (
+                <DropdownMenuItem onClick={() => handleUnban(user.id)}>
+                  <ShieldOff className="mr-2 size-4" />
+                  Unban
+                </DropdownMenuItem>
+              ) : (
+                <DropdownMenuItem
+                  onClick={() => setConfirmAction({ type: "ban", user })}
+                >
+                  <Ban className="mr-2 size-4" />
+                  Ban user
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuItem onClick={() => handleRevoke(user.id)}>
+                <LogOut className="mr-2 size-4" />
+                Revoke sessions
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                className="text-destructive"
+                onClick={() => setConfirmAction({ type: "delete", user })}
+              >
+                <Trash2 className="mr-2 size-4" />
+                Delete user
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        );
+      },
+      enableSorting: false,
+      enableHiding: false,
+      size: 64,
+    };
+    return [...base, actionsCol];
+  }, []);
+
+  const pageCount = Math.max(1, Math.ceil(total / LIMIT));
+  const { table: usersTable } = useDataTable({
+    data: users,
+    columns: userColumns,
+    pageCount,
+    initialState: {
+      sorting: [{ id: "createdAt", desc: true }],
+      pagination: { pageSize: LIMIT },
+    },
+    getRowId: (row) => row.id,
+  });
+
+  // Invitations table
+  const invitationColumns = React.useMemo<ColumnDef<Invitation>[]>(() => {
+    const base = getInvitationColumns();
+    const actionsCol: ColumnDef<Invitation> = {
+      id: "actions",
+      header: () => null,
+      cell: ({ row }) => {
+        const inv = row.original;
+        if (inv.status !== "pending") return null;
+        return (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="size-8 p-0 text-muted-foreground hover:text-destructive"
+            onClick={() => handleRevokeInvitation(inv.id)}
+            title="Revoke invitation"
+          >
+            <X className="size-4" />
+          </Button>
+        );
+      },
+      enableSorting: false,
+      enableHiding: false,
+      size: 64,
+    };
+    return [...base, actionsCol];
+  }, []);
+
+  const { table: invitationsTable } = useDataTable({
+    data: invitations,
+    columns: invitationColumns,
+    pageCount: 1,
+    initialState: { pagination: { pageSize: 100 } },
+    getRowId: (row) => row.id,
+  });
 
   // Fetch users
   useEffect(() => {
@@ -363,8 +443,6 @@ export default function UsersPage() {
     );
   }
 
-  const page = params.page;
-  const totalPages = Math.max(1, Math.ceil(total / LIMIT));
   const pendingInvitations = invitations.filter((i) => i.status === "pending");
 
   return (
@@ -480,128 +558,11 @@ export default function UsersPage() {
             />
           )
         ) : (
-          <>
-            <div className="rounded-md border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Email</TableHead>
-                    <TableHead className="w-32">Name</TableHead>
-                    <TableHead className="w-32">Role</TableHead>
-                    <TableHead className="w-24">Status</TableHead>
-                    <TableHead className="w-36">Created</TableHead>
-                    <TableHead className="w-16" />
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {users.map((user) => (
-                    <TableRow key={user.id} className={busy.has(user.id) ? "opacity-50" : ""}>
-                      <TableCell className="text-sm font-medium">{user.email}</TableCell>
-                      <TableCell className="text-sm text-muted-foreground">
-                        {user.name || "\u2014"}
-                      </TableCell>
-                      <TableCell>
-                        <Badge {...(roleBadge[user.role] ?? roleBadge.viewer)}>
-                          {user.role}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        {user.banned ? (
-                          <Badge variant="outline" className="border-yellow-300 text-yellow-700 dark:border-yellow-700 dark:text-yellow-400">
-                            Banned
-                          </Badge>
-                        ) : (
-                          <Badge variant="outline" className="border-green-300 text-green-700 dark:border-green-700 dark:text-green-400">
-                            Active
-                          </Badge>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {new Date(user.createdAt).toLocaleDateString(undefined, {
-                          month: "short",
-                          day: "numeric",
-                          year: "numeric",
-                        })}
-                      </TableCell>
-                      <TableCell>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" size="sm" className="size-8 p-0">
-                              <MoreHorizontal className="size-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            {ROLES.map((r) =>
-                              r !== user.role ? (
-                                <DropdownMenuItem
-                                  key={r}
-                                  onClick={() => handleRoleChange(user.id, r)}
-                                >
-                                  <Shield className="mr-2 size-4" />
-                                  Set {r}
-                                </DropdownMenuItem>
-                              ) : null,
-                            )}
-                            <DropdownMenuSeparator />
-                            {user.banned ? (
-                              <DropdownMenuItem onClick={() => handleUnban(user.id)}>
-                                <ShieldOff className="mr-2 size-4" />
-                                Unban
-                              </DropdownMenuItem>
-                            ) : (
-                              <DropdownMenuItem
-                                onClick={() => setConfirmAction({ type: "ban", user })}
-                              >
-                                <Ban className="mr-2 size-4" />
-                                Ban user
-                              </DropdownMenuItem>
-                            )}
-                            <DropdownMenuItem onClick={() => handleRevoke(user.id)}>
-                              <LogOut className="mr-2 size-4" />
-                              Revoke sessions
-                            </DropdownMenuItem>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem
-                              className="text-destructive"
-                              onClick={() => setConfirmAction({ type: "delete", user })}
-                            >
-                              <Trash2 className="mr-2 size-4" />
-                              Delete user
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-
-            {/* Pagination */}
-            <div className="flex items-center justify-between">
-              <p className="text-sm text-muted-foreground">
-                Page {page} of {totalPages} ({total} total)
-              </p>
-              <div className="flex gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={page <= 1}
-                  onClick={() => setParams((p) => ({ page: p.page - 1 }))}
-                >
-                  Previous
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={page >= totalPages}
-                  onClick={() => setParams((p) => ({ page: p.page + 1 }))}
-                >
-                  Next
-                </Button>
-              </div>
-            </div>
-          </>
+          <DataTable table={usersTable}>
+            <DataTableToolbar table={usersTable}>
+              <DataTableSortList table={usersTable} />
+            </DataTableToolbar>
+          </DataTable>
         )}
 
         {/* Pending Invitations */}
@@ -617,64 +578,7 @@ export default function UsersPage() {
                 <Badge variant="outline">{pendingInvitations.length}</Badge>
               )}
             </div>
-            <div className="rounded-md border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Email</TableHead>
-                    <TableHead className="w-32">Role</TableHead>
-                    <TableHead className="w-28">Status</TableHead>
-                    <TableHead className="w-36">Expires</TableHead>
-                    <TableHead className="w-36">Sent</TableHead>
-                    <TableHead className="w-16" />
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {invitations.map((inv) => (
-                    <TableRow key={inv.id}>
-                      <TableCell className="text-sm font-medium">{inv.email}</TableCell>
-                      <TableCell>
-                        <Badge {...(roleBadge[inv.role] ?? roleBadge.viewer)}>
-                          {inv.role}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        <Badge {...(inviteStatusBadge[inv.status] ?? inviteStatusBadge.pending)}>
-                          {inv.status}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {new Date(inv.expires_at).toLocaleDateString(undefined, {
-                          month: "short",
-                          day: "numeric",
-                          year: "numeric",
-                        })}
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {new Date(inv.created_at).toLocaleDateString(undefined, {
-                          month: "short",
-                          day: "numeric",
-                          year: "numeric",
-                        })}
-                      </TableCell>
-                      <TableCell>
-                        {inv.status === "pending" && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="size-8 p-0 text-muted-foreground hover:text-destructive"
-                            onClick={() => handleRevokeInvitation(inv.id)}
-                            title="Revoke invitation"
-                          >
-                            <X className="size-4" />
-                          </Button>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
+            <DataTable table={invitationsTable} />
           </div>
         )}
       </div>

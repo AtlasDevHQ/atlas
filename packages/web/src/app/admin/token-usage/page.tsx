@@ -1,5 +1,6 @@
 "use client";
 
+import * as React from "react";
 import dynamic from "next/dynamic";
 import { useQueryStates } from "nuqs";
 import { tokenUsageSearchParams } from "./search-params";
@@ -8,19 +9,16 @@ import { useDarkMode } from "@/ui/hooks/use-dark-mode";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { StatCard } from "@/ui/components/admin/stat-card";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { EmptyState } from "@/ui/components/admin/empty-state";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
+import { DataTable } from "@/components/data-table/data-table";
+import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
+import { DataTableSortList } from "@/components/data-table/data-table-sort-list";
+import { getTokenUsageColumns, type UserTokenRow } from "./columns";
+import { useDataTable } from "@/hooks/use-data-table";
 import { Coins, TrendingUp, Users, MessageSquare, Search } from "lucide-react";
 import { useState } from "react";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
@@ -39,15 +37,6 @@ interface TokenSummary {
   totalRequests: number;
   from: string;
   to: string;
-}
-
-interface UserTokenRow {
-  userId: string;
-  userEmail?: string | null;
-  promptTokens: number;
-  completionTokens: number;
-  totalTokens: number;
-  requestCount: number;
 }
 
 interface TrendsResponse {
@@ -95,6 +84,20 @@ export default function TokenUsagePage() {
 
   const { data: usersData, loading: usersLoading, error: usersError } =
     useAdminFetch<{ users: UserTokenRow[] }>(`/api/v1/admin/tokens/by-user${qs}`, { deps: [qs] });
+
+  // Data table for top users
+  const tokenColumns = React.useMemo(() => getTokenUsageColumns(), []);
+  const tokenData = usersData?.users ?? [];
+  const { table: tokenTable } = useDataTable({
+    data: tokenData,
+    columns: tokenColumns,
+    pageCount: 1,
+    initialState: {
+      sorting: [{ id: "totalTokens", desc: true }],
+      pagination: { pageSize: 50 },
+    },
+    getRowId: (row) => row.userId,
+  });
 
   // Gate: auth/availability errors surface as FeatureGate
   const gateError = findGateError(summaryError, trendsError, usersError);
@@ -237,38 +240,11 @@ export default function TokenUsagePage() {
           ) : !usersData?.users?.length ? (
             <EmptyState icon={Users} title="No user data for this period" />
           ) : (
-            <div className="rounded-md border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>User</TableHead>
-                    <TableHead className="w-28 text-right">Prompt</TableHead>
-                    <TableHead className="w-28 text-right">Completion</TableHead>
-                    <TableHead className="w-28 text-right">Total</TableHead>
-                    <TableHead className="w-20 text-right">Requests</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {usersData.users.map((u) => (
-                    <TableRow key={u.userId}>
-                      <TableCell className="text-sm">{u.userEmail ?? u.userId}</TableCell>
-                      <TableCell className="text-right text-xs tabular-nums">
-                        {formatNumber(u.promptTokens)}
-                      </TableCell>
-                      <TableCell className="text-right text-xs tabular-nums">
-                        {formatNumber(u.completionTokens)}
-                      </TableCell>
-                      <TableCell className="text-right text-xs tabular-nums font-medium">
-                        {formatNumber(u.totalTokens)}
-                      </TableCell>
-                      <TableCell className="text-right text-xs tabular-nums">
-                        {u.requestCount}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
+            <DataTable table={tokenTable}>
+              <DataTableToolbar table={tokenTable}>
+                <DataTableSortList table={tokenTable} />
+              </DataTableToolbar>
+            </DataTable>
           )}
         </CardContent>
       </Card>

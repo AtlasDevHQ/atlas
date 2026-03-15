@@ -51,11 +51,14 @@ Agent requests action → pending
          ↓                ↓
       executed         executed
          ↓                ↓
-    success/failed    success/failed
+  success/failed/    success/failed/
+    timed_out          timed_out
 ```
 
-- **auto** mode: `pending` → `auto_approved` → `executed` (or `failed`)
-- **manual** / **admin-only** mode: `pending` → `approved` / `denied` → `executed` (or `failed`)
+- **auto** mode: `pending` → `auto_approved` → `executed` (or `failed` / `timed_out`)
+- **manual** / **admin-only** mode: `pending` → `approved` / `denied` → `executed` (or `failed` / `timed_out`)
+
+When execution exceeds the configured timeout, the action transitions to `timed_out` instead of remaining in-flight. The timeout duration is logged in the audit trail.
 
 ---
 
@@ -109,25 +112,28 @@ This action is **reversible** -- on rollback, Atlas transitions the created issu
 
 ```bash
 ATLAS_ACTIONS_ENABLED=true
+ATLAS_ACTION_TIMEOUT=300000   # 5 minute execution timeout (ms)
 ```
 
 ### Via atlas.config.ts
 
-Override approval modes and role requirements per action:
+Override approval modes, role requirements, and timeouts per action:
 
 ```typescript
 import { defineConfig } from "@atlas/api/lib/config";
 
 export default defineConfig({
   actions: {
-    // Default approval mode for all actions unless overridden
+    // Default approval mode and timeout for all actions unless overridden
     defaults: {
       approval: "manual",
+      timeout: 300000,            // 5 minute default (ms)
     },
     // Per-action overrides — key is the action type identifier
     "email:send": {
       approval: "admin-only",       // Only admins can approve email sends
       requiredRole: "admin",
+      timeout: 30000,               // 30 second timeout for email sends
       credentials: {
         RESEND_API_KEY: { env: "RESEND_API_KEY" },  // Validated at startup
       },
@@ -139,6 +145,8 @@ export default defineConfig({
   },
 });
 ```
+
+**Timeout resolution order:** per-action `timeout` > `defaults.timeout` > `ATLAS_ACTION_TIMEOUT` env var. When no timeout is configured, actions run without a time limit.
 
 See [Configuration](/reference/config) for the full config schema.
 

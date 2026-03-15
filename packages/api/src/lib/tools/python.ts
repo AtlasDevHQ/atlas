@@ -61,7 +61,9 @@ export const CRITICAL_MODULES = new Set(["os", "subprocess", "sys", "shutil"]);
 
 /**
  * Build the effective blocked module set from the default list + config overrides.
- * Called on each validation so config changes (hot-reload) take effect immediately.
+ * Called on each validation rather than cached at module load, so any config
+ * singleton update (e.g. test mocking or future hot-reload) takes effect on
+ * the next call.
  */
 export function getEffectiveBlockedModules(): Set<string> {
   const config = getConfig();
@@ -113,7 +115,8 @@ const BLOCKED_BUILTINS = new Set([
  * Validate Python code for blocked imports and dangerous builtins.
  *
  * Uses Python's own `ast` module to parse the code, then checks for:
- * - `import X` / `from X import ...` where X is in BLOCKED_MODULES
+ * - `import X` / `from X import ...` where X is in the effective blocked set
+ *   (see {@link getEffectiveBlockedModules})
  * - Calls to blocked builtins (exec, eval, compile, __import__, open, getattr, etc.)
  *
  * This is defense-in-depth — the sidecar container is the security boundary.
@@ -205,6 +208,7 @@ json.dump({"imports": imports, "calls": calls}, sys.stdout)
     blockedModules = getEffectiveBlockedModules();
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
+    log.error({ err: detail }, "Failed to compute effective blocked modules — likely a config error");
     return { safe: false, reason: detail };
   }
 

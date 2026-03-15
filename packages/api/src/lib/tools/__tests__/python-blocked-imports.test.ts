@@ -120,6 +120,35 @@ describe("configurable blocked imports", () => {
       };
       expect(() => getEffectiveBlockedModules()).toThrow("os, subprocess");
     });
+
+    it("returns default set when both arrays are empty", () => {
+      mockConfig = {
+        python: { blockedModules: [], allowModules: [] },
+      };
+      const result = getEffectiveBlockedModules();
+      expect(result).toEqual(DEFAULT_BLOCKED_MODULES);
+    });
+
+    it("blockedModules takes precedence when module is in both lists", () => {
+      mockConfig = {
+        python: {
+          blockedModules: ["requests"],
+          allowModules: ["requests"],
+        },
+      };
+      const result = getEffectiveBlockedModules();
+      expect(result.has("requests")).toBe(true);
+    });
+
+    it("deduplicates blockedModules entries", () => {
+      mockConfig = {
+        python: { blockedModules: ["boto3", "boto3"], allowModules: [] },
+      };
+      const result = getEffectiveBlockedModules();
+      expect(result.has("boto3")).toBe(true);
+      // Set naturally deduplicates, just verify size is correct
+      expect(result.size).toBe(DEFAULT_BLOCKED_MODULES.size + 1);
+    });
   });
 
   describe("validatePythonCode with config", () => {

@@ -291,7 +291,7 @@ describe("agent integration", () => {
     });
     const steps = await result.steps;
 
-    // stopWhen: stepCountIs(25) should cap the loop
+    // stopWhen: stepCountIs(getAgentMaxSteps()) should cap the loop (default 25)
     expect(steps.length).toBe(25);
   });
 

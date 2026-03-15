@@ -305,7 +305,7 @@ describe("settings module", () => {
   describe("requiresRestart metadata", () => {
     it("hot-reloadable settings do not have requiresRestart", () => {
       const registry = getSettingsRegistry();
-      const hotReloadable = ["ATLAS_ROW_LIMIT", "ATLAS_QUERY_TIMEOUT", "ATLAS_RATE_LIMIT_RPM"];
+      const hotReloadable = ["ATLAS_ROW_LIMIT", "ATLAS_QUERY_TIMEOUT", "ATLAS_RATE_LIMIT_RPM", "ATLAS_AGENT_MAX_STEPS"];
       for (const key of hotReloadable) {
         const def = registry.find((s) => s.key === key);
         expect(def).toBeDefined();

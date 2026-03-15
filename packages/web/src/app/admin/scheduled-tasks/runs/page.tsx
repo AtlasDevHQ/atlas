@@ -1,19 +1,12 @@
 "use client";
 
-import { Fragment, useEffect, useState } from "react";
+import * as React from "react";
+import { useEffect, useState } from "react";
+import type { Row } from "@tanstack/react-table";
 import Link from "next/link";
 import { useQueryStates } from "nuqs";
 import { runHistorySearchParams } from "./search-params";
 import { useAtlasConfig } from "@/ui/context";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -29,67 +22,18 @@ import { LoadingState } from "@/ui/components/admin/loading-state";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import {
   History,
-  ChevronDown,
-  ChevronRight,
   ExternalLink,
   ArrowLeft,
-  Loader2,
 } from "lucide-react";
 import type { FetchError } from "@/ui/hooks/use-admin-fetch";
 import { friendlyError } from "@/ui/hooks/use-admin-fetch";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
-import { DeliveryStatusBadge } from "@/ui/components/admin/delivery-status-badge";
+import { ExpandableDataTable } from "@/components/data-table/data-table-expandable";
+import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
+import { DataTableSortList } from "@/components/data-table/data-table-sort-list";
+import { useDataTable } from "@/hooks/use-data-table";
+import { getRunHistoryColumns, formatTimestamp, formatDuration } from "./columns";
 import type { ScheduledTask, ScheduledTaskRunWithTaskName } from "@/ui/lib/types";
-
-// ── Helpers ───────────────────────────────────────────────────────
-
-function RunStatusBadge({ status }: { status: string }) {
-  switch (status) {
-    case "success":
-      return (
-        <Badge
-          variant="secondary"
-          className="bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
-        >
-          {status}
-        </Badge>
-      );
-    case "failed":
-      return <Badge variant="destructive">{status}</Badge>;
-    case "running":
-      return (
-        <Badge variant="secondary" className="gap-1">
-          <Loader2 className="size-3 animate-spin" />
-          {status}
-        </Badge>
-      );
-    default:
-      return <Badge variant="outline">{status}</Badge>;
-  }
-}
-
-function formatDuration(startedAt: string, completedAt: string | null): string {
-  if (!completedAt) return "—";
-  const ms = new Date(completedAt).getTime() - new Date(startedAt).getTime();
-  if (!Number.isFinite(ms) || ms < 0) return "—";
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  const mins = Math.floor(ms / 60_000);
-  const secs = Math.round((ms % 60_000) / 1000);
-  return `${mins}m ${secs}s`;
-}
-
-function formatTimestamp(dateStr: string): string {
-  const date = new Date(dateStr);
-  if (isNaN(date.getTime())) return "—";
-  return date.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-}
 
 // ── Page ──────────────────────────────────────────────────────────
 
@@ -176,6 +120,99 @@ export default function RunHistoryPage() {
       cancelled = true;
     };
   }, [apiUrl, offset, taskFilter, statusFilter, dateFrom, dateTo, credentials, refetchKey]);
+
+  // ── Data table ──────────────────────────────────────────────────
+  const runColumns = React.useMemo(
+    () => getRunHistoryColumns({ expandedId: expandedRun }),
+    [expandedRun],
+  );
+
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const { table: runsTable } = useDataTable({
+    data: runs,
+    columns: runColumns,
+    pageCount,
+    initialState: {
+      sorting: [{ id: "startedAt", desc: true }],
+      pagination: { pageSize: PAGE_SIZE },
+    },
+    getRowId: (row) => row.id,
+  });
+
+  const handleRunRowClick = React.useCallback(
+    (row: Row<ScheduledTaskRunWithTaskName>) =>
+      setParams({ expandedRun: expandedRun === row.original.id ? null : row.original.id }),
+    [expandedRun, setParams],
+  );
+
+  const isRunExpanded = React.useCallback(
+    (row: Row<ScheduledTaskRunWithTaskName>) => expandedRun === row.original.id,
+    [expandedRun],
+  );
+
+  const renderRunExpandedRow = React.useCallback(
+    (row: Row<ScheduledTaskRunWithTaskName>) => {
+      const run = row.original;
+      if (expandedRun !== run.id) return null;
+      return (
+        <div className="space-y-3 text-sm">
+          <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+            <div>
+              <span className="text-xs font-medium text-muted-foreground">Started</span>
+              <p>{formatTimestamp(run.startedAt)}</p>
+            </div>
+            <div>
+              <span className="text-xs font-medium text-muted-foreground">Completed</span>
+              <p>{run.completedAt ? formatTimestamp(run.completedAt) : "\u2014"}</p>
+            </div>
+            <div>
+              <span className="text-xs font-medium text-muted-foreground">Duration</span>
+              <p>{formatDuration(run.startedAt, run.completedAt ?? null)}</p>
+            </div>
+            <div>
+              <span className="text-xs font-medium text-muted-foreground">Tokens used</span>
+              <p>{run.tokensUsed?.toLocaleString() ?? "\u2014"}</p>
+            </div>
+          </div>
+          {run.deliveryError && (
+            <div>
+              <span className="text-xs font-medium text-muted-foreground">Delivery error</span>
+              <pre className="mt-1 max-h-40 overflow-auto rounded-md bg-muted p-3 text-xs whitespace-pre-wrap">
+                {run.deliveryError}
+              </pre>
+            </div>
+          )}
+          {run.error && (
+            <div>
+              <span className="text-xs font-medium text-muted-foreground">Error</span>
+              <pre className="mt-1 max-h-40 overflow-auto rounded-md bg-muted p-3 text-xs whitespace-pre-wrap">
+                {run.error}
+              </pre>
+            </div>
+          )}
+          <div className="flex gap-3">
+            {run.conversationId && (
+              <Button variant="outline" size="sm" asChild>
+                <Link href={`/?conversationId=${run.conversationId}`}>
+                  <ExternalLink className="mr-1 size-3" />
+                  View conversation
+                </Link>
+              </Button>
+            )}
+            {run.actionId && (
+              <Button variant="outline" size="sm" asChild>
+                <Link href={`/admin/actions?expanded=${run.actionId}`}>
+                  <ExternalLink className="mr-1 size-3" />
+                  View action
+                </Link>
+              </Button>
+            )}
+          </div>
+        </div>
+      );
+    },
+    [expandedRun],
+  );
 
   // Gate: 401/403/404
   if (!loading && error?.status && [401, 403, 404].includes(error.status)) {
@@ -288,180 +325,16 @@ export default function RunHistoryPage() {
         ) : runs.length === 0 && !error ? (
           <EmptyState icon={History} title="No runs found" />
         ) : runs.length > 0 ? (
-          <>
-            <div className="rounded-md border">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-8" />
-                  <TableHead>Task</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Delivery</TableHead>
-                  <TableHead>Started</TableHead>
-                  <TableHead>Duration</TableHead>
-                  <TableHead>Tokens</TableHead>
-                  <TableHead>Error</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {runs.map((run) => {
-                  const isExpanded = expandedRun === run.id;
-                  return (
-                    <Fragment key={run.id}>
-                      <TableRow
-                        className="cursor-pointer"
-                        onClick={() =>
-                          setParams({ expandedRun: isExpanded ? null : run.id })
-                        }
-                      >
-                        <TableCell>
-                          {isExpanded ? (
-                            <ChevronDown className="size-4 text-muted-foreground" />
-                          ) : (
-                            <ChevronRight className="size-4 text-muted-foreground" />
-                          )}
-                        </TableCell>
-                        <TableCell className="font-medium">{run.taskName}</TableCell>
-                        <TableCell>
-                          <RunStatusBadge status={run.status} />
-                        </TableCell>
-                        <TableCell>
-                          <DeliveryStatusBadge
-                            status={run.deliveryStatus}
-                            error={run.deliveryError}
-                          />
-                        </TableCell>
-                        <TableCell className="text-xs text-muted-foreground">
-                          {formatTimestamp(run.startedAt)}
-                        </TableCell>
-                        <TableCell className="text-xs text-muted-foreground">
-                          {formatDuration(run.startedAt, run.completedAt)}
-                        </TableCell>
-                        <TableCell className="text-xs text-muted-foreground">
-                          {run.tokensUsed?.toLocaleString() ?? "—"}
-                        </TableCell>
-                        <TableCell
-                          className="max-w-xs truncate text-xs text-muted-foreground"
-                          title={run.error ?? undefined}
-                        >
-                          {run.error ? run.error.slice(0, 80) : "—"}
-                        </TableCell>
-                      </TableRow>
-
-                      {isExpanded && (
-                        <TableRow>
-                          <TableCell colSpan={8} className="bg-muted/30 p-4">
-                            <div className="space-y-3 text-sm">
-                              <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-                                <div>
-                                  <span className="text-xs font-medium text-muted-foreground">
-                                    Started
-                                  </span>
-                                  <p>{formatTimestamp(run.startedAt)}</p>
-                                </div>
-                                <div>
-                                  <span className="text-xs font-medium text-muted-foreground">
-                                    Completed
-                                  </span>
-                                  <p>
-                                    {run.completedAt
-                                      ? formatTimestamp(run.completedAt)
-                                      : "—"}
-                                  </p>
-                                </div>
-                                <div>
-                                  <span className="text-xs font-medium text-muted-foreground">
-                                    Duration
-                                  </span>
-                                  <p>{formatDuration(run.startedAt, run.completedAt)}</p>
-                                </div>
-                                <div>
-                                  <span className="text-xs font-medium text-muted-foreground">
-                                    Tokens used
-                                  </span>
-                                  <p>{run.tokensUsed?.toLocaleString() ?? "—"}</p>
-                                </div>
-                              </div>
-
-                              {run.deliveryError && (
-                                <div>
-                                  <span className="text-xs font-medium text-muted-foreground">
-                                    Delivery error
-                                  </span>
-                                  <pre className="mt-1 max-h-40 overflow-auto rounded-md bg-muted p-3 text-xs whitespace-pre-wrap">
-                                    {run.deliveryError}
-                                  </pre>
-                                </div>
-                              )}
-
-                              {run.error && (
-                                <div>
-                                  <span className="text-xs font-medium text-muted-foreground">
-                                    Error
-                                  </span>
-                                  <pre className="mt-1 max-h-40 overflow-auto rounded-md bg-muted p-3 text-xs whitespace-pre-wrap">
-                                    {run.error}
-                                  </pre>
-                                </div>
-                              )}
-
-                              <div className="flex gap-3">
-                                {run.conversationId && (
-                                  <Button variant="outline" size="sm" asChild>
-                                    <Link
-                                      href={`/?conversationId=${run.conversationId}`}
-                                    >
-                                      <ExternalLink className="mr-1 size-3" />
-                                      View conversation
-                                    </Link>
-                                  </Button>
-                                )}
-                                {run.actionId && (
-                                  <Button variant="outline" size="sm" asChild>
-                                    <Link href={`/admin/actions?expanded=${run.actionId}`}>
-                                      <ExternalLink className="mr-1 size-3" />
-                                      View action
-                                    </Link>
-                                  </Button>
-                                )}
-                              </div>
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      )}
-                    </Fragment>
-                  );
-                })}
-              </TableBody>
-            </Table>
-            </div>
-
-            {total > PAGE_SIZE && (
-              <div className="flex items-center justify-between">
-                <p className="text-sm text-muted-foreground">
-                  Page {page} of {Math.max(1, Math.ceil(total / PAGE_SIZE))} ({total} total)
-                </p>
-                <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={page <= 1}
-                    onClick={() => setParams((p) => ({ page: p.page - 1 }))}
-                  >
-                    Previous
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={offset + PAGE_SIZE >= total}
-                    onClick={() => setParams((p) => ({ page: p.page + 1 }))}
-                  >
-                    Next
-                  </Button>
-                </div>
-              </div>
-            )}
-          </>
+          <ExpandableDataTable
+            table={runsTable}
+            onRowClick={handleRunRowClick}
+            isRowExpanded={isRunExpanded}
+            renderExpandedRow={renderRunExpandedRow}
+          >
+            <DataTableToolbar table={runsTable}>
+              <DataTableSortList table={runsTable} />
+            </DataTableToolbar>
+          </ExpandableDataTable>
         ) : null}
       </div>
       </ErrorBoundary>

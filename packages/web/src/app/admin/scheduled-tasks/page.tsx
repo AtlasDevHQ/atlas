@@ -1,6 +1,8 @@
 "use client";
 
-import { Fragment, useEffect, useState } from "react";
+import * as React from "react";
+import { useEffect, useState } from "react";
+import type { ColumnDef, Row } from "@tanstack/react-table";
 import Link from "next/link";
 import { useQueryStates } from "nuqs";
 import { scheduledTasksSearchParams } from "./search-params";
@@ -37,13 +39,8 @@ import { LoadingState } from "@/ui/components/admin/loading-state";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import {
   CalendarClock,
-  Mail,
-  Hash,
-  Globe,
   Play,
   Loader2,
-  ChevronDown,
-  ChevronRight,
   Plus,
   Pencil,
   Trash2,
@@ -53,60 +50,18 @@ import {
 import { useInProgressSet, type FetchError, friendlyError } from "@/ui/hooks/use-admin-fetch";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { DeliveryStatusBadge } from "@/ui/components/admin/delivery-status-badge";
+import { ExpandableDataTable } from "@/components/data-table/data-table-expandable";
+import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
+import { DataTableSortList } from "@/components/data-table/data-table-sort-list";
+import { useDataTable } from "@/hooks/use-data-table";
+import { getScheduledTaskColumns, formatRelativeDate } from "./columns";
 import { TaskFormDialog } from "./task-form-dialog";
 import type {
   ScheduledTask,
-  ScheduledTaskRun,
   ScheduledTaskWithRuns,
 } from "@/ui/lib/types";
 
 type EnabledFilter = "all" | "true" | "false";
-
-// ── Helpers ───────────────────────────────────────────────────────
-
-const CHANNEL_ICON = {
-  email: Mail,
-  slack: Hash,
-  webhook: Globe,
-} as const;
-
-function formatRelativeDate(dateStr: string | null): string {
-  if (!dateStr) return "—";
-  const date = new Date(dateStr);
-  const now = new Date();
-  const diffMs = date.getTime() - now.getTime();
-  const absDiffMs = Math.abs(diffMs);
-
-  if (absDiffMs < 60_000) return diffMs > 0 ? "in <1m" : "<1m ago";
-  if (absDiffMs < 3_600_000) {
-    const mins = Math.round(absDiffMs / 60_000);
-    return diffMs > 0 ? `in ${mins}m` : `${mins}m ago`;
-  }
-  if (absDiffMs < 86_400_000) {
-    const hrs = Math.round(absDiffMs / 3_600_000);
-    return diffMs > 0 ? `in ${hrs}h` : `${hrs}h ago`;
-  }
-  const days = Math.round(absDiffMs / 86_400_000);
-  return diffMs > 0 ? `in ${days}d` : `${days}d ago`;
-}
-
-function RunStatusBadge({ status }: { status: ScheduledTaskRun["status"] }) {
-  switch (status) {
-    case "success":
-      return (
-        <Badge
-          variant="secondary"
-          className="bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
-        >
-          {status}
-        </Badge>
-      );
-    case "failed":
-      return <Badge variant="destructive">{status}</Badge>;
-    default:
-      return <Badge variant="outline">{status}</Badge>;
-  }
-}
 
 // ── Page ──────────────────────────────────────────────────────────
 
@@ -356,6 +311,155 @@ export default function ScheduledTasksPage() {
     setSelectedTask(null);
   }
 
+  // ── Data table ──────────────────────────────────────────────────
+  const taskColumns = React.useMemo<ColumnDef<ScheduledTask>[]>(() => {
+    const base = getScheduledTaskColumns({ expandedId });
+    const enabledCol: ColumnDef<ScheduledTask> = {
+      id: "enabled",
+      accessorKey: "enabled",
+      header: () => "Enabled",
+      cell: ({ row }) => {
+        const task = row.original;
+        return (
+          <Button
+            size="sm"
+            variant={task.enabled ? "secondary" : "ghost"}
+            disabled={toggling.has(task.id)}
+            onClick={(e) => handleToggle(task, e)}
+          >
+            {toggling.has(task.id) ? (
+              <Loader2 className="size-3 animate-spin" />
+            ) : task.enabled ? "On" : "Off"}
+          </Button>
+        );
+      },
+      enableSorting: false,
+      enableHiding: false,
+    };
+    const actionsCol: ColumnDef<ScheduledTask> = {
+      id: "actions",
+      header: () => null,
+      cell: ({ row }) => {
+        const task = row.original;
+        return (
+          <div className="flex items-center gap-1">
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={triggering.has(task.id)}
+              onClick={(e) => handleRunNow(task.id, e)}
+            >
+              {triggering.has(task.id) ? (
+                <Loader2 className="size-3 animate-spin" />
+              ) : (
+                <>
+                  <Play className="mr-1 size-3" />
+                  Run
+                </>
+              )}
+            </Button>
+            <Button size="icon" variant="ghost" className="size-8" title="Preview delivery" onClick={(e) => handlePreview(task.id, e)}>
+              <Eye className="size-3" />
+            </Button>
+            <Button size="icon" variant="ghost" className="size-8" onClick={(e) => openEdit(task, e)}>
+              <Pencil className="size-3" />
+            </Button>
+            <Button size="icon" variant="ghost" className="size-8 text-destructive hover:text-destructive" onClick={(e) => { e.stopPropagation(); setDeleteTarget(task); }}>
+              <Trash2 className="size-3" />
+            </Button>
+          </div>
+        );
+      },
+      enableSorting: false,
+      enableHiding: false,
+      size: 144,
+    };
+    return [...base, enabledCol, actionsCol];
+  }, [expandedId, toggling, triggering]);
+
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const { table: tasksTable } = useDataTable({
+    data: tasks,
+    columns: taskColumns,
+    pageCount,
+    initialState: { pagination: { pageSize: PAGE_SIZE } },
+    getRowId: (row) => row.id,
+  });
+
+  const handleTaskRowClick = React.useCallback(
+    (row: Row<ScheduledTask>) => handleRowClick(row.original.id),
+    [expandedId],
+  );
+
+  const isTaskExpanded = React.useCallback(
+    (row: Row<ScheduledTask>) => expandedId === row.original.id,
+    [expandedId],
+  );
+
+  const renderTaskExpandedRow = React.useCallback(
+    (row: Row<ScheduledTask>) => {
+      if (expandedId !== row.original.id) return null;
+      if (detailLoading) {
+        return (
+          <div className="flex items-center gap-2 text-muted-foreground">
+            <Loader2 className="size-3 animate-spin" />
+            <span className="text-xs">Loading runs...</span>
+          </div>
+        );
+      }
+      if (detailError) {
+        return <p className="text-xs text-destructive">{detailError}</p>;
+      }
+      if (selectedTask && selectedTask.recentRuns.length > 0) {
+        return (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Status</TableHead>
+                <TableHead>Delivery</TableHead>
+                <TableHead>Started</TableHead>
+                <TableHead>Completed</TableHead>
+                <TableHead>Tokens</TableHead>
+                <TableHead>Error</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {selectedTask.recentRuns.map((run) => (
+                <TableRow key={run.id}>
+                  <TableCell>
+                    <Badge
+                      variant={run.status === "failed" ? "destructive" : run.status === "success" ? "secondary" : "outline"}
+                      className={run.status === "success" ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400" : undefined}
+                    >
+                      {run.status}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>
+                    <DeliveryStatusBadge status={run.deliveryStatus} error={run.deliveryError} />
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {formatRelativeDate(run.startedAt)}
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {formatRelativeDate(run.completedAt)}
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {run.tokensUsed ?? "\u2014"}
+                  </TableCell>
+                  <TableCell className="max-w-xs truncate text-xs text-muted-foreground" title={run.error ?? undefined}>
+                    {run.error ?? "\u2014"}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        );
+      }
+      return <p className="text-xs text-muted-foreground">No recent runs</p>;
+    },
+    [expandedId, detailLoading, detailError, selectedTask],
+  );
+
   // ── Render ──────────────────────────────────────────────────────
   return (
     <div className="flex h-[calc(100dvh-3rem)] flex-col">
@@ -419,221 +523,16 @@ export default function ScheduledTasksPage() {
             action={{ label: "Create task", onClick: openCreate }}
           />
         ) : tasks.length > 0 ? (
-          <>
-            <div className="rounded-md border">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-8" />
-                  <TableHead>Name</TableHead>
-                  <TableHead>Question</TableHead>
-                  <TableHead>Cron</TableHead>
-                  <TableHead>Channel</TableHead>
-                  <TableHead>Next Run</TableHead>
-                  <TableHead>Enabled</TableHead>
-                  <TableHead className="w-36" />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {tasks.map((task) => {
-                  const ChannelIcon = CHANNEL_ICON[task.deliveryChannel];
-                  const isExpanded = expandedId === task.id;
-                  return (
-                    <Fragment key={task.id}>
-                      <TableRow
-                        className="cursor-pointer"
-                        onClick={() => handleRowClick(task.id)}
-                      >
-                        <TableCell>
-                          {isExpanded ? (
-                            <ChevronDown className="size-4 text-muted-foreground" />
-                          ) : (
-                            <ChevronRight className="size-4 text-muted-foreground" />
-                          )}
-                        </TableCell>
-                        <TableCell className="font-medium">
-                          {task.name}
-                        </TableCell>
-                        <TableCell
-                          className="max-w-xs truncate text-muted-foreground"
-                          title={task.question}
-                        >
-                          {task.question}
-                        </TableCell>
-                        <TableCell className="font-mono text-xs">
-                          {task.cronExpression}
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant="outline" className="gap-1">
-                            <ChannelIcon className="size-3" />
-                            {task.deliveryChannel}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="text-xs text-muted-foreground">
-                          {formatRelativeDate(task.nextRunAt)}
-                        </TableCell>
-                        <TableCell>
-                          <Button
-                            size="sm"
-                            variant={task.enabled ? "secondary" : "ghost"}
-                            disabled={toggling.has(task.id)}
-                            onClick={(e) => handleToggle(task, e)}
-                          >
-                            {toggling.has(task.id) ? (
-                              <Loader2 className="size-3 animate-spin" />
-                            ) : task.enabled ? (
-                              "On"
-                            ) : (
-                              "Off"
-                            )}
-                          </Button>
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex items-center gap-1">
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              disabled={triggering.has(task.id)}
-                              onClick={(e) => handleRunNow(task.id, e)}
-                            >
-                              {triggering.has(task.id) ? (
-                                <Loader2 className="size-3 animate-spin" />
-                              ) : (
-                                <>
-                                  <Play className="mr-1 size-3" />
-                                  Run
-                                </>
-                              )}
-                            </Button>
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className="size-8"
-                              title="Preview delivery"
-                              onClick={(e) => handlePreview(task.id, e)}
-                            >
-                              <Eye className="size-3" />
-                            </Button>
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className="size-8"
-                              onClick={(e) => openEdit(task, e)}
-                            >
-                              <Pencil className="size-3" />
-                            </Button>
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className="size-8 text-destructive hover:text-destructive"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setDeleteTarget(task);
-                              }}
-                            >
-                              <Trash2 className="size-3" />
-                            </Button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-
-                      {isExpanded && (
-                        <TableRow>
-                          <TableCell colSpan={8} className="bg-muted/30 p-4">
-                            {detailLoading ? (
-                              <div className="flex items-center gap-2 text-muted-foreground">
-                                <Loader2 className="size-3 animate-spin" />
-                                <span className="text-xs">
-                                  Loading runs...
-                                </span>
-                              </div>
-                            ) : detailError ? (
-                              <p className="text-xs text-destructive">{detailError}</p>
-                            ) : selectedTask &&
-                              selectedTask.recentRuns.length > 0 ? (
-                              <Table>
-                                <TableHeader>
-                                  <TableRow>
-                                    <TableHead>Status</TableHead>
-                                    <TableHead>Delivery</TableHead>
-                                    <TableHead>Started</TableHead>
-                                    <TableHead>Completed</TableHead>
-                                    <TableHead>Tokens</TableHead>
-                                    <TableHead>Error</TableHead>
-                                  </TableRow>
-                                </TableHeader>
-                                <TableBody>
-                                  {selectedTask.recentRuns.map((run) => (
-                                    <TableRow key={run.id}>
-                                      <TableCell>
-                                        <RunStatusBadge status={run.status} />
-                                      </TableCell>
-                                      <TableCell>
-                                        <DeliveryStatusBadge
-                                          status={run.deliveryStatus}
-                                          error={run.deliveryError}
-                                        />
-                                      </TableCell>
-                                      <TableCell className="text-xs text-muted-foreground">
-                                        {formatRelativeDate(run.startedAt)}
-                                      </TableCell>
-                                      <TableCell className="text-xs text-muted-foreground">
-                                        {formatRelativeDate(run.completedAt)}
-                                      </TableCell>
-                                      <TableCell className="text-xs text-muted-foreground">
-                                        {run.tokensUsed ?? "—"}
-                                      </TableCell>
-                                      <TableCell
-                                        className="max-w-xs truncate text-xs text-muted-foreground"
-                                        title={run.error ?? undefined}
-                                      >
-                                        {run.error ?? "—"}
-                                      </TableCell>
-                                    </TableRow>
-                                  ))}
-                                </TableBody>
-                              </Table>
-                            ) : (
-                              <p className="text-xs text-muted-foreground">
-                                No recent runs
-                              </p>
-                            )}
-                          </TableCell>
-                        </TableRow>
-                      )}
-                    </Fragment>
-                  );
-                })}
-              </TableBody>
-            </Table>
-            </div>
-
-            {total > PAGE_SIZE && (
-              <div className="flex items-center justify-between">
-                <p className="text-sm text-muted-foreground">
-                  Page {page} of {Math.max(1, Math.ceil(total / PAGE_SIZE))} ({total} total)
-                </p>
-                <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={page <= 1}
-                    onClick={() => setParams((p) => ({ page: p.page - 1 }))}
-                  >
-                    Previous
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={offset + PAGE_SIZE >= total}
-                    onClick={() => setParams((p) => ({ page: p.page + 1 }))}
-                  >
-                    Next
-                  </Button>
-                </div>
-              </div>
-            )}
-          </>
+          <ExpandableDataTable
+            table={tasksTable}
+            onRowClick={handleTaskRowClick}
+            isRowExpanded={isTaskExpanded}
+            renderExpandedRow={renderTaskExpandedRow}
+          >
+            <DataTableToolbar table={tasksTable}>
+              <DataTableSortList table={tasksTable} />
+            </DataTableToolbar>
+          </ExpandableDataTable>
         ) : null}
       </div>
       </ErrorBoundary>

@@ -2,8 +2,9 @@
  * The Atlas agent.
  *
  * Runs a single-agent loop driven by a ToolRegistry (default: explore,
- * executeSQL). The loop runs until the step limit (25) is reached or
- * the model stops issuing tool calls.
+ * executeSQL). The loop runs until the step limit is reached (configurable
+ * via `ATLAS_AGENT_MAX_STEPS`, default 25) or the model stops issuing
+ * tool calls.
  */
 
 import {
@@ -21,6 +22,7 @@ import { connections, detectDBType, type ConnectionMetadata, type DBType } from 
 import { getCrossSourceJoins, type CrossSourceJoin } from "./semantic";
 import { getSemanticIndex } from "./semantic-index";
 import { createLogger, getRequestContext } from "./logger";
+import { getSetting } from "./settings";
 import { hasInternalDB, internalExecute } from "./db/internal";
 import {
   trace,
@@ -30,6 +32,26 @@ import {
 
 const log = createLogger("agent");
 const tracer = trace.getTracer("atlas");
+
+const DEFAULT_MAX_STEPS = 25;
+const MIN_MAX_STEPS = 1;
+const MAX_MAX_STEPS = 100;
+
+let lastWarnedMaxSteps: string | undefined;
+
+/** Read agent max steps from settings cache (DB override > env var > default). */
+function getAgentMaxSteps(): number {
+  const raw = getSetting("ATLAS_AGENT_MAX_STEPS") ?? String(DEFAULT_MAX_STEPS);
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < MIN_MAX_STEPS || n > MAX_MAX_STEPS) {
+    if (raw !== lastWarnedMaxSteps) {
+      log.warn({ value: raw }, `Invalid ATLAS_AGENT_MAX_STEPS value; using default ${DEFAULT_MAX_STEPS}`);
+      lastWarnedMaxSteps = raw;
+    }
+    return DEFAULT_MAX_STEPS;
+  }
+  return n;
+}
 
 const SYSTEM_PROMPT_PREFIX = `You are Atlas, an expert data analyst AI. You answer questions about data by exploring a semantic layer, writing SQL, and interpreting results.
 
@@ -341,7 +363,8 @@ export function applyCacheControl(
  * @param messages - The conversation history from the chat UI.
  * @param tools - Optional custom {@link ToolRegistry}. Defaults to
  *   {@link defaultRegistry} (explore + executeSQL). The loop terminates
- *   when the step limit (25) is reached or the model stops issuing tool calls.
+ *   when the step limit is reached (configurable via `ATLAS_AGENT_MAX_STEPS`,
+ *   default 25) or the model stops issuing tool calls.
  * @param conversationId - Optional conversation ID for token usage tracking.
  *   When provided, the recorded token usage row links to this conversation.
  */
@@ -393,7 +416,7 @@ export async function runAgent({
       tools: toolRegistry.getAll(),
       temperature: 0.2,
       maxOutputTokens: 4096,
-      stopWhen: stepCountIs(25),
+      stopWhen: stepCountIs(getAgentMaxSteps()),
       // totalMs: 180s for self-hosted (full agent loop budget).
       // On Vercel, maxDuration caps the serverless function at 300s (Pro plan).
       timeout: { totalMs: 180_000, stepMs: 30_000, chunkMs: 5_000 },

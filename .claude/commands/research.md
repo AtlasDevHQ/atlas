@@ -8,7 +8,7 @@ You are researching the Atlas codebase to answer a question or plan a change.
 
 | Area | Key files |
 |------|-----------|
-| Agent loop | `packages/api/src/lib/agent.ts` — streamText, stopWhen: stepCountIs(25), tool orchestration |
+| Agent loop | `packages/api/src/lib/agent.ts` — streamText, stopWhen: stepCountIs(getAgentMaxSteps()), tool orchestration |
 | Agent query | `packages/api/src/lib/agent-query.ts` — shared execution for JSON + Slack |
 | LLM providers | `packages/api/src/lib/providers.ts` — anthropic/openai/bedrock/ollama/gateway |
 | SQL validation | `packages/api/src/lib/tools/sql.ts` — 4-layer pipeline + execution |

@@ -281,7 +281,7 @@ Grep for: stepCountIs|maxSteps|stopWhen in packages/api/src/lib/agent.ts
 
 | Check | What to Verify |
 |-------|----------------|
-| Max steps | `stopWhen: stepCountIs(25)` or equivalent — don't increase without good reason |
+| Max steps | `stopWhen: stepCountIs(getAgentMaxSteps())` — default 25, configurable via `ATLAS_AGENT_MAX_STEPS` (1–100) |
 | No infinite loops | No code path that could bypass step counting |
 
 ---

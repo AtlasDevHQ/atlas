@@ -58,18 +58,18 @@ SDK gained `listTables()` convenience method and a complete error code catalog w
 
 ---
 
-## 0.6.0 — Governance & Integrations
+## 0.6.0 — Governance & Operational Hardening
 
-The current milestone. Access control, audit, and third-party integrations for production teams.
+The current milestone. Finish half-built infrastructure, add governance controls, and harden the plugin ecosystem for production teams.
 
-- **Access control** — Advanced RLS policies (multi-column, array claims), session management, OIDC/OAuth provider docs
-- **Audit** — Audit log export and search, data classification tags on query trails
+- **Infrastructure** — Configurable agent step limit, action timeout enforcement, rollback support, blocked imports, explore backend hardening
+- **Governance** — Advanced RLS policies (multi-column, array claims), session management, audit log export and search
+- **Plugin ecosystem** — Typed plugin SDK, tool hooks, custom validation
 - **Integrations** — Microsoft Teams plugin, generic webhook plugin for Zapier/Make/n8n, email digest subscriptions
-- **Data protection** — PII detection and column masking via plugin hooks
 
 ---
 
-## 0.7.0 — Performance & Scale
+## 0.7.0 — Performance & Multi-Tenancy
 
 Handle larger semantic layers, more concurrent users, and bigger result sets.
 
@@ -84,7 +84,26 @@ An agent that gets smarter over time.
 
 - **Knowledge** — Curated prompt library per industry, query suggestion engine from usage history
 - **Advanced** — Self-hosted model benchmarks, notebook-style interface, multi-agent collaboration
+
+---
+
+## 0.9.0 — SaaS Infrastructure
+
+Multi-tenant platform foundation for hosted Atlas.
+
+- **Multi-tenancy** — Tenant isolation, usage metering, billing integration
 - **Enterprise auth** — SAML and SCIM support
+- **Platform** — Onboarding flow, team management, usage dashboards
+
+---
+
+## 1.0.0 — SaaS Launch
+
+Public launch of hosted Atlas at app.useatlas.dev.
+
+- **General availability** — Production SLAs, SOC 2 readiness, status page
+- **Self-serve** — Sign-up flow, free tier, upgrade paths
+- **Enterprise** — Dedicated instances, custom contracts, priority support
 
 ---
 

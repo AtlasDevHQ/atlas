@@ -4,10 +4,9 @@
  * Structured pino logs for every action state transition.
  *
  * State transitions:
- * - pending -> approved -> executed | failed
+ * - pending -> approved -> executed | failed | timed_out
  * - pending -> denied
- * - pending -> auto_approved (executed inline) | failed
- * - pending -> timed_out (reserved, not yet implemented)
+ * - pending -> auto_approved (executed inline) | failed | timed_out
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -20,24 +19,27 @@ export interface ActionAuditEntry {
   actionType: string;
   status: ActionStatus;
   latencyMs?: number;
+  /** Configured timeout duration (logged when status is timed_out). */
+  timeoutMs?: number;
   userId?: string;
   approverId?: string;
   error?: string;
 }
 
 export function logActionAudit(entry: ActionAuditEntry): void {
-  const { actionId, actionType, status, latencyMs, userId, approverId, error } = entry;
+  const { actionId, actionType, status, latencyMs, timeoutMs, userId, approverId, error } = entry;
   const fields = {
     actionId,
     actionType,
     status,
     ...(latencyMs !== undefined && { latencyMs }),
+    ...(timeoutMs !== undefined && { timeoutMs }),
     ...(userId && { userId }),
     ...(approverId && { approverId }),
     ...(error && { error }),
   };
 
-  if (status === "failed") {
+  if (status === "failed" || status === "timed_out") {
     log.error(fields, `action_${status}`);
   } else if (status === "denied") {
     log.warn(fields, `action_${status}`);

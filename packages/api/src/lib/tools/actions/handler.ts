@@ -26,6 +26,29 @@ import { logActionAudit } from "./audit";
 const log = createLogger("action-handler");
 
 // ---------------------------------------------------------------------------
+// Timeout helper
+// ---------------------------------------------------------------------------
+
+export class ActionTimeoutError extends Error {
+  constructor(public readonly timeoutMs: number) {
+    super(`Action timed out after ${timeoutMs}ms`);
+    this.name = "ActionTimeoutError";
+  }
+}
+
+function executeWithTimeout<T>(
+  fn: () => Promise<T>,
+  timeoutMs: number | undefined,
+): Promise<T> {
+  if (timeoutMs == null) return fn();
+  let timer: ReturnType<typeof setTimeout>;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new ActionTimeoutError(timeoutMs)), timeoutMs);
+  });
+  return Promise.race([fn(), timeoutPromise]).finally(() => clearTimeout(timer!));
+}
+
+// ---------------------------------------------------------------------------
 // In-memory fallback store (when DATABASE_URL is not set)
 // ---------------------------------------------------------------------------
 
@@ -51,10 +74,9 @@ export function getActionExecutor(actionId: string): ActionExecutor | undefined 
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve the effective approval mode for an action type.
+ * Resolve the effective action config for an action type (approval, timeout, requiredRole).
  * Priority: per-action override > config defaults > action's defaultApproval > "manual".
  */
-// Note: timeout and maxPerConversation are resolved here but not yet enforced — reserved for future implementation
 export function getActionConfig(
   actionType: string,
   defaultApproval?: ActionApprovalMode,
@@ -85,6 +107,9 @@ export function getActionConfig(
       } else {
         log.warn({ actionType, value: perAction.requiredRole }, "Per-action requiredRole is not a valid Atlas role — ignoring override");
       }
+    }
+    if (typeof perAction.timeout === "number" && perAction.timeout > 0) {
+      timeout = perAction.timeout;
     }
   }
 
@@ -248,7 +273,10 @@ export async function handleAction(
     // Execute immediately
     const startMs = Date.now();
     try {
-      const result = await executeFn(request.payload);
+      const result = await executeWithTimeout(
+        () => executeFn(request.payload),
+        actionConfig.timeout,
+      );
       const latencyMs = Date.now() - startMs;
 
       await updateActionStatus(request.id, {
@@ -269,6 +297,24 @@ export async function handleAction(
       return { status: "auto_approved", actionId: request.id, result };
     } catch (err) {
       const latencyMs = Date.now() - startMs;
+
+      if (err instanceof ActionTimeoutError) {
+        await updateActionStatus(request.id, {
+          status: "timed_out",
+          resolved_at: new Date().toISOString(),
+          error: err.message,
+        });
+        logActionAudit({
+          actionId: request.id,
+          actionType: request.actionType,
+          status: "timed_out",
+          latencyMs,
+          timeoutMs: err.timeoutMs,
+          userId,
+        });
+        return { status: "timed_out", actionId: request.id, error: err.message };
+      }
+
       const errorMsg = err instanceof Error ? err.message : String(err);
 
       await updateActionStatus(request.id, {
@@ -331,9 +377,13 @@ export async function approveAction(
 
     // Execute the action
     if (resolveFn) {
+      const { timeout } = getActionConfig(entry.action_type);
       const startMs = Date.now();
       try {
-        const result = await resolveFn(entry.payload);
+        const result = await executeWithTimeout(
+          () => resolveFn(entry.payload),
+          timeout,
+        );
         const latencyMs = Date.now() - startMs;
 
         const execRows = await internalQuery(
@@ -354,6 +404,32 @@ export async function approveAction(
         return updated;
       } catch (err) {
         const latencyMs = Date.now() - startMs;
+
+        if (err instanceof ActionTimeoutError) {
+          const timedOut: ActionLogEntry = { ...entry, status: "timed_out" as ActionStatus, error: err.message };
+          try {
+            const timedOutRows = await internalQuery(
+              `UPDATE action_log SET status = 'timed_out', error = $1 WHERE id = $2 RETURNING *`,
+              [err.message, actionId],
+            ) as unknown as ActionLogEntry[];
+            if (timedOutRows[0]) Object.assign(timedOut, timedOutRows[0]);
+          } catch (dbErr) {
+            log.error({ err: dbErr, actionId }, "Failed to persist timed_out status to DB — memory store updated");
+          }
+          memoryStore.set(actionId, timedOut);
+
+          logActionAudit({
+            actionId,
+            actionType: entry.action_type,
+            status: "timed_out",
+            latencyMs,
+            timeoutMs: err.timeoutMs,
+            approverId,
+          });
+
+          return timedOut;
+        }
+
         const errorMsg = err instanceof Error ? err.message : String(err);
 
         const failRows = await internalQuery(
@@ -399,9 +475,13 @@ export async function approveAction(
   });
 
   if (resolveFn) {
+    const { timeout } = getActionConfig(entry.action_type);
     const startMs = Date.now();
     try {
-      const result = await resolveFn(entry.payload);
+      const result = await executeWithTimeout(
+        () => resolveFn(entry.payload),
+        timeout,
+      );
       const latencyMs = Date.now() - startMs;
       const executed: ActionLogEntry = {
         ...approved,
@@ -422,6 +502,27 @@ export async function approveAction(
       return executed;
     } catch (err) {
       const latencyMs = Date.now() - startMs;
+
+      if (err instanceof ActionTimeoutError) {
+        const timedOut: ActionLogEntry = {
+          ...approved,
+          status: "timed_out",
+          error: err.message,
+        };
+        memoryStore.set(actionId, timedOut);
+
+        logActionAudit({
+          actionId,
+          actionType: entry.action_type,
+          status: "timed_out",
+          latencyMs,
+          timeoutMs: err.timeoutMs,
+          approverId,
+        });
+
+        return timedOut;
+      }
+
       const errorMsg = err instanceof Error ? err.message : String(err);
       const failed: ActionLogEntry = {
         ...approved,

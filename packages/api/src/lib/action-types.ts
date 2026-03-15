@@ -19,7 +19,7 @@ export const ACTION_STATUSES = [
   "denied",
   "executed",
   "failed",
-  "timed_out", // Reserved — not yet implemented
+  "timed_out",
   "auto_approved",
 ] as const;
 export type ActionStatus = (typeof ACTION_STATUSES)[number];
@@ -46,7 +46,8 @@ export type ActionToolResult =
   | { status: "executed"; actionId: string; result: unknown }
   | { status: "denied"; actionId: string; reason?: string }
   | { status: "auto_approved"; actionId: string; result: unknown }
-  | { status: "failed"; actionId?: string; error: string };
+  | { status: "failed"; actionId?: string; error: string }
+  | { status: "timed_out"; actionId: string; error: string };
 
 /**
  * Structural superset of AtlasTool with action-specific metadata.

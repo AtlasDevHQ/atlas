@@ -91,6 +91,8 @@ const PerActionConfigSchema = z.object({
   approval: ActionApprovalSchema.optional(),
   /** Minimum role required to approve this action. Overrides the approval mode's default role mapping. */
   requiredRole: AtlasRoleSchema.optional(),
+  /** Execution timeout in milliseconds. Overrides the global defaults.timeout. */
+  timeout: z.number().int().positive().optional(),
   credentials: z.record(z.string(), z.object({ env: z.string() })).optional(),
   rateLimit: z.number().int().positive().optional(),
 }).passthrough();

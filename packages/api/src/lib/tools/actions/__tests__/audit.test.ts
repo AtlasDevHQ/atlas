@@ -208,4 +208,52 @@ describe("logActionAudit()", () => {
     expect(fields.approverId).toBe("admin-2");
     expect(fields.error).toBe("Timeout");
   });
+
+  // -------------------------------------------------------------------------
+  // timed_out status routing and timeoutMs field
+  // -------------------------------------------------------------------------
+
+  it("calls log.error for status 'timed_out'", () => {
+    logActionAudit({
+      actionId: "a13",
+      actionType: "slow:action",
+      status: "timed_out",
+      latencyMs: 5050,
+      timeoutMs: 5000,
+    });
+
+    expect(mockError).toHaveBeenCalledTimes(1);
+    expect(mockInfo).not.toHaveBeenCalled();
+    expect(mockWarn).not.toHaveBeenCalled();
+
+    const [fields, message] = mockError.mock.calls[0] as unknown as [Record<string, unknown>, string];
+    expect(message).toBe("action_timed_out");
+    expect(fields.actionId).toBe("a13");
+    expect(fields.status).toBe("timed_out");
+    expect(fields.timeoutMs).toBe(5000);
+    expect(fields.latencyMs).toBe(5050);
+  });
+
+  it("includes timeoutMs when provided", () => {
+    logActionAudit({
+      actionId: "a14",
+      actionType: "test:action",
+      status: "timed_out",
+      timeoutMs: 30000,
+    });
+
+    const [fields] = mockError.mock.calls[0] as unknown as [Record<string, unknown>, string];
+    expect(fields.timeoutMs).toBe(30000);
+  });
+
+  it("omits timeoutMs when not provided", () => {
+    logActionAudit({
+      actionId: "a15",
+      actionType: "test:action",
+      status: "pending",
+    });
+
+    const [fields] = mockInfo.mock.calls[0] as unknown as [Record<string, unknown>, string];
+    expect("timeoutMs" in fields).toBe(false);
+  });
 });

@@ -8,6 +8,7 @@ import {
   buildActionRequest,
   getActionConfig,
   _resetActionStore,
+  ActionTimeoutError,
 } from "../handler";
 import { loadConfig, _resetConfig } from "@atlas/api/lib/config";
 import { withRequestContext } from "@atlas/api/lib/logger";
@@ -26,6 +27,7 @@ beforeEach(() => {
   delete process.env.DATABASE_URL;
   delete process.env.ATLAS_ACTIONS_ENABLED;
   delete process.env.ATLAS_ACTION_APPROVAL;
+  delete process.env.ATLAS_ACTION_TIMEOUT;
   _resetPool(null);
   _resetActionStore();
   _resetConfig();
@@ -34,6 +36,7 @@ beforeEach(() => {
 afterEach(() => {
   delete process.env.ATLAS_ACTIONS_ENABLED;
   delete process.env.ATLAS_ACTION_APPROVAL;
+  delete process.env.ATLAS_ACTION_TIMEOUT;
   if (origDbUrl) {
     process.env.DATABASE_URL = origDbUrl;
   } else {
@@ -677,5 +680,180 @@ describe("listPendingActions() — userId filter", () => {
 
     const results = await listPendingActions({ userId: "nonexistent" });
     expect(results).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ActionTimeoutError
+// ---------------------------------------------------------------------------
+
+describe("ActionTimeoutError", () => {
+  it("stores the timeout duration and has the right message", () => {
+    const err = new ActionTimeoutError(5000);
+    expect(err.message).toBe("Action timed out after 5000ms");
+    expect(err.timeoutMs).toBe(5000);
+    expect(err.name).toBe("ActionTimeoutError");
+    expect(err).toBeInstanceOf(Error);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// handleAction — timeout enforcement (auto-approve)
+// ---------------------------------------------------------------------------
+
+describe("handleAction() — timeout enforcement", () => {
+  it("transitions to timed_out when auto-approve execution exceeds timeout", async () => {
+    process.env.ATLAS_ACTIONS_ENABLED = "true";
+    process.env.ATLAS_ACTION_APPROVAL = "auto";
+    process.env.ATLAS_ACTION_TIMEOUT = "50";
+    await loadConfig("/tmp/handler-test-nonexistent");
+
+    const request = buildActionRequest({
+      actionType: "slow:action",
+      target: "target-1",
+      summary: "Slow action",
+      payload: { data: "test" },
+      reversible: false,
+    });
+
+    const result = await withRequestContext(
+      { requestId: "req-timeout-1", user: { id: "u1", label: "user@test.com", mode: "managed" } },
+      () =>
+        handleAction(request, async () => {
+          await new Promise((resolve) => setTimeout(resolve, 200));
+          return "should not reach";
+        }),
+    );
+
+    expect(result.status).toBe("timed_out");
+    if (result.status === "timed_out") {
+      expect(result.error).toBe("Action timed out after 50ms");
+      expect(result.actionId).toBe(request.id);
+    }
+
+    // Verify persisted status
+    const stored = await getAction(request.id);
+    expect(stored).not.toBeNull();
+    expect(stored!.status).toBe("timed_out");
+    expect(stored!.error).toBe("Action timed out after 50ms");
+  });
+
+  it("does not time out when execution completes within timeout", async () => {
+    process.env.ATLAS_ACTIONS_ENABLED = "true";
+    process.env.ATLAS_ACTION_APPROVAL = "auto";
+    process.env.ATLAS_ACTION_TIMEOUT = "5000";
+    await loadConfig("/tmp/handler-test-nonexistent");
+
+    const request = buildActionRequest({
+      actionType: "fast:action",
+      target: "target-2",
+      summary: "Fast action",
+      payload: { data: "test" },
+      reversible: false,
+    });
+
+    const result = await withRequestContext(
+      { requestId: "req-timeout-2", user: { id: "u1", label: "user@test.com", mode: "managed" } },
+      () =>
+        handleAction(request, async () => ({ done: true })),
+    );
+
+    expect(result.status).toBe("auto_approved");
+    if (result.status === "auto_approved") {
+      expect(result.result).toEqual({ done: true });
+    }
+  });
+
+  it("does not enforce timeout when no timeout is configured", async () => {
+    process.env.ATLAS_ACTIONS_ENABLED = "true";
+    process.env.ATLAS_ACTION_APPROVAL = "auto";
+    // No ATLAS_ACTION_TIMEOUT set
+    await loadConfig("/tmp/handler-test-nonexistent");
+
+    const request = buildActionRequest({
+      actionType: "no-timeout:action",
+      target: "target-3",
+      summary: "No timeout configured",
+      payload: {},
+      reversible: false,
+    });
+
+    const result = await withRequestContext(
+      { requestId: "req-timeout-3", user: { id: "u1", label: "user@test.com", mode: "managed" } },
+      () =>
+        handleAction(request, async () => "completed"),
+    );
+
+    expect(result.status).toBe("auto_approved");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// approveAction — timeout enforcement (manual approve)
+// ---------------------------------------------------------------------------
+
+describe("approveAction() — timeout enforcement", () => {
+  it("transitions to timed_out when approved execution exceeds timeout", async () => {
+    process.env.ATLAS_ACTIONS_ENABLED = "true";
+    process.env.ATLAS_ACTION_TIMEOUT = "50";
+    await loadConfig("/tmp/handler-test-nonexistent");
+
+    const request = buildActionRequest({
+      actionType: "slow:manual",
+      target: "target-1",
+      summary: "Slow manual action",
+      payload: { key: "val" },
+      reversible: false,
+    });
+
+    await withRequestContext({ requestId: "req-approve-timeout-1" }, () =>
+      handleAction(request, async () => "done"),
+    );
+
+    const result = await approveAction(request.id, "admin-1", async () => {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      return "should not reach";
+    });
+
+    expect(result).not.toBeNull();
+    expect(result!.status).toBe("timed_out");
+    expect(result!.error).toBe("Action timed out after 50ms");
+
+    // Verify persisted status
+    const stored = await getAction(request.id);
+    expect(stored!.status).toBe("timed_out");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getActionConfig — per-action timeout override
+// ---------------------------------------------------------------------------
+
+describe("getActionConfig() — timeout", () => {
+  it("reads timeout from ATLAS_ACTION_TIMEOUT env var", async () => {
+    process.env.ATLAS_ACTIONS_ENABLED = "true";
+    process.env.ATLAS_ACTION_TIMEOUT = "15000";
+    await loadConfig("/tmp/handler-test-nonexistent");
+
+    const config = getActionConfig("any:action");
+    expect(config.timeout).toBe(15000);
+  });
+
+  it("per-action timeout overrides global defaults", async () => {
+    const { validateAndResolve, _setConfigForTest } = await import("@atlas/api/lib/config");
+
+    const resolved = validateAndResolve({
+      actions: {
+        defaults: { timeout: 60000 },
+        "fast:action": { timeout: 5000 },
+      },
+    });
+    _setConfigForTest(resolved);
+
+    const globalConfig = getActionConfig("other:action");
+    expect(globalConfig.timeout).toBe(60000);
+
+    const overrideConfig = getActionConfig("fast:action");
+    expect(overrideConfig.timeout).toBe(5000);
   });
 });

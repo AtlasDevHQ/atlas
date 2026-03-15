@@ -483,7 +483,7 @@ export default function ConnectionsPage() {
     data: displayConnections,
     columns,
     pageCount: 1,
-    initialState: { pagination: { pageSize: 100 } },
+    initialState: { pagination: { pageIndex: 0, pageSize: 100 } },
     getRowId: (row) => row.id,
   });
 

@@ -130,7 +130,7 @@ export default function RunHistoryPage() {
     pageCount,
     initialState: {
       sorting: [{ id: "startedAt", desc: true }],
-      pagination: { pageSize: PAGE_SIZE },
+      pagination: { pageIndex: 0, pageSize: PAGE_SIZE },
     },
     getRowId: (row) => row.id,
   });

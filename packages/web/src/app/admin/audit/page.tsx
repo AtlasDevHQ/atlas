@@ -63,7 +63,7 @@ export default function AuditPage() {
     pageCount,
     initialState: {
       sorting: [{ id: "timestamp", desc: true }],
-      pagination: { pageSize: LIMIT },
+      pagination: { pageIndex: 0, pageSize: LIMIT },
     },
     getRowId: (row) => row.id,
   });

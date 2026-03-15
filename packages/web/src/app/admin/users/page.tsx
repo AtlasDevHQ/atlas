@@ -205,7 +205,7 @@ export default function UsersPage() {
     pageCount,
     initialState: {
       sorting: [{ id: "createdAt", desc: true }],
-      pagination: { pageSize: LIMIT },
+      pagination: { pageIndex: 0, pageSize: LIMIT },
     },
     getRowId: (row) => row.id,
   });
@@ -242,7 +242,7 @@ export default function UsersPage() {
     data: invitations,
     columns: invitationColumns,
     pageCount: 1,
-    initialState: { pagination: { pageSize: 100 } },
+    initialState: { pagination: { pageIndex: 0, pageSize: 100 } },
     getRowId: (row) => row.id,
     queryKeys: { page: "invPage", perPage: "invPerPage", sort: "invSort", filters: "invFilters", joinOperator: "invJoin" },
   });

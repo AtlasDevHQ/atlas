@@ -93,7 +93,7 @@ export default function TokenUsagePage() {
     pageCount: 1,
     initialState: {
       sorting: [{ id: "totalTokens", desc: true }],
-      pagination: { pageSize: 50 },
+      pagination: { pageIndex: 0, pageSize: 50 },
     },
     getRowId: (row) => row.userId,
   });

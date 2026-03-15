@@ -382,7 +382,7 @@ export default function ScheduledTasksPage() {
     data: tasks,
     columns: taskColumns,
     pageCount,
-    initialState: { pagination: { pageSize: PAGE_SIZE } },
+    initialState: { pagination: { pageIndex: 0, pageSize: PAGE_SIZE } },
     getRowId: (row) => row.id,
   });
 

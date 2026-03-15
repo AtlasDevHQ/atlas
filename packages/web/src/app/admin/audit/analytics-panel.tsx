@@ -91,7 +91,7 @@ export function AnalyticsPanel({ from, to }: { from: string; to: string }) {
     data: slowData?.queries ?? [],
     columns: slowColumns,
     pageCount: 1,
-    initialState: { sorting: [{ id: "avgDuration", desc: true }], pagination: { pageSize: 50 } },
+    initialState: { sorting: [{ id: "avgDuration", desc: true }], pagination: { pageIndex: 0, pageSize: 50 } },
     getRowId: (_, i) => String(i),
     queryKeys: { page: "slowPage", perPage: "slowPP", sort: "slowSort", filters: "slowF", joinOperator: "slowJ" },
   });
@@ -101,7 +101,7 @@ export function AnalyticsPanel({ from, to }: { from: string; to: string }) {
     data: frequentData?.queries ?? [],
     columns: frequentColumns,
     pageCount: 1,
-    initialState: { sorting: [{ id: "count", desc: true }], pagination: { pageSize: 50 } },
+    initialState: { sorting: [{ id: "count", desc: true }], pagination: { pageIndex: 0, pageSize: 50 } },
     getRowId: (_, i) => String(i),
     queryKeys: { page: "freqPage", perPage: "freqPP", sort: "freqSort", filters: "freqF", joinOperator: "freqJ" },
   });
@@ -111,7 +111,7 @@ export function AnalyticsPanel({ from, to }: { from: string; to: string }) {
     data: userData?.users ?? [],
     columns: userColumns,
     pageCount: 1,
-    initialState: { sorting: [{ id: "count", desc: true }], pagination: { pageSize: 50 } },
+    initialState: { sorting: [{ id: "count", desc: true }], pagination: { pageIndex: 0, pageSize: 50 } },
     getRowId: (row) => row.userId,
     queryKeys: { page: "userPage", perPage: "userPP", sort: "userSort", filters: "userF", joinOperator: "userJ" },
   });

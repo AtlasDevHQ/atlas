@@ -641,6 +641,20 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
   }
 
   // 10. Sandbox pre-flight (explore tool isolation)
+  try {
+    const { getConfig: getAtlasConfig } = await import("@atlas/api/lib/config");
+    const sandboxPriority = getAtlasConfig()?.sandbox?.priority;
+    if (sandboxPriority) {
+      log.info(
+        { priority: sandboxPriority },
+        "Custom sandbox priority configured: %s",
+        sandboxPriority.join(" > "),
+      );
+    }
+  } catch {
+    // Config module unavailable — skip
+  }
+
   const isVercel = process.env.ATLAS_RUNTIME === "vercel" || !!process.env.VERCEL;
   if (isVercel) {
     log.info("Explore tool: Vercel sandbox active");

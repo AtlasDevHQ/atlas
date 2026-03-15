@@ -292,6 +292,7 @@ Explore tool isolation backends. See [Sandbox Architecture](/architecture/sandbo
 | `ATLAS_NSJAIL_PATH` | Auto-detected | Explicit path to nsjail binary |
 | `ATLAS_NSJAIL_TIME_LIMIT` | `10` | nsjail per-command time limit in seconds |
 | `ATLAS_NSJAIL_MEMORY_LIMIT` | `256` | nsjail per-command memory limit in MB |
+| `ATLAS_SANDBOX_PRIORITY` | — | Comma-separated backend priority order (e.g. `sidecar,nsjail,just-bash`). Valid values: `vercel-sandbox`, `nsjail`, `sidecar`, `just-bash`. Plugin backends always take highest priority. See [Configuration](/reference/config#sandbox) |
 
 <Tabs items={["Docker Compose (dev)", "Production sidecar", "nsjail (self-hosted)"]}>
 <Tab value="Docker Compose (dev)">

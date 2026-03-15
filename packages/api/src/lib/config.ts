@@ -158,6 +158,24 @@ const SandboxConfigSchema = z.object({
 
 export type SandboxConfig = z.infer<typeof SandboxConfigSchema>;
 
+/** Modules that can never be unblocked via `allowModules`. */
+const PYTHON_CRITICAL_MODULES = ["os", "subprocess", "sys", "shutil"];
+
+const PythonConfigSchema = z.object({
+  /** Additional modules to block (added to the default blocked list). */
+  blockedModules: z.array(z.string().min(1, "Module name must not be empty")).default([]),
+  /** Modules to remove from the default blocked list. Critical modules (os, subprocess, sys, shutil) cannot be unblocked. */
+  allowModules: z.array(z.string().min(1, "Module name must not be empty")).default([]),
+}).refine(
+  (cfg) => !cfg.allowModules.some((m: string) => PYTHON_CRITICAL_MODULES.includes(m)),
+  {
+    message: `Cannot unblock critical Python modules (${PYTHON_CRITICAL_MODULES.join(", ")}). These are blocked regardless of configuration.`,
+    path: ["allowModules"],
+  },
+);
+
+export type PythonConfig = z.infer<typeof PythonConfigSchema>;
+
 const AtlasConfigSchema = z.object({
   /**
    * Named datasource connections. The "default" key is used when no
@@ -233,6 +251,12 @@ const AtlasConfigSchema = z.object({
    * selection priority for the explore tool.
    */
   sandbox: SandboxConfigSchema.optional(),
+
+  /**
+   * Python tool import guard configuration. Customize which modules are
+   * blocked or allowed in the defense-in-depth import checker.
+   */
+  python: PythonConfigSchema.optional(),
 });
 
 /** The output type after Zod parsing (defaults applied, all fields present). */
@@ -242,7 +266,7 @@ export type AtlasConfig = z.infer<typeof AtlasConfigSchema>;
 export type AtlasConfigInput = z.input<typeof AtlasConfigSchema>;
 
 /** Expose schemas and formatter for external validation (e.g. tests, CLI). */
-export { AtlasConfigSchema, RateLimitConfigSchema, RLSPolicySchema, RLSConfigSchema, SandboxConfigSchema };
+export { AtlasConfigSchema, RateLimitConfigSchema, RLSPolicySchema, RLSConfigSchema, SandboxConfigSchema, PythonConfigSchema };
 
 /**
  * The resolved config after merging the config file with env var defaults.
@@ -270,6 +294,8 @@ export interface ResolvedConfig {
   rls?: RLSConfig;
   /** Sandbox / explore backend configuration. */
   sandbox?: SandboxConfig;
+  /** Python tool import guard overrides. */
+  python?: PythonConfig;
   /** Whether the config was loaded from a file or synthesized from env vars. */
   source: "file" | "env";
 }
@@ -749,6 +775,7 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
     ...(config.scheduler ? { scheduler: config.scheduler } : {}),
     ...(config.rls ? { rls: config.rls } : {}),
     ...(config.sandbox ? { sandbox: config.sandbox } : {}),
+    ...(config.python ? { python: config.python } : {}),
     source: "file",
   };
 }

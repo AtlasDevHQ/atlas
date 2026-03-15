@@ -40,13 +40,12 @@ function executeWithTimeout<T>(
   fn: () => Promise<T>,
   timeoutMs: number | undefined,
 ): Promise<T> {
-  if (!timeoutMs) return fn();
-  return Promise.race([
-    fn(),
-    new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new ActionTimeoutError(timeoutMs)), timeoutMs);
-    }),
-  ]);
+  if (timeoutMs == null) return fn();
+  let timer: ReturnType<typeof setTimeout>;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new ActionTimeoutError(timeoutMs)), timeoutMs);
+  });
+  return Promise.race([fn(), timeoutPromise]).finally(() => clearTimeout(timer!));
 }
 
 // ---------------------------------------------------------------------------
@@ -75,7 +74,7 @@ export function getActionExecutor(actionId: string): ActionExecutor | undefined 
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve the effective approval mode for an action type.
+ * Resolve the effective action config for an action type (approval, timeout, requiredRole).
  * Priority: per-action override > config defaults > action's defaultApproval > "manual".
  */
 export function getActionConfig(

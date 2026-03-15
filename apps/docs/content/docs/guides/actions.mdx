@@ -146,7 +146,7 @@ export default defineConfig({
 });
 ```
 
-**Timeout resolution order:** per-action `timeout` > `defaults.timeout` > `ATLAS_ACTION_TIMEOUT` env var. When no timeout is configured, actions run without a time limit.
+**Timeout resolution:** With a config file, per-action `timeout` overrides `defaults.timeout`. The `ATLAS_ACTION_TIMEOUT` env var is only used when no config file is present (it populates `defaults.timeout` automatically). When no timeout is configured, actions run without a time limit.
 
 See [Configuration](/reference/config) for the full config schema.
 

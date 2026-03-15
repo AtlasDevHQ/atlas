@@ -27,6 +27,7 @@ beforeEach(() => {
   delete process.env.DATABASE_URL;
   delete process.env.ATLAS_ACTIONS_ENABLED;
   delete process.env.ATLAS_ACTION_APPROVAL;
+  delete process.env.ATLAS_ACTION_TIMEOUT;
   _resetPool(null);
   _resetActionStore();
   _resetConfig();
@@ -35,6 +36,7 @@ beforeEach(() => {
 afterEach(() => {
   delete process.env.ATLAS_ACTIONS_ENABLED;
   delete process.env.ATLAS_ACTION_APPROVAL;
+  delete process.env.ATLAS_ACTION_TIMEOUT;
   if (origDbUrl) {
     process.env.DATABASE_URL = origDbUrl;
   } else {

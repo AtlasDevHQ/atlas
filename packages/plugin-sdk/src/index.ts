@@ -1,8 +1,8 @@
 /**
  * @useatlas/plugin-sdk — Public API for authoring Atlas plugins.
  *
- * Peer dependency re-exports are available via sub-paths:
- * - `@useatlas/plugin-sdk/ai` — `tool`, `jsonSchema`, `CoreTool`, `ToolSet`, `Tool`
+ * Optional peer dependency re-exports are available via sub-paths:
+ * - `@useatlas/plugin-sdk/ai` — `tool`, `jsonSchema`, `ToolSet`, `Tool`
  * - `@useatlas/plugin-sdk/hono` — `Hono`, `Context`, `MiddlewareHandler`
  */
 
@@ -66,11 +66,9 @@ export {
 export type { CreatePluginOptions } from "./helpers";
 
 // ---------------------------------------------------------------------------
-// Peer dependency re-exports (convenience — also available via sub-paths)
+// Peer dependency type re-exports (type-only — erased at runtime, safe even
+// when the optional peer deps are not installed)
 // ---------------------------------------------------------------------------
 
-export { tool, jsonSchema } from "./ai";
 export type { ToolSet, Tool } from "./ai";
-
-export { Hono } from "./hono";
 export type { Context, MiddlewareHandler } from "./hono";

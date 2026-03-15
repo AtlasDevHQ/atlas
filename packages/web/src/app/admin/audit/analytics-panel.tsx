@@ -52,6 +52,7 @@ export interface ErrorGroup {
 
 export interface AuditUserStats {
   userId: string;
+  userEmail?: string | null;
   count: number;
   avgDuration: number;
   errorCount: number;
@@ -298,7 +299,7 @@ export function AnalyticsPanel({ from, to }: { from: string; to: string }) {
                 <TableBody>
                   {userData.users.map((u) => (
                     <TableRow key={u.userId}>
-                      <TableCell className="text-sm">{u.userId}</TableCell>
+                      <TableCell className="text-sm">{u.userEmail ?? u.userId}</TableCell>
                       <TableCell className="text-right text-xs tabular-nums">
                         {u.count.toLocaleString()}
                       </TableCell>

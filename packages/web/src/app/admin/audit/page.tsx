@@ -31,11 +31,12 @@ import { ErrorBoundary } from "@/ui/components/error-boundary";
 interface AuditRow {
   id: string;
   user_id: string;
-  query: string;
+  sql: string;
   success: boolean;
   duration_ms: number;
   row_count: number;
   timestamp: string;
+  user_email?: string | null;
   error?: string;
 }
 
@@ -327,9 +328,9 @@ export default function AuditPage() {
                             minute: "2-digit",
                           })}
                         </TableCell>
-                        <TableCell className="text-sm">{row.user_id}</TableCell>
+                        <TableCell className="text-sm">{row.user_email ?? row.user_id ?? "Anonymous"}</TableCell>
                         <TableCell className="max-w-xs truncate font-mono text-xs">
-                          {row.query}
+                          {row.sql}
                         </TableCell>
                         <TableCell className="text-right text-xs tabular-nums">
                           {row.duration_ms}ms

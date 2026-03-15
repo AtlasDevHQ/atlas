@@ -104,6 +104,7 @@ interface Invitation {
   role: string;
   status: string;
   invited_by: string | null;
+  invited_by_email: string | null;
   expires_at: string;
   accepted_at: string | null;
   created_at: string;

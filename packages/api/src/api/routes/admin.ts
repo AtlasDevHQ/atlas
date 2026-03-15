@@ -979,13 +979,13 @@ admin.get("/audit", async (c) => {
 
     const user = c.req.query("user");
     if (user) {
-      conditions.push(`user_id = $${paramIdx++}`);
+      conditions.push(`a.user_id = $${paramIdx++}`);
       params.push(user);
     }
 
     const success = c.req.query("success");
     if (success === "true" || success === "false") {
-      conditions.push(`success = $${paramIdx++}`);
+      conditions.push(`a.success = $${paramIdx++}`);
       params.push(success === "true");
     }
 
@@ -994,7 +994,7 @@ admin.get("/audit", async (c) => {
       if (isNaN(Date.parse(from))) {
         return c.json({ error: "invalid_request", message: `Invalid 'from' date format: "${from}". Use ISO 8601 (e.g. 2026-01-01).` }, 400);
       }
-      conditions.push(`timestamp >= $${paramIdx++}`);
+      conditions.push(`a.timestamp >= $${paramIdx++}`);
       params.push(from);
     }
 
@@ -1003,7 +1003,7 @@ admin.get("/audit", async (c) => {
       if (isNaN(Date.parse(to))) {
         return c.json({ error: "invalid_request", message: `Invalid 'to' date format: "${to}". Use ISO 8601 (e.g. 2026-03-03).` }, 400);
       }
-      conditions.push(`timestamp <= $${paramIdx++}`);
+      conditions.push(`a.timestamp <= $${paramIdx++}`);
       params.push(to);
     }
 
@@ -1011,13 +1011,16 @@ admin.get("/audit", async (c) => {
 
     try {
       const countResult = await internalQuery<{ count: string }>(
-        `SELECT COUNT(*) as count FROM audit_log ${whereClause}`,
+        `SELECT COUNT(*) as count FROM audit_log a ${whereClause}`,
         params,
       );
       const total = parseInt(String(countResult[0]?.count ?? "0"), 10);
 
       const rows = await internalQuery(
-        `SELECT * FROM audit_log ${whereClause} ORDER BY timestamp DESC LIMIT $${paramIdx++} OFFSET $${paramIdx++}`,
+        `SELECT a.*, u.email AS user_email
+         FROM audit_log a
+         LEFT JOIN "user" u ON a.user_id = u.id
+         ${whereClause} ORDER BY a.timestamp DESC LIMIT $${paramIdx++} OFFSET $${paramIdx++}`,
         [...params, limit, offset],
       );
 
@@ -1313,16 +1316,20 @@ admin.get("/audit/analytics/users", async (c) => {
     try {
       const rows = await internalQuery<{
         user_id: string;
+        user_email: string | null;
         count: string;
         avg_duration: string;
         error_count: string;
       }>(
-        `SELECT COALESCE(user_id, 'anonymous') as user_id,
+        `SELECT COALESCE(a.user_id, 'anonymous') as user_id,
+                u.email as user_email,
                 COUNT(*) as count,
-                ROUND(AVG(duration_ms)) as avg_duration,
-                COUNT(*) FILTER (WHERE NOT success) as error_count
-         FROM audit_log ${range.where}
-         GROUP BY COALESCE(user_id, 'anonymous')
+                ROUND(AVG(a.duration_ms)) as avg_duration,
+                COUNT(*) FILTER (WHERE NOT a.success) as error_count
+         FROM audit_log a
+         LEFT JOIN "user" u ON a.user_id = u.id
+         ${range.where}
+         GROUP BY COALESCE(a.user_id, 'anonymous'), u.email
          ORDER BY COUNT(*) DESC
          LIMIT 50`,
         range.params,
@@ -1333,6 +1340,7 @@ admin.get("/audit/analytics/users", async (c) => {
           const errorCount = parseInt(String(r.error_count), 10);
           return {
             userId: r.user_id,
+            userEmail: r.user_email,
             count,
             avgDuration: parseInt(String(r.avg_duration), 10),
             errorCount,
@@ -2316,21 +2324,22 @@ admin.get("/users/invitations", async (c) => {
     const validStatuses = ["pending", "accepted", "revoked", "expired"];
 
     try {
-      let sql = `SELECT id, email, role, status, invited_by, expires_at, accepted_at, created_at
-                 FROM invitations`;
+      let sql = `SELECT i.id, i.email, i.role, i.status, i.invited_by, u.email AS invited_by_email, i.expires_at, i.accepted_at, i.created_at
+                 FROM invitations i
+                 LEFT JOIN "user" u ON i.invited_by = u.id`;
       const params: unknown[] = [];
 
       if (status && validStatuses.includes(status)) {
         if (status === "expired") {
           // "expired" is a virtual status — pending invitations past their expiry
-          sql += ` WHERE status = 'pending' AND expires_at <= now()`;
+          sql += ` WHERE i.status = 'pending' AND i.expires_at <= now()`;
         } else {
-          sql += ` WHERE status = $1`;
+          sql += ` WHERE i.status = $1`;
           params.push(status);
         }
       }
 
-      sql += ` ORDER BY created_at DESC LIMIT 100`;
+      sql += ` ORDER BY i.created_at DESC LIMIT 100`;
 
       const rows = await internalQuery<{
         id: string;
@@ -2338,6 +2347,7 @@ admin.get("/users/invitations", async (c) => {
         role: string;
         status: string;
         invited_by: string | null;
+        invited_by_email: string | null;
         expires_at: string;
         accepted_at: string | null;
         created_at: string;
@@ -2495,20 +2505,23 @@ admin.get("/tokens/by-user", async (c) => {
   try {
     const rows = await internalQuery<{
       user_id: string;
+      user_email: string | null;
       total_prompt: string;
       total_completion: string;
       total_tokens: string;
       request_count: string;
     }>(
       `SELECT
-         COALESCE(user_id, 'anonymous') AS user_id,
-         SUM(prompt_tokens) AS total_prompt,
-         SUM(completion_tokens) AS total_completion,
-         SUM(prompt_tokens + completion_tokens) AS total_tokens,
+         COALESCE(t.user_id, 'anonymous') AS user_id,
+         u.email AS user_email,
+         SUM(t.prompt_tokens) AS total_prompt,
+         SUM(t.completion_tokens) AS total_completion,
+         SUM(t.prompt_tokens + t.completion_tokens) AS total_tokens,
          COUNT(*) AS request_count
-       FROM token_usage
-       WHERE created_at >= $1 AND created_at <= $2
-       GROUP BY user_id
+       FROM token_usage t
+       LEFT JOIN "user" u ON t.user_id = u.id
+       WHERE t.created_at >= $1 AND t.created_at <= $2
+       GROUP BY t.user_id, u.email
        ORDER BY total_tokens DESC
        LIMIT $3`,
       [fromDate, toDate, limit],
@@ -2517,6 +2530,7 @@ admin.get("/tokens/by-user", async (c) => {
     return c.json({
       users: rows.map((r) => ({
         userId: r.user_id,
+        userEmail: r.user_email,
         promptTokens: parseInt(r.total_prompt, 10),
         completionTokens: parseInt(r.total_completion, 10),
         totalTokens: parseInt(r.total_tokens, 10),

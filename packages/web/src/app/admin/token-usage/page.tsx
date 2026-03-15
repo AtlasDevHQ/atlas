@@ -43,6 +43,7 @@ interface TokenSummary {
 
 interface UserTokenRow {
   userId: string;
+  userEmail?: string | null;
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
@@ -250,7 +251,7 @@ export default function TokenUsagePage() {
                 <TableBody>
                   {usersData.users.map((u) => (
                     <TableRow key={u.userId}>
-                      <TableCell className="text-sm">{u.userId}</TableCell>
+                      <TableCell className="text-sm">{u.userEmail ?? u.userId}</TableCell>
                       <TableCell className="text-right text-xs tabular-nums">
                         {formatNumber(u.promptTokens)}
                       </TableCell>

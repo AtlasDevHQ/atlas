@@ -1,6 +1,5 @@
 "use client";
 
-import * as React from "react";
 import { useEffect, useState } from "react";
 import { useQueryStates } from "nuqs";
 import { usersSearchParams } from "./search-params";
@@ -136,7 +135,7 @@ export default function UsersPage() {
   );
 
   // Data table columns (actions column uses component callbacks)
-  const userColumns = React.useMemo<ColumnDef<User>[]>(() => {
+  const userColumns: ColumnDef<User>[] = (() => {
     const base = getUserColumns();
     const actionsCol: ColumnDef<User> = {
       id: "actions",
@@ -197,7 +196,7 @@ export default function UsersPage() {
       size: 64,
     };
     return [...base, actionsCol];
-  }, []);
+  })();
 
   const pageCount = Math.max(1, Math.ceil(total / LIMIT));
   const { table: usersTable } = useDataTable({
@@ -212,7 +211,7 @@ export default function UsersPage() {
   });
 
   // Invitations table
-  const invitationColumns = React.useMemo<ColumnDef<Invitation>[]>(() => {
+  const invitationColumns: ColumnDef<Invitation>[] = (() => {
     const base = getInvitationColumns();
     const actionsCol: ColumnDef<Invitation> = {
       id: "actions",
@@ -237,7 +236,7 @@ export default function UsersPage() {
       size: 64,
     };
     return [...base, actionsCol];
-  }, []);
+  })();
 
   const { table: invitationsTable } = useDataTable({
     data: invitations,
@@ -245,6 +244,7 @@ export default function UsersPage() {
     pageCount: 1,
     initialState: { pagination: { pageSize: 100 } },
     getRowId: (row) => row.id,
+    queryKeys: { page: "invPage", perPage: "invPerPage", sort: "invSort", filters: "invFilters", joinOperator: "invJoin" },
   });
 
   // Fetch users

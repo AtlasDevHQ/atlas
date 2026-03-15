@@ -1,6 +1,5 @@
 "use client";
 
-import * as React from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useAtlasConfig } from "@/ui/context";
 import { Button } from "@/components/ui/button";
@@ -427,7 +426,7 @@ export default function ConnectionsPage() {
   const displayConnections = localConnections ?? connections ?? [];
 
   // Data table columns (actions column uses component callbacks)
-  const columns = React.useMemo<ColumnDef<ConnectionInfo>[]>(() => {
+  const columns: ColumnDef<ConnectionInfo>[] = (() => {
     const base = getConnectionColumns();
     const actionsCol: ColumnDef<ConnectionInfo> = {
       id: "actions",
@@ -478,7 +477,7 @@ export default function ConnectionsPage() {
       size: 180,
     };
     return [...base, actionsCol];
-  }, [testing, loadingDetail]);
+  })();
 
   const { table: connTable } = useDataTable({
     data: displayConnections,

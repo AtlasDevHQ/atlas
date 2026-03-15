@@ -312,7 +312,7 @@ export default function ScheduledTasksPage() {
   }
 
   // ── Data table ──────────────────────────────────────────────────
-  const taskColumns = React.useMemo<ColumnDef<ScheduledTask>[]>(() => {
+  const taskColumns: ColumnDef<ScheduledTask>[] = (() => {
     const base = getScheduledTaskColumns({ expandedId });
     const enabledCol: ColumnDef<ScheduledTask> = {
       id: "enabled",
@@ -375,7 +375,7 @@ export default function ScheduledTasksPage() {
       size: 144,
     };
     return [...base, enabledCol, actionsCol];
-  }, [expandedId, toggling, triggering]);
+  })();
 
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const { table: tasksTable } = useDataTable({
@@ -386,79 +386,70 @@ export default function ScheduledTasksPage() {
     getRowId: (row) => row.id,
   });
 
-  const handleTaskRowClick = React.useCallback(
-    (row: Row<ScheduledTask>) => handleRowClick(row.original.id),
-    [expandedId],
-  );
+  const handleTaskRowClick = (row: Row<ScheduledTask>) => handleRowClick(row.original.id);
 
-  const isTaskExpanded = React.useCallback(
-    (row: Row<ScheduledTask>) => expandedId === row.original.id,
-    [expandedId],
-  );
+  const isTaskExpanded = (row: Row<ScheduledTask>) => expandedId === row.original.id;
 
-  const renderTaskExpandedRow = React.useCallback(
-    (row: Row<ScheduledTask>) => {
-      if (expandedId !== row.original.id) return null;
-      if (detailLoading) {
-        return (
-          <div className="flex items-center gap-2 text-muted-foreground">
-            <Loader2 className="size-3 animate-spin" />
-            <span className="text-xs">Loading runs...</span>
-          </div>
-        );
-      }
-      if (detailError) {
-        return <p className="text-xs text-destructive">{detailError}</p>;
-      }
-      if (selectedTask && selectedTask.recentRuns.length > 0) {
-        return (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Status</TableHead>
-                <TableHead>Delivery</TableHead>
-                <TableHead>Started</TableHead>
-                <TableHead>Completed</TableHead>
-                <TableHead>Tokens</TableHead>
-                <TableHead>Error</TableHead>
+  const renderTaskExpandedRow = (row: Row<ScheduledTask>) => {
+    if (expandedId !== row.original.id) return null;
+    if (detailLoading) {
+      return (
+        <div className="flex items-center gap-2 text-muted-foreground">
+          <Loader2 className="size-3 animate-spin" />
+          <span className="text-xs">Loading runs...</span>
+        </div>
+      );
+    }
+    if (detailError) {
+      return <p className="text-xs text-destructive">{detailError}</p>;
+    }
+    if (selectedTask && selectedTask.recentRuns.length > 0) {
+      return (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Status</TableHead>
+              <TableHead>Delivery</TableHead>
+              <TableHead>Started</TableHead>
+              <TableHead>Completed</TableHead>
+              <TableHead>Tokens</TableHead>
+              <TableHead>Error</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {selectedTask.recentRuns.map((run) => (
+              <TableRow key={run.id}>
+                <TableCell>
+                  <Badge
+                    variant={run.status === "failed" ? "destructive" : run.status === "success" ? "secondary" : "outline"}
+                    className={run.status === "success" ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400" : undefined}
+                  >
+                    {run.status}
+                  </Badge>
+                </TableCell>
+                <TableCell>
+                  <DeliveryStatusBadge status={run.deliveryStatus} error={run.deliveryError} />
+                </TableCell>
+                <TableCell className="text-xs text-muted-foreground">
+                  {formatRelativeDate(run.startedAt)}
+                </TableCell>
+                <TableCell className="text-xs text-muted-foreground">
+                  {formatRelativeDate(run.completedAt)}
+                </TableCell>
+                <TableCell className="text-xs text-muted-foreground">
+                  {run.tokensUsed ?? "\u2014"}
+                </TableCell>
+                <TableCell className="max-w-xs truncate text-xs text-muted-foreground" title={run.error ?? undefined}>
+                  {run.error ?? "\u2014"}
+                </TableCell>
               </TableRow>
-            </TableHeader>
-            <TableBody>
-              {selectedTask.recentRuns.map((run) => (
-                <TableRow key={run.id}>
-                  <TableCell>
-                    <Badge
-                      variant={run.status === "failed" ? "destructive" : run.status === "success" ? "secondary" : "outline"}
-                      className={run.status === "success" ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400" : undefined}
-                    >
-                      {run.status}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>
-                    <DeliveryStatusBadge status={run.deliveryStatus} error={run.deliveryError} />
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {formatRelativeDate(run.startedAt)}
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {formatRelativeDate(run.completedAt)}
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {run.tokensUsed ?? "\u2014"}
-                  </TableCell>
-                  <TableCell className="max-w-xs truncate text-xs text-muted-foreground" title={run.error ?? undefined}>
-                    {run.error ?? "\u2014"}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        );
-      }
-      return <p className="text-xs text-muted-foreground">No recent runs</p>;
-    },
-    [expandedId, detailLoading, detailError, selectedTask],
-  );
+            ))}
+          </TableBody>
+        </Table>
+      );
+    }
+    return <p className="text-xs text-muted-foreground">No recent runs</p>;
+  };
 
   // ── Render ──────────────────────────────────────────────────────
   return (

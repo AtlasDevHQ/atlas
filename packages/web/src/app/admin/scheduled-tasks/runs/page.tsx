@@ -1,6 +1,5 @@
 "use client";
 
-import * as React from "react";
 import { useEffect, useState } from "react";
 import type { Row } from "@tanstack/react-table";
 import Link from "next/link";
@@ -122,10 +121,7 @@ export default function RunHistoryPage() {
   }, [apiUrl, offset, taskFilter, statusFilter, dateFrom, dateTo, credentials, refetchKey]);
 
   // ── Data table ──────────────────────────────────────────────────
-  const runColumns = React.useMemo(
-    () => getRunHistoryColumns({ expandedId: expandedRun }),
-    [expandedRun],
-  );
+  const runColumns = getRunHistoryColumns({ expandedId: expandedRun });
 
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const { table: runsTable } = useDataTable({
@@ -139,80 +135,71 @@ export default function RunHistoryPage() {
     getRowId: (row) => row.id,
   });
 
-  const handleRunRowClick = React.useCallback(
-    (row: Row<ScheduledTaskRunWithTaskName>) =>
-      setParams({ expandedRun: expandedRun === row.original.id ? null : row.original.id }),
-    [expandedRun, setParams],
-  );
+  const handleRunRowClick = (row: Row<ScheduledTaskRunWithTaskName>) =>
+    setParams({ expandedRun: expandedRun === row.original.id ? null : row.original.id });
 
-  const isRunExpanded = React.useCallback(
-    (row: Row<ScheduledTaskRunWithTaskName>) => expandedRun === row.original.id,
-    [expandedRun],
-  );
+  const isRunExpanded = (row: Row<ScheduledTaskRunWithTaskName>) => expandedRun === row.original.id;
 
-  const renderRunExpandedRow = React.useCallback(
-    (row: Row<ScheduledTaskRunWithTaskName>) => {
-      const run = row.original;
-      if (expandedRun !== run.id) return null;
-      return (
-        <div className="space-y-3 text-sm">
-          <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-            <div>
-              <span className="text-xs font-medium text-muted-foreground">Started</span>
-              <p>{formatTimestamp(run.startedAt)}</p>
-            </div>
-            <div>
-              <span className="text-xs font-medium text-muted-foreground">Completed</span>
-              <p>{run.completedAt ? formatTimestamp(run.completedAt) : "\u2014"}</p>
-            </div>
-            <div>
-              <span className="text-xs font-medium text-muted-foreground">Duration</span>
-              <p>{formatDuration(run.startedAt, run.completedAt ?? null)}</p>
-            </div>
-            <div>
-              <span className="text-xs font-medium text-muted-foreground">Tokens used</span>
-              <p>{run.tokensUsed?.toLocaleString() ?? "\u2014"}</p>
-            </div>
+  const renderRunExpandedRow = (row: Row<ScheduledTaskRunWithTaskName>) => {
+    const run = row.original;
+    if (expandedRun !== run.id) return null;
+    return (
+      <div className="space-y-3 text-sm">
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+          <div>
+            <span className="text-xs font-medium text-muted-foreground">Started</span>
+            <p>{formatTimestamp(run.startedAt)}</p>
           </div>
-          {run.deliveryError && (
-            <div>
-              <span className="text-xs font-medium text-muted-foreground">Delivery error</span>
-              <pre className="mt-1 max-h-40 overflow-auto rounded-md bg-muted p-3 text-xs whitespace-pre-wrap">
-                {run.deliveryError}
-              </pre>
-            </div>
-          )}
-          {run.error && (
-            <div>
-              <span className="text-xs font-medium text-muted-foreground">Error</span>
-              <pre className="mt-1 max-h-40 overflow-auto rounded-md bg-muted p-3 text-xs whitespace-pre-wrap">
-                {run.error}
-              </pre>
-            </div>
-          )}
-          <div className="flex gap-3">
-            {run.conversationId && (
-              <Button variant="outline" size="sm" asChild>
-                <Link href={`/?conversationId=${run.conversationId}`}>
-                  <ExternalLink className="mr-1 size-3" />
-                  View conversation
-                </Link>
-              </Button>
-            )}
-            {run.actionId && (
-              <Button variant="outline" size="sm" asChild>
-                <Link href={`/admin/actions?expanded=${run.actionId}`}>
-                  <ExternalLink className="mr-1 size-3" />
-                  View action
-                </Link>
-              </Button>
-            )}
+          <div>
+            <span className="text-xs font-medium text-muted-foreground">Completed</span>
+            <p>{run.completedAt ? formatTimestamp(run.completedAt) : "\u2014"}</p>
+          </div>
+          <div>
+            <span className="text-xs font-medium text-muted-foreground">Duration</span>
+            <p>{formatDuration(run.startedAt, run.completedAt ?? null)}</p>
+          </div>
+          <div>
+            <span className="text-xs font-medium text-muted-foreground">Tokens used</span>
+            <p>{run.tokensUsed?.toLocaleString() ?? "\u2014"}</p>
           </div>
         </div>
-      );
-    },
-    [expandedRun],
-  );
+        {run.deliveryError && (
+          <div>
+            <span className="text-xs font-medium text-muted-foreground">Delivery error</span>
+            <pre className="mt-1 max-h-40 overflow-auto rounded-md bg-muted p-3 text-xs whitespace-pre-wrap">
+              {run.deliveryError}
+            </pre>
+          </div>
+        )}
+        {run.error && (
+          <div>
+            <span className="text-xs font-medium text-muted-foreground">Error</span>
+            <pre className="mt-1 max-h-40 overflow-auto rounded-md bg-muted p-3 text-xs whitespace-pre-wrap">
+              {run.error}
+            </pre>
+          </div>
+        )}
+        <div className="flex gap-3">
+          {run.conversationId && (
+            <Button variant="outline" size="sm" asChild>
+              <Link href={`/?conversationId=${run.conversationId}`}>
+                <ExternalLink className="mr-1 size-3" />
+                View conversation
+              </Link>
+            </Button>
+          )}
+          {run.actionId && (
+            <Button variant="outline" size="sm" asChild>
+              <Link href={`/admin/actions?expanded=${run.actionId}`}>
+                <ExternalLink className="mr-1 size-3" />
+                View action
+              </Link>
+            </Button>
+          )}
+        </div>
+      </div>
+    );
+  };
 
   // Gate: 401/403/404
   if (!loading && error?.status && [401, 403, 404].includes(error.status)) {

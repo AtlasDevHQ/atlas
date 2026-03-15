@@ -1,6 +1,5 @@
 "use client";
 
-import * as React from "react";
 import dynamic from "next/dynamic";
 import { useAdminFetch, type FetchError } from "@/ui/hooks/use-admin-fetch";
 import { useDarkMode } from "@/ui/hooks/use-dark-mode";
@@ -87,31 +86,34 @@ export function AnalyticsPanel({ from, to }: { from: string; to: string }) {
   );
 
   // Data tables for each section
-  const slowColumns = React.useMemo(() => getSlowQueryColumns(), []);
+  const slowColumns = getSlowQueryColumns();
   const { table: slowTable } = useDataTable({
     data: slowData?.queries ?? [],
     columns: slowColumns,
     pageCount: 1,
     initialState: { sorting: [{ id: "avgDuration", desc: true }], pagination: { pageSize: 50 } },
     getRowId: (_, i) => String(i),
+    queryKeys: { page: "slowPage", perPage: "slowPP", sort: "slowSort", filters: "slowF", joinOperator: "slowJ" },
   });
 
-  const frequentColumns = React.useMemo(() => getFrequentQueryColumns(), []);
+  const frequentColumns = getFrequentQueryColumns();
   const { table: frequentTable } = useDataTable({
     data: frequentData?.queries ?? [],
     columns: frequentColumns,
     pageCount: 1,
     initialState: { sorting: [{ id: "count", desc: true }], pagination: { pageSize: 50 } },
     getRowId: (_, i) => String(i),
+    queryKeys: { page: "freqPage", perPage: "freqPP", sort: "freqSort", filters: "freqF", joinOperator: "freqJ" },
   });
 
-  const userColumns = React.useMemo(() => getUserActivityColumns(), []);
+  const userColumns = getUserActivityColumns();
   const { table: userTable } = useDataTable({
     data: userData?.users ?? [],
     columns: userColumns,
     pageCount: 1,
     initialState: { sorting: [{ id: "count", desc: true }], pagination: { pageSize: 50 } },
     getRowId: (row) => row.userId,
+    queryKeys: { page: "userPage", perPage: "userPP", sort: "userSort", filters: "userF", joinOperator: "userJ" },
   });
 
   // Gate: auth/availability errors surface as FeatureGate

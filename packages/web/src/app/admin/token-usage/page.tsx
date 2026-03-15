@@ -1,6 +1,5 @@
 "use client";
 
-import * as React from "react";
 import dynamic from "next/dynamic";
 import { useQueryStates } from "nuqs";
 import { tokenUsageSearchParams } from "./search-params";
@@ -86,7 +85,7 @@ export default function TokenUsagePage() {
     useAdminFetch<{ users: UserTokenRow[] }>(`/api/v1/admin/tokens/by-user${qs}`, { deps: [qs] });
 
   // Data table for top users
-  const tokenColumns = React.useMemo(() => getTokenUsageColumns(), []);
+  const tokenColumns = getTokenUsageColumns();
   const tokenData = usersData?.users ?? [];
   const { table: tokenTable } = useDataTable({
     data: tokenData,

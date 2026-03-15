@@ -1,6 +1,5 @@
 "use client";
 
-import * as React from "react";
 import { useEffect, useState } from "react";
 import { useQueryState } from "nuqs";
 import { parseAsStringLiteral } from "nuqs";
@@ -53,8 +52,8 @@ export default function AuditPage() {
   const [analyticsFrom, setAnalyticsFrom] = useState("");
   const [analyticsTo, setAnalyticsTo] = useState("");
 
-  // Column definitions (stable reference)
-  const columns = React.useMemo(() => getAuditColumns(), []);
+  // Column definitions
+  const columns = getAuditColumns();
 
   // Data table with nuqs-managed pagination, sorting, column visibility
   const pageCount = Math.max(1, Math.ceil(total / LIMIT));

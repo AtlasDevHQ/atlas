@@ -66,6 +66,10 @@
     "ai": "^6.0.0",
     "hono": "^4.0.0"
   },
+  "peerDependenciesMeta": {
+    "ai": { "optional": true },
+    "hono": { "optional": true }
+  },
   "devDependencies": {
     "ai": "^6.0.97",
     "hono": "^4.12.3",

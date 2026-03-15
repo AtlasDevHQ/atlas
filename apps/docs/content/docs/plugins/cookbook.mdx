@@ -753,8 +753,8 @@ Plugins can add tools to the agent via `ctx.tools.register()` in `initialize()`.
 
 ```typescript
 import { z } from "zod";
-import { tool } from "ai";
 import { definePlugin } from "@useatlas/plugin-sdk";
+import { tool } from "@useatlas/plugin-sdk/ai";
 
 export default definePlugin({
   id: "inventory-lookup",

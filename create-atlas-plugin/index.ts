@@ -225,11 +225,11 @@ export function ${toCamelCase(pluginName)}Plugin(): AtlasContextPlugin {
 
     case "interaction":
       return `import { definePlugin } from "@useatlas/plugin-sdk";
+import { Hono } from "@useatlas/plugin-sdk/hono";
 import type {
   AtlasInteractionPlugin,
   PluginHealthResult,
 } from "@useatlas/plugin-sdk";
-import type { Hono } from "hono";
 
 /**
  * Build the plugin object. Exported for direct use and testing.
@@ -276,13 +276,13 @@ export function ${toCamelCase(pluginName)}Plugin(): AtlasInteractionPlugin {
 
     case "action":
       return `import { definePlugin } from "@useatlas/plugin-sdk";
+import { tool } from "@useatlas/plugin-sdk/ai";
 import type {
   AtlasActionPlugin,
   PluginAction,
   PluginHealthResult,
 } from "@useatlas/plugin-sdk";
 import { z } from "zod";
-import { tool } from "ai";
 
 // Define the parameters for your action tool
 const actionParams = z.object({

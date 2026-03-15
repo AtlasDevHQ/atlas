@@ -1,22 +1,24 @@
 "use client";
 
+import * as React from "react";
 import dynamic from "next/dynamic";
 import { useAdminFetch, type FetchError } from "@/ui/hooks/use-admin-fetch";
 import { useDarkMode } from "@/ui/hooks/use-dark-mode";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { EmptyState } from "@/ui/components/admin/empty-state";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
+import { DataTable } from "@/components/data-table/data-table";
+import { useDataTable } from "@/hooks/use-data-table";
+import {
+  getSlowQueryColumns,
+  getFrequentQueryColumns,
+  getUserActivityColumns,
+  type SlowQuery,
+  type FrequentQuery,
+  type AuditUserStats,
+} from "./analytics-columns";
 import { BarChart3, Clock, AlertTriangle, Users, Repeat } from "lucide-react";
 
 // Dynamic import — Recharts is heavy
@@ -31,32 +33,9 @@ export interface VolumePoint {
   errors: number;
 }
 
-export interface SlowQuery {
-  query: string;
-  avgDuration: number;
-  maxDuration: number;
-  count: number;
-}
-
-export interface FrequentQuery {
-  query: string;
-  count: number;
-  avgDuration: number;
-  errorCount: number;
-}
-
 export interface ErrorGroup {
   error: string;
   count: number;
-}
-
-export interface AuditUserStats {
-  userId: string;
-  userEmail?: string | null;
-  count: number;
-  avgDuration: number;
-  errorCount: number;
-  errorRate: number;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
@@ -106,6 +85,34 @@ export function AnalyticsPanel({ from, to }: { from: string; to: string }) {
     `/api/v1/admin/audit/analytics/users${qs}`,
     { deps: [qs] },
   );
+
+  // Data tables for each section
+  const slowColumns = React.useMemo(() => getSlowQueryColumns(), []);
+  const { table: slowTable } = useDataTable({
+    data: slowData?.queries ?? [],
+    columns: slowColumns,
+    pageCount: 1,
+    initialState: { sorting: [{ id: "avgDuration", desc: true }], pagination: { pageSize: 50 } },
+    getRowId: (_, i) => String(i),
+  });
+
+  const frequentColumns = React.useMemo(() => getFrequentQueryColumns(), []);
+  const { table: frequentTable } = useDataTable({
+    data: frequentData?.queries ?? [],
+    columns: frequentColumns,
+    pageCount: 1,
+    initialState: { sorting: [{ id: "count", desc: true }], pagination: { pageSize: 50 } },
+    getRowId: (_, i) => String(i),
+  });
+
+  const userColumns = React.useMemo(() => getUserActivityColumns(), []);
+  const { table: userTable } = useDataTable({
+    data: userData?.users ?? [],
+    columns: userColumns,
+    pageCount: 1,
+    initialState: { sorting: [{ id: "count", desc: true }], pagination: { pageSize: 50 } },
+    getRowId: (row) => row.userId,
+  });
 
   // Gate: auth/availability errors surface as FeatureGate
   const gateError = findGateError(volumeError, slowError, frequentError, errorsError, userError);
@@ -157,36 +164,7 @@ export function AnalyticsPanel({ from, to }: { from: string; to: string }) {
             ) : !slowData?.queries?.length ? (
               <EmptyState icon={Clock} message="No query data" />
             ) : (
-              <div className="rounded-md border">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Query</TableHead>
-                      <TableHead className="w-20 text-right">Avg</TableHead>
-                      <TableHead className="w-20 text-right">Max</TableHead>
-                      <TableHead className="w-16 text-right">Runs</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {slowData.queries.map((q, i) => (
-                      <TableRow key={i}>
-                        <TableCell className="max-w-xs truncate font-mono text-xs">
-                          {q.query}
-                        </TableCell>
-                        <TableCell className="text-right text-xs tabular-nums">
-                          {q.avgDuration}ms
-                        </TableCell>
-                        <TableCell className="text-right text-xs tabular-nums">
-                          {q.maxDuration}ms
-                        </TableCell>
-                        <TableCell className="text-right text-xs tabular-nums">
-                          {q.count}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
+              <DataTable table={slowTable} />
             )}
           </CardContent>
         </Card>
@@ -209,36 +187,7 @@ export function AnalyticsPanel({ from, to }: { from: string; to: string }) {
             ) : !frequentData?.queries?.length ? (
               <EmptyState icon={Repeat} message="No query data" />
             ) : (
-              <div className="rounded-md border">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Query</TableHead>
-                      <TableHead className="w-16 text-right">Runs</TableHead>
-                      <TableHead className="w-20 text-right">Avg</TableHead>
-                      <TableHead className="w-16 text-right">Errors</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {frequentData.queries.map((q, i) => (
-                      <TableRow key={i}>
-                        <TableCell className="max-w-xs truncate font-mono text-xs">
-                          {q.query}
-                        </TableCell>
-                        <TableCell className="text-right text-xs tabular-nums">
-                          {q.count}
-                        </TableCell>
-                        <TableCell className="text-right text-xs tabular-nums">
-                          {q.avgDuration}ms
-                        </TableCell>
-                        <TableCell className="text-right text-xs tabular-nums">
-                          {q.errorCount}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
+              <DataTable table={frequentTable} />
             )}
           </CardContent>
         </Card>
@@ -285,47 +234,7 @@ export function AnalyticsPanel({ from, to }: { from: string; to: string }) {
           ) : !userData?.users?.length ? (
             <EmptyState icon={Users} message="No user data" />
           ) : (
-            <div className="rounded-md border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>User</TableHead>
-                    <TableHead className="w-20 text-right">Queries</TableHead>
-                    <TableHead className="w-24 text-right">Avg Duration</TableHead>
-                    <TableHead className="w-16 text-right">Errors</TableHead>
-                    <TableHead className="w-24 text-right">Error Rate</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {userData.users.map((u) => (
-                    <TableRow key={u.userId}>
-                      <TableCell className="text-sm">{u.userEmail ?? u.userId}</TableCell>
-                      <TableCell className="text-right text-xs tabular-nums">
-                        {u.count.toLocaleString()}
-                      </TableCell>
-                      <TableCell className="text-right text-xs tabular-nums">
-                        {u.avgDuration}ms
-                      </TableCell>
-                      <TableCell className="text-right text-xs tabular-nums">
-                        {u.errorCount}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <Badge
-                          variant="outline"
-                          className={
-                            u.errorRate > 0.1
-                              ? "border-red-300 text-red-700 dark:border-red-700 dark:text-red-400"
-                              : "border-green-300 text-green-700 dark:border-green-700 dark:text-green-400"
-                          }
-                        >
-                          {(u.errorRate * 100).toFixed(1)}%
-                        </Badge>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
+            <DataTable table={userTable} />
           )}
         </CardContent>
       </Card>

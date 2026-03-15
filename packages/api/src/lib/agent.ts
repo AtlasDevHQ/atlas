@@ -12,6 +12,7 @@ import {
   streamText,
   type ModelMessage,
   type SystemModelMessage,
+  type ToolSet,
   type UIMessage,
 } from "ai";
 import { getModel, getProviderType, type ProviderType } from "./providers";
@@ -22,6 +23,8 @@ import { getCrossSourceJoins, type CrossSourceJoin } from "./semantic";
 import { getSemanticIndex } from "./semantic-index";
 import { createLogger, getRequestContext } from "./logger";
 import { hasInternalDB, internalExecute } from "./db/internal";
+import { dispatchMutableHook } from "./plugins/hooks";
+import { plugins } from "./plugins/registry";
 import {
   trace,
   SpanStatusCode,
@@ -336,6 +339,81 @@ export function applyCacheControl(
 }
 
 /**
+ * Wrap each tool's execute function with beforeToolCall / afterToolCall
+ * plugin hook dispatch. No-op when no plugins are registered.
+ *
+ * - beforeToolCall: can return `{ args }` to modify args, or throw to reject
+ * - afterToolCall: can return `{ result }` to modify the result
+ */
+function wrapToolsWithHooks(
+  toolSet: ToolSet,
+  hookCtx: { userId?: string; conversationId?: string },
+): ToolSet {
+  if (plugins.size === 0) return toolSet;
+
+  const stepCounter = { value: 0 };
+  const wrapped: ToolSet = {};
+
+  for (const [name, t] of Object.entries(toolSet)) {
+    if (!t.execute) {
+      wrapped[name] = t;
+      continue;
+    }
+
+    const origExecute = t.execute;
+    wrapped[name] = {
+      ...t,
+      execute: async (
+        args: Record<string, unknown>,
+        options: Parameters<NonNullable<typeof t.execute>>[1],
+      ) => {
+        stepCounter.value++;
+        const ctx = {
+          toolName: name,
+          args,
+          context: { ...hookCtx, stepCount: stepCounter.value },
+        };
+
+        // beforeToolCall — can modify args or throw to reject
+        let finalArgs: Record<string, unknown>;
+        try {
+          finalArgs = await dispatchMutableHook(
+            "beforeToolCall",
+            ctx,
+            "args",
+          ) as Record<string, unknown>;
+        } catch (err) {
+          log.warn(
+            { toolName: name, err: err instanceof Error ? err : new Error(String(err)) },
+            "Tool call rejected by plugin",
+          );
+          return `Tool call rejected by plugin: ${err instanceof Error ? err.message : String(err)}`;
+        }
+
+        const result = await origExecute(finalArgs, options);
+
+        // afterToolCall — can modify result
+        try {
+          return await dispatchMutableHook(
+            "afterToolCall",
+            { ...ctx, args: finalArgs, result, context: { ...hookCtx, stepCount: stepCounter.value } },
+            "result",
+          );
+        } catch (err) {
+          log.warn(
+            { toolName: name, err: err instanceof Error ? err : new Error(String(err)) },
+            "afterToolCall hook error — returning original result",
+          );
+          return result;
+        }
+      },
+    };
+  }
+
+  return wrapped;
+}
+
+/**
  * Run the Atlas agent loop.
  *
  * @param messages - The conversation history from the chat UI.
@@ -383,6 +461,8 @@ export async function runAgent({
 
   // Resolve async work before entering otelContext.with() (sync callback).
   const modelMessages = await convertToModelMessages(messages);
+  const rawTools = toolRegistry.getAll();
+  const tools = wrapToolsWithHooks(rawTools, { userId: userId ?? undefined, conversationId });
 
   let result;
   try {
@@ -390,7 +470,7 @@ export async function runAgent({
       model,
       system: buildSystemParam(providerType, toolRegistry, warnings),
       messages: modelMessages,
-      tools: toolRegistry.getAll(),
+      tools,
       temperature: 0.2,
       maxOutputTokens: 4096,
       stopWhen: stepCountIs(25),

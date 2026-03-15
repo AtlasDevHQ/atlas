@@ -177,7 +177,7 @@ Both URLs should respond. Open [http://localhost:3000](http://localhost:3000) in
 
 <Accordions>
 <Accordion title="Port 3000 or 3001 already in use?">
-Another dev server is using the port. Find it with `lsof -i :3000` (or `:3001`), then stop it. Alternatively, use `bun run dev:local` which starts containers and dev servers together.
+Another dev server is using the port. Find it with `lsof -i :3000` (or `:3001`), then stop it.
 </Accordion>
 </Accordions>
 </Step>
@@ -207,8 +207,7 @@ You're up and running. The agent can answer questions about the demo dataset usi
 
 | Command | Description |
 |---------|-------------|
-| `bun run dev:local` | Start containers + dev servers (all-in-one) |
-| `bun run dev` | Start API + Next.js (assumes containers are running) |
+| `bun run dev` | Start containers + dev servers |
 | `bun run db:up` | Start Postgres + sandbox sidecar |
 | `bun run db:down` | Stop containers |
 | `bun run db:reset` | Nuke volume and re-seed from scratch |

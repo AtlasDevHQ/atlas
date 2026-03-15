@@ -12,8 +12,7 @@
     "create-atlas-plugin"
   ],
   "scripts": {
-    "dev": "bun run --hot packages/api/src/api/server.ts & API_PID=$!; trap 'kill $API_PID 2>/dev/null' EXIT; bun run --filter '@atlas/web' dev",
-    "dev:local": "bash scripts/db-up.sh && bun run dev",
+    "dev": "bash scripts/db-up.sh && bun run --hot packages/api/src/api/server.ts & API_PID=$!; trap 'kill $API_PID 2>/dev/null' EXIT; bun run --filter '@atlas/web' dev",
     "dev:api": "bun run --hot packages/api/src/api/server.ts",
     "dev:web": "bun run --filter '@atlas/web' dev",
     "dev:www": "bun run --filter '@atlas/www' dev",

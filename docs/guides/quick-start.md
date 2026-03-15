@@ -40,7 +40,7 @@ Generate the semantic layer and start:
 
 ```bash
 bun run atlas -- init                # Profile DB and generate YAMLs
-bun run dev:local                    # Start containers + dev servers → http://localhost:3000
+bun run dev                          # Start containers + dev servers → http://localhost:3000
 ```
 
 > **New project scaffolding:** `bun create @useatlas my-app` provides interactive setup with template selection, DB config, provider setup, and optional semantic layer generation.
@@ -86,8 +86,7 @@ See [Bring Your Own DB](bring-your-own-db.md) for production database setup incl
 
 | Command | Description |
 |---------|-------------|
-| `bun run dev:local` | Start containers (Postgres + sidecar) + dev servers |
-| `bun run dev` | Start API (:3001) + Next.js (:3000) — assumes containers are running |
+| `bun run dev` | Start containers (Postgres + sidecar) + dev servers |
 | `bun run build` | Production build |
 | `bun run start` | Start production server |
 | `bun run lint` | ESLint |

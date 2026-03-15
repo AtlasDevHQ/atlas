@@ -63,8 +63,7 @@ Internal milestones (v0.1–v1.0) track architectural progress. Public semver st
 
 ```bash
 bun install              # Install dependencies
-bun run dev:local        # Containers + dev servers
-bun run dev              # Hono API (:3001) + Next.js (:3000)
+bun run dev              # Containers + Hono API (:3001) + Next.js (:3000)
 bun run dev:api          # Standalone Hono API
 bun run dev:web          # Standalone Next.js
 bun run build            # Production build

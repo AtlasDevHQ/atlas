@@ -642,6 +642,109 @@ export default definePlugin({
 });
 ```
 
+### Compliance Gate via `beforeToolCall`
+
+Block or modify tool calls based on business rules. `beforeToolCall` fires before every tool execution in the agent loop — it receives the tool name, args, and request context. Return `{ args }` to rewrite, throw to reject, or return void to pass through:
+
+```typescript
+import { definePlugin } from "@useatlas/plugin-sdk";
+
+const RESTRICTED_TABLES = new Set(["salary", "ssn_records", "credit_cards"]);
+
+export default definePlugin({
+  id: "compliance-gate",
+  types: ["context"],
+  version: "1.0.0",
+
+  contextProvider: {
+    async load() { return ""; },
+  },
+
+  hooks: {
+    beforeToolCall: [{
+      // Only intercept SQL execution, not explore commands
+      matcher: (ctx) => ctx.toolName === "executeSQL",
+      handler: (ctx) => {
+        const sql = (ctx.args.sql as string) ?? "";
+        for (const table of RESTRICTED_TABLES) {
+          if (sql.toLowerCase().includes(table)) {
+            throw new Error(
+              `Access to ${table} is restricted by compliance policy`,
+            );
+          }
+        }
+      },
+    }],
+  },
+});
+```
+
+### Cost Tracking via `afterToolCall`
+
+Observe every tool call to log usage metrics. `afterToolCall` fires after execution with the result. Return `{ result }` to modify, or return void to observe:
+
+```typescript
+import { definePlugin } from "@useatlas/plugin-sdk";
+
+export default definePlugin({
+  id: "tool-usage-tracker",
+  types: ["context"],
+  version: "1.0.0",
+
+  contextProvider: {
+    async load() { return ""; },
+  },
+
+  hooks: {
+    afterToolCall: [{
+      handler: (ctx) => {
+        console.log(JSON.stringify({
+          event: "tool_call",
+          tool: ctx.toolName,
+          userId: ctx.context.userId,
+          conversationId: ctx.context.conversationId,
+          stepCount: ctx.context.toolCallCount,
+          timestamp: new Date().toISOString(),
+        }));
+      },
+    }],
+  },
+});
+```
+
+### Tool Call Rate Limiting via `beforeToolCall`
+
+Limit the number of tool calls per agent run to control costs:
+
+```typescript
+import { definePlugin } from "@useatlas/plugin-sdk";
+
+const MAX_TOOL_CALLS = 15;
+
+export default definePlugin({
+  id: "tool-rate-limiter",
+  types: ["context"],
+  version: "1.0.0",
+
+  contextProvider: {
+    async load() { return ""; },
+  },
+
+  hooks: {
+    beforeToolCall: [{
+      handler: (ctx) => {
+        if (ctx.context.toolCallCount > MAX_TOOL_CALLS) {
+          throw new Error(
+            `Tool call limit exceeded (${MAX_TOOL_CALLS}). ` +
+            "Please refine your question to require fewer queries.",
+          );
+        }
+      },
+    }],
+  },
+});
+```
+
 ## Advanced Patterns
 
 ### Registering Custom Tools

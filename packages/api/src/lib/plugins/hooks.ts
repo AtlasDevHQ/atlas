@@ -2,14 +2,16 @@
  * Plugin hook dispatch runtime.
  *
  * Dispatches lifecycle hooks (beforeQuery, afterQuery, beforeExplore,
- * afterExplore, onRequest, onResponse) to all healthy plugins that
- * define matching hook entries. Zero overhead when no plugins are registered.
+ * afterExplore, beforeToolCall, afterToolCall, onRequest, onResponse)
+ * to all healthy plugins that define matching hook entries. Zero overhead
+ * when no plugins are registered.
  *
- * Mutable hooks (beforeQuery, beforeExplore) can return a mutation object
- * to rewrite the SQL/command, or throw to reject the operation. All other
- * hooks are observation-only (void return — handler return values are
- * discarded). Mutations chain in registration order across healthy plugins
- * — unhealthy plugins are silently skipped.
+ * Mutable hooks (beforeQuery, beforeExplore, beforeToolCall, afterToolCall)
+ * can return a mutation object to rewrite the SQL/command/args/result, or
+ * throw to reject the operation. All other hooks are observation-only
+ * (void return — handler return values are discarded). Mutations chain in
+ * registration order across healthy plugins — unhealthy plugins are
+ * silently skipped.
  */
 
 import { plugins } from "./registry";
@@ -23,10 +25,10 @@ interface HookEntry<T> {
   handler: (ctx: T) => Promise<unknown> | unknown;
 }
 
-type HookName = "beforeQuery" | "afterQuery" | "beforeExplore" | "afterExplore" | "onRequest" | "onResponse";
+type HookName = "beforeQuery" | "afterQuery" | "beforeExplore" | "afterExplore" | "beforeToolCall" | "afterToolCall" | "onRequest" | "onResponse";
 
 /** Hook names that support mutation via dispatchMutableHook. */
-type MutableHookName = "beforeQuery" | "beforeExplore";
+type MutableHookName = "beforeQuery" | "beforeExplore" | "beforeToolCall" | "afterToolCall";
 
 /**
  * Dispatch a named hook to all healthy plugins (observation-only —
@@ -80,9 +82,9 @@ export async function dispatchHook<T>(
  * - Matcher errors are caught and logged (skipping the entry), NOT treated
  *   as rejections.
  *
- * @param hookName   - "beforeQuery" or "beforeExplore"
+ * @param hookName   - A mutable hook name (beforeQuery, beforeExplore, beforeToolCall, afterToolCall)
  * @param context    - The initial hook context
- * @param mutateKey  - The context key to mutate (e.g. "sql" or "command")
+ * @param mutateKey  - The context key to mutate (e.g. "sql", "command", "args", "result")
  * @param registry   - Optional plugin registry override. For testing.
  * @returns The final mutated value (or the original if no hooks mutated it).
  */

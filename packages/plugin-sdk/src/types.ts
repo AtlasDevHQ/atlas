@@ -191,6 +191,47 @@ export interface AfterExploreHookContext extends ExploreHookContext {
   output: string;
 }
 
+/** Session context available to tool call hooks. */
+export interface ToolCallSessionContext {
+  userId?: string;
+  conversationId?: string;
+  /** 1-based count of tool invocations in the current agent run (across all tools). */
+  toolCallCount: number;
+}
+
+/** Context passed to beforeToolCall / afterToolCall hooks. */
+export interface ToolCallHookContext {
+  toolName: string;
+  args: Record<string, unknown>;
+  context: ToolCallSessionContext;
+}
+
+export interface AfterToolCallHookContext extends ToolCallHookContext {
+  /**
+   * The tool's return value. Typed as `unknown` because different tools
+   * return different shapes. Narrow based on `toolName`:
+   *
+   * ```ts
+   * if (ctx.toolName === "executeSQL") {
+   *   const qr = ctx.result as { columns: string[]; rows: Record<string, unknown>[] };
+   * }
+   * ```
+   */
+  result: unknown;
+  /** Wall-clock duration of the tool execution in milliseconds. */
+  durationMs: number;
+}
+
+/** Mutation return type for beforeToolCall hooks. Return to rewrite the args. */
+export interface ToolCallArgsMutation {
+  args: Record<string, unknown>;
+}
+
+/** Mutation return type for afterToolCall hooks. Return to rewrite the result. */
+export interface ToolCallResultMutation {
+  result: unknown;
+}
+
 /** Context passed to onRequest / onResponse HTTP hooks. */
 export interface RequestHookContext {
   path: string;
@@ -208,9 +249,10 @@ export interface ResponseHookContext {
  * Named hook arrays. Agent lifecycle hooks (beforeQuery, afterQuery, etc.)
  * plus HTTP-level cross-cutting hooks (onRequest, onResponse).
  *
- * `beforeQuery` and `beforeExplore` are mutable — handlers can return a
- * mutation object to rewrite the SQL/command, or throw to reject the operation.
- * All other hooks are observation-only (void return).
+ * `beforeQuery`, `beforeExplore`, `beforeToolCall`, and `afterToolCall` are
+ * mutable — handlers can return a mutation object to rewrite the
+ * SQL/command/args/result, or throw to reject the operation. All other hooks
+ * are observation-only (void return).
  */
 export interface PluginHooks {
   /** Fires before each SQL query. Return `{ sql }` to rewrite, throw to reject. */
@@ -221,6 +263,10 @@ export interface PluginHooks {
   beforeExplore?: PluginHookEntry<ExploreHookContext, ExploreHookMutation>[];
   /** Fires after each explore command with output. */
   afterExplore?: PluginHookEntry<AfterExploreHookContext>[];
+  /** Fires before each tool call. Return `{ args }` to rewrite args, throw to reject. */
+  beforeToolCall?: PluginHookEntry<ToolCallHookContext, ToolCallArgsMutation>[];
+  /** Fires after each tool call. Return `{ result }` to rewrite the result, throw to reject. */
+  afterToolCall?: PluginHookEntry<AfterToolCallHookContext, ToolCallResultMutation>[];
   /** HTTP-level: fires before routing a request. */
   onRequest?: PluginHookEntry<RequestHookContext>[];
   /** HTTP-level: fires after sending a response. */

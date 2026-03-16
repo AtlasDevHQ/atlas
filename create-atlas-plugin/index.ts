@@ -122,7 +122,7 @@ import type {
 export function build${toPascalCase(pluginName)}Plugin(): AtlasDatasourcePlugin {
   return definePlugin({
     id: "${id}",
-    type: "datasource",
+    types: ["datasource"] as const,
     version: "0.1.0",
     name: "${nameTitle}",
 
@@ -180,7 +180,7 @@ import type {
 export function build${toPascalCase(pluginName)}Plugin(): AtlasContextPlugin {
   return definePlugin({
     id: "${id}",
-    type: "context",
+    types: ["context"] as const,
     version: "0.1.0",
     name: "${nameTitle}",
 
@@ -237,7 +237,7 @@ import type {
 export function build${toPascalCase(pluginName)}Plugin(): AtlasInteractionPlugin {
   return definePlugin({
     id: "${id}",
-    type: "interaction",
+    types: ["interaction"] as const,
     version: "0.1.0",
     name: "${nameTitle}",
 
@@ -316,7 +316,7 @@ export function build${toPascalCase(pluginName)}Plugin(): AtlasActionPlugin {
 
   return definePlugin({
     id: "${id}",
-    type: "action",
+    types: ["action"] as const,
     version: "0.1.0",
     name: "${nameTitle}",
 
@@ -365,7 +365,7 @@ import type {
 export function build${toPascalCase(pluginName)}Plugin(): AtlasSandboxPlugin {
   return definePlugin({
     id: "${id}",
-    type: "sandbox",
+    types: ["sandbox"] as const,
     version: "0.1.0",
     name: "${nameTitle}",
 
@@ -457,10 +457,10 @@ function createMockContext() {
 }`;
 
   const baseTests = `
-  test("has correct id and type", () => {
+  test("has correct id and types", () => {
     const plugin = ${factoryFn}();
     expect(plugin.id).toBe("${pluginName}");
-    expect(plugin.type).toBe("${pluginType}");
+    expect(plugin.types).toContain("${pluginType}");
   });
 
   test("has a version string", () => {

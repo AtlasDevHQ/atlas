@@ -802,6 +802,44 @@ admin.get("/connections/pool", async (c) => {
   });
 });
 
+// GET /connections/pool/orgs — org-scoped pool metrics
+admin.get("/connections/pool/orgs", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  return withRequestContext({ requestId, user: authResult.user }, () => {
+    const orgId = c.req.query("orgId");
+    const metrics = connections.getOrgPoolMetrics(orgId || undefined);
+    const config = connections.getOrgPoolConfig();
+    return c.json({ metrics, config, orgCount: connections.listOrgs().length });
+  });
+});
+
+// POST /connections/pool/orgs/:orgId/drain — drain all pools for an org
+admin.post("/connections/pool/orgs/:orgId/drain", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const orgId = c.req.param("orgId");
+    const result = await connections.drainOrg(orgId);
+    log.info({ orgId, drained: result.drained, requestId, userId: authResult.user?.id }, "Org pools drained via admin API");
+    return c.json(result);
+  });
+});
+
 // POST /connections/:id/drain — drain and recreate a pool
 admin.post("/connections/:id/drain", async (c) => {
   const req = c.req.raw;

@@ -50,6 +50,20 @@ export interface PoolMetrics {
   lastDrainAt: string | null;
 }
 
+/** Wire format for per-org pool metrics (extends PoolMetrics with org scope). */
+export interface OrgPoolMetrics extends PoolMetrics {
+  orgId: string;
+}
+
+/** Wire format for org pool configuration (returned by admin API). */
+export interface OrgPoolConfig {
+  maxConnections: number;
+  idleTimeoutMs: number;
+  maxOrgs: number;
+  warmupProbes: number;
+  drainThreshold: number;
+}
+
 /** Wire format for a single connection detail response. */
 export interface ConnectionDetail {
   id: string;

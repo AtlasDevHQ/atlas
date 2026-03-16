@@ -10,7 +10,7 @@
 import { Hono } from "hono";
 import type { PluginLogger } from "@useatlas/plugin-sdk";
 import { verifyBotToken } from "./verify";
-import { getAccessToken, sendReply } from "./teams-client";
+import { getAccessToken, sendReply, isValidServiceUrl } from "./teams-client";
 import type { ReplyActivity } from "./teams-client";
 import {
   formatQueryResponse,
@@ -134,8 +134,21 @@ export function createTeamsRoutes(deps: TeamsRuntimeDeps): Hono {
     let activity: TeamsActivity;
     try {
       activity = (await c.req.json()) as TeamsActivity;
-    } catch {
+    } catch (err) {
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        "Teams /messages received unparseable body",
+      );
       return c.json({ error: "Invalid JSON" }, 400);
+    }
+
+    // Validate serviceUrl to prevent SSRF — only allow known Microsoft endpoints
+    if (!isValidServiceUrl(activity.serviceUrl ?? "")) {
+      log.warn(
+        { serviceUrl: activity.serviceUrl },
+        "Rejected activity with invalid serviceUrl",
+      );
+      return c.json({ error: "Invalid serviceUrl" }, 400);
     }
 
     // Handle conversationUpdate (bot added to team) — ack silently
@@ -145,6 +158,10 @@ export function createTeamsRoutes(deps: TeamsRuntimeDeps): Hono {
 
     // Only process message activities
     if (activity.type !== "message") {
+      log.debug(
+        { activityType: activity.type, activityId: activity.id },
+        "Ignoring unhandled activity type",
+      );
       return c.json({ status: "ok" });
     }
 

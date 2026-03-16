@@ -94,7 +94,8 @@ function buildTeamsPlugin(
         appPassword: config.appPassword,
         tenantId: config.tenantId,
         log: log ?? {
-          info: () => {},
+          info: (...args: unknown[]) =>
+            console.info("[teams-interaction]", ...args),
           warn: (...args: unknown[]) =>
             console.warn("[teams-interaction]", ...args),
           error: (...args: unknown[]) =>

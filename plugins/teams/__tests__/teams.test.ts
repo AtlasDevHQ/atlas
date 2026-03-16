@@ -28,7 +28,7 @@ import {
   cardAttachment,
 } from "../src/format";
 import { resetJWKSCache } from "../src/verify";
-import { resetTokenCache } from "../src/teams-client";
+import { resetTokenCache, isValidServiceUrl } from "../src/teams-client";
 
 // ---------------------------------------------------------------------------
 // Global fetch mock — intercepts Azure AD and Bot Connector calls
@@ -817,5 +817,156 @@ describe("teamsPlugin — config registration", () => {
     ).toBe(true);
     expect(typeof plugin.version).toBe("string");
     expect(plugin.version.trim().length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Service URL validation (SSRF prevention)
+// ---------------------------------------------------------------------------
+
+describe("isValidServiceUrl", () => {
+  test("accepts known Bot Framework service URLs", () => {
+    expect(isValidServiceUrl("https://smba.trafficmanager.net/teams/")).toBe(true);
+    expect(isValidServiceUrl("https://smba.trafficmanager.net/emea/")).toBe(true);
+    expect(isValidServiceUrl("https://webchat.botframework.com/")).toBe(true);
+  });
+
+  test("rejects non-HTTPS URLs", () => {
+    expect(isValidServiceUrl("http://smba.trafficmanager.net/teams/")).toBe(false);
+  });
+
+  test("rejects arbitrary URLs", () => {
+    expect(isValidServiceUrl("https://evil.example.com/")).toBe(false);
+    expect(isValidServiceUrl("https://attacker.com/v3/conversations/")).toBe(false);
+  });
+
+  test("rejects empty and malformed URLs", () => {
+    expect(isValidServiceUrl("")).toBe(false);
+    expect(isValidServiceUrl("not-a-url")).toBe(false);
+  });
+});
+
+describe("routes — serviceUrl validation", () => {
+  beforeEach(async () => {
+    await setupTestKeys();
+    resetJWKSCache();
+    resetTokenCache();
+    globalThis.fetch = mockTeamsFetch();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  test("rejects activities with invalid serviceUrl", async () => {
+    const mockExecuteQuery = mock(() => Promise.resolve(defaultQueryResult));
+    const app = createTestApp(
+      createMockConfig({ executeQuery: mockExecuteQuery }),
+    );
+    const token = await createTestToken(APP_ID);
+
+    const activity = makeMessageActivity("how many users?", {
+      serviceUrl: "https://evil.example.com/",
+    });
+
+    const resp = await app.request("/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(activity),
+    });
+
+    expect(resp.status).toBe(400);
+    expect(mockExecuteQuery).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tenant ID restriction
+// ---------------------------------------------------------------------------
+
+describe("routes — tenant restriction", () => {
+  beforeEach(async () => {
+    await setupTestKeys();
+    resetJWKSCache();
+    resetTokenCache();
+    globalThis.fetch = mockTeamsFetch();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  test("rejects tokens missing tid claim when tenantId is configured", async () => {
+    const mockExecuteQuery = mock(() => Promise.resolve(defaultQueryResult));
+    const app = createTestApp(
+      createMockConfig({
+        executeQuery: mockExecuteQuery,
+        tenantId: "expected-tenant-123",
+      }),
+    );
+    // Token without tid claim
+    const token = await createTestToken(APP_ID);
+
+    const resp = await app.request("/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(makeMessageActivity("how many users?")),
+    });
+
+    expect(resp.status).toBe(401);
+    expect(mockExecuteQuery).not.toHaveBeenCalled();
+  });
+
+  test("rejects tokens with wrong tid when tenantId is configured", async () => {
+    const mockExecuteQuery = mock(() => Promise.resolve(defaultQueryResult));
+    const app = createTestApp(
+      createMockConfig({
+        executeQuery: mockExecuteQuery,
+        tenantId: "expected-tenant-123",
+      }),
+    );
+    const token = await createTestToken(APP_ID, { tid: "wrong-tenant-456" });
+
+    const resp = await app.request("/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(makeMessageActivity("how many users?")),
+    });
+
+    expect(resp.status).toBe(401);
+    expect(mockExecuteQuery).not.toHaveBeenCalled();
+  });
+
+  test("accepts tokens with correct tid when tenantId is configured", async () => {
+    const mockExecuteQuery = mock(() => Promise.resolve(defaultQueryResult));
+    const app = createTestApp(
+      createMockConfig({
+        executeQuery: mockExecuteQuery,
+        tenantId: "correct-tenant-123",
+      }),
+    );
+    const token = await createTestToken(APP_ID, { tid: "correct-tenant-123" });
+
+    const resp = await app.request("/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(makeMessageActivity("how many users?")),
+    });
+
+    expect(resp.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(mockExecuteQuery).toHaveBeenCalled();
   });
 });

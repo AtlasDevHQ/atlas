@@ -29,9 +29,18 @@ const BF_OPENID_URL =
 const AAD_OPENID_URL =
   "https://login.microsoftonline.com/common/v2.0/.well-known/openid-configuration";
 
-// Cached JWKS resolvers — created lazily on first use
-let bfJWKS: ReturnType<typeof createRemoteJWKSet> | null = null;
-let aadJWKS: ReturnType<typeof createRemoteJWKSet> | null = null;
+// Cached JWKS resolvers with TTL — re-fetched periodically to handle key rotation.
+// jose's createRemoteJWKSet handles individual key rotation (kid mismatch → refetch),
+// but the OpenID metadata jwks_uri itself could change, so we re-resolve periodically.
+const JWKS_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+interface JWKSCacheEntry {
+  resolver: ReturnType<typeof createRemoteJWKSet>;
+  fetchedAt: number;
+}
+
+let bfJWKS: JWKSCacheEntry | null = null;
+let aadJWKS: JWKSCacheEntry | null = null;
 
 /** Fetch the jwks_uri from an OpenID metadata endpoint. */
 async function fetchJwksUri(openIdUrl: string): Promise<string> {
@@ -46,22 +55,26 @@ async function fetchJwksUri(openIdUrl: string): Promise<string> {
   return metadata.jwks_uri;
 }
 
+function isCacheValid(entry: JWKSCacheEntry | null): entry is JWKSCacheEntry {
+  return entry !== null && Date.now() - entry.fetchedAt < JWKS_CACHE_TTL_MS;
+}
+
 async function getBotFrameworkJWKS(): Promise<
   ReturnType<typeof createRemoteJWKSet>
 > {
-  if (!bfJWKS) {
+  if (!isCacheValid(bfJWKS)) {
     const jwksUri = await fetchJwksUri(BF_OPENID_URL);
-    bfJWKS = createRemoteJWKSet(new URL(jwksUri));
+    bfJWKS = { resolver: createRemoteJWKSet(new URL(jwksUri)), fetchedAt: Date.now() };
   }
-  return bfJWKS;
+  return bfJWKS.resolver;
 }
 
 async function getAadJWKS(): Promise<ReturnType<typeof createRemoteJWKSet>> {
-  if (!aadJWKS) {
+  if (!isCacheValid(aadJWKS)) {
     const jwksUri = await fetchJwksUri(AAD_OPENID_URL);
-    aadJWKS = createRemoteJWKSet(new URL(jwksUri));
+    aadJWKS = { resolver: createRemoteJWKSet(new URL(jwksUri)), fetchedAt: Date.now() };
   }
-  return aadJWKS;
+  return aadJWKS.resolver;
 }
 
 // ---------------------------------------------------------------------------
@@ -123,25 +136,37 @@ export async function verifyBotToken(
         audience: appId,
       });
 
-      // Validate issuer
+      // Validate issuer — reject immediately if unrecognized after successful signature check
       const issuer = payload.iss ?? "";
       if (issuer !== BOT_FRAMEWORK_ISSUER && !isAadIssuer(issuer)) {
-        continue; // Try next JWKS source
+        return { valid: false, error: `Unrecognized token issuer: ${issuer}` };
       }
 
-      // Optional tenant restriction
-      if (tenantId && payload.tid && payload.tid !== tenantId) {
-        log?.warn(
-          { expected: tenantId, got: payload.tid },
-          "Token tenant ID mismatch",
-        );
-        return { valid: false, error: "Tenant ID mismatch" };
+      // Tenant restriction — reject if tenantId is configured but token has wrong or missing tid
+      if (tenantId) {
+        if (!payload.tid) {
+          log?.warn(
+            { expected: tenantId },
+            "Token missing tid claim but tenant restriction is configured",
+          );
+          return { valid: false, error: "Token missing tenant ID claim" };
+        }
+        if (payload.tid !== tenantId) {
+          log?.warn(
+            { expected: tenantId, got: payload.tid },
+            "Token tenant ID mismatch",
+          );
+          return { valid: false, error: "Tenant ID mismatch" };
+        }
       }
 
       return { valid: true, claims: payload as Record<string, unknown> };
     } catch (err) {
-      // JWSSignatureVerificationFailed or other jose errors — try next source
-      if (err instanceof joseErrors.JWSSignatureVerificationFailed) {
+      // Signature mismatch or no matching key — try next JWKS source
+      if (
+        err instanceof joseErrors.JWSSignatureVerificationFailed ||
+        err instanceof joseErrors.JWKSNoMatchingKey
+      ) {
         continue;
       }
       if (err instanceof joseErrors.JWTExpired) {
@@ -153,9 +178,13 @@ export async function verifyBotToken(
           error: `Token claim validation failed: ${err.message}`,
         };
       }
-      // Network errors fetching JWKS — log and try next
+      // Network errors fetching JWKS or unexpected errors — log and try next
       log?.warn(
-        { source: source.name, err: err instanceof Error ? err.message : String(err) },
+        {
+          source: source.name,
+          errorType: err?.constructor?.name,
+          err: err instanceof Error ? err.message : String(err),
+        },
         "JWKS verification attempt failed",
       );
       continue;

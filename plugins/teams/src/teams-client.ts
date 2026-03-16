@@ -18,70 +18,88 @@ const TOKEN_URL =
 const BOT_FRAMEWORK_SCOPE = "https://api.botframework.com/.default";
 
 // ---------------------------------------------------------------------------
-// Token cache
+// Service URL validation — prevent SSRF via crafted serviceUrl
 // ---------------------------------------------------------------------------
 
-let cachedToken: { token: string; expiresAt: number } | null = null;
+const ALLOWED_SERVICE_URL_PATTERNS = [
+  /^https:\/\/[^/]*\.botframework\.com(\/|$)/,
+  /^https:\/\/[^/]*\.trafficmanager\.net(\/|$)/,
+];
+
+/**
+ * Validate that a service URL is a known Microsoft Bot Connector endpoint.
+ * Prevents SSRF by rejecting arbitrary URLs in the activity's serviceUrl field.
+ */
+export function isValidServiceUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:") return false;
+    return ALLOWED_SERVICE_URL_PATTERNS.some((p) => p.test(url));
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Token cache — keyed by appId for multi-instance safety
+// ---------------------------------------------------------------------------
+
+const tokenCache = new Map<string, { token: string; expiresAt: number }>();
 
 /**
  * Get an OAuth2 access token for the Bot Connector API.
  *
  * Uses the client credentials flow with the bot's appId and appPassword.
- * Tokens are cached and refreshed 60 seconds before expiry.
+ * Tokens are cached per appId and refreshed before expiry.
  */
 export async function getAccessToken(
   appId: string,
   appPassword: string,
   log?: PluginLogger,
 ): Promise<string> {
-  if (cachedToken && Date.now() < cachedToken.expiresAt) {
-    return cachedToken.token;
+  const cached = tokenCache.get(appId);
+  if (cached && Date.now() < cached.expiresAt) {
+    return cached.token;
   }
 
-  try {
-    const resp = await fetch(TOKEN_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        grant_type: "client_credentials",
-        client_id: appId,
-        client_secret: appPassword,
-        scope: BOT_FRAMEWORK_SCOPE,
-      }),
-      signal: AbortSignal.timeout(15_000),
-    });
+  const resp = await fetch(TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "client_credentials",
+      client_id: appId,
+      client_secret: appPassword,
+      scope: BOT_FRAMEWORK_SCOPE,
+    }),
+    signal: AbortSignal.timeout(15_000),
+  });
 
-    if (!resp.ok) {
-      log?.error(
-        { status: resp.status },
-        "Azure AD token request failed",
-      );
-      throw new Error(`Azure AD token request failed: HTTP ${resp.status}`);
-    }
-
-    const data = (await resp.json()) as {
-      access_token: string;
-      expires_in: number;
-    };
-
-    if (!data.access_token) {
-      throw new Error("Azure AD token response missing access_token");
-    }
-
-    // Cache with 60-second buffer before expiry
-    cachedToken = {
-      token: data.access_token,
-      expiresAt: Date.now() + (data.expires_in - 60) * 1000,
-    };
-
-    return data.access_token;
-  } catch (err) {
-    log?.error(
-      { err: err instanceof Error ? err.message : String(err) },
-      "Failed to obtain Azure AD access token",
-    );
-    throw err;
+  if (!resp.ok) {
+    throw new Error(`Azure AD token request failed: HTTP ${resp.status}`);
   }
+
+  const data = (await resp.json()) as {
+    access_token: string;
+    expires_in: number;
+  };
+
+  if (!data.access_token) {
+    throw new Error("Azure AD token response missing access_token");
+  }
+
+  // Validate expires_in and enforce minimum cache duration
+  const expiresIn =
+    typeof data.expires_in === "number" && data.expires_in > 0
+      ? data.expires_in
+      : 300;
+  const bufferSeconds = Math.min(60, Math.floor(expiresIn / 2));
+
+  tokenCache.set(appId, {
+    token: data.access_token,
+    expiresAt: Date.now() + (expiresIn - bufferSeconds) * 1000,
+  });
+
+  return data.access_token;
 }
 
 // ---------------------------------------------------------------------------
@@ -146,5 +164,5 @@ export async function sendReply(
 
 /** Reset the token cache (for testing). */
 export function resetTokenCache(): void {
-  cachedToken = null;
+  tokenCache.clear();
 }

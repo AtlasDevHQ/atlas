@@ -27,6 +27,6 @@ ENV PORT=3003
 ENV HOSTNAME="0.0.0.0"
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -qO- http://localhost:3003/ || exit 1
+  CMD bun -e "fetch('http://localhost:3003/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
 
 CMD ["bun", "server.js"]

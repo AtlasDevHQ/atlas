@@ -51,7 +51,6 @@ docker compose -f examples/docker/docker-compose.yml up
 
 **One-click deploy** — use the marketplace templates:
 
-<!-- TODO: replace slugs with actual Railway template URLs after publishing -->
 - [Atlas Demo](https://railway.com/template/atlas-demo) — seeded demo data, just add your API key
 - [Atlas](https://railway.com/template/atlas) — connect your own PostgreSQL or MySQL database
 

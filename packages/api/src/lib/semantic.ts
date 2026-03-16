@@ -11,11 +11,12 @@
  * subdirectories are present, all connections share the same whitelist
  * (backward compat with single-DB).
  *
- * **Org scoping:** When an orgId is active, entities are loaded from the
- * internal DB (`semantic_entities` table) instead of disk. The per-org
- * whitelist is cached in memory and invalidated on entity CRUD. When no
- * orgId is present (CLI, self-hosted without orgs), file-based YAML is
- * used (existing behavior).
+ * **Org scoping:** When an orgId is active, the whitelist is loaded from
+ * the internal DB (`semantic_entities` table). The semantic index is built
+ * from persistent on-disk files at `semantic/.orgs/{orgId}/`, maintained
+ * by the dual-write sync layer (`semantic-sync.ts`). When no orgId is
+ * present (CLI, self-hosted without orgs), file-based YAML is used
+ * (existing behavior).
  */
 
 import * as fs from "fs";
@@ -153,7 +154,7 @@ function loadEntitiesFromDir(
  * structure, not per-source subdirectories. These are skipped when scanning for
  * source-specific directories.
  */
-const RESERVED_DIRS = new Set(["entities", "metrics"]);
+const RESERVED_DIRS = new Set(["entities", "metrics", ".orgs"]);
 
 /**
  * Load entity YAMLs and partition tables by connection ID.
@@ -513,37 +514,57 @@ export function invalidateOrgSemanticIndex(orgId: string): void {
 /**
  * Get or build the semantic index for an org.
  *
- * Uses the org's entities from DB to build the same Markdown summary
- * that the file-based `buildSemanticIndex()` produces.
+ * Reads from the persistent org directory at `semantic/.orgs/{orgId}/`
+ * maintained by the dual-write sync layer (`semantic-sync.ts`). If the
+ * directory is empty or missing, triggers a DB-to-disk sync first.
+ *
+ * On sync failure (e.g. transient DB outage), returns an uncached result
+ * built from whatever is on disk — the next call will retry the sync.
  */
 export async function getOrgSemanticIndex(orgId: string): Promise<string> {
   const cached = _orgSemanticIndexes.get(orgId);
   if (cached !== undefined) return cached;
 
-  const { listEntities } = await import("@atlas/api/lib/db/semantic-entities");
-  const [entities, metrics, glossary] = await Promise.all([
-    listEntities(orgId, "entity"),
-    listEntities(orgId, "metric"),
-    listEntities(orgId, "glossary"),
-  ]);
+  const { getSemanticRoot, syncAllEntitiesToDisk } = await import("@atlas/api/lib/semantic-sync");
+  const orgRoot = getSemanticRoot(orgId);
 
-  // Delegate to the existing semantic-index builder by writing YAML content
-  // into a temp directory and calling buildSemanticIndex on it.
-  // This reuses all the formatting logic without duplication.
-  const tmpDir = await createTempSemanticDir(orgId, entities, metrics, glossary);
+  // Ensure the org directory exists on disk (may be first access after boot)
+  const entitiesDir = path.join(orgRoot, "entities");
+  let hasFiles = false;
+  let syncFailed = false;
   try {
-    const { buildSemanticIndex } = await import("@atlas/api/lib/semantic-index");
-    const index = buildSemanticIndex(tmpDir);
-    _orgSemanticIndexes.set(orgId, index);
-    return index;
-  } finally {
-    // Clean up temp directory
-    try {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    } catch (cleanupErr) {
-      log.debug({ orgId, tmpDir, err: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr) }, "Failed to clean up temp semantic directory");
+    const entries = fs.readdirSync(entitiesDir);
+    hasFiles = entries.some((e) => e.endsWith(".yml"));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      log.warn(
+        { orgId, err: err instanceof Error ? err.message : String(err) },
+        "Unexpected error reading org entities directory",
+      );
     }
   }
+
+  if (!hasFiles) {
+    // Rebuild from DB before building the index
+    try {
+      await syncAllEntitiesToDisk(orgId);
+    } catch (err) {
+      syncFailed = true;
+      log.warn(
+        { orgId, err: err instanceof Error ? err.message : String(err) },
+        "Failed to sync org entities to disk for semantic index — returning uncached result",
+      );
+    }
+  }
+
+  const { buildSemanticIndex } = await import("@atlas/api/lib/semantic-index");
+  const index = buildSemanticIndex(orgRoot);
+
+  // Don't cache if sync failed — next call should retry
+  if (!syncFailed) {
+    _orgSemanticIndexes.set(orgId, index);
+  }
+  return index;
 }
 
 /** Clear all org semantic index caches. For testing. */
@@ -551,38 +572,3 @@ export function _resetOrgSemanticIndexes(): void {
   _orgSemanticIndexes.clear();
 }
 
-/**
- * Create a temporary directory with the org's semantic layer files,
- * structured for the existing buildSemanticIndex() to consume.
- */
-/** Sanitize a name for safe use in file paths (strip traversal chars). */
-function safeName(name: string): string {
-  return path.basename(name).replace(/[^a-zA-Z0-9_.-]/g, "_");
-}
-
-async function createTempSemanticDir(
-  orgId: string,
-  entities: Array<{ name: string; yaml_content: string; connection_id: string | null }>,
-  metrics: Array<{ name: string; yaml_content: string }>,
-  glossary: Array<{ name: string; yaml_content: string }>,
-): Promise<string> {
-  const os = await import("os");
-  const safeOrgId = orgId.replace(/[^a-zA-Z0-9_-]/g, "_");
-  const tmpBase = path.join(os.tmpdir(), `atlas-semantic-${safeOrgId}-${Date.now()}`);
-  const entitiesDir = path.join(tmpBase, "entities");
-  const metricsDir = path.join(tmpBase, "metrics");
-  fs.mkdirSync(entitiesDir, { recursive: true });
-  fs.mkdirSync(metricsDir, { recursive: true });
-
-  for (const e of entities) {
-    fs.writeFileSync(path.join(entitiesDir, `${safeName(e.name)}.yml`), e.yaml_content);
-  }
-  for (const m of metrics) {
-    fs.writeFileSync(path.join(metricsDir, `${safeName(m.name)}.yml`), m.yaml_content);
-  }
-  for (const g of glossary) {
-    fs.writeFileSync(path.join(tmpBase, `${safeName(g.name)}.yml`), g.yaml_content);
-  }
-
-  return tmpBase;
-}

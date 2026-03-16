@@ -231,6 +231,12 @@ await migrateAuthTables().catch((err) => {
   log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Boot migration failed");
 });
 
+// Reconcile org semantic layer directories from DB.
+// Ensures persistent org dirs exist on disk for the explore tool after
+// restart, disk loss, or new deployment. Non-blocking — errors logged internally.
+import { reconcileAllOrgs } from "@atlas/api/lib/semantic-sync";
+await reconcileAllOrgs();
+
 // Load settings overrides from internal DB into in-process cache.
 // loadSettings() handles errors internally (logs + falls back to env vars).
 import { loadSettings } from "@atlas/api/lib/settings";

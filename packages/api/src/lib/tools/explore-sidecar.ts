@@ -24,8 +24,24 @@ const HTTP_OVERHEAD_MS = 5_000;
 
 export async function createSidecarBackend(
   sidecarUrl: string,
+  options?: { semanticRoot?: string },
 ): Promise<ExploreBackend> {
   const authToken = process.env.SIDECAR_AUTH_TOKEN;
+
+  // Compute sidecar cwd for org-scoped directories.
+  // The sidecar mounts the host's semantic/ at /semantic. If the semantic
+  // root is semantic/.orgs/org123, the sidecar cwd is .orgs/org123
+  // (relative to /semantic in the container).
+  let sidecarCwd: string | undefined;
+  if (options?.semanticRoot) {
+    const { getSemanticRoot } = await import("@atlas/api/lib/semantic-sync");
+    const base = getSemanticRoot(); // base semantic root (no org)
+    const path = await import("path");
+    const rel = path.relative(base, options.semanticRoot);
+    if (rel && rel !== "." && !rel.startsWith("..")) {
+      sidecarCwd = rel;
+    }
+  }
 
   let baseUrl: URL;
   try {
@@ -75,7 +91,7 @@ export async function createSidecarBackend(
             "Content-Type": "application/json",
             ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
           },
-          body: JSON.stringify({ command, timeout }),
+          body: JSON.stringify({ command, timeout, ...(sidecarCwd ? { cwd: sidecarCwd } : {}) }),
           signal: AbortSignal.timeout(timeout + HTTP_OVERHEAD_MS),
         });
       } catch (err) {

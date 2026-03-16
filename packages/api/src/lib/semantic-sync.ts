@@ -372,17 +372,30 @@ export async function importFromDisk(
     return { imported: 0, skipped: errors.length, errors, total };
   }
 
-  const imported = await bulkUpsertEntities(orgId, entities);
-  invalidateOrgWhitelist(orgId);
+  let imported: number;
+  try {
+    imported = await bulkUpsertEntities(orgId, entities);
+  } finally {
+    // Always invalidate — partial writes may have occurred
+    invalidateOrgWhitelist(orgId);
+  }
+
+  const dbFailures = entities.length - imported;
+  if (dbFailures > 0) {
+    log.warn(
+      { orgId, dbFailures, imported, yamlErrors: errors.length },
+      "Some entities passed YAML validation but failed DB upsert",
+    );
+  }
 
   log.info(
-    { orgId, imported, skipped: errors.length, total },
+    { orgId, imported, skipped: errors.length + dbFailures, total },
     "Imported semantic entities from disk to DB",
   );
 
   return {
     imported,
-    skipped: errors.length,
+    skipped: errors.length + dbFailures,
     errors,
     total,
   };
@@ -528,23 +541,28 @@ async function _autoImportOrgsFromDisk(): Promise<void> {
       .map((d) => d.name);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return; // no .orgs/ dir — nothing to import
-    log.debug({ err: err instanceof Error ? err.message : String(err) }, "Could not scan .orgs/ for auto-import");
+    log.warn({ err: err instanceof Error ? err.message : String(err) }, "Could not scan .orgs/ for auto-import — skipping");
     return;
   }
+
+  const { countEntities } = await import("@atlas/api/lib/db/semantic-entities");
 
   for (const orgId of orgDirs) {
     const entitiesDir = path.join(orgsDir, orgId, "entities");
     let entries: string[];
     try {
       entries = await fs.promises.readdir(entitiesDir);
-    } catch {
-      continue; // no entities dir — skip
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        log.warn(
+          { orgId, err: err instanceof Error ? err.message : String(err) },
+          "Cannot read entities dir for auto-import — skipping org",
+        );
+      }
+      continue;
     }
 
     if (!entries.some((e) => e.endsWith(".yml"))) continue;
-
-    // Check if this org already has entities in DB
-    const { countEntities } = await import("@atlas/api/lib/db/semantic-entities");
     const dbCount = await countEntities(orgId);
     if (dbCount > 0) continue; // already imported
 

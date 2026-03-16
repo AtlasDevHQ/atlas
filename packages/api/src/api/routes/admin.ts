@@ -736,18 +736,20 @@ admin.post("/semantic/org/import", async (c) => {
       return c.json({ error: "not_available", message: "Org-scoped semantic entities require an internal database (DATABASE_URL)." }, 501);
     }
 
-    let body: { connectionId?: string; sourceDir?: string } = {};
-    try {
-      body = await c.req.json();
-    } catch {
-      // No body is fine — defaults used
+    let body: { connectionId?: string } = {};
+    const contentType = c.req.header("content-type") ?? "";
+    if (contentType.includes("application/json")) {
+      try {
+        body = await c.req.json();
+      } catch (err) {
+        return c.json({ error: "bad_request", message: `Invalid JSON body: ${err instanceof Error ? err.message : String(err)}` }, 400);
+      }
     }
 
     try {
       const { importFromDisk } = await import("@atlas/api/lib/semantic-sync");
       const result = await importFromDisk(orgId, {
         connectionId: body.connectionId,
-        sourceDir: body.sourceDir,
       });
 
       log.info(

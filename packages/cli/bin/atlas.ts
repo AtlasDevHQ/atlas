@@ -4670,8 +4670,19 @@ async function handleImport(args: string[]): Promise<void> {
     });
 
     if (!resp.ok) {
-      const text = await resp.text().catch(() => `HTTP ${resp.status}`);
-      console.error(`Import failed: ${text}`);
+      if (resp.status === 401 || resp.status === 403) {
+        console.error("Import failed: authentication required.");
+        console.error("  Set ATLAS_API_KEY environment variable.");
+      } else {
+        let errorMsg = `HTTP ${resp.status}`;
+        try {
+          const json = await resp.json() as { message?: string; error?: string };
+          errorMsg = json.message ?? json.error ?? errorMsg;
+        } catch {
+          errorMsg = await resp.text().catch(() => errorMsg);
+        }
+        console.error(`Import failed: ${errorMsg}`);
+      }
       process.exit(1);
     }
 
@@ -4698,6 +4709,7 @@ async function handleImport(args: string[]): Promise<void> {
     if (detail.includes("ECONNREFUSED") || detail.includes("fetch failed")) {
       console.error(`Cannot reach Atlas API at ${apiUrl}. Is the server running?`);
       console.error("  Start it with: bun run dev:api");
+      console.error("  Set ATLAS_API_URL if the API is not on localhost:3001");
     } else {
       console.error(`Import failed: ${detail}`);
     }
@@ -5598,6 +5610,7 @@ Next steps:
     if (process.env.ATLAS_API_KEY) importHeaders.Authorization = `Bearer ${process.env.ATLAS_API_KEY}`;
 
     // For each datasource, import with its connection ID
+    let anyImported = false;
     for (const ds of datasources) {
       const importBody: Record<string, string> = {};
       if (ds.id !== "default") importBody.connectionId = ds.id;
@@ -5613,19 +5626,35 @@ Next steps:
         if (resp.ok) {
           const result = await resp.json() as { imported: number; skipped: number; total: number };
           console.log(`  Imported ${result.imported} entities${ds.id !== "default" ? ` (connection: ${ds.id})` : ""}`);
+          if (result.imported > 0) anyImported = true;
         } else {
-          const text = await resp.text().catch(() => `HTTP ${resp.status}`);
-          console.warn(`  Warning: Import failed for ${ds.id}: ${text}`);
+          let errorMsg = `HTTP ${resp.status}`;
+          try {
+            const json = await resp.json() as { message?: string; error?: string };
+            errorMsg = json.message ?? json.error ?? errorMsg;
+          } catch {
+            errorMsg = await resp.text().catch(() => errorMsg);
+          }
+          console.warn(`  Warning: Import failed for ${ds.id}: ${errorMsg}`);
           console.warn("  Run 'atlas import' later to retry.\n");
         }
       } catch (err) {
         const detail = err instanceof Error ? err.message : String(err);
         if (detail.includes("ECONNREFUSED") || detail.includes("fetch failed")) {
           console.warn("  Warning: Atlas API not reachable — skipping auto-import.");
+          console.warn("  Set ATLAS_API_URL if the API is not on localhost:3001");
           console.warn("  Start the API server and run 'atlas import' to import manually.\n");
           break; // Don't try remaining datasources
         }
         console.warn(`  Warning: Import failed for ${ds.id}: ${detail}`);
+      }
+    }
+
+    if (!anyImported && datasources.length > 0) {
+      console.warn("\nNo entities were imported to the DB. Files were written to disk successfully.");
+      console.warn("Run 'atlas import' once the API server is available to complete the import.");
+      if (!process.env.ATLAS_API_KEY) {
+        console.warn("Hint: set ATLAS_API_KEY for CLI authentication.\n");
       }
     }
   }

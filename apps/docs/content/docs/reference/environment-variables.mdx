@@ -269,6 +269,18 @@ These can also be configured via [`atlas.config.ts`](/reference/config#session-t
 
 ---
 
+## Semantic Index
+
+The semantic index pre-computes a summary of the semantic layer and injects it into the agent system prompt to reduce explore tool calls.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_SEMANTIC_INDEX_ENABLED` | `true` | Set `false` to disable the pre-computed semantic index |
+
+For additional configuration (e.g. `maxEntitiesPerQuery`), use [`atlas.config.ts`](/reference/config#semantic-index).
+
+---
+
 ## Row-Level Security
 
 Env var shorthand for a single global RLS policy. For per-table policies, use [`atlas.config.ts`](/reference/config#rls-row-level-security). See [Row-Level Security](/security/row-level-security) for the full guide.

@@ -592,6 +592,35 @@ These settings can be changed at runtime via Admin > Settings without a restart.
 
 ---
 
+## Semantic Index
+
+The semantic index pre-computes a summary of the semantic layer at server startup and injects it into the agent system prompt. This reduces explore tool calls by giving the agent upfront knowledge of available tables, columns, measures, and glossary terms.
+
+```typescript
+export default defineConfig({
+  semanticIndex: {
+    enabled: true,            // default: true
+    maxEntitiesPerQuery: 10,  // max entities surfaced per query (default: 10)
+  },
+});
+```
+
+### Semantic index fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `enabled` | `boolean` | No | Whether the index is active. Default: `true` |
+| `maxEntitiesPerQuery` | `number` | No | Max entities to include per query. Default: `10` |
+
+**Env var equivalent:**
+```bash
+ATLAS_SEMANTIC_INDEX_ENABLED=false  # Set to "false" to disable
+```
+
+The index automatically switches between **full mode** (< 20 entities, shows all columns and types) and **summary mode** (20+ entities, compact one-liner per table). It rebuilds when the semantic layer cache is invalidated (e.g. file changes in dev mode).
+
+---
+
 ## Full Example
 
 ```typescript
@@ -668,6 +697,12 @@ export default defineConfig({
     allowModules: ["requests"],
     blockedModules: ["boto3"],
   },
+
+  // Semantic index (pre-computed summary in agent prompt)
+  semanticIndex: {
+    enabled: true,
+    maxEntitiesPerQuery: 10,
+  },
 });
 ```
 
@@ -689,6 +724,7 @@ export default defineConfig({
 | `sandbox` | `object` | — | Sandbox backend priority ([details](#sandbox)) |
 | `python` | `object` | — | Python import guard overrides ([details](#python-import-guard)) |
 | `session` | `object` | — | Session timeout configuration ([details](#session-timeouts)) |
+| `semanticIndex` | `object` | — | Semantic index configuration ([details](#semantic-index)) |
 
 ---
 

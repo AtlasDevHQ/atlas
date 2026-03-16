@@ -337,7 +337,7 @@ describe("admin settings routes", () => {
         Promise.resolve({
           authenticated: true,
           mode: "simple-key",
-          user: { id: "user-1", mode: "simple-key", label: "User", role: "analyst" },
+          user: { id: "user-1", mode: "simple-key", label: "User", role: "member" },
         }),
       );
 

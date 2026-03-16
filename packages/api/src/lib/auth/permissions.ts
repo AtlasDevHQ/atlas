@@ -84,6 +84,9 @@ export function parseRole(value: string | undefined): AtlasRole | undefined {
 const APPROVAL_MODE_MIN_ROLE: Record<ActionApprovalMode, AtlasRole> = {
   auto: "member", // Not actually checked — auto actions don't need approval
   manual: "admin",
+  // "admin-only" requires the owner role. The name is a legacy holdover from
+  // when admin was the highest role. With the owner > admin > member hierarchy,
+  // this effectively means "owner-only". Renaming would be a config-breaking change.
   "admin-only": "owner",
 };
 

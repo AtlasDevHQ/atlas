@@ -363,11 +363,11 @@ describe("Admin routes — auth enforcement", () => {
     mockCheckRateLimit.mockReturnValue({ allowed: true });
   });
 
-  it("returns 403 when user has analyst role", async () => {
+  it("returns 403 when user has member role", async () => {
     mockAuthenticateRequest.mockResolvedValue({
       authenticated: true,
       mode: "simple-key",
-      user: { id: "user-1", mode: "simple-key", label: "Analyst", role: "analyst" },
+      user: { id: "user-1", mode: "simple-key", label: "Member", role: "member" },
     });
 
     const res = await app.fetch(adminRequest("/api/v1/admin/overview"));
@@ -438,7 +438,7 @@ describe("Admin routes — auth enforcement", () => {
     mockAuthenticateRequest.mockResolvedValue({
       authenticated: true,
       mode: "simple-key",
-      user: { id: "user-1", mode: "simple-key", label: "Analyst", role: "analyst" },
+      user: { id: "user-1", mode: "simple-key", label: "Member", role: "member" },
     });
 
     const res = await app.fetch(adminRequest("/api/v1/admin/connections/default/test", "POST"));
@@ -1252,7 +1252,7 @@ describe("Admin routes — audit analytics", () => {
       mockAuthenticateRequest.mockResolvedValue({
         authenticated: true,
         mode: "simple-key",
-        user: { id: "user-1", mode: "simple-key", label: "Analyst", role: "analyst" },
+        user: { id: "user-1", mode: "simple-key", label: "Member", role: "member" },
       });
 
       const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/volume"));
@@ -1357,7 +1357,7 @@ describe("Admin routes — semantic diff", () => {
     mockAuthenticateRequest.mockResolvedValue({
       authenticated: true,
       mode: "simple-key",
-      user: { id: "user-1", mode: "simple-key", label: "Analyst", role: "analyst" },
+      user: { id: "user-1", mode: "simple-key", label: "Member", role: "member" },
     });
 
     const res = await app.fetch(adminRequest("/api/v1/admin/semantic/diff"));

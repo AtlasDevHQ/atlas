@@ -345,7 +345,7 @@ describe("POST /api/v1/admin/plugins/:id/enable", () => {
       Promise.resolve({
         authenticated: true,
         mode: "simple-key",
-        user: { id: "user-1", mode: "simple-key", label: "User", role: "analyst" },
+        user: { id: "user-1", mode: "simple-key", label: "User", role: "member" },
       }),
     );
     const res = await request("/api/v1/admin/plugins/test-plugin/enable", {

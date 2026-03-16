@@ -19,7 +19,7 @@ export interface OrgMember {
   id: string;
   organizationId: string;
   userId: string;
-  role: string;
+  role: OrgRole;
   createdAt: string;
   user?: {
     id: string;
@@ -33,7 +33,7 @@ export interface OrgInvitation {
   id: string;
   organizationId: string;
   email: string;
-  role: string;
+  role: OrgRole;
   status: "pending" | "accepted" | "rejected" | "canceled";
   inviterId: string;
   expiresAt: string;

@@ -83,18 +83,18 @@ adminOrgs.get("/", async (c) => {
     }
 
     try {
-      const orgs = await internalQuery<Record<string, unknown>>(
-        `SELECT id, name, slug, logo, metadata, "createdAt"
-         FROM organization
-         ORDER BY "createdAt" DESC`,
-      );
-
-      // Get member counts per org
-      const memberCounts = await internalQuery<{ organization_id: string; count: number }>(
-        `SELECT "organizationId" as organization_id, COUNT(*)::int as count
-         FROM member
-         GROUP BY "organizationId"`,
-      );
+      const [orgs, memberCounts] = await Promise.all([
+        internalQuery<Record<string, unknown>>(
+          `SELECT id, name, slug, logo, metadata, "createdAt"
+           FROM organization
+           ORDER BY "createdAt" DESC`,
+        ),
+        internalQuery<{ organization_id: string; count: number }>(
+          `SELECT "organizationId" as organization_id, COUNT(*)::int as count
+           FROM member
+           GROUP BY "organizationId"`,
+        ),
+      ]);
       const countMap = new Map(memberCounts.map((r) => [r.organization_id, r.count]));
 
       const result = orgs.map((o) => ({
@@ -151,25 +151,25 @@ adminOrgs.get("/:id", async (c) => {
 
       const org = orgs[0];
 
-      // Get members with user info
-      const members = await internalQuery<Record<string, unknown>>(
-        `SELECT m.id, m."organizationId", m."userId", m.role, m."createdAt",
-                u.name as user_name, u.email as user_email, u.image as user_image
-         FROM member m
-         LEFT JOIN "user" u ON m."userId" = u.id
-         WHERE m."organizationId" = $1
-         ORDER BY m."createdAt" ASC`,
-        [orgId],
-      );
-
-      // Get pending invitations
-      const invitations = await internalQuery<Record<string, unknown>>(
-        `SELECT id, email, role, status, "inviterId", "expiresAt", "createdAt"
-         FROM invitation
-         WHERE "organizationId" = $1
-         ORDER BY "createdAt" DESC`,
-        [orgId],
-      );
+      // Get members and invitations in parallel
+      const [members, invitations] = await Promise.all([
+        internalQuery<Record<string, unknown>>(
+          `SELECT m.id, m."organizationId", m."userId", m.role, m."createdAt",
+                  u.name as user_name, u.email as user_email, u.image as user_image
+           FROM member m
+           LEFT JOIN "user" u ON m."userId" = u.id
+           WHERE m."organizationId" = $1
+           ORDER BY m."createdAt" ASC`,
+          [orgId],
+        ),
+        internalQuery<Record<string, unknown>>(
+          `SELECT id, email, role, status, "inviterId", "expiresAt", "createdAt"
+           FROM invitation
+           WHERE "organizationId" = $1
+           ORDER BY "createdAt" DESC`,
+          [orgId],
+        ),
+      ]);
 
       return c.json({
         organization: {

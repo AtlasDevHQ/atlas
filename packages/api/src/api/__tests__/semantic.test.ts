@@ -92,7 +92,7 @@ const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(
     Promise.resolve({
       authenticated: true,
       mode: "simple-key",
-      user: { id: "user-1", mode: "simple-key", label: "User", role: "analyst" },
+      user: { id: "user-1", mode: "simple-key", label: "User", role: "member" },
     }),
 );
 
@@ -232,7 +232,7 @@ function setAuthenticated(): void {
   mockAuthenticateRequest.mockResolvedValue({
     authenticated: true,
     mode: "simple-key",
-    user: { id: "user-1", mode: "simple-key", label: "User", role: "analyst" },
+    user: { id: "user-1", mode: "simple-key", label: "User", role: "member" },
   });
   mockCheckRateLimit.mockReturnValue({ allowed: true });
 }

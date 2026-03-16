@@ -164,7 +164,7 @@ mock.module("@atlas/api/lib/conversations", () => ({
 }));
 
 mock.module("@atlas/api/lib/auth/types", () => ({
-  ATLAS_ROLES: ["viewer", "analyst", "admin"],
+  ATLAS_ROLES: ["member", "admin", "owner"],
 }));
 
 mock.module("@atlas/api/lib/security", () => ({
@@ -236,7 +236,7 @@ describe("admin token usage routes", () => {
         Promise.resolve({
           authenticated: true,
           mode: "simple-key",
-          user: { id: "user-1", mode: "simple-key", label: "User", role: "analyst" },
+          user: { id: "user-1", mode: "simple-key", label: "User", role: "member" },
         }),
       );
       const res = await app.fetch(adminRequest("/api/v1/admin/tokens/summary"));

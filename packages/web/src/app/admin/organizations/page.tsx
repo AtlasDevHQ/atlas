@@ -92,7 +92,6 @@ export default function OrganizationsPage() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
 
-  const [orgs, setOrgs] = useState<Org[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<FetchError | null>(null);
   const [params, setParams] = useQueryStates(orgsSearchParams);
@@ -104,7 +103,8 @@ export default function OrganizationsPage() {
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
 
-  // Fetch organizations
+  // Fetch all organizations once — search is client-side
+  const [allOrgs, setAllOrgs] = useState<Org[]>([]);
   useEffect(() => {
     let cancelled = false;
     async function fetchOrgs() {
@@ -118,14 +118,7 @@ export default function OrganizationsPage() {
         }
         const data = await res.json();
         if (!cancelled) {
-          let result = data.organizations ?? [];
-          if (params.search) {
-            const q = params.search.toLowerCase();
-            result = result.filter(
-              (o: Org) => o.name.toLowerCase().includes(q) || o.slug.toLowerCase().includes(q),
-            );
-          }
-          setOrgs(result);
+          setAllOrgs(data.organizations ?? []);
         }
       } catch (err) {
         if (!cancelled) {
@@ -137,7 +130,15 @@ export default function OrganizationsPage() {
     }
     fetchOrgs();
     return () => { cancelled = true; };
-  }, [apiUrl, credentials, params.search]);
+  }, [apiUrl, credentials]);
+
+  // Client-side search filtering
+  const orgs = params.search
+    ? allOrgs.filter((o) => {
+        const q = params.search.toLowerCase();
+        return o.name.toLowerCase().includes(q) || o.slug.toLowerCase().includes(q);
+      })
+    : allOrgs;
 
   async function openDetail(orgId: string) {
     setDetailOpen(true);

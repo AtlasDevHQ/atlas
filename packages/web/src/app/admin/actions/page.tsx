@@ -186,7 +186,12 @@ export default function ActionsPage() {
         const res = await fetch(`${apiUrl}/api/v1/actions?${params}`, { credentials });
         if (cancelled) return;
         if (!res.ok) {
-          setError({ message: `HTTP ${res.status}`, status: res.status });
+          let serverMessage = `HTTP ${res.status}`;
+          try {
+            const body = await res.json();
+            if (body?.message) serverMessage = body.message;
+          } catch { /* ignore parse errors */ }
+          setError({ message: serverMessage, status: res.status });
           return;
         }
         const data = await res.json();

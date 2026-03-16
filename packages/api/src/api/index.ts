@@ -131,14 +131,14 @@ if (process.env.ATLAS_SCHEDULER_ENABLED === "true") {
   log.debug("Scheduled tasks disabled (ATLAS_SCHEDULER_ENABLED not set)");
 }
 
-// User session self-service routes — always available (auth-gated per-user).
+// User session self-service routes — requires managed auth + internal DB.
 try {
   const { sessions } = await import("./routes/sessions");
   app.route("/api/v1/sessions", sessions);
 } catch (err) {
   log.error(
     { err: err instanceof Error ? err : new Error(String(err)) },
-    "Failed to load session routes",
+    "Failed to load session routes — user session self-service will be unavailable",
   );
 }
 

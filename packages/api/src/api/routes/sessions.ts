@@ -67,7 +67,8 @@ sessions.get("/", async (c) => {
         `SELECT id, "createdAt", "updatedAt", "expiresAt", "ipAddress", "userAgent"
          FROM session
          WHERE "userId" = $1
-         ORDER BY "updatedAt" DESC`,
+         ORDER BY "updatedAt" DESC
+         LIMIT 100`,
         [userId],
       );
 

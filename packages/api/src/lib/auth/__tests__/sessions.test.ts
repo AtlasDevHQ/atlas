@@ -141,8 +141,6 @@ mock.module("@atlas/api/lib/auth/server", () => ({
   getAuthInstance: () => ({
     api: {
       listUsers: mock(() => Promise.resolve({ users: [], total: 0 })),
-      listUserSessions: mock(() => Promise.resolve([])),
-      revokeUserSession: mock(() => Promise.resolve()),
       setRole: mock(() => Promise.resolve()),
       banUser: mock(() => Promise.resolve()),
       unbanUser: mock(() => Promise.resolve()),

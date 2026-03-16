@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState } from "react";
 import { useQueryStates } from "nuqs";
 import { sessionsSearchParams } from "./search-params";
 import { getSessionColumns, type SessionRow, type SessionActions } from "./columns";
@@ -57,7 +57,7 @@ export default function SessionsPage() {
   const inProgress = useInProgressSet();
 
   // Revoke a single session
-  const revokeSession = useCallback(async (sessionId: string) => {
+  async function revokeSession(sessionId: string) {
     inProgress.start(sessionId);
     try {
       const res = await fetch(`${apiUrl}/api/v1/admin/sessions/${sessionId}`, {
@@ -76,34 +76,11 @@ export default function SessionsPage() {
     } finally {
       inProgress.stop(sessionId);
     }
-  }, [apiUrl, credentials, inProgress]);
-
-  // Revoke all sessions for a user
-  const revokeUserSessions = useCallback(async (userId: string) => {
-    inProgress.start(`user:${userId}`);
-    try {
-      const res = await fetch(`${apiUrl}/api/v1/admin/sessions/user/${userId}`, {
-        method: "DELETE",
-        credentials,
-      });
-      if (!res.ok) {
-        let msg = `HTTP ${res.status}`;
-        try { msg = (await res.json()).message ?? msg; } catch { /* ignore */ }
-        setError({ message: msg, status: res.status });
-        return;
-      }
-      setFetchKey((k) => k + 1);
-    } catch (err) {
-      setError({ message: err instanceof Error ? err.message : "Failed to revoke sessions" });
-    } finally {
-      inProgress.stop(`user:${userId}`);
-    }
-  }, [apiUrl, credentials, inProgress]);
+  }
 
   // Column definitions with action callbacks
   const sessionActions: SessionActions = {
     onRevoke: revokeSession,
-    onRevokeUser: revokeUserSessions,
     isRevoking: (id: string) => inProgress.has(id),
   };
   const columns = getSessionColumns(sessionActions);
@@ -122,7 +99,7 @@ export default function SessionsPage() {
   });
 
   // Stats
-  const { data: stats } = useAdminFetch<SessionStats>(
+  const { data: stats, error: statsError } = useAdminFetch<SessionStats>(
     "/api/v1/admin/sessions/stats",
     { deps: [fetchKey] },
   );
@@ -173,13 +150,11 @@ export default function SessionsPage() {
   }, [apiUrl, offset, pageSize, search, credentials, fetchKey]);
 
   // Bulk revoke selected sessions
-  const revokeSelected = useCallback(async () => {
+  async function revokeSelected() {
     const selected = table.getSelectedRowModel().rows.map((r) => r.original.id);
-    for (const id of selected) {
-      await revokeSession(id);
-    }
+    await Promise.all(selected.map((id) => revokeSession(id)));
     table.resetRowSelection();
-  }, [table, revokeSession]);
+  }
 
   // Auth/feature gate
   if (!loading && error?.status && [401, 403, 404].includes(error.status)) {
@@ -234,7 +209,7 @@ export default function SessionsPage() {
       <ErrorBoundary>
         <div className="flex-1 overflow-auto p-6 space-y-6">
           {/* Stats */}
-          {stats && (
+          {stats && !statsError && (
             <div className="grid gap-4 sm:grid-cols-3">
               <StatCard title="Total Sessions" value={stats.total.toLocaleString()} icon={Monitor} />
               <StatCard title="Active Sessions" value={stats.active.toLocaleString()} icon={Activity} />

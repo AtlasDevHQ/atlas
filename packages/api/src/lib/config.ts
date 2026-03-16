@@ -833,6 +833,7 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
     ...(config.rls ? { rls: config.rls } : {}),
     ...(config.sandbox ? { sandbox: config.sandbox } : {}),
     ...(config.python ? { python: config.python } : {}),
+    ...(config.session ? { session: config.session } : {}),
     source: "file",
   };
 }

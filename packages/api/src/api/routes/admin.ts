@@ -2070,27 +2070,30 @@ admin.get("/sessions/stats", async (c) => {
   if ("error" in preamble) {
     return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
   }
+  const { authResult } = preamble;
 
   if (!hasInternalDB() || detectAuthMode() !== "managed") {
     return c.json({ error: "not_available", message: "Session management requires managed auth mode." }, 404);
   }
 
-  try {
-    const [totalResult, activeResult, uniqueUsersResult] = await Promise.all([
-      internalQuery<{ count: string }>(`SELECT COUNT(*) AS count FROM session`),
-      internalQuery<{ count: string }>(`SELECT COUNT(*) AS count FROM session WHERE "expiresAt" > NOW()`),
-      internalQuery<{ count: string }>(`SELECT COUNT(DISTINCT "userId") AS count FROM session WHERE "expiresAt" > NOW()`),
-    ]);
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    try {
+      const [totalResult, activeResult, uniqueUsersResult] = await Promise.all([
+        internalQuery<{ count: string }>(`SELECT COUNT(*) AS count FROM session`),
+        internalQuery<{ count: string }>(`SELECT COUNT(*) AS count FROM session WHERE "expiresAt" > NOW()`),
+        internalQuery<{ count: string }>(`SELECT COUNT(DISTINCT "userId") AS count FROM session WHERE "expiresAt" > NOW()`),
+      ]);
 
-    return c.json({
-      total: parseInt(String(totalResult[0]?.count ?? "0"), 10),
-      active: parseInt(String(activeResult[0]?.count ?? "0"), 10),
-      uniqueUsers: parseInt(String(uniqueUsersResult[0]?.count ?? "0"), 10),
-    });
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to get session stats");
-    return c.json({ error: "internal_error", message: "Failed to get session stats." }, 500);
-  }
+      return c.json({
+        total: parseInt(String(totalResult[0]?.count ?? "0"), 10),
+        active: parseInt(String(activeResult[0]?.count ?? "0"), 10),
+        uniqueUsers: parseInt(String(uniqueUsersResult[0]?.count ?? "0"), 10),
+      });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to get session stats");
+      return c.json({ error: "internal_error", message: "Failed to get session stats." }, 500);
+    }
+  });
 });
 
 // DELETE /sessions/:id — revoke a single session by ID
@@ -2182,8 +2185,6 @@ interface AdminApi {
     users: Array<Record<string, unknown>>;
     total: number;
   }>;
-  listUserSessions(opts: { body: { userId: string }; headers: Headers }): Promise<Array<Record<string, unknown>>>;
-  revokeUserSession(opts: { body: { sessionToken: string }; headers: Headers }): Promise<unknown>;
   setRole(opts: { body: { userId: string; role: string }; headers: Headers }): Promise<unknown>;
   banUser(opts: { body: Record<string, unknown>; headers: Headers }): Promise<unknown>;
   unbanUser(opts: { body: { userId: string }; headers: Headers }): Promise<unknown>;

@@ -3,6 +3,7 @@
 import type { ColumnDef } from "@tanstack/react-table";
 import { DataTableColumnHeader } from "@/components/data-table/data-table-column-header";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Clock, User, Globe, Monitor, Trash2 } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -21,7 +22,9 @@ export interface SessionRow {
 // ── Helpers ───────────────────────────────────────────────────────
 
 function formatDate(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString(undefined, {
     month: "short",
     day: "numeric",
     hour: "2-digit",
@@ -43,12 +46,32 @@ function shortUA(ua: string | null): string {
 
 export interface SessionActions {
   onRevoke: (sessionId: string) => void;
-  onRevokeUser: (userId: string) => void;
   isRevoking: (id: string) => boolean;
 }
 
 export function getSessionColumns(actions?: SessionActions): ColumnDef<SessionRow>[] {
   return [
+    {
+      id: "select",
+      header: ({ table }) => (
+        <Checkbox
+          checked={table.getIsAllPageRowsSelected() || (table.getIsSomePageRowsSelected() && "indeterminate")}
+          onCheckedChange={(value) => table.toggleAllPageRowsSelected(!!value)}
+          aria-label="Select all"
+          className="translate-y-0.5"
+        />
+      ),
+      cell: ({ row }) => (
+        <Checkbox
+          checked={row.getIsSelected()}
+          onCheckedChange={(value) => row.toggleSelected(!!value)}
+          aria-label="Select row"
+          className="translate-y-0.5"
+        />
+      ),
+      enableSorting: false,
+      size: 40,
+    },
     {
       id: "userEmail",
       accessorFn: (row) => row.userEmail ?? row.userId,

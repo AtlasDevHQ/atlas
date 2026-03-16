@@ -64,19 +64,27 @@ export interface RLSFilter {
    *  Pre-escaping is required because node-sql-parser's sqlify emits
    *  single_quote_string values literally without escaping. */
   value: string;
+  /** Array of resolved claim values for IN-list conditions. When set,
+   *  takes precedence over `value`. Each element is already SQL-escaped. */
+  values?: string[];
+}
+
+/** A group of filters from a single RLS policy — ANDed together. */
+export interface RLSFilterGroup {
+  filters: RLSFilter[];
 }
 
 /**
  * Match RLS policies against the tables in a query and resolve claim values.
  *
- * Returns either `{ filters }` on success or `{ error }` when the query
- * should be blocked (missing user, missing claims, etc.).
+ * Returns either `{ groups, combineWith }` on success or `{ error }` when
+ * the query should be blocked (missing user, missing claims, etc.).
  */
 export function resolveRLSFilters(
   user: AtlasUser | undefined,
   queriedTables: Set<string>,
   config: RLSConfig,
-): { filters: RLSFilter[] } | { error: string } {
+): { groups: RLSFilterGroup[]; combineWith: "and" | "or" } | { error: string } {
   if (!user) {
     return {
       error:
@@ -91,8 +99,8 @@ export function resolveRLSFilters(
     };
   }
 
-  const filters: RLSFilter[] = [];
-  const seen = new Set<string>();
+  const groups: RLSFilterGroup[] = [];
+  const combineWith = config.combineWith;
 
   for (const policy of config.policies) {
     // Match queried tables against policy tables
@@ -107,26 +115,77 @@ export function resolveRLSFilters(
 
     if (matchingTables.size === 0) continue;
 
-    // Resolve claim value — fail-closed on missing claims
-    const rawValue = resolveClaimPath(user.claims, policy.claim);
-    if (rawValue === undefined || rawValue === null) {
-      return {
-        error: `RLS policy requires claim "${policy.claim}" but it is missing from the user's claims. Query blocked.`,
-      };
+    // Normalize conditions: single column/claim → conditions array
+    const conditions = policy.conditions ?? (() => {
+      if (!policy.column || !policy.claim) {
+        // Should be unreachable after Zod validation, but fail-closed if it isn't.
+        return [{ column: "__INVALID__", claim: "__INVALID__" }];
+      }
+      return [{ column: policy.column, claim: policy.claim }];
+    })();
+
+    const filters: RLSFilter[] = [];
+
+    for (const condition of conditions) {
+      // Resolve claim value — fail-closed on missing claims
+      const rawValue = resolveClaimPath(user.claims, condition.claim);
+      if (rawValue === undefined || rawValue === null) {
+        return {
+          error: `RLS policy requires claim "${condition.claim}" but it is missing from the user's claims. Query blocked.`,
+        };
+      }
+
+      // Reject object-typed claims (not arrays) — would produce "[object Object]"
+      if (typeof rawValue === "object" && !Array.isArray(rawValue)) {
+        return {
+          error: `RLS policy claim "${condition.claim}" resolved to an object instead of a scalar or array. Use a more specific claim path (e.g. "${condition.claim}.id"). Query blocked.`,
+        };
+      }
+
+      if (Array.isArray(rawValue)) {
+        // Empty array → fail-closed (no values to match against)
+        if (rawValue.length === 0) {
+          return {
+            error: `RLS policy claim "${condition.claim}" resolved to an empty array. Query blocked (fail-closed).`,
+          };
+        }
+        // Validate array elements are primitives — objects would produce "[object Object]"
+        for (const v of rawValue) {
+          if (v === null || v === undefined) {
+            return {
+              error: `RLS policy claim "${condition.claim}" contains a null/undefined array element. Query blocked (fail-closed).`,
+            };
+          }
+          if (typeof v === "object") {
+            return {
+              error: `RLS policy claim "${condition.claim}" contains a non-primitive array element. Array values must be strings, numbers, or booleans. Query blocked.`,
+            };
+          }
+        }
+        const escapedValues = rawValue.map((v) => String(v).replace(/'/g, "''"));
+        for (const table of matchingTables) {
+          filters.push({
+            table,
+            column: condition.column,
+            value: escapedValues[0],
+            values: escapedValues,
+          });
+        }
+      } else {
+        // Scalar claim: SQL-escape single quotes and convert to string
+        const strValue = String(rawValue).replace(/'/g, "''");
+        for (const table of matchingTables) {
+          filters.push({ table, column: condition.column, value: strValue });
+        }
+      }
     }
 
-    // SQL-escape single quotes and convert to string
-    const strValue = String(rawValue).replace(/'/g, "''");
-
-    for (const table of matchingTables) {
-      const key = `${table}:${policy.column}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      filters.push({ table, column: policy.column, value: strValue });
+    if (filters.length > 0) {
+      groups.push({ filters });
     }
   }
 
-  return { filters };
+  return { groups, combineWith };
 }
 
 // ---------------------------------------------------------------------------
@@ -167,19 +226,39 @@ function collectCTENames(ast: any): Set<string> {
   return names;
 }
 
-/** Build a column_ref → value equality condition AST node. */
-function buildEqCondition(tableRef: string, column: string, value: string) {
+/** Build an AST condition node for a single RLS filter (= or IN). */
+function buildCondition(tableRef: string, filter: RLSFilter) {
+  if (filter.values && filter.values.length > 0) {
+    // IN-list for array claims
+    return {
+      type: "binary_expr",
+      operator: "IN",
+      left: {
+        type: "column_ref",
+        table: tableRef,
+        column: filter.column,
+      },
+      right: {
+        type: "expr_list",
+        value: filter.values.map((v) => ({
+          type: "single_quote_string",
+          value: v,
+        })),
+      },
+    };
+  }
+  // Equality for scalar claims
   return {
     type: "binary_expr",
     operator: "=",
     left: {
       type: "column_ref",
       table: tableRef,
-      column: column,
+      column: filter.column,
     },
     right: {
       type: "single_quote_string",
-      value,
+      value: filter.value,
     },
   };
 }
@@ -187,10 +266,14 @@ function buildEqCondition(tableRef: string, column: string, value: string) {
 /**
  * Recursively inject RLS conditions into a SELECT AST node.
  * Handles: FROM tables, CTEs, UNIONs, and WHERE-clause subqueries.
+ *
+ * Conditions within a single policy group are ANDed. Groups are combined
+ * using the `combineWith` operator (AND or OR).
  */
 function injectIntoSelectAST(
   ast: any,
-  filters: RLSFilter[],
+  groups: RLSFilterGroup[],
+  combineWith: "and" | "or",
   dialect: string,
 ): void {
   const cteNames = collectCTENames(ast);
@@ -200,7 +283,7 @@ function injectIntoSelectAST(
     for (const cte of ast.with) {
       const cteAst = cte?.stmt?.ast ?? cte?.stmt;
       if (cteAst && cteAst.type === "select") {
-        injectIntoSelectAST(cteAst, filters, dialect);
+        injectIntoSelectAST(cteAst, groups, combineWith, dialect);
       }
     }
   }
@@ -210,23 +293,46 @@ function injectIntoSelectAST(
   if (Array.isArray(from) && from.length > 0) {
     const aliasMap = extractTableAliasMap(from, cteNames);
 
-    let rlsCondition: any = null;
-    for (const filter of filters) {
-      const alias = aliasMap.get(filter.table.toLowerCase());
-      if (!alias) continue;
+    // Build per-policy-group conditions
+    const groupConditions: any[] = [];
+    for (const group of groups) {
+      let groupCondition: any = null;
+      for (const filter of group.filters) {
+        const alias = aliasMap.get(filter.table.toLowerCase());
+        if (!alias) continue;
 
-      const condition = buildEqCondition(alias, filter.column, filter.value);
-      rlsCondition = rlsCondition
-        ? {
-            type: "binary_expr",
-            operator: "AND",
-            left: rlsCondition,
-            right: condition,
-          }
-        : condition;
+        const condition = buildCondition(alias, filter);
+        groupCondition = groupCondition
+          ? {
+              type: "binary_expr",
+              operator: "AND",
+              left: groupCondition,
+              right: condition,
+            }
+          : condition;
+      }
+      if (groupCondition) groupConditions.push(groupCondition);
     }
 
-    if (rlsCondition) {
+    // Combine groups with AND or OR
+    if (groupConditions.length > 0) {
+      const combineOp = combineWith === "or" ? "OR" : "AND";
+      let rlsCondition = groupConditions[0];
+      for (let i = 1; i < groupConditions.length; i++) {
+        rlsCondition = {
+          type: "binary_expr",
+          operator: combineOp,
+          left: rlsCondition,
+          right: groupConditions[i],
+        };
+      }
+
+      // When using OR with multiple groups, wrap in parens to prevent
+      // precedence issues with the existing WHERE clause
+      if (combineWith === "or" && groupConditions.length > 1) {
+        rlsCondition.parentheses = true;
+      }
+
       ast.where = ast.where
         ? {
             type: "binary_expr",
@@ -241,19 +347,19 @@ function injectIntoSelectAST(
     for (const entry of from) {
       const subAst = entry?.expr?.ast;
       if (subAst && subAst.type === "select") {
-        injectIntoSelectAST(subAst, filters, dialect);
+        injectIntoSelectAST(subAst, groups, combineWith, dialect);
       }
     }
   }
 
   // Recurse into subqueries within the WHERE clause
   if (ast.where) {
-    walkWhereForSubqueries(ast.where, filters, dialect);
+    walkWhereForSubqueries(ast.where, groups, combineWith, dialect);
   }
 
   // Handle UNION (recursively inject into _next)
   if (ast._next) {
-    injectIntoSelectAST(ast._next, filters, dialect);
+    injectIntoSelectAST(ast._next, groups, combineWith, dialect);
   }
 }
 
@@ -263,24 +369,25 @@ function injectIntoSelectAST(
  */
 function walkWhereForSubqueries(
   node: any,
-  filters: RLSFilter[],
+  groups: RLSFilterGroup[],
+  combineWith: "and" | "or",
   dialect: string,
 ): void {
   if (!node || typeof node !== "object") return;
 
   // Subquery in WHERE (e.g., WHERE id IN (SELECT ...))
   if (node.ast && typeof node.ast === "object" && node.ast.type === "select") {
-    injectIntoSelectAST(node.ast, filters, dialect);
+    injectIntoSelectAST(node.ast, groups, combineWith, dialect);
   }
 
   // Recurse into binary expression children
-  if (node.left) walkWhereForSubqueries(node.left, filters, dialect);
-  if (node.right) walkWhereForSubqueries(node.right, filters, dialect);
+  if (node.left) walkWhereForSubqueries(node.left, groups, combineWith, dialect);
+  if (node.right) walkWhereForSubqueries(node.right, groups, combineWith, dialect);
 
   // Recurse into expr_list values (e.g., IN (...subquery...))
   if (node.type === "expr_list" && Array.isArray(node.value)) {
     for (const v of node.value) {
-      walkWhereForSubqueries(v, filters, dialect);
+      walkWhereForSubqueries(v, groups, combineWith, dialect);
     }
   }
 }
@@ -292,20 +399,24 @@ function walkWhereForSubqueries(
  *
  * The input SQL must be a single SELECT statement that has already passed
  * validateSQL(). The output is a syntactically valid SQL string with RLS
- * conditions AND-ed into the WHERE clause.
+ * conditions injected into the WHERE clause.
  *
  * @param sql - Validated SQL string (single SELECT).
- * @param filters - RLS filters to inject.
+ * @param groups - RLS filter groups to inject. Conditions within a group are
+ *   ANDed; groups are combined using `combineWith`.
+ * @param combineWith - How to combine conditions from different policies.
  * @param dbType - Database type for parser dialect selection.
  * @returns Modified SQL string with RLS conditions.
  * @throws Error if AST parsing or regeneration fails.
  */
 export function injectRLSConditions(
   sql: string,
-  filters: RLSFilter[],
+  groups: RLSFilterGroup[],
+  combineWith: "and" | "or",
   dbType: DBType,
 ): string {
-  if (filters.length === 0) return sql;
+  const allFilters = groups.flatMap((g) => g.filters);
+  if (allFilters.length === 0) return sql;
 
   const dialect = parserDatabase(dbType);
   const ast = parser.astify(sql.trim().replace(/;\s*$/, ""), {
@@ -313,7 +424,7 @@ export function injectRLSConditions(
   });
   const stmt = Array.isArray(ast) ? ast[0] : ast;
 
-  injectIntoSelectAST(stmt, filters, dialect);
+  injectIntoSelectAST(stmt, groups, combineWith, dialect);
 
   const result = parser.sqlify(stmt, { database: dialect });
   log.debug({ originalLength: sql.length, resultLength: result.length }, "RLS conditions injected into SQL");

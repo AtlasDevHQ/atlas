@@ -25,7 +25,7 @@ import { withSpan } from "@atlas/api/lib/tracing";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { acquireSourceSlot, decrementSourceConcurrency } from "@atlas/api/lib/db/source-rate-limit";
 import { getConfig } from "@atlas/api/lib/config";
-import { resolveRLSFilters, injectRLSConditions } from "@atlas/api/lib/rls";
+import { resolveRLSFilters, injectRLSConditions, type RLSFilterGroup } from "@atlas/api/lib/rls";
 import { getSetting } from "@atlas/api/lib/settings";
 
 const log = createLogger("sql");
@@ -551,12 +551,6 @@ Rules:
     const config = getConfig();
     const rlsConfig = config?.rls;
     if (rlsConfig?.enabled && !customValidator) {
-      if (!config) {
-        // Config not loaded — fail-closed rather than risk missing RLS.
-        decrementSourceConcurrency(connId);
-        log.error("getConfig() returned null during RLS-enabled SQL execution — config not loaded");
-        return { success: false, error: "Server configuration not initialized. Please retry." };
-      }
       const ctx = getRequestContext();
       const user = ctx?.user;
 
@@ -607,11 +601,12 @@ Rules:
         return { success: false, error: filterResult.error };
       }
 
-      if (filterResult.filters.length > 0) {
+      const hasFilters = filterResult.groups.some((g: RLSFilterGroup) => g.filters.length > 0);
+      if (hasFilters) {
         try {
-          normalizedMutated = injectRLSConditions(normalizedMutated, filterResult.filters, dbType);
+          normalizedMutated = injectRLSConditions(normalizedMutated, filterResult.groups, filterResult.combineWith, dbType);
           log.debug(
-            { filters: filterResult.filters.length, userId: user?.id },
+            { groups: filterResult.groups.length, combineWith: filterResult.combineWith, userId: user?.id },
             "RLS conditions injected",
           );
         } catch (err) {

@@ -116,14 +116,35 @@ const ActionsConfigSchema = z.object({
 
 export type ActionsConfig = z.infer<typeof ActionsConfigSchema>;
 
-const RLSPolicySchema = z.object({
-  /** Tables this policy applies to. Use ["*"] for all tables. */
-  tables: z.array(z.string().min(1)).min(1),
-  /** Column name to filter on in the matched tables. Must be a valid SQL identifier. */
+const RLSConditionSchema = z.object({
+  /** Column name to filter on. Must be a valid SQL identifier. */
   column: z.string().min(1).regex(/^[a-zA-Z_][a-zA-Z0-9_]*$/, "Must be a valid column name"),
   /** Claim path to extract the filter value from the user's claims. Supports dot-delimited paths. */
   claim: z.string().min(1),
 });
+
+export type RLSCondition = z.infer<typeof RLSConditionSchema>;
+
+const RLSPolicySchema = z.object({
+  /** Tables this policy applies to. Use ["*"] for all tables. */
+  tables: z.array(z.string().min(1)).min(1),
+  /** Column name to filter on (single-condition shorthand). */
+  column: z.string().min(1).regex(/^[a-zA-Z_][a-zA-Z0-9_]*$/, "Must be a valid column name").optional(),
+  /** Claim path (single-condition shorthand). */
+  claim: z.string().min(1).optional(),
+  /** Multiple column/claim conditions — ANDed together within this policy. */
+  conditions: z.array(RLSConditionSchema).min(1).optional(),
+}).refine(
+  (p) => {
+    const hasSingle = p.column !== undefined || p.claim !== undefined;
+    const hasConditions = p.conditions !== undefined;
+    if (hasSingle && hasConditions) return false;
+    if (!hasSingle && !hasConditions) return false;
+    if (hasSingle && (p.column === undefined || p.claim === undefined)) return false;
+    return true;
+  },
+  { message: "Each policy must specify either { column, claim } or { conditions: [...] }, not both" },
+);
 
 export type RLSPolicy = z.infer<typeof RLSPolicySchema>;
 
@@ -132,6 +153,8 @@ const RLSConfigSchema = z.object({
   enabled: z.boolean().default(false),
   /** RLS policies. Each policy maps a claim to a column on one or more tables. */
   policies: z.array(RLSPolicySchema).default([]),
+  /** How to combine conditions from different policies. "and" (default) requires all policies to match. "or" requires at least one policy to match. */
+  combineWith: z.enum(["and", "or"]).default("and"),
 }).refine(
   (cfg) => !cfg.enabled || cfg.policies.length > 0,
   { message: "RLS is enabled but no policies are defined", path: ["policies"] },
@@ -266,7 +289,7 @@ export type AtlasConfig = z.infer<typeof AtlasConfigSchema>;
 export type AtlasConfigInput = z.input<typeof AtlasConfigSchema>;
 
 /** Expose schemas and formatter for external validation (e.g. tests, CLI). */
-export { AtlasConfigSchema, RateLimitConfigSchema, RLSPolicySchema, RLSConfigSchema, SandboxConfigSchema, PythonConfigSchema };
+export { AtlasConfigSchema, RateLimitConfigSchema, RLSConditionSchema, RLSPolicySchema, RLSConfigSchema, SandboxConfigSchema, PythonConfigSchema };
 
 /**
  * The resolved config after merging the config file with env var defaults.
@@ -397,7 +420,18 @@ export function configFromEnv(): ResolvedConfig {
         `Got: ATLAS_RLS_COLUMN=${column ?? "(unset)"}, ATLAS_RLS_CLAIM=${claim ?? "(unset)"}`,
       );
     }
-    rls = { enabled: true, policies: [{ tables: ["*"], column, claim }] };
+    const rlsParseResult = RLSConfigSchema.safeParse({
+      enabled: true,
+      policies: [{ tables: ["*"], column, claim }],
+      combineWith: "and",
+    });
+    if (!rlsParseResult.success) {
+      throw new Error(
+        `Invalid RLS environment variable configuration: ${rlsParseResult.error.issues.map((i) => i.message).join("; ")}. ` +
+        `Check ATLAS_RLS_COLUMN (must be a valid SQL identifier) and ATLAS_RLS_CLAIM.`,
+      );
+    }
+    rls = rlsParseResult.data;
   }
 
   // Sandbox priority from env var (comma-separated backend names)

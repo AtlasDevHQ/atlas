@@ -1,10 +1,11 @@
 /**
- * Tests for executeSQL connection error handling.
+ * Tests for the connection-lookup catch block in executeSQL.
  *
- * Verifies that the catch block in executeSQL only handles known
- * registration/configuration errors and re-throws unexpected ones.
+ * Verifies that known registration/configuration errors return a curated
+ * message, while unexpected errors (unsupported DB scheme, internal errors)
+ * return the original error message instead of being silently swallowed.
  */
-import { describe, it, expect, mock, beforeEach } from "bun:test";
+import { describe, it, expect, mock, beforeEach, afterEach } from "bun:test";
 
 mock.module("@atlas/api/lib/semantic", () => ({
   getWhitelistedTables: () => new Set(["companies"]),
@@ -61,6 +62,8 @@ const exec = (sql: string, connectionId?: string) =>
   ) as Promise<AnyResult>;
 
 describe("executeSQL connection error handling", () => {
+  const origDatasource = process.env.ATLAS_DATASOURCE_URL;
+
   beforeEach(() => {
     process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
     // Default: everything works
@@ -69,7 +72,17 @@ describe("executeSQL connection error handling", () => {
     getDBTypeFn = () => "postgres";
   });
 
-  it("returns error for unregistered connection (known error)", async () => {
+  afterEach(() => {
+    if (origDatasource) {
+      process.env.ATLAS_DATASOURCE_URL = origDatasource;
+    } else {
+      delete process.env.ATLAS_DATASOURCE_URL;
+    }
+  });
+
+  // --- Known registration/configuration errors (curated message) ---
+
+  it("returns curated error for unregistered connection", async () => {
     getFn = (id: string) => {
       throw new Error(`Connection "${id}" is not registered.`);
     };
@@ -77,9 +90,10 @@ describe("executeSQL connection error handling", () => {
     const result = await exec("SELECT id FROM companies", "unknown-conn");
     expect(result.success).toBe(false);
     expect(result.error).toContain("is not registered");
+    expect(result.error).toContain("Available:");
   });
 
-  it("returns error when no datasource configured (known error)", async () => {
+  it("returns curated error when no datasource configured", async () => {
     getDefaultFn = () => {
       throw new Error(
         "No analytics datasource configured. Set ATLAS_DATASOURCE_URL to a PostgreSQL or MySQL connection string, or register a datasource plugin.",
@@ -88,36 +102,63 @@ describe("executeSQL connection error handling", () => {
 
     const result = await exec("SELECT id FROM companies");
     expect(result.success).toBe(false);
+    // Both known errors produce the same curated "not registered" message
     expect(result.error).toContain("is not registered");
   });
 
-  it("re-throws unexpected errors instead of swallowing them", async () => {
+  it("returns curated error when getDBType throws registration error on default path", async () => {
+    getDBTypeFn = () => {
+      throw new Error('Connection "default" is not registered.');
+    };
+
+    const result = await exec("SELECT id FROM companies");
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("is not registered");
+  });
+
+  // --- Unexpected errors (original message preserved, not swallowed) ---
+
+  it("returns original error for unexpected connection failures", async () => {
     getDefaultFn = () => {
       throw new Error("ECONNREFUSED: connection refused");
     };
 
-    await expect(exec("SELECT id FROM companies")).rejects.toThrow(
-      "ECONNREFUSED",
-    );
+    const result = await exec("SELECT id FROM companies");
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("ECONNREFUSED");
+    expect(result.error).toContain("failed to initialize");
   });
 
-  it("re-throws non-Error exceptions", async () => {
+  it("returns original error for non-Error exceptions", async () => {
     getDefaultFn = () => {
       throw "unexpected string error";
     };
 
-    await expect(exec("SELECT id FROM companies")).rejects.toThrow(
-      "unexpected string error",
-    );
+    const result = await exec("SELECT id FROM companies");
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("unexpected string error");
   });
 
-  it("re-throws when getDBType fails with unexpected error after get succeeds", async () => {
+  it("returns original error when getDBType fails with unexpected error", async () => {
     getDBTypeFn = () => {
       throw new TypeError("Cannot read properties of undefined");
     };
 
-    await expect(
-      exec("SELECT id FROM companies", "some-conn"),
-    ).rejects.toThrow("Cannot read properties of undefined");
+    const result = await exec("SELECT id FROM companies", "some-conn");
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Cannot read properties of undefined");
+    expect(result.error).toContain("failed to initialize");
+  });
+
+  it("returns original error for unsupported database scheme", async () => {
+    getDefaultFn = () => {
+      throw new Error(
+        'Unsupported database URL scheme "clickhouse://". This adapter is now a plugin.',
+      );
+    };
+
+    const result = await exec("SELECT id FROM companies");
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Unsupported database URL scheme");
   });
 });

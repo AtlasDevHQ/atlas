@@ -335,9 +335,11 @@ Rules:
         dbType = connections.getDBType(connId);
       }
     } catch (err) {
-      // Only handle known registration/configuration errors — re-throw
-      // unexpected ones (e.g., connection init failures) so they surface
-      // properly in the agent response instead of being silently swallowed.
+      // Narrow the catch to distinguish registration/config errors from
+      // unexpected failures (e.g., unsupported DB scheme, internal errors).
+      // Both return { success: false } so the agent stream stays alive, but
+      // registration errors get a curated message while unexpected ones
+      // surface the original error for debuggability.
       const message = err instanceof Error ? err.message : String(err);
       if (
         message.includes("is not registered") ||
@@ -348,7 +350,11 @@ Rules:
           error: `Connection "${connId}" is not registered. Available: ${connections.list().join(", ") || "(none)"}`,
         };
       }
-      throw err;
+      log.error({ err, connectionId: connId }, "Unexpected error during connection lookup");
+      return {
+        success: false,
+        error: `Connection "${connId}" failed to initialize: ${message}`,
+      };
     }
 
     const targetHost = connections.getTargetHost(connId);

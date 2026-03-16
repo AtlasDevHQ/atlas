@@ -207,7 +207,7 @@ export function formatErrorResponse(error: string): AdaptiveCard {
  * Wrap an Adaptive Card as a Bot Framework attachment.
  */
 export function cardAttachment(card: AdaptiveCard): {
-  contentType: string;
+  contentType: "application/vnd.microsoft.card.adaptive";
   content: AdaptiveCard;
 } {
   return {

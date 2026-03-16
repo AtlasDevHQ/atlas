@@ -110,16 +110,21 @@ export interface ReplyActivity {
   type: "message";
   text?: string;
   attachments?: Array<{
-    contentType: string;
+    contentType: "application/vnd.microsoft.card.adaptive";
     content: AdaptiveCard;
   }>;
 }
+
+export type SendResult =
+  | { ok: true }
+  | { ok: false; status?: number; reason: string };
 
 /**
  * Send a reply activity to the Bot Connector API.
  *
  * Uses the service URL from the incoming activity and the conversation
- * context to post a reply in the correct thread.
+ * context to post a reply in the correct thread. Returns a structured
+ * result so callers can distinguish failure modes.
  */
 export async function sendReply(
   serviceUrl: string,
@@ -128,7 +133,7 @@ export async function sendReply(
   activity: ReplyActivity,
   token: string,
   log?: PluginLogger,
-): Promise<boolean> {
+): Promise<SendResult> {
   // Ensure service URL ends without trailing slash
   const base = serviceUrl.replace(/\/+$/, "");
   const url = `${base}/v3/conversations/${encodeURIComponent(conversationId)}/activities/${encodeURIComponent(activityId)}`;
@@ -145,20 +150,22 @@ export async function sendReply(
     });
 
     if (!resp.ok) {
+      const body = await resp.text().catch(() => "");
       log?.error(
-        { status: resp.status, url },
+        { status: resp.status, url, body: body.slice(0, 200) },
         "Bot Connector reply failed",
       );
-      return false;
+      return { ok: false, status: resp.status, reason: `HTTP ${resp.status}` };
     }
 
-    return true;
+    return { ok: true };
   } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
     log?.error(
-      { err: err instanceof Error ? err.message : String(err) },
+      { err: reason, url },
       "Bot Connector reply request failed",
     );
-    return false;
+    return { ok: false, reason };
   }
 }
 

@@ -27,7 +27,7 @@ import {
   formatErrorResponse,
   cardAttachment,
 } from "../src/format";
-import { resetJWKSCache } from "../src/verify";
+import { verifyBotToken, resetJWKSCache } from "../src/verify";
 import { resetTokenCache, isValidServiceUrl } from "../src/teams-client";
 
 // ---------------------------------------------------------------------------
@@ -968,5 +968,216 @@ describe("routes — tenant restriction", () => {
     expect(resp.status).toBe(200);
     await new Promise((r) => setTimeout(r, 100));
     expect(mockExecuteQuery).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Direct verifyBotToken unit tests
+// ---------------------------------------------------------------------------
+
+describe("verifyBotToken", () => {
+  beforeEach(async () => {
+    await setupTestKeys();
+    resetJWKSCache();
+    globalThis.fetch = mockTeamsFetch();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  test("rejects missing Authorization header", async () => {
+    const result = await verifyBotToken(null, APP_ID);
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.error).toBe("Missing Authorization header");
+    }
+  });
+
+  test("rejects non-Bearer auth scheme", async () => {
+    const result = await verifyBotToken("Basic dXNlcjpwYXNz", APP_ID);
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.error).toBe("Invalid Authorization header format");
+    }
+  });
+
+  test("rejects malformed Bearer token", async () => {
+    const result = await verifyBotToken("Bearer not-a-jwt", APP_ID);
+    expect(result.valid).toBe(false);
+  });
+
+  test("rejects token with wrong audience", async () => {
+    const token = await createTestToken("wrong-app-id");
+    const result = await verifyBotToken(`Bearer ${token}`, APP_ID);
+    expect(result.valid).toBe(false);
+  });
+
+  test("rejects token with unrecognized issuer", async () => {
+    const token = await createTestToken(APP_ID, {
+      iss: "https://evil-issuer.com",
+    });
+    const result = await verifyBotToken(`Bearer ${token}`, APP_ID);
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.error).toContain("Unrecognized token issuer");
+    }
+  });
+
+  test("rejects expired token", async () => {
+    const token = await new SignJWT({
+      aud: APP_ID,
+      iss: "https://api.botframework.com",
+    })
+      .setProtectedHeader({ alg: "RS256", kid: "test-key-id" })
+      .setIssuedAt(Math.floor(Date.now() / 1000) - 7200)
+      .setExpirationTime(Math.floor(Date.now() / 1000) - 3600)
+      .sign(testKeyPair.privateKey);
+
+    const result = await verifyBotToken(`Bearer ${token}`, APP_ID);
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.error).toBe("Token expired");
+    }
+  });
+
+  test("accepts valid Bot Framework token", async () => {
+    const token = await createTestToken(APP_ID);
+    const result = await verifyBotToken(`Bearer ${token}`, APP_ID);
+    expect(result.valid).toBe(true);
+    if (result.valid) {
+      expect(result.claims.aud).toBe(APP_ID);
+      expect(result.claims.iss).toBe("https://api.botframework.com");
+    }
+  });
+
+  test("accepts valid Azure AD token", async () => {
+    const token = await createTestToken(APP_ID, {
+      iss: "https://sts.windows.net/tenant-123/",
+      tid: "tenant-123",
+    });
+    const result = await verifyBotToken(`Bearer ${token}`, APP_ID);
+    expect(result.valid).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Route edge cases
+// ---------------------------------------------------------------------------
+
+describe("routes — edge cases", () => {
+  beforeEach(async () => {
+    await setupTestKeys();
+    resetJWKSCache();
+    resetTokenCache();
+    globalThis.fetch = mockTeamsFetch();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  test("returns 400 for invalid JSON body", async () => {
+    const app = createTestApp(
+      createMockConfig({ executeQuery: mock(() => Promise.resolve(defaultQueryResult)) }),
+    );
+    const token = await createTestToken(APP_ID);
+
+    const resp = await app.request("/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: "this is not json",
+    });
+
+    expect(resp.status).toBe(400);
+    const json = (await resp.json()) as Record<string, unknown>;
+    expect(json.error).toBe("Invalid JSON");
+  });
+
+  test("sends error card when executeQuery throws", async () => {
+    const failingQuery = mock(() => Promise.reject(new Error("query failed")));
+    const app = createTestApp(
+      createMockConfig({ executeQuery: failingQuery }),
+    );
+    const token = await createTestToken(APP_ID);
+
+    const resp = await app.request("/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(makeMessageActivity("how many users?")),
+    });
+
+    expect(resp.status).toBe(200);
+    // Wait for async processing (error path sends error card)
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Verify that the Bot Connector was called (error reply attempt)
+    const fetchMock = globalThis.fetch as unknown as Mock<typeof fetch>;
+    const connectorCalls = fetchMock.mock.calls.filter(
+      (call) => {
+        const url = typeof call[0] === "string" ? call[0] : "";
+        return url.includes("/v3/conversations/");
+      },
+    );
+    expect(connectorCalls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("uses scrubError callback when provided", async () => {
+    const failingQuery = mock(() => Promise.reject(new Error("secret db error")));
+    const scrubError = mock(() => "Something went wrong");
+    const app = createTestApp(
+      createMockConfig({ executeQuery: failingQuery, scrubError }),
+    );
+    const token = await createTestToken(APP_ID);
+
+    await app.request("/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(makeMessageActivity("query")),
+    });
+
+    await new Promise((r) => setTimeout(r, 200));
+    expect(scrubError).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Data table truncation
+// ---------------------------------------------------------------------------
+
+describe("formatQueryResponse — data truncation", () => {
+  test("truncates large data tables with row count note", () => {
+    const manyRows = Array.from({ length: 30 }, (_, i) => ({
+      id: i,
+      name: `user_${i}`,
+    }));
+    const card = formatQueryResponse({
+      answer: "Here are the users",
+      sql: ["SELECT * FROM users"],
+      data: [{ columns: ["id", "name"], rows: manyRows }],
+      steps: 2,
+      usage: { totalTokens: 100 },
+    });
+
+    const tableBlock = card.body.find(
+      (b) =>
+        b.type === "TextBlock" &&
+        "fontType" in b &&
+        b.fontType === "Monospace" &&
+        b.text.includes("id"),
+    );
+    expect(tableBlock).toBeDefined();
+    if (tableBlock?.type === "TextBlock") {
+      expect(tableBlock.text).toContain("Showing first 20 of 30 rows");
+    }
   });
 });

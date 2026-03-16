@@ -24,7 +24,7 @@ import type { TeamsQueryResult } from "./format";
 // ---------------------------------------------------------------------------
 
 export interface TeamsActivity {
-  type: string;
+  type: "message" | "conversationUpdate" | "event" | "invoke" | (string & {});
   id: string;
   timestamp?: string;
   serviceUrl: string;
@@ -227,7 +227,7 @@ export function createTeamsRoutes(deps: TeamsRuntimeDeps): Hono {
           attachments: [cardAttachment(card)],
         };
 
-        const sent = await sendReply(
+        const result = await sendReply(
           activity.serviceUrl,
           conversationId,
           activity.id,
@@ -236,9 +236,9 @@ export function createTeamsRoutes(deps: TeamsRuntimeDeps): Hono {
           log,
         );
 
-        if (!sent) {
+        if (!result.ok) {
           log.error(
-            { conversationId, activityId: activity.id },
+            { conversationId, activityId: activity.id, status: result.status, reason: result.reason },
             "Failed to send Teams reply",
           );
         }

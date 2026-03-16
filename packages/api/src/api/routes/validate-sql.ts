@@ -25,11 +25,20 @@ const ValidateSQLRequestSchema = z.object({
   connectionId: z.string().optional(),
 });
 
+/** Validation layer identifiers returned in the `errors` array. */
+export type ValidationLayer =
+  | "empty_check"
+  | "connection"
+  | "regex_guard"
+  | "ast_parse"
+  | "table_whitelist";
+
 /**
- * Map the error message from validateSQL() to the validation layer that
- * produced it. Error messages are stable strings we control.
+ * Map the error message from validateSQL() in lib/tools/sql.ts to the
+ * validation layer that produced it. If those messages change, update the
+ * matchers below accordingly.
  */
-function inferLayer(error: string): string {
+function inferLayer(error: string): ValidationLayer {
   if (error === "Empty query") return "empty_check";
   if (error.startsWith("Connection") || error.startsWith("No valid datasource")) return "connection";
   if (error.startsWith("Forbidden SQL operation")) return "regex_guard";
@@ -37,7 +46,9 @@ function inferLayer(error: string): string {
     error.includes("not in the allowed list") ||
     error.includes("Could not verify table")
   ) return "table_whitelist";
-  // Covers: parse failures, non-SELECT, multiple statements
+  // Fallthrough: parse failures, non-SELECT, multiple statements.
+  // Log so we notice when new error formats are added to validateSQL().
+  log.warn({ error }, "inferLayer: unrecognized error message, defaulting to ast_parse");
   return "ast_parse";
 }
 
@@ -85,16 +96,18 @@ validateSqlRoute.post("/", async (c) => {
       });
     }
 
-    // Extract referenced tables from the valid query
+    // Extract referenced tables from the valid query.
+    // getDBType/detectDBType are outside the catch — operational errors
+    // (missing connection, bad config) should propagate, not be swallowed.
     let tables: string[] = [];
+    let dbType: string;
+    if (connectionId) {
+      dbType = connections.getDBType(connectionId);
+    } else {
+      dbType = detectDBType();
+    }
+    const trimmed = sql.trim().replace(/;\s*$/, "");
     try {
-      let dbType: string;
-      if (connectionId) {
-        dbType = connections.getDBType(connectionId);
-      } else {
-        dbType = detectDBType();
-      }
-      const trimmed = sql.trim().replace(/;\s*$/, "");
       const tableRefs = parser.tableList(trimmed, {
         database: parserDatabase(dbType, connectionId),
       });
@@ -102,15 +115,19 @@ validateSqlRoute.post("/", async (c) => {
         ...new Set(
           tableRefs
             .map((ref) => {
+              // tableList returns "action::schema::table" format
               const parts = ref.split("::");
-              return parts.pop()?.toLowerCase() ?? "";
+              const table = parts[2]?.toLowerCase() ?? "";
+              const schema = parts[1]?.toLowerCase();
+              if (!table) return "";
+              return schema && schema !== "null" ? `${schema}.${table}` : table;
             })
-            .filter((t) => t && t !== "null"),
+            .filter(Boolean),
         ),
       ];
     } catch (err) {
       log.warn(
-        { err: err instanceof Error ? err : new Error(String(err)) },
+        { err: err instanceof Error ? err : new Error(String(err)), sql: trimmed },
         "Table extraction failed for valid query",
       );
     }

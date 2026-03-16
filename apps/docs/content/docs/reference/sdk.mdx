@@ -413,14 +413,16 @@ const result = await atlas.validateSQL(
 ### Response
 
 ```typescript
-interface ValidateSQLResponse {
-  valid: boolean;
-  errors: Array<{
-    layer: string;   // "empty_check" | "connection" | "regex_guard" | "ast_parse" | "table_whitelist"
-    message: string;
-  }>;
-  tables: string[];  // Tables referenced in the query (empty when invalid)
-}
+type ValidationLayer =
+  | "empty_check"
+  | "connection"
+  | "regex_guard"
+  | "ast_parse"
+  | "table_whitelist";
+
+type ValidateSQLResponse =
+  | { valid: true;  errors: [];  tables: string[] }
+  | { valid: false; errors: Array<{ layer: ValidationLayer; message: string }>; tables: [] };
 ```
 
 ### Validation layers
@@ -740,6 +742,7 @@ import type {
   ShareConversationResponse,
 
   // Validate SQL
+  ValidationLayer,
   ValidateSQLResponse,
 
   // Scheduled Tasks

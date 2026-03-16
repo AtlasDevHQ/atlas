@@ -137,6 +137,10 @@ describe("POST /api/v1/validate-sql", () => {
     mockTableList.mockReturnValue(["select::null::users", "select::null::orders"]);
     mockDetectDBType.mockReset();
     mockDetectDBType.mockReturnValue("postgres");
+    mockGetDBType.mockReset();
+    mockGetDBType.mockReturnValue("postgres");
+    mockParserDatabase.mockReset();
+    mockParserDatabase.mockReturnValue("PostgresQL");
   });
 
   it("returns valid=true with tables for a valid SELECT", async () => {
@@ -319,7 +323,7 @@ describe("POST /api/v1/validate-sql", () => {
     expect(body.error).toBe("validation_error");
   });
 
-  it("filters out 'null' schema from table refs", async () => {
+  it("preserves schema qualifier for non-null schemas", async () => {
     mockTableList.mockReturnValueOnce([
       "select::null::users",
       "select::public::orders",
@@ -329,6 +333,75 @@ describe("POST /api/v1/validate-sql", () => {
     expect(response.status).toBe(200);
 
     const body = (await response.json()) as Record<string, unknown>;
-    expect(body.tables).toEqual(["users", "orders"]);
+    expect(body.tables).toEqual(["users", "public.orders"]);
+  });
+
+  it("maps unrecognized error to ast_parse layer (default fallback)", async () => {
+    mockValidateSQL.mockReturnValueOnce({
+      valid: false,
+      error: "Unexpected parser failure: syntax error near 'FOOBAR'",
+    });
+
+    const response = await app.fetch(makeRequest({ sql: "FOOBAR" }));
+    expect(response.status).toBe(200);
+
+    const body = (await response.json()) as Record<string, unknown>;
+    const errors = body.errors as Array<{ layer: string; message: string }>;
+    expect(errors[0].layer).toBe("ast_parse");
+  });
+
+  it("maps 'No valid datasource' error to connection layer", async () => {
+    mockValidateSQL.mockReturnValueOnce({
+      valid: false,
+      error: "No valid datasource configured. Set ATLAS_DATASOURCE_URL to a PostgreSQL or MySQL connection string, or register a datasource plugin.",
+    });
+
+    const response = await app.fetch(makeRequest({ sql: "SELECT 1" }));
+    expect(response.status).toBe(200);
+
+    const body = (await response.json()) as Record<string, unknown>;
+    const errors = body.errors as Array<{ layer: string; message: string }>;
+    expect(errors[0].layer).toBe("connection");
+  });
+
+  it("maps 'Could not verify table' error to table_whitelist layer", async () => {
+    mockValidateSQL.mockReturnValueOnce({
+      valid: false,
+      error: "Could not verify table permissions. Rewrite using standard SQL syntax.",
+    });
+
+    const response = await app.fetch(makeRequest({ sql: "SELECT * FROM (complex)" }));
+    expect(response.status).toBe(200);
+
+    const body = (await response.json()) as Record<string, unknown>;
+    const errors = body.errors as Array<{ layer: string; message: string }>;
+    expect(errors[0].layer).toBe("table_whitelist");
+  });
+
+  it("uses connections.getDBType when connectionId is set for table extraction", async () => {
+    mockGetDBType.mockReturnValueOnce("mysql");
+
+    const response = await app.fetch(
+      makeRequest({ sql: "SELECT 1 FROM t", connectionId: "my-conn" }),
+    );
+    expect(response.status).toBe(200);
+    expect(mockGetDBType).toHaveBeenCalledWith("my-conn");
+    expect(mockDetectDBType).not.toHaveBeenCalled();
+  });
+
+  it("returns 422 for whitespace-only sql string", async () => {
+    const response = await app.fetch(makeRequest({ sql: "   " }));
+    expect(response.status).toBe(422);
+    expect(mockValidateSQL).not.toHaveBeenCalled();
+  });
+
+  it("returns 500 when auth system throws", async () => {
+    mockAuthenticateRequest.mockRejectedValueOnce(new Error("Redis connection lost"));
+
+    const response = await app.fetch(makeRequest());
+    expect(response.status).toBe(500);
+
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.error).toBe("auth_error");
   });
 });

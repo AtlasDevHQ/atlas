@@ -351,7 +351,7 @@ Rules:
     if (customValidator) {
       let result: { valid: boolean; reason?: string };
       try {
-        result = customValidator(normalizedSql);
+        result = await customValidator(normalizedSql);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         log.error({ err, connectionId: connId, sql: normalizedSql.slice(0, 200) }, "Custom validator threw an exception");
@@ -460,7 +460,7 @@ Rules:
       if (customValidator) {
         let reresult: { valid: boolean; reason?: string };
         try {
-          reresult = customValidator(normalizedMutated);
+          reresult = await customValidator(normalizedMutated);
         } catch (err) {
           decrementSourceConcurrency(connId);
           const message = err instanceof Error ? err.message : String(err);

@@ -697,7 +697,7 @@ dialect: "This datasource uses ClickHouse. Use toStartOfMonth() for date truncat
 
 ### `connection.validate`
 
-Replace the standard SQL validation pipeline with a custom validator. Use for non-SQL query languages (SOQL, GraphQL, MQL):
+Replace the standard SQL validation pipeline with a custom validator. Use for non-SQL query languages (SOQL, GraphQL, MQL). Can be synchronous or asynchronous:
 
 ```typescript
 connection: {
@@ -709,6 +709,8 @@ connection: {
   },
 },
 ```
+
+When `validate` is present, auto-LIMIT and RLS injection are skipped (non-SQL languages may not support these). Hooks still fire — rewritten queries are re-validated through this function. See the [Plugin Cookbook](/plugins/cookbook#custom-query-validation) for full examples including async validation.
 
 ### `connection.parserDialect` and `connection.forbiddenPatterns`
 

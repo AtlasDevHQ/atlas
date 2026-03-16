@@ -96,7 +96,7 @@ type ConfirmAction =
   | null;
 
 const LIMIT = 50;
-const ROLES = ["viewer", "analyst", "admin"] as const;
+const ROLES = ["member", "admin", "owner"] as const;
 
 export default function UsersPage() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
@@ -119,7 +119,7 @@ export default function UsersPage() {
   // -- Invite dialog state --
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteRole, setInviteRole] = useState<string>("analyst");
+  const [inviteRole, setInviteRole] = useState<string>("member");
   const [inviteLoading, setInviteLoading] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteResult, setInviteResult] = useState<{ inviteUrl: string; emailSent: boolean; emailError?: string } | null>(null);
@@ -372,7 +372,7 @@ export default function UsersPage() {
 
   function resetInviteDialog() {
     setInviteEmail("");
-    setInviteRole("analyst");
+    setInviteRole("member");
     setInviteError(null);
     setInviteResult(null);
     setInviteLoading(false);
@@ -465,9 +465,9 @@ export default function UsersPage() {
         {statsError && !statsError.status ? (
           <div className="grid gap-4 sm:grid-cols-4">
             <StatCard title="Total Users" value="unavailable" icon={<Users className="size-4" />} />
-            <StatCard title="Admins" value="unavailable" icon={<ShieldCheck className="size-4" />} />
-            <StatCard title="Analysts" value="unavailable" icon={<Shield className="size-4" />} />
-            <StatCard title="Viewers" value="unavailable" icon={<Eye className="size-4" />} />
+            <StatCard title="Owners" value="unavailable" icon={<ShieldCheck className="size-4" />} />
+            <StatCard title="Admins" value="unavailable" icon={<Shield className="size-4" />} />
+            <StatCard title="Members" value="unavailable" icon={<Eye className="size-4" />} />
           </div>
         ) : stats ? (
           <div className="grid gap-4 sm:grid-cols-4">
@@ -477,18 +477,18 @@ export default function UsersPage() {
               icon={<Users className="size-4" />}
             />
             <StatCard
-              title="Admins"
-              value={(stats.byRole.admin ?? 0).toLocaleString()}
+              title="Owners"
+              value={(stats.byRole.owner ?? 0).toLocaleString()}
               icon={<ShieldCheck className="size-4" />}
             />
             <StatCard
-              title="Analysts"
-              value={(stats.byRole.analyst ?? 0).toLocaleString()}
+              title="Admins"
+              value={(stats.byRole.admin ?? 0).toLocaleString()}
               icon={<Shield className="size-4" />}
             />
             <StatCard
-              title="Viewers"
-              value={(stats.byRole.viewer ?? 0).toLocaleString()}
+              title="Members"
+              value={(stats.byRole.member ?? 0).toLocaleString()}
               icon={<Eye className="size-4" />}
             />
           </div>

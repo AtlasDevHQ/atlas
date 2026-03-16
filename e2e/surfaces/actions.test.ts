@@ -143,9 +143,9 @@ mock.module("@atlas/api/lib/plugins/hooks", () => ({
 // Auth mock — configurable per test
 // ---------------------------------------------------------------------------
 
+const ownerUser = { id: "owner-1", mode: "simple-key" as const, label: "Owner", role: "owner" as const };
 const adminUser = { id: "admin-1", mode: "simple-key" as const, label: "Admin", role: "admin" as const };
-const analystUser = { id: "analyst-1", mode: "simple-key" as const, label: "Analyst", role: "analyst" as const };
-const viewerUser = { id: "viewer-1", mode: "simple-key" as const, label: "Viewer", role: "viewer" as const };
+const memberUser = { id: "member-1", mode: "simple-key" as const, label: "Member", role: "member" as const };
 
 const mockAuthenticateRequest: Mock<(req: Request) => Promise<
   | { authenticated: true; mode: string; user: unknown }
@@ -658,25 +658,25 @@ describe("E2E: Action framework", () => {
     it("canApprove denies viewer for manual actions", async () => {
       const { canApprove } = await import("../../packages/api/src/lib/auth/permissions");
 
-      expect(canApprove(viewerUser, "manual")).toBe(false);
-      expect(canApprove(analystUser, "manual")).toBe(true);
+      expect(canApprove(memberUser, "manual")).toBe(false);
       expect(canApprove(adminUser, "manual")).toBe(true);
+      expect(canApprove(ownerUser, "manual")).toBe(true);
     });
 
-    it("canApprove denies analyst for admin-only actions", async () => {
+    it("canApprove denies member and admin for admin-only (owner-only) actions", async () => {
       const { canApprove } = await import("../../packages/api/src/lib/auth/permissions");
 
-      expect(canApprove(viewerUser, "admin-only")).toBe(false);
-      expect(canApprove(analystUser, "admin-only")).toBe(false);
-      expect(canApprove(adminUser, "admin-only")).toBe(true);
+      expect(canApprove(memberUser, "admin-only")).toBe(false);
+      expect(canApprove(adminUser, "admin-only")).toBe(false);
+      expect(canApprove(ownerUser, "admin-only")).toBe(true);
     });
 
     it("canApprove allows all authenticated users for auto actions", async () => {
       const { canApprove } = await import("../../packages/api/src/lib/auth/permissions");
 
-      expect(canApprove(viewerUser, "auto")).toBe(true);
-      expect(canApprove(analystUser, "auto")).toBe(true);
+      expect(canApprove(memberUser, "auto")).toBe(true);
       expect(canApprove(adminUser, "auto")).toBe(true);
+      expect(canApprove(ownerUser, "auto")).toBe(true);
     });
 
     it("canApprove denies when no user (no-auth mode)", async () => {
@@ -690,9 +690,9 @@ describe("E2E: Action framework", () => {
     it("canApprove respects per-action requiredRole override", async () => {
       const { canApprove } = await import("../../packages/api/src/lib/auth/permissions");
 
-      // Manual action with requiredRole=admin — analyst should be denied
-      expect(canApprove(analystUser, "manual", "admin")).toBe(false);
-      expect(canApprove(adminUser, "manual", "admin")).toBe(true);
+      // Manual action with requiredRole=owner — admin should be denied, owner allowed
+      expect(canApprove(adminUser, "manual", "owner")).toBe(false);
+      expect(canApprove(ownerUser, "manual", "owner")).toBe(true);
     });
 
     it("route rejects non-admin for admin-only action approve (via handler)", async () => {
@@ -707,12 +707,12 @@ describe("E2E: Action framework", () => {
       const stored = await getAction(actionId);
       expect(stored).not.toBeNull();
 
-      // Analyst cannot approve admin-only
+      // Admin cannot approve admin-only (owner-only)
       const cfg = getActionConfig("email:send", "admin-only");
-      expect(canApprove(analystUser, cfg.approval)).toBe(false);
+      expect(canApprove(adminUser, cfg.approval)).toBe(false);
 
-      // Admin can approve
-      expect(canApprove(adminUser, cfg.approval)).toBe(true);
+      // Owner can approve
+      expect(canApprove(ownerUser, cfg.approval)).toBe(true);
     });
   });
 

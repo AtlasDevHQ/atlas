@@ -286,15 +286,15 @@ describe("validateBYOT()", () => {
       }
     });
 
-    it("JWT with atlas_role: 'analyst' fallback claim", async () => {
-      const token = await signJWT({ sub: "user_123", atlas_role: "analyst" });
+    it("JWT with atlas_role: 'member' fallback claim", async () => {
+      const token = await signJWT({ sub: "user_123", atlas_role: "member" });
       const result = await validateBYOT(
         makeRequest({ Authorization: `Bearer ${token}` }),
       );
 
       expect(result.authenticated).toBe(true);
       if (result.authenticated && result.user) {
-        expect(result.user.role).toBe("analyst");
+        expect(result.user.role).toBe("member");
       }
     });
 

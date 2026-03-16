@@ -4,7 +4,6 @@
  * AuthMode determines how requests are authenticated.
  * AtlasRole determines the user's permission level for action approval.
  * AtlasUser represents a verified identity attached to a request.
- * AuthResult is the return type from all auth validators.
  */
 
 export { AUTH_MODES, ATLAS_ROLES } from "@useatlas/types/auth";
@@ -23,6 +22,7 @@ export function createAtlasUser(
   mode: Exclude<AuthMode, "none">,
   label: string,
   role?: AtlasRole,
+  activeOrganizationId?: string,
   claims?: Record<string, unknown>,
 ): AtlasUser {
   if (!id) throw new Error("AtlasUser id must be non-empty");
@@ -33,6 +33,7 @@ export function createAtlasUser(
     mode,
     label,
     ...(role ? { role } : {}),
+    ...(activeOrganizationId ? { activeOrganizationId } : {}),
     ...(frozenClaims ? { claims: frozenClaims } : {}),
   });
 }

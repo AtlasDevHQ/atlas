@@ -124,7 +124,7 @@ describe("conversations module", () => {
       const result = await createConversation({ userId: "u1", title: "Test" });
       expect(result).toEqual({ id: "conv-123" });
       expect(queryCalls[0].sql).toContain("INSERT INTO conversations");
-      expect(queryCalls[0].params).toEqual(["u1", "Test", "web", null]);
+      expect(queryCalls[0].params).toEqual(["u1", "Test", "web", null, null]);
     });
 
     it("returns null when no DB", async () => {
@@ -145,7 +145,7 @@ describe("conversations module", () => {
       setResults({ rows: [{ id: "conv-456" }] });
 
       await createConversation({});
-      expect(queryCalls[0].params).toEqual([null, null, "web", null]);
+      expect(queryCalls[0].params).toEqual([null, null, "web", null, null]);
     });
 
     it("accepts custom surface and connectionId", async () => {
@@ -153,7 +153,7 @@ describe("conversations module", () => {
       setResults({ rows: [{ id: "conv-789" }] });
 
       await createConversation({ surface: "api", connectionId: "wh" });
-      expect(queryCalls[0].params).toEqual([null, null, "api", "wh"]);
+      expect(queryCalls[0].params).toEqual([null, null, "api", "wh", null]);
     });
   });
 

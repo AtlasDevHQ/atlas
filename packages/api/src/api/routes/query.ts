@@ -214,6 +214,7 @@ query.post("/", async (c) => {
                 userId: authResult.user?.id,
                 title: generateTitle(question),
                 surface: "api",
+                orgId: authResult.user?.activeOrganizationId,
               });
               if (created) conversationId = created.id;
             }

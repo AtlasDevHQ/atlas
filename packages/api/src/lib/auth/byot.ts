@@ -50,7 +50,7 @@ function extractRoleFromPayload(payload: Record<string, unknown>) {
     if (typeof value === "string") {
       const role = parseRole(value);
       if (role) return role;
-      log.warn({ claimPath, value, validRoles: ["viewer", "analyst", "admin"] }, "JWT role claim value is not a valid Atlas role — ignoring");
+      log.warn({ claimPath, value, validRoles: ["member", "admin", "owner"] }, "JWT role claim value is not a valid Atlas role — ignoring");
     } else if (value !== undefined && value !== null) {
       log.warn({ claimPath, type: typeof value }, "JWT role claim is not a string — ignoring");
     }
@@ -63,7 +63,7 @@ function extractRoleFromPayload(payload: Record<string, unknown>) {
     if (typeof value === "string") {
       const role = parseRole(value);
       if (role) return role;
-      log.warn({ claim, value, validRoles: ["viewer", "analyst", "admin"] }, "JWT role claim value is not a valid Atlas role — ignoring");
+      log.warn({ claim, value, validRoles: ["member", "admin", "owner"] }, "JWT role claim value is not a valid Atlas role — ignoring");
     } else if (value !== undefined && value !== null) {
       log.warn({ claim, type: typeof value }, "JWT role claim is not a string — ignoring");
     }
@@ -117,7 +117,7 @@ export async function validateBYOT(req: Request): Promise<AuthResult> {
     return {
       authenticated: true,
       mode: "byot",
-      user: createAtlasUser(sub, "byot", email || sub, role, payload as Record<string, unknown>),
+      user: createAtlasUser(sub, "byot", email || sub, role, undefined, payload as Record<string, unknown>),
     };
   } catch (err) {
     // Infrastructure errors — JWKS endpoint issues are not client auth failures.

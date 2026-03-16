@@ -45,7 +45,7 @@ export async function validateManaged(req: Request): Promise<AuthResult> {
   }
 
   // Extract role from session user (set by Better Auth admin plugin, stored in the `role` column).
-  // Falls back to default (viewer) when not present — see permissions.ts.
+  // Falls back to default (member) when not present — see permissions.ts.
   const sessionUser = session.user as Record<string, unknown>;
   // Better Auth can store multiple roles as comma-separated strings; Atlas uses only the first.
   const rawRoleField = sessionUser?.role;
@@ -54,7 +54,7 @@ export async function validateManaged(req: Request): Promise<AuthResult> {
   if (typeof rawRole === "string") {
     role = parseRole(rawRole);
     if (rawRole && !role) {
-      log.warn({ value: rawRole, validRoles: ["viewer", "analyst", "admin"] }, "Session user role is not a valid Atlas role — defaulting to 'viewer'");
+      log.warn({ value: rawRole, validRoles: ["member", "admin", "owner"] }, "Session user role is not a valid Atlas role — defaulting to 'member'");
     }
   } else {
     role = undefined;
@@ -97,12 +97,19 @@ export async function validateManaged(req: Request): Promise<AuthResult> {
     }
   }
 
+  // Extract activeOrganizationId from session — set by Better Auth org plugin
+  // via POST /organization/set-active.
+  const activeOrganizationId = (sessionData?.activeOrganizationId as string) ?? undefined;
+
   // Carry session user fields as claims for RLS policy evaluation
   const claims: Record<string, unknown> = { ...sessionUser, sub: userId };
+  if (activeOrganizationId) {
+    claims.org_id = activeOrganizationId;
+  }
 
   return {
     authenticated: true,
     mode: "managed",
-    user: createAtlasUser(userId, "managed", email || userId, role, claims),
+    user: createAtlasUser(userId, "managed", email || userId, role, activeOrganizationId, claims),
   };
 }

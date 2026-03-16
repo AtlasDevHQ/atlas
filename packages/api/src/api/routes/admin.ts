@@ -657,8 +657,10 @@ admin.put("/semantic/org/entities/:name", async (c) => {
     try {
       const { upsertEntity } = await import("@atlas/api/lib/db/semantic-entities");
       const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
+      const { syncEntityToDisk } = await import("@atlas/api/lib/semantic-sync");
       await upsertEntity(orgId, entityType, name, body.yamlContent, body.connectionId);
       invalidateOrgWhitelist(orgId);
+      await syncEntityToDisk(orgId, name, entityType, body.yamlContent);
 
       log.info({ requestId, orgId, name, entityType }, "Org semantic entity upserted");
       return c.json({ ok: true, name, entityType });
@@ -697,11 +699,13 @@ admin.delete("/semantic/org/entities/:name", async (c) => {
     try {
       const { deleteEntity } = await import("@atlas/api/lib/db/semantic-entities");
       const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
+      const { syncEntityDeleteFromDisk } = await import("@atlas/api/lib/semantic-sync");
       const deleted = await deleteEntity(orgId, entityType, name);
       if (!deleted) {
         return c.json({ error: "not_found", message: `Entity "${name}" not found.` }, 404);
       }
       invalidateOrgWhitelist(orgId);
+      await syncEntityDeleteFromDisk(orgId, name, entityType);
 
       log.info({ requestId, orgId, name, entityType }, "Org semantic entity deleted");
       return c.json({ ok: true, name, entityType });

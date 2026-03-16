@@ -99,6 +99,16 @@ async function handleExec(req: Request): Promise<Response> {
 
   const timeout = clampTimeout(body.timeout, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
 
+  // Resolve working directory — must be under SEMANTIC_DIR to prevent traversal
+  let cwd = SEMANTIC_DIR;
+  if (body.cwd) {
+    const resolved = join(SEMANTIC_DIR, body.cwd.replace(/^\/semantic\/?/, ""));
+    if (!resolved.startsWith(SEMANTIC_DIR)) {
+      return Response.json({ error: "cwd must be under SEMANTIC_DIR" }, { status: 400 });
+    }
+    cwd = resolved;
+  }
+
   // Per-request isolation: unique temp directory
   const execId = randomUUID();
   const tmpDir = join("/tmp", `exec-${execId}`);
@@ -111,7 +121,7 @@ async function handleExec(req: Request): Promise<Response> {
     await mkdir(tmpDir, { recursive: true });
 
     const proc = Bun.spawn(["bash", "-c", body.command], {
-      cwd: SEMANTIC_DIR,
+      cwd,
       env: {
         PATH: "/bin:/usr/bin",
         HOME: tmpDir,

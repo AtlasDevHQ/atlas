@@ -13,18 +13,21 @@
  * Operators can override the built-in priority via `sandbox.priority` in atlas.config.ts
  * or `ATLAS_SANDBOX_PRIORITY` env var. Plugin backends always take highest priority.
  * A production warning is logged when falling back to just-bash.
+ *
+ * Org scoping: when an activeOrganizationId is present in the request
+ * context, the explore tool reads from `semantic/.orgs/{orgId}/` instead
+ * of `semantic/`. Each org's directory is maintained by the dual-write
+ * sync layer (semantic-sync.ts). Backends are cached per semantic root.
  */
 
 import { tool } from "ai";
 import { z } from "zod";
-import * as path from "path";
-import { createLogger } from "@atlas/api/lib/logger";
+import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { withSpan } from "@atlas/api/lib/tracing";
 import { getConfig, type SandboxBackendName } from "@atlas/api/lib/config";
+import { getSemanticRoot } from "@atlas/api/lib/semantic-sync";
 
 const log = createLogger("explore");
-
-const SEMANTIC_ROOT = path.resolve(process.cwd(), "semantic");
 
 // --- Backend interface ---
 
@@ -199,13 +202,13 @@ export function getExploreBackendType(): ExploreBackendType {
  * Try to create a specific backend by name. Returns null if the backend
  * is not available (env vars not set, binary not found, etc.).
  */
-async function tryCreateBackend(name: SandboxBackendName): Promise<ExploreBackend | null> {
+async function tryCreateBackend(name: SandboxBackendName, semanticRoot: string): Promise<ExploreBackend | null> {
   switch (name) {
     case "vercel-sandbox": {
       if (!useVercelSandbox()) return null;
       try {
         const { createSandboxBackend } = await import("./explore-sandbox");
-        return createSandboxBackend(SEMANTIC_ROOT);
+        return createSandboxBackend(semanticRoot);
       } catch (err) {
         const detail = err instanceof Error ? err.message : String(err);
         log.warn(
@@ -222,7 +225,7 @@ async function tryCreateBackend(name: SandboxBackendName): Promise<ExploreBacken
       if (process.env.ATLAS_SANDBOX !== "nsjail" && !useNsjail()) return null;
       try {
         const { createNsjailBackend } = await import("./explore-nsjail");
-        return await createNsjailBackend(SEMANTIC_ROOT, {
+        return await createNsjailBackend(semanticRoot, {
           onInfrastructureError: invalidateExploreBackend,
           onNsjailFailed: markNsjailFailed,
         });
@@ -241,7 +244,7 @@ async function tryCreateBackend(name: SandboxBackendName): Promise<ExploreBacken
       if (!useSidecar() || _sidecarFailed) return null;
       try {
         const { createSidecarBackend } = await import("./explore-sidecar");
-        return createSidecarBackend(process.env.ATLAS_SANDBOX_URL!);
+        return createSidecarBackend(process.env.ATLAS_SANDBOX_URL!, { semanticRoot });
       } catch (err) {
         _sidecarFailed = true;
         const detail = err instanceof Error ? err.message : String(err);
@@ -265,16 +268,22 @@ async function tryCreateBackend(name: SandboxBackendName): Promise<ExploreBacken
       } else {
         log.debug("Explore tool using just-bash backend (acceptable for development)");
       }
-      return createBashBackend(SEMANTIC_ROOT);
+      return createBashBackend(semanticRoot);
     }
   }
 }
 
-let backendPromise: Promise<ExploreBackend> | null = null;
+/**
+ * Backend cache keyed by semantic root path.
+ *
+ * For self-hosted (no orgs), there's exactly one entry. For multi-tenant,
+ * each org gets its own backend instance (most backends are cheap to create).
+ */
+const backendCache = new Map<string, Promise<ExploreBackend>>();
 
-/** Clear cached backend so the next call recreates it. */
+/** Clear cached backends so the next call recreates them. */
 export function invalidateExploreBackend(): void {
-  backendPromise = null;
+  backendCache.clear();
   _activeSandboxPluginId = null;
 }
 
@@ -282,7 +291,7 @@ export function invalidateExploreBackend(): void {
  *  Called from explore-nsjail.ts on exit code 109 (sandbox setup failure). */
 export function markNsjailFailed(): void {
   _nsjailFailed = true;
-  backendPromise = null;
+  backendCache.clear();
 }
 
 /** Permanently mark the sidecar as failed so health reports "just-bash".
@@ -291,16 +300,17 @@ export function markSidecarFailed(): void {
   _sidecarFailed = true;
 }
 
-function getExploreBackend(): Promise<ExploreBackend> {
-  if (!backendPromise) {
-    backendPromise = (async (): Promise<ExploreBackend> => {
+function getExploreBackend(semanticRoot: string): Promise<ExploreBackend> {
+  let promise = backendCache.get(semanticRoot);
+  if (!promise) {
+    promise = (async (): Promise<ExploreBackend> => {
       // Priority 0: Sandbox plugins (sorted by priority, highest first)
       // Skipped when ATLAS_SANDBOX=nsjail — operator explicitly wants nsjail only
       if (process.env.ATLAS_SANDBOX !== "nsjail") {
         try {
           const { plugins } = await import("@atlas/api/lib/plugins/registry");
           const { wireSandboxPlugins } = await import("@atlas/api/lib/plugins/wiring");
-          const result = await wireSandboxPlugins(plugins, SEMANTIC_ROOT);
+          const result = await wireSandboxPlugins(plugins, semanticRoot);
           if (result.failed.length > 0) {
             log.warn(
               { failed: result.failed, selectedPlugin: result.pluginId },
@@ -332,7 +342,7 @@ function getExploreBackend(): Promise<ExploreBackend> {
           configPriority.join(" > "),
         );
         for (const name of configPriority) {
-          const backend = await tryCreateBackend(name);
+          const backend = await tryCreateBackend(name, semanticRoot);
           if (backend) {
             log.info(
               { backend: name, source: "config" },
@@ -350,7 +360,7 @@ function getExploreBackend(): Promise<ExploreBackend> {
             { priority: configPriority },
             "All higher-priority backends in sandbox.priority unavailable — using just-bash",
           );
-          return createBashBackend(SEMANTIC_ROOT);
+          return createBashBackend(semanticRoot);
         }
         // Operator did NOT include just-bash — respect their intent
         throw new Error(
@@ -365,14 +375,14 @@ function getExploreBackend(): Promise<ExploreBackend> {
       // Priority 1: Vercel Sandbox (Firecracker VM)
       if (useVercelSandbox()) {
         const { createSandboxBackend } = await import("./explore-sandbox");
-        return createSandboxBackend(SEMANTIC_ROOT);
+        return createSandboxBackend(semanticRoot);
       }
 
       // Priority 2: nsjail explicit (ATLAS_SANDBOX=nsjail) — hard-fail if init fails
       if (process.env.ATLAS_SANDBOX === "nsjail" && !_nsjailFailed) {
         try {
           const { createNsjailBackend } = await import("./explore-nsjail");
-          return await createNsjailBackend(SEMANTIC_ROOT, {
+          return await createNsjailBackend(semanticRoot, {
             onInfrastructureError: invalidateExploreBackend,
             onNsjailFailed: markNsjailFailed,
           });
@@ -391,14 +401,14 @@ function getExploreBackend(): Promise<ExploreBackend> {
       // Skips nsjail auto-detection entirely — no noisy namespace warnings.
       if (useSidecar()) {
         const { createSidecarBackend } = await import("./explore-sidecar");
-        return createSidecarBackend(process.env.ATLAS_SANDBOX_URL!);
+        return createSidecarBackend(process.env.ATLAS_SANDBOX_URL!, { semanticRoot });
       }
 
       // Priority 4: nsjail auto-detect (binary on PATH, graceful fallback)
       if (!_nsjailFailed && useNsjail()) {
         try {
           const { createNsjailBackend } = await import("./explore-nsjail");
-          return await createNsjailBackend(SEMANTIC_ROOT, {
+          return await createNsjailBackend(semanticRoot, {
             onInfrastructureError: invalidateExploreBackend,
             onNsjailFailed: markNsjailFailed,
           });
@@ -424,13 +434,14 @@ function getExploreBackend(): Promise<ExploreBackend> {
       } else {
         log.debug("Explore tool using just-bash backend (acceptable for development)");
       }
-      return createBashBackend(SEMANTIC_ROOT);
+      return createBashBackend(semanticRoot);
     })().catch((err) => {
-      backendPromise = null; // allow retry on next call
+      backendCache.delete(semanticRoot); // allow retry on next call
       throw err;
     });
+    backendCache.set(semanticRoot, promise);
   }
-  return backendPromise;
+  return promise;
 }
 
 // --- Tool definition ---
@@ -462,12 +473,16 @@ Always start by listing the root directory to see what sources are available.`,
   }),
 
   execute: async ({ command }) => {
+    // Resolve org-scoped semantic root from request context
+    const orgId = getRequestContext()?.user?.activeOrganizationId;
+    const semanticRoot = getSemanticRoot(orgId);
+
     let backend: ExploreBackend;
     try {
-      backend = await getExploreBackend();
+      backend = await getExploreBackend(semanticRoot);
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
-      log.error({ err: detail }, "Explore backend initialization failed");
+      log.error({ err: detail, orgId }, "Explore backend initialization failed");
       return `Error: Explore tool is unavailable — ${detail}`;
     }
 
@@ -499,13 +514,14 @@ Always start by listing the root directory to see what sources are available.`,
         {
           "atlas.command": execCommand.slice(0, 200),
           "atlas.backend": getExploreBackendType(),
+          ...(orgId ? { "atlas.org_id": orgId } : {}),
         },
         () => backend.exec(execCommand),
       );
       const durationMs = Math.round(performance.now() - start);
 
       log.debug(
-        { command: execCommand, durationMs, exitCode: result.exitCode },
+        { command: execCommand, durationMs, exitCode: result.exitCode, orgId },
         "explore command",
       );
 

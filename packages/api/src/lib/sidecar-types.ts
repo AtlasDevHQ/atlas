@@ -7,6 +7,8 @@
 export interface SidecarExecRequest {
   command: string;
   timeout?: number;
+  /** Working directory override (must be under SEMANTIC_DIR). */
+  cwd?: string;
 }
 
 export interface SidecarExecResponse {

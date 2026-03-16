@@ -5,9 +5,8 @@ description: Configure Google, GitHub, and Microsoft social login for Atlas mana
 
 import { Callout } from "fumadocs-ui/components/callout";
 import { Steps, Step } from "fumadocs-ui/components/steps";
-import { Tab, Tabs } from "fumadocs-ui/components/tabs";
 
-Atlas's managed auth (Better Auth) supports social login out of the box. Users can sign in with Google, GitHub, or Microsoft — no plugin required. Social providers are configured alongside email/password in the `betterAuth()` call.
+Atlas's managed auth (Better Auth) supports social login — no plugin required. Adding social providers requires a small configuration change to the `betterAuth()` call in `packages/api/src/lib/auth/server.ts`. This guide walks through setting up each provider.
 
 <Callout title="Prerequisites">
 - [Managed auth](/deployment/authentication#managed-auth) enabled (`BETTER_AUTH_SECRET` + `DATABASE_URL`)
@@ -17,12 +16,12 @@ Atlas's managed auth (Better Auth) supports social login out of the box. Users c
 
 ## How It Works
 
-1. User clicks "Sign in with Google/GitHub/Microsoft" in the Atlas UI
+1. User clicks a social login button (or your frontend calls `auth.signIn.social()`)
 2. Browser redirects to the provider's OAuth consent screen
 3. Provider redirects back to Atlas at `/api/auth/callback/{provider}`
 4. Better Auth creates or links the user account and starts a session
 
-Social login users go through the same admin bootstrap and invitation logic as email/password signups — the first user gets `admin`, invitation matches auto-assign roles, and `ATLAS_ADMIN_EMAIL` is respected.
+Social login users go through the same admin bootstrap and invitation logic as email/password signups — the first user gets `admin`, invitation matches auto-assign roles, and `ATLAS_ADMIN_EMAIL` is respected. This logic runs on **first sign-in** (account creation). If a social login links to an existing account, the user keeps their current role.
 
 ---
 
@@ -62,7 +61,7 @@ Replace `https://api.example.com` with your `BETTER_AUTH_URL` value. For local d
 7. Copy the **Client ID** and **Client Secret**
 
 <Callout type="info">
-If you haven't configured the OAuth consent screen yet, Google will prompt you. For internal use, choose **Internal** (Google Workspace only). For public signups, choose **External** and submit for verification.
+If you haven't configured the OAuth consent screen yet, Google will prompt you. **Internal** restricts sign-in to users within your Google Workspace organization (no verification needed). **External** allows any Google account but starts in "testing" mode (limited to 100 test users) until you submit for verification.
 </Callout>
 </Step>
 
@@ -79,17 +78,18 @@ GOOGLE_CLIENT_SECRET=GOCSPX-...
 <Step>
 ### Configure Atlas
 
-Add the `socialProviders` block to your `betterAuth()` call in `packages/api/src/lib/auth/server.ts`:
+Add a `socialProviders` block to the `betterAuth()` call in `packages/api/src/lib/auth/server.ts`, after the `emailAndPassword` configuration:
 
 ```typescript
 const instance = betterAuth({
-  // ... existing config ...
+  // ... existing config (database, secret, emailAndPassword) ...
   socialProviders: {
     google: {
       clientId: process.env.GOOGLE_CLIENT_ID!,
       clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
     },
   },
+  // ... rest of config (session, plugins, databaseHooks) ...
 });
 ```
 </Step>
@@ -285,13 +285,13 @@ const instance = betterAuth({
 });
 ```
 
-Social providers work alongside email/password. Users who sign up via a social provider can later add a password, and vice versa. Better Auth links accounts by email address — if a user signs in with Google using the same email they previously used for email/password signup, the accounts are linked.
+Social providers work alongside email/password. Users who sign up via a social provider can later add a password, and vice versa. Better Auth links accounts by email address when the provider returns a verified email — if a user signs in with Google using the same email they previously used for email/password signup, the accounts are linked. Google and Microsoft return verified emails by default. For GitHub, the user's primary email must be verified on GitHub for automatic linking to work.
 
 ---
 
 ## Frontend Integration
 
-The Atlas web UI handles social login buttons automatically when providers are configured. For custom frontends, use the Better Auth client:
+The Atlas web UI currently supports email/password sign-in. To add social login buttons, use the Better Auth client in your frontend:
 
 ```typescript
 import { createAuthClient } from "better-auth/react";
@@ -326,9 +326,10 @@ After successful authentication, the user is redirected back to your app with an
 
 **Symptom:** GitHub sign-in fails with an email-related error.
 
-**Fix:** GitHub OAuth does not return the user's email if their email is set to private. Users must either:
-- Make their email public in [GitHub email settings](https://github.com/settings/emails)
-- Or ensure at least one verified email is accessible via the GitHub API (Better Auth requests the `user:email` scope automatically)
+**Fix:** GitHub OAuth does not return the user's email if their email is set to private. Better Auth requests the `user:email` scope automatically, but the user must have at least one **verified, primary** email on GitHub. Ask the user to:
+1. Go to [GitHub email settings](https://github.com/settings/emails)
+2. Ensure at least one email is verified (has a green checkmark)
+3. Ensure a primary email is set
 
 ### User lands on wrong role after social login
 
@@ -372,7 +373,9 @@ See [Cross-origin deployment](/deployment/authentication#cross-origin-deployment
 
 ### Account linking
 
-When a user signs in with a social provider using the same email as an existing account, Better Auth links the accounts. The user can then sign in with either method. If you see duplicate accounts, check whether the social provider is returning a different email than expected (e.g. a personal vs. work Microsoft account).
+When a user signs in with a social provider using the same verified email as an existing account, Better Auth links the accounts. The user can then sign in with either method. If you see duplicate accounts, check whether:
+- The social provider is returning a different email than expected (e.g. a personal vs. work Microsoft account)
+- The GitHub user's email is unverified (unverified emails are not linked automatically)
 
 ---
 

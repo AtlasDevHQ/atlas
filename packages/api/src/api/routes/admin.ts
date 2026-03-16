@@ -42,6 +42,7 @@ import {
   discoverEntities,
   findEntityFile,
 } from "@atlas/api/lib/semantic-files";
+import { runDiff } from "@atlas/api/lib/semantic-diff";
 
 const log = createLogger("admin-routes");
 
@@ -459,6 +460,40 @@ admin.get("/semantic/stats", async (c) => {
       },
       ...(warnings.length > 0 && { warnings }),
     });
+  });
+});
+
+// GET /semantic/diff — compare DB schema against YAML entities
+admin.get("/semantic/diff", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const connectionId = c.req.query("connection") ?? "default";
+
+    // Validate connection exists
+    const registered = connections.list();
+    if (!registered.includes(connectionId)) {
+      return c.json({ error: "not_found", message: `Connection "${connectionId}" not found.` }, 404);
+    }
+
+    try {
+      const result = await runDiff(connectionId);
+      return c.json(result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      log.error(
+        { err: err instanceof Error ? err : new Error(String(err)), connectionId, requestId },
+        "Schema diff failed",
+      );
+      return c.json({ error: "internal_error", message: `Schema diff failed: ${message}` }, 500);
+    }
   });
 });
 

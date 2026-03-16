@@ -279,6 +279,33 @@ mock.module("@atlas/api/lib/tools/actions", () => ({
   },
 }));
 
+const mockRunDiff: Mock<(connectionId?: string) => Promise<unknown>> = mock(() =>
+  Promise.resolve({
+    connection: "default",
+    newTables: ["new_table"],
+    removedTables: ["old_table"],
+    tableDiffs: [
+      {
+        table: "users",
+        addedColumns: [{ name: "email", type: "string" }],
+        removedColumns: [],
+        typeChanges: [{ name: "status", yamlType: "string", dbType: "number" }],
+      },
+    ],
+    unchangedCount: 2,
+    summary: { total: 5, new: 1, removed: 1, changed: 1, unchanged: 2 },
+  }),
+);
+
+mock.module("@atlas/api/lib/semantic-diff", () => ({
+  runDiff: mockRunDiff,
+  mapSQLType: (t: string) => t,
+  parseEntityYAML: () => ({ table: "", columns: new Map(), foreignKeys: new Set() }),
+  computeDiff: () => ({ newTables: [], removedTables: [], tableDiffs: [], unchangedCount: 0 }),
+  getDBSchema: async () => new Map(),
+  getYAMLSnapshots: () => ({ snapshots: new Map(), warnings: [] }),
+}));
+
 mock.module("@atlas/api/lib/conversations", () => ({
   createConversation: mock(() => Promise.resolve(null)),
   addMessage: mock(() => {}),
@@ -1279,5 +1306,61 @@ describe("Admin routes — audit analytics", () => {
       expect(sql).not.toContain("timestamp >=");
       expect(params).toEqual(["2026-03-07"]);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Semantic diff endpoint
+// ---------------------------------------------------------------------------
+
+describe("Admin routes — semantic diff", () => {
+  beforeEach(() => {
+    setAdmin();
+    mockRunDiff.mockClear();
+  });
+
+  it("GET /semantic/diff returns structured diff", async () => {
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/diff"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.connection).toBe("default");
+    expect(body.newTables).toEqual(["new_table"]);
+    expect(body.removedTables).toEqual(["old_table"]);
+    expect(Array.isArray(body.tableDiffs)).toBe(true);
+    expect(body.unchangedCount).toBe(2);
+    expect(body.summary).toEqual({ total: 5, new: 1, removed: 1, changed: 1, unchanged: 2 });
+  });
+
+  it("passes connection query param to runDiff", async () => {
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/diff?connection=default"));
+    expect(res.status).toBe(200);
+    expect(mockRunDiff).toHaveBeenCalledWith("default");
+  });
+
+  it("returns 404 for unknown connection", async () => {
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/diff?connection=unknown"));
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("not_found");
+  });
+
+  it("returns 500 with specific message when runDiff throws", async () => {
+    mockRunDiff.mockRejectedValueOnce(new Error("DB unreachable"));
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/diff"));
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("internal_error");
+    expect(body.message).toContain("DB unreachable");
+  });
+
+  it("requires admin role", async () => {
+    mockAuthenticateRequest.mockResolvedValue({
+      authenticated: true,
+      mode: "simple-key",
+      user: { id: "user-1", mode: "simple-key", label: "Analyst", role: "analyst" },
+    });
+
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/diff"));
+    expect(res.status).toBe(403);
   });
 });

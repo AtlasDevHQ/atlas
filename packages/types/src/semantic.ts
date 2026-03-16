@@ -54,6 +54,35 @@ export interface EntityData extends SemanticEntityDetail {
   name: string;
 }
 
+// ---------------------------------------------------------------------------
+// Schema diff types (admin API)
+// ---------------------------------------------------------------------------
+
+/** Column-level diff for a single table that exists in both DB and YAML. */
+export interface SemanticTableDiff {
+  table: string;
+  addedColumns: { name: string; type: string }[];
+  removedColumns: { name: string; type: string }[];
+  typeChanges: { name: string; yamlType: string; dbType: string }[];
+}
+
+/** Full diff result returned by `GET /api/v1/admin/semantic/diff`. */
+export interface SemanticDiffResponse {
+  connection: string;
+  newTables: string[];
+  removedTables: string[];
+  tableDiffs: SemanticTableDiff[];
+  unchangedCount: number;
+  summary: {
+    total: number;
+    new: number;
+    removed: number;
+    changed: number;
+    unchanged: number;
+  };
+  warnings?: string[];
+}
+
 /** Column info returned by the public tables endpoint. */
 export interface TableColumn {
   name: string;

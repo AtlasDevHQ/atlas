@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   LayoutDashboard,
   Database,
+  GitCompareArrows,
   Cable,
   ScrollText,
   Users,
@@ -33,6 +34,7 @@ import {
 const navItems = [
   { href: "/admin", label: "Overview", icon: LayoutDashboard, exact: true },
   { href: "/admin/semantic", label: "Semantic Layer", icon: Database },
+  { href: "/admin/schema-diff", label: "Schema Diff", icon: GitCompareArrows },
   { href: "/admin/connections", label: "Connections", icon: Cable },
   { href: "/admin/audit", label: "Audit", icon: ScrollText },
   { href: "/admin/users", label: "Users", icon: Users },

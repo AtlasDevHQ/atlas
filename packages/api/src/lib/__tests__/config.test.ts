@@ -1235,3 +1235,103 @@ describe("configFromEnv ATLAS_SANDBOX_PRIORITY", () => {
     expect(config.sandbox).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Session timeout config
+// ---------------------------------------------------------------------------
+
+describe("session config (validateAndResolve)", () => {
+  it("accepts valid session timeouts", () => {
+    const resolved = validateAndResolve({
+      session: { idleTimeout: 3600, absoluteTimeout: 86400 },
+    });
+    expect(resolved.session).toEqual({ idleTimeout: 3600, absoluteTimeout: 86400 });
+  });
+
+  it("defaults both timeouts to 0 when omitted from session block", () => {
+    const resolved = validateAndResolve({ session: {} });
+    expect(resolved.session).toEqual({ idleTimeout: 0, absoluteTimeout: 0 });
+  });
+
+  it("omits session from resolved config when not provided", () => {
+    const resolved = validateAndResolve({});
+    expect(resolved.session).toBeUndefined();
+  });
+
+  it("allows zero values (disabled)", () => {
+    const resolved = validateAndResolve({
+      session: { idleTimeout: 0, absoluteTimeout: 0 },
+    });
+    expect(resolved.session).toEqual({ idleTimeout: 0, absoluteTimeout: 0 });
+  });
+
+  it("rejects negative values", () => {
+    expect(() => validateAndResolve({
+      session: { idleTimeout: -1, absoluteTimeout: 3600 },
+    })).toThrow();
+  });
+
+  it("rejects non-integer values", () => {
+    expect(() => validateAndResolve({
+      session: { idleTimeout: 3.5, absoluteTimeout: 3600 },
+    })).toThrow();
+  });
+
+  it("accepts only idleTimeout", () => {
+    const resolved = validateAndResolve({
+      session: { idleTimeout: 1800 },
+    });
+    expect(resolved.session).toEqual({ idleTimeout: 1800, absoluteTimeout: 0 });
+  });
+
+  it("accepts only absoluteTimeout", () => {
+    const resolved = validateAndResolve({
+      session: { absoluteTimeout: 86400 },
+    });
+    expect(resolved.session).toEqual({ idleTimeout: 0, absoluteTimeout: 86400 });
+  });
+});
+
+describe("configFromEnv session timeout", () => {
+  afterEach(() => {
+    delete process.env.ATLAS_SESSION_IDLE_TIMEOUT;
+    delete process.env.ATLAS_SESSION_ABSOLUTE_TIMEOUT;
+  });
+
+  it("reads ATLAS_SESSION_IDLE_TIMEOUT from env", () => {
+    process.env.ATLAS_SESSION_IDLE_TIMEOUT = "3600";
+    const config = configFromEnv();
+    expect(config.session).toEqual({ idleTimeout: 3600, absoluteTimeout: 0 });
+  });
+
+  it("reads ATLAS_SESSION_ABSOLUTE_TIMEOUT from env", () => {
+    process.env.ATLAS_SESSION_ABSOLUTE_TIMEOUT = "86400";
+    const config = configFromEnv();
+    expect(config.session).toEqual({ idleTimeout: 0, absoluteTimeout: 86400 });
+  });
+
+  it("reads both timeout env vars", () => {
+    process.env.ATLAS_SESSION_IDLE_TIMEOUT = "3600";
+    process.env.ATLAS_SESSION_ABSOLUTE_TIMEOUT = "86400";
+    const config = configFromEnv();
+    expect(config.session).toEqual({ idleTimeout: 3600, absoluteTimeout: 86400 });
+  });
+
+  it("omits session when both are 0 or unset", () => {
+    const config = configFromEnv();
+    expect(config.session).toBeUndefined();
+  });
+
+  it("omits session when env vars are 0", () => {
+    process.env.ATLAS_SESSION_IDLE_TIMEOUT = "0";
+    process.env.ATLAS_SESSION_ABSOLUTE_TIMEOUT = "0";
+    const config = configFromEnv();
+    expect(config.session).toBeUndefined();
+  });
+
+  it("ignores non-numeric values", () => {
+    process.env.ATLAS_SESSION_IDLE_TIMEOUT = "abc";
+    const config = configFromEnv();
+    expect(config.session).toBeUndefined();
+  });
+});

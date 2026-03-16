@@ -2115,15 +2115,14 @@ admin.delete("/sessions/:id", async (c) => {
     const sessionId = c.req.param("id");
 
     try {
-      const existing = await internalQuery<{ id: string }>(
-        `SELECT id FROM session WHERE id = $1`,
+      const deleted = await internalQuery<{ id: string }>(
+        `DELETE FROM session WHERE id = $1 RETURNING id`,
         [sessionId],
       );
-      if (existing.length === 0) {
+      if (deleted.length === 0) {
         return c.json({ error: "not_found", message: "Session not found." }, 404);
       }
 
-      await internalQuery(`DELETE FROM session WHERE id = $1`, [sessionId]);
       log.info({ requestId, sessionId, actorId: authResult.user?.id }, "Session revoked");
       return c.json({ success: true });
     } catch (err) {
@@ -2152,16 +2151,15 @@ admin.delete("/sessions/user/:userId", async (c) => {
     const userId = c.req.param("userId");
 
     try {
-      const result = await internalQuery<{ count: string }>(
-        `SELECT COUNT(*) AS count FROM session WHERE "userId" = $1`,
+      const deleted = await internalQuery<{ id: string }>(
+        `DELETE FROM session WHERE "userId" = $1 RETURNING id`,
         [userId],
       );
-      const count = parseInt(String(result[0]?.count ?? "0"), 10);
-      if (count === 0) {
+      if (deleted.length === 0) {
         return c.json({ error: "not_found", message: "No sessions found for this user." }, 404);
       }
 
-      await internalQuery(`DELETE FROM session WHERE "userId" = $1`, [userId]);
+      const count = deleted.length;
       log.info({ requestId, targetUserId: userId, count, actorId: authResult.user?.id }, "All user sessions revoked");
       return c.json({ success: true, count });
     } catch (err) {

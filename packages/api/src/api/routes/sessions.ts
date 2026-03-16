@@ -125,19 +125,24 @@ sessions.delete("/:id", async (c) => {
     const sessionId = c.req.param("id");
 
     try {
-      // Verify the session belongs to this user
-      const existing = await internalQuery<{ id: string; userId: string }>(
-        `SELECT id, "userId" FROM session WHERE id = $1`,
-        [sessionId],
+      // Atomic delete scoped to the current user — returns empty if
+      // the session doesn't exist or belongs to another user.
+      const deleted = await internalQuery<{ id: string }>(
+        `DELETE FROM session WHERE id = $1 AND "userId" = $2 RETURNING id`,
+        [sessionId, userId],
       );
-      if (existing.length === 0) {
-        return c.json({ error: "not_found", message: "Session not found." }, 404);
-      }
-      if (existing[0].userId !== userId) {
+      if (deleted.length === 0) {
+        // Distinguish "not found" from "wrong user" for a clear error message
+        const exists = await internalQuery<{ userId: string }>(
+          `SELECT "userId" FROM session WHERE id = $1`,
+          [sessionId],
+        );
+        if (exists.length === 0) {
+          return c.json({ error: "not_found", message: "Session not found." }, 404);
+        }
         return c.json({ error: "forbidden", message: "Cannot revoke another user's session." }, 403);
       }
 
-      await internalQuery(`DELETE FROM session WHERE id = $1`, [sessionId]);
       log.info({ requestId, sessionId, userId }, "User revoked own session");
       return c.json({ success: true });
     } catch (err) {

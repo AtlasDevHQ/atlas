@@ -272,9 +272,9 @@ describe("Admin session routes", () => {
 
   describe("DELETE /api/v1/admin/sessions/:id", () => {
     it("revokes a session", async () => {
-      mockInternalQuery
-        .mockImplementationOnce(() => Promise.resolve([{ id: "sess-1" }])) // SELECT exists
-        .mockImplementationOnce(() => Promise.resolve([])); // DELETE
+      mockInternalQuery.mockImplementationOnce(() =>
+        Promise.resolve([{ id: "sess-1" }]), // DELETE RETURNING
+      );
 
       const res = await del("/api/v1/admin/sessions/sess-1");
       expect(res.status).toBe(200);
@@ -292,9 +292,9 @@ describe("Admin session routes", () => {
 
   describe("DELETE /api/v1/admin/sessions/user/:userId", () => {
     it("revokes all sessions for a user", async () => {
-      mockInternalQuery
-        .mockImplementationOnce(() => Promise.resolve([{ count: "3" }])) // COUNT
-        .mockImplementationOnce(() => Promise.resolve([])); // DELETE
+      mockInternalQuery.mockImplementationOnce(() =>
+        Promise.resolve([{ id: "s1" }, { id: "s2" }, { id: "s3" }]), // DELETE RETURNING
+      );
 
       const res = await del("/api/v1/admin/sessions/user/user-1");
       expect(res.status).toBe(200);
@@ -304,7 +304,7 @@ describe("Admin session routes", () => {
     });
 
     it("returns 404 when user has no sessions", async () => {
-      mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
+      mockInternalQuery.mockImplementation(() => Promise.resolve([]));
 
       const res = await del("/api/v1/admin/sessions/user/no-sessions");
       expect(res.status).toBe(404);
@@ -359,9 +359,10 @@ describe("User self-service session routes", () => {
 
   describe("DELETE /api/v1/sessions/:id", () => {
     it("revokes own session", async () => {
-      mockInternalQuery
-        .mockImplementationOnce(() => Promise.resolve([{ id: "sess-1", userId: "user-1" }]))
-        .mockImplementationOnce(() => Promise.resolve([]));
+      // DELETE ... WHERE id=$1 AND userId=$2 RETURNING id
+      mockInternalQuery.mockImplementationOnce(() =>
+        Promise.resolve([{ id: "sess-1" }]),
+      );
 
       const res = await del("/api/v1/sessions/sess-1");
       expect(res.status).toBe(200);
@@ -370,52 +371,25 @@ describe("User self-service session routes", () => {
     });
 
     it("returns 403 when trying to revoke another user's session", async () => {
-      mockInternalQuery.mockImplementationOnce(() =>
-        Promise.resolve([{ id: "sess-2", userId: "other-user" }]),
-      );
+      // DELETE RETURNING returns empty (wrong user), then SELECT finds the session
+      mockInternalQuery
+        .mockImplementationOnce(() => Promise.resolve([])) // DELETE RETURNING = empty
+        .mockImplementationOnce(() => Promise.resolve([{ userId: "other-user" }])); // SELECT exists
 
       const res = await del("/api/v1/sessions/sess-2");
       expect(res.status).toBe(403);
     });
 
     it("returns 404 for non-existent session", async () => {
-      mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+      // DELETE RETURNING returns empty, SELECT also returns empty
+      mockInternalQuery
+        .mockImplementationOnce(() => Promise.resolve([])) // DELETE RETURNING
+        .mockImplementationOnce(() => Promise.resolve([])); // SELECT not found
       const res = await del("/api/v1/sessions/nonexistent");
       expect(res.status).toBe(404);
     });
   });
 });
 
-describe("Session timeout enforcement", () => {
-  // Test the timeout logic in managed.ts via the getSetting mock
-  // These tests verify the concept — actual integration requires
-  // a running Better Auth instance with session data.
-
-  it("idle timeout setting defaults to 0 (disabled)", () => {
-    // Our mock returns "0" for ATLAS_SESSION_IDLE_TIMEOUT
-    const raw = "0";
-    const parsed = parseInt(raw, 10);
-    expect(parsed).toBe(0);
-    // 0 means disabled — no timeout enforcement
-  });
-
-  it("parses valid timeout values correctly", () => {
-    const values = [
-      { input: "3600", expected: 3600 },
-      { input: "86400", expected: 86400 },
-      { input: "0", expected: 0 },
-    ];
-    for (const { input, expected } of values) {
-      expect(parseInt(input, 10)).toBe(expected);
-    }
-  });
-
-  it("handles invalid timeout values gracefully", () => {
-    const invalid = ["", "abc", "-1"];
-    for (const val of invalid) {
-      const n = parseInt(val, 10);
-      const timeout = Number.isFinite(n) && n > 0 ? n : 0;
-      expect(timeout).toBe(0);
-    }
-  });
-});
+// Session timeout enforcement tests live in managed.test.ts where they
+// exercise the actual validateManaged() function with real env var overrides.

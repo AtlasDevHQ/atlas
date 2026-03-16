@@ -17,6 +17,7 @@ export interface AuditRow {
   timestamp: string;
   user_email?: string | null;
   error?: string;
+  source_id?: string | null;
 }
 
 // ── Columns ───────────────────────────────────────────────────────

@@ -949,6 +949,84 @@ admin.get("/connections/:id", async (c) => {
 // Audit routes
 // ---------------------------------------------------------------------------
 
+/** Escape ILIKE special characters so they are matched literally. */
+function escapeIlike(s: string): string {
+  return s.replace(/[%_\\]/g, "\\$&");
+}
+
+/** Quote a value for safe CSV output (RFC 4180). */
+function csvField(val: string | null | undefined): string {
+  const s = val ?? "";
+  if (s.includes(",") || s.includes('"') || s.includes("\n")) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+/** Shared filter builder for audit list + export endpoints. */
+function buildAuditFilters(query: (key: string) => string | undefined): {
+  conditions: string[];
+  params: unknown[];
+  paramIdx: number;
+  error?: { error: string; message: string; status: number };
+} {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  let paramIdx = 1;
+
+  const user = query("user");
+  if (user) {
+    conditions.push(`a.user_id = $${paramIdx++}`);
+    params.push(user);
+  }
+
+  const success = query("success");
+  if (success === "true" || success === "false") {
+    conditions.push(`a.success = $${paramIdx++}`);
+    params.push(success === "true");
+  }
+
+  const from = query("from");
+  if (from) {
+    if (isNaN(Date.parse(from))) {
+      return { conditions, params, paramIdx, error: { error: "invalid_request", message: `Invalid 'from' date format: "${from}". Use ISO 8601 (e.g. 2026-01-01).`, status: 400 } };
+    }
+    conditions.push(`a.timestamp >= $${paramIdx++}`);
+    params.push(from);
+  }
+
+  const to = query("to");
+  if (to) {
+    if (isNaN(Date.parse(to))) {
+      return { conditions, params, paramIdx, error: { error: "invalid_request", message: `Invalid 'to' date format: "${to}". Use ISO 8601 (e.g. 2026-03-03).`, status: 400 } };
+    }
+    conditions.push(`a.timestamp <= $${paramIdx++}`);
+    params.push(to);
+  }
+
+  const connection = query("connection");
+  if (connection) {
+    conditions.push(`a.source_id = $${paramIdx++}`);
+    params.push(connection);
+  }
+
+  const table = query("table");
+  if (table) {
+    conditions.push(`a.sql ILIKE $${paramIdx++}`);
+    params.push(`%${escapeIlike(table)}%`);
+  }
+
+  const search = query("search");
+  if (search) {
+    const term = `%${escapeIlike(search)}%`;
+    conditions.push(`(a.sql ILIKE $${paramIdx} OR u.email ILIKE $${paramIdx} OR a.error ILIKE $${paramIdx})`);
+    params.push(term);
+    paramIdx++;
+  }
+
+  return { conditions, params, paramIdx };
+}
+
 // GET /audit — query audit_log (paginated)
 admin.get("/audit", async (c) => {
   const req = c.req.raw;
@@ -973,45 +1051,19 @@ admin.get("/audit", async (c) => {
 
     // Queries the internal DB directly (not the analytics datasource),
     // so no validateSQL pipeline needed. Parameterized queries prevent injection.
-    const conditions: string[] = [];
-    const params: unknown[] = [];
-    let paramIdx = 1;
-
-    const user = c.req.query("user");
-    if (user) {
-      conditions.push(`a.user_id = $${paramIdx++}`);
-      params.push(user);
+    const filters = buildAuditFilters((k) => c.req.query(k));
+    if (filters.error) {
+      return c.json({ error: filters.error.error, message: filters.error.message }, filters.error.status as 400);
     }
+    const { conditions, params } = filters;
+    let { paramIdx } = filters;
 
-    const success = c.req.query("success");
-    if (success === "true" || success === "false") {
-      conditions.push(`a.success = $${paramIdx++}`);
-      params.push(success === "true");
-    }
-
-    const from = c.req.query("from");
-    if (from) {
-      if (isNaN(Date.parse(from))) {
-        return c.json({ error: "invalid_request", message: `Invalid 'from' date format: "${from}". Use ISO 8601 (e.g. 2026-01-01).` }, 400);
-      }
-      conditions.push(`a.timestamp >= $${paramIdx++}`);
-      params.push(from);
-    }
-
-    const to = c.req.query("to");
-    if (to) {
-      if (isNaN(Date.parse(to))) {
-        return c.json({ error: "invalid_request", message: `Invalid 'to' date format: "${to}". Use ISO 8601 (e.g. 2026-03-03).` }, 400);
-      }
-      conditions.push(`a.timestamp <= $${paramIdx++}`);
-      params.push(to);
-    }
-
+    // The JOIN is always needed because the search filter references u.email
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
     try {
       const countResult = await internalQuery<{ count: string }>(
-        `SELECT COUNT(*) as count FROM audit_log a ${whereClause}`,
+        `SELECT COUNT(*) as count FROM audit_log a LEFT JOIN "user" u ON a.user_id = u.id ${whereClause}`,
         params,
       );
       const total = parseInt(String(countResult[0]?.count ?? "0"), 10);
@@ -1028,6 +1080,84 @@ admin.get("/audit", async (c) => {
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Audit query failed");
       return c.json({ error: "internal_error", message: "Failed to query audit log." }, 500);
+    }
+  });
+});
+
+// GET /audit/export — CSV export of audit_log (respects current filters)
+admin.get("/audit/export", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const filters = buildAuditFilters((k) => c.req.query(k));
+    if (filters.error) {
+      return c.json({ error: filters.error.error, message: filters.error.message }, filters.error.status as 400);
+    }
+    const { conditions, params } = filters;
+    let { paramIdx } = filters;
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    const exportLimit = 10000;
+
+    try {
+      const rows = await internalQuery<{
+        id: string;
+        timestamp: string;
+        user_id: string;
+        sql: string;
+        duration_ms: number;
+        row_count: number;
+        success: boolean;
+        error: string | null;
+        source_id: string | null;
+        user_email: string | null;
+      }>(
+        `SELECT a.id, a.timestamp, a.user_id, a.sql, a.duration_ms, a.row_count, a.success, a.error, a.source_id, u.email AS user_email
+         FROM audit_log a
+         LEFT JOIN "user" u ON a.user_id = u.id
+         ${whereClause} ORDER BY a.timestamp DESC LIMIT $${paramIdx++}`,
+        [...params, exportLimit],
+      );
+
+      const csvHeader = "id,timestamp,user,sql,duration_ms,row_count,success,error,connection\n";
+      const csvRows = rows.map((r) => {
+        const fields = [
+          csvField(r.id),
+          csvField(r.timestamp),
+          csvField(r.user_email ?? r.user_id ?? ""),
+          csvField(r.sql),
+          String(r.duration_ms),
+          String(r.row_count ?? ""),
+          String(r.success),
+          csvField(r.error),
+          csvField(r.source_id),
+        ];
+        return fields.join(",");
+      });
+
+      const csv = csvHeader + csvRows.join("\n");
+      const filename = `audit-log-${new Date().toISOString().slice(0, 10)}.csv`;
+
+      return new Response(csv, {
+        headers: {
+          "Content-Type": "text/csv; charset=utf-8",
+          "Content-Disposition": `attachment; filename="${filename}"`,
+        },
+      });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Audit export failed");
+      return c.json({ error: "internal_error", message: "Failed to export audit log." }, 500);
     }
   });
 });

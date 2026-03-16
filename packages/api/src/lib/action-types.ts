@@ -21,6 +21,7 @@ export const ACTION_STATUSES = [
   "failed",
   "timed_out",
   "auto_approved",
+  "rolled_back",
 ] as const;
 export type ActionStatus = (typeof ACTION_STATUSES)[number];
 

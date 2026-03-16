@@ -7,6 +7,7 @@
  * - pending -> approved -> executed | failed | timed_out
  * - pending -> denied
  * - pending -> auto_approved (executed inline) | failed | timed_out
+ * - executed | auto_approved -> rolled_back (via rollback API)
  */
 
 import { createLogger } from "@atlas/api/lib/logger";

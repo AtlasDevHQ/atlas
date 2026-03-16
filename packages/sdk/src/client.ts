@@ -912,6 +912,15 @@ export function createAtlasClient(options: AtlasClientOptions) {
     },
 
     /**
+     * Trigger rollback of an executed action using its stored rollback metadata.
+     * Returns the updated action entry on success.
+     */
+    async rollbackAction(id: string): Promise<Record<string, unknown>> {
+      const res = await post(`/api/v1/actions/${encodeURIComponent(id)}/rollback`, {});
+      return unwrap<Record<string, unknown>>(res);
+    },
+
+    /**
      * Start a streaming chat session — returns the raw `Response` whose body
      * is an SSE stream (AI SDK UI Message Stream Protocol). Callers can consume it
      * directly with the AI SDK's `useChat` or manual stream parsing.

@@ -65,6 +65,24 @@ See [Semantic Layer](/getting-started/semantic-layer) for the YAML format refere
 
 ---
 
+## Schema Diff
+
+**Route:** `/admin/schema-diff`
+
+Compares the live database schema against the semantic layer YAML files to detect drift:
+
+- **Summary cards** — New tables (in DB, not in YAML), removed tables (in YAML, not in DB), changed tables (column-level drift), unchanged tables (in sync)
+- **New tables** — Green cards listing tables that exist in the database but have no corresponding entity YAML. Shows a suggestion to run `atlas init --update`
+- **Removed tables** — Red cards listing entity YAMLs that reference tables no longer in the database. Indicates stale entities that should be cleaned up
+- **Changed tables** — Amber expandable cards with a column-level diff table showing added columns, removed columns, and type mismatches between DB and YAML
+- **In-sync state** — When no drift is detected, shows a green success message
+
+**Multiple connections:** If multiple datasource connections are registered, a connection selector dropdown appears in the page header. The diff is re-computed when you switch connections.
+
+**API endpoint:** `GET /api/v1/admin/semantic/diff?connection=<id>` — returns structured JSON with `newTables`, `removedTables`, `tableDiffs`, `unchangedCount`, and a `summary` object.
+
+---
+
 ## Audit Log
 
 **Route:** `/admin/audit`
@@ -344,6 +362,7 @@ All admin endpoints are at `/api/v1/admin/` and require the `admin` role. See th
 | `GET` | `/semantic/glossary` | Get glossary |
 | `GET` | `/semantic/catalog` | Get catalog |
 | `GET` | `/semantic/stats` | Semantic coverage stats |
+| `GET` | `/semantic/diff` | Schema diff (DB vs YAML) |
 | `GET` | `/audit` | Query audit log (supports `table` and `column` filters) |
 | `GET` | `/audit/stats` | Audit aggregates |
 | `GET` | `/audit/facets` | Distinct tables and columns for filter dropdowns |

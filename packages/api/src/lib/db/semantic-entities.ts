@@ -138,7 +138,8 @@ export async function countEntities(
 }
 
 /**
- * Bulk upsert entities for an org. Runs in a single transaction.
+ * Bulk upsert entities for an org. Each entity is upserted individually —
+ * failures are logged and skipped (partial imports are expected).
  * Used by the import endpoint.
  */
 export async function bulkUpsertEntities(

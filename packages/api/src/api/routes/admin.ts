@@ -505,6 +505,15 @@ admin.get("/semantic/diff", async (c) => {
 // Org-scoped semantic entity CRUD (DB-backed)
 // ---------------------------------------------------------------------------
 
+const VALID_ENTITY_TYPES = new Set(["entity", "metric", "glossary", "catalog"]);
+
+type SemanticEntityType = "entity" | "metric" | "glossary" | "catalog";
+
+function validateEntityType(raw: string | undefined, defaultType: string = "entity"): SemanticEntityType | null {
+  const value = raw ?? defaultType;
+  return VALID_ENTITY_TYPES.has(value) ? value as SemanticEntityType : null;
+}
+
 // GET /semantic/org/entities — list entities for the active org
 admin.get("/semantic/org/entities", async (c) => {
   const req = c.req.raw;
@@ -522,7 +531,11 @@ admin.get("/semantic/org/entities", async (c) => {
     }
 
     const { listEntities } = await import("@atlas/api/lib/db/semantic-entities");
-    const entityType = c.req.query("type") as "entity" | "metric" | "glossary" | "catalog" | undefined;
+    const rawType = c.req.query("type");
+    if (rawType && !VALID_ENTITY_TYPES.has(rawType)) {
+      return c.json({ error: "bad_request", message: `Invalid type. Must be one of: ${[...VALID_ENTITY_TYPES].join(", ")}` }, 400);
+    }
+    const entityType = rawType as "entity" | "metric" | "glossary" | "catalog" | undefined;
     const rows = await listEntities(orgId, entityType);
     return c.json({
       entities: rows.map((r) => ({
@@ -553,7 +566,10 @@ admin.get("/semantic/org/entities/:name", async (c) => {
     }
 
     const name = c.req.param("name");
-    const entityType = (c.req.query("type") ?? "entity") as "entity" | "metric" | "glossary" | "catalog";
+    const entityType = validateEntityType(c.req.query("type"));
+    if (!entityType) {
+      return c.json({ error: "bad_request", message: `Invalid type. Must be one of: ${[...VALID_ENTITY_TYPES].join(", ")}` }, 400);
+    }
     const { getEntity } = await import("@atlas/api/lib/db/semantic-entities");
     const row = await getEntity(orgId, entityType, name);
     if (!row) {
@@ -598,7 +614,24 @@ admin.put("/semantic/org/entities/:name", async (c) => {
       return c.json({ error: "bad_request", message: "yamlContent (string) is required." }, 400);
     }
 
-    const entityType = (body.entityType ?? "entity") as "entity" | "metric" | "glossary" | "catalog";
+    const entityType = validateEntityType(body.entityType);
+    if (!entityType) {
+      return c.json({ error: "bad_request", message: `Invalid entityType. Must be one of: ${[...VALID_ENTITY_TYPES].join(", ")}` }, 400);
+    }
+
+    // Validate YAML is parseable and (for entities) has a table field
+    try {
+      const yamlMod = await import("js-yaml");
+      const parsed = yamlMod.load(body.yamlContent);
+      if (entityType === "entity") {
+        if (!parsed || typeof parsed !== "object" || !("table" in (parsed as Record<string, unknown>))) {
+          return c.json({ error: "bad_request", message: "Entity YAML must contain a 'table' field." }, 400);
+        }
+      }
+    } catch (err) {
+      return c.json({ error: "bad_request", message: `Invalid YAML: ${err instanceof Error ? err.message : String(err)}` }, 400);
+    }
+
     const { upsertEntity } = await import("@atlas/api/lib/db/semantic-entities");
     const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
     await upsertEntity(orgId, entityType, name, body.yamlContent, body.connectionId);
@@ -626,7 +659,10 @@ admin.delete("/semantic/org/entities/:name", async (c) => {
     }
 
     const name = c.req.param("name");
-    const entityType = (c.req.query("type") ?? "entity") as "entity" | "metric" | "glossary" | "catalog";
+    const entityType = validateEntityType(c.req.query("type"));
+    if (!entityType) {
+      return c.json({ error: "bad_request", message: `Invalid type. Must be one of: ${[...VALID_ENTITY_TYPES].join(", ")}` }, 400);
+    }
     const { deleteEntity } = await import("@atlas/api/lib/db/semantic-entities");
     const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
     const deleted = await deleteEntity(orgId, entityType, name);

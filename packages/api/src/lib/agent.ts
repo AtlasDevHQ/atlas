@@ -484,8 +484,11 @@ export async function runAgent({
   let orgSemanticIndex: string | undefined;
   if (orgId && hasInternalDB()) {
     try {
-      await loadOrgWhitelist(orgId);
-      orgSemanticIndex = await getOrgSemanticIndex(orgId) || undefined;
+      const [, idx] = await Promise.all([
+        loadOrgWhitelist(orgId),
+        getOrgSemanticIndex(orgId),
+      ]);
+      orgSemanticIndex = idx || undefined;
     } catch (err) {
       log.warn({ orgId, err: err instanceof Error ? err.message : String(err) }, "Failed to load org semantic data — falling back to file-based");
     }

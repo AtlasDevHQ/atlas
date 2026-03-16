@@ -534,6 +534,11 @@ export function _resetOrgSemanticIndexes(): void {
  * Create a temporary directory with the org's semantic layer files,
  * structured for the existing buildSemanticIndex() to consume.
  */
+/** Sanitize a name for safe use in file paths (strip traversal chars). */
+function safeName(name: string): string {
+  return path.basename(name).replace(/[^a-zA-Z0-9_.-]/g, "_");
+}
+
 async function createTempSemanticDir(
   orgId: string,
   entities: Array<{ name: string; yaml_content: string; connection_id: string | null }>,
@@ -541,21 +546,21 @@ async function createTempSemanticDir(
   glossary: Array<{ name: string; yaml_content: string }>,
 ): Promise<string> {
   const os = await import("os");
-  const tmpBase = path.join(os.tmpdir(), `atlas-semantic-${orgId}-${Date.now()}`);
+  const safeOrgId = orgId.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const tmpBase = path.join(os.tmpdir(), `atlas-semantic-${safeOrgId}-${Date.now()}`);
   const entitiesDir = path.join(tmpBase, "entities");
   const metricsDir = path.join(tmpBase, "metrics");
   fs.mkdirSync(entitiesDir, { recursive: true });
   fs.mkdirSync(metricsDir, { recursive: true });
 
   for (const e of entities) {
-    fs.writeFileSync(path.join(entitiesDir, `${e.name}.yml`), e.yaml_content);
+    fs.writeFileSync(path.join(entitiesDir, `${safeName(e.name)}.yml`), e.yaml_content);
   }
   for (const m of metrics) {
-    fs.writeFileSync(path.join(metricsDir, `${m.name}.yml`), m.yaml_content);
+    fs.writeFileSync(path.join(metricsDir, `${safeName(m.name)}.yml`), m.yaml_content);
   }
   for (const g of glossary) {
-    // Glossary goes at root level
-    fs.writeFileSync(path.join(tmpBase, `${g.name}.yml`), g.yaml_content);
+    fs.writeFileSync(path.join(tmpBase, `${safeName(g.name)}.yml`), g.yaml_content);
   }
 
   return tmpBase;

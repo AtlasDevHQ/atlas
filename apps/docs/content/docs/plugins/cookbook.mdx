@@ -850,6 +850,116 @@ connection: {
 Async validators add latency to every query. Prefer synchronous validation when possible. If you must call an external service, add a timeout and consider caching the schema locally.
 </Callout>
 
+### Complete Plugin with SOQL Length-Limit Validator
+
+A full datasource plugin that enforces Salesforce SOQL limits: query length cap, SELECT-only, and forbidden DML keywords:
+
+```typescript
+import { z } from "zod";
+import { createPlugin } from "@useatlas/plugin-sdk";
+import type {
+  AtlasDatasourcePlugin,
+  PluginDBConnection,
+  PluginQueryResult,
+  QueryValidationResult,
+} from "@useatlas/plugin-sdk";
+
+const SOQL_MAX_LENGTH = 20_000; // Salesforce SOQL character limit
+const SOQL_FORBIDDEN = [/\b(DELETE|INSERT|UPDATE|UPSERT|UNDELETE|MERGE)\b/i];
+
+function validateSOQL(query: string): QueryValidationResult {
+  const trimmed = query.trim();
+  if (!trimmed) return { valid: false, reason: "Empty query" };
+
+  if (trimmed.length > SOQL_MAX_LENGTH) {
+    return {
+      valid: false,
+      reason: `SOQL query exceeds ${SOQL_MAX_LENGTH} character limit (${trimmed.length} chars)`,
+    };
+  }
+
+  if (!/^\s*SELECT\b/i.test(trimmed)) {
+    return { valid: false, reason: "Only SELECT queries are allowed in SOQL" };
+  }
+
+  for (const pattern of SOQL_FORBIDDEN) {
+    if (pattern.test(trimmed)) {
+      return { valid: false, reason: `Forbidden SOQL operation: ${pattern.source}` };
+    }
+  }
+
+  return { valid: true };
+}
+
+const configSchema = z.object({
+  instanceUrl: z.string().url(),
+  accessToken: z.string().min(1),
+});
+
+type SalesforceConfig = z.infer<typeof configSchema>;
+
+function createSOQLConnection(config: SalesforceConfig): PluginDBConnection {
+  return {
+    async query(soql: string, timeoutMs?: number): Promise<PluginQueryResult> {
+      const response = await fetch(
+        `${config.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(soql)}`,
+        {
+          headers: { Authorization: `Bearer ${config.accessToken}` },
+          signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined,
+        },
+      );
+      if (!response.ok) throw new Error(`SOQL query failed: ${response.status}`);
+      const data = (await response.json()) as { records: Record<string, unknown>[] };
+      const rows = data.records;
+      const columns = rows.length > 0 ? Object.keys(rows[0]!).filter((k) => k !== "attributes") : [];
+      return { columns, rows };
+    },
+    async close() {},
+  };
+}
+
+export const salesforcePlugin = createPlugin<
+  SalesforceConfig,
+  AtlasDatasourcePlugin<SalesforceConfig>
+>({
+  configSchema,
+  create: (config) => ({
+    id: "salesforce-soql",
+    types: ["datasource"] as const,
+    version: "1.0.0",
+    config,
+    connection: {
+      create: () => createSOQLConnection(config),
+      dbType: "salesforce",
+      validate: validateSOQL,
+    },
+    dialect: [
+      "This datasource uses SOQL (Salesforce Object Query Language).",
+      "- Use relationship queries instead of JOINs (e.g. Account.Name).",
+      "- No SELECT * — always list specific fields.",
+      "- Maximum query length: 20,000 characters.",
+    ].join("\n"),
+  }),
+});
+```
+
+Register in `atlas.config.ts`:
+
+```typescript
+plugins: [
+  salesforcePlugin({
+    instanceUrl: process.env.SF_INSTANCE_URL!,
+    accessToken: process.env.SF_ACCESS_TOKEN!,
+  }),
+],
+```
+
+Key points:
+- **`validate` completely replaces** the standard 4-layer SQL validation — it is your responsibility to enforce safety
+- **`reason` is user-facing** — it appears in error responses shown to the agent and in audit logs
+- **Auto-LIMIT and RLS are skipped** for custom-validated connections since non-SQL languages may not support them
+- **Hooks still fire** — queries rewritten by `beforeQuery` hooks are re-validated through `validateSOQL`
+
 ## Advanced Patterns
 
 ### Registering Custom Tools

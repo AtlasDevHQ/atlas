@@ -551,12 +551,6 @@ Rules:
     const config = getConfig();
     const rlsConfig = config?.rls;
     if (rlsConfig?.enabled && !customValidator) {
-      if (!config) {
-        // Config not loaded — fail-closed rather than risk missing RLS.
-        decrementSourceConcurrency(connId);
-        log.error("getConfig() returned null during RLS-enabled SQL execution — config not loaded");
-        return { success: false, error: "Server configuration not initialized. Please retry." };
-      }
       const ctx = getRequestContext();
       const user = ctx?.user;
 

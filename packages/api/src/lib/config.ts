@@ -420,7 +420,18 @@ export function configFromEnv(): ResolvedConfig {
         `Got: ATLAS_RLS_COLUMN=${column ?? "(unset)"}, ATLAS_RLS_CLAIM=${claim ?? "(unset)"}`,
       );
     }
-    rls = { enabled: true, policies: [{ tables: ["*"], column, claim }], combineWith: "and" as const };
+    const rlsParseResult = RLSConfigSchema.safeParse({
+      enabled: true,
+      policies: [{ tables: ["*"], column, claim }],
+      combineWith: "and",
+    });
+    if (!rlsParseResult.success) {
+      throw new Error(
+        `Invalid RLS environment variable configuration: ${rlsParseResult.error.issues.map((i) => i.message).join("; ")}. ` +
+        `Check ATLAS_RLS_COLUMN (must be a valid SQL identifier) and ATLAS_RLS_CLAIM.`,
+      );
+    }
+    rls = rlsParseResult.data;
   }
 
   // Sandbox priority from env var (comma-separated backend names)

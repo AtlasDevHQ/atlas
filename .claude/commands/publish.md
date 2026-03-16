@@ -12,7 +12,7 @@ Run these in parallel:
 
 1. Current published versions:
    ```bash
-   for pkg in types create create-plugin sdk plugin-sdk react clickhouse snowflake duckdb mysql salesforce e2b daytona nsjail sidecar vercel-sandbox slack email jira yaml-context; do
+   for pkg in types create create-plugin sdk plugin-sdk react clickhouse snowflake duckdb mysql salesforce e2b daytona nsjail sidecar vercel-sandbox slack webhook teams email jira yaml-context; do
      npm view "@useatlas/$pkg" version 2>/dev/null && echo "  @useatlas/$pkg" || echo "  @useatlas/$pkg (not published)"
    done
    ```
@@ -27,7 +27,7 @@ Run these in parallel:
    jq -r '.version' packages/plugin-sdk/package.json && echo "  plugin-sdk"
    jq -r '.version' packages/react/package.json && echo "  react"
    # Plugins
-   for plugin in clickhouse snowflake duckdb mysql salesforce e2b daytona nsjail sidecar vercel-sandbox slack email jira yaml-context; do
+   for plugin in clickhouse snowflake duckdb mysql salesforce e2b daytona nsjail sidecar vercel-sandbox slack webhook teams email jira yaml-context; do
      jq -r '.version' "plugins/$plugin/package.json" && echo "  $plugin"
    done
    ```
@@ -172,6 +172,28 @@ done
 
 All N packages published successfully.
 ```
+
+---
+
+**New packages — initial manual publish required:**
+
+OIDC trusted publishing only works for packages that already exist on npm. When publishing a **brand-new** `@useatlas/*` package for the first time:
+
+1. Ask the user for a temporary npm access token (create at https://www.npmjs.com/settings/tokens)
+2. Publish manually from the package directory:
+   ```bash
+   cd plugins/<name> && npm publish --access public --registry https://registry.npmjs.org/ --//registry.npmjs.org/:_authToken=<TOKEN>
+   ```
+3. After the initial publish, configure trusted publishing on npmjs.com:
+   - Go to the package settings page → "Publishing access"
+   - Add a GitHub Actions trusted publisher:
+     - Repository: `AtlasDevHQ/atlas`
+     - Environment: `npm`
+     - Workflow: `publish.yml`
+4. Remind the user to **revoke the temporary token** immediately after use
+5. Ensure the publish workflow (`.github/workflows/publish.yml`) has the tag trigger and publish step for the new package — if not, add them before the first tag-based publish
+
+After initial setup, all subsequent publishes work automatically via tags.
 
 ---
 

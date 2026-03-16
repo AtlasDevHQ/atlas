@@ -5,7 +5,7 @@ Microsoft Teams interaction plugin with Bot Framework messaging, @mention handli
 ## Install
 
 ```bash
-bun add @useatlas/teams jose
+bun add @useatlas/teams
 ```
 
 ## Usage

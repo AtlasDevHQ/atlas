@@ -6,7 +6,7 @@ import {
   injectRLSConditions,
   type RLSFilterGroup,
 } from "@atlas/api/lib/rls";
-import type { RLSConfig } from "@atlas/api/lib/config";
+import { type RLSConfig, RLSPolicySchema, RLSConfigSchema } from "@atlas/api/lib/config";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 
 // ---------------------------------------------------------------------------
@@ -839,5 +839,217 @@ describe("injectRLSConditions", () => {
     expect(result).toContain("acme");
     const p = new Parser();
     expect(() => p.astify(result, { database: "PostgresQL" })).not.toThrow();
+  });
+
+  it("OR parenthesization preserves existing WHERE precedence", () => {
+    const sql = "SELECT * FROM orders WHERE status = 'active'";
+    const groups: RLSFilterGroup[] = [
+      { filters: [{ table: "orders", column: "tenant_id", value: "acme" }] },
+      { filters: [{ table: "orders", column: "region", value: "us-east" }] },
+    ];
+    const result = injectRLSConditions(sql, groups, "or", "postgres");
+    // Parse result and verify the top-level WHERE is AND (existing AND rls)
+    // not OR (which would widen access)
+    const p = new Parser();
+    const ast = p.astify(result, { database: "PostgresQL" });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const stmt = (Array.isArray(ast) ? ast[0] : ast) as any;
+    // Top-level WHERE operator must be AND (existing WHERE AND rls_group)
+    expect(stmt.where.operator).toBe("AND");
+    // The right side of the AND should contain OR (the RLS groups)
+    expect(stmt.where.right.operator).toBe("OR");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Zod schema validation
+// ---------------------------------------------------------------------------
+
+describe("RLSPolicySchema validation", () => {
+  it("accepts single column+claim shorthand", () => {
+    const result = RLSPolicySchema.safeParse({
+      tables: ["orders"],
+      column: "tenant_id",
+      claim: "org_id",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts conditions array", () => {
+    const result = RLSPolicySchema.safeParse({
+      tables: ["orders"],
+      conditions: [
+        { column: "tenant_id", claim: "org_id" },
+        { column: "region", claim: "region" },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects both column+claim AND conditions", () => {
+    const result = RLSPolicySchema.safeParse({
+      tables: ["orders"],
+      column: "tenant_id",
+      claim: "org_id",
+      conditions: [{ column: "region", claim: "region" }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects neither column+claim NOR conditions", () => {
+    const result = RLSPolicySchema.safeParse({
+      tables: ["orders"],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects column without claim", () => {
+    const result = RLSPolicySchema.safeParse({
+      tables: ["orders"],
+      column: "tenant_id",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects claim without column", () => {
+    const result = RLSPolicySchema.safeParse({
+      tables: ["orders"],
+      claim: "org_id",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects invalid column name in shorthand", () => {
+    const result = RLSPolicySchema.safeParse({
+      tables: ["orders"],
+      column: "1invalid",
+      claim: "org_id",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects invalid column name in conditions", () => {
+    const result = RLSPolicySchema.safeParse({
+      tables: ["orders"],
+      conditions: [{ column: "drop table", claim: "org_id" }],
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("RLSConfigSchema validation", () => {
+  it("defaults combineWith to 'and'", () => {
+    const result = RLSConfigSchema.safeParse({
+      enabled: true,
+      policies: [{ tables: ["*"], column: "tenant_id", claim: "org" }],
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.combineWith).toBe("and");
+    }
+  });
+
+  it("accepts combineWith 'or'", () => {
+    const result = RLSConfigSchema.safeParse({
+      enabled: true,
+      combineWith: "or",
+      policies: [{ tables: ["*"], column: "tenant_id", claim: "org" }],
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.combineWith).toBe("or");
+    }
+  });
+
+  it("rejects enabled with no policies", () => {
+    const result = RLSConfigSchema.safeParse({
+      enabled: true,
+      policies: [],
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Edge cases: claim type validation
+// ---------------------------------------------------------------------------
+
+describe("resolveRLSFilters claim type validation", () => {
+  const config: RLSConfig = {
+    enabled: true,
+    policies: [{ tables: ["*"], column: "tenant_id", claim: "tenant" }],
+    combineWith: "and",
+  };
+
+  it("blocks object-type claims with actionable error", () => {
+    const user: AtlasUser = {
+      id: "user-1",
+      mode: "byot",
+      label: "test",
+      claims: { tenant: { id: "acme", name: "Acme Corp" } },
+    };
+    const result = resolveRLSFilters(user, new Set(["orders"]), config);
+    expect("error" in result).toBe(true);
+    if ("error" in result) {
+      expect(result.error).toContain("object");
+      expect(result.error).toContain("tenant.id");
+    }
+  });
+
+  it("blocks null elements in array claims", () => {
+    const arrayConfig: RLSConfig = {
+      enabled: true,
+      policies: [{ tables: ["*"], column: "dept", claim: "departments" }],
+      combineWith: "and",
+    };
+    const user: AtlasUser = {
+      id: "user-1",
+      mode: "byot",
+      label: "test",
+      claims: { departments: ["eng", null, "sales"] },
+    };
+    const result = resolveRLSFilters(user, new Set(["orders"]), arrayConfig);
+    expect("error" in result).toBe(true);
+    if ("error" in result) {
+      expect(result.error).toContain("null");
+    }
+  });
+
+  it("blocks object elements in array claims", () => {
+    const arrayConfig: RLSConfig = {
+      enabled: true,
+      policies: [{ tables: ["*"], column: "dept", claim: "departments" }],
+      combineWith: "and",
+    };
+    const user: AtlasUser = {
+      id: "user-1",
+      mode: "byot",
+      label: "test",
+      claims: { departments: [{ name: "eng" }, { name: "sales" }] },
+    };
+    const result = resolveRLSFilters(user, new Set(["orders"]), arrayConfig);
+    expect("error" in result).toBe(true);
+    if ("error" in result) {
+      expect(result.error).toContain("non-primitive");
+    }
+  });
+
+  it("allows numeric array elements", () => {
+    const arrayConfig: RLSConfig = {
+      enabled: true,
+      policies: [{ tables: ["*"], column: "dept_id", claim: "dept_ids" }],
+      combineWith: "and",
+    };
+    const user: AtlasUser = {
+      id: "user-1",
+      mode: "byot",
+      label: "test",
+      claims: { dept_ids: [1, 2, 3] },
+    };
+    const result = resolveRLSFilters(user, new Set(["orders"]), arrayConfig);
+    expect("groups" in result).toBe(true);
+    if ("groups" in result) {
+      expect(result.groups[0].filters[0].values).toEqual(["1", "2", "3"]);
+    }
   });
 });

@@ -100,7 +100,7 @@ export function resolveRLSFilters(
   }
 
   const groups: RLSFilterGroup[] = [];
-  const combineWith = config.combineWith ?? "and";
+  const combineWith = config.combineWith;
 
   for (const policy of config.policies) {
     // Match queried tables against policy tables
@@ -116,7 +116,13 @@ export function resolveRLSFilters(
     if (matchingTables.size === 0) continue;
 
     // Normalize conditions: single column/claim → conditions array
-    const conditions = policy.conditions ?? [{ column: policy.column!, claim: policy.claim! }];
+    const conditions = policy.conditions ?? (() => {
+      if (!policy.column || !policy.claim) {
+        // Should be unreachable after Zod validation, but fail-closed if it isn't.
+        return [{ column: "__INVALID__", claim: "__INVALID__" }];
+      }
+      return [{ column: policy.column, claim: policy.claim }];
+    })();
 
     const filters: RLSFilter[] = [];
 
@@ -129,12 +135,32 @@ export function resolveRLSFilters(
         };
       }
 
+      // Reject object-typed claims (not arrays) — would produce "[object Object]"
+      if (typeof rawValue === "object" && !Array.isArray(rawValue)) {
+        return {
+          error: `RLS policy claim "${condition.claim}" resolved to an object instead of a scalar or array. Use a more specific claim path (e.g. "${condition.claim}.id"). Query blocked.`,
+        };
+      }
+
       if (Array.isArray(rawValue)) {
         // Empty array → fail-closed (no values to match against)
         if (rawValue.length === 0) {
           return {
             error: `RLS policy claim "${condition.claim}" resolved to an empty array. Query blocked (fail-closed).`,
           };
+        }
+        // Validate array elements are primitives — objects would produce "[object Object]"
+        for (const v of rawValue) {
+          if (v === null || v === undefined) {
+            return {
+              error: `RLS policy claim "${condition.claim}" contains a null/undefined array element. Query blocked (fail-closed).`,
+            };
+          }
+          if (typeof v === "object") {
+            return {
+              error: `RLS policy claim "${condition.claim}" contains a non-primitive array element. Array values must be strings, numbers, or booleans. Query blocked.`,
+            };
+          }
         }
         const escapedValues = rawValue.map((v) => String(v).replace(/'/g, "''"));
         for (const table of matchingTables) {

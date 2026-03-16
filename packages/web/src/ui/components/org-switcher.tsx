@@ -11,7 +11,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useAtlasConfig } from "@/ui/context";
+import { authClient } from "@/lib/auth/client";
 
 interface OrgOption {
   id: string;
@@ -21,7 +21,6 @@ interface OrgOption {
 }
 
 export function OrgSwitcher() {
-  const { authClient } = useAtlasConfig();
   const session = authClient.useSession();
   const [orgs, setOrgs] = useState<OrgOption[]>([]);
   const [loading, setLoading] = useState(true);
@@ -48,7 +47,7 @@ export function OrgSwitcher() {
     }
     fetchOrgs();
     return () => { cancelled = true; };
-  }, [session.data?.user, authClient]);
+  }, [session.data?.user]);
 
   const activeOrg = orgs.find((o) => o.id === activeOrgId);
 

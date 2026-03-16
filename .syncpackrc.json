@@ -34,6 +34,7 @@
         "@useatlas/vercel-sandbox",
         "@useatlas/slack",
         "@useatlas/teams",
+        "@useatlas/webhook",
         "@useatlas/mcp",
         "@useatlas/email",
         "@useatlas/jira",

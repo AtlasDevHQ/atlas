@@ -5,6 +5,7 @@
     "mcp",
     "obsidian",
     "slack",
-    "teams"
+    "teams",
+    "webhook"
   ]
 }

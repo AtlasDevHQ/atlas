@@ -711,6 +711,8 @@ interface QueryValidationResult {
 }
 ```
 
+`validate` is defined on the datasource plugin's `connection` configuration object (`AtlasDatasourcePlugin.connection`), not on the `PluginDBConnection` runtime interface.
+
 **Behavior when `validate` is present:**
 
 - The entire standard `validateSQL` pipeline is bypassed for this connection

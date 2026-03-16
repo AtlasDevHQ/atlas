@@ -1,6 +1,6 @@
 {
   "name": "@useatlas/teams",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "Atlas Microsoft Teams interaction plugin",
   "type": "module",
   "main": "./src/index.ts",

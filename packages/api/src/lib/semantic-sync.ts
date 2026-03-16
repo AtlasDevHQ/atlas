@@ -4,11 +4,12 @@
  * Maintains persistent per-org directories at `semantic/.orgs/{orgId}/`
  * that mirror the `semantic_entities` DB table. The DB is the source of
  * truth; the disk is a persistent cache consumed by the explore tool
- * (models are RL'd on filesystem exploration — d0 insight).
+ * (the agent navigates the semantic layer via filesystem commands like
+ * `ls`, `cat`, and `grep`).
  *
- * Two sync directions:
- * - DB → disk: admin API entity CRUD writes DB first, then syncs to disk
- * - disk → DB: `atlas init` / import writes disk first, then imports to DB
+ * Currently implements DB → disk: admin API entity CRUD writes DB first,
+ * then syncs to disk. The reverse direction (disk → DB, for `atlas init`
+ * / import) is planned in #523.
  *
  * File writes use atomic write-to-temp + rename to prevent partial reads.
  */
@@ -31,10 +32,17 @@ const SEMANTIC_BASE = path.resolve(process.cwd(), "semantic");
  *
  * - With orgId: `semantic/.orgs/{orgId}/`
  * - Without orgId: `semantic/` (self-hosted fallback)
+ *
+ * Validates orgId against path traversal — rejects values containing
+ * path separators or `..` components.
  */
 export function getSemanticRoot(orgId?: string): string {
-  if (orgId) return path.join(SEMANTIC_BASE, ".orgs", orgId);
-  return SEMANTIC_BASE;
+  if (!orgId) return SEMANTIC_BASE;
+  const safe = path.basename(orgId);
+  if (safe !== orgId || orgId === "." || orgId === "..") {
+    throw new Error(`Invalid orgId for semantic root: "${orgId}"`);
+  }
+  return path.join(SEMANTIC_BASE, ".orgs", safe);
 }
 
 // ---------------------------------------------------------------------------
@@ -152,7 +160,8 @@ export async function syncEntityDeleteFromDisk(
 
 /**
  * Per-org mutex to prevent concurrent full rebuilds from interleaving
- * with single-file writes. Map<orgId, Promise<void>>.
+ * with each other. Single-file writes (syncEntityToDisk) are not
+ * serialized by this lock — atomicWriteFile provides per-file safety.
  */
 const _rebuildLocks = new Map<string, Promise<void>>();
 
@@ -167,7 +176,12 @@ export async function syncAllEntitiesToDisk(orgId: string): Promise<number> {
   // Per-org mutex: wait for any in-progress rebuild, then start ours
   const existing = _rebuildLocks.get(orgId);
   if (existing) {
-    await existing.catch(() => {}); // don't propagate prior failures
+    await existing.catch((err) => {
+      log.debug(
+        { orgId, err: err instanceof Error ? err.message : String(err) },
+        "Prior rebuild for org failed — proceeding with fresh rebuild attempt",
+      );
+    });
   }
 
   let resolve: () => void;
@@ -189,8 +203,10 @@ async function _doSyncAllEntitiesToDisk(orgId: string): Promise<number> {
   const root = getSemanticRoot(orgId);
 
   // Ensure directories exist
-  await fs.promises.mkdir(path.join(root, "entities"), { recursive: true });
-  await fs.promises.mkdir(path.join(root, "metrics"), { recursive: true });
+  await Promise.all([
+    fs.promises.mkdir(path.join(root, "entities"), { recursive: true }),
+    fs.promises.mkdir(path.join(root, "metrics"), { recursive: true }),
+  ]);
 
   // Build a set of expected files so we can clean up stale ones
   const expectedFiles = new Set<string>();
@@ -213,7 +229,14 @@ async function _doSyncAllEntitiesToDisk(orgId: string): Promise<number> {
   // Remove stale files that are no longer in DB
   await _cleanStaleFiles(root, expectedFiles);
 
-  log.info({ orgId, synced, total: rows.length }, "Full sync to disk complete");
+  if (synced < rows.length) {
+    log.warn(
+      { orgId, synced, total: rows.length, failed: rows.length - synced },
+      "Full sync completed with failures — some entities may not be visible to explore tool",
+    );
+  } else {
+    log.info({ orgId, synced, total: rows.length }, "Full sync to disk complete");
+  }
   return synced;
 }
 
@@ -290,9 +313,19 @@ export async function reconcileAllOrgs(): Promise<void> {
     if (!hasInternalDB()) return;
 
     const { internalQuery } = await import("@atlas/api/lib/db/internal");
-    const orgs = await internalQuery<{ org_id: string }>(
-      "SELECT DISTINCT org_id FROM semantic_entities",
-    );
+    let orgs: Array<{ org_id: string }>;
+    try {
+      orgs = await internalQuery<{ org_id: string }>(
+        "SELECT DISTINCT org_id FROM semantic_entities",
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("does not exist") || msg.includes("no such table")) {
+        log.info("semantic_entities table not found — first boot before migration, skipping reconciliation");
+        return;
+      }
+      throw err; // re-throw unexpected DB errors
+    }
 
     if (orgs.length === 0) {
       log.debug("No org semantic entities in DB — skipping boot reconciliation");
@@ -310,8 +343,16 @@ export async function reconcileAllOrgs(): Promise<void> {
       try {
         const entries = await fs.promises.readdir(entitiesDir);
         needsRebuild = !entries.some((e) => e.endsWith(".yml"));
-      } catch {
-        needsRebuild = true; // directory doesn't exist
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+          needsRebuild = true;
+        } else {
+          log.warn(
+            { orgId, err: err instanceof Error ? err.message : String(err) },
+            "Unexpected error reading org entities directory — attempting rebuild",
+          );
+          needsRebuild = true;
+        }
       }
 
       if (needsRebuild) {

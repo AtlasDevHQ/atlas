@@ -11,11 +11,12 @@
  * subdirectories are present, all connections share the same whitelist
  * (backward compat with single-DB).
  *
- * **Org scoping:** When an orgId is active, entities are loaded from the
- * internal DB (`semantic_entities` table) instead of disk. The per-org
- * whitelist is cached in memory and invalidated on entity CRUD. When no
- * orgId is present (CLI, self-hosted without orgs), file-based YAML is
- * used (existing behavior).
+ * **Org scoping:** When an orgId is active, the whitelist is loaded from
+ * the internal DB (`semantic_entities` table). The semantic index is built
+ * from persistent on-disk files at `semantic/.orgs/{orgId}/`, maintained
+ * by the dual-write sync layer (`semantic-sync.ts`). When no orgId is
+ * present (CLI, self-hosted without orgs), file-based YAML is used
+ * (existing behavior).
  */
 
 import * as fs from "fs";
@@ -514,8 +515,11 @@ export function invalidateOrgSemanticIndex(orgId: string): void {
  * Get or build the semantic index for an org.
  *
  * Reads from the persistent org directory at `semantic/.orgs/{orgId}/`
- * maintained by the dual-write sync layer (semantic-sync.ts). Falls back
- * to DB → temp dir if the persistent directory doesn't exist yet.
+ * maintained by the dual-write sync layer (`semantic-sync.ts`). If the
+ * directory is empty or missing, triggers a DB-to-disk sync first.
+ *
+ * On sync failure (e.g. transient DB outage), returns an uncached result
+ * built from whatever is on disk — the next call will retry the sync.
  */
 export async function getOrgSemanticIndex(orgId: string): Promise<string> {
   const cached = _orgSemanticIndexes.get(orgId);
@@ -527,11 +531,17 @@ export async function getOrgSemanticIndex(orgId: string): Promise<string> {
   // Ensure the org directory exists on disk (may be first access after boot)
   const entitiesDir = path.join(orgRoot, "entities");
   let hasFiles = false;
+  let syncFailed = false;
   try {
     const entries = fs.readdirSync(entitiesDir);
     hasFiles = entries.some((e) => e.endsWith(".yml"));
-  } catch {
-    // Directory doesn't exist — needs rebuild
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      log.warn(
+        { orgId, err: err instanceof Error ? err.message : String(err) },
+        "Unexpected error reading org entities directory",
+      );
+    }
   }
 
   if (!hasFiles) {
@@ -539,16 +549,21 @@ export async function getOrgSemanticIndex(orgId: string): Promise<string> {
     try {
       await syncAllEntitiesToDisk(orgId);
     } catch (err) {
+      syncFailed = true;
       log.warn(
         { orgId, err: err instanceof Error ? err.message : String(err) },
-        "Failed to sync org entities to disk for semantic index — index may be empty",
+        "Failed to sync org entities to disk for semantic index — returning uncached result",
       );
     }
   }
 
   const { buildSemanticIndex } = await import("@atlas/api/lib/semantic-index");
   const index = buildSemanticIndex(orgRoot);
-  _orgSemanticIndexes.set(orgId, index);
+
+  // Don't cache if sync failed — next call should retry
+  if (!syncFailed) {
+    _orgSemanticIndexes.set(orgId, index);
+  }
   return index;
 }
 

@@ -7,7 +7,7 @@
 export interface SidecarExecRequest {
   command: string;
   timeout?: number;
-  /** Working directory override (must be under SEMANTIC_DIR). */
+  /** Working directory override, relative to SEMANTIC_DIR (e.g. '.orgs/org123'). Must resolve to a path under SEMANTIC_DIR. */
   cwd?: string;
 }
 

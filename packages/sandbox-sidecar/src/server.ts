@@ -99,11 +99,11 @@ async function handleExec(req: Request): Promise<Response> {
 
   const timeout = clampTimeout(body.timeout, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
 
-  // Resolve working directory — must be under SEMANTIC_DIR to prevent traversal
+  // Resolve working directory — must be strictly under SEMANTIC_DIR to prevent traversal
   let cwd = SEMANTIC_DIR;
   if (body.cwd) {
     const resolved = join(SEMANTIC_DIR, body.cwd.replace(/^\/semantic\/?/, ""));
-    if (!resolved.startsWith(SEMANTIC_DIR)) {
+    if (resolved !== SEMANTIC_DIR && !resolved.startsWith(SEMANTIC_DIR + "/")) {
       return Response.json({ error: "cwd must be under SEMANTIC_DIR" }, { status: 400 });
     }
     cwd = resolved;

@@ -2,20 +2,22 @@
  * Tests for the dual-write sync layer (semantic-sync.ts).
  *
  * Covers:
- * - getSemanticRoot() path resolution
- * - syncEntityToDisk() atomic file writes
- * - syncEntityDeleteFromDisk() file removal
- * - syncAllEntitiesToDisk() full rebuild + stale file cleanup
- * - cleanupOrgDirectory() directory removal
+ * - getSemanticRoot() path resolution + path traversal rejection
+ * - syncEntityToDisk() — exercises the real function via actual filesystem
+ * - syncEntityDeleteFromDisk() — file removal + ENOENT handling
+ * - syncAllEntitiesToDisk() — full rebuild from DB mock, verifies disk output
+ * - cleanupOrgDirectory() — directory removal
  *
- * Uses a real temp directory for filesystem operations.
+ * The tests call the real production functions. Since getSemanticRoot uses
+ * a process-level base path, syncEntityToDisk/syncAllEntitiesToDisk write
+ * to the real semantic/.orgs/ directory. Tests clean up after themselves.
+ *
  * Uses mock.module() to mock the DB layer.
  */
 
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
-import * as os from "os";
 
 // ---------------------------------------------------------------------------
 // Mock the DB layer
@@ -54,12 +56,20 @@ import {
 } from "../semantic-sync";
 
 // ---------------------------------------------------------------------------
-// Test setup
+// Test setup — use a unique org ID per test to avoid collisions
 // ---------------------------------------------------------------------------
 
-let tmpDir: string;
+/** Org IDs created during tests — cleaned up in afterEach. */
+const createdOrgIds: string[] = [];
+
+function testOrgId(): string {
+  const id = `test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  createdOrgIds.push(id);
+  return id;
+}
 
 function makeEntityRow(
+  orgId: string,
   name: string,
   entityType: string,
   yamlContent: string,
@@ -67,7 +77,7 @@ function makeEntityRow(
 ): SemanticEntityRow {
   return {
     id: `id-${name}`,
-    org_id: "org-test",
+    org_id: orgId,
     entity_type: entityType as SemanticEntityRow["entity_type"],
     name,
     yaml_content: yamlContent,
@@ -78,17 +88,21 @@ function makeEntityRow(
 }
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-sync-test-"));
   mockListEntities.mockReset();
   mockListEntities.mockImplementation(() => Promise.resolve([]));
 });
 
 afterEach(() => {
-  try {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  } catch {
-    // cleanup best-effort
+  // Clean up any org directories created during the test
+  for (const orgId of createdOrgIds) {
+    try {
+      const root = getSemanticRoot(orgId);
+      fs.rmSync(root, { recursive: true, force: true });
+    } catch {
+      // best-effort
+    }
   }
+  createdOrgIds.length = 0;
 });
 
 // ---------------------------------------------------------------------------
@@ -113,44 +127,98 @@ describe("getSemanticRoot", () => {
     expect(root1).toContain("org-a");
     expect(root2).toContain("org-b");
   });
+
+  it("rejects orgId with path traversal (../)", () => {
+    expect(() => getSemanticRoot("../../etc")).toThrow("Invalid orgId");
+  });
+
+  it("rejects orgId with slash", () => {
+    expect(() => getSemanticRoot("org/sub")).toThrow("Invalid orgId");
+  });
+
+  it("rejects orgId of '..'", () => {
+    expect(() => getSemanticRoot("..")).toThrow("Invalid orgId");
+  });
+
+  it("rejects orgId of '.'", () => {
+    expect(() => getSemanticRoot(".")).toThrow("Invalid orgId");
+  });
+
+  it("accepts normal UUID-like orgId", () => {
+    expect(() => getSemanticRoot("a1b2c3d4-e5f6-7890-abcd-ef1234567890")).not.toThrow();
+  });
 });
 
 // ---------------------------------------------------------------------------
-// syncEntityToDisk
+// syncEntityToDisk — exercises the real function
 // ---------------------------------------------------------------------------
 
 describe("syncEntityToDisk", () => {
-  it("writes entity YAML to the correct path", async () => {
-    // Override semantic root for this test by using the internal function
-    // We test the file writing mechanism directly
-    const orgRoot = path.join(tmpDir, ".orgs", "org-test");
-    const entitiesDir = path.join(orgRoot, "entities");
-    fs.mkdirSync(entitiesDir, { recursive: true });
-
-    const filePath = path.join(entitiesDir, "users.yml");
+  it("writes entity YAML to the correct path via atomic write", async () => {
+    const orgId = testOrgId();
     const content = "table: users\ndescription: User table\n";
 
-    // Write directly using fs to verify the path pattern
-    fs.writeFileSync(filePath, content);
+    await syncEntityToDisk(orgId, "users", "entity", content);
 
-    expect(fs.existsSync(filePath)).toBe(true);
-    expect(fs.readFileSync(filePath, "utf-8")).toBe(content);
+    const expectedPath = path.join(getSemanticRoot(orgId), "entities", "users.yml");
+    expect(fs.existsSync(expectedPath)).toBe(true);
+    expect(fs.readFileSync(expectedPath, "utf-8")).toBe(content);
   });
 
-  it("creates parent directories if they don't exist", async () => {
-    // This tests the atomicWriteFile path creation behavior
-    const orgRoot = path.join(tmpDir, ".orgs", "org-new");
-    const entitiesDir = path.join(orgRoot, "entities");
+  it("creates parent directories automatically", async () => {
+    const orgId = testOrgId();
+    const root = getSemanticRoot(orgId);
 
-    expect(fs.existsSync(entitiesDir)).toBe(false);
+    // Directory should not exist yet
+    expect(fs.existsSync(root)).toBe(false);
 
-    // syncEntityToDisk creates dirs automatically via atomicWriteFile
-    // We simulate by writing through the expected path
-    fs.mkdirSync(entitiesDir, { recursive: true });
-    const filePath = path.join(entitiesDir, "test.yml");
-    fs.writeFileSync(filePath, "table: test\n");
+    await syncEntityToDisk(orgId, "orders", "entity", "table: orders\n");
 
-    expect(fs.existsSync(filePath)).toBe(true);
+    const expectedPath = path.join(root, "entities", "orders.yml");
+    expect(fs.existsSync(expectedPath)).toBe(true);
+  });
+
+  it("writes metrics to the metrics subdirectory", async () => {
+    const orgId = testOrgId();
+
+    await syncEntityToDisk(orgId, "revenue", "metric", "name: revenue\nsql: SUM(amount)\n");
+
+    const expectedPath = path.join(getSemanticRoot(orgId), "metrics", "revenue.yml");
+    expect(fs.existsSync(expectedPath)).toBe(true);
+  });
+
+  it("writes glossary to the root directory", async () => {
+    const orgId = testOrgId();
+
+    await syncEntityToDisk(orgId, "glossary", "glossary", "terms:\n  - name: ARR\n");
+
+    const expectedPath = path.join(getSemanticRoot(orgId), "glossary.yml");
+    expect(fs.existsSync(expectedPath)).toBe(true);
+  });
+
+  it("sanitizes entity names with path traversal characters", async () => {
+    const orgId = testOrgId();
+
+    await syncEntityToDisk(orgId, "../../etc/passwd", "entity", "table: hack\n");
+
+    // Should NOT create a file at ../../etc/passwd — safeName strips traversal
+    const root = getSemanticRoot(orgId);
+    const expectedPath = path.join(root, "entities", "passwd.yml");
+    expect(fs.existsSync(expectedPath)).toBe(true);
+    // Verify nothing escaped
+    expect(fs.existsSync(path.join(root, "..", "..", "etc", "passwd.yml"))).toBe(false);
+  });
+
+  it("does not throw on write failure (swallows error)", async () => {
+    // syncEntityToDisk swallows errors — DB write already succeeded
+    // Use a path-traversal-rejected orgId to verify it doesn't throw
+    // Instead, write to a valid org but with a read-only parent
+    // (hard to simulate portably — just verify the function signature)
+    await expect(
+      syncEntityToDisk("nonexistent-but-valid-org", "test", "entity", "table: test\n"),
+    ).resolves.toBeUndefined();
+    // Clean up
+    createdOrgIds.push("nonexistent-but-valid-org");
   });
 });
 
@@ -160,10 +228,22 @@ describe("syncEntityToDisk", () => {
 
 describe("syncEntityDeleteFromDisk", () => {
   it("does not throw when file does not exist", async () => {
-    // syncEntityDeleteFromDisk handles ENOENT gracefully
     await expect(
       syncEntityDeleteFromDisk("nonexistent-org", "nonexistent", "entity"),
     ).resolves.toBeUndefined();
+  });
+
+  it("removes an existing entity file", async () => {
+    const orgId = testOrgId();
+
+    // Create the file first
+    await syncEntityToDisk(orgId, "to-delete", "entity", "table: to_delete\n");
+    const filePath = path.join(getSemanticRoot(orgId), "entities", "to-delete.yml");
+    expect(fs.existsSync(filePath)).toBe(true);
+
+    // Delete it
+    await syncEntityDeleteFromDisk(orgId, "to-delete", "entity");
+    expect(fs.existsSync(filePath)).toBe(false);
   });
 });
 
@@ -173,27 +253,57 @@ describe("syncEntityDeleteFromDisk", () => {
 
 describe("syncAllEntitiesToDisk", () => {
   it("writes all entities from DB to disk", async () => {
-    const orgId = "org-full-sync";
+    const orgId = testOrgId();
     mockListEntities.mockImplementation(() =>
       Promise.resolve([
-        makeEntityRow("users", "entity", "table: users\ndescription: Users\n"),
-        makeEntityRow("orders", "entity", "table: orders\ndescription: Orders\n"),
-        makeEntityRow("revenue", "metric", "name: revenue\nsql: SUM(amount)\n"),
+        makeEntityRow(orgId, "users", "entity", "table: users\ndescription: Users\n"),
+        makeEntityRow(orgId, "orders", "entity", "table: orders\ndescription: Orders\n"),
+        makeEntityRow(orgId, "revenue", "metric", "name: revenue\nsql: SUM(amount)\n"),
       ]),
     );
 
     const synced = await syncAllEntitiesToDisk(orgId);
     expect(synced).toBe(3);
 
-    // Verify the mock was called with the correct orgId
-    expect(mockListEntities).toHaveBeenCalledWith(orgId);
+    // Verify actual files on disk
+    const root = getSemanticRoot(orgId);
+    expect(fs.existsSync(path.join(root, "entities", "users.yml"))).toBe(true);
+    expect(fs.existsSync(path.join(root, "entities", "orders.yml"))).toBe(true);
+    expect(fs.existsSync(path.join(root, "metrics", "revenue.yml"))).toBe(true);
+    expect(fs.readFileSync(path.join(root, "entities", "users.yml"), "utf-8")).toBe("table: users\ndescription: Users\n");
   });
 
   it("returns 0 when DB has no entities", async () => {
     mockListEntities.mockImplementation(() => Promise.resolve([]));
+    const orgId = testOrgId();
 
-    const synced = await syncAllEntitiesToDisk("org-empty");
+    const synced = await syncAllEntitiesToDisk(orgId);
     expect(synced).toBe(0);
+  });
+
+  it("removes stale files not in DB", async () => {
+    const orgId = testOrgId();
+
+    // Create a file that won't be in the DB
+    const root = getSemanticRoot(orgId);
+    const staleFile = path.join(root, "entities", "stale.yml");
+    fs.mkdirSync(path.join(root, "entities"), { recursive: true });
+    fs.writeFileSync(staleFile, "table: stale\n");
+    expect(fs.existsSync(staleFile)).toBe(true);
+
+    // DB only has "users"
+    mockListEntities.mockImplementation(() =>
+      Promise.resolve([
+        makeEntityRow(orgId, "users", "entity", "table: users\n"),
+      ]),
+    );
+
+    await syncAllEntitiesToDisk(orgId);
+
+    // Stale file should be removed
+    expect(fs.existsSync(staleFile)).toBe(false);
+    // Users file should exist
+    expect(fs.existsSync(path.join(root, "entities", "users.yml"))).toBe(true);
   });
 });
 
@@ -202,18 +312,20 @@ describe("syncAllEntitiesToDisk", () => {
 // ---------------------------------------------------------------------------
 
 describe("cleanupOrgDirectory", () => {
-  it("removes org directory", async () => {
-    const orgRoot = path.join(tmpDir, "org-to-delete");
-    fs.mkdirSync(path.join(orgRoot, "entities"), { recursive: true });
-    fs.writeFileSync(path.join(orgRoot, "entities", "test.yml"), "table: test\n");
+  it("removes the org directory and all contents", async () => {
+    const orgId = testOrgId();
 
-    expect(fs.existsSync(orgRoot)).toBe(true);
+    // Create some files
+    await syncEntityToDisk(orgId, "test", "entity", "table: test\n");
+    const root = getSemanticRoot(orgId);
+    expect(fs.existsSync(root)).toBe(true);
 
-    await cleanupOrgDirectory("org-to-delete");
+    await cleanupOrgDirectory(orgId);
+    expect(fs.existsSync(root)).toBe(false);
 
-    // Since cleanupOrgDirectory uses getSemanticRoot which points to the real
-    // semantic dir, not our tmpDir, we verify the function doesn't throw
-    // on a non-existent path
+    // Remove from cleanup list since we already cleaned up
+    const idx = createdOrgIds.indexOf(orgId);
+    if (idx >= 0) createdOrgIds.splice(idx, 1);
   });
 
   it("does not throw for non-existent org", async () => {

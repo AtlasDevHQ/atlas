@@ -334,11 +334,21 @@ Rules:
         db = connections.get(connId);
         dbType = connections.getDBType(connId);
       }
-    } catch {
-      return {
-        success: false,
-        error: `Connection "${connId}" is not registered. Available: ${connections.list().join(", ") || "(none)"}`,
-      };
+    } catch (err) {
+      // Only handle known registration/configuration errors — re-throw
+      // unexpected ones (e.g., connection init failures) so they surface
+      // properly in the agent response instead of being silently swallowed.
+      const message = err instanceof Error ? err.message : String(err);
+      if (
+        message.includes("is not registered") ||
+        message.includes("No analytics datasource")
+      ) {
+        return {
+          success: false,
+          error: `Connection "${connId}" is not registered. Available: ${connections.list().join(", ") || "(none)"}`,
+        };
+      }
+      throw err;
     }
 
     const targetHost = connections.getTargetHost(connId);

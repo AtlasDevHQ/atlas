@@ -551,6 +551,36 @@ These modules are blocked by default. Use `allowModules` to selectively unblock 
 
 ---
 
+## Session Timeouts
+
+Configure automatic session invalidation policies. Both timeouts are disabled by default (value `0`).
+
+```typescript
+export default defineConfig({
+  session: {
+    idleTimeout: 3600,       // 1 hour — invalidate sessions inactive for this long
+    absoluteTimeout: 86400,  // 24 hours — hard limit regardless of activity
+  },
+});
+```
+
+### Session timeout fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `idleTimeout` | `number` | No | Seconds of inactivity before invalidation. `0` = disabled |
+| `absoluteTimeout` | `number` | No | Maximum session lifetime in seconds. `0` = disabled |
+
+**Env var equivalents:**
+```bash
+ATLAS_SESSION_IDLE_TIMEOUT=3600
+ATLAS_SESSION_ABSOLUTE_TIMEOUT=86400
+```
+
+These settings can be changed at runtime via Admin > Settings without a restart.
+
+---
+
 ## Full Example
 
 ```typescript
@@ -647,6 +677,7 @@ export default defineConfig({
 | `scheduler` | `object` | — | Scheduled task configuration ([details](#scheduler)) |
 | `sandbox` | `object` | — | Sandbox backend priority ([details](#sandbox)) |
 | `python` | `object` | — | Python import guard overrides ([details](#python-import-guard)) |
+| `session` | `object` | — | Session timeout configuration ([details](#session-timeouts)) |
 
 ---
 

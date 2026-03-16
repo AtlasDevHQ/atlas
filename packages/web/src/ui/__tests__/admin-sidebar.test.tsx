@@ -32,7 +32,7 @@ describe("AdminSidebar", () => {
     const { container } = render(<AdminSidebar />, { wrapper: Wrapper });
     const labels = [
       "Overview", "Semantic Layer", "Connections", "Audit",
-      "Users", "Plugins", "Scheduled Tasks", "Actions",
+      "Users", "Sessions", "Plugins", "Scheduled Tasks", "Actions",
     ];
     for (const label of labels) {
       expect(container.textContent).toContain(label);
@@ -59,6 +59,7 @@ describe("AdminSidebar", () => {
     expect(hrefs).toContain("/admin/connections");
     expect(hrefs).toContain("/admin/audit");
     expect(hrefs).toContain("/admin/users");
+    expect(hrefs).toContain("/admin/sessions");
     expect(hrefs).toContain("/admin/plugins");
     expect(hrefs).toContain("/admin/scheduled-tasks");
     expect(hrefs).toContain("/admin/actions");

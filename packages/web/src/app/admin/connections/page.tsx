@@ -39,16 +39,18 @@ import { DataTable } from "@/components/data-table/data-table";
 import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
 import { getConnectionColumns } from "./columns";
 import { useDataTable } from "@/hooks/use-data-table";
-import { Cable, Loader2, Plus, Pencil, Trash2, Eye, EyeOff } from "lucide-react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Cable, Loader2, Plus, Pencil, Trash2, Eye, EyeOff, Activity, ChevronDown, ChevronUp, Droplets } from "lucide-react";
 import { useAdminFetch, useInProgressSet, friendlyError } from "@/ui/hooks/use-admin-fetch";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
 import {
   DB_TYPES,
   type ConnectionHealth,
   type ConnectionInfo,
   type ConnectionDetail,
+  type PoolMetrics,
 } from "@/ui/lib/types";
 
 // ── Connection Form Dialog ───────────────────────────────────────
@@ -401,6 +403,185 @@ function DeleteConnectionDialog({
   );
 }
 
+// ── Pool Stats Section ────────────────────────────────────────────
+
+function PoolBar({ active, idle, total }: { active: number; idle: number; total: number }) {
+  if (total === 0) return <div className="h-2 w-full rounded-full bg-muted" />;
+  const activePct = Math.round((active / total) * 100);
+  const idlePct = Math.round((idle / total) * 100);
+  return (
+    <div className="flex h-2 w-full overflow-hidden rounded-full bg-muted">
+      <div className="bg-blue-500 transition-all" style={{ width: `${activePct}%` }} />
+      <div className="bg-emerald-400 transition-all" style={{ width: `${idlePct}%` }} />
+    </div>
+  );
+}
+
+function PoolStatsSection({
+  apiUrl,
+  credentials,
+  onError,
+}: {
+  apiUrl: string;
+  credentials: RequestCredentials;
+  onError: (msg: string) => void;
+}) {
+  const [metrics, setMetrics] = useState<PoolMetrics[] | null>(null);
+  const [poolLoading, setPoolLoading] = useState(true);
+  const [expanded, setExpanded] = useState(true);
+  const [drainTarget, setDrainTarget] = useState<string | null>(null);
+  const [draining, setDraining] = useState(false);
+  const cancelledRef = useRef(false);
+
+  async function fetchMetrics() {
+    try {
+      const res = await fetch(`${apiUrl}/api/v1/admin/connections/pool`, { credentials });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!cancelledRef.current) setMetrics(data.metrics ?? []);
+    } catch {
+      // silent — pool stats are non-critical
+    } finally {
+      if (!cancelledRef.current) setPoolLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    cancelledRef.current = false;
+    fetchMetrics();
+    return () => { cancelledRef.current = true; };
+  }, [apiUrl, credentials]);
+
+  async function handleDrain(id: string) {
+    setDraining(true);
+    try {
+      const res = await fetch(`${apiUrl}/api/v1/admin/connections/${encodeURIComponent(id)}/drain`, {
+        method: "POST",
+        credentials,
+      });
+      const data = await res.json().catch(() => ({ message: `HTTP ${res.status}` }));
+      if (!res.ok || !data.drained) {
+        onError(data.message || "Drain failed");
+      }
+      fetchMetrics();
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "Network error");
+    } finally {
+      setDraining(false);
+      setDrainTarget(null);
+    }
+  }
+
+  if (poolLoading || !metrics || metrics.length === 0) return null;
+
+  return (
+    <>
+      <div>
+        <button
+          type="button"
+          className="flex w-full items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+          onClick={() => setExpanded(!expanded)}
+        >
+          <Activity className="size-4" />
+          Pool Stats
+          {expanded ? <ChevronUp className="ml-auto size-4" /> : <ChevronDown className="ml-auto size-4" />}
+        </button>
+        {expanded && (
+          <div className="mt-3 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {metrics.map((m) => (
+              <Card key={m.connectionId} className="shadow-none">
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium">
+                    <span className="font-mono">{m.connectionId}</span>
+                    <span className="ml-2 text-xs text-muted-foreground">{m.dbType}</span>
+                  </CardTitle>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setDrainTarget(m.connectionId)}
+                    aria-label={`Drain pool ${m.connectionId}`}
+                    className="h-7 px-2"
+                  >
+                    <Droplets className="size-3.5" />
+                  </Button>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-3">
+                    {m.pool && (
+                      <div>
+                        <div className="mb-1 flex justify-between text-xs text-muted-foreground">
+                          <span>Active: {m.pool.activeCount} / Idle: {m.pool.idleCount}</span>
+                          <span>Total: {m.pool.totalSize}</span>
+                        </div>
+                        <PoolBar active={m.pool.activeCount} idle={m.pool.idleCount} total={m.pool.totalSize} />
+                        {m.pool.waitingCount > 0 && (
+                          <p className="mt-1 text-xs text-yellow-600 dark:text-yellow-400">
+                            {m.pool.waitingCount} waiting
+                          </p>
+                        )}
+                      </div>
+                    )}
+                    <div className="grid grid-cols-3 gap-2 text-center">
+                      <div>
+                        <p className="text-lg font-semibold tabular-nums">{m.totalQueries}</p>
+                        <p className="text-xs text-muted-foreground">Queries</p>
+                      </div>
+                      <div>
+                        <p className={cn("text-lg font-semibold tabular-nums", m.totalErrors > 0 && "text-destructive")}>
+                          {m.totalErrors}
+                        </p>
+                        <p className="text-xs text-muted-foreground">Errors</p>
+                      </div>
+                      <div>
+                        <p className="text-lg font-semibold tabular-nums">{m.avgQueryTimeMs}ms</p>
+                        <p className="text-xs text-muted-foreground">Avg time</p>
+                      </div>
+                    </div>
+                    {m.consecutiveFailures > 0 && (
+                      <p className="text-xs text-yellow-600 dark:text-yellow-400">
+                        {m.consecutiveFailures} consecutive failures
+                      </p>
+                    )}
+                    {m.lastDrainAt && (
+                      <p className="text-xs text-muted-foreground">
+                        Last drain: {new Date(m.lastDrainAt).toLocaleString()}
+                      </p>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <AlertDialog open={!!drainTarget} onOpenChange={(open) => !open && setDrainTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Drain Connection Pool</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will close all connections in the{" "}
+              <span className="font-mono font-semibold">{drainTarget}</span> pool and recreate it.
+              Active queries may fail.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={draining}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => drainTarget && handleDrain(drainTarget)}
+              disabled={draining}
+            >
+              {draining ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
+              Drain & Recreate
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  );
+}
+
 // ── Page ──────────────────────────────────────────────────────────
 
 export default function ConnectionsPage() {
@@ -582,6 +763,8 @@ export default function ConnectionsPage() {
       <div className="flex-1 overflow-auto p-6 space-y-6">
         {error && <ErrorBanner message={friendlyError(error)} onRetry={refetch} />}
         {mutationError && <ErrorBanner message={mutationError} onRetry={() => setMutationError(null)} />}
+
+        <PoolStatsSection apiUrl={apiUrl} credentials={credentials} onError={setMutationError} />
 
         {loading ? (
           <div className="flex h-64 items-center justify-center">

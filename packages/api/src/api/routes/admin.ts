@@ -518,6 +518,53 @@ admin.get("/connections", async (c) => {
   });
 });
 
+// GET /connections/pool — pool metrics for all connections
+admin.get("/connections/pool", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  return withRequestContext({ requestId, user: authResult.user }, () => {
+    const metrics = connections.getAllPoolMetrics();
+    return c.json({ metrics });
+  });
+});
+
+// POST /connections/:id/drain — drain and recreate a pool
+admin.post("/connections/:id/drain", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const id = c.req.param("id");
+    if (!connections.has(id)) {
+      return c.json({ error: "not_found", message: `Connection "${id}" not found` }, 404);
+    }
+    try {
+      const result = await connections.drain(id);
+      if (!result.drained) {
+        return c.json({ drained: false, message: result.message }, 409);
+      }
+      log.info({ connectionId: id, requestId, userId: authResult.user?.id }, "Pool drained via admin API");
+      return c.json({ drained: true, message: result.message });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id, requestId }, "Pool drain failed");
+      return c.json({ error: "drain_failed", message: err instanceof Error ? err.message : "Drain failed" }, 500);
+    }
+  });
+});
+
 // POST /connections/test — test a connection URL without persisting
 admin.post("/connections/test", async (c) => {
   const req = c.req.raw;

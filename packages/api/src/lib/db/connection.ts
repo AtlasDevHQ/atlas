@@ -67,9 +67,19 @@ export interface QueryResult {
   rows: Record<string, unknown>[];
 }
 
+/** Real-time pool size counters returned by core adapters. */
+export interface PoolStats {
+  totalSize: number;
+  activeCount: number;
+  idleCount: number;
+  waitingCount: number;
+}
+
 export interface DBConnection {
   query(sql: string, timeoutMs?: number): Promise<QueryResult>;
   close(): Promise<void>;
+  /** Return real-time pool counters. Core adapters implement this; plugins return undefined. */
+  getPoolStats?(): PoolStats | null;
 }
 
 export type DBType = "postgres" | "mysql" | (string & {});
@@ -93,6 +103,18 @@ export interface ConnectionMetadata {
 const UNHEALTHY_WINDOW_MS = 5 * 60 * 1000;
 /** Number of consecutive failures before marking unhealthy (must also span UNHEALTHY_WINDOW_MS). */
 const UNHEALTHY_THRESHOLD = 3;
+
+/** Number of warmup probes per connection at startup. Configurable via ATLAS_POOL_WARMUP. */
+function getPoolWarmup(): number {
+  const raw = parseInt(process.env.ATLAS_POOL_WARMUP ?? "", 10);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 2;
+}
+
+/** Consecutive error threshold before auto-drain. Configurable via ATLAS_POOL_DRAIN_THRESHOLD. */
+function getPoolDrainThreshold(): number {
+  const raw = parseInt(process.env.ATLAS_POOL_DRAIN_THRESHOLD ?? "", 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 5;
+}
 
 /**
  * Extract the hostname from a database URL for audit purposes.
@@ -258,6 +280,14 @@ function createPostgresDB(config: ConnectionConfig): DBConnection {
     async close() {
       await pool.end();
     },
+    getPoolStats(): PoolStats | null {
+      return {
+        totalSize: pool.totalCount ?? 0,
+        activeCount: (pool.totalCount ?? 0) - (pool.idleCount ?? 0),
+        idleCount: pool.idleCount ?? 0,
+        waitingCount: pool.waitingCount ?? 0,
+      };
+    },
   };
 }
 
@@ -290,6 +320,10 @@ function createMySQLDB(config: ConnectionConfig): DBConnection {
     },
     async close() {
       await pool.end();
+    },
+    getPoolStats(): PoolStats | null {
+      // mysql2 pool internals are not part of the public API — return null
+      return null;
     },
   };
 }
@@ -333,6 +367,11 @@ interface RegistryEntry {
   validate?: (query: string) => { valid: boolean; reason?: string } | Promise<{ valid: boolean; reason?: string }>;
   /** Plugin-provided metadata for SQL validation. */
   pluginMeta?: ConnectionPluginMeta;
+  // Pool metrics tracking
+  totalQueries: number;
+  totalErrors: number;
+  totalQueryTimeMs: number;
+  lastDrainAt: number | null;
 }
 
 /**
@@ -401,6 +440,10 @@ export class ConnectionRegistry {
       consecutiveFailures: 0,
       lastHealth: null,
       firstFailureAt: null,
+      totalQueries: 0,
+      totalErrors: 0,
+      totalQueryTimeMs: 0,
+      lastDrainAt: null,
     });
 
     if (existing) {
@@ -431,6 +474,10 @@ export class ConnectionRegistry {
       firstFailureAt: null,
       validate,
       pluginMeta: meta,
+      totalQueries: 0,
+      totalErrors: 0,
+      totalQueryTimeMs: 0,
+      lastDrainAt: null,
     });
     if (existing) {
       existing.conn.close().catch((err) => {
@@ -462,6 +509,43 @@ export class ConnectionRegistry {
     }
     entry.lastQueryAt = Date.now();
     return entry.conn;
+  }
+
+  /** Record a successful query execution for metrics tracking. */
+  recordQuery(id: string, durationMs: number): void {
+    const entry = this.entries.get(id);
+    if (!entry) return;
+    entry.totalQueries++;
+    entry.totalQueryTimeMs += durationMs;
+  }
+
+  /** Record a query error for metrics tracking and auto-drain evaluation. */
+  recordError(id: string): void {
+    const entry = this.entries.get(id);
+    if (!entry) return;
+    entry.totalErrors++;
+    entry.consecutiveFailures++;
+
+    // Auto-drain when consecutive failures exceed threshold
+    const threshold = getPoolDrainThreshold();
+    if (entry.consecutiveFailures >= threshold && entry.config) {
+      const cooldownMs = 30_000;
+      if (entry.lastDrainAt && Date.now() - entry.lastDrainAt < cooldownMs) {
+        log.debug({ connectionId: id }, "Pool drain skipped — cooldown active");
+        return;
+      }
+      log.warn({ connectionId: id, consecutiveFailures: entry.consecutiveFailures }, "Pool drain triggered: consecutive error threshold exceeded");
+      this._drainAndRecreate(id, entry);
+    }
+  }
+
+  /** Reset consecutive failures counter (called on successful query). */
+  recordSuccess(id: string): void {
+    const entry = this.entries.get(id);
+    if (entry) {
+      entry.consecutiveFailures = 0;
+      entry.firstFailureAt = null;
+    }
   }
 
   getDBType(id: string): DBType {
@@ -590,6 +674,97 @@ export class ConnectionRegistry {
       clearInterval(this.healthCheckInterval);
       this.healthCheckInterval = null;
     }
+  }
+
+  /**
+   * Pre-warm connections by running SELECT 1 on each registered pool.
+   * @param count Number of warmup probes per connection (default: from env or 2).
+   */
+  async warmup(count?: number): Promise<void> {
+    const n = count ?? getPoolWarmup();
+    if (n <= 0) return;
+    const ids = this.list();
+    if (ids.length === 0) return;
+
+    let total = 0;
+    let ready = 0;
+    for (const id of ids) {
+      const entry = this.entries.get(id);
+      if (!entry) continue;
+      for (let i = 0; i < n; i++) {
+        total++;
+        try {
+          await entry.conn.query("SELECT 1", 5000);
+          ready++;
+        } catch (err) {
+          log.warn({ connectionId: id, probe: i + 1, err: err instanceof Error ? err.message : String(err) }, "Pool warmup probe failed");
+        }
+      }
+    }
+    log.info({ ready, total }, "Pool warmed: connections ready");
+  }
+
+  /**
+   * Drain a connection pool and recreate it from stored config.
+   * Only works for config-registered connections (not plugin/direct connections).
+   */
+  async drain(id: string): Promise<{ drained: boolean; message: string }> {
+    const entry = this.entries.get(id);
+    if (!entry) throw new ConnectionNotRegisteredError(id);
+
+    if (!entry.config) {
+      return { drained: false, message: "Cannot drain plugin-managed connection — plugin must re-register it" };
+    }
+
+    const cooldownMs = 30_000;
+    if (entry.lastDrainAt && Date.now() - entry.lastDrainAt < cooldownMs) {
+      const remainingSec = Math.ceil((cooldownMs - (Date.now() - entry.lastDrainAt)) / 1000);
+      return { drained: false, message: `Drain cooldown active — wait ${remainingSec}s` };
+    }
+
+    this._drainAndRecreate(id, entry);
+    return { drained: true, message: "Pool drained and recreated" };
+  }
+
+  /** Internal: close and recreate a pool from config. */
+  private _drainAndRecreate(id: string, entry: RegistryEntry): void {
+    if (!entry.config) return;
+
+    const config = entry.config;
+    const dbType = entry.dbType;
+    const oldConn = entry.conn;
+
+    const newConn = createConnection(dbType, config);
+    entry.conn = newConn;
+    entry.consecutiveFailures = 0;
+    entry.firstFailureAt = null;
+    entry.lastDrainAt = Date.now();
+
+    oldConn.close().catch((err) => {
+      log.warn({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to close drained pool");
+    });
+  }
+
+  /** Return pool metrics for a specific connection. */
+  getPoolMetrics(id: string): import("@useatlas/types").PoolMetrics {
+    const entry = this.entries.get(id);
+    if (!entry) throw new ConnectionNotRegisteredError(id);
+
+    return {
+      connectionId: id,
+      dbType: entry.dbType,
+      pool: entry.conn.getPoolStats?.() ?? null,
+      totalQueries: entry.totalQueries,
+      totalErrors: entry.totalErrors,
+      avgQueryTimeMs: entry.totalQueries > 0 ? Math.round(entry.totalQueryTimeMs / entry.totalQueries) : 0,
+      consecutiveFailures: entry.consecutiveFailures,
+      lastDrainAt: entry.lastDrainAt ? new Date(entry.lastDrainAt).toISOString() : null,
+    };
+  }
+
+  /** Return pool metrics for all registered connections. */
+  getAllPoolMetrics(): import("@useatlas/types").PoolMetrics[] {
+    return Array.from(this.entries.keys()).map((id) => this.getPoolMetrics(id));
   }
 
   /**

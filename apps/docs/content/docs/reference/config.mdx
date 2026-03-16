@@ -275,6 +275,17 @@ export default defineConfig({
 });
 ```
 
+### Pool Warmup & Auto-Drain
+
+Connection pools are automatically warmed at startup and drained when consecutive errors exceed a threshold. Configure via environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_POOL_WARMUP` | `2` | Number of `SELECT 1` probes per connection at startup. `0` disables warmup |
+| `ATLAS_POOL_DRAIN_THRESHOLD` | `5` | Consecutive query errors before the pool is drained and recreated |
+
+Auto-drain has a 30-second cooldown to prevent drain storms. Manual drain is available via the [admin console](/guides/admin-console#pool-stats) or `POST /api/v1/admin/connections/:id/drain`.
+
 ---
 
 ## RLS (Row-Level Security)

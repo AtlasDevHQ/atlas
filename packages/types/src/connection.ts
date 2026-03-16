@@ -30,6 +30,26 @@ export interface ConnectionInfo {
   health?: ConnectionHealth;
 }
 
+/** Real-time pool size counters (only available for core adapters with pool access). */
+export interface PoolStats {
+  totalSize: number;
+  activeCount: number;
+  idleCount: number;
+  waitingCount: number;
+}
+
+/** Wire format for per-connection pool metrics. */
+export interface PoolMetrics {
+  connectionId: string;
+  dbType: string;
+  pool: PoolStats | null;
+  totalQueries: number;
+  totalErrors: number;
+  avgQueryTimeMs: number;
+  consecutiveFailures: number;
+  lastDrainAt: string | null;
+}
+
 /** Wire format for a single connection detail response. */
 export interface ConnectionDetail {
   id: string;

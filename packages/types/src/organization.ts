@@ -6,6 +6,9 @@
  * (conversations, audit logs, connections, etc.) is scoped to an org.
  */
 
+import type { AtlasRole } from "./auth";
+import { ATLAS_ROLES } from "./auth";
+
 export interface Organization {
   id: string;
   name: string;
@@ -45,6 +48,10 @@ export interface OrgInvitation {
   };
 }
 
-/** Org roles in descending privilege order. */
-export const ORG_ROLES = ["owner", "admin", "member"] as const;
-export type OrgRole = (typeof ORG_ROLES)[number];
+/**
+ * Org roles in descending privilege order. Same values as AtlasRole,
+ * listed high-to-low for display. Single source of truth is ATLAS_ROLES
+ * in auth.ts — this is a reversed view for convenience.
+ */
+export const ORG_ROLES = [...ATLAS_ROLES].reverse() as unknown as readonly ["owner", "admin", "member"];
+export type OrgRole = AtlasRole;

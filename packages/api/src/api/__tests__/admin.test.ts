@@ -795,6 +795,30 @@ describe("GET /api/v1/admin/audit", () => {
     expect(capturedParams).toContain("%100\\%%");
   });
 
+  it("correctly parameterizes combined new filters (search + connection + table)", async () => {
+    let capturedSql = "";
+    let capturedParams: unknown[] = [];
+    let callCount = 0;
+    mockInternalQuery.mockImplementation((sql: string, params?: unknown[]) => {
+      callCount++;
+      if (callCount === 1) {
+        capturedSql = sql;
+        capturedParams = params ?? [];
+        return Promise.resolve([{ count: "0" }]);
+      }
+      return Promise.resolve([]);
+    });
+
+    await app.fetch(adminRequest(
+      "/api/v1/admin/audit?connection=warehouse&table=orders&search=revenue",
+    ));
+
+    expect(capturedSql).toContain("source_id = $1");
+    expect(capturedSql).toContain("a.sql ILIKE $2");
+    expect(capturedSql).toContain("a.sql ILIKE $3 OR u.email ILIKE $3 OR a.error ILIKE $3");
+    expect(capturedParams).toEqual(["warehouse", "%orders%", "%revenue%"]);
+  });
+
   it("returns 400 for invalid date format", async () => {
     const res = await app.fetch(adminRequest("/api/v1/admin/audit?from=not-a-date"));
     expect(res.status).toBe(400);
@@ -821,20 +845,25 @@ describe("GET /api/v1/admin/audit/export", () => {
   });
 
   it("returns CSV with correct headers", async () => {
-    mockInternalQuery.mockResolvedValue([
-      {
-        id: "abc-123",
-        timestamp: "2026-03-01T10:00:00Z",
-        user_id: "u1",
-        sql: "SELECT * FROM orders",
-        duration_ms: 42,
-        row_count: 10,
-        success: true,
-        error: null,
-        source_id: "default",
-        user_email: "admin@test.com",
-      },
-    ]);
+    let callCount = 0;
+    mockInternalQuery.mockImplementation(() => {
+      callCount++;
+      if (callCount === 1) return Promise.resolve([{ count: "1" }]);
+      return Promise.resolve([
+        {
+          id: "abc-123",
+          timestamp: "2026-03-01T10:00:00Z",
+          user_id: "u1",
+          sql: "SELECT * FROM orders",
+          duration_ms: 42,
+          row_count: 10,
+          success: true,
+          error: null,
+          source_id: "default",
+          user_email: "admin@test.com",
+        },
+      ]);
+    });
 
     const res = await app.fetch(adminRequest("/api/v1/admin/audit/export"));
     expect(res.status).toBe(200);
@@ -849,20 +878,25 @@ describe("GET /api/v1/admin/audit/export", () => {
   });
 
   it("escapes CSV fields with quotes", async () => {
-    mockInternalQuery.mockResolvedValue([
-      {
-        id: "abc-456",
-        timestamp: "2026-03-01T10:00:00Z",
-        user_id: "u1",
-        sql: 'SELECT "name" FROM users',
-        duration_ms: 10,
-        row_count: 5,
-        success: true,
-        error: null,
-        source_id: null,
-        user_email: null,
-      },
-    ]);
+    let callCount = 0;
+    mockInternalQuery.mockImplementation(() => {
+      callCount++;
+      if (callCount === 1) return Promise.resolve([{ count: "1" }]);
+      return Promise.resolve([
+        {
+          id: "abc-456",
+          timestamp: "2026-03-01T10:00:00Z",
+          user_id: "u1",
+          sql: 'SELECT "name" FROM users',
+          duration_ms: 10,
+          row_count: 5,
+          success: true,
+          error: null,
+          source_id: null,
+          user_email: null,
+        },
+      ]);
+    });
 
     const res = await app.fetch(adminRequest("/api/v1/admin/audit/export"));
     const body = await res.text();
@@ -873,7 +907,10 @@ describe("GET /api/v1/admin/audit/export", () => {
   it("respects filters on export", async () => {
     let capturedSql = "";
     let capturedParams: unknown[] = [];
+    let callCount = 0;
     mockInternalQuery.mockImplementation((sql: string, params?: unknown[]) => {
+      callCount++;
+      if (callCount === 1) return Promise.resolve([{ count: "0" }]);
       capturedSql = sql;
       capturedParams = params ?? [];
       return Promise.resolve([]);
@@ -885,6 +922,34 @@ describe("GET /api/v1/admin/audit/export", () => {
     expect(capturedSql).toContain("success");
     expect(capturedParams).toContain("warehouse");
     expect(capturedParams).toContain(false);
+  });
+
+  it("returns 403 for non-admin user", async () => {
+    mockAuthenticateRequest.mockResolvedValue({
+      authenticated: true,
+      mode: "simple-key",
+      user: { id: "user-1", mode: "simple-key", label: "User", role: "member" },
+    });
+    const res = await app.fetch(adminRequest("/api/v1/admin/audit/export"));
+    expect(res.status).toBe(403);
+  });
+
+  it("returns CSV with only headers when no rows match", async () => {
+    let callCount = 0;
+    mockInternalQuery.mockImplementation(() => {
+      callCount++;
+      if (callCount === 1) return Promise.resolve([{ count: "0" }]);
+      return Promise.resolve([]);
+    });
+    const res = await app.fetch(adminRequest("/api/v1/admin/audit/export"));
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toBe("id,timestamp,user,sql,duration_ms,row_count,success,error,connection\n");
+  });
+
+  it("returns 400 for invalid date on export", async () => {
+    const res = await app.fetch(adminRequest("/api/v1/admin/audit/export?from=garbage"));
+    expect(res.status).toBe(400);
   });
 
   it("returns 404 when no internal DB", async () => {
@@ -932,7 +997,7 @@ describe("GET /api/v1/admin/audit/stats", () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.totalQueries).toBe(100);
     expect(body.totalErrors).toBe(5);
-    expect(body.errorRate).toBe(0.05);
+    expect(body.errorRate).toBe(5);
     expect(Array.isArray(body.queriesPerDay)).toBe(true);
   });
 

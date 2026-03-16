@@ -40,7 +40,6 @@ interface AuditStats {
 
 interface ConnectionMeta {
   id: string;
-  dbType: string;
   description?: string;
 }
 
@@ -79,6 +78,17 @@ function buildQueryString(p: AuditQueryParams, opts?: { noPagination?: boolean }
   return qs;
 }
 
+/** Extract server error message from a non-ok response, falling back to status code. */
+async function extractErrorMessage(res: Response, fallback: string): Promise<string> {
+  try {
+    const body = await res.json();
+    if (body?.message) return body.message;
+  } catch {
+    // Response body not JSON
+  }
+  return `${fallback}: HTTP ${res.status}`;
+}
+
 export default function AuditPage() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
@@ -87,6 +97,7 @@ export default function AuditPage() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<FetchError | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
 
   const [params, setParams] = useQueryStates(auditSearchParams);
@@ -97,7 +108,7 @@ export default function AuditPage() {
   const [analyticsTo, setAnalyticsTo] = useState("");
 
   // Connection list for filter dropdown
-  const { data: connectionsData } = useAdminFetch<{ connections: ConnectionMeta[] }>(
+  const { data: connectionsData, error: connectionsError } = useAdminFetch<{ connections: ConnectionMeta[] }>(
     "/api/v1/admin/connections",
   );
   const connectionList = connectionsData?.connections ?? [];
@@ -123,9 +134,10 @@ export default function AuditPage() {
     "/api/v1/admin/audit/stats",
   );
 
-  // Clear stale error when switching tabs
+  // Clear stale errors when switching tabs
   useEffect(() => {
     setError(null);
+    setExportError(null);
   }, [tab]);
 
   // Read pagination from table state for fetching
@@ -152,7 +164,10 @@ export default function AuditPage() {
         const qs = buildQueryString(queryParams);
         const res = await fetch(`${apiUrl}/api/v1/admin/audit?${qs}`, { credentials });
         if (!res.ok) {
-          if (!cancelled) setError({ message: `HTTP ${res.status}`, status: res.status });
+          if (!cancelled) {
+            const msg = await extractErrorMessage(res, "Failed to load audit log");
+            setError({ message: msg, status: res.status });
+          }
           return;
         }
         const data = await res.json();
@@ -176,13 +191,21 @@ export default function AuditPage() {
 
   async function handleExport() {
     setExporting(true);
+    setExportError(null);
     try {
       const qs = buildQueryString(queryParams, { noPagination: true });
       const res = await fetch(`${apiUrl}/api/v1/admin/audit/export?${qs}`, { credentials });
       if (!res.ok) {
-        setError({ message: `Export failed: HTTP ${res.status}`, status: res.status });
+        const msg = await extractErrorMessage(res, "Export failed");
+        setExportError(msg);
         return;
       }
+
+      // Check for truncation
+      const truncated = res.headers.get("X-Export-Truncated") === "true";
+      const exportTotal = res.headers.get("X-Export-Total");
+      const exportLimit = res.headers.get("X-Export-Limit");
+
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -190,10 +213,14 @@ export default function AuditPage() {
       a.download = `audit-log-${new Date().toISOString().slice(0, 10)}.csv`;
       a.click();
       URL.revokeObjectURL(url);
+
+      if (truncated) {
+        setExportError(
+          `Export limited to ${Number(exportLimit).toLocaleString()} rows out of ${Number(exportTotal).toLocaleString()} total. Apply filters to narrow results.`,
+        );
+      }
     } catch (err) {
-      setError({
-        message: err instanceof Error ? err.message : "Export failed",
-      });
+      setExportError(err instanceof Error ? err.message : "Export failed");
     } finally {
       setExporting(false);
     }
@@ -318,6 +345,14 @@ export default function AuditPage() {
             </div>
           ) : null}
 
+          {/* Export error (separate from list error) */}
+          {exportError && (
+            <ErrorBanner
+              message={exportError}
+              onRetry={() => { setExportError(null); handleExport(); }}
+            />
+          )}
+
           {/* Search + Filters */}
           <div className="flex flex-wrap items-end gap-3">
             <div className="relative flex-1 min-w-[200px] max-w-sm">
@@ -330,7 +365,7 @@ export default function AuditPage() {
               />
             </div>
 
-            {connectionList.length > 1 && (
+            {connectionList.length > 1 ? (
               <Select
                 value={connection || "__all__"}
                 onValueChange={(v) => setParams({ connection: v === "__all__" ? "" : v })}
@@ -347,7 +382,14 @@ export default function AuditPage() {
                   ))}
                 </SelectContent>
               </Select>
-            )}
+            ) : connectionsError && !connectionsError.status ? (
+              <Select disabled>
+                <SelectTrigger className="h-9 w-44 opacity-50">
+                  <SelectValue placeholder="Connections unavailable" />
+                </SelectTrigger>
+                <SelectContent />
+              </Select>
+            ) : null}
 
             <Input
               placeholder="Filter by table..."

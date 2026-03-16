@@ -957,19 +957,18 @@ function escapeIlike(s: string): string {
 /** Quote a value for safe CSV output (RFC 4180). */
 function csvField(val: string | null | undefined): string {
   const s = val ?? "";
-  if (s.includes(",") || s.includes('"') || s.includes("\n")) {
+  if (s.includes(",") || s.includes('"') || s.includes("\n") || s.includes("\r")) {
     return `"${s.replace(/"/g, '""')}"`;
   }
   return s;
 }
 
+type AuditFilterResult =
+  | { ok: true; conditions: string[]; params: unknown[]; paramIdx: number }
+  | { ok: false; error: string; message: string; status: 400 };
+
 /** Shared filter builder for audit list + export endpoints. */
-function buildAuditFilters(query: (key: string) => string | undefined): {
-  conditions: string[];
-  params: unknown[];
-  paramIdx: number;
-  error?: { error: string; message: string; status: number };
-} {
+function buildAuditFilters(query: (key: string) => string | undefined): AuditFilterResult {
   const conditions: string[] = [];
   const params: unknown[] = [];
   let paramIdx = 1;
@@ -989,7 +988,7 @@ function buildAuditFilters(query: (key: string) => string | undefined): {
   const from = query("from");
   if (from) {
     if (isNaN(Date.parse(from))) {
-      return { conditions, params, paramIdx, error: { error: "invalid_request", message: `Invalid 'from' date format: "${from}". Use ISO 8601 (e.g. 2026-01-01).`, status: 400 } };
+      return { ok: false, error: "invalid_request", message: `Invalid 'from' date format: "${from}". Use ISO 8601 (e.g. 2026-01-01).`, status: 400 };
     }
     conditions.push(`a.timestamp >= $${paramIdx++}`);
     params.push(from);
@@ -998,7 +997,7 @@ function buildAuditFilters(query: (key: string) => string | undefined): {
   const to = query("to");
   if (to) {
     if (isNaN(Date.parse(to))) {
-      return { conditions, params, paramIdx, error: { error: "invalid_request", message: `Invalid 'to' date format: "${to}". Use ISO 8601 (e.g. 2026-03-03).`, status: 400 } };
+      return { ok: false, error: "invalid_request", message: `Invalid 'to' date format: "${to}". Use ISO 8601 (e.g. 2026-03-03).`, status: 400 };
     }
     conditions.push(`a.timestamp <= $${paramIdx++}`);
     params.push(to);
@@ -1024,7 +1023,7 @@ function buildAuditFilters(query: (key: string) => string | undefined): {
     paramIdx++;
   }
 
-  return { conditions, params, paramIdx };
+  return { ok: true, conditions, params, paramIdx };
 }
 
 // GET /audit — query audit_log (paginated)
@@ -1052,8 +1051,8 @@ admin.get("/audit", async (c) => {
     // Queries the internal DB directly (not the analytics datasource),
     // so no validateSQL pipeline needed. Parameterized queries prevent injection.
     const filters = buildAuditFilters((k) => c.req.query(k));
-    if (filters.error) {
-      return c.json({ error: filters.error.error, message: filters.error.message }, filters.error.status as 400);
+    if (!filters.ok) {
+      return c.json({ error: filters.error, message: filters.message }, filters.status);
     }
     const { conditions, params } = filters;
     let { paramIdx } = filters;
@@ -1068,7 +1067,22 @@ admin.get("/audit", async (c) => {
       );
       const total = parseInt(String(countResult[0]?.count ?? "0"), 10);
 
-      const rows = await internalQuery(
+      const rows = await internalQuery<{
+        id: string;
+        timestamp: string;
+        user_id: string | null;
+        sql: string;
+        duration_ms: number;
+        row_count: number | null;
+        success: boolean;
+        error: string | null;
+        source_id: string | null;
+        source_type: string | null;
+        target_host: string | null;
+        user_label: string | null;
+        auth_mode: string;
+        user_email: string | null;
+      }>(
         `SELECT a.*, u.email AS user_email
          FROM audit_log a
          LEFT JOIN "user" u ON a.user_id = u.id
@@ -1101,8 +1115,8 @@ admin.get("/audit/export", async (c) => {
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     const filters = buildAuditFilters((k) => c.req.query(k));
-    if (filters.error) {
-      return c.json({ error: filters.error.error, message: filters.error.message }, filters.error.status as 400);
+    if (!filters.ok) {
+      return c.json({ error: filters.error, message: filters.message }, filters.status);
     }
     const { conditions, params } = filters;
     let { paramIdx } = filters;
@@ -1111,13 +1125,20 @@ admin.get("/audit/export", async (c) => {
     const exportLimit = 10000;
 
     try {
+      // Count total matching rows to detect truncation
+      const countResult = await internalQuery<{ count: string }>(
+        `SELECT COUNT(*) as count FROM audit_log a LEFT JOIN "user" u ON a.user_id = u.id ${whereClause}`,
+        params,
+      );
+      const totalAvailable = parseInt(String(countResult[0]?.count ?? "0"), 10);
+
       const rows = await internalQuery<{
         id: string;
         timestamp: string;
-        user_id: string;
+        user_id: string | null;
         sql: string;
         duration_ms: number;
-        row_count: number;
+        row_count: number | null;
         success: boolean;
         error: string | null;
         source_id: string | null;
@@ -1148,11 +1169,17 @@ admin.get("/audit/export", async (c) => {
 
       const csv = csvHeader + csvRows.join("\n");
       const filename = `audit-log-${new Date().toISOString().slice(0, 10)}.csv`;
+      const truncated = totalAvailable > exportLimit;
 
       return new Response(csv, {
         headers: {
           "Content-Type": "text/csv; charset=utf-8",
           "Content-Disposition": `attachment; filename="${filename}"`,
+          ...(truncated && {
+            "X-Export-Truncated": "true",
+            "X-Export-Total": String(totalAvailable),
+            "X-Export-Limit": String(exportLimit),
+          }),
         },
       });
     } catch (err) {
@@ -1186,7 +1213,7 @@ admin.get("/audit/stats", async (c) => {
 
       const total = parseInt(String(totalResult[0]?.total ?? "0"), 10);
       const errors = parseInt(String(totalResult[0]?.errors ?? "0"), 10);
-      const errorRate = total > 0 ? errors / total : 0;
+      const errorRate = total > 0 ? (errors / total) * 100 : 0;
 
       const dailyResult = await internalQuery<{ day: string; count: string }>(
         `SELECT DATE(timestamp) as day, COUNT(*) as count FROM audit_log WHERE timestamp >= NOW() - INTERVAL '7 days' GROUP BY DATE(timestamp) ORDER BY day DESC`,

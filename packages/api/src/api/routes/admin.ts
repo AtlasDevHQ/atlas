@@ -716,6 +716,54 @@ admin.delete("/semantic/org/entities/:name", async (c) => {
   });
 });
 
+// POST /semantic/org/import — bulk import from org's disk directory to DB
+admin.post("/semantic/org/import", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const orgId = authResult.user?.activeOrganizationId;
+    if (!orgId) {
+      return c.json({ error: "bad_request", message: "Active organization required." }, 400);
+    }
+
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Org-scoped semantic entities require an internal database (DATABASE_URL)." }, 501);
+    }
+
+    let body: { connectionId?: string } = {};
+    const contentType = c.req.header("content-type") ?? "";
+    if (contentType.includes("application/json")) {
+      try {
+        body = await c.req.json();
+      } catch (err) {
+        return c.json({ error: "bad_request", message: `Invalid JSON body: ${err instanceof Error ? err.message : String(err)}` }, 400);
+      }
+    }
+
+    try {
+      const { importFromDisk } = await import("@atlas/api/lib/semantic-sync");
+      const result = await importFromDisk(orgId, {
+        connectionId: body.connectionId,
+      });
+
+      log.info(
+        { requestId, orgId, imported: result.imported, skipped: result.skipped, total: result.total },
+        "Org semantic import completed",
+      );
+      return c.json(result);
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to import org semantic entities");
+      return c.json({ error: "internal_error", message: "Failed to import entities." }, 500);
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Connection routes
 // ---------------------------------------------------------------------------

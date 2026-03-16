@@ -7,9 +7,9 @@
  * (the agent navigates the semantic layer via filesystem commands like
  * `ls`, `cat`, and `grep`).
  *
- * Currently implements DB → disk: admin API entity CRUD writes DB first,
- * then syncs to disk. The reverse direction (disk → DB, for `atlas init`
- * / import) is planned in #523.
+ * Two sync directions:
+ * - DB → disk (#522): admin API entity CRUD writes DB first, then syncs to disk
+ * - disk → DB (#523): `atlas init` / import writes disk first, then imports to DB
  *
  * File writes use atomic write-to-temp + rename to prevent partial reads.
  */
@@ -298,6 +298,150 @@ export async function cleanupOrgDirectory(orgId: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Disk → DB import
+// ---------------------------------------------------------------------------
+
+export interface ImportError {
+  file: string;
+  reason: string;
+}
+
+export interface ImportResult {
+  imported: number;
+  skipped: number;
+  errors: ImportError[];
+  total: number;
+}
+
+/**
+ * Import YAML files from an org's disk directory into the DB.
+ *
+ * Scans `semantic/.orgs/{orgId}/entities/*.yml`, `metrics/*.yml`, and
+ * `glossary.yml`. Each file is validated, then upserted via
+ * `bulkUpsertEntities()`. Invalid files are skipped with per-file
+ * error reporting.
+ *
+ * Also accepts a `sourceDir` override for importing from a non-org
+ * directory (e.g. self-hosted `semantic/` root during migration).
+ */
+export async function importFromDisk(
+  orgId: string,
+  options?: { connectionId?: string; sourceDir?: string },
+): Promise<ImportResult> {
+  const { bulkUpsertEntities } = await import("@atlas/api/lib/db/semantic-entities");
+  const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
+  const yaml = await import("js-yaml");
+
+  const root = options?.sourceDir ?? getSemanticRoot(orgId);
+  const errors: ImportError[] = [];
+  const entities: Array<{ entityType: SemanticEntityType; name: string; yamlContent: string; connectionId?: string }> = [];
+
+  // Scan entities/*.yml
+  const entitiesDir = path.join(root, "entities");
+  await _scanYamlDir(entitiesDir, "entity", entities, errors, yaml, options?.connectionId);
+
+  // Scan metrics/*.yml
+  const metricsDir = path.join(root, "metrics");
+  await _scanYamlDir(metricsDir, "metric", entities, errors, yaml, options?.connectionId);
+
+  // Scan glossary.yml at root
+  const glossaryPath = path.join(root, "glossary.yml");
+  try {
+    const content = await fs.promises.readFile(glossaryPath, "utf-8");
+    try {
+      yaml.load(content); // validate parseable
+      entities.push({
+        entityType: "glossary",
+        name: "glossary",
+        yamlContent: content,
+        connectionId: options?.connectionId,
+      });
+    } catch (err) {
+      errors.push({ file: "glossary.yml", reason: `Invalid YAML: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      errors.push({ file: "glossary.yml", reason: err instanceof Error ? err.message : String(err) });
+    }
+    // ENOENT is fine — glossary is optional
+  }
+
+  const total = entities.length + errors.length;
+
+  if (entities.length === 0) {
+    return { imported: 0, skipped: errors.length, errors, total };
+  }
+
+  let imported: number;
+  try {
+    imported = await bulkUpsertEntities(orgId, entities);
+  } finally {
+    // Always invalidate — partial writes may have occurred
+    invalidateOrgWhitelist(orgId);
+  }
+
+  const dbFailures = entities.length - imported;
+  if (dbFailures > 0) {
+    log.warn(
+      { orgId, dbFailures, imported, yamlErrors: errors.length },
+      "Some entities passed YAML validation but failed DB upsert",
+    );
+  }
+
+  log.info(
+    { orgId, imported, skipped: errors.length + dbFailures, total },
+    "Imported semantic entities from disk to DB",
+  );
+
+  return {
+    imported,
+    skipped: errors.length + dbFailures,
+    errors,
+    total,
+  };
+}
+
+/** Scan a directory of .yml files and collect valid entities. */
+async function _scanYamlDir(
+  dir: string,
+  entityType: SemanticEntityType,
+  out: Array<{ entityType: SemanticEntityType; name: string; yamlContent: string; connectionId?: string }>,
+  errors: ImportError[],
+  yaml: typeof import("js-yaml"),
+  connectionId?: string,
+): Promise<void> {
+  let files: string[];
+  try {
+    files = (await fs.promises.readdir(dir)).filter((f) => f.endsWith(".yml"));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return; // dir doesn't exist — fine
+    errors.push({ file: dir, reason: err instanceof Error ? err.message : String(err) });
+    return;
+  }
+
+  for (const file of files) {
+    const filePath = path.join(dir, file);
+    const name = file.replace(/\.yml$/, "");
+    try {
+      const content = await fs.promises.readFile(filePath, "utf-8");
+      const parsed = yaml.load(content);
+
+      // Validate entities have a table field
+      if (entityType === "entity") {
+        if (!parsed || typeof parsed !== "object" || !("table" in (parsed as Record<string, unknown>))) {
+          errors.push({ file, reason: "Entity YAML must contain a 'table' field" });
+          continue;
+        }
+      }
+
+      out.push({ entityType, name, yamlContent: content, connectionId });
+    } catch (err) {
+      errors.push({ file, reason: err instanceof Error ? err.message : String(err) });
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Boot reconciliation
 // ---------------------------------------------------------------------------
 
@@ -328,7 +472,10 @@ export async function reconcileAllOrgs(): Promise<void> {
     }
 
     if (orgs.length === 0) {
-      log.debug("No org semantic entities in DB — skipping boot reconciliation");
+      // Check for first-boot auto-import: disk files exist but DB is empty.
+      // This handles self-hosted → managed migration and atlas init before
+      // the import endpoint existed.
+      await _autoImportOrgsFromDisk();
       return;
     }
 
@@ -374,5 +521,62 @@ export async function reconcileAllOrgs(): Promise<void> {
       { err: err instanceof Error ? err.message : String(err) },
       "Boot reconciliation failed — org semantic layers may be incomplete",
     );
+  }
+}
+
+/**
+ * First-boot auto-import: scan `semantic/.orgs/` for directories that
+ * have YAML files on disk but zero entities in the DB. Import them.
+ *
+ * Handles:
+ * - `atlas init` ran before the import endpoint existed
+ * - Self-hosted → managed migration (files copied to .orgs/ manually)
+ */
+async function _autoImportOrgsFromDisk(): Promise<void> {
+  const orgsDir = path.join(SEMANTIC_BASE, ".orgs");
+  let orgDirs: string[];
+  try {
+    orgDirs = (await fs.promises.readdir(orgsDir, { withFileTypes: true }))
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return; // no .orgs/ dir — nothing to import
+    log.warn({ err: err instanceof Error ? err.message : String(err) }, "Could not scan .orgs/ for auto-import — skipping");
+    return;
+  }
+
+  const { countEntities } = await import("@atlas/api/lib/db/semantic-entities");
+
+  for (const orgId of orgDirs) {
+    const entitiesDir = path.join(orgsDir, orgId, "entities");
+    let entries: string[];
+    try {
+      entries = await fs.promises.readdir(entitiesDir);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        log.warn(
+          { orgId, err: err instanceof Error ? err.message : String(err) },
+          "Cannot read entities dir for auto-import — skipping org",
+        );
+      }
+      continue;
+    }
+
+    if (!entries.some((e) => e.endsWith(".yml"))) continue;
+    const dbCount = await countEntities(orgId);
+    if (dbCount > 0) continue; // already imported
+
+    try {
+      const result = await importFromDisk(orgId);
+      log.info(
+        { orgId, imported: result.imported, skipped: result.skipped },
+        "Auto-imported org semantic entities from disk (first boot)",
+      );
+    } catch (err) {
+      log.error(
+        { orgId, err: err instanceof Error ? err.message : String(err) },
+        "Auto-import from disk failed for org",
+      );
+    }
   }
 }

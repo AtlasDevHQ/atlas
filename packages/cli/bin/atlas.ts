@@ -4216,15 +4216,18 @@ export interface ProfileDatasourceOpts {
   explicitEnrich: boolean;
   demoDataset: DemoDataset | null;  // null for multi-source runs (--demo is single-datasource only)
   force: boolean;          // skip failure threshold check
+  orgId?: string;          // org-scoped mode: write to semantic/.orgs/{orgId}/
 }
 
 /**
  * Compute the output base directory for a datasource.
  * "default" → `semantic/`, anything else → `semantic/{id}/`.
+ * When orgId is provided: `semantic/.orgs/{orgId}/` (or `.orgs/{orgId}/{id}/`).
  * Returns an absolute path resolved from the process working directory.
  */
-export function outputDirForDatasource(id: string): string {
-  return id === "default" ? SEMANTIC_DIR : path.join(SEMANTIC_DIR, id);
+export function outputDirForDatasource(id: string, orgId?: string): string {
+  const base = orgId ? path.join(SEMANTIC_DIR, ".orgs", orgId) : SEMANTIC_DIR;
+  return id === "default" ? base : path.join(base, id);
 }
 
 export interface DatasourceEntry {
@@ -4234,7 +4237,7 @@ export interface DatasourceEntry {
 }
 
 async function profileDatasource(opts: ProfileDatasourceOpts): Promise<void> {
-  const { id, url: connStr, dbType, filterTables, shouldEnrich, explicitEnrich, demoDataset, force } = opts;
+  const { id, url: connStr, dbType, filterTables, shouldEnrich, explicitEnrich, demoDataset, force, orgId } = opts;
   let { schema: schemaArg } = opts;
 
   validateSchemaName(schemaArg);
@@ -4545,7 +4548,7 @@ async function profileDatasource(opts: ProfileDatasourceOpts): Promise<void> {
   }
 
   // Compute output directories
-  const outputBase = outputDirForDatasource(id);
+  const outputBase = outputDirForDatasource(id, orgId);
   const entitiesOutDir = path.join(outputBase, "entities");
   const metricsOutDir = path.join(outputBase, "metrics");
 
@@ -4621,7 +4624,9 @@ async function profileDatasource(opts: ProfileDatasourceOpts): Promise<void> {
     }
   }
 
-  const relativeOutput = id === "default" ? "./semantic/" : `./semantic/${id}/`;
+  const relativeOutput = orgId
+    ? `./semantic/.orgs/${orgId}/`
+    : id === "default" ? "./semantic/" : `./semantic/${id}/`;
   console.log(`
 Done! Semantic layer written to ${relativeOutput} in ${formatDuration(profilingElapsed)}
 
@@ -4635,6 +4640,81 @@ Next steps:
   1. Review the generated YAMLs and refine business context
   2. Run \`bun run dev\` to start Atlas
 `);
+}
+
+// --- Import ---
+
+async function handleImport(args: string[]): Promise<void> {
+  const connectionArg = getFlag(args, "--connection");
+
+  // Determine the API base URL
+  const apiUrl = process.env.ATLAS_API_URL ?? "http://localhost:3001";
+
+  // Build the import request
+  const importUrl = `${apiUrl}/api/v1/admin/semantic/org/import`;
+  const body: Record<string, string> = {};
+  if (connectionArg) body.connectionId = connectionArg;
+
+  // Determine auth header
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (process.env.ATLAS_API_KEY) headers.Authorization = `Bearer ${process.env.ATLAS_API_KEY}`;
+
+  console.log("Importing semantic layer from disk to DB...\n");
+
+  try {
+    const resp = await fetch(importUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(60_000),
+    });
+
+    if (!resp.ok) {
+      if (resp.status === 401 || resp.status === 403) {
+        console.error("Import failed: authentication required.");
+        console.error("  Set ATLAS_API_KEY environment variable.");
+      } else {
+        let errorMsg = `HTTP ${resp.status}`;
+        try {
+          const json = await resp.json() as { message?: string; error?: string };
+          errorMsg = json.message ?? json.error ?? errorMsg;
+        } catch {
+          errorMsg = await resp.text().catch(() => errorMsg);
+        }
+        console.error(`Import failed: ${errorMsg}`);
+      }
+      process.exit(1);
+    }
+
+    const result = await resp.json() as { imported: number; skipped: number; errors: Array<{ file: string; reason: string }>; total: number };
+
+    console.log(`Imported: ${result.imported}`);
+    if (result.skipped > 0) {
+      console.log(`Skipped:  ${result.skipped}`);
+    }
+    console.log(`Total:    ${result.total}`);
+
+    if (result.errors.length > 0) {
+      console.log("\nErrors:");
+      for (const e of result.errors) {
+        console.log(`  ${e.file}: ${e.reason}`);
+      }
+    }
+
+    if (result.imported > 0) {
+      console.log("\nDone! Entities imported to DB. The explore tool and SQL validation will use the updated semantic layer.");
+    }
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    if (detail.includes("ECONNREFUSED") || detail.includes("fetch failed")) {
+      console.error(`Cannot reach Atlas API at ${apiUrl}. Is the server running?`);
+      console.error("  Start it with: bun run dev:api");
+      console.error("  Set ATLAS_API_URL if the API is not on localhost:3001");
+    } else {
+      console.error(`Import failed: ${detail}`);
+    }
+    process.exit(1);
+  }
 }
 
 // --- Migrate ---
@@ -4805,6 +4885,8 @@ const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
       { flag: "--no-enrich", description: "Explicitly skip LLM enrichment" },
       { flag: "--force", description: "Continue even if more than 20% of tables fail to profile" },
       { flag: "--demo [simple|cybersec|ecommerce]", description: "Load a demo dataset then profile (default: simple)" },
+      { flag: "--org <orgId>", description: "Write to semantic/.orgs/{orgId}/ and auto-import to DB (org-scoped mode)" },
+      { flag: "--no-import", description: "Skip auto-import to DB in org-scoped mode (write disk only)" },
     ],
     examples: [
       "atlas init",
@@ -4812,6 +4894,7 @@ const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
       "atlas init --enrich",
       "atlas init --demo cybersec",
       "atlas init --csv sales.csv,products.csv",
+      "atlas init --org org-123",
     ],
   },
   diff: {
@@ -4872,6 +4955,17 @@ const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
     examples: [
       "atlas mcp",
       "atlas mcp --transport sse --port 9090",
+    ],
+  },
+  import: {
+    description: "Import semantic layer YAML files from disk into the internal DB for the active org.",
+    usage: "import [options]",
+    flags: [
+      { flag: "--connection <name>", description: "Associate imported entities with a named datasource" },
+    ],
+    examples: [
+      "atlas import",
+      "atlas import --connection warehouse",
     ],
   },
   migrate: {
@@ -4967,6 +5061,7 @@ function printOverviewHelp(): void {
     "Usage: atlas <command> [options]\n\n" +
     "Commands:\n" +
     "  init          Profile DB and generate semantic layer\n" +
+    "  import        Import semantic YAML files from disk into DB\n" +
     "  diff          Compare DB schema against existing semantic layer\n" +
     "  query         Ask a question via the Atlas API\n" +
     "  validate      Validate config, semantic layer, and connectivity\n" +
@@ -5109,6 +5204,10 @@ async function main() {
       process.exit(1);
     }
     return;
+  }
+
+  if (command === "import") {
+    return handleImport(args);
   }
 
   if (command === "migrate") {
@@ -5302,6 +5401,20 @@ Next steps:
     shouldEnrich = providerConfigured;
   }
 
+  // --- Detect org-scoped mode ---
+  // When DATABASE_URL is set and managed auth is active, atlas init writes
+  // to semantic/.orgs/{orgId}/ and auto-imports to the internal DB.
+  const noImport = args.includes("--no-import");
+  let orgId: string | undefined;
+  if (process.env.DATABASE_URL && process.env.BETTER_AUTH_SECRET) {
+    // Org-scoped mode is available. The orgId comes from the active session.
+    // For CLI use, accept ATLAS_ORG_ID env var or --org flag.
+    orgId = getFlag(args, "--org") ?? process.env.ATLAS_ORG_ID;
+    if (orgId) {
+      console.log(`Org-scoped mode: writing to semantic/.orgs/${orgId}/\n`);
+    }
+  }
+
   // --- Resolve datasource list ---
 
   // Try loading atlas.config.ts
@@ -5462,6 +5575,7 @@ Next steps:
         explicitEnrich,
         demoDataset: isMultiSource ? null : demoDataset,
         force: forceInit,
+        orgId,
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -5484,6 +5598,65 @@ Next steps:
     }
     console.error(`${"=".repeat(60)}`);
     process.exit(1);
+  }
+
+  // --- Auto-import to DB in org-scoped mode ---
+  if (orgId && !noImport) {
+    console.log("\nImporting entities to internal DB...\n");
+
+    const apiUrl = process.env.ATLAS_API_URL ?? "http://localhost:3001";
+    const importUrl = `${apiUrl}/api/v1/admin/semantic/org/import`;
+    const importHeaders: Record<string, string> = { "Content-Type": "application/json" };
+    if (process.env.ATLAS_API_KEY) importHeaders.Authorization = `Bearer ${process.env.ATLAS_API_KEY}`;
+
+    // For each datasource, import with its connection ID
+    let anyImported = false;
+    for (const ds of datasources) {
+      const importBody: Record<string, string> = {};
+      if (ds.id !== "default") importBody.connectionId = ds.id;
+
+      try {
+        const resp = await fetch(importUrl, {
+          method: "POST",
+          headers: importHeaders,
+          body: JSON.stringify(importBody),
+          signal: AbortSignal.timeout(60_000),
+        });
+
+        if (resp.ok) {
+          const result = await resp.json() as { imported: number; skipped: number; total: number };
+          console.log(`  Imported ${result.imported} entities${ds.id !== "default" ? ` (connection: ${ds.id})` : ""}`);
+          if (result.imported > 0) anyImported = true;
+        } else {
+          let errorMsg = `HTTP ${resp.status}`;
+          try {
+            const json = await resp.json() as { message?: string; error?: string };
+            errorMsg = json.message ?? json.error ?? errorMsg;
+          } catch {
+            errorMsg = await resp.text().catch(() => errorMsg);
+          }
+          console.warn(`  Warning: Import failed for ${ds.id}: ${errorMsg}`);
+          console.warn("  Run 'atlas import' later to retry.\n");
+        }
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        if (detail.includes("ECONNREFUSED") || detail.includes("fetch failed")) {
+          console.warn("  Warning: Atlas API not reachable — skipping auto-import.");
+          console.warn("  Set ATLAS_API_URL if the API is not on localhost:3001");
+          console.warn("  Start the API server and run 'atlas import' to import manually.\n");
+          break; // Don't try remaining datasources
+        }
+        console.warn(`  Warning: Import failed for ${ds.id}: ${detail}`);
+      }
+    }
+
+    if (!anyImported && datasources.length > 0) {
+      console.warn("\nNo entities were imported to the DB. Files were written to disk successfully.");
+      console.warn("Run 'atlas import' once the API server is available to complete the import.");
+      if (!process.env.ATLAS_API_KEY) {
+        console.warn("Hint: set ATLAS_API_KEY for CLI authentication.\n");
+      }
+    }
   }
 }
 

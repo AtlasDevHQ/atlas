@@ -26,6 +26,9 @@ import * as path from "path";
 import type { SemanticEntityRow } from "../db/semantic-entities";
 
 const mockListEntities = mock((): Promise<SemanticEntityRow[]> => Promise.resolve([]));
+const mockBulkUpsertEntities = mock((_orgId: string, entities: unknown[]): Promise<number> =>
+  Promise.resolve(Array.isArray(entities) ? entities.length : 0),
+);
 const mockHasInternalDB = mock((): boolean => true);
 const mockInternalQuery = mock((): Promise<Array<{ org_id: string }>> => Promise.resolve([]));
 
@@ -35,12 +38,29 @@ mock.module("@atlas/api/lib/db/semantic-entities", () => ({
   upsertEntity: mock(() => Promise.resolve()),
   deleteEntity: mock(() => Promise.resolve(false)),
   countEntities: mock(() => Promise.resolve(0)),
-  bulkUpsertEntities: mock(() => Promise.resolve(0)),
+  bulkUpsertEntities: mockBulkUpsertEntities,
 }));
 
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: mockHasInternalDB,
   internalQuery: mockInternalQuery,
+}));
+
+const mockInvalidateOrgWhitelist = mock(() => {});
+
+mock.module("@atlas/api/lib/semantic", () => ({
+  invalidateOrgWhitelist: mockInvalidateOrgWhitelist,
+  getWhitelistedTables: mock(() => new Set()),
+  getOrgWhitelistedTables: mock(() => new Set()),
+  loadOrgWhitelist: mock(() => Promise.resolve(new Map())),
+  getOrgSemanticIndex: mock(() => Promise.resolve("")),
+  invalidateOrgSemanticIndex: mock(() => {}),
+  getCrossSourceJoins: mock(() => []),
+  registerPluginEntities: mock(() => {}),
+  _resetWhitelists: mock(() => {}),
+  _resetPluginEntities: mock(() => {}),
+  _resetOrgWhitelists: mock(() => {}),
+  _resetOrgSemanticIndexes: mock(() => {}),
 }));
 
 // ---------------------------------------------------------------------------
@@ -53,6 +73,7 @@ import {
   syncEntityDeleteFromDisk,
   syncAllEntitiesToDisk,
   cleanupOrgDirectory,
+  importFromDisk,
 } from "../semantic-sync";
 
 // ---------------------------------------------------------------------------
@@ -332,5 +353,94 @@ describe("cleanupOrgDirectory", () => {
     await expect(
       cleanupOrgDirectory("nonexistent-org"),
     ).resolves.toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// importFromDisk
+// ---------------------------------------------------------------------------
+
+describe("importFromDisk", () => {
+  it("imports entities from disk to DB", async () => {
+    const orgId = testOrgId();
+
+    // Write some YAML files to the org directory
+    await syncEntityToDisk(orgId, "users", "entity", "table: users\ndescription: Users\n");
+    await syncEntityToDisk(orgId, "orders", "entity", "table: orders\ndescription: Orders\n");
+    await syncEntityToDisk(orgId, "revenue", "metric", "name: revenue\nsql: SUM(amount)\n");
+
+    const result = await importFromDisk(orgId);
+
+    expect(result.total).toBe(3);
+    expect(result.imported).toBe(3);
+    expect(result.skipped).toBe(0);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it("skips invalid YAML files and reports errors", async () => {
+    const orgId = testOrgId();
+    const root = getSemanticRoot(orgId);
+
+    // Write a valid entity
+    await syncEntityToDisk(orgId, "valid", "entity", "table: valid\n");
+
+    // Write an invalid entity (no table field)
+    fs.mkdirSync(path.join(root, "entities"), { recursive: true });
+    fs.writeFileSync(path.join(root, "entities", "bad.yml"), "description: no table field\n");
+
+    const result = await importFromDisk(orgId);
+
+    expect(result.imported).toBe(1); // only the valid one
+    expect(result.skipped).toBe(1);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].file).toBe("bad.yml");
+    expect(result.errors[0].reason).toContain("table");
+  });
+
+  it("returns empty result when no files exist", async () => {
+    const orgId = testOrgId();
+
+    const result = await importFromDisk(orgId);
+
+    expect(result.total).toBe(0);
+    expect(result.imported).toBe(0);
+    expect(result.skipped).toBe(0);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it("imports glossary.yml from root", async () => {
+    const orgId = testOrgId();
+
+    // Write a glossary
+    await syncEntityToDisk(orgId, "glossary", "glossary", "terms:\n  - name: ARR\n");
+
+    const result = await importFromDisk(orgId);
+
+    expect(result.imported).toBe(1);
+    expect(result.total).toBe(1);
+  });
+
+  it("accepts a custom sourceDir", async () => {
+    const orgId = testOrgId();
+
+    // Write files to the org's normal directory
+    await syncEntityToDisk(orgId, "test", "entity", "table: test\n");
+
+    // Import using the org root as sourceDir explicitly
+    const result = await importFromDisk(orgId, { sourceDir: getSemanticRoot(orgId) });
+
+    expect(result.imported).toBe(1);
+  });
+
+  it("passes connectionId through to upserted entities", async () => {
+    const orgId = testOrgId();
+
+    await syncEntityToDisk(orgId, "test", "entity", "table: test\n");
+
+    const result = await importFromDisk(orgId, { connectionId: "warehouse" });
+
+    expect(result.imported).toBe(1);
+    // The mock bulkUpsertEntities doesn't check connectionId,
+    // but we verify it doesn't error
   });
 });

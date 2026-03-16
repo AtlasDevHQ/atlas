@@ -1,0 +1,384 @@
+---
+title: Social Login Providers
+description: Configure Google, GitHub, and Microsoft social login for Atlas managed auth.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+import { Steps, Step } from "fumadocs-ui/components/steps";
+import { Tab, Tabs } from "fumadocs-ui/components/tabs";
+
+Atlas's managed auth (Better Auth) supports social login out of the box. Users can sign in with Google, GitHub, or Microsoft — no plugin required. Social providers are configured alongside email/password in the `betterAuth()` call.
+
+<Callout title="Prerequisites">
+- [Managed auth](/deployment/authentication#managed-auth) enabled (`BETTER_AUTH_SECRET` + `DATABASE_URL`)
+- `BETTER_AUTH_URL` set to your API's public URL (e.g. `https://api.example.com`)
+- OAuth credentials from the provider you want to enable
+</Callout>
+
+## How It Works
+
+1. User clicks "Sign in with Google/GitHub/Microsoft" in the Atlas UI
+2. Browser redirects to the provider's OAuth consent screen
+3. Provider redirects back to Atlas at `/api/auth/callback/{provider}`
+4. Better Auth creates or links the user account and starts a session
+
+Social login users go through the same admin bootstrap and invitation logic as email/password signups — the first user gets `admin`, invitation matches auto-assign roles, and `ATLAS_ADMIN_EMAIL` is respected.
+
+---
+
+## Callback URL
+
+Each provider needs a callback URL during OAuth app setup. The format is:
+
+```
+{BETTER_AUTH_URL}/api/auth/callback/{provider}
+```
+
+| Provider | Callback URL |
+|----------|-------------|
+| Google | `https://api.example.com/api/auth/callback/google` |
+| GitHub | `https://api.example.com/api/auth/callback/github` |
+| Microsoft | `https://api.example.com/api/auth/callback/microsoft` |
+
+Replace `https://api.example.com` with your `BETTER_AUTH_URL` value. For local development, use `http://localhost:3001`.
+
+---
+
+## Google
+
+<Steps>
+<Step>
+### Create OAuth credentials
+
+1. Go to the [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
+2. Create a project (or select an existing one)
+3. Go to **APIs & Services > Credentials**
+4. Click **Create Credentials > OAuth client ID**
+5. Select **Web application** as the application type
+6. Under **Authorized redirect URIs**, add your callback URL:
+   ```
+   https://api.example.com/api/auth/callback/google
+   ```
+7. Copy the **Client ID** and **Client Secret**
+
+<Callout type="info">
+If you haven't configured the OAuth consent screen yet, Google will prompt you. For internal use, choose **Internal** (Google Workspace only). For public signups, choose **External** and submit for verification.
+</Callout>
+</Step>
+
+<Step>
+### Set environment variables
+
+```bash
+# .env
+GOOGLE_CLIENT_ID=123456789.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=GOCSPX-...
+```
+</Step>
+
+<Step>
+### Configure Atlas
+
+Add the `socialProviders` block to your `betterAuth()` call in `packages/api/src/lib/auth/server.ts`:
+
+```typescript
+const instance = betterAuth({
+  // ... existing config ...
+  socialProviders: {
+    google: {
+      clientId: process.env.GOOGLE_CLIENT_ID!,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+    },
+  },
+});
+```
+</Step>
+
+<Step>
+### Test
+
+1. Start Atlas: `bun run dev`
+2. Navigate to the login page
+3. Click **Sign in with Google**
+4. Complete the Google consent screen
+5. Verify you're redirected back and signed in
+</Step>
+</Steps>
+
+---
+
+## GitHub
+
+<Steps>
+<Step>
+### Create an OAuth App
+
+1. Go to [GitHub Settings > Developer settings > OAuth Apps](https://github.com/settings/developers)
+2. Click **New OAuth App**
+3. Fill in the form:
+   - **Application name**: Your app name (e.g. "Atlas")
+   - **Homepage URL**: Your app URL (e.g. `https://app.example.com`)
+   - **Authorization callback URL**:
+     ```
+     https://api.example.com/api/auth/callback/github
+     ```
+4. Click **Register application**
+5. Copy the **Client ID**
+6. Click **Generate a new client secret** and copy it
+
+<Callout type="warn">
+GitHub only shows the client secret once. Copy it immediately after generating.
+</Callout>
+</Step>
+
+<Step>
+### Set environment variables
+
+```bash
+# .env
+GITHUB_CLIENT_ID=Iv1.abc123def456
+GITHUB_CLIENT_SECRET=your-github-client-secret
+```
+</Step>
+
+<Step>
+### Configure Atlas
+
+```typescript
+const instance = betterAuth({
+  // ... existing config ...
+  socialProviders: {
+    github: {
+      clientId: process.env.GITHUB_CLIENT_ID!,
+      clientSecret: process.env.GITHUB_CLIENT_SECRET!,
+    },
+  },
+});
+```
+</Step>
+
+<Step>
+### Test
+
+1. Start Atlas: `bun run dev`
+2. Navigate to the login page
+3. Click **Sign in with GitHub**
+4. Authorize the OAuth app on GitHub
+5. Verify you're redirected back and signed in
+</Step>
+</Steps>
+
+---
+
+## Microsoft (Entra ID)
+
+<Steps>
+<Step>
+### Register an application
+
+1. Go to the [Azure Portal > App registrations](https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationsListBlade)
+2. Click **New registration**
+3. Fill in the form:
+   - **Name**: Your app name (e.g. "Atlas")
+   - **Supported account types**: Choose based on your needs:
+     - **Single tenant** — Only your organization
+     - **Multitenant** — Any Microsoft work/school account
+     - **Multitenant + personal** — Any Microsoft account (default)
+   - **Redirect URI**: Select **Web** and enter:
+     ```
+     https://api.example.com/api/auth/callback/microsoft
+     ```
+4. Click **Register**
+5. Copy the **Application (client) ID** from the overview page
+6. Copy the **Directory (tenant) ID** if you're restricting to your organization
+</Step>
+
+<Step>
+### Create a client secret
+
+1. In your app registration, go to **Certificates & secrets**
+2. Click **New client secret**
+3. Add a description and set an expiration
+4. Click **Add**
+5. Copy the secret **Value** (not the Secret ID)
+
+<Callout type="warn">
+The secret value is only shown once. Copy it immediately after creation. Set a calendar reminder before expiration to rotate the secret.
+</Callout>
+</Step>
+
+<Step>
+### Set environment variables
+
+```bash
+# .env
+MICROSOFT_CLIENT_ID=12345678-abcd-efgh-ijkl-1234567890ab
+MICROSOFT_CLIENT_SECRET=your-microsoft-client-secret
+
+# Optional: restrict to a specific tenant (default: "common" = any Microsoft account)
+MICROSOFT_TENANT_ID=your-tenant-id
+```
+</Step>
+
+<Step>
+### Configure Atlas
+
+```typescript
+const instance = betterAuth({
+  // ... existing config ...
+  socialProviders: {
+    microsoft: {
+      clientId: process.env.MICROSOFT_CLIENT_ID!,
+      clientSecret: process.env.MICROSOFT_CLIENT_SECRET!,
+      tenantId: process.env.MICROSOFT_TENANT_ID || "common",
+    },
+  },
+});
+```
+
+**Tenant ID values:**
+
+| Value | Who can sign in |
+|-------|----------------|
+| `common` | Any Microsoft account (personal + work/school) |
+| `organizations` | Any work/school account |
+| `consumers` | Personal Microsoft accounts only |
+| `{tenant-id}` | Only accounts in that specific directory |
+</Step>
+
+<Step>
+### Test
+
+1. Start Atlas: `bun run dev`
+2. Navigate to the login page
+3. Click **Sign in with Microsoft**
+4. Sign in with a Microsoft account
+5. Verify you're redirected back and signed in
+</Step>
+</Steps>
+
+---
+
+## Multiple Providers
+
+Enable any combination of providers in a single configuration:
+
+```typescript
+const instance = betterAuth({
+  // ... existing config ...
+  emailAndPassword: { enabled: true },
+  socialProviders: {
+    google: {
+      clientId: process.env.GOOGLE_CLIENT_ID!,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+    },
+    github: {
+      clientId: process.env.GITHUB_CLIENT_ID!,
+      clientSecret: process.env.GITHUB_CLIENT_SECRET!,
+    },
+    microsoft: {
+      clientId: process.env.MICROSOFT_CLIENT_ID!,
+      clientSecret: process.env.MICROSOFT_CLIENT_SECRET!,
+      tenantId: process.env.MICROSOFT_TENANT_ID || "common",
+    },
+  },
+});
+```
+
+Social providers work alongside email/password. Users who sign up via a social provider can later add a password, and vice versa. Better Auth links accounts by email address — if a user signs in with Google using the same email they previously used for email/password signup, the accounts are linked.
+
+---
+
+## Frontend Integration
+
+The Atlas web UI handles social login buttons automatically when providers are configured. For custom frontends, use the Better Auth client:
+
+```typescript
+import { createAuthClient } from "better-auth/react";
+
+const auth = createAuthClient({
+  baseURL: "https://api.example.com",
+});
+
+// Redirect to provider's OAuth consent screen
+await auth.signIn.social({ provider: "google" });
+await auth.signIn.social({ provider: "github" });
+await auth.signIn.social({ provider: "microsoft" });
+```
+
+After successful authentication, the user is redirected back to your app with an active session.
+
+---
+
+## Troubleshooting
+
+### Redirect URI mismatch
+
+**Symptom:** OAuth provider returns an error like "redirect_uri_mismatch" or "Invalid redirect URI".
+
+**Fix:** The callback URL registered with the provider must exactly match what Better Auth generates. Check:
+- Protocol: `https://` vs `http://` (use `http://` only for `localhost`)
+- Trailing slashes: most providers are strict about this
+- Port: include the port for non-standard ports (e.g. `http://localhost:3001/api/auth/callback/google`)
+- `BETTER_AUTH_URL` must be set correctly — Better Auth uses it to construct callback URLs
+
+### "email_not_found" error with GitHub
+
+**Symptom:** GitHub sign-in fails with an email-related error.
+
+**Fix:** GitHub OAuth does not return the user's email if their email is set to private. Users must either:
+- Make their email public in [GitHub email settings](https://github.com/settings/emails)
+- Or ensure at least one verified email is accessible via the GitHub API (Better Auth requests the `user:email` scope automatically)
+
+### User lands on wrong role after social login
+
+**Symptom:** A user signs in via social provider but gets `analyst` instead of `admin`.
+
+**Explanation:** Social login goes through the same bootstrap logic as email/password:
+- If `ATLAS_ADMIN_EMAIL` matches the social account's email → `admin`
+- If no admin exists yet → first signup gets `admin`
+- If a pending invitation matches the email → invited role is assigned
+- Otherwise → `analyst` (the `defaultRole` from the admin plugin)
+
+Check that `ATLAS_ADMIN_EMAIL` matches the email the provider returns (case-insensitive).
+
+### Microsoft: "AADSTS700016" application error
+
+**Symptom:** Microsoft login fails with error code AADSTS700016.
+
+**Fix:** The Application (client) ID is incorrect or the app registration is not in the expected tenant. Verify:
+- `MICROSOFT_CLIENT_ID` matches the **Application (client) ID** (not the Object ID)
+- `MICROSOFT_TENANT_ID` matches the directory where the app is registered (or use `common` for multi-tenant)
+
+### Microsoft: client secret expired
+
+**Symptom:** Microsoft login suddenly stops working.
+
+**Fix:** Entra ID client secrets have an expiration date. Generate a new secret in **Certificates & secrets** and update `MICROSOFT_CLIENT_SECRET`. Set a reminder to rotate before the next expiration.
+
+### Session cookie not sent (cross-origin)
+
+**Symptom:** Social login completes but the user appears unauthenticated on the frontend.
+
+**Fix:** If your API and frontend are on different origins, ensure cross-origin cookies are configured:
+
+```bash
+ATLAS_CORS_ORIGIN=https://app.example.com
+BETTER_AUTH_TRUSTED_ORIGINS=https://app.example.com
+BETTER_AUTH_URL=https://api.example.com
+```
+
+See [Cross-origin deployment](/deployment/authentication#cross-origin-deployment) for details.
+
+### Account linking
+
+When a user signs in with a social provider using the same email as an existing account, Better Auth links the accounts. The user can then sign in with either method. If you see duplicate accounts, check whether the social provider is returning a different email than expected (e.g. a personal vs. work Microsoft account).
+
+---
+
+## Related
+
+- [Authentication](/deployment/authentication) — full auth mode reference including managed auth setup
+- [Admin Console](/guides/admin-console) — manage users and roles
+- [Row-Level Security](/security/row-level-security) — tenant isolation with JWT claims
+- [Troubleshooting](/guides/troubleshooting#auth-issues) — general auth troubleshooting

@@ -82,6 +82,9 @@ const mockDenyAction = mock((): Promise<ActionLogEntry | null> =>
   Promise.resolve(null),
 );
 const mockGetActionExecutor = mock((): undefined => undefined);
+const mockRollbackAction = mock((): Promise<ActionLogEntry | null> =>
+  Promise.resolve(null),
+);
 
 let currentActionConfig: { approval: ActionApprovalMode; requiredRole?: AtlasRole } = {
   approval: "manual",
@@ -96,6 +99,7 @@ mock.module("@atlas/api/lib/tools/actions/handler", () => ({
   getAction: mockGetAction,
   approveAction: mockApproveAction,
   denyAction: mockDenyAction,
+  rollbackAction: mockRollbackAction,
   getActionExecutor: mockGetActionExecutor,
   getActionConfig: mockGetActionConfig,
 }));

@@ -3,10 +3,14 @@ import {
   handleAction,
   approveAction,
   denyAction,
+  rollbackAction,
   getAction,
   listPendingActions,
   buildActionRequest,
   getActionConfig,
+  extractRollbackInfo,
+  registerRollbackMethod,
+  getRollbackMethod,
   _resetActionStore,
   ActionTimeoutError,
 } from "../handler";
@@ -855,5 +859,279 @@ describe("getActionConfig() — timeout", () => {
 
     const overrideConfig = getActionConfig("fast:action");
     expect(overrideConfig.timeout).toBe(5000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractRollbackInfo
+// ---------------------------------------------------------------------------
+
+describe("extractRollbackInfo()", () => {
+  it("returns RollbackInfo for valid result", () => {
+    const result = {
+      key: "PROJ-1",
+      rollbackInfo: { method: "transition", params: { issueKey: "PROJ-1", targetStatus: "Closed" } },
+    };
+    const info = extractRollbackInfo(result);
+    expect(info).toEqual({ method: "transition", params: { issueKey: "PROJ-1", targetStatus: "Closed" } });
+  });
+
+  it("returns null for null/undefined/primitives", () => {
+    expect(extractRollbackInfo(null)).toBeNull();
+    expect(extractRollbackInfo(undefined)).toBeNull();
+    expect(extractRollbackInfo("string")).toBeNull();
+    expect(extractRollbackInfo(42)).toBeNull();
+    expect(extractRollbackInfo(true)).toBeNull();
+  });
+
+  it("returns null for object without rollbackInfo", () => {
+    expect(extractRollbackInfo({})).toBeNull();
+    expect(extractRollbackInfo({ key: "value" })).toBeNull();
+  });
+
+  it("returns null for non-object rollbackInfo", () => {
+    expect(extractRollbackInfo({ rollbackInfo: null })).toBeNull();
+    expect(extractRollbackInfo({ rollbackInfo: "string" })).toBeNull();
+    expect(extractRollbackInfo({ rollbackInfo: 42 })).toBeNull();
+  });
+
+  it("returns null when method is not a string", () => {
+    expect(extractRollbackInfo({ rollbackInfo: { method: 123, params: {} } })).toBeNull();
+    expect(extractRollbackInfo({ rollbackInfo: { params: {} } })).toBeNull();
+  });
+
+  it("returns null when params is missing or not a plain object", () => {
+    expect(extractRollbackInfo({ rollbackInfo: { method: "x" } })).toBeNull();
+    expect(extractRollbackInfo({ rollbackInfo: { method: "x", params: null } })).toBeNull();
+    expect(extractRollbackInfo({ rollbackInfo: { method: "x", params: "string" } })).toBeNull();
+  });
+
+  it("returns null when params is an array", () => {
+    expect(extractRollbackInfo({ rollbackInfo: { method: "x", params: [1, 2, 3] } })).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rollback method registry
+// ---------------------------------------------------------------------------
+
+describe("registerRollbackMethod / getRollbackMethod", () => {
+  it("registers and retrieves a handler", () => {
+    const handler = async () => "ok";
+    registerRollbackMethod("test:method", handler);
+    expect(getRollbackMethod("test:method")).toBe(handler);
+  });
+
+  it("returns undefined for unregistered method", () => {
+    expect(getRollbackMethod("nonexistent:method")).toBeUndefined();
+  });
+
+  it("is cleared by _resetActionStore", () => {
+    registerRollbackMethod("temp:method", async () => "ok");
+    _resetActionStore();
+    expect(getRollbackMethod("temp:method")).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rollbackAction
+// ---------------------------------------------------------------------------
+
+describe("rollbackAction()", () => {
+  it("rolls back an executed action", async () => {
+    const request = buildActionRequest({
+      actionType: "jira:create",
+      target: "PROJ",
+      summary: "Create ticket",
+      payload: { summary: "Test" },
+      reversible: true,
+    });
+
+    // Create pending action, then approve+execute with rollback info
+    await withRequestContext({ requestId: "req-rb-1" }, () =>
+      handleAction(request, async () => ({
+        key: "PROJ-1",
+        rollbackInfo: { method: "transition", params: { issueKey: "PROJ-1" } },
+      })),
+    );
+    await approveAction(request.id, "admin-1", async () => ({
+      key: "PROJ-1",
+      rollbackInfo: { method: "transition", params: { issueKey: "PROJ-1" } },
+    }));
+
+    // Verify it's executed with rollback_info
+    const beforeRollback = await getAction(request.id);
+    expect(beforeRollback!.status).toBe("executed");
+    expect(beforeRollback!.rollback_info).not.toBeNull();
+
+    const result = await rollbackAction(request.id, "admin-1");
+    expect(result).not.toBeNull();
+    expect(result!.status).toBe("rolled_back");
+    expect(result!.resolved_at).not.toBeNull();
+
+    // Verify persisted status
+    const stored = await getAction(request.id);
+    expect(stored!.status).toBe("rolled_back");
+  });
+
+  it("returns null for non-rollbackable status (pending)", async () => {
+    const request = buildActionRequest({
+      actionType: "test:action",
+      target: "t1",
+      summary: "Test",
+      payload: {},
+      reversible: true,
+    });
+
+    await withRequestContext({ requestId: "req-rb-2" }, () =>
+      handleAction(request, async () => "done"),
+    );
+
+    const result = await rollbackAction(request.id, "admin-1");
+    expect(result).toBeNull();
+  });
+
+  it("returns null for unknown action ID", async () => {
+    const result = await rollbackAction("nonexistent-id-12345", "admin-1");
+    expect(result).toBeNull();
+  });
+
+  it("returns null when action has no rollback_info", async () => {
+    const request = buildActionRequest({
+      actionType: "test:no-rb",
+      target: "t1",
+      summary: "No rollback info",
+      payload: {},
+      reversible: false,
+    });
+
+    // Auto-approve with no rollback info in result
+    process.env.ATLAS_ACTIONS_ENABLED = "true";
+    process.env.ATLAS_ACTION_APPROVAL = "auto";
+    const { loadConfig: lc } = await import("@atlas/api/lib/config");
+    await lc("/tmp/handler-test-nonexistent");
+
+    await withRequestContext({ requestId: "req-rb-3" }, () =>
+      handleAction(request, async () => ({ success: true })),
+    );
+
+    const stored = await getAction(request.id);
+    expect(stored!.status).toBe("auto_approved");
+    expect(stored!.rollback_info).toBeNull();
+
+    const result = await rollbackAction(request.id, "admin-1");
+    expect(result).toBeNull();
+  });
+
+  it("prevents double rollback (CAS)", async () => {
+    const request = buildActionRequest({
+      actionType: "jira:create",
+      target: "PROJ",
+      summary: "Create ticket",
+      payload: { summary: "Test" },
+      reversible: true,
+    });
+
+    await withRequestContext({ requestId: "req-rb-4" }, () =>
+      handleAction(request, async () => ({
+        key: "PROJ-2",
+        rollbackInfo: { method: "transition", params: { issueKey: "PROJ-2" } },
+      })),
+    );
+    await approveAction(request.id, "admin-1", async () => ({
+      key: "PROJ-2",
+      rollbackInfo: { method: "transition", params: { issueKey: "PROJ-2" } },
+    }));
+
+    const first = await rollbackAction(request.id, "admin-1");
+    expect(first).not.toBeNull();
+    expect(first!.status).toBe("rolled_back");
+
+    const second = await rollbackAction(request.id, "admin-2");
+    expect(second).toBeNull();
+  });
+
+  it("dispatches to registered rollback handler", async () => {
+    let handlerCalled = false;
+    let handlerParams: Record<string, unknown> = {};
+    registerRollbackMethod("test:dispatch", async (params) => {
+      handlerCalled = true;
+      handlerParams = params;
+    });
+
+    const request = buildActionRequest({
+      actionType: "test:dispatchable",
+      target: "t1",
+      summary: "Dispatchable",
+      payload: { key: "val" },
+      reversible: true,
+    });
+
+    await withRequestContext({ requestId: "req-rb-5" }, () =>
+      handleAction(request, async () => ({
+        ok: true,
+        rollbackInfo: { method: "test:dispatch", params: { myKey: "myVal" } },
+      })),
+    );
+    await approveAction(request.id, "admin-1", async () => ({
+      ok: true,
+      rollbackInfo: { method: "test:dispatch", params: { myKey: "myVal" } },
+    }));
+
+    await rollbackAction(request.id, "admin-1");
+    expect(handlerCalled).toBe(true);
+    expect(handlerParams).toEqual({ myKey: "myVal" });
+  });
+
+  it("stores error when rollback handler throws", async () => {
+    registerRollbackMethod("test:failing", async () => {
+      throw new Error("JIRA API unavailable");
+    });
+
+    const request = buildActionRequest({
+      actionType: "test:failing-rb",
+      target: "t1",
+      summary: "Failing rollback",
+      payload: {},
+      reversible: true,
+    });
+
+    await withRequestContext({ requestId: "req-rb-6" }, () =>
+      handleAction(request, async () => ({
+        rollbackInfo: { method: "test:failing", params: {} },
+      })),
+    );
+    await approveAction(request.id, "admin-1", async () => ({
+      rollbackInfo: { method: "test:failing", params: {} },
+    }));
+
+    const result = await rollbackAction(request.id, "admin-1");
+    expect(result).not.toBeNull();
+    expect(result!.status).toBe("rolled_back");
+    expect(result!.error).toBe("JIRA API unavailable");
+  });
+
+  it("stores error when no handler is registered for rollback method", async () => {
+    const request = buildActionRequest({
+      actionType: "test:no-handler",
+      target: "t1",
+      summary: "No handler",
+      payload: {},
+      reversible: true,
+    });
+
+    await withRequestContext({ requestId: "req-rb-7" }, () =>
+      handleAction(request, async () => ({
+        rollbackInfo: { method: "unregistered:method", params: { a: 1 } },
+      })),
+    );
+    await approveAction(request.id, "admin-1", async () => ({
+      rollbackInfo: { method: "unregistered:method", params: { a: 1 } },
+    }));
+
+    const result = await rollbackAction(request.id, "admin-1");
+    expect(result).not.toBeNull();
+    expect(result!.status).toBe("rolled_back");
+    expect(result!.error).toContain("No rollback handler registered for method: unregistered:method");
   });
 });

@@ -18,6 +18,7 @@ import {
   getAction,
   approveAction,
   denyAction,
+  rollbackAction,
   listPendingActions,
   getActionExecutor,
   getActionConfig,
@@ -267,6 +268,62 @@ actions.post("/:id/deny", async (c) => {
     } catch (err) {
       log.error({ err: err instanceof Error ? err.message : String(err), requestId, op: "denyAction" }, "Failed to deny action");
       return c.json({ error: "internal_error", message: "Failed to deny action." }, 500);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /:id/rollback — rollback an executed action
+// ---------------------------------------------------------------------------
+
+actions.post("/:id/rollback", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured)." }, 404);
+  }
+
+  const preamble = await authPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  const id = c.req.param("id");
+  if (!UUID_RE.test(id)) {
+    return c.json({ error: "invalid_request", message: "Invalid action ID format." }, 400);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    try {
+      const action = await getAction(id);
+      if (!action) {
+        return c.json({ error: "not_found", message: "Action not found." }, 404);
+      }
+
+      const cfg = getActionConfig(action.action_type);
+
+      if (!canApprove(authResult.user, cfg.approval, cfg.requiredRole)) {
+        return c.json({ error: "forbidden", message: "Insufficient role to rollback this action." }, 403);
+      }
+
+      if (!action.rollback_info) {
+        return c.json({ error: "conflict", message: "Action does not have rollback information." }, 409);
+      }
+
+      const rollbackerId = authResult.user?.id ?? "anonymous";
+      const result = await rollbackAction(id, rollbackerId);
+      if (!result) {
+        return c.json({ error: "conflict", message: "Action cannot be rolled back. It may have been rolled back already or changed state." }, 409);
+      }
+      if (result.error) {
+        return c.json({ ...result, warning: "Rollback status updated but the rollback handler reported an error. The side-effect may not have been reversed." });
+      }
+      return c.json(result);
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, op: "rollbackAction" }, "Failed to rollback action");
+      return c.json({ error: "internal_error", message: "Failed to rollback action." }, 500);
     }
   });
 });

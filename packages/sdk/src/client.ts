@@ -196,6 +196,22 @@ export interface UpdateScheduledTaskInput {
 }
 
 // ---------------------------------------------------------------------------
+// Action types
+// ---------------------------------------------------------------------------
+
+export interface RollbackActionResponse {
+  id: string;
+  status: string;
+  action_type: string;
+  target: string;
+  summary: string;
+  rollback_info: { method: string; params: Record<string, unknown> } | null;
+  error: string | null;
+  /** Present when the rollback handler reported an error — the side-effect may not have been reversed. */
+  warning?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Admin types
 // ---------------------------------------------------------------------------
 
@@ -909,6 +925,17 @@ export function createAtlasClient(options: AtlasClientOptions) {
         const res = await post(`/api/v1/admin/plugins/${encodeURIComponent(id)}/health`, {});
         return unwrap<PluginHealthCheckResponse>(res);
       },
+    },
+
+    /**
+     * Trigger rollback of an executed action using its stored rollback metadata.
+     * Returns the updated action entry on success. When the rollback handler
+     * reports an error, the response includes a `warning` field and `error`
+     * with details — the status will still be `rolled_back`.
+     */
+    async rollbackAction(id: string): Promise<RollbackActionResponse> {
+      const res = await post(`/api/v1/actions/${encodeURIComponent(id)}/rollback`, {});
+      return unwrap<RollbackActionResponse>(res);
     },
 
     /**

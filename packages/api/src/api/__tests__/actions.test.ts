@@ -62,12 +62,16 @@ const mockGetActionConfig = mock(
     approval: "manual",
   }),
 );
+const mockRollbackAction = mock((): Promise<ActionLogEntry | null> =>
+  Promise.resolve(null),
+);
 
 mock.module("@atlas/api/lib/tools/actions/handler", () => ({
   listPendingActions: mockListPendingActions,
   getAction: mockGetAction,
   approveAction: mockApproveAction,
   denyAction: mockDenyAction,
+  rollbackAction: mockRollbackAction,
   getActionExecutor: mockGetActionExecutor,
   getActionConfig: mockGetActionConfig,
 }));
@@ -180,6 +184,8 @@ describe("actions routes", () => {
     mockGetActionExecutor.mockReturnValue(undefined);
     mockGetActionConfig.mockReset();
     mockGetActionConfig.mockReturnValue({ approval: "manual" });
+    mockRollbackAction.mockReset();
+    mockRollbackAction.mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -683,6 +689,166 @@ describe("actions routes", () => {
 
       const body = (await response.json()) as Record<string, unknown>;
       expect(body.error).toBe("invalid_request");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/v1/actions/:id/rollback
+  // -------------------------------------------------------------------------
+
+  describe("POST /api/v1/actions/:id/rollback", () => {
+    it("returns 200 on successful rollback", async () => {
+      const action = makeAction({
+        status: "executed",
+        rollback_info: { method: "transition", params: { issueKey: "PROJ-1" } },
+      });
+      const rolledBack = makeAction({
+        status: "rolled_back" as ActionLogEntry["status"],
+        resolved_at: "2024-06-01T02:00:00Z",
+        rollback_info: { method: "transition", params: { issueKey: "PROJ-1" } },
+      });
+      mockGetAction.mockResolvedValueOnce(action);
+      mockRollbackAction.mockResolvedValueOnce(rolledBack);
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/actions/${VALID_ID}/rollback`, {
+          method: "POST",
+        }),
+      );
+      expect(response.status).toBe(200);
+
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.status).toBe("rolled_back");
+    });
+
+    it("returns 409 when action has no rollback_info", async () => {
+      const action = makeAction({ status: "executed", rollback_info: null });
+      mockGetAction.mockResolvedValueOnce(action);
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/actions/${VALID_ID}/rollback`, {
+          method: "POST",
+        }),
+      );
+      expect(response.status).toBe(409);
+
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("conflict");
+    });
+
+    it("returns 409 when rollbackAction returns null (wrong state)", async () => {
+      const action = makeAction({
+        status: "executed",
+        rollback_info: { method: "transition", params: { issueKey: "PROJ-1" } },
+      });
+      mockGetAction.mockResolvedValueOnce(action);
+      mockRollbackAction.mockResolvedValueOnce(null);
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/actions/${VALID_ID}/rollback`, {
+          method: "POST",
+        }),
+      );
+      expect(response.status).toBe(409);
+
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("conflict");
+    });
+
+    it("returns 404 when action not found", async () => {
+      mockGetAction.mockResolvedValueOnce(null);
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/actions/${VALID_ID}/rollback`, {
+          method: "POST",
+        }),
+      );
+      expect(response.status).toBe(404);
+
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("not_found");
+    });
+
+    it("returns 400 for invalid UUID", async () => {
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/actions/not-a-uuid/rollback", {
+          method: "POST",
+        }),
+      );
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("invalid_request");
+    });
+
+    it("returns 404 when no internal DB", async () => {
+      delete process.env.DATABASE_URL;
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/actions/${VALID_ID}/rollback`, {
+          method: "POST",
+        }),
+      );
+      expect(response.status).toBe(404);
+    });
+
+    it("returns 403 when user lacks permission", async () => {
+      const action = makeAction({
+        status: "executed",
+        rollback_info: { method: "transition", params: { issueKey: "PROJ-1" } },
+      });
+      mockGetAction.mockResolvedValueOnce(action);
+      mockGetActionConfig.mockReturnValueOnce({ approval: "admin-only" });
+
+      // User with simple-key mode defaults to analyst role, which can't approve admin-only
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/actions/${VALID_ID}/rollback`, {
+          method: "POST",
+        }),
+      );
+      expect(response.status).toBe(403);
+
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("forbidden");
+    });
+
+    it("passes rollbackerId from auth user to rollbackAction", async () => {
+      const action = makeAction({
+        status: "executed",
+        rollback_info: { method: "transition", params: { issueKey: "PROJ-1" } },
+      });
+      const rolledBack = makeAction({ status: "rolled_back" as ActionLogEntry["status"] });
+      mockGetAction.mockResolvedValueOnce(action);
+      mockRollbackAction.mockResolvedValueOnce(rolledBack);
+
+      await app.fetch(
+        new Request(`http://localhost/api/v1/actions/${VALID_ID}/rollback`, {
+          method: "POST",
+        }),
+      );
+
+      expect(mockRollbackAction).toHaveBeenCalledTimes(1);
+      const call = mockRollbackAction.mock.calls[0] as unknown as [string, string];
+      expect(call[0]).toBe(VALID_ID);
+      expect(call[1]).toBe("u1");
+    });
+
+    it("returns 500 when rollbackAction throws", async () => {
+      const action = makeAction({
+        status: "executed",
+        rollback_info: { method: "transition", params: { issueKey: "PROJ-1" } },
+      });
+      mockGetAction.mockResolvedValueOnce(action);
+      mockRollbackAction.mockRejectedValueOnce(new Error("DB crashed"));
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/actions/${VALID_ID}/rollback`, {
+          method: "POST",
+        }),
+      );
+      expect(response.status).toBe(500);
+
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("internal_error");
     });
   });
 });

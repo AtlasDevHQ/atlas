@@ -42,6 +42,7 @@ import {
   CheckCheck,
   XCircle,
   Inbox,
+  Undo2,
 } from "lucide-react";
 import { useInProgressSet, type FetchError, friendlyError } from "@/ui/hooks/use-admin-fetch";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
@@ -65,7 +66,8 @@ interface ActionLogEntry {
     | "executed"
     | "failed"
     | "timed_out"
-    | "auto_approved";
+    | "auto_approved"
+    | "rolled_back";
   result: unknown;
   error: string | null;
   rollback_info: object | null;
@@ -73,13 +75,14 @@ interface ActionLogEntry {
   request_id: string | null;
 }
 
-type StatusFilter = "pending" | "executed" | "denied" | "failed" | "all";
+type StatusFilter = "pending" | "executed" | "denied" | "failed" | "rolled_back" | "all";
 
 const FILTER_OPTIONS: { value: StatusFilter; label: string }[] = [
   { value: "pending", label: "Pending" },
   { value: "executed", label: "Executed" },
   { value: "denied", label: "Denied" },
   { value: "failed", label: "Failed" },
+  { value: "rolled_back", label: "Rolled Back" },
   { value: "all", label: "All" },
 ];
 
@@ -143,6 +146,7 @@ const EMPTY_MESSAGES: Record<StatusFilter, string> = {
   executed: "No executed actions yet.",
   denied: "No denied actions.",
   failed: "No failed actions.",
+  rolled_back: "No rolled back actions.",
   all: "No actions recorded yet.",
 };
 
@@ -158,6 +162,7 @@ export default function ActionsPage() {
   const [, startTransition] = useTransition();
   const approving = useInProgressSet();
   const denying = useInProgressSet();
+  const rollingBack = useInProgressSet();
 
   const [refetchKey, setRefetchKey] = useState(0);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -268,6 +273,36 @@ export default function ActionsPage() {
       setMutationError(err instanceof Error ? err.message : "Deny failed");
     } finally {
       denying.stop(id);
+    }
+  }
+
+  async function handleRollback(id: string) {
+    rollingBack.start(id);
+    setMutationError(null);
+    try {
+      const res = await fetch(`${apiUrl}/api/v1/actions/${id}/rollback`, {
+        credentials,
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) {
+        let serverMessage = `Rollback failed (HTTP ${res.status})`;
+        try {
+          const body = await res.json();
+          if (body?.message) serverMessage = body.message;
+        } catch { /* ignore parse errors */ }
+        throw new Error(serverMessage);
+      }
+      const body = await res.json();
+      if (body?.warning) {
+        setMutationError(body.warning);
+      }
+      setRefetchKey((k) => k + 1);
+    } catch (err) {
+      setMutationError(err instanceof Error ? err.message : "Rollback failed");
+    } finally {
+      rollingBack.stop(id);
     }
   }
 
@@ -499,6 +534,30 @@ export default function ActionsPage() {
                               </Button>
                             </div>
                           )}
+                          {(action.status === "executed" || action.status === "auto_approved") && action.rollback_info && (
+                            <div
+                              className="flex justify-end gap-1"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    disabled={rollingBack.has(action.id)}
+                                    onClick={() => handleRollback(action.id)}
+                                  >
+                                    {rollingBack.has(action.id) ? (
+                                      <Loader2 className="size-4 animate-spin" />
+                                    ) : (
+                                      <Undo2 className="size-4" />
+                                    )}
+                                  </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>Rollback this action</TooltipContent>
+                              </Tooltip>
+                            </div>
+                          )}
                         </TableCell>
                       </TableRow>
                       {isExpanded && (
@@ -568,6 +627,23 @@ export default function ActionsPage() {
                                       <X className="mr-1 size-4" />
                                     )}
                                     Deny
+                                  </Button>
+                                </div>
+                              )}
+                              {(action.status === "executed" || action.status === "auto_approved") && action.rollback_info && (
+                                <div className="flex gap-2 pt-2">
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    disabled={rollingBack.has(action.id)}
+                                    onClick={() => handleRollback(action.id)}
+                                  >
+                                    {rollingBack.has(action.id) ? (
+                                      <Loader2 className="mr-1 size-4 animate-spin" />
+                                    ) : (
+                                      <Undo2 className="mr-1 size-4" />
+                                    )}
+                                    Rollback
                                   </Button>
                                 </div>
                               )}

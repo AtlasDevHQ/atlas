@@ -25,7 +25,7 @@ import { withSpan } from "@atlas/api/lib/tracing";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { acquireSourceSlot, decrementSourceConcurrency } from "@atlas/api/lib/db/source-rate-limit";
 import { getConfig } from "@atlas/api/lib/config";
-import { resolveRLSFilters, injectRLSConditions } from "@atlas/api/lib/rls";
+import { resolveRLSFilters, injectRLSConditions, type RLSFilterGroup } from "@atlas/api/lib/rls";
 import { getSetting } from "@atlas/api/lib/settings";
 
 const log = createLogger("sql");
@@ -607,11 +607,12 @@ Rules:
         return { success: false, error: filterResult.error };
       }
 
-      if (filterResult.filters.length > 0) {
+      const hasFilters = filterResult.groups.some((g: RLSFilterGroup) => g.filters.length > 0);
+      if (hasFilters) {
         try {
-          normalizedMutated = injectRLSConditions(normalizedMutated, filterResult.filters, dbType);
+          normalizedMutated = injectRLSConditions(normalizedMutated, filterResult.groups, filterResult.combineWith, dbType);
           log.debug(
-            { filters: filterResult.filters.length, userId: user?.id },
+            { groups: filterResult.groups.length, combineWith: filterResult.combineWith, userId: user?.id },
             "RLS conditions injected",
           );
         } catch (err) {

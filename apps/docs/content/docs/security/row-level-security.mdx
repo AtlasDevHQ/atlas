@@ -15,11 +15,11 @@ RLS is **fail-closed**. If the user's claims are missing or cannot be resolved, 
 
 1. You define **policies** that map JWT claims to table columns
 2. When the agent generates a SQL query, Atlas resolves the claim value from the authenticated user
-3. Atlas injects `WHERE table.column = 'claim_value'` into the query AST (not string concatenation)
+3. Atlas injects `WHERE table.column = 'claim_value'` (or `IN (...)` for array claims) into the query AST (not string concatenation)
 4. The injection runs **after** plugin `beforeQuery` hooks -- plugins cannot strip RLS conditions
 5. Claim values are SQL-escaped (single quotes doubled) before injection
 
-The AST manipulation handles CTEs, subqueries, UNIONs, derived tables, and table aliases correctly. Custom validators (SOQL, GraphQL) bypass RLS and must enforce their own filtering.
+Policies support single or multi-column conditions, array-valued JWT claims (generates `IN (...)` instead of `=`), and configurable AND/OR logic between policies. The AST manipulation handles CTEs, subqueries, UNIONs, derived tables, and table aliases correctly. Custom validators (SOQL, GraphQL) bypass RLS and must enforce their own filtering.
 
 ---
 
@@ -74,11 +74,24 @@ export default defineConfig({
 
 ### Policy Schema
 
+Each policy uses either the single-condition shorthand (`column` + `claim`) or the multi-condition form (`conditions`):
+
 | Field | Type | Description |
 |-------|------|-------------|
 | `tables` | `string[]` | Table names this policy applies to. Use `["*"]` for all tables |
-| `column` | `string` | Column name to filter on. Must be a valid SQL identifier |
-| `claim` | `string` | Claim path to extract the filter value from the user's JWT claims. Supports dot-delimited nested paths |
+| `column` | `string` | Column name to filter on (single-condition shorthand) |
+| `claim` | `string` | Claim path to resolve the filter value (single-condition shorthand) |
+| `conditions` | `{ column, claim }[]` | Multiple column/claim pairs — ANDed together within this policy |
+
+Use `column`+`claim` for single-condition policies, or `conditions` for multi-column policies. You cannot use both on the same policy.
+
+### RLS Config Options
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | `boolean` | `false` | Whether RLS is active |
+| `policies` | `RLSPolicy[]` | `[]` | Array of policies |
+| `combineWith` | `"and" \| "or"` | `"and"` | How to combine conditions from different policies |
 
 **Validation rules:**
 - At least one policy is required when `enabled: true`
@@ -97,7 +110,110 @@ Claim paths support dot-delimited access into nested JWT structures:
 | `app_metadata.tenant` | `{ "app_metadata": { "tenant": "acme" } }` | `acme` |
 | `custom.nested.id` | `{ "custom": { "nested": { "id": 42 } } }` | `42` |
 
-Non-string values are coerced to strings. If the path resolves to `undefined` or `null`, the query is blocked.
+Non-string values are coerced to strings. Array values generate `IN (...)` conditions (see [Array Claims](#array-claims)). If the path resolves to `undefined` or `null`, the query is blocked. Empty arrays are also blocked (fail-closed).
+
+---
+
+## Array Claims
+
+When a JWT claim resolves to an array, Atlas generates an `IN (...)` condition instead of `=`:
+
+**JWT claims:**
+
+```json
+{
+  "sub": "user_123",
+  "departments": ["engineering", "sales"]
+}
+```
+
+**Config:**
+
+```typescript
+rls: {
+  enabled: true,
+  policies: [
+    { tables: ["*"], column: "department", claim: "departments" },
+  ],
+}
+```
+
+**Injection result:**
+
+```sql
+-- Agent generates:
+SELECT * FROM tickets
+
+-- After RLS injection:
+SELECT * FROM tickets WHERE tickets.department IN ('engineering', 'sales')
+```
+
+<Callout type="warn">
+Empty arrays are blocked (fail-closed). If a user's claim resolves to `[]`, the query is rejected to prevent accidental full-table access.
+</Callout>
+
+---
+
+## Multi-Column Policies
+
+When a policy needs to filter on multiple columns simultaneously, use the `conditions` array:
+
+```typescript
+rls: {
+  enabled: true,
+  policies: [
+    {
+      tables: ["orders", "shipments"],
+      conditions: [
+        { column: "tenant_id", claim: "org_id" },
+        { column: "region", claim: "app_metadata.region" },
+      ],
+    },
+  ],
+}
+```
+
+All conditions within a policy are ANDed together:
+
+```sql
+-- After injection:
+SELECT * FROM orders
+WHERE orders.tenant_id = 'org_acme' AND orders.region = 'us-east'
+```
+
+---
+
+## OR-Logic Between Policies
+
+By default, conditions from different policies are ANDed (all must match). Set `combineWith: "or"` to allow access when **any** policy matches:
+
+```typescript
+rls: {
+  enabled: true,
+  combineWith: "or",
+  policies: [
+    // Users can access data matching their org...
+    { tables: ["*"], column: "org_id", claim: "org_id" },
+    // ...OR data in their assigned region
+    { tables: ["*"], column: "region", claim: "region" },
+  ],
+}
+```
+
+**Injection result:**
+
+```sql
+-- Agent generates:
+SELECT * FROM orders WHERE status = 'active'
+
+-- After RLS injection (OR between policies):
+SELECT * FROM orders
+WHERE status = 'active' AND (orders.org_id = 'org_acme' OR orders.region = 'us-east')
+```
+
+<Callout>
+When using `combineWith: "or"`, the OR-combined conditions are parenthesized to prevent precedence issues with existing WHERE clauses. Within each policy, multiple conditions are still ANDed.
+</Callout>
 
 ---
 
@@ -188,7 +304,7 @@ Each branch of a UNION gets its own RLS conditions independently.
 
 ## Security Model
 
-- **Fail-closed** -- missing user, missing claims, or unresolvable claim paths block the query
+- **Fail-closed** -- missing user, missing claims, unresolvable claim paths, or empty array claims block the query
 - **Post-plugin** -- RLS injection runs after plugin `beforeQuery` hooks, so plugins cannot strip conditions
 - **SQL-escaped** -- claim values have single quotes doubled before injection
 - **AST-based** -- conditions are injected into the parsed AST and regenerated, preventing injection attacks

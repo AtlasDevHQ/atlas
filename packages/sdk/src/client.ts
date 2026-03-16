@@ -196,6 +196,16 @@ export interface UpdateScheduledTaskInput {
 }
 
 // ---------------------------------------------------------------------------
+// Validate SQL types
+// ---------------------------------------------------------------------------
+
+export interface ValidateSQLResponse {
+  valid: boolean;
+  errors: Array<{ layer: string; message: string }>;
+  tables: string[];
+}
+
+// ---------------------------------------------------------------------------
 // Action types
 // ---------------------------------------------------------------------------
 
@@ -936,6 +946,36 @@ export function createAtlasClient(options: AtlasClientOptions) {
     async rollbackAction(id: string): Promise<RollbackActionResponse> {
       const res = await post(`/api/v1/actions/${encodeURIComponent(id)}/rollback`, {});
       return unwrap<RollbackActionResponse>(res);
+    },
+
+    /**
+     * Validate a SQL query without executing it. Runs the full validation
+     * pipeline (empty check → regex guard → AST parse → table whitelist)
+     * and returns the result with any errors and referenced tables.
+     */
+    async validateSQL(sql: string, connectionId?: string): Promise<ValidateSQLResponse> {
+      const res = await post("/api/v1/validate-sql", {
+        sql,
+        ...(connectionId && { connectionId }),
+      });
+      return unwrap<ValidateSQLResponse>(res);
+    },
+
+    /**
+     * Query the audit log (paginated, filterable). Convenience alias for
+     * `admin.audit()` — requires admin role.
+     */
+    async getAuditLog(opts?: AuditLogOptions): Promise<AuditLogResponse> {
+      const params = new URLSearchParams();
+      if (opts?.limit != null) params.set("limit", String(opts.limit));
+      if (opts?.offset != null) params.set("offset", String(opts.offset));
+      if (opts?.user != null) params.set("user", opts.user);
+      if (opts?.success != null) params.set("success", String(opts.success));
+      if (opts?.from != null) params.set("from", opts.from);
+      if (opts?.to != null) params.set("to", opts.to);
+      const qs = params.toString();
+      const res = await get(`/api/v1/admin/audit${qs ? `?${qs}` : ""}`);
+      return unwrap<AuditLogResponse>(res);
     },
 
     /**

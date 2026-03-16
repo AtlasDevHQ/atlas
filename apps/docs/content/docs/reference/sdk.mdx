@@ -384,6 +384,123 @@ See [Scheduled Tasks](/guides/scheduled-tasks) for full configuration details.
 
 ---
 
+## Validate SQL
+
+Validate a SQL query without executing it. Runs the full validation pipeline (empty check, regex guard, AST parse, table whitelist) and returns the result.
+
+```typescript
+const result = await atlas.validateSQL("SELECT id, name FROM users WHERE active = true");
+
+if (result.valid) {
+  console.log("Tables referenced:", result.tables); // ["users"]
+} else {
+  for (const err of result.errors) {
+    console.log(`[${err.layer}] ${err.message}`);
+    // e.g. [regex_guard] Forbidden SQL operation detected: ...
+  }
+}
+```
+
+### With a specific connection
+
+```typescript
+const result = await atlas.validateSQL(
+  "SELECT * FROM analytics.events",
+  "clickhouse-prod", // connectionId
+);
+```
+
+### Response
+
+```typescript
+interface ValidateSQLResponse {
+  valid: boolean;
+  errors: Array<{
+    layer: string;   // "empty_check" | "connection" | "regex_guard" | "ast_parse" | "table_whitelist"
+    message: string;
+  }>;
+  tables: string[];  // Tables referenced in the query (empty when invalid)
+}
+```
+
+### Validation layers
+
+| Layer | Description |
+|-------|-------------|
+| `empty_check` | Query is empty or whitespace-only |
+| `connection` | Connection ID not registered or no datasource configured |
+| `regex_guard` | DML/DDL keyword detected (INSERT, UPDATE, DELETE, DROP, etc.) |
+| `ast_parse` | Query could not be parsed, is not a SELECT, or contains multiple statements |
+| `table_whitelist` | Query references a table not defined in the semantic layer |
+
+---
+
+## Audit Log
+
+Query the audit log with filters. Convenience method that wraps `admin.audit()` — requires admin role.
+
+```typescript
+// Get recent failed queries
+const { rows, total } = await atlas.getAuditLog({
+  success: false,
+  limit: 20,
+});
+
+for (const entry of rows) {
+  console.log(`${entry.timestamp} | ${entry.sql.slice(0, 60)} | ${entry.error}`);
+}
+
+// Filter by date range and user
+const { rows: userQueries } = await atlas.getAuditLog({
+  user: "user-uuid",
+  from: "2026-03-01",
+  to: "2026-03-15",
+  limit: 100,
+});
+```
+
+### Options
+
+```typescript
+interface AuditLogOptions {
+  limit?: number;     // Max rows per page (server clamps to 200, default 50)
+  offset?: number;    // Pagination offset
+  user?: string;      // Filter by user ID
+  success?: boolean;  // Filter by success/failure
+  from?: string;      // ISO 8601 date (e.g. "2026-01-01")
+  to?: string;        // ISO 8601 date (e.g. "2026-03-15")
+}
+```
+
+### Response
+
+```typescript
+interface AuditLogResponse {
+  rows: AuditLogEntry[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+interface AuditLogEntry {
+  id: string;
+  timestamp: string;
+  userId: string | null;
+  userLabel: string | null;
+  authMode: AuthMode;
+  sql: string;
+  durationMs: number;
+  rowCount: number | null;
+  success: boolean;
+  error: string | null;
+  sourceId: string | null;
+  sourceType: string | null;
+  targetHost: string | null;
+}
+```
+
+---
+
 ## Admin
 
 Access admin-only endpoints. Requires the `admin` role.
@@ -621,6 +738,9 @@ import type {
   ListConversationsResponse,
   ListConversationsOptions,
   ShareConversationResponse,
+
+  // Validate SQL
+  ValidateSQLResponse,
 
   // Scheduled Tasks
   DeliveryChannel,

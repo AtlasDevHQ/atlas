@@ -179,6 +179,10 @@
         "ai": "^6.0.0",
         "hono": "^4.0.0",
       },
+      "optionalPeers": [
+        "ai",
+        "hono",
+      ],
     },
     "packages/react": {
       "name": "@useatlas/react",

@@ -10,7 +10,9 @@
  * 2. Semantic index isolation — per-org indexes only mention their own entities
  * 3. Cache key isolation — same SQL + different orgId = different cache entries
  * 4. Explore root isolation — per-org semantic roots are distinct and under .orgs/
- * 5. Request context isolation — no orgId falls back to file-based whitelist
+ * 5. Request context isolation — org-scoped and file-based whitelists are separate codepaths
+ * 6. Audit log isolation — org_id from request context is persisted per-org
+ * 7. Conversation isolation — conversations are created and listed per-org
  *
  * Uses mock.module() — all named exports mocked.
  *
@@ -33,6 +35,11 @@ const mockUpsertEntity = mock((): Promise<void> => Promise.resolve());
 const mockDeleteEntity = mock((): Promise<boolean> => Promise.resolve(false));
 const mockCountEntities = mock((): Promise<number> => Promise.resolve(0));
 const mockBulkUpsertEntities = mock((): Promise<number> => Promise.resolve(0));
+const mockInternalQuery = mock((): Promise<Record<string, unknown>[]> => Promise.resolve([]));
+const mockInternalExecute = mock((_sql: string, _params?: unknown[]) => {});
+
+/** Controls the activeOrganizationId returned by the mocked getRequestContext. */
+let mockActiveOrgId: string | undefined;
 
 mock.module("@atlas/api/lib/db/semantic-entities", () => ({
   listEntities: mockListEntities,
@@ -45,7 +52,19 @@ mock.module("@atlas/api/lib/db/semantic-entities", () => ({
 
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => true,
-  internalQuery: () => Promise.resolve([]),
+  internalQuery: mockInternalQuery,
+  internalExecute: mockInternalExecute,
+  getInternalDB: () => ({}),
+  closeInternalDB: () => Promise.resolve(),
+  _resetPool: () => {},
+  _resetCircuitBreaker: () => {},
+  migrateInternalDB: () => Promise.resolve(),
+  loadSavedConnections: () => Promise.resolve(0),
+  getEncryptionKey: () => null,
+  _resetEncryptionKeyCache: () => {},
+  encryptUrl: (u: string) => u,
+  decryptUrl: (u: string) => u,
+  isPlaintextUrl: () => true,
 }));
 
 mock.module("@atlas/api/lib/config", () => ({
@@ -59,6 +78,31 @@ mock.module("@atlas/api/lib/logger", () => ({
     error: () => {},
     debug: () => {},
   }),
+  getRequestContext: () =>
+    mockActiveOrgId
+      ? {
+          requestId: "test-req",
+          user: {
+            id: "user-1",
+            mode: "managed" as const,
+            label: "test@test.com",
+            activeOrganizationId: mockActiveOrgId,
+          },
+        }
+      : undefined,
+  withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
+  getLogger: () => ({
+    info: () => {},
+    warn: () => {},
+    error: () => {},
+    debug: () => {},
+  }),
+  redactPaths: [],
+}));
+
+mock.module("@atlas/api/lib/security", () => ({
+  SENSITIVE_PATTERNS: /^$/,
+  maskConnectionUrl: (url: string) => url,
 }));
 
 // ---------------------------------------------------------------------------
@@ -78,6 +122,8 @@ const getWhitelistedTables = semanticMod.getWhitelistedTables as typeof import("
 
 import { getSemanticRoot } from "../semantic-sync";
 import { buildCacheKey } from "../cache/keys";
+import { logQueryAudit } from "../auth/audit";
+import { createConversation, listConversations } from "../conversations";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -419,6 +465,157 @@ describe("request context isolation", () => {
 
     // They are different Set instances from different sources
     expect(fileTables).not.toBe(orgTables);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6. Audit log isolation
+// ---------------------------------------------------------------------------
+
+describe("audit log isolation", () => {
+  beforeEach(() => {
+    mockActiveOrgId = undefined;
+    mockInternalExecute.mockReset();
+  });
+
+  it("audit entry includes org-alpha org_id from request context", () => {
+    mockActiveOrgId = ORG_ALPHA;
+    logQueryAudit({ sql: "SELECT 1", durationMs: 10, rowCount: 1, success: true });
+
+    expect(mockInternalExecute).toHaveBeenCalledTimes(1);
+    const params = mockInternalExecute.mock.calls[0][1] as unknown[];
+    // org_id is the 14th parameter (index 13) in the INSERT
+    expect(params[13]).toBe(ORG_ALPHA);
+  });
+
+  it("audit entry includes org-beta org_id from request context", () => {
+    mockActiveOrgId = ORG_BETA;
+    logQueryAudit({ sql: "SELECT 1", durationMs: 5, rowCount: 0, success: true });
+
+    expect(mockInternalExecute).toHaveBeenCalledTimes(1);
+    const params = mockInternalExecute.mock.calls[0][1] as unknown[];
+    expect(params[13]).toBe(ORG_BETA);
+  });
+
+  it("audit entry has null org_id when no org context", () => {
+    mockActiveOrgId = undefined;
+    logQueryAudit({ sql: "SELECT 1", durationMs: 1, rowCount: 1, success: true });
+
+    expect(mockInternalExecute).toHaveBeenCalledTimes(1);
+    const params = mockInternalExecute.mock.calls[0][1] as unknown[];
+    expect(params[13]).toBeNull();
+  });
+
+  it("consecutive audits under different orgs do not cross-contaminate", () => {
+    mockActiveOrgId = ORG_ALPHA;
+    logQueryAudit({ sql: "SELECT * FROM users", durationMs: 10, rowCount: 5, success: true });
+
+    mockActiveOrgId = ORG_BETA;
+    logQueryAudit({ sql: "SELECT * FROM products", durationMs: 8, rowCount: 3, success: true });
+
+    expect(mockInternalExecute).toHaveBeenCalledTimes(2);
+    const paramsAlpha = mockInternalExecute.mock.calls[0][1] as unknown[];
+    const paramsBeta = mockInternalExecute.mock.calls[1][1] as unknown[];
+    expect(paramsAlpha[13]).toBe(ORG_ALPHA);
+    expect(paramsBeta[13]).toBe(ORG_BETA);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7. Conversation isolation
+// ---------------------------------------------------------------------------
+
+describe("conversation isolation", () => {
+  beforeEach(() => {
+    mockInternalQuery.mockReset();
+    mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+  });
+
+  it("createConversation persists org-alpha orgId", async () => {
+    mockInternalQuery.mockImplementationOnce(() =>
+      Promise.resolve([{ id: "conv-alpha" }]),
+    );
+
+    const result = await createConversation({
+      userId: "user-1",
+      title: "Alpha query",
+      orgId: ORG_ALPHA,
+    });
+
+    expect(result).toEqual({ id: "conv-alpha" });
+    expect(mockInternalQuery).toHaveBeenCalledTimes(1);
+    const params = mockInternalQuery.mock.calls[0][1] as unknown[];
+    // orgId is the last parameter in the INSERT
+    expect(params[params.length - 1]).toBe(ORG_ALPHA);
+  });
+
+  it("createConversation persists org-beta orgId separately", async () => {
+    mockInternalQuery.mockImplementationOnce(() =>
+      Promise.resolve([{ id: "conv-beta" }]),
+    );
+
+    const result = await createConversation({
+      userId: "user-2",
+      title: "Beta query",
+      orgId: ORG_BETA,
+    });
+
+    expect(result).toEqual({ id: "conv-beta" });
+    const params = mockInternalQuery.mock.calls[0][1] as unknown[];
+    expect(params[params.length - 1]).toBe(ORG_BETA);
+  });
+
+  it("listConversations filters by orgId in SQL query", async () => {
+    // Mock: first call = COUNT, second call = data rows
+    mockInternalQuery
+      .mockImplementationOnce(() => Promise.resolve([{ total: 1 }]))
+      .mockImplementationOnce(() =>
+        Promise.resolve([{
+          id: "conv-alpha",
+          user_id: "user-1",
+          title: "Alpha query",
+          surface: "web",
+          connection_id: null,
+          starred: false,
+          created_at: "2026-01-01",
+          updated_at: "2026-01-01",
+        }]),
+      );
+
+    const result = await listConversations({ orgId: ORG_ALPHA });
+
+    expect(result.conversations).toHaveLength(1);
+    expect(result.conversations[0].id).toBe("conv-alpha");
+    // Verify org_id was passed as a SQL parameter
+    const countParams = mockInternalQuery.mock.calls[0][1] as unknown[];
+    expect(countParams).toContain(ORG_ALPHA);
+    // Verify the SQL includes org_id filter
+    const countSql = mockInternalQuery.mock.calls[0][0] as string;
+    expect(countSql).toContain("org_id");
+  });
+
+  it("different orgIds produce different SQL filter parameters", async () => {
+    // Alpha list
+    mockInternalQuery
+      .mockImplementationOnce(() => Promise.resolve([{ total: 0 }]))
+      .mockImplementationOnce(() => Promise.resolve([]));
+    await listConversations({ orgId: ORG_ALPHA });
+
+    // Beta list
+    mockInternalQuery
+      .mockImplementationOnce(() => Promise.resolve([{ total: 0 }]))
+      .mockImplementationOnce(() => Promise.resolve([]));
+    await listConversations({ orgId: ORG_BETA });
+
+    // Alpha call params (calls 0 and 1)
+    const alphaParams = mockInternalQuery.mock.calls[0][1] as unknown[];
+    expect(alphaParams).toContain(ORG_ALPHA);
+    expect(alphaParams).not.toContain(ORG_BETA);
+
+    // Beta call params (calls 2 and 3)
+    const betaParams = mockInternalQuery.mock.calls[2][1] as unknown[];
+    expect(betaParams).toContain(ORG_BETA);
+    expect(betaParams).not.toContain(ORG_ALPHA);
   });
 });
 

@@ -36,8 +36,8 @@ export function createAtlasUser(
     id,
     mode,
     label,
-    ...(options?.role ? { role: options.role } : {}),
-    ...(options?.activeOrganizationId ? { activeOrganizationId: options.activeOrganizationId } : {}),
-    ...(frozenClaims ? { claims: frozenClaims } : {}),
+    ...(options?.role !== undefined ? { role: options.role } : {}),
+    ...(options?.activeOrganizationId !== undefined ? { activeOrganizationId: options.activeOrganizationId } : {}),
+    ...(frozenClaims !== undefined ? { claims: frozenClaims } : {}),
   });
 }

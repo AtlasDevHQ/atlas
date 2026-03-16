@@ -540,6 +540,43 @@ See [Admin Console](/guides/admin-console) for details on each endpoint.
 
 ---
 
+## Rollback
+
+Trigger rollback of an executed action. The action must be reversible (have stored `rollback_info`) and in the `executed` or `auto_approved` status.
+
+```typescript
+const result = await atlas.rollbackAction("action-uuid");
+
+console.log(result.status);       // "rolled_back"
+console.log(result.action_type);  // "jira:create"
+
+// Check if the rollback handler reported an error
+if (result.warning) {
+  console.warn(result.warning);
+  console.warn(result.error); // Handler error details
+}
+```
+
+### Response
+
+```typescript
+interface RollbackActionResponse {
+  id: string;
+  status: string;
+  action_type: string;
+  target: string;
+  summary: string;
+  rollback_info: { method: string; params: Record<string, unknown> } | null;
+  error: string | null;
+  /** Present when the rollback handler reported an error — the side-effect may not have been reversed. */
+  warning?: string;
+}
+```
+
+See [Actions Framework](/guides/actions#rollback) for the full rollback lifecycle and error cases.
+
+---
+
 ## Error Handling
 
 All API errors are thrown as `AtlasError` instances. See [Error Codes](/reference/error-codes) for the full catalog of every error code, HTTP status, retry guidance, and a complete retry-with-backoff example. See [Rate Limiting & Retry](/guides/rate-limiting) for backoff patterns and handling 429 responses.
@@ -740,6 +777,9 @@ import type {
   ListConversationsResponse,
   ListConversationsOptions,
   ShareConversationResponse,
+
+  // Actions
+  RollbackActionResponse,
 
   // Validate SQL
   ValidationLayer,

@@ -695,22 +695,79 @@ A string injected into the agent's system prompt with SQL dialect guidance:
 dialect: "This datasource uses ClickHouse. Use toStartOfMonth() for date truncation, not DATE_TRUNC().",
 ```
 
-### `connection.validate`
+### `connection.validate` — Custom Query Validation
 
-Replace the standard SQL validation pipeline with a custom validator. Use for non-SQL query languages (SOQL, GraphQL, MQL). Can be synchronous or asynchronous:
+Replace the standard SQL validation pipeline with a custom validator. Use this when your datasource speaks a non-SQL query language -- SOQL, GraphQL, MQL, or any custom query DSL where the standard 4-layer SQL validation (empty check, regex guard, AST parse, table whitelist) does not apply.
+
+**Signature:**
+
+```typescript
+validate?(query: string): QueryValidationResult | Promise<QueryValidationResult>
+
+interface QueryValidationResult {
+  valid: boolean;
+  /** User-facing rejection reason — appears in error responses and audit logs. */
+  reason?: string;
+}
+```
+
+`validate` is defined on the datasource plugin's `connection` configuration object (`AtlasDatasourcePlugin.connection`), not on the `PluginDBConnection` runtime interface.
+
+**Behavior when `validate` is present:**
+
+- The entire standard `validateSQL` pipeline is bypassed for this connection
+- Auto-LIMIT is skipped (non-SQL languages may not support `LIMIT`)
+- RLS injection is skipped (the SQL rewriter cannot parse non-SQL queries)
+- `parserDialect` and `forbiddenPatterns` are ignored
+- Plugin hooks still fire -- queries rewritten by `beforeQuery` hooks are re-validated through this function before execution
+
+**Sync example** (SOQL length-limit validator):
 
 ```typescript
 connection: {
-  create: () => myConn,
+  create: () => mySalesforceConn,
   dbType: "salesforce",
-  validate: (query) => {
-    if (query.includes("DELETE")) return { valid: false, reason: "DELETE not allowed" };
+  validate(query) {
+    if (query.length > 20_000) {
+      return { valid: false, reason: "SOQL query exceeds 20,000 character limit" };
+    }
+    if (/\b(DELETE|INSERT|UPDATE|UPSERT)\b/i.test(query)) {
+      return { valid: false, reason: "Only SELECT queries are allowed" };
+    }
     return { valid: true };
   },
 },
 ```
 
-When `validate` is present, auto-LIMIT and RLS injection are skipped (non-SQL languages may not support these). Hooks still fire — rewritten queries are re-validated through this function. See the [Plugin Cookbook](/plugins/cookbook#custom-query-validation) for full examples including async validation.
+**Async example** (external schema validation service):
+
+```typescript
+connection: {
+  create: () => myConn,
+  dbType: "custom-api",
+  async validate(query) {
+    const res = await fetch("https://schema.internal/validate", {
+      method: "POST",
+      body: JSON.stringify({ query }),
+      headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return { valid: false, reason: "Schema service unavailable" };
+    const body = await res.json() as { allowed: boolean; message?: string };
+    return body.allowed
+      ? { valid: true }
+      : { valid: false, reason: body.message ?? "Query rejected" };
+  },
+},
+```
+
+<Callout type="warn">
+Async validators add latency to every query. Prefer synchronous validation when possible. If you must call an external service, add a timeout and consider caching the schema locally.
+</Callout>
+
+**Error propagation:** The `reason` string is user-facing -- it appears in the error response returned to the agent and is recorded in the audit log. Write clear, actionable messages (e.g., `"SOQL query exceeds 20,000 character limit"` rather than `"invalid"`).
+
+See the [Plugin Cookbook](/plugins/cookbook#custom-query-validation) for complete plugin examples with custom validators.
 
 ### `connection.parserDialect` and `connection.forbiddenPatterns`
 

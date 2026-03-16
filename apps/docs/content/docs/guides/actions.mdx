@@ -53,12 +53,149 @@ Agent requests action → pending
          ↓                ↓
   success/failed/    success/failed/
     timed_out          timed_out
+         ↓                ↓
+    rolled_back*     rolled_back*
+
+* reversible actions only
 ```
 
 - **auto** mode: `pending` → `auto_approved` → `executed` (or `failed` / `timed_out`)
 - **manual** / **admin-only** mode: `pending` → `approved` / `denied` → `executed` (or `failed` / `timed_out`)
+- **rollback** (reversible actions): `executed` / `auto_approved` → `rolled_back`
 
 When execution exceeds the configured timeout, the action transitions to `timed_out` instead of remaining in-flight. The timeout duration is logged in the audit trail.
+
+---
+
+## Rollback
+
+Reversible actions can be undone after execution. When an action plugin declares `reversible: true` and its execute handler returns `rollbackInfo`, the action can be rolled back via the API or the admin console.
+
+### How Rollback Works
+
+1. The action plugin declares `reversible: true` in its `PluginAction` definition
+2. The execute handler returns a `rollbackInfo` object containing the method and parameters needed to undo the action
+3. Atlas stores `rollbackInfo` in the action log alongside the execution result
+4. An admin triggers rollback via the API or admin console
+5. The action transitions to `rolled_back` status via compare-and-swap (CAS)
+6. The rollback handler is dispatched using the stored `rollbackInfo`
+
+### Status Transition
+
+Rollback is only available from the `executed` or `auto_approved` statuses:
+
+```
+executed / auto_approved → rolled_back
+```
+
+Actions in any other status (`pending`, `denied`, `failed`, `timed_out`, or already `rolled_back`) cannot be rolled back.
+
+### API
+
+```bash
+# Rollback an executed action
+curl -X POST http://localhost:3001/api/v1/actions/<id>/rollback \
+  -H "Authorization: Bearer <key>"
+```
+
+**Request:** No body required.
+
+**Response (success):**
+
+```json
+{
+  "id": "action-uuid",
+  "status": "rolled_back",
+  "action_type": "jira:create",
+  "target": "PROJ-123",
+  "summary": "Created JIRA issue PROJ-123",
+  "rollback_info": { "method": "transition", "params": { "issueKey": "PROJ-123" } },
+  "error": null
+}
+```
+
+**Response (rollback handler error):**
+
+```json
+{
+  "id": "action-uuid",
+  "status": "rolled_back",
+  "action_type": "jira:create",
+  "target": "PROJ-123",
+  "summary": "Created JIRA issue PROJ-123",
+  "rollback_info": { "method": "transition", "params": { "issueKey": "PROJ-123" } },
+  "error": "JIRA API returned 403",
+  "warning": "Rollback status updated but the rollback handler reported an error. The side-effect may not have been reversed."
+}
+```
+
+When the rollback handler fails, the status still transitions to `rolled_back` but the response includes a `warning` and `error` field so operators know the side-effect may not have been reversed.
+
+### Admin Console
+
+Admins can rollback actions from the admin console at `/admin/actions`. Executed reversible actions show a **Rollback** button.
+
+### Error Cases
+
+| Scenario | HTTP Status | Error Code |
+|----------|-------------|------------|
+| No internal database configured | 404 | `not_available` |
+| Invalid action ID format | 400 | `invalid_request` |
+| Action not found | 404 | `not_found` |
+| Action not reversible (no `rollback_info`) | 409 | `conflict` |
+| Action already rolled back or not in rollbackable state | 409 | `conflict` |
+| Insufficient role | 403 | `forbidden` |
+| Unexpected server error | 500 | `internal_error` |
+| Rollback handler failed | 200 | Response includes `warning` and `error` fields |
+
+### Declaring Actions as Reversible
+
+In your action plugin, set `reversible: true` and return `rollbackInfo` from the execute handler:
+
+```typescript
+import { z } from "zod";
+import { tool } from "@useatlas/plugin-sdk/ai";
+import type { PluginAction } from "@useatlas/plugin-sdk";
+
+const action: PluginAction = {
+  name: "createJiraIssue",
+  description: "Create a JIRA issue",
+  tool: tool({
+    description: "Create a JIRA issue from analysis findings",
+    inputSchema: z.object({ summary: z.string(), project: z.string() }),
+    execute: async ({ summary, project }) => {
+      const issue = await createIssue({ summary, project });
+      return {
+        issueKey: issue.key,
+        url: issue.url,
+        // Return rollbackInfo so the action can be undone
+        rollbackInfo: {
+          method: "transition",
+          params: { issueKey: issue.key },
+        },
+      };
+    },
+  }),
+  actionType: "jira:create",
+  reversible: true,        // Enables the rollback button/API
+  defaultApproval: "manual",
+  requiredCredentials: ["JIRA_API_TOKEN"],
+};
+```
+
+The `rollbackInfo.method` and `rollbackInfo.params` are stored in the action log and passed to the rollback handler when triggered.
+
+### SDK
+
+```typescript
+const result = await atlas.rollbackAction("action-uuid");
+console.log(result.status);  // "rolled_back"
+if (result.warning) {
+  console.warn(result.warning); // Handler error — side-effect may persist
+}
+```
+
+See [SDK Reference](/reference/sdk#rollback) for the full method signature.
 
 ---
 
@@ -186,6 +323,7 @@ When using the [Slack integration](/guides/slack), pending actions show as ephem
 | `GET` | `/api/v1/actions/:id` | Get action details |
 | `POST` | `/api/v1/actions/:id/approve` | Approve a pending action |
 | `POST` | `/api/v1/actions/:id/deny` | Deny a pending action |
+| `POST` | `/api/v1/actions/:id/rollback` | Rollback an executed reversible action |
 
 ---
 

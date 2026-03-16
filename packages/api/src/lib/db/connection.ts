@@ -24,6 +24,26 @@ export type { HealthStatus } from "@atlas/api/lib/connection-types";
 
 const log = createLogger("db");
 
+// --- Typed error classes for connection lookup/configuration ---
+
+/** Thrown when a connection ID is not found in the registry. */
+export class ConnectionNotRegisteredError extends Error {
+  constructor(id: string) {
+    super(`Connection "${id}" is not registered.`);
+    this.name = "ConnectionNotRegisteredError";
+  }
+}
+
+/** Thrown when no analytics datasource URL is configured. */
+export class NoDatasourceConfiguredError extends Error {
+  constructor() {
+    super(
+      "No analytics datasource configured. Set ATLAS_DATASOURCE_URL to a PostgreSQL or MySQL connection string, or register a datasource plugin."
+    );
+    this.name = "NoDatasourceConfiguredError";
+  }
+}
+
 /**
  * Resolve the analytics datasource URL from env vars.
  *
@@ -86,7 +106,8 @@ export function extractTargetHost(url: string): string {
       .replace(/^[a-z][a-z0-9+.-]*:\/\//, "http://");
     const parsed = new URL(normalized);
     return parsed.hostname || "(unknown)";
-  } catch {
+  } catch (err) {
+    log.debug({ err, url: url.slice(0, 50) }, "Failed to extract target host from URL");
     return "(unknown)";
   }
 }
@@ -437,7 +458,7 @@ export class ConnectionRegistry {
   get(id: string): DBConnection {
     const entry = this.entries.get(id);
     if (!entry) {
-      throw new Error(`Connection "${id}" is not registered.`);
+      throw new ConnectionNotRegisteredError(id);
     }
     entry.lastQueryAt = Date.now();
     return entry.conn;
@@ -445,7 +466,7 @@ export class ConnectionRegistry {
 
   getDBType(id: string): DBType {
     const entry = this.entries.get(id);
-    if (!entry) throw new Error(`Connection "${id}" is not registered.`);
+    if (!entry) throw new ConnectionNotRegisteredError(id);
     return entry.dbType;
   }
 
@@ -475,9 +496,7 @@ export class ConnectionRegistry {
     if (!this.entries.has("default")) {
       const url = resolveDatasourceUrl();
       if (!url) {
-        throw new Error(
-          "No analytics datasource configured. Set ATLAS_DATASOURCE_URL to a PostgreSQL or MySQL connection string, or register a datasource plugin."
-        );
+        throw new NoDatasourceConfiguredError();
       }
       this.register("default", {
         url,
@@ -507,7 +526,7 @@ export class ConnectionRegistry {
   async healthCheck(id: string): Promise<HealthCheckResult> {
     const entry = this.entries.get(id);
     if (!entry) {
-      throw new Error(`Connection "${id}" is not registered.`);
+      throw new ConnectionNotRegisteredError(id);
     }
 
     const start = performance.now();

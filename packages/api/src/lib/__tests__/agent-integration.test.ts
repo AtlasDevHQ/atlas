@@ -63,6 +63,12 @@ mock.module("@atlas/api/lib/db/connection", () => ({
     describe: () => [{ id: "default", dbType: "postgres" as const }],
   },
   detectDBType: () => "postgres" as const,
+  ConnectionNotRegisteredError: class extends Error {
+    constructor(id: string) { super(`Connection "${id}" is not registered.`); this.name = "ConnectionNotRegisteredError"; }
+  },
+  NoDatasourceConfiguredError: class extends Error {
+    constructor() { super("No analytics datasource configured."); this.name = "NoDatasourceConfiguredError"; }
+  },
 }));
 
 // Mock just-bash to avoid OverlayFs/filesystem dependency in CI.

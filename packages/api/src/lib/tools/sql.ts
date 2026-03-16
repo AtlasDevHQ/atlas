@@ -16,7 +16,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { Parser } from "node-sql-parser";
-import { connections, detectDBType } from "@atlas/api/lib/db/connection";
+import { connections, detectDBType, ConnectionNotRegisteredError, NoDatasourceConfiguredError } from "@atlas/api/lib/db/connection";
 import type { DBConnection, DBType } from "@atlas/api/lib/db/connection";
 import { getWhitelistedTables } from "@atlas/api/lib/semantic";
 import { logQueryAudit } from "@atlas/api/lib/auth/audit";
@@ -140,14 +140,14 @@ export function validateSQL(sql: string, connectionId?: string): { valid: boolea
     try {
       dbType = connections.getDBType(connectionId);
     } catch (err) {
-      log.debug({ err, connectionId }, "getDBType failed for connectionId");
+      log.warn({ err, connectionId }, "getDBType failed for connectionId");
       return { valid: false, error: `Connection "${connectionId}" is not registered.` };
     }
   } else {
     try {
       dbType = detectDBType();
     } catch (err) {
-      log.debug({ err }, "detectDBType failed — no valid datasource configured");
+      log.warn({ err }, "detectDBType failed — no valid datasource configured");
       return { valid: false, error: "No valid datasource configured. Set ATLAS_DATASOURCE_URL to a PostgreSQL or MySQL connection string, or register a datasource plugin." };
     }
   }
@@ -250,9 +250,10 @@ export function validateSQL(sql: string, connectionId?: string): { valid: boolea
           }
         }
       }
-    } catch {
+    } catch (err) {
       // Table extraction uses the same parser that just succeeded in step 2.
       // If it fails here, reject to avoid bypassing the whitelist.
+      log.warn({ err, sql: trimmed.slice(0, 200) }, "Table extraction failed after successful AST parse");
       return {
         valid: false,
         error: "Could not verify table permissions. Rewrite using standard SQL syntax.",
@@ -334,10 +335,29 @@ Rules:
         db = connections.get(connId);
         dbType = connections.getDBType(connId);
       }
-    } catch {
+    } catch (err) {
+      // Narrow the catch to distinguish registration/config errors from
+      // unexpected failures (unsupported DB scheme, internal errors).
+      // Both return { success: false } so the agent stream stays alive, but
+      // known errors get curated messages while unexpected ones surface the
+      // original error for debuggability.
+      if (err instanceof ConnectionNotRegisteredError) {
+        return {
+          success: false,
+          error: `Connection "${connId}" is not registered. Available: ${connections.list().join(", ") || "(none)"}`,
+        };
+      }
+      if (err instanceof NoDatasourceConfiguredError) {
+        return {
+          success: false,
+          error: err.message,
+        };
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      log.error({ err, connectionId: connId }, "Unexpected error during connection lookup");
       return {
         success: false,
-        error: `Connection "${connId}" is not registered. Available: ${connections.list().join(", ") || "(none)"}`,
+        error: `Connection "${connId}" failed to initialize: ${message}`,
       };
     }
 

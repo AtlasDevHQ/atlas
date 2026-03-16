@@ -18,8 +18,8 @@ export interface AuditRow {
   user_email?: string | null;
   error?: string | null;
   source_id?: string | null;
-  tables_accessed?: string[] | null;
-  columns_accessed?: string[] | null;
+  tables_accessed: string[] | null;
+  columns_accessed: string[] | null;
 }
 
 // ── Columns ───────────────────────────────────────────────────────

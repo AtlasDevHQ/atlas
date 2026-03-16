@@ -35,9 +35,13 @@ const parser = new Parser();
 // ── Classification ──────────────────────────────────────────────────
 
 export interface SQLClassification {
-  tablesAccessed: string[];
-  columnsAccessed: string[];
+  readonly tablesAccessed: string[];
+  readonly columnsAccessed: string[];
 }
+
+export type SQLValidationResult =
+  | { valid: true; error?: undefined; classification: SQLClassification }
+  | { valid: false; error: string; classification?: undefined };
 
 /**
  * Extract table and column references from validated SQL.
@@ -77,7 +81,11 @@ export function extractClassification(
     )];
 
     return { tablesAccessed, columnsAccessed };
-  } catch {
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err : new Error(String(err)), sql: sql.slice(0, 200), dialect },
+      "Classification extraction failed — storing empty arrays",
+    );
     return { tablesAccessed: [], columnsAccessed: [] };
   }
 }
@@ -181,7 +189,7 @@ function getExtraPatterns(dbType: DBType | string, connectionId?: string): RegEx
   }
 }
 
-export function validateSQL(sql: string, connectionId?: string): { valid: boolean; error?: string; classification?: SQLClassification } {
+export function validateSQL(sql: string, connectionId?: string): SQLValidationResult {
   // Resolve DB type for this connection.
   // When an explicit connectionId is given but not found, return a validation
   // error instead of silently falling back — wrong parser mode is a security risk.
@@ -425,6 +433,9 @@ Rules:
     // If absent, validateSQL is used instead — validators are mutually exclusive.
     const customValidator = connections.getValidator(connId);
     const normalizedSql = sql.trim().replace(/;\s*$/, "").trimEnd();
+    // Classification is only populated for standard SQL (validateSQL path).
+    // Custom validators (SOQL, GraphQL) bypass node-sql-parser so classification
+    // stays undefined — their audit entries store NULL for tables/columns_accessed.
     let classification: SQLClassification | undefined;
     if (customValidator) {
       let result: { valid: boolean; reason?: string };

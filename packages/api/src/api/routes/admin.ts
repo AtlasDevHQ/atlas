@@ -1263,24 +1263,27 @@ admin.get("/audit/facets", async (c) => {
   }
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    try {
-      const [tableRows, columnRows] = await Promise.all([
-        internalQuery<{ val: string }>(
-          `SELECT DISTINCT jsonb_array_elements_text(tables_accessed) AS val FROM audit_log WHERE tables_accessed IS NOT NULL ORDER BY val LIMIT 200`,
-        ),
-        internalQuery<{ val: string }>(
-          `SELECT DISTINCT jsonb_array_elements_text(columns_accessed) AS val FROM audit_log WHERE columns_accessed IS NOT NULL ORDER BY val LIMIT 200`,
-        ),
-      ]);
+    // Use allSettled so one failing query doesn't block the other
+    const [tableResult, columnResult] = await Promise.allSettled([
+      internalQuery<{ val: string }>(
+        `SELECT DISTINCT jsonb_array_elements_text(tables_accessed) AS val FROM audit_log WHERE tables_accessed IS NOT NULL AND jsonb_typeof(tables_accessed) = 'array' ORDER BY val LIMIT 200`,
+      ),
+      internalQuery<{ val: string }>(
+        `SELECT DISTINCT jsonb_array_elements_text(columns_accessed) AS val FROM audit_log WHERE columns_accessed IS NOT NULL AND jsonb_typeof(columns_accessed) = 'array' ORDER BY val LIMIT 200`,
+      ),
+    ]);
 
-      return c.json({
-        tables: tableRows.map((r) => r.val),
-        columns: columnRows.map((r) => r.val),
-      });
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Audit facets query failed");
-      return c.json({ error: "internal_error", message: "Failed to query audit facets." }, 500);
+    if (tableResult.status === "rejected") {
+      log.warn({ err: tableResult.reason }, "Failed to load table facets");
     }
+    if (columnResult.status === "rejected") {
+      log.warn({ err: columnResult.reason }, "Failed to load column facets");
+    }
+
+    return c.json({
+      tables: tableResult.status === "fulfilled" ? tableResult.value.map((r) => r.val) : [],
+      columns: columnResult.status === "fulfilled" ? columnResult.value.map((r) => r.val) : [],
+    });
   });
 });
 

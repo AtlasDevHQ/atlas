@@ -121,9 +121,13 @@ export default function AuditPage() {
   const connectionList = connectionsData?.connections ?? [];
 
   // Facets for table/column filter dropdowns
-  const { data: facetsData } = useAdminFetch<AuditFacets>(
+  const { data: facetsData, error: facetsError } = useAdminFetch<AuditFacets>(
     "/api/v1/admin/audit/facets",
   );
+  if (facetsError && !facetsError.status) {
+    // Log client-side so devs can diagnose why dropdowns fell back to text inputs
+    console.warn("Audit facets fetch failed:", facetsError.message);
+  }
   const tableFacets = facetsData?.tables ?? [];
   const columnFacets = facetsData?.columns ?? [];
 

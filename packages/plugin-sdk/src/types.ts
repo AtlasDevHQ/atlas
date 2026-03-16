@@ -317,6 +317,28 @@ export interface ConfigSchemaField {
 }
 
 // ---------------------------------------------------------------------------
+// Cache backend interface — plugins can provide external cache (Redis, etc)
+// ---------------------------------------------------------------------------
+
+/** A single cached query result entry. */
+export interface PluginCacheEntry {
+  columns: string[];
+  rows: Record<string, unknown>[];
+  cachedAt: number;
+  ttl: number;
+}
+
+/** Cache backend interface for query result caching. */
+export interface PluginCacheBackend {
+  get(key: string): PluginCacheEntry | null;
+  set(key: string, entry: PluginCacheEntry): void;
+  delete(key: string): boolean;
+  /** Flush all entries. */
+  flush(): void;
+  stats(): { hits: number; misses: number; entryCount: number; maxSize: number; ttl: number };
+}
+
+// ---------------------------------------------------------------------------
 // Base plugin interface
 // ---------------------------------------------------------------------------
 
@@ -367,6 +389,12 @@ export interface AtlasPluginBase<TConfig = undefined> {
    * Tables are auto-migrated at boot (see packages/api/src/lib/plugins/migrate.ts).
    */
   schema?: Record<string, PluginTableDefinition>;
+
+  /**
+   * Optional external cache backend (e.g. Redis) for query result caching.
+   * When provided, replaces the default in-memory LRU cache.
+   */
+  cacheBackend?: PluginCacheBackend;
 }
 
 // ---------------------------------------------------------------------------

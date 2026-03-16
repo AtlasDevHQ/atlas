@@ -288,6 +288,30 @@ Auto-drain has a 30-second cooldown to prevent drain storms. Manual drain is ava
 
 ---
 
+## Query Cache
+
+Identical queries return cached results within the TTL. Cache keys include the org ID, connection ID, and user claims for tenant isolation.
+
+```typescript
+export default defineConfig({
+  cache: {
+    enabled: true,       // default: true
+    ttl: 300_000,        // 5 minutes (milliseconds)
+    maxSize: 1000,       // max cached entries
+  },
+});
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | `boolean` | `true` | Enable/disable query result caching |
+| `ttl` | `number` | `300000` | Time-to-live in milliseconds |
+| `maxSize` | `number` | `1000` | Maximum cached entries (LRU eviction) |
+
+The cache is automatically flushed on config reload. Manual flush is available via `POST /api/v1/admin/cache/flush`. Plugins can provide an external cache backend (e.g. Redis) via the `cacheBackend` field on the plugin object.
+
+---
+
 ## RLS (Row-Level Security)
 
 Define RLS policies that inject WHERE clauses on every query based on user JWT claims. Each policy specifies which tables it applies to, which column to filter on, and which JWT claim provides the value.

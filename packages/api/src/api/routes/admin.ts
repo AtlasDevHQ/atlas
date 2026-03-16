@@ -569,6 +569,49 @@ admin.post("/connections/:id/drain", async (c) => {
   });
 });
 
+// GET /cache/stats — cache hit/miss statistics
+admin.get("/cache/stats", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  const { getCache, cacheEnabled } = await import("@atlas/api/lib/cache/index");
+  return withRequestContext({ requestId, user: authResult.user }, () => {
+    if (!cacheEnabled()) {
+      return c.json({ enabled: false, hits: 0, misses: 0, entryCount: 0, maxSize: 0, ttl: 0 });
+    }
+    const stats = getCache().stats();
+    return c.json({ enabled: true, ...stats });
+  });
+});
+
+// POST /cache/flush — flush all cache entries
+admin.post("/cache/flush", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  const { flushCache, cacheEnabled } = await import("@atlas/api/lib/cache/index");
+  return withRequestContext({ requestId, user: authResult.user }, () => {
+    if (!cacheEnabled()) {
+      return c.json({ flushed: false, message: "Cache is disabled" });
+    }
+    flushCache();
+    log.info({ requestId, userId: authResult.user?.id }, "Cache flushed via admin API");
+    return c.json({ flushed: true, message: "Cache flushed" });
+  });
+});
+
 // POST /connections/test — test a connection URL without persisting
 admin.post("/connections/test", async (c) => {
   const req = c.req.raw;

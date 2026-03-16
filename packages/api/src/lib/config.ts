@@ -303,6 +303,20 @@ const AtlasConfigSchema = z.object({
     /** Whether the semantic index is enabled. Default: true. */
     enabled: z.boolean().default(true),
   }).optional(),
+
+  /**
+   * Query result cache configuration. When enabled (default), identical
+   * queries return cached results within the TTL. Cache keys include
+   * orgId for tenant isolation.
+   */
+  cache: z.object({
+    /** Whether query caching is enabled. Default: true. */
+    enabled: z.boolean().default(true),
+    /** Time-to-live in milliseconds. Default: 300000 (5 minutes). */
+    ttl: z.number().int().positive().default(300_000),
+    /** Maximum number of cached entries. Default: 1000. */
+    maxSize: z.number().int().positive().default(1000),
+  }).optional(),
 });
 
 /** The output type after Zod parsing (defaults applied, all fields present). */
@@ -346,6 +360,8 @@ export interface ResolvedConfig {
   session?: { idleTimeout: number; absoluteTimeout: number };
   /** Semantic index configuration. */
   semanticIndex?: { enabled: boolean };
+  /** Query result cache configuration. */
+  cache?: { enabled: boolean; ttl: number; maxSize: number };
   /** Whether the config was loaded from a file or synthesized from env vars. */
   source: "file" | "env";
 }
@@ -504,6 +520,19 @@ export function configFromEnv(): ResolvedConfig {
     ...(process.env.ATLAS_SEMANTIC_INDEX_ENABLED === "false"
       ? { semanticIndex: { enabled: false } }
       : {}),
+    // Cache config from env vars
+    ...((() => {
+      const enabled = process.env.ATLAS_CACHE_ENABLED !== "false" && process.env.ATLAS_CACHE_ENABLED !== "0";
+      const ttl = parseInt(process.env.ATLAS_CACHE_TTL ?? "", 10);
+      const maxSize = parseInt(process.env.ATLAS_CACHE_MAX_SIZE ?? "", 10);
+      return {
+        cache: {
+          enabled,
+          ttl: Number.isFinite(ttl) && ttl > 0 ? ttl : 300_000,
+          maxSize: Number.isFinite(maxSize) && maxSize > 0 ? maxSize : 1000,
+        },
+      };
+    })()),
     source: "env",
   };
 }
@@ -851,6 +880,7 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
     ...(config.python ? { python: config.python } : {}),
     ...(config.session ? { session: config.session } : {}),
     ...(config.semanticIndex ? { semanticIndex: config.semanticIndex } : {}),
+    ...(config.cache ? { cache: config.cache } : {}),
     source: "file",
   };
 }
@@ -896,6 +926,18 @@ export async function loadConfig(
   );
 
   _resolved = resolved;
+
+  // Flush query cache on config reload to avoid stale results
+  try {
+    const { flushCache } = await import("@atlas/api/lib/cache/index");
+    flushCache();
+  } catch (err) {
+    // Dynamic import may fail on first load before cache is wired — other errors must be logged
+    if (err instanceof Error && !err.message.includes("Cannot find module")) {
+      log.warn({ err: err.message }, "Failed to flush query cache during config reload");
+    }
+  }
+
   return resolved;
 }
 

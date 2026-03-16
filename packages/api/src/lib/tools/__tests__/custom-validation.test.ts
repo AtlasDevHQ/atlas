@@ -87,6 +87,16 @@ mock.module("@atlas/api/lib/db/connection", () => ({
   },
 }));
 
+mock.module("@atlas/api/lib/cache/index", () => ({
+  getCache: () => ({ get: () => null, set: () => {}, stats: () => ({ hits: 0, misses: 0, entryCount: 0, maxSize: 1000, ttl: 300000 }) }),
+  buildCacheKey: () => "mock-key",
+  cacheEnabled: () => false,
+  getDefaultTtl: () => 300000,
+  flushCache: () => {},
+  setCacheBackend: () => {},
+  _resetCache: () => {},
+}));
+
 // Import after mocks
 const { executeSQL } = await import("@atlas/api/lib/tools/sql");
 

@@ -848,11 +848,16 @@ admin.get("/cache/stats", async (c) => {
     if (!cacheEnabled()) {
       return c.json({ enabled: false, hits: 0, misses: 0, hitRate: 0, missRate: 0, entryCount: 0, maxSize: 0, ttl: 0 });
     }
-    const stats = getCache().stats();
-    const total = stats.hits + stats.misses;
-    const hitRate = total > 0 ? stats.hits / total : 0;
-    const missRate = total > 0 ? stats.misses / total : 0;
-    return c.json({ enabled: true, ...stats, hitRate, missRate });
+    try {
+      const stats = getCache().stats();
+      const total = stats.hits + stats.misses;
+      const hitRate = total > 0 ? stats.hits / total : 0;
+      const missRate = total > 0 ? stats.misses / total : 0;
+      return c.json({ enabled: true, ...stats, hitRate, missRate });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to retrieve cache stats");
+      return c.json({ error: "internal_error", message: "Failed to retrieve cache statistics." }, 500);
+    }
   });
 });
 
@@ -872,10 +877,15 @@ admin.post("/cache/flush", async (c) => {
     if (!cacheEnabled()) {
       return c.json({ ok: false, flushed: 0, message: "Cache is disabled" });
     }
-    const count = getCache().stats().entryCount;
-    flushCache();
-    log.info({ requestId, userId: authResult.user?.id, flushed: count }, "Cache flushed via admin API");
-    return c.json({ ok: true, flushed: count, message: "Cache flushed" });
+    try {
+      const count = getCache().stats().entryCount;
+      flushCache();
+      log.info({ requestId, userId: authResult.user?.id, flushed: count }, "Cache flushed via admin API");
+      return c.json({ ok: true, flushed: count, message: "Cache flushed" });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to flush cache");
+      return c.json({ error: "internal_error", message: "Failed to flush cache." }, 500);
+    }
   });
 });
 

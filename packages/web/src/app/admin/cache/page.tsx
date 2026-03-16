@@ -18,10 +18,11 @@ import {
 } from "@/components/ui/alert-dialog";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
+import { EmptyState } from "@/ui/components/admin/empty-state";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
-import { HardDrive, Trash2, Loader2, Activity, Database, Clock, Target } from "lucide-react";
+import { HardDrive, Trash2, Activity, Database, Clock, Target } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -107,6 +108,7 @@ export default function CachePage() {
   }
 
   async function handleFlush() {
+    if (flushing) return;
     setFlushing(true);
     setFlushError(null);
     setFlushMessage(null);
@@ -119,8 +121,9 @@ export default function CachePage() {
         const body = await res.json().catch(() => null);
         throw new Error(body?.message ?? `HTTP ${res.status}`);
       }
-      const body = await res.json();
-      setFlushMessage(`Flushed ${body.flushed} ${body.flushed === 1 ? "entry" : "entries"}`);
+      const body = await res.json().catch(() => null);
+      const count = body?.flushed ?? 0;
+      setFlushMessage(`Flushed ${count} ${count === 1 ? "entry" : "entries"}`);
       refetch();
     } catch (err) {
       setFlushError(err instanceof Error ? err.message : "Failed to flush cache");
@@ -259,7 +262,6 @@ export default function CachePage() {
                         variant="destructive"
                         disabled={flushing || !data.enabled || data.entryCount === 0}
                       >
-                        {flushing && <Loader2 className="mr-1 size-3 animate-spin" />}
                         Flush Cache
                       </Button>
                     </AlertDialogTrigger>
@@ -283,10 +285,7 @@ export default function CachePage() {
               </Card>
             </div>
           ) : !error ? (
-            <div className="flex flex-col items-center justify-center py-16 text-center">
-              <HardDrive className="mb-3 size-10 text-muted-foreground/50" />
-              <p className="text-sm text-muted-foreground">No cache data available</p>
-            </div>
+            <EmptyState icon={HardDrive} title="No cache data available" />
           ) : null}
         </div>
       </ErrorBoundary>

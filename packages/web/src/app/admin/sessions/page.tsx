@@ -211,9 +211,9 @@ export default function SessionsPage() {
           {/* Stats */}
           {stats && !statsError && (
             <div className="grid gap-4 sm:grid-cols-3">
-              <StatCard title="Total Sessions" value={stats.total.toLocaleString()} icon={Monitor} />
-              <StatCard title="Active Sessions" value={stats.active.toLocaleString()} icon={Activity} />
-              <StatCard title="Unique Users" value={stats.uniqueUsers.toLocaleString()} icon={Users} />
+              <StatCard title="Total Sessions" value={stats.total.toLocaleString()} icon={<Monitor className="size-4" />} />
+              <StatCard title="Active Sessions" value={stats.active.toLocaleString()} icon={<Activity className="size-4" />} />
+              <StatCard title="Unique Users" value={stats.uniqueUsers.toLocaleString()} icon={<Users className="size-4" />} />
             </div>
           )}
 

@@ -80,12 +80,17 @@ Two tabs: **Log** and **Analytics**.
 Shows every SQL query executed by the agent with:
 
 - **Stats** — Total queries, total errors, error rate
-- **Log table** — Timestamp, user, SQL query, duration, row count, success/failure
+- **Log table** — Timestamp, user, SQL query, tables accessed, duration, row count, success/failure
+
+**Data classification tags:** Each audit entry includes `tables_accessed` and `columns_accessed` arrays extracted from the validated SQL AST. These enable compliance-grade filtering — answer questions like "which queries touched the `users` table?" without parsing SQL text.
 
 **Filters:**
+- **Table** — Filter by table name (dropdown populated from audit data). Uses JSONB array matching on the `tables_accessed` column
+- **Column** — Filter by column name (dropdown populated from audit data). Uses JSONB array matching on the `columns_accessed` column
 - Date range (from/to)
-- User ID
-- Errors only toggle
+- Connection
+- Status (success/error)
+- Free-text search (SQL, user, error)
 - Pagination
 
 ### Analytics
@@ -293,8 +298,9 @@ All admin endpoints are at `/api/v1/admin/` and require the `admin` role. See th
 | `GET` | `/semantic/glossary` | Get glossary |
 | `GET` | `/semantic/catalog` | Get catalog |
 | `GET` | `/semantic/stats` | Semantic coverage stats |
-| `GET` | `/audit` | Query audit log |
+| `GET` | `/audit` | Query audit log (supports `table` and `column` filters) |
 | `GET` | `/audit/stats` | Audit aggregates |
+| `GET` | `/audit/facets` | Distinct tables and columns for filter dropdowns |
 | `GET` | `/audit/analytics/volume` | Query volume per day |
 | `GET` | `/audit/analytics/slow` | Slowest queries |
 | `GET` | `/audit/analytics/frequent` | Most frequent queries |

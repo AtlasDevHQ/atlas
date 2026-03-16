@@ -7,6 +7,7 @@ export const auditSearchParams = {
   search: parseAsString.withDefault(""),
   connection: parseAsString.withDefault(""),
   table: parseAsString.withDefault(""),
+  column: parseAsString.withDefault(""),
   status: parseAsStringLiteral(["success", "error", ""] as const).withDefault(""),
   from: parseAsString.withDefault(""),
   to: parseAsString.withDefault(""),

@@ -32,6 +32,64 @@ const log = createLogger("sql");
 
 const parser = new Parser();
 
+// ── Classification ──────────────────────────────────────────────────
+
+export interface SQLClassification {
+  readonly tablesAccessed: string[];
+  readonly columnsAccessed: string[];
+}
+
+export type SQLValidationResult =
+  | { valid: true; error?: undefined; classification: SQLClassification }
+  | { valid: false; error: string; classification?: undefined };
+
+/**
+ * Extract table and column references from validated SQL.
+ *
+ * Uses node-sql-parser's tableList/columnList helpers.
+ * CTE names are excluded from tablesAccessed.
+ * SELECT * is stored as ["*"] in columnsAccessed.
+ * Best-effort: returns empty arrays on extraction failure.
+ */
+export function extractClassification(
+  sql: string,
+  dialect: string,
+  cteNames: Set<string>,
+): SQLClassification {
+  try {
+    const tableRefs = parser.tableList(sql, { database: dialect });
+    const tablesAccessed = [...new Set(
+      tableRefs
+        .map((ref) => {
+          const parts = ref.split("::");
+          return parts.pop()?.toLowerCase() ?? "";
+        })
+        .filter((t) => t && !cteNames.has(t)),
+    )];
+
+    const columnRefs = parser.columnList(sql, { database: dialect });
+    const columnsAccessed = [...new Set(
+      columnRefs
+        .map((ref) => {
+          const parts = ref.split("::");
+          const col = parts.pop() ?? "";
+          // node-sql-parser uses "(.*)" for SELECT *
+          if (col === "(.*)") return "*";
+          return col.toLowerCase();
+        })
+        .filter(Boolean),
+    )];
+
+    return { tablesAccessed, columnsAccessed };
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err : new Error(String(err)), sql: sql.slice(0, 200), dialect },
+      "Classification extraction failed — storing empty arrays",
+    );
+    return { tablesAccessed: [], columnsAccessed: [] };
+  }
+}
+
 /**
  * Strip SQL comments for regex guard testing.
  *
@@ -131,7 +189,7 @@ function getExtraPatterns(dbType: DBType | string, connectionId?: string): RegEx
   }
 }
 
-export function validateSQL(sql: string, connectionId?: string): { valid: boolean; error?: string } {
+export function validateSQL(sql: string, connectionId?: string): SQLValidationResult {
   // Resolve DB type for this connection.
   // When an explicit connectionId is given but not found, return a validation
   // error instead of silently falling back — wrong parser mode is a security risk.
@@ -261,7 +319,14 @@ export function validateSQL(sql: string, connectionId?: string): { valid: boolea
     }
   }
 
-  return { valid: true };
+  // 4. Extract classification data (best-effort, never blocks validation)
+  const classification = extractClassification(
+    trimmed,
+    parserDatabase(dbType, connectionId),
+    cteNames,
+  );
+
+  return { valid: true, classification };
 }
 
 let lastWarnedRowLimit: string | undefined;
@@ -368,6 +433,10 @@ Rules:
     // If absent, validateSQL is used instead — validators are mutually exclusive.
     const customValidator = connections.getValidator(connId);
     const normalizedSql = sql.trim().replace(/;\s*$/, "").trimEnd();
+    // Classification is only populated for standard SQL (validateSQL path).
+    // Custom validators (SOQL, GraphQL) bypass node-sql-parser so classification
+    // stays undefined — their audit entries store NULL for tables/columns_accessed.
+    let classification: SQLClassification | undefined;
     if (customValidator) {
       let result: { valid: boolean; reason?: string };
       try {
@@ -425,6 +494,8 @@ Rules:
         });
         return { success: false, error: validation.error };
       }
+      // Capture classification from validated AST for audit logging
+      classification = validation.classification;
     }
 
     // Per-source rate limiting — atomic check-and-acquire
@@ -669,6 +740,8 @@ Rules:
           sourceId: connId,
           sourceType: dbType,
           targetHost,
+          tablesAccessed: classification?.tablesAccessed,
+          columnsAccessed: classification?.columnsAccessed,
         });
       } catch (auditErr) {
         log.warn({ err: auditErr }, "Failed to write query audit log");
@@ -706,6 +779,8 @@ Rules:
           sourceId: connId,
           sourceType: dbType,
           targetHost,
+          tablesAccessed: classification?.tablesAccessed,
+          columnsAccessed: classification?.columnsAccessed,
         });
       } catch (auditErr) {
         log.warn({ err: auditErr }, "Failed to write query audit log");

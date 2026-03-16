@@ -756,7 +756,7 @@ describe("GET /api/v1/admin/audit", () => {
     expect(capturedParams).toContain("warehouse");
   });
 
-  it("supports table filter via SQL ILIKE", async () => {
+  it("supports table filter via JSONB contains", async () => {
     let capturedSql = "";
     let capturedParams: unknown[] = [];
     let callCount = 0;
@@ -772,11 +772,31 @@ describe("GET /api/v1/admin/audit", () => {
 
     await app.fetch(adminRequest("/api/v1/admin/audit?table=orders"));
 
-    expect(capturedSql).toContain("a.sql ILIKE");
-    expect(capturedParams).toContain("%orders%");
+    expect(capturedSql).toContain("tables_accessed ?");
+    expect(capturedParams).toContain("orders");
   });
 
-  it("escapes ILIKE wildcards in search and table filters", async () => {
+  it("supports column filter via JSONB contains", async () => {
+    let capturedSql = "";
+    let capturedParams: unknown[] = [];
+    let callCount = 0;
+    mockInternalQuery.mockImplementation((sql: string, params?: unknown[]) => {
+      callCount++;
+      if (callCount === 1) {
+        capturedSql = sql;
+        capturedParams = params ?? [];
+        return Promise.resolve([{ count: "0" }]);
+      }
+      return Promise.resolve([]);
+    });
+
+    await app.fetch(adminRequest("/api/v1/admin/audit?column=email"));
+
+    expect(capturedSql).toContain("columns_accessed ?");
+    expect(capturedParams).toContain("email");
+  });
+
+  it("lowercases table and column filter values", async () => {
     let capturedParams: unknown[] = [];
     let callCount = 0;
     mockInternalQuery.mockImplementation((_sql: string, params?: unknown[]) => {
@@ -788,14 +808,13 @@ describe("GET /api/v1/admin/audit", () => {
       return Promise.resolve([]);
     });
 
-    await app.fetch(adminRequest("/api/v1/admin/audit?table=order_items&search=100%25"));
+    await app.fetch(adminRequest("/api/v1/admin/audit?table=Orders&column=Email"));
 
-    // _ and % should be escaped with backslash
-    expect(capturedParams).toContain("%order\\_items%");
-    expect(capturedParams).toContain("%100\\%%");
+    expect(capturedParams).toContain("orders");
+    expect(capturedParams).toContain("email");
   });
 
-  it("correctly parameterizes combined new filters (search + connection + table)", async () => {
+  it("correctly parameterizes combined new filters (search + connection + table + column)", async () => {
     let capturedSql = "";
     let capturedParams: unknown[] = [];
     let callCount = 0;
@@ -810,13 +829,14 @@ describe("GET /api/v1/admin/audit", () => {
     });
 
     await app.fetch(adminRequest(
-      "/api/v1/admin/audit?connection=warehouse&table=orders&search=revenue",
+      "/api/v1/admin/audit?connection=warehouse&table=orders&column=revenue&search=test",
     ));
 
     expect(capturedSql).toContain("source_id = $1");
-    expect(capturedSql).toContain("a.sql ILIKE $2");
-    expect(capturedSql).toContain("a.sql ILIKE $3 OR u.email ILIKE $3 OR a.error ILIKE $3");
-    expect(capturedParams).toEqual(["warehouse", "%orders%", "%revenue%"]);
+    expect(capturedSql).toContain("tables_accessed ? $2");
+    expect(capturedSql).toContain("columns_accessed ? $3");
+    expect(capturedSql).toContain("a.sql ILIKE $4 OR u.email ILIKE $4 OR a.error ILIKE $4");
+    expect(capturedParams).toEqual(["warehouse", "orders", "revenue", "%test%"]);
   });
 
   it("returns 400 for invalid date format", async () => {
@@ -872,7 +892,7 @@ describe("GET /api/v1/admin/audit/export", () => {
     expect(res.headers.get("Content-Disposition")).toContain(".csv");
 
     const body = await res.text();
-    expect(body).toContain("id,timestamp,user,sql,duration_ms,row_count,success,error,connection");
+    expect(body).toContain("id,timestamp,user,sql,duration_ms,row_count,success,error,connection,tables_accessed,columns_accessed");
     expect(body).toContain("admin@test.com");
     expect(body).toContain("SELECT * FROM orders");
   });
@@ -944,7 +964,7 @@ describe("GET /api/v1/admin/audit/export", () => {
     const res = await app.fetch(adminRequest("/api/v1/admin/audit/export"));
     expect(res.status).toBe(200);
     const body = await res.text();
-    expect(body).toBe("id,timestamp,user,sql,duration_ms,row_count,success,error,connection\n");
+    expect(body).toBe("id,timestamp,user,sql,duration_ms,row_count,success,error,connection,tables_accessed,columns_accessed\n");
   });
 
   it("returns 400 for invalid date on export", async () => {

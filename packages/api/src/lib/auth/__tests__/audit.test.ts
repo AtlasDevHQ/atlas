@@ -75,6 +75,8 @@ describe("logQueryAudit()", () => {
       null, // source_id
       null, // source_type
       null, // target_host
+      null, // tables_accessed
+      null, // columns_accessed
     ]);
   });
 

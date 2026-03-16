@@ -3,7 +3,7 @@
 import type { ColumnDef } from "@tanstack/react-table";
 import { Badge } from "@/components/ui/badge";
 import { DataTableColumnHeader } from "@/components/data-table/data-table-column-header";
-import { Clock, User, Code, Timer, Rows3, CheckCircle } from "lucide-react";
+import { Clock, User, Code, Timer, Rows3, CheckCircle, Table2 } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -18,6 +18,8 @@ export interface AuditRow {
   user_email?: string | null;
   error?: string | null;
   source_id?: string | null;
+  tables_accessed: string[] | null;
+  columns_accessed: string[] | null;
 }
 
 // ── Columns ───────────────────────────────────────────────────────
@@ -86,6 +88,32 @@ export function getAuditColumns(): ColumnDef<AuditRow>[] {
         icon: Code,
       },
       enableSorting: false,
+    },
+    {
+      id: "tables_accessed",
+      accessorFn: (row) => row.tables_accessed,
+      header: ({ column }) => (
+        <DataTableColumnHeader column={column} label="Tables" />
+      ),
+      cell: ({ row }) => {
+        const tables = row.original.tables_accessed;
+        if (!tables?.length) return <span className="text-xs text-muted-foreground">—</span>;
+        return (
+          <div className="flex flex-wrap gap-1 max-w-[200px]">
+            {tables.map((t) => (
+              <Badge key={t} variant="secondary" className="text-[10px] px-1.5 py-0">
+                {t}
+              </Badge>
+            ))}
+          </div>
+        );
+      },
+      meta: {
+        label: "Tables",
+        icon: Table2,
+      },
+      enableSorting: false,
+      size: 160,
     },
     {
       id: "duration_ms",

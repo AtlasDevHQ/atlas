@@ -95,6 +95,8 @@ function extractAuditParams(params: unknown[]) {
     sourceId: params[8] as string | null,
     sourceType: params[9] as string | null,
     targetHost: params[10] as string | null,
+    tablesAccessed: params[11] as string | null,
+    columnsAccessed: params[12] as string | null,
   };
 }
 
@@ -229,5 +231,44 @@ describe("executeSQL audit logging", () => {
     const audit = extractAuditParams(inserts[0].params!);
     expect(audit.sourceId).toBe("default");
     expect(audit.sourceType).toBe("postgres");
+  });
+
+  it("includes tables_accessed and columns_accessed in successful audit entries", async () => {
+    await exec("SELECT id, name FROM companies");
+
+    const inserts = getAuditInserts();
+    expect(inserts).toHaveLength(1);
+    const audit = extractAuditParams(inserts[0].params!);
+    expect(audit.success).toBe(true);
+    // Classification data is stored as JSON strings
+    expect(audit.tablesAccessed).not.toBeNull();
+    const tables: string[] = JSON.parse(audit.tablesAccessed!);
+    expect(tables).toContain("companies");
+    expect(audit.columnsAccessed).not.toBeNull();
+    const columns: string[] = JSON.parse(audit.columnsAccessed!);
+    expect(columns).toContain("id");
+    expect(columns).toContain("name");
+  });
+
+  it("includes tables_accessed for JOIN queries", async () => {
+    await exec("SELECT c.name, p.email FROM companies c JOIN people p ON c.id = p.company_id");
+
+    const inserts = getAuditInserts();
+    expect(inserts).toHaveLength(1);
+    const audit = extractAuditParams(inserts[0].params!);
+    const tables: string[] = JSON.parse(audit.tablesAccessed!);
+    expect(tables).toContain("companies");
+    expect(tables).toContain("people");
+  });
+
+  it("stores null classification for validation-rejected queries", async () => {
+    await exec("DROP TABLE companies");
+
+    const inserts = getAuditInserts();
+    expect(inserts).toHaveLength(1);
+    const audit = extractAuditParams(inserts[0].params!);
+    // Validation failures don't have classification data
+    expect(audit.tablesAccessed).toBeNull();
+    expect(audit.columnsAccessed).toBeNull();
   });
 });

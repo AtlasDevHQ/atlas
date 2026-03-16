@@ -45,12 +45,18 @@ interface ConnectionMeta {
 
 const LIMIT = 50;
 
+interface AuditFacets {
+  tables: string[];
+  columns: string[];
+}
+
 interface AuditQueryParams {
   pageSize: number;
   offset: number;
   search: string;
   connection: string;
   tableFilter: string;
+  columnFilter: string;
   status: string;
   from: string;
   to: string;
@@ -67,6 +73,7 @@ function buildQueryString(p: AuditQueryParams, opts?: { noPagination?: boolean }
   if (p.search) qs.set("search", p.search);
   if (p.connection) qs.set("connection", p.connection);
   if (p.tableFilter) qs.set("table", p.tableFilter);
+  if (p.columnFilter) qs.set("column", p.columnFilter);
   if (p.status === "success") qs.set("success", "true");
   if (p.status === "error") qs.set("success", "false");
   if (p.from) qs.set("from", p.from);
@@ -101,7 +108,7 @@ export default function AuditPage() {
   const [exporting, setExporting] = useState(false);
 
   const [params, setParams] = useQueryStates(auditSearchParams);
-  const { tab, search, connection, table: tableFilter, status, from, to } = params;
+  const { tab, search, connection, table: tableFilter, column: columnFilter, status, from, to } = params;
 
   // Analytics date range (separate from log tab filters)
   const [analyticsFrom, setAnalyticsFrom] = useState("");
@@ -112,6 +119,17 @@ export default function AuditPage() {
     "/api/v1/admin/connections",
   );
   const connectionList = connectionsData?.connections ?? [];
+
+  // Facets for table/column filter dropdowns
+  const { data: facetsData, error: facetsError } = useAdminFetch<AuditFacets>(
+    "/api/v1/admin/audit/facets",
+  );
+  if (facetsError && !facetsError.status) {
+    // Log client-side so devs can diagnose why dropdowns fell back to text inputs
+    console.warn("Audit facets fetch failed:", facetsError.message);
+  }
+  const tableFacets = facetsData?.tables ?? [];
+  const columnFacets = facetsData?.columns ?? [];
 
   // Column definitions
   const columns = getAuditColumns();
@@ -150,7 +168,7 @@ export default function AuditPage() {
   const sortDesc = sorting[0]?.desc;
 
   const queryParams: AuditQueryParams = {
-    pageSize, offset, search, connection, tableFilter, status, from, to, sortId, sortDesc,
+    pageSize, offset, search, connection, tableFilter, columnFilter, status, from, to, sortId, sortDesc,
   };
 
   // Fetch rows on mount and when table state changes (only for log tab)
@@ -187,7 +205,7 @@ export default function AuditPage() {
     }
     fetchRows();
     return () => { cancelled = true; };
-  }, [apiUrl, offset, pageSize, search, connection, tableFilter, status, from, to, sortId, sortDesc, tab, credentials]);
+  }, [apiUrl, offset, pageSize, search, connection, tableFilter, columnFilter, status, from, to, sortId, sortDesc, tab, credentials]);
 
   async function handleExport() {
     setExporting(true);
@@ -226,10 +244,10 @@ export default function AuditPage() {
     }
   }
 
-  const hasFilters = !!(search || connection || tableFilter || status || from || to);
+  const hasFilters = !!(search || connection || tableFilter || columnFilter || status || from || to);
 
   function clearFilters() {
-    setParams({ search: "", connection: "", table: "", status: "", from: "", to: "" });
+    setParams({ search: "", connection: "", table: "", column: "", status: "", from: "", to: "" });
   }
 
   // Gate: 401/403/404 (applies to both tabs via stats endpoint)
@@ -391,12 +409,53 @@ export default function AuditPage() {
               </Select>
             ) : null}
 
-            <Input
-              placeholder="Filter by table..."
-              value={tableFilter}
-              onChange={(e) => setParams({ table: e.target.value })}
-              className="h-9 w-40"
-            />
+            {tableFacets.length > 0 ? (
+              <Select
+                value={tableFilter || "__all__"}
+                onValueChange={(v) => setParams({ table: v === "__all__" ? "" : v })}
+              >
+                <SelectTrigger className="h-9 w-40">
+                  <SelectValue placeholder="All tables" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__all__">All tables</SelectItem>
+                  {tableFacets.map((t) => (
+                    <SelectItem key={t} value={t}>{t}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <Input
+                placeholder="Filter by table..."
+                value={tableFilter}
+                onChange={(e) => setParams({ table: e.target.value })}
+                className="h-9 w-40"
+              />
+            )}
+
+            {columnFacets.length > 0 ? (
+              <Select
+                value={columnFilter || "__all__"}
+                onValueChange={(v) => setParams({ column: v === "__all__" ? "" : v })}
+              >
+                <SelectTrigger className="h-9 w-40">
+                  <SelectValue placeholder="All columns" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__all__">All columns</SelectItem>
+                  {columnFacets.map((col) => (
+                    <SelectItem key={col} value={col}>{col}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <Input
+                placeholder="Filter by column..."
+                value={columnFilter}
+                onChange={(e) => setParams({ column: e.target.value })}
+                className="h-9 w-40"
+              />
+            )}
 
             <Select
               value={status || "__all__"}

@@ -16,7 +16,7 @@ bun add @useatlas/email-digest
 ### Prerequisites
 
 - Internal database configured (`DATABASE_URL`) for subscription storage
-- An email transport: SendGrid API key, AWS SES credentials, or SMTP server
+- A SendGrid API key for email delivery
 - An `executeMetric` callback wired to the Atlas agent
 
 ## Configuration
@@ -40,30 +40,14 @@ export default defineConfig({
 });
 ```
 
-For SMTP transport:
-
-```typescript
-emailDigestPlugin({
-  from: "Atlas <digest@myco.com>",
-  transport: "smtp",
-  smtp: {
-    host: "smtp.myco.com",
-    port: 587,
-    auth: { user: "atlas", pass: process.env.SMTP_PASSWORD! },
-  },
-  executeMetric: myMetricRunner,
-})
-```
-
 ### Options
 
 | Option | Type | Required | Description |
 |--------|------|----------|-------------|
-| `from` | `string` | Yes | Sender email address (e.g. `"Atlas <digest@myco.com>"`). |
-| `transport` | `"smtp" \| "sendgrid" \| "ses"` | Yes | Email transport to use. |
-| `smtp` | `object` | When `transport: "smtp"` | SMTP configuration: `host`, `port`, `auth`. |
-| `apiKey` | `string` | When `transport: "sendgrid" \| "ses"` | API key for the email service. |
-| `publicUrl` | `string` | No | Base URL for unsubscribe links. Defaults to `ATLAS_PUBLIC_URL`. |
+| `from` | `string` | Yes | Sender email address. Supports display-name format (e.g. `"Atlas <digest@myco.com>"`). |
+| `transport` | `"sendgrid"` | Yes | Email transport. Currently only SendGrid is supported. |
+| `apiKey` | `string` | Yes | SendGrid API key. |
+| `publicUrl` | `string` | No | Base URL for unsubscribe/management links. |
 | `executeMetric` | `function` | Yes | Callback that runs a metric query and returns `MetricResult`. |
 
 ### MetricResult Shape
@@ -83,7 +67,7 @@ interface MetricResult {
 
 ## Subscription API
 
-All routes are mounted under the plugin's base path (typically `/api/plugins/email-digest-interaction/`).
+All routes are mounted under the plugin's base path (typically `/api/plugins/email-digest-interaction/`). All routes require the `X-Atlas-User-Id` header for authentication.
 
 ### `GET /digest/subscriptions`
 
@@ -101,12 +85,15 @@ curl https://api.example.com/api/plugins/email-digest-interaction/digest/subscri
   "subscriptions": [
     {
       "id": "sub-abc",
+      "userId": "user-123",
       "metrics": ["active_users", "revenue"],
       "frequency": "daily",
       "deliveryHour": 9,
       "timezone": "America/New_York",
       "email": "alice@myco.com",
-      "enabled": true
+      "enabled": true,
+      "createdAt": "2026-03-16T00:00:00Z",
+      "updatedAt": "2026-03-16T00:00:00Z"
     }
   ]
 }
@@ -148,6 +135,10 @@ curl -X PUT https://api.example.com/api/plugins/email-digest-interaction/digest/
   -d '{"frequency": "weekly", "deliveryHour": 8}'
 ```
 
+Updatable fields: `metrics`, `frequency`, `deliveryHour`, `timezone`, `email`, `enabled`.
+
+Set `enabled: false` to pause a subscription without deleting it.
+
 ### `DELETE /digest/subscriptions/:id`
 
 Cancel a subscription.
@@ -176,13 +167,14 @@ Each digest email includes:
 
 The internal database (`DATABASE_URL`) is not configured. The email digest plugin requires it for storing subscriptions.
 
+### 401 on subscription routes
+
+The `X-Atlas-User-Id` header is missing from the request. All subscription routes require authentication.
+
 ### Metrics show error placeholders
 
 Individual metric failures don't break the whole digest. Check the Atlas logs for the specific metric error. Common causes: query timeout, connection issues, or invalid metric name.
 
 ### Emails not arriving
 
-Verify your transport configuration:
-- **SendGrid**: Check the API key has send permissions
-- **SES**: Verify the sender address is verified in your SES configuration
-- **SMTP**: Ensure the relay host is reachable and credentials are correct
+Verify your SendGrid API key has send permissions. Check the Atlas logs for delivery errors. The `from` address must be verified in your SendGrid configuration.

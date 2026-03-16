@@ -2,7 +2,7 @@
  * Email digest HTML template.
  *
  * Inline-styled HTML suitable for email clients (no external CSS).
- * Mirrors the format-email.ts style from the scheduler package.
+ * Mirrors the style of the Atlas email formatter (`packages/api/src/lib/scheduler/format-email.ts`).
  */
 
 import type { MetricResult } from "./config";

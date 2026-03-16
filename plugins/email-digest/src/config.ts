@@ -1,52 +1,29 @@
 /**
  * Email digest plugin configuration schema.
  *
- * Supports SMTP, SendGrid, and SES transports for sending digest emails.
+ * Currently supports SendGrid for sending digest emails.
+ * SES and SMTP transports are planned for future releases.
  */
 
 import { z } from "zod";
 
-export const SmtpConfigSchema = z.object({
-  host: z.string().min(1, "SMTP host must not be empty"),
-  port: z.number().int().min(1).max(65535),
-  auth: z
-    .object({
-      user: z.string().min(1),
-      pass: z.string().min(1),
-    })
-    .optional(),
+export const EmailDigestConfigSchema = z.object({
+  /** Sender email address. Supports display-name format (e.g. "Atlas <digest@myco.com>"). */
+  from: z.string().min(1, "from address must not be empty"),
+  /** Email transport. Currently only SendGrid is supported. */
+  transport: z.literal("sendgrid"),
+  /** SendGrid API key. */
+  apiKey: z.string().min(1, "apiKey must not be empty"),
+  /** Base URL for unsubscribe/management links (e.g. "https://app.myco.com"). Optional. */
+  publicUrl: z.string().url().optional(),
+  /**
+   * Callback to run a metric query and return results.
+   * Required — the plugin uses this to execute each subscribed metric.
+   */
+  executeMetric: z
+    .any()
+    .refine((v) => typeof v === "function", "executeMetric must be a function"),
 });
-
-export type SmtpConfig = z.infer<typeof SmtpConfigSchema>;
-
-export const EmailDigestConfigSchema = z
-  .object({
-    /** Sender email address (e.g. "Atlas <digest@myco.com>"). */
-    from: z.string().min(1, "from address must not be empty"),
-    /** Email transport to use for sending digests. */
-    transport: z.enum(["smtp", "sendgrid", "ses"]),
-    /** SMTP configuration (required when transport is "smtp"). */
-    smtp: SmtpConfigSchema.optional(),
-    /** API key for SendGrid or SES (required when transport is "sendgrid" or "ses"). */
-    apiKey: z.string().min(1).optional(),
-    /** Base URL for unsubscribe/management links. Defaults to ATLAS_PUBLIC_URL env var. */
-    publicUrl: z.string().url().optional(),
-    /**
-     * Callback to run a metric query and return results.
-     * Required — the plugin uses this to execute each subscribed metric.
-     */
-    executeMetric: z
-      .any()
-      .refine((v) => typeof v === "function", "executeMetric must be a function"),
-  })
-  .refine(
-    (c) => c.transport !== "smtp" || c.smtp !== undefined,
-    "smtp config is required when transport is 'smtp'",
-  )
-  .refine(
-    (c) => c.transport === "smtp" || c.apiKey !== undefined,
-    "apiKey is required when transport is 'sendgrid' or 'ses'",
-  );
 
 export interface MetricResult {
   name: string;
@@ -59,9 +36,8 @@ export interface MetricResult {
 
 export interface EmailDigestPluginConfig {
   from: string;
-  transport: "smtp" | "sendgrid" | "ses";
-  smtp?: SmtpConfig;
-  apiKey?: string;
+  transport: "sendgrid";
+  apiKey: string;
   publicUrl?: string;
   executeMetric: (metricName: string) => Promise<MetricResult>;
 }

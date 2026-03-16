@@ -7,6 +7,7 @@
  */
 
 import type { EmailDigestPluginConfig, MetricResult } from "./config";
+import type { PluginLogger } from "@useatlas/plugin-sdk";
 
 export interface DigestSubscription {
   id: string;
@@ -16,6 +17,7 @@ export interface DigestSubscription {
   frequency: "daily" | "weekly";
   deliveryHour: number;
   timezone: string;
+  enabled: boolean;
 }
 
 export interface DigestPayload {
@@ -32,16 +34,22 @@ export interface DigestPayload {
 export async function generateDigest(
   subscription: DigestSubscription,
   executeMetric: EmailDigestPluginConfig["executeMetric"],
+  log?: Pick<PluginLogger, "warn">,
 ): Promise<DigestPayload> {
   const results = await Promise.all(
     subscription.metrics.map(async (metricName): Promise<MetricResult> => {
       try {
         return await executeMetric(metricName);
       } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log?.warn(
+          { subscriptionId: subscription.id, metric: metricName, err: message },
+          "Metric execution failed — digest will include error placeholder",
+        );
         return {
           name: metricName,
           value: null,
-          error: err instanceof Error ? err.message : String(err),
+          error: message,
         };
       }
     }),

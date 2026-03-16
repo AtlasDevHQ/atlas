@@ -4,9 +4,10 @@
  * Provides subscription management API routes for users to subscribe
  * to metric digests delivered via email on a daily or weekly schedule.
  *
- * Subscriptions are stored in the internal database. The plugin registers
- * a scheduled task handler that generates and sends digest emails at
- * the configured frequency.
+ * Subscriptions are stored in the internal database. The plugin exports
+ * `generateDigest`, `renderDigestEmail`, and `sendEmail` for use by an
+ * external scheduler that dispatches digest emails at the configured
+ * frequency.
  *
  * @example
  * ```typescript
@@ -39,9 +40,6 @@ import type {
 } from "@useatlas/plugin-sdk";
 import { EmailDigestConfigSchema } from "./config";
 import type { EmailDigestPluginConfig, MetricResult } from "./config";
-import { generateDigest } from "./digest";
-import type { DigestSubscription } from "./digest";
-import { renderDigestEmail } from "./templates";
 
 // Re-export types for consumers
 export type { EmailDigestPluginConfig, MetricResult } from "./config";
@@ -49,7 +47,7 @@ export type { DigestSubscription, DigestPayload } from "./digest";
 export type { DigestEmailContent } from "./templates";
 
 // ---------------------------------------------------------------------------
-// DB schema for plugin table
+// DB schema for plugin table (used by plugin migration system)
 // ---------------------------------------------------------------------------
 
 const DIGEST_SUBSCRIPTIONS_SCHEMA = {
@@ -57,7 +55,7 @@ const DIGEST_SUBSCRIPTIONS_SCHEMA = {
     fields: {
       user_id: { type: "string" as const, required: true },
       email: { type: "string" as const, required: true },
-      metrics: { type: "string" as const, required: true }, // JSON array
+      metrics: { type: "string" as const, required: true }, // JSON array stored as JSONB in PostgreSQL
       frequency: { type: "string" as const, required: true },
       delivery_hour: { type: "number" as const, required: true },
       timezone: { type: "string" as const, required: true },
@@ -70,6 +68,16 @@ const DIGEST_SUBSCRIPTIONS_SCHEMA = {
 // Email sending
 // ---------------------------------------------------------------------------
 
+/**
+ * Parse a display-name format email (e.g. "Atlas <digest@co.com>")
+ * into separate name and email fields for the SendGrid API.
+ */
+function parseFromAddress(from: string): { email: string; name?: string } {
+  const match = from.match(/^(.+?)\s*<([^>]+)>$/);
+  if (match) return { name: match[1].trim(), email: match[2] };
+  return { email: from };
+}
+
 async function sendEmail(
   config: EmailDigestPluginConfig,
   to: string,
@@ -79,70 +87,36 @@ async function sendEmail(
   log: PluginLogger,
 ): Promise<boolean> {
   try {
-    if (config.transport === "sendgrid") {
-      const resp = await fetch("https://api.sendgrid.com/v3/mail/send", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${config.apiKey}`,
-        },
-        body: JSON.stringify({
-          personalizations: [{ to: [{ email: to }] }],
-          from: { email: config.from },
-          subject,
-          content: [
-            { type: "text/plain", value: text },
-            { type: "text/html", value: html },
-          ],
-        }),
-        signal: AbortSignal.timeout(15_000),
+    const resp = await fetch("https://api.sendgrid.com/v3/mail/send", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.apiKey}`,
+      },
+      body: JSON.stringify({
+        personalizations: [{ to: [{ email: to }] }],
+        from: parseFromAddress(config.from),
+        subject,
+        content: [
+          { type: "text/plain", value: text },
+          { type: "text/html", value: html },
+        ],
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!resp.ok) {
+      const body = await resp.text().catch((bodyErr) => {
+        log.warn({ err: bodyErr instanceof Error ? bodyErr.message : String(bodyErr) }, "Could not read SendGrid error response body");
+        return "";
       });
-      if (!resp.ok) {
-        const body = await resp.text().catch(() => "");
-        log.error({ to, status: resp.status, body: body.slice(0, 200) }, "SendGrid delivery failed");
-        return false;
-      }
-      return true;
+      log.error({ to, status: resp.status, body: body.slice(0, 200) }, "SendGrid delivery failed");
+      return false;
     }
-
-    if (config.transport === "ses") {
-      // SES v2 SendEmail API
-      const resp = await fetch("https://email.us-east-1.amazonaws.com/v2/email/outbound-emails", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${config.apiKey}`,
-        },
-        body: JSON.stringify({
-          FromEmailAddress: config.from,
-          Destination: { ToAddresses: [to] },
-          Content: {
-            Simple: {
-              Subject: { Data: subject },
-              Body: {
-                Text: { Data: text },
-                Html: { Data: html },
-              },
-            },
-          },
-        }),
-        signal: AbortSignal.timeout(15_000),
-      });
-      if (!resp.ok) {
-        const body = await resp.text().catch(() => "");
-        log.error({ to, status: resp.status, body: body.slice(0, 200) }, "SES delivery failed");
-        return false;
-      }
-      return true;
-    }
-
-    // SMTP — simplified: POST to a local SMTP relay (production would use nodemailer)
-    // For now, log a warning that SMTP requires additional setup
-    log.warn("SMTP transport requires a mail relay — email not sent. Use sendgrid or ses in production.");
-    return false;
+    return true;
   } catch (err) {
+    const isTimeout = err instanceof DOMException && err.name === "AbortError";
     log.error(
-      { to, err: err instanceof Error ? err.message : String(err) },
+      { to, transport: config.transport, timeout: isTimeout, err: err instanceof Error ? err.message : String(err) },
       "Email delivery error",
     );
     return false;
@@ -159,9 +133,17 @@ interface RouteDeps {
   config: EmailDigestPluginConfig;
 }
 
+/**
+ * Require the x-atlas-user-id header on all routes.
+ * Returns 401 if missing to prevent silent auth bypass.
+ */
+function requireUserId(c: { req: { header(name: string): string | undefined } }): string | null {
+  return c.req.header("x-atlas-user-id") ?? null;
+}
+
 function createDigestRoutes(deps: RouteDeps): Hono {
   const app = new Hono();
-  const { db, log, config } = deps;
+  const { db, log } = deps;
 
   // Middleware: require internal DB
   app.use("*", async (c, next) => {
@@ -171,16 +153,17 @@ function createDigestRoutes(deps: RouteDeps): Hono {
     await next();
   });
 
-  // GET /digest/subscriptions — list current user's subscriptions
   app.get("/digest/subscriptions", async (c) => {
-    const userId = c.req.header("x-atlas-user-id") ?? "anonymous";
+    const userId = requireUserId(c);
+    if (!userId) return c.json({ error: "Authentication required — x-atlas-user-id header missing" }, 401);
+
     try {
       const result = await db!.query(
         `SELECT id, user_id, email, metrics, frequency, delivery_hour, timezone, enabled, created_at, updated_at
          FROM digest_subscriptions WHERE user_id = $1 ORDER BY created_at DESC`,
         [userId],
       );
-      const subscriptions = result.rows.map(parseSubscriptionRow);
+      const subscriptions = result.rows.map((row) => parseSubscriptionRow(row, log));
       return c.json({ subscriptions });
     } catch (err) {
       log.error({ err: err instanceof Error ? err.message : String(err) }, "Failed to list subscriptions");
@@ -188,9 +171,10 @@ function createDigestRoutes(deps: RouteDeps): Hono {
     }
   });
 
-  // POST /digest/subscriptions — create subscription
   app.post("/digest/subscriptions", async (c) => {
-    const userId = c.req.header("x-atlas-user-id") ?? "anonymous";
+    const userId = requireUserId(c);
+    if (!userId) return c.json({ error: "Authentication required — x-atlas-user-id header missing" }, 401);
+
     let body: Record<string, unknown>;
     try {
       body = await c.req.json();
@@ -237,9 +221,9 @@ function createDigestRoutes(deps: RouteDeps): Hono {
     }
   });
 
-  // PUT /digest/subscriptions/:id — update subscription
   app.put("/digest/subscriptions/:id", async (c) => {
-    const userId = c.req.header("x-atlas-user-id") ?? "anonymous";
+    const userId = requireUserId(c);
+    if (!userId) return c.json({ error: "Authentication required — x-atlas-user-id header missing" }, 401);
     const subId = c.req.param("id");
 
     let body: Record<string, unknown>;
@@ -249,64 +233,74 @@ function createDigestRoutes(deps: RouteDeps): Hono {
       return c.json({ error: "Invalid JSON body" }, 400);
     }
 
-    // Verify ownership
-    const existing = await db!.query(
-      `SELECT id FROM digest_subscriptions WHERE id = $1 AND user_id = $2`,
-      [subId, userId],
-    );
-    if (existing.rows.length === 0) {
-      return c.json({ error: "Subscription not found" }, 404);
-    }
-
-    const updates: string[] = [];
-    const params: unknown[] = [];
-    let paramIdx = 1;
-
-    if (body.metrics !== undefined) {
-      if (!Array.isArray(body.metrics) || body.metrics.length === 0) {
-        return c.json({ error: "metrics must be a non-empty array" }, 400);
-      }
-      updates.push(`metrics = $${paramIdx++}`);
-      params.push(JSON.stringify(body.metrics));
-    }
-    if (body.frequency !== undefined) {
-      if (body.frequency !== "daily" && body.frequency !== "weekly") {
-        return c.json({ error: "frequency must be 'daily' or 'weekly'" }, 400);
-      }
-      updates.push(`frequency = $${paramIdx++}`);
-      params.push(body.frequency);
-    }
-    if (body.deliveryHour !== undefined) {
-      if (typeof body.deliveryHour !== "number" || body.deliveryHour < 0 || body.deliveryHour > 23) {
-        return c.json({ error: "deliveryHour must be an integer 0-23" }, 400);
-      }
-      updates.push(`delivery_hour = $${paramIdx++}`);
-      params.push(body.deliveryHour);
-    }
-    if (body.timezone !== undefined) {
-      updates.push(`timezone = $${paramIdx++}`);
-      params.push(body.timezone);
-    }
-    if (body.enabled !== undefined) {
-      updates.push(`enabled = $${paramIdx++}`);
-      params.push(body.enabled);
-    }
-    if (body.email !== undefined) {
-      updates.push(`email = $${paramIdx++}`);
-      params.push(body.email);
-    }
-
-    if (updates.length === 0) {
-      return c.json({ error: "No fields to update" }, 400);
-    }
-
-    updates.push(`updated_at = $${paramIdx++}`);
-    params.push(new Date().toISOString());
-    params.push(subId);
-
     try {
+      // Verify ownership
+      const existing = await db!.query(
+        `SELECT id FROM digest_subscriptions WHERE id = $1 AND user_id = $2`,
+        [subId, userId],
+      );
+      if (existing.rows.length === 0) {
+        return c.json({ error: "Subscription not found" }, 404);
+      }
+
+      const updates: string[] = [];
+      const params: unknown[] = [];
+      let paramIdx = 1;
+
+      if (body.metrics !== undefined) {
+        if (!Array.isArray(body.metrics) || body.metrics.length === 0) {
+          return c.json({ error: "metrics must be a non-empty array" }, 400);
+        }
+        updates.push(`metrics = $${paramIdx++}`);
+        params.push(JSON.stringify(body.metrics));
+      }
+      if (body.frequency !== undefined) {
+        if (body.frequency !== "daily" && body.frequency !== "weekly") {
+          return c.json({ error: "frequency must be 'daily' or 'weekly'" }, 400);
+        }
+        updates.push(`frequency = $${paramIdx++}`);
+        params.push(body.frequency);
+      }
+      if (body.deliveryHour !== undefined) {
+        if (typeof body.deliveryHour !== "number" || body.deliveryHour < 0 || body.deliveryHour > 23) {
+          return c.json({ error: "deliveryHour must be an integer 0-23" }, 400);
+        }
+        updates.push(`delivery_hour = $${paramIdx++}`);
+        params.push(body.deliveryHour);
+      }
+      if (body.timezone !== undefined) {
+        if (typeof body.timezone !== "string" || body.timezone.length === 0) {
+          return c.json({ error: "timezone must be a non-empty string" }, 400);
+        }
+        updates.push(`timezone = $${paramIdx++}`);
+        params.push(body.timezone);
+      }
+      if (body.enabled !== undefined) {
+        if (typeof body.enabled !== "boolean") {
+          return c.json({ error: "enabled must be a boolean" }, 400);
+        }
+        updates.push(`enabled = $${paramIdx++}`);
+        params.push(body.enabled);
+      }
+      if (body.email !== undefined) {
+        if (typeof body.email !== "string" || body.email.length === 0) {
+          return c.json({ error: "email must be a non-empty string" }, 400);
+        }
+        updates.push(`email = $${paramIdx++}`);
+        params.push(body.email);
+      }
+
+      if (updates.length === 0) {
+        return c.json({ error: "No fields to update" }, 400);
+      }
+
+      updates.push(`updated_at = $${paramIdx++}`);
+      params.push(new Date().toISOString());
+      params.push(subId);
+      params.push(userId);
+
       await db!.execute(
-        `UPDATE digest_subscriptions SET ${updates.join(", ")} WHERE id = $${paramIdx}`,
+        `UPDATE digest_subscriptions SET ${updates.join(", ")} WHERE id = $${paramIdx} AND user_id = $${paramIdx + 1}`,
         params,
       );
       log.info({ subscriptionId: subId }, "Digest subscription updated");
@@ -317,9 +311,9 @@ function createDigestRoutes(deps: RouteDeps): Hono {
     }
   });
 
-  // DELETE /digest/subscriptions/:id — cancel subscription
   app.delete("/digest/subscriptions/:id", async (c) => {
-    const userId = c.req.header("x-atlas-user-id") ?? "anonymous";
+    const userId = requireUserId(c);
+    if (!userId) return c.json({ error: "Authentication required — x-atlas-user-id header missing" }, 401);
     const subId = c.req.param("id");
 
     try {
@@ -331,7 +325,10 @@ function createDigestRoutes(deps: RouteDeps): Hono {
         return c.json({ error: "Subscription not found" }, 404);
       }
 
-      await db!.execute(`DELETE FROM digest_subscriptions WHERE id = $1`, [subId]);
+      await db!.execute(
+        `DELETE FROM digest_subscriptions WHERE id = $1 AND user_id = $2`,
+        [subId, userId],
+      );
       log.info({ subscriptionId: subId }, "Digest subscription deleted");
       return c.json({ deleted: true });
     } catch (err) {
@@ -343,13 +340,16 @@ function createDigestRoutes(deps: RouteDeps): Hono {
   return app;
 }
 
-function parseSubscriptionRow(row: Record<string, unknown>) {
+function parseSubscriptionRow(row: Record<string, unknown>, log?: PluginLogger) {
   let metrics: string[] = [];
   try {
     const raw = typeof row.metrics === "string" ? JSON.parse(row.metrics) : row.metrics;
     if (Array.isArray(raw)) metrics = raw;
-  } catch {
-    // Leave metrics as empty array
+  } catch (err) {
+    log?.warn(
+      { subscriptionId: row.id, err: err instanceof Error ? err.message : String(err) },
+      "Failed to parse metrics JSON — defaulting to empty array",
+    );
   }
   return {
     id: row.id as string,
@@ -375,6 +375,7 @@ function buildEmailDigestPlugin(
   let log: PluginLogger | null = null;
   let initialized = false;
   let pluginDb: AtlasPluginContext["db"] = null;
+  let schemaReady = false;
 
   return {
     id: "email-digest-interaction",
@@ -389,7 +390,7 @@ function buildEmailDigestPlugin(
       const deps: RouteDeps = {
         db: pluginDb,
         log: log ?? {
-          info: () => {},
+          info: (...args: unknown[]) => console.info("[email-digest]", ...args),
           warn: (...args: unknown[]) => console.warn("[email-digest]", ...args),
           error: (...args: unknown[]) => console.error("[email-digest]", ...args),
           debug: () => {},
@@ -409,35 +410,31 @@ function buildEmailDigestPlugin(
       log = ctx.logger;
       pluginDb = ctx.db;
 
-      // Create table if internal DB is available
+      // Safety-net table creation — the plugin migration system uses the
+      // declarative `schema` above, but this ensures the table exists even
+      // when the migration system is not active (e.g. standalone usage).
       if (ctx.db) {
-        try {
-          await ctx.db.execute(`
-            CREATE TABLE IF NOT EXISTS digest_subscriptions (
-              id TEXT PRIMARY KEY,
-              user_id TEXT NOT NULL,
-              email TEXT NOT NULL,
-              metrics JSONB NOT NULL DEFAULT '[]',
-              frequency TEXT NOT NULL DEFAULT 'daily',
-              delivery_hour INTEGER NOT NULL DEFAULT 9,
-              timezone TEXT NOT NULL DEFAULT 'UTC',
-              enabled BOOLEAN NOT NULL DEFAULT true,
-              created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-              updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-          `);
-          await ctx.db.execute(`
-            CREATE INDEX IF NOT EXISTS idx_digest_subs_user ON digest_subscriptions(user_id)
-          `);
-          await ctx.db.execute(`
-            CREATE INDEX IF NOT EXISTS idx_digest_subs_enabled ON digest_subscriptions(enabled, frequency)
-          `);
-        } catch (err) {
-          ctx.logger.error(
-            { err: err instanceof Error ? err.message : String(err) },
-            "Failed to create digest_subscriptions table — subscription management will be unavailable",
-          );
-        }
+        await ctx.db.execute(`
+          CREATE TABLE IF NOT EXISTS digest_subscriptions (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            email TEXT NOT NULL,
+            metrics JSONB NOT NULL DEFAULT '[]',
+            frequency TEXT NOT NULL DEFAULT 'daily',
+            delivery_hour INTEGER NOT NULL DEFAULT 9,
+            timezone TEXT NOT NULL DEFAULT 'UTC',
+            enabled BOOLEAN NOT NULL DEFAULT true,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+          )
+        `);
+        await ctx.db.execute(`
+          CREATE INDEX IF NOT EXISTS idx_digest_subs_user ON digest_subscriptions(user_id)
+        `);
+        await ctx.db.execute(`
+          CREATE INDEX IF NOT EXISTS idx_digest_subs_enabled ON digest_subscriptions(enabled, frequency)
+        `);
+        schemaReady = true;
       }
 
       ctx.logger.info(`Email digest plugin initialized (transport: ${config.transport})`);
@@ -463,13 +460,31 @@ function buildEmailDigestPlugin(
         };
       }
 
-      return { healthy: true, latencyMs: Math.round(performance.now() - start) };
+      if (!schemaReady) {
+        return {
+          healthy: false,
+          message: "Database schema not ready — table creation may have failed",
+          latencyMs: Math.round(performance.now() - start),
+        };
+      }
+
+      try {
+        await pluginDb.query("SELECT 1 FROM digest_subscriptions LIMIT 0", []);
+        return { healthy: true, latencyMs: Math.round(performance.now() - start) };
+      } catch (err) {
+        return {
+          healthy: false,
+          message: `Table probe failed: ${err instanceof Error ? err.message : String(err)}`,
+          latencyMs: Math.round(performance.now() - start),
+        };
+      }
     },
 
     async teardown() {
       log = null;
       pluginDb = null;
       initialized = false;
+      schemaReady = false;
     },
   };
 }
@@ -497,7 +512,7 @@ export const emailDigestPlugin = createPlugin<
 /** Direct builder for tests or manual construction. */
 export { buildEmailDigestPlugin };
 
-// Export digest generation and email sending for use by the scheduler
+// Export building blocks for external orchestration (scheduler, custom pipelines, tests)
 export { generateDigest } from "./digest";
 export { renderDigestEmail } from "./templates";
-export { sendEmail };
+export { sendEmail, parseFromAddress };

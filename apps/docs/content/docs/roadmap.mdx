@@ -62,10 +62,10 @@ SDK gained `listTables()` convenience method and a complete error code catalog w
 
 The current milestone. Finish half-built infrastructure, add governance controls, and harden the plugin ecosystem for production teams.
 
-- **Infrastructure** — Configurable agent step limit, action timeout enforcement, rollback support, blocked imports, explore backend hardening
-- **Governance** — Advanced RLS policies (multi-column, array claims), session management, audit log export and search
-- **Plugin ecosystem** — Typed plugin SDK, tool hooks, custom validation
-- **Integrations** — Microsoft Teams plugin (done), generic webhook plugin for Zapier/Make/n8n, email digest subscriptions
+- **Infrastructure** — Configurable agent step limit, action timeout enforcement, rollback support, blocked imports, explore backend priority (all shipped)
+- **Governance** — Advanced RLS policies (multi-column, array claims, OR-logic), session management with idle/absolute timeouts, audit log CSV export, search, filtering, and data classification tags (all shipped)
+- **Plugin ecosystem** — Typed plugin SDK with peer dep re-exports, beforeToolCall/afterToolCall hooks, custom query validation, SDK `validateSQL()` and `getAuditLog()` methods (all shipped)
+- **Integrations** — Microsoft Teams bot with Adaptive Cards, generic webhook plugin for Zapier/Make/n8n (shipped). Remaining: semantic layer diff UI, email digest subscriptions
 
 ---
 

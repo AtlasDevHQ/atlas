@@ -27,6 +27,7 @@ import { acquireSourceSlot, decrementSourceConcurrency } from "@atlas/api/lib/db
 import { getConfig } from "@atlas/api/lib/config";
 import { resolveRLSFilters, injectRLSConditions, type RLSFilterGroup } from "@atlas/api/lib/rls";
 import { getSetting } from "@atlas/api/lib/settings";
+import { getCache, buildCacheKey, cacheEnabled, getDefaultTtl } from "@atlas/api/lib/cache/index";
 
 const log = createLogger("sql");
 
@@ -711,6 +712,27 @@ Rules:
       querySql += ` LIMIT ${rowLimit}`;
     }
 
+    // Check cache before executing query
+    let cacheKey: string | null = null;
+    if (cacheEnabled()) {
+      const ctx = getRequestContext();
+      const orgId = ctx?.user?.activeOrganizationId;
+      const claims = ctx?.user?.claims;
+      cacheKey = buildCacheKey(querySql, connId, orgId, claims);
+      const cached = getCache().get(cacheKey);
+      if (cached) {
+        return {
+          success: true,
+          explanation,
+          row_count: cached.rows.length,
+          columns: cached.columns,
+          rows: cached.rows,
+          truncated: cached.rows.length >= rowLimit,
+          cached: true,
+        };
+      }
+    }
+
     // Includes connection acquisition time; the OTel span inside withSpan
     // covers only the actual query execution against the database.
     // SQL content is NOT included in span attributes for security.
@@ -733,6 +755,16 @@ Rules:
 
       connections.recordQuery(connId, durationMs);
       connections.recordSuccess(connId);
+
+      // Store in cache on success
+      if (cacheKey) {
+        getCache().set(cacheKey, {
+          columns: result.columns,
+          rows: result.rows,
+          cachedAt: Date.now(),
+          ttl: getDefaultTtl(),
+        });
+      }
 
       try {
         logQueryAudit({
@@ -765,6 +797,7 @@ Rules:
         columns: result.columns,
         rows: result.rows,
         truncated,
+        cached: false,
         ...(hasHookMeta && { metadata: hookMetadata }),
       };
     } catch (err) {

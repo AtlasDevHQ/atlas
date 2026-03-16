@@ -186,6 +186,16 @@ if (config.plugins?.length) {
     log.error({ failed: intResult.failed }, "Some interaction plugins failed to wire");
   }
 
+  // Wire plugin cache backend if any plugin provides one
+  for (const plugin of plugins.getAll()) {
+    if (plugin.cacheBackend) {
+      const { setCacheBackend } = await import("@atlas/api/lib/cache/index");
+      setCacheBackend(plugin.cacheBackend as import("@atlas/api/lib/cache/index").CacheBackend);
+      log.info({ pluginId: plugin.id }, "Plugin-provided cache backend registered");
+      break; // only one cache backend
+    }
+  }
+
   // Graceful shutdown: teardown plugins on SIGTERM
   process.on("SIGTERM", async () => {
     log.info("SIGTERM received — tearing down plugins");

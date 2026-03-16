@@ -153,6 +153,9 @@ Query safety and SQL validation settings. See [SQL Validation Pipeline](/securit
 | `ATLAS_SCHEMA` | `public` | PostgreSQL schema name. Used by the CLI for profiling (`init`, `diff`) and by the API at runtime to set the connection `search_path` |
 | `ATLAS_POOL_WARMUP` | `2` | Number of warmup probes per connection at startup. Set to `0` to disable warmup |
 | `ATLAS_POOL_DRAIN_THRESHOLD` | `5` | Consecutive query errors before the pool is automatically drained and recreated |
+| `ATLAS_CACHE_ENABLED` | `true` | Enable query result caching. Set to `false` to disable |
+| `ATLAS_CACHE_TTL` | `300000` | Cache TTL in milliseconds (default: 5 minutes) |
+| `ATLAS_CACHE_MAX_SIZE` | `1000` | Maximum number of cached query results |
 
 <Callout type="warn">
 Non-SELECT SQL (INSERT, UPDATE, DELETE, DROP, etc.) is **always rejected** — there is no toggle to disable this. The `ATLAS_TABLE_WHITELIST` setting only controls whether queries are restricted to semantic layer tables.

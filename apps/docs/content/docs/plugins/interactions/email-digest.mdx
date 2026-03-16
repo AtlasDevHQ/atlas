@@ -1,0 +1,188 @@
+---
+title: Email Digest
+description: Subscribe users to scheduled metric summary emails delivered daily or weekly.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The Email Digest interaction plugin enables users to subscribe to metric digests — formatted email summaries of key metrics delivered on a daily or weekly schedule. Each digest includes metric values, trend indicators, and optional data tables.
+
+## Installation
+
+```bash
+bun add @useatlas/email-digest
+```
+
+### Prerequisites
+
+- Internal database configured (`DATABASE_URL`) for subscription storage
+- An email transport: SendGrid API key, AWS SES credentials, or SMTP server
+- An `executeMetric` callback wired to the Atlas agent
+
+## Configuration
+
+```typescript
+import { defineConfig } from "@atlas/api/lib/config";
+import { emailDigestPlugin } from "@useatlas/email-digest";
+
+export default defineConfig({
+  plugins: [
+    emailDigestPlugin({
+      from: "Atlas <digest@myco.com>",
+      transport: "sendgrid",
+      apiKey: process.env.SENDGRID_API_KEY!,
+      executeMetric: async (metricName) => {
+        // Run the metric query and return results
+        return { name: metricName, value: 42, previousValue: 38 };
+      },
+    }),
+  ],
+});
+```
+
+For SMTP transport:
+
+```typescript
+emailDigestPlugin({
+  from: "Atlas <digest@myco.com>",
+  transport: "smtp",
+  smtp: {
+    host: "smtp.myco.com",
+    port: 587,
+    auth: { user: "atlas", pass: process.env.SMTP_PASSWORD! },
+  },
+  executeMetric: myMetricRunner,
+})
+```
+
+### Options
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `from` | `string` | Yes | Sender email address (e.g. `"Atlas <digest@myco.com>"`). |
+| `transport` | `"smtp" \| "sendgrid" \| "ses"` | Yes | Email transport to use. |
+| `smtp` | `object` | When `transport: "smtp"` | SMTP configuration: `host`, `port`, `auth`. |
+| `apiKey` | `string` | When `transport: "sendgrid" \| "ses"` | API key for the email service. |
+| `publicUrl` | `string` | No | Base URL for unsubscribe links. Defaults to `ATLAS_PUBLIC_URL`. |
+| `executeMetric` | `function` | Yes | Callback that runs a metric query and returns `MetricResult`. |
+
+### MetricResult Shape
+
+The `executeMetric` callback should return a `MetricResult`:
+
+```typescript
+interface MetricResult {
+  name: string;
+  value: string | number | null;
+  previousValue?: string | number | null; // For trend indicators
+  columns?: string[];                      // For data tables
+  rows?: Record<string, unknown>[];        // For data tables
+  error?: string;                          // For failed metrics
+}
+```
+
+## Subscription API
+
+All routes are mounted under the plugin's base path (typically `/api/plugins/email-digest-interaction/`).
+
+### `GET /digest/subscriptions`
+
+List the current user's digest subscriptions.
+
+```bash
+curl https://api.example.com/api/plugins/email-digest-interaction/digest/subscriptions \
+  -H "X-Atlas-User-Id: user-123"
+```
+
+**Response:**
+
+```json
+{
+  "subscriptions": [
+    {
+      "id": "sub-abc",
+      "metrics": ["active_users", "revenue"],
+      "frequency": "daily",
+      "deliveryHour": 9,
+      "timezone": "America/New_York",
+      "email": "alice@myco.com",
+      "enabled": true
+    }
+  ]
+}
+```
+
+### `POST /digest/subscriptions`
+
+Create a new digest subscription.
+
+```bash
+curl -X POST https://api.example.com/api/plugins/email-digest-interaction/digest/subscriptions \
+  -H "Content-Type: application/json" \
+  -H "X-Atlas-User-Id: user-123" \
+  -d '{
+    "metrics": ["active_users", "revenue", "churn_rate"],
+    "frequency": "daily",
+    "deliveryHour": 9,
+    "timezone": "America/New_York",
+    "email": "alice@myco.com"
+  }'
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `metrics` | `string[]` | Yes | — | Metric names to include in the digest. |
+| `frequency` | `"daily" \| "weekly"` | Yes | — | How often to send the digest. |
+| `deliveryHour` | `number` | Yes | — | Hour of day (0-23) to send the digest. |
+| `timezone` | `string` | No | `"UTC"` | IANA timezone for the delivery hour. |
+| `email` | `string` | Yes | — | Email address to deliver the digest to. |
+
+### `PUT /digest/subscriptions/:id`
+
+Update an existing subscription. Only include fields you want to change.
+
+```bash
+curl -X PUT https://api.example.com/api/plugins/email-digest-interaction/digest/subscriptions/sub-abc \
+  -H "Content-Type: application/json" \
+  -H "X-Atlas-User-Id: user-123" \
+  -d '{"frequency": "weekly", "deliveryHour": 8}'
+```
+
+### `DELETE /digest/subscriptions/:id`
+
+Cancel a subscription.
+
+```bash
+curl -X DELETE https://api.example.com/api/plugins/email-digest-interaction/digest/subscriptions/sub-abc \
+  -H "X-Atlas-User-Id: user-123"
+```
+
+## Digest Email Format
+
+Each digest email includes:
+
+- **Header** with Atlas branding and date
+- **Metric sections** with:
+  - Metric name and current value
+  - Trend indicator (up/down arrow + percentage) when a previous value is available
+  - Optional data table for tabular results
+- **Error placeholders** for metrics that failed to execute (other metrics still appear)
+- **Footer** with unsubscribe and subscription management links
+- **Plain text fallback** for email clients that don't render HTML
+
+## Troubleshooting
+
+### 503 on subscription routes
+
+The internal database (`DATABASE_URL`) is not configured. The email digest plugin requires it for storing subscriptions.
+
+### Metrics show error placeholders
+
+Individual metric failures don't break the whole digest. Check the Atlas logs for the specific metric error. Common causes: query timeout, connection issues, or invalid metric name.
+
+### Emails not arriving
+
+Verify your transport configuration:
+- **SendGrid**: Check the API key has send permissions
+- **SES**: Verify the sender address is verified in your SES configuration
+- **SMTP**: Ensure the relay host is reachable and credentials are correct

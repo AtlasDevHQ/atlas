@@ -409,6 +409,20 @@
         "zod": "^4.0.0",
       },
     },
+    "plugins/email-digest": {
+      "name": "@useatlas/email-digest",
+      "version": "0.0.6",
+      "devDependencies": {
+        "@useatlas/plugin-sdk": "workspace:*",
+        "hono": "^4.12.3",
+        "zod": "^4.3.6",
+      },
+      "peerDependencies": {
+        "@useatlas/plugin-sdk": ">=0.0.1",
+        "hono": "^4.0.0",
+        "zod": "^4.0.0",
+      },
+    },
     "plugins/jira": {
       "name": "@useatlas/jira",
       "version": "0.0.6",
@@ -1820,6 +1834,8 @@
     "@useatlas/e2b": ["@useatlas/e2b@workspace:plugins/e2b"],
 
     "@useatlas/email": ["@useatlas/email@workspace:plugins/email"],
+
+    "@useatlas/email-digest": ["@useatlas/email-digest@workspace:plugins/email-digest"],
 
     "@useatlas/jira": ["@useatlas/jira@workspace:plugins/jira"],
 

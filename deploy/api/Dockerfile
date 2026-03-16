@@ -43,6 +43,7 @@ COPY plugins/vercel-sandbox/package.json plugins/vercel-sandbox/package.json
 COPY plugins/bigquery/package.json plugins/bigquery/package.json
 COPY plugins/webhook/package.json plugins/webhook/package.json
 COPY plugins/teams/package.json plugins/teams/package.json
+COPY plugins/email-digest/package.json plugins/email-digest/package.json
 COPY create-atlas-plugin/package.json create-atlas-plugin/package.json
 RUN bun ci --ignore-scripts
 

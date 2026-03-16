@@ -1,0 +1,52 @@
+{
+  "name": "@useatlas/email-digest",
+  "version": "0.0.6",
+  "description": "Atlas email digest plugin for scheduled metric summary subscriptions",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "files": [
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "bun test __tests__/email-digest.test.ts"
+  },
+  "keywords": [
+    "atlas",
+    "text-to-sql",
+    "plugin",
+    "interaction",
+    "email",
+    "digest",
+    "scheduled",
+    "metrics"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AtlasDevHQ/atlas",
+    "directory": "plugins/email-digest"
+  },
+  "homepage": "https://docs.useatlas.dev",
+  "bugs": {
+    "url": "https://github.com/AtlasDevHQ/atlas/issues"
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "hono": "^4.0.0",
+    "zod": "^4.0.0",
+    "@useatlas/plugin-sdk": ">=0.0.1"
+  },
+  "devDependencies": {
+    "hono": "^4.12.3",
+    "zod": "^4.3.6",
+    "@useatlas/plugin-sdk": "workspace:*"
+  }
+}

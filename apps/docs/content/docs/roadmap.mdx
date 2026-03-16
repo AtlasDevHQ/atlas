@@ -56,22 +56,15 @@ ARIA labels on chat input, message bubbles, and skip links. Lighthouse/axe audit
 
 SDK gained `listTables()` convenience method and a complete error code catalog with retry guidance. Streaming docs added for timeout/resume behavior and `retryAfterSeconds` null-safety. End-to-end integration tests added for the widget embed flow, SDK streaming, and MCP server. Every docs guide gained prerequisites and troubleshooting sections, reference pages were audited for code-first content, and a cross-link audit connected all related pages. Semantic discovery API now surfaces warnings when YAML parsing returns partial results. Obsidian plugin gained a README and docs page.
 
----
+### 0.6.0 — Governance & Operational Hardening
 
-## 0.6.0 — Governance & Operational Hardening
-
-The current milestone. Finish half-built infrastructure, add governance controls, and harden the plugin ecosystem for production teams.
-
-- **Infrastructure** — Configurable agent step limit, action timeout enforcement, rollback support, blocked imports, explore backend priority (all shipped)
-- **Governance** — Advanced RLS policies (multi-column, array claims, OR-logic), session management with idle/absolute timeouts, audit log CSV export, search, filtering, and data classification tags (all shipped)
-- **Plugin ecosystem** — Typed plugin SDK with peer dep re-exports, beforeToolCall/afterToolCall hooks, custom query validation, SDK `validateSQL()` and `getAuditLog()` methods (all shipped)
-- **Integrations** — Microsoft Teams bot with Adaptive Cards, generic webhook plugin for Zapier/Make/n8n, semantic layer diff UI, email digest subscriptions (all shipped)
+Production-readiness hardening across infrastructure, governance, and integrations. Action timeout enforcement with `timed_out` status transitions, rollback API for reversible actions, configurable agent step limits and Python import guards, and operator-controlled explore backend priority. Advanced RLS with multi-column policies, array claims, and OR-logic between policies. Session management with admin listing/revoking and idle/absolute timeouts. Audit log gained CSV export, full-text search, connection/table filtering, and data classification tags extracted from the SQL AST. Plugin SDK shipped typed peer dep re-exports, beforeToolCall/afterToolCall hooks, and custom query validation for non-SQL datasources. SDK added `validateSQL()` and `getAuditLog()` methods. New interaction plugins for Microsoft Teams (Bot Framework, Adaptive Cards), generic webhooks (Zapier/Make/n8n), and email digest subscriptions. Admin console gained a semantic layer diff view comparing DB schema against YAML entities.
 
 ---
 
 ## 0.7.0 — Performance & Multi-Tenancy
 
-Handle larger semantic layers, more concurrent users, and bigger result sets.
+The current milestone. Handle larger semantic layers, more concurrent users, and bigger result sets.
 
 - **Caching** — Query result caching with configurable TTL, semantic layer indexing
 - **Infrastructure** — Connection pool improvements, streaming Python output, tenant-scoped semantic layers

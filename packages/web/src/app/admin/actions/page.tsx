@@ -248,7 +248,14 @@ export default function ActionsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
       });
-      if (!res.ok) throw new Error(`Approve failed (HTTP ${res.status})`);
+      if (!res.ok) {
+        let serverMessage = `Approve failed (HTTP ${res.status})`;
+        try {
+          const body = await res.json();
+          if (body?.message) serverMessage = body.message;
+        } catch { /* ignore parse errors */ }
+        throw new Error(serverMessage);
+      }
       setRefetchKey((k) => k + 1);
     } catch (err) {
       setMutationError(err instanceof Error ? err.message : "Approve failed");
@@ -267,7 +274,14 @@ export default function ActionsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ reason: "Denied by admin" }),
       });
-      if (!res.ok) throw new Error(`Deny failed (HTTP ${res.status})`);
+      if (!res.ok) {
+        let serverMessage = `Deny failed (HTTP ${res.status})`;
+        try {
+          const body = await res.json();
+          if (body?.message) serverMessage = body.message;
+        } catch { /* ignore parse errors */ }
+        throw new Error(serverMessage);
+      }
       setRefetchKey((k) => k + 1);
     } catch (err) {
       setMutationError(err instanceof Error ? err.message : "Deny failed");
@@ -322,8 +336,15 @@ export default function ActionsPage() {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),
-          }).then((res) => {
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          }).then(async (res) => {
+            if (!res.ok) {
+              let serverMessage = `HTTP ${res.status}`;
+              try {
+                const errBody = await res.json();
+                if (errBody?.message) serverMessage = errBody.message;
+              } catch { /* ignore parse errors */ }
+              throw new Error(serverMessage);
+            }
           }),
         ),
       );

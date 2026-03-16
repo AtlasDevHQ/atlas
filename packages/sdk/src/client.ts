@@ -20,6 +20,9 @@ export type {
   ConnectionInfo,
   ConnectionDetail,
   ActionApprovalMode,
+  ActionLogEntry,
+  ActionStatus,
+  RollbackInfo,
   DeliveryChannel,
   RunStatus,
   Recipient,
@@ -39,6 +42,8 @@ import type {
   ConnectionInfo,
   DeliveryChannel,
   ActionApprovalMode,
+  ActionStatus,
+  RollbackInfo,
   Recipient,
   ScheduledTask,
   ScheduledTaskWithRuns,
@@ -218,11 +223,11 @@ export type ValidateSQLResponse =
 
 export interface RollbackActionResponse {
   id: string;
-  status: string;
+  status: ActionStatus;
   action_type: string;
   target: string;
   summary: string;
-  rollback_info: { method: string; params: Record<string, unknown> } | null;
+  rollback_info: RollbackInfo | null;
   error: string | null;
   /** Present when the rollback handler reported an error — the side-effect may not have been reversed. */
   warning?: string;

@@ -949,6 +949,20 @@ admin.get("/connections/:id", async (c) => {
 // Audit routes
 // ---------------------------------------------------------------------------
 
+/** Escape ILIKE special characters so they are matched literally. */
+function escapeIlike(s: string): string {
+  return s.replace(/[%_\\]/g, "\\$&");
+}
+
+/** Quote a value for safe CSV output (RFC 4180). */
+function csvField(val: string | null | undefined): string {
+  const s = val ?? "";
+  if (s.includes(",") || s.includes('"') || s.includes("\n")) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
 /** Shared filter builder for audit list + export endpoints. */
 function buildAuditFilters(query: (key: string) => string | undefined): {
   conditions: string[];
@@ -998,15 +1012,13 @@ function buildAuditFilters(query: (key: string) => string | undefined): {
 
   const table = query("table");
   if (table) {
-    // Match table name in SQL (word-boundary safe via whitespace/punctuation context)
     conditions.push(`a.sql ILIKE $${paramIdx++}`);
-    params.push(`%${table}%`);
+    params.push(`%${escapeIlike(table)}%`);
   }
 
   const search = query("search");
   if (search) {
-    // Full-text search across SQL, user email (via join), and error messages
-    const term = `%${search}%`;
+    const term = `%${escapeIlike(search)}%`;
     conditions.push(`(a.sql ILIKE $${paramIdx} OR u.email ILIKE $${paramIdx} OR a.error ILIKE $${paramIdx})`);
     params.push(term);
     paramIdx++;
@@ -1121,16 +1133,15 @@ admin.get("/audit/export", async (c) => {
       const csvHeader = "id,timestamp,user,sql,duration_ms,row_count,success,error,connection\n";
       const csvRows = rows.map((r) => {
         const fields = [
-          r.id,
-          r.timestamp,
-          r.user_email ?? r.user_id ?? "",
-          // Escape SQL: double-quote the field, escape inner quotes
-          `"${(r.sql ?? "").replace(/"/g, '""')}"`,
+          csvField(r.id),
+          csvField(r.timestamp),
+          csvField(r.user_email ?? r.user_id ?? ""),
+          csvField(r.sql),
           String(r.duration_ms),
           String(r.row_count ?? ""),
           String(r.success),
-          r.error ? `"${r.error.replace(/"/g, '""')}"` : "",
-          r.source_id ?? "",
+          csvField(r.error),
+          csvField(r.source_id),
         ];
         return fields.join(",");
       });

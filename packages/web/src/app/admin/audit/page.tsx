@@ -46,6 +46,39 @@ interface ConnectionMeta {
 
 const LIMIT = 50;
 
+interface AuditQueryParams {
+  pageSize: number;
+  offset: number;
+  search: string;
+  connection: string;
+  tableFilter: string;
+  status: string;
+  from: string;
+  to: string;
+  sortId?: string;
+  sortDesc?: boolean;
+}
+
+function buildQueryString(p: AuditQueryParams, opts?: { noPagination?: boolean }): URLSearchParams {
+  const qs = new URLSearchParams();
+  if (!opts?.noPagination) {
+    qs.set("limit", String(p.pageSize));
+    qs.set("offset", String(p.offset));
+  }
+  if (p.search) qs.set("search", p.search);
+  if (p.connection) qs.set("connection", p.connection);
+  if (p.tableFilter) qs.set("table", p.tableFilter);
+  if (p.status === "success") qs.set("success", "true");
+  if (p.status === "error") qs.set("success", "false");
+  if (p.from) qs.set("from", p.from);
+  if (p.to) qs.set("to", p.to);
+  if (p.sortId) {
+    qs.set("sort", p.sortId);
+    qs.set("order", p.sortDesc ? "desc" : "asc");
+  }
+  return qs;
+}
+
 export default function AuditPage() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
@@ -58,6 +91,10 @@ export default function AuditPage() {
 
   const [params, setParams] = useQueryStates(auditSearchParams);
   const { tab, search, connection, table: tableFilter, status, from, to } = params;
+
+  // Analytics date range (separate from log tab filters)
+  const [analyticsFrom, setAnalyticsFrom] = useState("");
+  const [analyticsTo, setAnalyticsTo] = useState("");
 
   // Connection list for filter dropdown
   const { data: connectionsData } = useAdminFetch<{ connections: ConnectionMeta[] }>(
@@ -100,26 +137,9 @@ export default function AuditPage() {
   const sortId = sorting[0]?.id;
   const sortDesc = sorting[0]?.desc;
 
-  // Build query string for API (shared between fetch and export)
-  function buildQueryString(opts?: { noPagination?: boolean }): URLSearchParams {
-    const qs = new URLSearchParams();
-    if (!opts?.noPagination) {
-      qs.set("limit", String(pageSize));
-      qs.set("offset", String(offset));
-    }
-    if (search) qs.set("search", search);
-    if (connection) qs.set("connection", connection);
-    if (tableFilter) qs.set("table", tableFilter);
-    if (status === "success") qs.set("success", "true");
-    if (status === "error") qs.set("success", "false");
-    if (from) qs.set("from", from);
-    if (to) qs.set("to", to);
-    if (sortId) {
-      qs.set("sort", sortId);
-      qs.set("order", sortDesc ? "desc" : "asc");
-    }
-    return qs;
-  }
+  const queryParams: AuditQueryParams = {
+    pageSize, offset, search, connection, tableFilter, status, from, to, sortId, sortDesc,
+  };
 
   // Fetch rows on mount and when table state changes (only for log tab)
   useEffect(() => {
@@ -129,7 +149,7 @@ export default function AuditPage() {
       setLoading(true);
       setError(null);
       try {
-        const qs = buildQueryString();
+        const qs = buildQueryString(queryParams);
         const res = await fetch(`${apiUrl}/api/v1/admin/audit?${qs}`, { credentials });
         if (!res.ok) {
           if (!cancelled) setError({ message: `HTTP ${res.status}`, status: res.status });
@@ -157,7 +177,7 @@ export default function AuditPage() {
   async function handleExport() {
     setExporting(true);
     try {
-      const qs = buildQueryString({ noPagination: true });
+      const qs = buildQueryString(queryParams, { noPagination: true });
       const res = await fetch(`${apiUrl}/api/v1/admin/audit/export?${qs}`, { credentials });
       if (!res.ok) {
         setError({ message: `Export failed: HTTP ${res.status}`, status: res.status });
@@ -247,8 +267,8 @@ export default function AuditPage() {
               <Input
                 id="analytics-from"
                 type="date"
-                value={params.from}
-                onChange={(e) => setParams({ from: e.target.value })}
+                value={analyticsFrom}
+                onChange={(e) => setAnalyticsFrom(e.target.value)}
                 className="h-9 w-40"
               />
             </div>
@@ -257,8 +277,8 @@ export default function AuditPage() {
               <Input
                 id="analytics-to"
                 type="date"
-                value={params.to}
-                onChange={(e) => setParams({ to: e.target.value })}
+                value={analyticsTo}
+                onChange={(e) => setAnalyticsTo(e.target.value)}
                 className="h-9 w-40"
               />
             </div>
@@ -267,7 +287,7 @@ export default function AuditPage() {
               Apply
             </Button>
           </div>
-          <AnalyticsPanel from={params.from} to={params.to} />
+          <AnalyticsPanel from={analyticsFrom} to={analyticsTo} />
         </TabsContent>
 
         <TabsContent value="log" className="flex-1 overflow-auto p-6 space-y-6">

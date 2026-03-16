@@ -776,6 +776,25 @@ describe("GET /api/v1/admin/audit", () => {
     expect(capturedParams).toContain("%orders%");
   });
 
+  it("escapes ILIKE wildcards in search and table filters", async () => {
+    let capturedParams: unknown[] = [];
+    let callCount = 0;
+    mockInternalQuery.mockImplementation((_sql: string, params?: unknown[]) => {
+      callCount++;
+      if (callCount === 1) {
+        capturedParams = params ?? [];
+        return Promise.resolve([{ count: "0" }]);
+      }
+      return Promise.resolve([]);
+    });
+
+    await app.fetch(adminRequest("/api/v1/admin/audit?table=order_items&search=100%25"));
+
+    // _ and % should be escaped with backslash
+    expect(capturedParams).toContain("%order\\_items%");
+    expect(capturedParams).toContain("%100\\%%");
+  });
+
   it("returns 400 for invalid date format", async () => {
     const res = await app.fetch(adminRequest("/api/v1/admin/audit?from=not-a-date"));
     expect(res.status).toBe(400);

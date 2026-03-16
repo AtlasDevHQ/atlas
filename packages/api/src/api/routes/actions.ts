@@ -315,11 +315,14 @@ actions.post("/:id/rollback", async (c) => {
       const rollbackerId = authResult.user?.id ?? "anonymous";
       const result = await rollbackAction(id, rollbackerId);
       if (!result) {
-        return c.json({ error: "conflict", message: "Action cannot be rolled back (not in executed or auto_approved state)." }, 409);
+        return c.json({ error: "conflict", message: "Action cannot be rolled back. It may have been rolled back already or changed state." }, 409);
+      }
+      if (result.error) {
+        return c.json({ ...result, warning: "Rollback status updated but the rollback handler reported an error. The side-effect may not have been reversed." });
       }
       return c.json(result);
     } catch (err) {
-      log.error({ err: err instanceof Error ? err.message : String(err), requestId, op: "rollbackAction" }, "Failed to rollback action");
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, op: "rollbackAction" }, "Failed to rollback action");
       return c.json({ error: "internal_error", message: "Failed to rollback action." }, 500);
     }
   });

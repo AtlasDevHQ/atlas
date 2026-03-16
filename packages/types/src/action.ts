@@ -13,7 +13,7 @@ export type ActionApprovalMode = (typeof ACTION_APPROVAL_MODES)[number];
  * Display status lifecycle for action tools that require user approval.
  *
  * Distinct from the server-internal `ActionStatus` in `@atlas/api` which
- * uses "pending" instead of "pending_approval" and omits "rolled_back".
+ * uses "pending" instead of "pending_approval".
  */
 export type ActionDisplayStatus =
   | "pending_approval"

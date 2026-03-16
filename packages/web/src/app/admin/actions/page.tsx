@@ -75,13 +75,14 @@ interface ActionLogEntry {
   request_id: string | null;
 }
 
-type StatusFilter = "pending" | "executed" | "denied" | "failed" | "all";
+type StatusFilter = "pending" | "executed" | "denied" | "failed" | "rolled_back" | "all";
 
 const FILTER_OPTIONS: { value: StatusFilter; label: string }[] = [
   { value: "pending", label: "Pending" },
   { value: "executed", label: "Executed" },
   { value: "denied", label: "Denied" },
   { value: "failed", label: "Failed" },
+  { value: "rolled_back", label: "Rolled Back" },
   { value: "all", label: "All" },
 ];
 
@@ -145,6 +146,7 @@ const EMPTY_MESSAGES: Record<StatusFilter, string> = {
   executed: "No executed actions yet.",
   denied: "No denied actions.",
   failed: "No failed actions.",
+  rolled_back: "No rolled back actions.",
   all: "No actions recorded yet.",
 };
 
@@ -284,7 +286,18 @@ export default function ActionsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
       });
-      if (!res.ok) throw new Error(`Rollback failed (HTTP ${res.status})`);
+      if (!res.ok) {
+        let serverMessage = `Rollback failed (HTTP ${res.status})`;
+        try {
+          const body = await res.json();
+          if (body?.message) serverMessage = body.message;
+        } catch { /* ignore parse errors */ }
+        throw new Error(serverMessage);
+      }
+      const body = await res.json();
+      if (body?.warning) {
+        setMutationError(body.warning);
+      }
       setRefetchKey((k) => k + 1);
     } catch (err) {
       setMutationError(err instanceof Error ? err.message : "Rollback failed");

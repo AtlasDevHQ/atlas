@@ -726,7 +726,7 @@ export function extractRollbackInfo(result: unknown): RollbackInfo | null {
   if (!info || typeof info !== "object") return null;
   const ri = info as Record<string, unknown>;
   if (typeof ri.method !== "string") return null;
-  if (!ri.params || typeof ri.params !== "object") return null;
+  if (!ri.params || typeof ri.params !== "object" || Array.isArray(ri.params)) return null;
   return { method: ri.method, params: ri.params as Record<string, unknown> };
 }
 
@@ -810,7 +810,18 @@ export async function rollbackAction(
         });
       }
     } else {
+      const noHandlerMsg = `No rollback handler registered for method: ${rollbackInfo.method}`;
       log.warn({ actionId, method: rollbackInfo.method }, "No rollback handler registered for method — status updated but rollback not dispatched");
+      try {
+        await internalQuery(
+          `UPDATE action_log SET error = $1 WHERE id = $2`,
+          [noHandlerMsg, actionId],
+        );
+      } catch (dbErr) {
+        log.error({ err: dbErr, actionId }, "Failed to persist missing-handler error to DB");
+      }
+      entry.error = noHandlerMsg;
+      memoryStore.set(actionId, entry);
     }
 
     return entry;
@@ -855,7 +866,10 @@ export async function rollbackAction(
       });
     }
   } else {
+    const noHandlerMsg = `No rollback handler registered for method: ${rollbackInfo.method}`;
     log.warn({ actionId, method: rollbackInfo.method }, "No rollback handler registered for method — status updated but rollback not dispatched");
+    rolledBack.error = noHandlerMsg;
+    memoryStore.set(actionId, rolledBack);
   }
 
   return rolledBack;

@@ -20,7 +20,7 @@ import { getModel, getProviderType, type ProviderType } from "./providers";
 import { defaultRegistry, type ToolRegistry } from "./tools/registry";
 import { getContextFragments, getDialectHints } from "./plugins/tools";
 import { connections, detectDBType, type ConnectionMetadata, type DBType } from "./db/connection";
-import { getCrossSourceJoins, type CrossSourceJoin } from "./semantic";
+import { getCrossSourceJoins, type CrossSourceJoin, loadOrgWhitelist, getOrgSemanticIndex } from "./semantic";
 import { getSemanticIndex } from "./semantic-index";
 import { getConfig } from "./config";
 import { createLogger, getRequestContext } from "./logger";
@@ -200,7 +200,7 @@ const PYTHON_GUIDANCE = `
 
 **Chart guidance:** prefer \`_atlas_chart\` (interactive Recharts) for bar/line/pie charts. Use \`chart_path()\` only for advanced matplotlib visualizations that Recharts cannot render.`;
 
-function buildSystemPrompt(registry: ToolRegistry): string {
+function buildSystemPrompt(registry: ToolRegistry, orgSemanticIndex?: string): string {
   let base = SYSTEM_PROMPT_PREFIX + "\n\n" + registry.describe() + "\n\n" + SYSTEM_PROMPT_SUFFIX;
 
   // Add Python guidance only when the tool is available
@@ -211,7 +211,8 @@ function buildSystemPrompt(registry: ToolRegistry): string {
   // Append the pre-indexed semantic layer summary (respects config)
   const indexEnabled = getConfig()?.semanticIndex?.enabled !== false;
   if (indexEnabled) {
-    const semanticIndex = getSemanticIndex();
+    // Prefer org-scoped index if available, fall back to file-based
+    const semanticIndex = orgSemanticIndex || getSemanticIndex();
     if (semanticIndex) {
       base += "\n\n" + semanticIndex;
     }
@@ -271,8 +272,9 @@ export function buildSystemParam(
   providerType: ProviderType,
   registry: ToolRegistry = defaultRegistry,
   warnings?: string[],
+  orgSemanticIndex?: string,
 ): string | SystemModelMessage {
-  let content = buildSystemPrompt(registry);
+  let content = buildSystemPrompt(registry, orgSemanticIndex);
 
   if (warnings && warnings.length > 0) {
     content += "\n\n## Warnings\n\n" + warnings.map((w) => `- ${w}`).join("\n");
@@ -471,8 +473,28 @@ export async function runAgent({
   const model = getModel();
   const providerType = getProviderType();
   // Capture context eagerly — AsyncLocalStorage may have exited by the time onFinish fires
-  const userId = getRequestContext()?.user?.id ?? null;
+  const reqCtx = getRequestContext();
+  const userId = reqCtx?.user?.id ?? null;
+  const orgId = reqCtx?.user?.activeOrganizationId;
   const resolvedModelId = typeof model === "string" ? model : model.modelId;
+
+  // Pre-load org-scoped semantic data before the agent loop.
+  // The whitelist is loaded into the per-org cache so sql.ts can read it
+  // synchronously. The index is passed into buildSystemParam.
+  let orgSemanticIndex: string | undefined;
+  if (orgId && hasInternalDB()) {
+    try {
+      const [, idx] = await Promise.all([
+        loadOrgWhitelist(orgId),
+        getOrgSemanticIndex(orgId),
+      ]);
+      orgSemanticIndex = idx || undefined;
+    } catch (err) {
+      log.error({ orgId, err: err instanceof Error ? err.message : String(err) }, "Failed to load org semantic data — agent will use file-based fallback");
+      if (!warnings) warnings = [];
+      warnings.push("Your organization's semantic layer could not be loaded. Using default configuration. Contact your admin if this persists.");
+    }
+  }
 
   const span = tracer.startSpan("atlas.agent", {
     attributes: {
@@ -502,7 +524,7 @@ export async function runAgent({
   try {
     result = otelContext.with(agentCtx, () => streamText({
       model,
-      system: buildSystemParam(providerType, toolRegistry, warnings),
+      system: buildSystemParam(providerType, toolRegistry, warnings, orgSemanticIndex),
       messages: modelMessages,
       tools,
       temperature: 0.2,

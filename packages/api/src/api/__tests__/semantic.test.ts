@@ -145,6 +145,13 @@ mock.module("@atlas/api/lib/db/connection", () => ({
 }));
 
 mock.module("@atlas/api/lib/semantic", () => ({
+  getOrgWhitelistedTables: () => new Set(),
+  loadOrgWhitelist: async () => new Map(),
+  invalidateOrgWhitelist: () => {},
+  getOrgSemanticIndex: async () => "",
+  invalidateOrgSemanticIndex: () => {},
+  _resetOrgWhitelists: () => {},
+  _resetOrgSemanticIndexes: () => {},
   getWhitelistedTables: () => new Set(["companies"]),
   getCrossSourceJoins: () => [],
   _resetWhitelists: () => {},

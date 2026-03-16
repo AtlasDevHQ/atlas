@@ -7,6 +7,13 @@ import { describe, expect, it, beforeEach, mock } from "bun:test";
 // explicit schema-qualified queries. This mirrors real usage where atlas init adds
 // qualified entries for non-public schemas.
 mock.module("@atlas/api/lib/semantic", () => ({
+  getOrgWhitelistedTables: () => new Set(),
+  loadOrgWhitelist: async () => new Map(),
+  invalidateOrgWhitelist: () => {},
+  getOrgSemanticIndex: async () => "",
+  invalidateOrgSemanticIndex: () => {},
+  _resetOrgWhitelists: () => {},
+  _resetOrgSemanticIndexes: () => {},
   getWhitelistedTables: () =>
     new Set(["companies", "people", "accounts", "public.companies", "analytics.companies", "orders"]),
   _resetWhitelists: () => {},

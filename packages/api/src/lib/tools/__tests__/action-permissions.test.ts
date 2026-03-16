@@ -133,6 +133,13 @@ mock.module("@atlas/api/lib/conversations", () => ({
 }));
 
 mock.module("@atlas/api/lib/semantic", () => ({
+  getOrgWhitelistedTables: () => new Set(),
+  loadOrgWhitelist: async () => new Map(),
+  invalidateOrgWhitelist: () => {},
+  getOrgSemanticIndex: async () => "",
+  invalidateOrgSemanticIndex: () => {},
+  _resetOrgWhitelists: () => {},
+  _resetOrgSemanticIndexes: () => {},
   getWhitelistedTables: () => new Set(),
   _resetWhitelists: () => {},
 }));

@@ -8,6 +8,13 @@ import { describe, it, expect, mock } from "bun:test";
 
 // Mock getWhitelistedTables to return different sets per connectionId
 mock.module("@atlas/api/lib/semantic", () => ({
+  getOrgWhitelistedTables: () => new Set(),
+  loadOrgWhitelist: async () => new Map(),
+  invalidateOrgWhitelist: () => {},
+  getOrgSemanticIndex: async () => "",
+  invalidateOrgSemanticIndex: () => {},
+  _resetOrgWhitelists: () => {},
+  _resetOrgSemanticIndexes: () => {},
   getWhitelistedTables: (connectionId?: string) => {
     switch (connectionId) {
       case "warehouse":

@@ -18,7 +18,7 @@ import { z } from "zod";
 import { Parser } from "node-sql-parser";
 import { connections, detectDBType, ConnectionNotRegisteredError, NoDatasourceConfiguredError } from "@atlas/api/lib/db/connection";
 import type { DBConnection, DBType } from "@atlas/api/lib/db/connection";
-import { getWhitelistedTables } from "@atlas/api/lib/semantic";
+import { getWhitelistedTables, getOrgWhitelistedTables } from "@atlas/api/lib/semantic";
 import { logQueryAudit } from "@atlas/api/lib/auth/audit";
 import { SENSITIVE_PATTERNS } from "@atlas/api/lib/security";
 import { withSpan } from "@atlas/api/lib/tracing";
@@ -279,7 +279,10 @@ export function validateSQL(sql: string, connectionId?: string): SQLValidationRe
   if (process.env.ATLAS_TABLE_WHITELIST !== "false") {
     try {
       const tables = parser.tableList(trimmed, { database: parserDatabase(dbType, connectionId) });
-      const allowed = getWhitelistedTables(connectionId);
+      const orgId = getRequestContext()?.user?.activeOrganizationId;
+      const allowed = orgId
+        ? getOrgWhitelistedTables(orgId, connectionId)
+        : getWhitelistedTables(connectionId);
 
       for (const ref of tables) {
         // tableList returns "select::schema::table" format

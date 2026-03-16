@@ -173,6 +173,13 @@ mock.module("@atlas/api/lib/db/connection", () => ({
 }));
 
 mock.module("@atlas/api/lib/semantic", () => ({
+  getOrgWhitelistedTables: () => new Set(),
+  loadOrgWhitelist: async () => new Map(),
+  invalidateOrgWhitelist: () => {},
+  getOrgSemanticIndex: async () => "",
+  invalidateOrgSemanticIndex: () => {},
+  _resetOrgWhitelists: () => {},
+  _resetOrgSemanticIndexes: () => {},
   getWhitelistedTables: () => new Set(["companies"]),
   getCrossSourceJoins: () => [],
   _resetWhitelists: () => {},
@@ -200,6 +207,21 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getEncryptionKey: () => null,
   isPlaintextUrl: (value: string) => /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value),
   _resetEncryptionKeyCache: mock(() => {}),
+}));
+
+// Org-scoped semantic entities mock
+const mockListEntitiesAdmin: Mock<(orgId: string, type?: string) => Promise<unknown[]>> = mock(() => Promise.resolve([]));
+const mockGetEntityAdmin: Mock<(orgId: string, type: string, name: string) => Promise<unknown>> = mock(() => Promise.resolve(null));
+const mockUpsertEntityAdmin: Mock<(...args: unknown[]) => Promise<void>> = mock(() => Promise.resolve());
+const mockDeleteEntityAdmin: Mock<(orgId: string, type: string, name: string) => Promise<boolean>> = mock(() => Promise.resolve(false));
+
+mock.module("@atlas/api/lib/db/semantic-entities", () => ({
+  listEntities: mockListEntitiesAdmin,
+  getEntity: mockGetEntityAdmin,
+  upsertEntity: mockUpsertEntityAdmin,
+  deleteEntity: mockDeleteEntityAdmin,
+  countEntities: mock(() => Promise.resolve(0)),
+  bulkUpsertEntities: mock(() => Promise.resolve(0)),
 }));
 
 const mockPluginHealthCheck: Mock<() => Promise<unknown>> = mock(() =>
@@ -1362,5 +1384,139 @@ describe("Admin routes — semantic diff", () => {
 
     const res = await app.fetch(adminRequest("/api/v1/admin/semantic/diff"));
     expect(res.status).toBe(403);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Org-scoped semantic entity CRUD
+// ---------------------------------------------------------------------------
+
+function setOrgAdmin(orgId: string): void {
+  mockAuthenticateRequest.mockResolvedValue({
+    authenticated: true,
+    mode: "managed",
+    user: { id: "admin-1", mode: "managed", label: "admin@test.com", role: "admin", activeOrganizationId: orgId },
+  });
+  mockCheckRateLimit.mockReturnValue({ allowed: true });
+}
+
+describe("GET /api/v1/admin/semantic/org/entities", () => {
+  beforeEach(() => {
+    setAdmin();
+    mockHasInternalDB = true;
+    mockListEntitiesAdmin.mockReset();
+    mockListEntitiesAdmin.mockResolvedValue([]);
+  });
+
+  it("returns 400 when no active organization", async () => {
+    setAdmin(); // no org
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/org/entities"));
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("bad_request");
+  });
+
+  it("returns 501 when no internal DB", async () => {
+    setOrgAdmin("org-1");
+    mockHasInternalDB = false;
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/org/entities"));
+    expect(res.status).toBe(501);
+  });
+
+  it("lists entities for org", async () => {
+    setOrgAdmin("org-1");
+    mockListEntitiesAdmin.mockResolvedValue([
+      { name: "users", entity_type: "entity", connection_id: null, updated_at: "2026-01-01" },
+    ]);
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/org/entities"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { entities: Array<{ name: string }> };
+    expect(body.entities).toHaveLength(1);
+    expect(body.entities[0].name).toBe("users");
+  });
+
+  it("rejects invalid type parameter", async () => {
+    setOrgAdmin("org-1");
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/org/entities?type=invalid"));
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("PUT /api/v1/admin/semantic/org/entities/:name", () => {
+  beforeEach(() => {
+    mockHasInternalDB = true;
+    mockUpsertEntityAdmin.mockReset();
+    mockUpsertEntityAdmin.mockResolvedValue(undefined);
+  });
+
+  it("returns 400 when no active organization", async () => {
+    setAdmin();
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/org/entities/users", "PUT", { yamlContent: "table: users" }));
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 when yamlContent is missing", async () => {
+    setOrgAdmin("org-1");
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/org/entities/users", "PUT", {}));
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 for invalid YAML", async () => {
+    setOrgAdmin("org-1");
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/org/entities/users", "PUT", { yamlContent: "{{{" }));
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("bad_request");
+    expect(body.message).toContain("Invalid YAML");
+  });
+
+  it("returns 400 when entity YAML has no table field", async () => {
+    setOrgAdmin("org-1");
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/org/entities/users", "PUT", {
+      yamlContent: "description: no table field here",
+    }));
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as Record<string, unknown>).message).toContain("table");
+  });
+
+  it("upserts valid entity", async () => {
+    setOrgAdmin("org-1");
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/org/entities/users", "PUT", {
+      yamlContent: "table: users\ndescription: User accounts",
+    }));
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as Record<string, unknown>).ok).toBe(true);
+    expect(mockUpsertEntityAdmin).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects invalid entityType", async () => {
+    setOrgAdmin("org-1");
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/org/entities/users", "PUT", {
+      yamlContent: "table: users",
+      entityType: "DROP TABLE",
+    }));
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("DELETE /api/v1/admin/semantic/org/entities/:name", () => {
+  beforeEach(() => {
+    mockHasInternalDB = true;
+    mockDeleteEntityAdmin.mockReset();
+  });
+
+  it("returns 404 when entity not found", async () => {
+    setOrgAdmin("org-1");
+    mockDeleteEntityAdmin.mockResolvedValue(false);
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/org/entities/nonexistent", "DELETE"));
+    expect(res.status).toBe(404);
+  });
+
+  it("deletes existing entity", async () => {
+    setOrgAdmin("org-1");
+    mockDeleteEntityAdmin.mockResolvedValue(true);
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/org/entities/users", "DELETE"));
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as Record<string, unknown>).ok).toBe(true);
   });
 });

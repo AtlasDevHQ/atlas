@@ -466,7 +466,24 @@ export async function migrateInternalDB(): Promise<void> {
   await pool.query(`ALTER TABLE settings ADD COLUMN IF NOT EXISTS org_id TEXT;`);
   await pool.query(`ALTER TABLE plugin_settings ADD COLUMN IF NOT EXISTS org_id TEXT;`);
 
-  log.info("Internal DB migration complete (audit_log, conversations, messages, slack, action_log, scheduled_tasks, connections, token_usage, invitations, plugin_settings, settings, org scoping)");
+  // Org-scoped semantic entities (DB-backed semantic layer)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS semantic_entities (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      org_id TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      name TEXT NOT NULL,
+      yaml_content TEXT NOT NULL,
+      connection_id TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_semantic_entities_org_type_name ON semantic_entities(org_id, entity_type, name);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_semantic_entities_org ON semantic_entities(org_id);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_semantic_entities_org_type ON semantic_entities(org_id, entity_type);`);
+
+  log.info("Internal DB migration complete (audit_log, conversations, messages, slack, action_log, scheduled_tasks, connections, token_usage, invitations, plugin_settings, settings, org scoping, semantic_entities)");
 }
 
 /**

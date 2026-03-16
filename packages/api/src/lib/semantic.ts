@@ -10,6 +10,12 @@
  * `warehouse`). When no entity specifies a connection and no per-source
  * subdirectories are present, all connections share the same whitelist
  * (backward compat with single-DB).
+ *
+ * **Org scoping:** When an orgId is active, entities are loaded from the
+ * internal DB (`semantic_entities` table) instead of disk. The per-org
+ * whitelist is cached in memory and invalidated on entity CRUD. When no
+ * orgId is present (CLI, self-hosted without orgs), file-based YAML is
+ * used (existing behavior).
  */
 
 import * as fs from "fs";
@@ -386,4 +392,197 @@ export function registerPluginEntities(
 export function _resetPluginEntities(): void {
   _pluginEntities.clear();
   _whitelists.clear();
+}
+
+// ---------------------------------------------------------------------------
+// Org-scoped whitelist (DB-backed)
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-org whitelist cache: Map<orgId, Map<connectionId, Set<tableName>>>.
+ * Populated by `loadOrgWhitelist()` before the agent loop starts.
+ * Invalidated by `invalidateOrgWhitelist(orgId)` on entity CRUD.
+ */
+const _orgWhitelists = new Map<string, Map<string, Set<string>>>();
+
+/**
+ * Load the table whitelist for an org from the internal DB.
+ *
+ * Parses stored YAML content using the same EntityShape validation as
+ * file-based loading. Results are cached per-org.
+ *
+ * @param orgId - Organization ID to load entities for.
+ * @returns Map of connectionId → Set<tableName>.
+ */
+export async function loadOrgWhitelist(orgId: string): Promise<Map<string, Set<string>>> {
+  const cached = _orgWhitelists.get(orgId);
+  if (cached) return cached;
+
+  const { listEntities } = await import("@atlas/api/lib/db/semantic-entities");
+  const rows = await listEntities(orgId, "entity");
+
+  const byConnection = new Map<string, Set<string>>();
+  let parseFailures = 0;
+  for (const row of rows) {
+    try {
+      const raw = yaml.load(row.yaml_content);
+      const parsed = EntityShape.safeParse(raw);
+      if (!parsed.success) {
+        parseFailures++;
+        log.warn({ orgId, entity: row.name, err: parsed.error.message }, "Skipping org entity — failed to validate");
+        continue;
+      }
+      const connId = parsed.data.connection ?? row.connection_id ?? "default";
+      if (!byConnection.has(connId)) byConnection.set(connId, new Set());
+      const tables = byConnection.get(connId)!;
+      const parts = parsed.data.table.split(".");
+      tables.add(parts[parts.length - 1].toLowerCase());
+      tables.add(parsed.data.table.toLowerCase());
+    } catch (err) {
+      parseFailures++;
+      log.warn(
+        { orgId, entity: row.name, err: err instanceof Error ? err.message : String(err) },
+        "Skipping org entity — failed to parse YAML",
+      );
+    }
+  }
+
+  if (parseFailures === rows.length && rows.length > 0) {
+    log.error({ orgId, entityCount: rows.length, parseFailures }, "All org entities failed to parse — whitelist is empty");
+  }
+
+  _orgWhitelists.set(orgId, byConnection);
+  const totalTables = Array.from(byConnection.values()).reduce((s, set) => s + set.size, 0);
+  log.info({ orgId, entityCount: rows.length, parsedCount: rows.length - parseFailures, tableCount: totalTables, connections: Array.from(byConnection.keys()) }, "Loaded org whitelist from DB");
+  return byConnection;
+}
+
+/**
+ * Get whitelisted tables for an org + connection.
+ *
+ * Must be called after `loadOrgWhitelist(orgId)` — returns empty set if
+ * the org whitelist has not been loaded yet.
+ */
+export function getOrgWhitelistedTables(orgId: string, connectionId: string = "default"): Set<string> {
+  const byConnection = _orgWhitelists.get(orgId);
+  if (!byConnection) {
+    log.warn({ orgId, connectionId }, "Org whitelist not loaded — all tables will be rejected");
+    return new Set();
+  }
+
+  const hasNonDefault = Array.from(byConnection.keys()).some((k) => k !== "default");
+  let tables: Set<string>;
+  if (!hasNonDefault) {
+    tables = new Set(byConnection.get("default") ?? []);
+  } else {
+    tables = new Set(byConnection.get(connectionId) ?? []);
+  }
+
+  // Merge plugin-provided entities (same behavior as file-based getWhitelistedTables)
+  const pluginTables = _pluginEntities.get(connectionId);
+  if (pluginTables && pluginTables.size > 0) {
+    for (const t of pluginTables) tables.add(t);
+  }
+
+  return tables;
+}
+
+/** Invalidate the cached whitelist for an org (call after entity CRUD). */
+export function invalidateOrgWhitelist(orgId: string): void {
+  _orgWhitelists.delete(orgId);
+  invalidateOrgSemanticIndex(orgId);
+}
+
+/** Clear all org whitelist caches. For testing. */
+export function _resetOrgWhitelists(): void {
+  _orgWhitelists.clear();
+}
+
+// ---------------------------------------------------------------------------
+// Org-scoped semantic index
+// ---------------------------------------------------------------------------
+
+/** Per-org semantic index cache. */
+const _orgSemanticIndexes = new Map<string, string>();
+
+/** Invalidate the cached semantic index for an org. */
+export function invalidateOrgSemanticIndex(orgId: string): void {
+  _orgSemanticIndexes.delete(orgId);
+}
+
+/**
+ * Get or build the semantic index for an org.
+ *
+ * Uses the org's entities from DB to build the same Markdown summary
+ * that the file-based `buildSemanticIndex()` produces.
+ */
+export async function getOrgSemanticIndex(orgId: string): Promise<string> {
+  const cached = _orgSemanticIndexes.get(orgId);
+  if (cached !== undefined) return cached;
+
+  const { listEntities } = await import("@atlas/api/lib/db/semantic-entities");
+  const [entities, metrics, glossary] = await Promise.all([
+    listEntities(orgId, "entity"),
+    listEntities(orgId, "metric"),
+    listEntities(orgId, "glossary"),
+  ]);
+
+  // Delegate to the existing semantic-index builder by writing YAML content
+  // into a temp directory and calling buildSemanticIndex on it.
+  // This reuses all the formatting logic without duplication.
+  const tmpDir = await createTempSemanticDir(orgId, entities, metrics, glossary);
+  try {
+    const { buildSemanticIndex } = await import("@atlas/api/lib/semantic-index");
+    const index = buildSemanticIndex(tmpDir);
+    _orgSemanticIndexes.set(orgId, index);
+    return index;
+  } finally {
+    // Clean up temp directory
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch (cleanupErr) {
+      log.debug({ orgId, tmpDir, err: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr) }, "Failed to clean up temp semantic directory");
+    }
+  }
+}
+
+/** Clear all org semantic index caches. For testing. */
+export function _resetOrgSemanticIndexes(): void {
+  _orgSemanticIndexes.clear();
+}
+
+/**
+ * Create a temporary directory with the org's semantic layer files,
+ * structured for the existing buildSemanticIndex() to consume.
+ */
+/** Sanitize a name for safe use in file paths (strip traversal chars). */
+function safeName(name: string): string {
+  return path.basename(name).replace(/[^a-zA-Z0-9_.-]/g, "_");
+}
+
+async function createTempSemanticDir(
+  orgId: string,
+  entities: Array<{ name: string; yaml_content: string; connection_id: string | null }>,
+  metrics: Array<{ name: string; yaml_content: string }>,
+  glossary: Array<{ name: string; yaml_content: string }>,
+): Promise<string> {
+  const os = await import("os");
+  const safeOrgId = orgId.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const tmpBase = path.join(os.tmpdir(), `atlas-semantic-${safeOrgId}-${Date.now()}`);
+  const entitiesDir = path.join(tmpBase, "entities");
+  const metricsDir = path.join(tmpBase, "metrics");
+  fs.mkdirSync(entitiesDir, { recursive: true });
+  fs.mkdirSync(metricsDir, { recursive: true });
+
+  for (const e of entities) {
+    fs.writeFileSync(path.join(entitiesDir, `${safeName(e.name)}.yml`), e.yaml_content);
+  }
+  for (const m of metrics) {
+    fs.writeFileSync(path.join(metricsDir, `${safeName(m.name)}.yml`), m.yaml_content);
+  }
+  for (const g of glossary) {
+    fs.writeFileSync(path.join(tmpBase, `${safeName(g.name)}.yml`), g.yaml_content);
+  }
+
+  return tmpBase;
 }

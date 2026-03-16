@@ -499,6 +499,42 @@ Rules:
       classification = validation.classification;
     }
 
+    // Check cache before acquiring a concurrency slot — cache hits need no DB connection.
+    // Wrapped in try-catch so a broken cache backend (plugin Redis down) fails open.
+    let cacheKey: string | null = null;
+    if (cacheEnabled()) {
+      try {
+        const ctx = getRequestContext();
+        const orgId = ctx?.user?.activeOrganizationId;
+        const claims = ctx?.user?.claims;
+        cacheKey = buildCacheKey(normalizedSql, connId, orgId, claims);
+        const cached = getCache().get(cacheKey);
+        if (cached) {
+          logQueryAudit({
+            sql: normalizedSql.slice(0, 2000),
+            durationMs: 0,
+            rowCount: cached.rows.length,
+            success: true,
+            sourceId: connId,
+            sourceType: dbType,
+            targetHost,
+          });
+          return {
+            success: true,
+            explanation,
+            row_count: cached.rows.length,
+            columns: cached.columns,
+            rows: cached.rows,
+            truncated: cached.rows.length >= getRowLimit(),
+            cached: true,
+          };
+        }
+      } catch (cacheErr) {
+        log.error({ err: cacheErr, connectionId: connId }, "Cache read failed — executing query against database");
+        cacheKey = null;
+      }
+    }
+
     // Per-source rate limiting — atomic check-and-acquire
     const slot = acquireSourceSlot(connId);
     if (!slot.acquired) {
@@ -712,27 +748,6 @@ Rules:
       querySql += ` LIMIT ${rowLimit}`;
     }
 
-    // Check cache before executing query
-    let cacheKey: string | null = null;
-    if (cacheEnabled()) {
-      const ctx = getRequestContext();
-      const orgId = ctx?.user?.activeOrganizationId;
-      const claims = ctx?.user?.claims;
-      cacheKey = buildCacheKey(querySql, connId, orgId, claims);
-      const cached = getCache().get(cacheKey);
-      if (cached) {
-        return {
-          success: true,
-          explanation,
-          row_count: cached.rows.length,
-          columns: cached.columns,
-          rows: cached.rows,
-          truncated: cached.rows.length >= rowLimit,
-          cached: true,
-        };
-      }
-    }
-
     // Includes connection acquisition time; the OTel span inside withSpan
     // covers only the actual query execution against the database.
     // SQL content is NOT included in span attributes for security.
@@ -756,14 +771,18 @@ Rules:
       connections.recordQuery(connId, durationMs);
       connections.recordSuccess(connId);
 
-      // Store in cache on success
+      // Store in cache on success — fail open if cache backend is broken
       if (cacheKey) {
-        getCache().set(cacheKey, {
-          columns: result.columns,
-          rows: result.rows,
-          cachedAt: Date.now(),
-          ttl: getDefaultTtl(),
-        });
+        try {
+          getCache().set(cacheKey, {
+            columns: result.columns,
+            rows: result.rows,
+            cachedAt: Date.now(),
+            ttl: getDefaultTtl(),
+          });
+        } catch (cacheErr) {
+          log.error({ err: cacheErr, connectionId: connId }, "Cache write failed — result not cached");
+        }
       }
 
       try {

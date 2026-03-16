@@ -590,7 +590,7 @@ admin.get("/cache/stats", async (c) => {
   });
 });
 
-// POST /cache/flush — flush cache entries (optionally scoped by orgId query param)
+// POST /cache/flush — flush all cache entries
 admin.post("/cache/flush", async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();

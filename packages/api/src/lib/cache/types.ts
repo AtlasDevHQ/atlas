@@ -25,7 +25,7 @@ export interface CacheBackend {
   get(key: string): CacheEntry | null;
   set(key: string, entry: CacheEntry): void;
   delete(key: string): boolean;
-  /** Flush all entries, or only entries matching a key prefix when provided. */
-  flush(prefix?: string): void;
+  /** Flush all entries. */
+  flush(): void;
   stats(): CacheStats;
 }

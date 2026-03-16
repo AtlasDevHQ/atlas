@@ -931,8 +931,11 @@ export async function loadConfig(
   try {
     const { flushCache } = await import("@atlas/api/lib/cache/index");
     flushCache();
-  } catch {
-    // Cache module may not be initialized yet during first load
+  } catch (err) {
+    // Dynamic import may fail on first load before cache is wired — other errors must be logged
+    if (err instanceof Error && !err.message.includes("Cannot find module")) {
+      log.warn({ err: err.message }, "Failed to flush query cache during config reload");
+    }
   }
 
   return resolved;

@@ -333,7 +333,8 @@ export interface PluginCacheBackend {
   get(key: string): PluginCacheEntry | null;
   set(key: string, entry: PluginCacheEntry): void;
   delete(key: string): boolean;
-  flush(prefix?: string): void;
+  /** Flush all entries. */
+  flush(): void;
   stats(): { hits: number; misses: number; entryCount: number; maxSize: number; ttl: number };
 }
 

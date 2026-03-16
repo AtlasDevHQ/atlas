@@ -1,7 +1,7 @@
 /**
  * Cache key generation for query result caching.
  *
- * Keys are SHA-256 hashes of the normalized SQL + orgId + connectionId + claims.
+ * Keys are SHA-256 hashes of the trimmed SQL + connectionId + orgId + claims.
  * This ensures org-scoped isolation by construction.
  */
 

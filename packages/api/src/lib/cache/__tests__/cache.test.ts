@@ -83,16 +83,6 @@ describe("LRUCacheBackend", () => {
     expect(cache.get("a")).toBeNull();
   });
 
-  it("flush with prefix clears only matching entries", () => {
-    cache.set("org1:abc", makeEntry());
-    cache.set("org1:def", makeEntry());
-    cache.set("org2:abc", makeEntry());
-    cache.flush("org1:");
-    expect(cache.get("org1:abc")).toBeNull();
-    expect(cache.get("org1:def")).toBeNull();
-    expect(cache.get("org2:abc")).not.toBeNull();
-  });
-
   it("stats tracks hits and misses", () => {
     cache.set("key1", makeEntry());
     cache.get("key1"); // hit

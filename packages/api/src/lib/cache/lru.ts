@@ -15,6 +15,8 @@ export class LRUCacheBackend implements CacheBackend {
   private misses = 0;
 
   constructor(maxSize: number, defaultTtl: number) {
+    if (maxSize < 1) throw new Error(`Cache maxSize must be >= 1, got ${maxSize}`);
+    if (defaultTtl < 1) throw new Error(`Cache defaultTtl must be >= 1ms, got ${defaultTtl}`);
     this.maxSize = maxSize;
     this.defaultTtl = defaultTtl;
   }
@@ -61,16 +63,8 @@ export class LRUCacheBackend implements CacheBackend {
     return this.cache.delete(key);
   }
 
-  flush(prefix?: string): void {
-    if (!prefix) {
-      this.cache.clear();
-      return;
-    }
-    for (const key of this.cache.keys()) {
-      if (key.startsWith(prefix)) {
-        this.cache.delete(key);
-      }
-    }
+  flush(): void {
+    this.cache.clear();
   }
 
   stats(): CacheStats {

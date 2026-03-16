@@ -42,6 +42,12 @@ mock.module("@atlas/api/lib/db/connection", () => ({
     list: () => ["default"],
   },
   detectDBType: mockDetectDBType,
+  ConnectionNotRegisteredError: class extends Error {
+    constructor(id: string) { super(`Connection "${id}" is not registered.`); this.name = "ConnectionNotRegisteredError"; }
+  },
+  NoDatasourceConfiguredError: class extends Error {
+    constructor() { super("No analytics datasource configured."); this.name = "NoDatasourceConfiguredError"; }
+  },
 }));
 
 // Import after mocks are registered

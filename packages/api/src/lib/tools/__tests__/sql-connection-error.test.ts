@@ -1,9 +1,10 @@
 /**
  * Tests for the connection-lookup catch block in executeSQL.
  *
- * Verifies that known registration/configuration errors return a curated
- * message, while unexpected errors (unsupported DB scheme, internal errors)
- * return the original error message instead of being silently swallowed.
+ * Verifies that known registration/configuration errors
+ * (ConnectionNotRegisteredError, NoDatasourceConfiguredError) return
+ * curated messages, while unexpected errors return the original error
+ * message instead of being silently swallowed.
  */
 import { describe, it, expect, mock, beforeEach, afterEach } from "bun:test";
 
@@ -17,6 +18,10 @@ const mockQuery = mock(() =>
 );
 const mockConn = { query: mockQuery, close: async () => {} };
 
+// Import typed errors for use in test throwers
+const { ConnectionNotRegisteredError, NoDatasourceConfiguredError } =
+  await import("@atlas/api/lib/db/connection");
+
 // Configurable throwers — tests swap these to simulate different errors
 let getDefaultFn: () => typeof mockConn;
 let getFn: (id: string) => typeof mockConn;
@@ -24,6 +29,8 @@ let getDBTypeFn: (id: string) => string;
 
 mock.module("@atlas/api/lib/db/connection", () => ({
   getDB: () => mockConn,
+  ConnectionNotRegisteredError,
+  NoDatasourceConfiguredError,
   connections: {
     get: (id: string) => getFn(id),
     getDefault: () => getDefaultFn(),
@@ -84,7 +91,7 @@ describe("executeSQL connection error handling", () => {
 
   it("returns curated error for unregistered connection", async () => {
     getFn = (id: string) => {
-      throw new Error(`Connection "${id}" is not registered.`);
+      throw new ConnectionNotRegisteredError(id);
     };
 
     const result = await exec("SELECT id FROM companies", "unknown-conn");
@@ -93,22 +100,20 @@ describe("executeSQL connection error handling", () => {
     expect(result.error).toContain("Available:");
   });
 
-  it("returns curated error when no datasource configured", async () => {
+  it("returns original message when no datasource configured", async () => {
     getDefaultFn = () => {
-      throw new Error(
-        "No analytics datasource configured. Set ATLAS_DATASOURCE_URL to a PostgreSQL or MySQL connection string, or register a datasource plugin.",
-      );
+      throw new NoDatasourceConfiguredError();
     };
 
     const result = await exec("SELECT id FROM companies");
     expect(result.success).toBe(false);
-    // Both known errors produce the same curated "not registered" message
-    expect(result.error).toContain("is not registered");
+    expect(result.error).toContain("No analytics datasource configured");
+    expect(result.error).toContain("ATLAS_DATASOURCE_URL");
   });
 
   it("returns curated error when getDBType throws registration error on default path", async () => {
     getDBTypeFn = () => {
-      throw new Error('Connection "default" is not registered.');
+      throw new ConnectionNotRegisteredError("default");
     };
 
     const result = await exec("SELECT id FROM companies");

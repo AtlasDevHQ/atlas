@@ -40,6 +40,9 @@ export type {
   SemanticEntityDetail,
   EntityData,
   ActionApprovalMode,
+  ActionLogEntry,
+  ActionStatus,
+  RollbackInfo,
 } from "@useatlas/types";
 export { SHARE_MODES, SHARE_EXPIRY_OPTIONS } from "@useatlas/types";
 export { authErrorMessage, parseChatError, classifyClientError } from "@useatlas/types/errors";

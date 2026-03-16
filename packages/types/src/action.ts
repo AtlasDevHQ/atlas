@@ -61,6 +61,49 @@ export interface ActionApprovalResponse {
   error?: string;
 }
 
+// ---------------------------------------------------------------------------
+// Server-side action status lifecycle (persisted in action_log table)
+// ---------------------------------------------------------------------------
+
+export const ACTION_STATUSES = [
+  "pending",
+  "approved",
+  "denied",
+  "executed",
+  "failed",
+  "timed_out",
+  "auto_approved",
+  "rolled_back",
+] as const;
+export type ActionStatus = (typeof ACTION_STATUSES)[number];
+
+/** Information needed to undo an executed action. */
+export interface RollbackInfo {
+  method: string;
+  params: Record<string, unknown>;
+}
+
+/** Database row shape for the action_log table. */
+export interface ActionLogEntry {
+  id: string;
+  requested_at: string;
+  resolved_at: string | null;
+  executed_at: string | null;
+  requested_by: string | null;
+  approved_by: string | null;
+  auth_mode: string;
+  action_type: string;
+  target: string;
+  summary: string;
+  payload: Record<string, unknown>;
+  status: ActionStatus;
+  result: unknown;
+  error: string | null;
+  rollback_info: RollbackInfo | null;
+  conversation_id: string | null;
+  request_id: string | null;
+}
+
 /** All valid ActionDisplayStatus values (derived from ALL_STATUSES). */
 const VALID_STATUSES: ReadonlySet<ActionDisplayStatus> = new Set<ActionDisplayStatus>(ALL_STATUSES);
 

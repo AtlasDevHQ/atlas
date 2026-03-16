@@ -8,22 +8,10 @@
  * ActionLogEntry represents the persisted audit row.
  */
 
-export { ACTION_APPROVAL_MODES } from "@useatlas/types/action";
-export type { ActionApprovalMode } from "@useatlas/types/action";
+export { ACTION_APPROVAL_MODES, ACTION_STATUSES } from "@useatlas/types/action";
+export type { ActionApprovalMode, ActionStatus, ActionLogEntry, RollbackInfo } from "@useatlas/types/action";
 
 import type { ActionApprovalMode } from "@useatlas/types/action";
-
-export const ACTION_STATUSES = [
-  "pending",
-  "approved",
-  "denied",
-  "executed",
-  "failed",
-  "timed_out",
-  "auto_approved",
-  "rolled_back",
-] as const;
-export type ActionStatus = (typeof ACTION_STATUSES)[number];
 
 /** Describes the action the agent wants to perform. */
 export interface ActionRequest {
@@ -33,12 +21,6 @@ export interface ActionRequest {
   summary: string;
   payload: Record<string, unknown>;
   reversible: boolean;
-}
-
-/** Information needed to undo an executed action. */
-export interface RollbackInfo {
-  method: string;
-  params: Record<string, unknown>;
 }
 
 /** Discriminated union returned by action tools to the agent loop. */
@@ -77,23 +59,3 @@ export function isAction(tool: { readonly name: string }): tool is AtlasAction {
   );
 }
 
-/** Database row shape for the action_log table. */
-export interface ActionLogEntry {
-  id: string;
-  requested_at: string;
-  resolved_at: string | null;
-  executed_at: string | null;
-  requested_by: string | null;
-  approved_by: string | null;
-  auth_mode: string;
-  action_type: string;
-  target: string;
-  summary: string;
-  payload: Record<string, unknown>;
-  status: ActionStatus;
-  result: unknown;
-  error: string | null;
-  rollback_info: RollbackInfo | null;
-  conversation_id: string | null;
-  request_id: string | null;
-}

@@ -240,6 +240,28 @@ describe("custom query validation", () => {
     expect(queryFn).not.toHaveBeenCalled();
   });
 
+  it("async validator resolving to undefined is treated as misconfigured", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    validatorMap.set("async-undef", (async () => undefined) as any);
+
+    const result = await exec("SELECT 1", "async-undef");
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("misconfigured");
+    expect(queryFn).not.toHaveBeenCalled();
+  });
+
+  it("async validator resolving to wrong shape ({ valid: 'yes' }) is treated as misconfigured", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    validatorMap.set("async-bad-shape", (async () => ({ valid: "yes" })) as any);
+
+    const result = await exec("SELECT 1", "async-bad-shape");
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("misconfigured");
+    expect(queryFn).not.toHaveBeenCalled();
+  });
+
   it("custom validator used for re-validation after hook mutation", async () => {
     // Install a custom validator that rejects queries containing "FORBIDDEN"
     const strictValidator = (q: string): { valid: boolean; reason?: string } => {

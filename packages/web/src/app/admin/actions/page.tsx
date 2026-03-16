@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/tooltip";
 import { ActionStatusBadge } from "@/ui/components/actions/action-status-badge";
 import type { ActionDisplayStatus } from "@/ui/lib/action-types";
+import type { ActionLogEntry } from "@/ui/lib/types";
 import { EmptyState } from "@/ui/components/admin/empty-state";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
@@ -46,34 +47,6 @@ import {
 } from "lucide-react";
 import { useInProgressSet, type FetchError, friendlyError } from "@/ui/hooks/use-admin-fetch";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
-
-interface ActionLogEntry {
-  id: string;
-  requested_at: string;
-  resolved_at: string | null;
-  executed_at: string | null;
-  requested_by: string | null;
-  approved_by: string | null;
-  auth_mode: string;
-  action_type: string;
-  target: string;
-  summary: string;
-  payload: Record<string, unknown>;
-  status:
-    | "pending"
-    | "approved"
-    | "denied"
-    | "executed"
-    | "failed"
-    | "timed_out"
-    | "auto_approved"
-    | "rolled_back";
-  result: unknown;
-  error: string | null;
-  rollback_info: object | null;
-  conversation_id: string | null;
-  request_id: string | null;
-}
 
 type StatusFilter = "pending" | "executed" | "denied" | "failed" | "rolled_back" | "all";
 

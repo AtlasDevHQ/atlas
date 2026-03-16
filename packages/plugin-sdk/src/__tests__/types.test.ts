@@ -695,6 +695,57 @@ describe("datasource plugin entities and dialect", () => {
     expect(await plugin.connection.validate!("DELETE FROM Account")).toEqual({ valid: false, reason: "Only SELECT queries allowed" });
   });
 
+  test("accepts async connection.validate function", async () => {
+    const plugin = definePlugin({
+      id: "async-soql-ds",
+      types: ["datasource"],
+      version: "1.0.0",
+      connection: {
+        create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
+        dbType: "salesforce" as const,
+        validate: async (query: string) => {
+          // Simulate async validation (e.g. external schema lookup)
+          await new Promise((resolve) => setTimeout(resolve, 1));
+          if (/\b(DELETE|INSERT)\b/i.test(query)) {
+            return { valid: false, reason: "Async: only SELECT allowed" };
+          }
+          return { valid: true };
+        },
+      },
+    } satisfies AtlasDatasourcePlugin);
+
+    expect(plugin.connection.validate).toBeDefined();
+    expect(await plugin.connection.validate!("SELECT Id FROM Account")).toEqual({ valid: true });
+    expect(await plugin.connection.validate!("DELETE FROM Account")).toEqual({ valid: false, reason: "Async: only SELECT allowed" });
+  });
+
+  test("createPlugin accepts async connection.validate", async () => {
+    const sfPlugin = createPlugin({
+      configSchema: z.object({ instanceUrl: z.string() }),
+      create: (config) => ({
+        id: "sf-async",
+        types: ["datasource"] as const,
+        version: "1.0.0",
+        config,
+        connection: {
+          create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
+          dbType: "salesforce" as const,
+          validate: async (q: string) => {
+            await new Promise((resolve) => setTimeout(resolve, 1));
+            return /^SELECT\b/i.test(q)
+              ? { valid: true }
+              : { valid: false, reason: "Must start with SELECT" };
+          },
+        },
+      }),
+    });
+
+    const instance = sfPlugin({ instanceUrl: "https://example.my.salesforce.com" });
+    expect(instance.connection.validate).toBeDefined();
+    expect(await instance.connection.validate!("SELECT Id FROM Account")).toEqual({ valid: true });
+    expect(await instance.connection.validate!("DESCRIBE Account")).toEqual({ valid: false, reason: "Must start with SELECT" });
+  });
+
   test("connection.validate is optional (backward compat)", () => {
     const plugin: AtlasDatasourcePlugin = definePlugin({
       id: "plain-ds",

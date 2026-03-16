@@ -8,4 +8,7 @@ export type {
   ResolvedDisplayStatus,
   ActionToolResultShape,
   ActionApprovalResponse,
+  ActionLogEntry,
+  ActionStatus,
+  RollbackInfo,
 } from "@useatlas/types/action";

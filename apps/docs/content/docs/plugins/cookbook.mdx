@@ -811,7 +811,7 @@ function createSOQLConnection(config: { instanceUrl: string; accessToken: string
 
 Key points:
 
-- **`validate` completely replaces** the standard 4-layer SQL validation (regex guard, AST parse, table whitelist, empty check). It is your responsibility to enforce safety.
+- **`validate` completely replaces** the standard 4-layer SQL validation (empty check, regex guard, AST parse, table whitelist). It is your responsibility to enforce safety.
 - **`reason` is user-facing** — it appears in error responses shown to the agent and in audit logs.
 - **Auto-LIMIT is skipped** for custom-validated connections since non-SQL languages may not support `LIMIT`.
 - **RLS injection is skipped** for custom-validated connections since the SQL rewriter can't parse non-SQL queries.

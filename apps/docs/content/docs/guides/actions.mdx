@@ -140,10 +140,12 @@ Admins can rollback actions from the admin console at `/admin/actions`. Executed
 | Scenario | HTTP Status | Error Code |
 |----------|-------------|------------|
 | No internal database configured | 404 | `not_available` |
+| Invalid action ID format | 400 | `invalid_request` |
 | Action not found | 404 | `not_found` |
 | Action not reversible (no `rollback_info`) | 409 | `conflict` |
 | Action already rolled back or not in rollbackable state | 409 | `conflict` |
 | Insufficient role | 403 | `forbidden` |
+| Unexpected server error | 500 | `internal_error` |
 | Rollback handler failed | 200 | Response includes `warning` and `error` fields |
 
 ### Declaring Actions as Reversible

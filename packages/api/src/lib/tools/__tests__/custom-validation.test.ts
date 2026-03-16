@@ -273,4 +273,44 @@ describe("custom query validation", () => {
       ) => ctx.sql,
     }));
   });
+
+  it("async custom validator used for re-validation after hook mutation", async () => {
+    // Async validator that rejects queries containing "BLOCKED"
+    const asyncStrictValidator = async (q: string): Promise<{ valid: boolean; reason?: string }> => {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      if (q.includes("BLOCKED")) return { valid: false, reason: "async: contains blocked keyword" };
+      return { valid: true };
+    };
+    validatorMap.set("async-revalidate", asyncStrictValidator);
+
+    // Hook rewrites query to include "BLOCKED" — async validator should catch it during re-validation
+    mock.module("@atlas/api/lib/plugins/hooks", () => ({
+      dispatchHook: async () => {},
+      dispatchMutableHook: async (
+        _hookName: string,
+        _ctx: { sql: string },
+        _field: string,
+      ) => "SELECT BLOCKED FROM data",
+    }));
+
+    const { executeSQL: executeSQLv3 } = await import("@atlas/api/lib/tools/sql");
+
+    const result = await (executeSQLv3.execute!(
+      { sql: "SELECT Id FROM data", explanation: "test async re-validation", connectionId: "async-revalidate" },
+      { toolCallId: "t8", messages: [], abortSignal: undefined as never },
+    ) as Promise<AnyResult>);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("async: contains blocked keyword");
+
+    // Restore original mock
+    mock.module("@atlas/api/lib/plugins/hooks", () => ({
+      dispatchHook: async () => {},
+      dispatchMutableHook: async (
+        _hookName: string,
+        ctx: { sql: string },
+        _field: string,
+      ) => ctx.sql,
+    }));
+  });
 });

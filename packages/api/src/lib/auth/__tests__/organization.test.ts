@@ -2,9 +2,10 @@
  * Tests for organization plugin integration.
  *
  * Covers:
- * - createAtlasUser with activeOrganizationId
+ * - createAtlasUser with options object
  * - Session carries org context
  * - Org-scoped access control role definitions
+ * - OrgRole is an alias for AtlasRole
  */
 
 import { describe, it, expect } from "bun:test";
@@ -12,28 +13,40 @@ import { createAtlasUser, ATLAS_ROLES } from "../types";
 import { ac, owner, admin, member } from "../org-permissions";
 
 // ---------------------------------------------------------------------------
-// createAtlasUser with activeOrganizationId
+// createAtlasUser with options object
 // ---------------------------------------------------------------------------
 
-describe("createAtlasUser() with org context", () => {
+describe("createAtlasUser() with options object", () => {
   it("includes activeOrganizationId when provided", () => {
-    const user = createAtlasUser("u1", "managed", "alice@test.com", "admin", "org-123");
+    const user = createAtlasUser("u1", "managed", "alice@test.com", { role: "admin", activeOrganizationId: "org-123" });
     expect(user.activeOrganizationId).toBe("org-123");
   });
 
   it("omits activeOrganizationId when not provided", () => {
-    const user = createAtlasUser("u1", "managed", "alice@test.com", "admin");
+    const user = createAtlasUser("u1", "managed", "alice@test.com", { role: "admin" });
     expect(user.activeOrganizationId).toBeUndefined();
   });
 
-  it("includes org_id in claims when activeOrganizationId is set", () => {
-    const user = createAtlasUser("u1", "managed", "alice@test.com", "admin", "org-456", { sub: "u1" });
-    expect(user.claims?.org_id).toBeUndefined(); // claims don't auto-include org_id — that's done in managed.ts
+  it("works with no options", () => {
+    const user = createAtlasUser("u1", "managed", "alice@test.com");
+    expect(user.role).toBeUndefined();
+    expect(user.activeOrganizationId).toBeUndefined();
+    expect(user.claims).toBeUndefined();
+  });
+
+  it("includes claims without needing undefined placeholder", () => {
+    const user = createAtlasUser("u1", "byot", "alice@test.com", { claims: { sub: "u1" } });
+    expect(user.claims?.sub).toBe("u1");
+    expect(user.activeOrganizationId).toBeUndefined();
   });
 
   it("preserves all fields when all provided", () => {
     const claims = { sub: "u1", org_id: "org-789" };
-    const user = createAtlasUser("u1", "managed", "alice@test.com", "owner", "org-789", claims);
+    const user = createAtlasUser("u1", "managed", "alice@test.com", {
+      role: "owner",
+      activeOrganizationId: "org-789",
+      claims,
+    });
     expect(user.id).toBe("u1");
     expect(user.mode).toBe("managed");
     expect(user.label).toBe("alice@test.com");
@@ -43,7 +56,7 @@ describe("createAtlasUser() with org context", () => {
   });
 
   it("is frozen (immutable)", () => {
-    const user = createAtlasUser("u1", "managed", "alice@test.com", "member", "org-1");
+    const user = createAtlasUser("u1", "managed", "alice@test.com", { role: "member", activeOrganizationId: "org-1" });
     expect(Object.isFrozen(user)).toBe(true);
   });
 });
@@ -71,11 +84,17 @@ describe("org-permissions access control", () => {
 });
 
 // ---------------------------------------------------------------------------
-// ATLAS_ROLES updated
+// ATLAS_ROLES / OrgRole unification
 // ---------------------------------------------------------------------------
 
 describe("ATLAS_ROLES", () => {
   it("contains member, admin, owner (not viewer/analyst)", () => {
     expect(ATLAS_ROLES).toEqual(["member", "admin", "owner"]);
+  });
+
+  it("OrgRole is derived from AtlasRole (same values)", async () => {
+    const { ORG_ROLES } = await import("@useatlas/types");
+    // ORG_ROLES is descending privilege, ATLAS_ROLES is ascending — same set
+    expect(new Set(ORG_ROLES)).toEqual(new Set(ATLAS_ROLES));
   });
 });

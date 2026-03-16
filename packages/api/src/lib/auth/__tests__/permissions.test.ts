@@ -21,7 +21,7 @@ import type { ActionApprovalMode } from "@atlas/api/lib/action-types";
 // ---------------------------------------------------------------------------
 
 function makeUser(mode: "simple-key" | "managed" | "byot", role?: AtlasRole) {
-  return createAtlasUser(`user-${mode}`, mode, `${mode}-label`, role);
+  return createAtlasUser(`user-${mode}`, mode, `${mode}-label`, role ? { role } : undefined);
 }
 
 // ---------------------------------------------------------------------------

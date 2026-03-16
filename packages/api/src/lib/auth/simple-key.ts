@@ -87,6 +87,6 @@ export function validateApiKey(req: Request): AuthResult {
   return {
     authenticated: true,
     mode: "simple-key",
-    user: createAtlasUser(id, "simple-key", label, role, undefined, claims),
+    user: createAtlasUser(id, "simple-key", label, { role, claims }),
   };
 }

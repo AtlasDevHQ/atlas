@@ -117,7 +117,7 @@ export async function validateBYOT(req: Request): Promise<AuthResult> {
     return {
       authenticated: true,
       mode: "byot",
-      user: createAtlasUser(sub, "byot", email || sub, role, undefined, payload as Record<string, unknown>),
+      user: createAtlasUser(sub, "byot", email || sub, { role, claims: payload as Record<string, unknown> }),
     };
   } catch (err) {
     // Infrastructure errors — JWKS endpoint issues are not client auth failures.

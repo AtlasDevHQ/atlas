@@ -745,6 +745,111 @@ export default definePlugin({
 });
 ```
 
+## Custom Query Validation
+
+### Replacing the SQL Validation Pipeline
+
+Non-SQL datasources (Salesforce SOQL, GraphQL, MongoDB MQL) need their own validation instead of the standard SQL validation pipeline. Use `connection.validate` to replace it entirely:
+
+```typescript
+import { createPlugin } from "@useatlas/plugin-sdk";
+import type { QueryValidationResult } from "@useatlas/plugin-sdk";
+import { z } from "zod";
+
+const SOQL_FORBIDDEN = [/\b(DELETE|INSERT|UPDATE|UPSERT|UNDELETE|MERGE)\b/i];
+
+function validateSOQL(query: string): QueryValidationResult {
+  const trimmed = query.trim();
+  if (!trimmed) return { valid: false, reason: "Empty query" };
+
+  // Must start with SELECT
+  if (!/^\s*SELECT\b/i.test(trimmed)) {
+    return { valid: false, reason: "Only SELECT queries are allowed in SOQL" };
+  }
+
+  // Check for forbidden DML keywords
+  for (const pattern of SOQL_FORBIDDEN) {
+    if (pattern.test(trimmed)) {
+      return { valid: false, reason: `Forbidden operation: ${pattern.source}` };
+    }
+  }
+
+  return { valid: true };
+}
+
+export const soqlPlugin = createPlugin({
+  configSchema: z.object({
+    instanceUrl: z.string().url(),
+    accessToken: z.string().min(1),
+  }),
+
+  create: (config) => ({
+    id: "soql-datasource",
+    types: ["datasource"] as const,
+    version: "1.0.0",
+    config,
+
+    connection: {
+      create: () => createSOQLConnection(config),
+      dbType: "salesforce",
+      validate: validateSOQL,
+    },
+
+    dialect: [
+      "This datasource uses SOQL (Salesforce Object Query Language).",
+      "- Use relationship queries instead of JOINs.",
+      "- No SELECT * — always list specific fields.",
+    ].join("\n"),
+  }),
+});
+
+function createSOQLConnection(config: { instanceUrl: string; accessToken: string }) {
+  // Your connection factory here
+  throw new Error("Not implemented — replace with your driver");
+}
+```
+
+Key points:
+
+- **`validate` completely replaces** the standard 4-layer SQL validation (regex guard, AST parse, table whitelist, empty check). It is your responsibility to enforce safety.
+- **`reason` is user-facing** — it appears in error responses shown to the agent and in audit logs.
+- **Auto-LIMIT is skipped** for custom-validated connections since non-SQL languages may not support `LIMIT`.
+- **RLS injection is skipped** for custom-validated connections since the SQL rewriter can't parse non-SQL queries.
+- **Hooks still fire** — `beforeQuery` can rewrite the query and the rewritten query is re-validated through your custom validator.
+- When a custom `validate` function is provided, `parserDialect` and `forbiddenPatterns` are ignored.
+
+### Async Validation
+
+Validators can be asynchronous — useful when validation requires an external call (e.g. checking a schema service or permission system):
+
+```typescript
+connection: {
+  create: () => myConn,
+  dbType: "custom-api",
+  validate: async (query) => {
+    const response = await fetch("https://schema.internal/validate", {
+      method: "POST",
+      body: JSON.stringify({ query }),
+      headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if (!response.ok) {
+      return { valid: false, reason: "Schema service unavailable" };
+    }
+
+    const result = await response.json() as { allowed: boolean; message?: string };
+    return result.allowed
+      ? { valid: true }
+      : { valid: false, reason: result.message ?? "Query rejected by schema service" };
+  },
+},
+```
+
+<Callout type="warn">
+Async validators add latency to every query. Prefer synchronous validation when possible. If you must call an external service, add a timeout and consider caching the schema locally.
+</Callout>
+
 ## Advanced Patterns
 
 ### Registering Custom Tools

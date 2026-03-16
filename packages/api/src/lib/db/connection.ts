@@ -308,8 +308,8 @@ interface RegistryEntry {
   consecutiveFailures: number;
   lastHealth: HealthCheckResult | null;
   firstFailureAt: number | null;
-  /** Custom query validator (mirrors QueryValidationResult from plugin-sdk). */
-  validate?: (query: string) => { valid: boolean; reason?: string };
+  /** Custom query validator (mirrors QueryValidationResult from plugin-sdk). May be sync or async. */
+  validate?: (query: string) => { valid: boolean; reason?: string } | Promise<{ valid: boolean; reason?: string }>;
   /** Plugin-provided metadata for SQL validation. */
   pluginMeta?: ConnectionPluginMeta;
 }
@@ -395,7 +395,7 @@ export class ConnectionRegistry {
     conn: DBConnection,
     dbType: DBType,
     description?: string,
-    validate?: (query: string) => { valid: boolean; reason?: string },
+    validate?: (query: string) => { valid: boolean; reason?: string } | Promise<{ valid: boolean; reason?: string }>,
     meta?: ConnectionPluginMeta,
   ): void {
     const existing = this.entries.get(id);
@@ -457,7 +457,7 @@ export class ConnectionRegistry {
   }
 
   /** Return the custom query validator for a connection, if one was registered. Callers must verify connection existence first. */
-  getValidator(id: string): ((query: string) => { valid: boolean; reason?: string }) | undefined {
+  getValidator(id: string): ((query: string) => { valid: boolean; reason?: string } | Promise<{ valid: boolean; reason?: string }>) | undefined {
     return this.entries.get(id)?.validate;
   }
 

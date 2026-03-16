@@ -673,7 +673,7 @@ describe("datasource plugin entities and dialect", () => {
     expect(plugin.dialect).toBe("Use SAFE_DIVIDE instead of / for BigQuery.");
   });
 
-  test("accepts connection.validate function", () => {
+  test("accepts connection.validate function", async () => {
     const plugin = definePlugin({
       id: "soql-ds",
       types: ["datasource"],
@@ -691,8 +691,8 @@ describe("datasource plugin entities and dialect", () => {
     } satisfies AtlasDatasourcePlugin);
 
     expect(plugin.connection.validate).toBeDefined();
-    expect(plugin.connection.validate!("SELECT Id FROM Account")).toEqual({ valid: true });
-    expect(plugin.connection.validate!("DELETE FROM Account")).toEqual({ valid: false, reason: "Only SELECT queries allowed" });
+    expect(await plugin.connection.validate!("SELECT Id FROM Account")).toEqual({ valid: true });
+    expect(await plugin.connection.validate!("DELETE FROM Account")).toEqual({ valid: false, reason: "Only SELECT queries allowed" });
   });
 
   test("connection.validate is optional (backward compat)", () => {
@@ -723,7 +723,7 @@ describe("datasource plugin entities and dialect", () => {
     } as any)).toThrow('connection "validate" must be a function');
   });
 
-  test("createPlugin works with connection.validate", () => {
+  test("createPlugin works with connection.validate", async () => {
     const sfPlugin = createPlugin({
       configSchema: z.object({ instanceUrl: z.string() }),
       create: (config) => ({
@@ -741,8 +741,8 @@ describe("datasource plugin entities and dialect", () => {
 
     const instance = sfPlugin({ instanceUrl: "https://example.my.salesforce.com" });
     expect(instance.connection.validate).toBeDefined();
-    expect(instance.connection.validate!("SELECT Id FROM Account")).toEqual({ valid: true });
-    expect(instance.connection.validate!("DESCRIBE Account")).toEqual({ valid: false, reason: "Must start with SELECT" });
+    expect(await instance.connection.validate!("SELECT Id FROM Account")).toEqual({ valid: true });
+    expect(await instance.connection.validate!("DESCRIBE Account")).toEqual({ valid: false, reason: "Must start with SELECT" });
   });
 
   test("accepts parserDialect string", () => {

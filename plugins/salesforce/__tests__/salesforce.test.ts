@@ -282,22 +282,22 @@ describe("plugin shape", () => {
     expect(typeof plugin.connection.validate).toBe("function");
   });
 
-  test("connection.validate rejects DML", () => {
+  test("connection.validate rejects DML", async () => {
     const plugin = salesforcePlugin({ url: VALID_URL });
-    const result = plugin.connection.validate!("DELETE FROM Account");
+    const result = await plugin.connection.validate!("DELETE FROM Account");
     expect(result.valid).toBe(false);
     expect(result.reason).toContain("Forbidden");
   });
 
-  test("connection.validate accepts valid SELECT (structural only, no whitelist)", () => {
+  test("connection.validate accepts valid SELECT (structural only, no whitelist)", async () => {
     const plugin = salesforcePlugin({ url: VALID_URL });
-    const result = plugin.connection.validate!("SELECT Id FROM AnyObject");
+    const result = await plugin.connection.validate!("SELECT Id FROM AnyObject");
     expect(result.valid).toBe(true);
   });
 
-  test("connection.validate rejects semicolons", () => {
+  test("connection.validate rejects semicolons", async () => {
     const plugin = salesforcePlugin({ url: VALID_URL });
-    const result = plugin.connection.validate!("SELECT Id FROM Account; SELECT Id FROM Contact");
+    const result = await plugin.connection.validate!("SELECT Id FROM Account; SELECT Id FROM Contact");
     expect(result.valid).toBe(false);
     expect(result.reason).toContain("Semicolons");
   });

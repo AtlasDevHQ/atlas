@@ -61,7 +61,7 @@ function soqlValidator(query: string): { valid: boolean; reason?: string } {
 }
 
 // Connections mock with getValidator support
-let validatorMap: Map<string, ((q: string) => { valid: boolean; reason?: string }) | undefined>;
+let validatorMap: Map<string, ((q: string) => { valid: boolean; reason?: string } | Promise<{ valid: boolean; reason?: string }>) | undefined>;
 
 mock.module("@atlas/api/lib/db/connection", () => ({
   getDB: () => mockConn,
@@ -196,6 +196,42 @@ describe("custom query validation", () => {
 
     expect(receivedQuery).toBe("SELECT Id FROM Account");
     expect(queryFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("async custom validator works correctly", async () => {
+    const asyncValidator = async (query: string): Promise<{ valid: boolean; reason?: string }> => {
+      // Simulate an async validation (e.g. external schema service)
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      if (/\bDELETE\b/i.test(query)) {
+        return { valid: false, reason: "Async validator: DELETE not allowed" };
+      }
+      return { valid: true };
+    };
+    validatorMap.set("async-plugin", asyncValidator);
+
+    const validResult = await exec("SELECT Id FROM Account", "async-plugin");
+    expect(validResult.success).toBe(true);
+    expect(queryFn).toHaveBeenCalledTimes(1);
+
+    queryFn.mockClear();
+
+    const invalidResult = await exec("DELETE FROM Account", "async-plugin");
+    expect(invalidResult.success).toBe(false);
+    expect(invalidResult.error).toContain("Async validator: DELETE not allowed");
+    expect(queryFn).not.toHaveBeenCalled();
+  });
+
+  it("async custom validator exception surfaces correctly", async () => {
+    const failingAsyncValidator = async (): Promise<{ valid: boolean; reason?: string }> => {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      throw new Error("async validator crashed");
+    };
+    validatorMap.set("async-broken", failingAsyncValidator);
+
+    const result = await exec("SELECT 1", "async-broken");
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("internal validator error");
+    expect(queryFn).not.toHaveBeenCalled();
   });
 
   it("custom validator used for re-validation after hook mutation", async () => {

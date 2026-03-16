@@ -27,7 +27,7 @@ interface DatasourceShape {
   connection: {
     create(): Promise<{ query(sql: string, timeoutMs?: number): Promise<unknown>; close(): Promise<void> }> | { query(sql: string, timeoutMs?: number): Promise<unknown>; close(): Promise<void> };
     dbType: string;
-    validate?(query: string): { valid: boolean; reason?: string };
+    validate?(query: string): { valid: boolean; reason?: string } | Promise<{ valid: boolean; reason?: string }>;
     parserDialect?: string;
     forbiddenPatterns?: RegExp[];
   };

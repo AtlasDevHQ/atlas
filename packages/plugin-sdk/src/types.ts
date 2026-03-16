@@ -405,9 +405,12 @@ export interface AtlasDatasourcePlugin<TConfig = undefined> extends AtlasPluginB
      * Return `{ valid: true }` to allow execution, or `{ valid: false, reason: "..." }`
      * to reject. The `reason` is user-facing — it appears in error responses and audit logs.
      *
+     * Can be synchronous or asynchronous — async validators are useful when validation
+     * requires an external call (e.g. schema service, permission check).
+     *
      * Queries rewritten by hooks are re-validated through this function before execution.
      */
-    validate?(query: string): QueryValidationResult;
+    validate?(query: string): QueryValidationResult | Promise<QueryValidationResult>;
     /**
      * node-sql-parser dialect string for SQL validation. When not provided,
      * the core pipeline auto-detects from `dbType`. Override this when `dbType`

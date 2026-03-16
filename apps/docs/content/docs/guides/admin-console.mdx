@@ -46,6 +46,20 @@ Connection URLs are encrypted at rest when `BETTER_AUTH_SECRET` or `ATLAS_ENCRYP
 - **Delete connection** — Remove a connection (with confirmation dialog). The default connection cannot be deleted
 - **Test connection** — Runs a health check query against the datasource and reports latency and status
 
+### Pool Stats
+
+A collapsible **Pool Stats** section shows real-time connection pool metrics for each datasource:
+
+- **Active / Idle / Total** connections with a visual bar
+- **Queries** — total queries executed through this pool
+- **Errors** — total errors and consecutive failure count
+- **Avg time** — average query execution time in milliseconds
+- **Last drain** — timestamp of the most recent pool drain
+
+**Drain & Recreate** — closes all connections in a pool and creates a fresh one. Use this when a connection becomes stale or unresponsive. A 30-second cooldown prevents drain storms.
+
+Pool warmup and auto-drain thresholds are configurable via [`ATLAS_POOL_WARMUP`](/reference/environment-variables) and [`ATLAS_POOL_DRAIN_THRESHOLD`](/reference/environment-variables)
+
 ---
 
 ## Semantic Layer Browser

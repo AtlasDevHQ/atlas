@@ -207,6 +207,11 @@ if (config.plugins?.length) {
   });
 }
 
+// Pre-warm connection pools after all datasources (config + plugins) are registered.
+await connections.warmup().catch((err) => {
+  log.error({ err: err instanceof Error ? err.message : String(err) }, "Pool warmup failed — datasource may be unreachable");
+});
+
 // Run migrations once at boot — blocks until complete, but does not prevent startup on failure.
 await migrateAuthTables().catch((err) => {
   log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Boot migration failed");

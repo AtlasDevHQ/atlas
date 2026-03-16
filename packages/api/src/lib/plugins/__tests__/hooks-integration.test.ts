@@ -16,6 +16,13 @@ import type { PluginLike, PluginContextLike } from "../registry";
 // --- Mocks ---
 
 mock.module("@atlas/api/lib/semantic", () => ({
+  getOrgWhitelistedTables: () => new Set(),
+  loadOrgWhitelist: async () => new Map(),
+  invalidateOrgWhitelist: () => {},
+  getOrgSemanticIndex: async () => "",
+  invalidateOrgSemanticIndex: () => {},
+  _resetOrgWhitelists: () => {},
+  _resetOrgSemanticIndexes: () => {},
   getWhitelistedTables: () => new Set(["users", "orders"]),
   _resetWhitelists: () => {},
 }));

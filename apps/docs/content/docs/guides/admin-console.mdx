@@ -377,6 +377,10 @@ All admin endpoints are at `/api/v1/admin/` and require the `admin` role. See th
 | `GET` | `/semantic/catalog` | Get catalog |
 | `GET` | `/semantic/stats` | Semantic coverage stats |
 | `GET` | `/semantic/diff` | Schema diff (DB vs YAML) |
+| `GET` | `/semantic/org/entities` | List org-scoped entities |
+| `GET` | `/semantic/org/entities/:name` | Get org entity detail |
+| `PUT` | `/semantic/org/entities/:name` | Create/update org entity |
+| `DELETE` | `/semantic/org/entities/:name` | Delete org entity |
 | `GET` | `/audit` | Query audit log (supports `table` and `column` filters) |
 | `GET` | `/audit/stats` | Audit aggregates |
 | `GET` | `/audit/facets` | Distinct tables and columns for filter dropdowns |

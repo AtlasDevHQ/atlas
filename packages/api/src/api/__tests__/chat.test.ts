@@ -59,6 +59,13 @@ mock.module("@atlas/api/lib/agent", () => ({
 
 // Mock modules needed by health and auth routes (loaded via ../index)
 mock.module("@atlas/api/lib/semantic", () => ({
+  getOrgWhitelistedTables: () => new Set(),
+  loadOrgWhitelist: async () => new Map(),
+  invalidateOrgWhitelist: () => {},
+  getOrgSemanticIndex: async () => "",
+  invalidateOrgSemanticIndex: () => {},
+  _resetOrgWhitelists: () => {},
+  _resetOrgSemanticIndexes: () => {},
   getWhitelistedTables: () => new Set(),
   _resetWhitelists: () => {},
 }));

@@ -502,6 +502,145 @@ admin.get("/semantic/diff", async (c) => {
 });
 
 // ---------------------------------------------------------------------------
+// Org-scoped semantic entity CRUD (DB-backed)
+// ---------------------------------------------------------------------------
+
+// GET /semantic/org/entities — list entities for the active org
+admin.get("/semantic/org/entities", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const orgId = authResult.user?.activeOrganizationId;
+    if (!orgId) {
+      return c.json({ error: "bad_request", message: "Active organization required." }, 400);
+    }
+
+    const { listEntities } = await import("@atlas/api/lib/db/semantic-entities");
+    const entityType = c.req.query("type") as "entity" | "metric" | "glossary" | "catalog" | undefined;
+    const rows = await listEntities(orgId, entityType);
+    return c.json({
+      entities: rows.map((r) => ({
+        name: r.name,
+        entityType: r.entity_type,
+        connectionId: r.connection_id,
+        updatedAt: r.updated_at,
+      })),
+      total: rows.length,
+    });
+  });
+});
+
+// GET /semantic/org/entities/:name — get a single entity
+admin.get("/semantic/org/entities/:name", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const orgId = authResult.user?.activeOrganizationId;
+    if (!orgId) {
+      return c.json({ error: "bad_request", message: "Active organization required." }, 400);
+    }
+
+    const name = c.req.param("name");
+    const entityType = (c.req.query("type") ?? "entity") as "entity" | "metric" | "glossary" | "catalog";
+    const { getEntity } = await import("@atlas/api/lib/db/semantic-entities");
+    const row = await getEntity(orgId, entityType, name);
+    if (!row) {
+      return c.json({ error: "not_found", message: `Entity "${name}" not found.` }, 404);
+    }
+    return c.json({
+      name: row.name,
+      entityType: row.entity_type,
+      connectionId: row.connection_id,
+      yamlContent: row.yaml_content,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    });
+  });
+});
+
+// PUT /semantic/org/entities/:name — create or update an entity
+admin.put("/semantic/org/entities/:name", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const orgId = authResult.user?.activeOrganizationId;
+    if (!orgId) {
+      return c.json({ error: "bad_request", message: "Active organization required." }, 400);
+    }
+
+    const name = c.req.param("name");
+    let body: { yamlContent: string; entityType?: string; connectionId?: string };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
+    }
+
+    if (!body.yamlContent || typeof body.yamlContent !== "string") {
+      return c.json({ error: "bad_request", message: "yamlContent (string) is required." }, 400);
+    }
+
+    const entityType = (body.entityType ?? "entity") as "entity" | "metric" | "glossary" | "catalog";
+    const { upsertEntity } = await import("@atlas/api/lib/db/semantic-entities");
+    const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
+    await upsertEntity(orgId, entityType, name, body.yamlContent, body.connectionId);
+    invalidateOrgWhitelist(orgId);
+
+    log.info({ requestId, orgId, name, entityType }, "Org semantic entity upserted");
+    return c.json({ ok: true, name, entityType });
+  });
+});
+
+// DELETE /semantic/org/entities/:name — delete an entity
+admin.delete("/semantic/org/entities/:name", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const orgId = authResult.user?.activeOrganizationId;
+    if (!orgId) {
+      return c.json({ error: "bad_request", message: "Active organization required." }, 400);
+    }
+
+    const name = c.req.param("name");
+    const entityType = (c.req.query("type") ?? "entity") as "entity" | "metric" | "glossary" | "catalog";
+    const { deleteEntity } = await import("@atlas/api/lib/db/semantic-entities");
+    const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
+    const deleted = await deleteEntity(orgId, entityType, name);
+    if (!deleted) {
+      return c.json({ error: "not_found", message: `Entity "${name}" not found.` }, 404);
+    }
+    invalidateOrgWhitelist(orgId);
+
+    log.info({ requestId, orgId, name, entityType }, "Org semantic entity deleted");
+    return c.json({ ok: true, name, entityType });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Connection routes
 // ---------------------------------------------------------------------------
 

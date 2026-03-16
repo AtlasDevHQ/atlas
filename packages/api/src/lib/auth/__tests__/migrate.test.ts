@@ -101,9 +101,9 @@ describe("migrateAuthTables", () => {
 
     await migrateAuthTables();
 
-    // migrateInternalDB: 45 original + 14 org_id columns = 59 queries
-    // + 1 loadSavedConnections SELECT + 1 loadPluginSettings SELECT = 61 total
-    expect(queries.length).toBe(61);
+    // migrateInternalDB: 45 original + 14 org_id columns + 4 semantic_entities = 63 queries
+    // + 1 loadSavedConnections SELECT + 1 loadPluginSettings SELECT = 65 total
+    expect(queries.length).toBe(65);
     expect(queries[0]).toContain("CREATE TABLE IF NOT EXISTS audit_log");
   });
 
@@ -144,8 +144,8 @@ describe("migrateAuthTables", () => {
     await migrateAuthTables();
     await migrateAuthTables();
 
-    // Internal DB migration runs once (59 queries) + 1 loadSavedConnections SELECT + 1 loadPluginSettings SELECT + 1 ALTER TABLE for password_change_required (managed mode)
-    expect(queries.length).toBe(62);
+    // Internal DB migration runs once (63 queries) + 1 loadSavedConnections SELECT + 1 loadPluginSettings SELECT + 1 ALTER TABLE for password_change_required (managed mode)
+    expect(queries.length).toBe(66);
     // Better Auth migration runs once
     expect(getMigrationCount()).toBe(1);
   });

@@ -302,8 +302,6 @@ const AtlasConfigSchema = z.object({
   semanticIndex: z.object({
     /** Whether the semantic index is enabled. Default: true. */
     enabled: z.boolean().default(true),
-    /** Maximum entities to include per query in the index summary. Default: 10. */
-    maxEntitiesPerQuery: z.number().int().positive().default(10),
   }).optional(),
 });
 
@@ -347,7 +345,7 @@ export interface ResolvedConfig {
   /** Session timeout configuration. */
   session?: { idleTimeout: number; absoluteTimeout: number };
   /** Semantic index configuration. */
-  semanticIndex?: { enabled: boolean; maxEntitiesPerQuery: number };
+  semanticIndex?: { enabled: boolean };
   /** Whether the config was loaded from a file or synthesized from env vars. */
   source: "file" | "env";
 }
@@ -504,7 +502,7 @@ export function configFromEnv(): ResolvedConfig {
     })()),
     // Semantic index from env vars
     ...(process.env.ATLAS_SEMANTIC_INDEX_ENABLED === "false"
-      ? { semanticIndex: { enabled: false, maxEntitiesPerQuery: 10 } }
+      ? { semanticIndex: { enabled: false } }
       : {}),
     source: "env",
   };

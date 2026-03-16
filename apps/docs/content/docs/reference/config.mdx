@@ -599,8 +599,7 @@ The semantic index pre-computes a summary of the semantic layer at server startu
 ```typescript
 export default defineConfig({
   semanticIndex: {
-    enabled: true,            // default: true
-    maxEntitiesPerQuery: 10,  // max entities surfaced per query (default: 10)
+    enabled: true,  // default: true
   },
 });
 ```
@@ -610,7 +609,6 @@ export default defineConfig({
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `enabled` | `boolean` | No | Whether the index is active. Default: `true` |
-| `maxEntitiesPerQuery` | `number` | No | Max entities to include per query. Default: `10` |
 
 **Env var equivalent:**
 ```bash
@@ -701,7 +699,6 @@ export default defineConfig({
   // Semantic index (pre-computed summary in agent prompt)
   semanticIndex: {
     enabled: true,
-    maxEntitiesPerQuery: 10,
   },
 });
 ```

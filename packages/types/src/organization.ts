@@ -53,5 +53,5 @@ export interface OrgInvitation {
  * listed high-to-low for display. Single source of truth is ATLAS_ROLES
  * in auth.ts — this is a reversed view for convenience.
  */
-export const ORG_ROLES = [...ATLAS_ROLES].reverse() as unknown as readonly ["owner", "admin", "member"];
+export const ORG_ROLES: readonly AtlasRole[] = [...ATLAS_ROLES].reverse();
 export type OrgRole = AtlasRole;

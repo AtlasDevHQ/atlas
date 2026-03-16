@@ -392,9 +392,11 @@ Rules:
     const connId = connectionId ?? "default";
 
     // Resolve org context for tenant-scoped pool isolation.
-    // When orgId is present (SaaS mode), each org gets its own pool instance.
+    // Only active when pool.perOrg is explicitly configured in atlas.config.ts.
     const reqCtx = getRequestContext();
-    const orgId = reqCtx?.user?.activeOrganizationId;
+    const orgId = connections.isOrgPoolingEnabled()
+      ? reqCtx?.user?.activeOrganizationId
+      : undefined;
 
     // Validate connection exists before proceeding.
     // Use getForOrg() when orgId is present for tenant isolation.

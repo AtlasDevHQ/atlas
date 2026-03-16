@@ -295,15 +295,27 @@ describe("ConnectionRegistry org-scoped pools", () => {
   });
 
   describe("org pool config", () => {
-    it("setOrgPoolConfig updates settings", () => {
+    it("setOrgPoolConfig updates settings and enables pooling", () => {
+      expect(registry.isOrgPoolingEnabled()).toBe(false);
       registry.setOrgPoolConfig({ maxConnections: 3, maxOrgs: 10 });
       const config = registry.getOrgPoolConfig();
       expect(config.maxConnections).toBe(3);
       expect(config.maxOrgs).toBe(10);
+      expect(config.enabled).toBe(true);
       // Defaults for unset fields
       expect(config.idleTimeoutMs).toBe(30000);
       expect(config.warmupProbes).toBe(2);
       expect(config.drainThreshold).toBe(5);
+    });
+
+    it("setOrgPoolConfig rejects invalid values", () => {
+      expect(() => registry.setOrgPoolConfig({ maxConnections: 0 })).toThrow("must be >= 1");
+      expect(() => registry.setOrgPoolConfig({ maxOrgs: -1 })).toThrow("must be >= 1");
+      expect(() => registry.setOrgPoolConfig({ drainThreshold: 0 })).toThrow("must be >= 1");
+    });
+
+    it("isOrgPoolingEnabled is false by default", () => {
+      expect(registry.isOrgPoolingEnabled()).toBe(false);
     });
   });
 

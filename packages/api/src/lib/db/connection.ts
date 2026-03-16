@@ -378,6 +378,8 @@ interface RegistryEntry {
 
 /** Configuration for per-org pool isolation. */
 export interface OrgPoolSettings {
+  /** Whether org-scoped pooling is active. Only true when pool.perOrg is explicitly configured. */
+  enabled: boolean;
   maxConnections: number;
   idleTimeoutMs: number;
   maxOrgs: number;
@@ -386,6 +388,7 @@ export interface OrgPoolSettings {
 }
 
 const DEFAULT_ORG_POOL_SETTINGS: OrgPoolSettings = {
+  enabled: false,
   maxConnections: 5,
   idleTimeoutMs: 30000,
   maxOrgs: 50,
@@ -426,9 +429,18 @@ export class ConnectionRegistry {
     this.maxTotalConnections = n;
   }
 
-  /** Configure per-org pool settings. Called from applyDatasources when pool.perOrg is set. */
-  setOrgPoolConfig(config: Partial<OrgPoolSettings>): void {
-    this.orgPoolSettings = { ...this.orgPoolSettings, ...config };
+  /** Configure per-org pool settings. Called from applyDatasources when pool.perOrg is set. Marks org pooling as enabled. */
+  setOrgPoolConfig(config: Partial<Omit<OrgPoolSettings, "enabled">>): void {
+    const merged = { ...this.orgPoolSettings, ...config, enabled: true };
+    if (merged.maxConnections < 1 || merged.maxOrgs < 1 || merged.drainThreshold < 1) {
+      throw new Error("Invalid org pool config: maxConnections, maxOrgs, and drainThreshold must be >= 1");
+    }
+    this.orgPoolSettings = merged;
+  }
+
+  /** Whether org-scoped pooling is enabled (pool.perOrg configured). */
+  isOrgPoolingEnabled(): boolean {
+    return this.orgPoolSettings.enabled;
   }
 
   /** Return the current org pool settings (for admin API / diagnostics). */
@@ -437,7 +449,17 @@ export class ConnectionRegistry {
   }
 
   private _orgKey(orgId: string, connectionId: string): string {
+    if (process.env.NODE_ENV !== "production") {
+      if (orgId.includes(":") || connectionId.includes(":")) {
+        throw new Error(`orgId/connectionId must not contain ':' — got orgId="${orgId}", connectionId="${connectionId}"`);
+      }
+    }
     return `${orgId}:${connectionId}`;
+  }
+
+  private _parseOrgKey(key: string): { orgId: string; connectionId: string } {
+    const sepIdx = key.indexOf(":");
+    return { orgId: key.slice(0, sepIdx), connectionId: key.slice(sepIdx + 1) };
   }
 
   /**
@@ -485,7 +507,16 @@ export class ConnectionRegistry {
       idleTimeoutMs: this.orgPoolSettings.idleTimeoutMs,
     };
 
-    const newConn = createConnection(baseEntry.dbType, orgConfig);
+    let newConn: DBConnection;
+    try {
+      newConn = createConnection(baseEntry.dbType, orgConfig);
+    } catch (err) {
+      log.error(
+        { orgId, connectionId, err: err instanceof Error ? err.message : String(err) },
+        "Failed to create org-scoped pool after LRU eviction",
+      );
+      throw err;
+    }
     const entry: RegistryEntry = {
       conn: newConn,
       dbType: baseEntry.dbType,
@@ -511,9 +542,7 @@ export class ConnectionRegistry {
 
     // Fire warmup probes in background (don't block the first request)
     if (this.orgPoolSettings.warmupProbes > 0) {
-      this._warmupEntry(entry, this.orgPoolSettings.warmupProbes).catch((err) => {
-        log.warn({ orgId, connectionId, err: err instanceof Error ? err.message : String(err) }, "Org pool warmup failed");
-      });
+      this._warmupEntry(entry, this.orgPoolSettings.warmupProbes, { orgId, connectionId });
     }
 
     return newConn;
@@ -564,25 +593,34 @@ export class ConnectionRegistry {
   /** Close all pools for a specific org (used by LRU eviction and drainOrg). */
   private _closeOrgPools(orgId: string): void {
     const prefix = `${orgId}:`;
+    const keysToDelete: string[] = [];
     for (const [key, entry] of this.orgEntries) {
       if (key.startsWith(prefix)) {
+        keysToDelete.push(key);
         entry.conn.close().catch((err) => {
-          log.warn({ key, err: err instanceof Error ? err.message : String(err) }, "Failed to close org pool");
+          log.error({ key, err: err instanceof Error ? err.message : String(err) }, "Failed to close org pool — connections may be leaked");
         });
-        this.orgEntries.delete(key);
       }
+    }
+    for (const key of keysToDelete) {
+      this.orgEntries.delete(key);
     }
     this.orgAccessSeq.delete(orgId);
   }
 
-  /** Run warmup probes on a single entry (used for org pool warmup). */
-  private async _warmupEntry(entry: RegistryEntry, count: number): Promise<void> {
+  /** Run warmup probes on a single entry (used for org pool warmup). Never rejects — logs failures. */
+  private async _warmupEntry(entry: RegistryEntry, count: number, context?: { orgId?: string; connectionId?: string }): Promise<void> {
+    let failures = 0;
     for (let i = 0; i < count; i++) {
       try {
         await entry.conn.query("SELECT 1", 5000);
-      } catch {
-        // Individual probe failures are expected during warmup — logged at caller
+      } catch (err) {
+        failures++;
+        log.warn({ probe: i + 1, total: count, err: err instanceof Error ? err.message : String(err), ...context }, "Warmup probe failed");
       }
+    }
+    if (failures === count && count > 0) {
+      log.error({ failures, total: count, ...context }, "All warmup probes failed — pool may be unhealthy");
     }
   }
 
@@ -737,7 +775,7 @@ export class ConnectionRegistry {
         return;
       }
       log.warn({ connectionId: id, orgId, consecutiveQueryFailures: entry.consecutiveQueryFailures }, "Pool drain triggered: consecutive error threshold exceeded");
-      this._drainAndRecreate(orgId ? `org:${orgId}/${id}` : id, entry);
+      this._drainAndRecreate(orgId ? this._orgKey(orgId, id) : id, entry);
     }
   }
 
@@ -1000,9 +1038,7 @@ export class ConnectionRegistry {
   getOrgPoolMetrics(orgId?: string): import("@useatlas/types").OrgPoolMetrics[] {
     const results: import("@useatlas/types").OrgPoolMetrics[] = [];
     for (const [key, entry] of this.orgEntries) {
-      const sepIdx = key.indexOf(":");
-      const entryOrgId = key.slice(0, sepIdx);
-      const connectionId = key.slice(sepIdx + 1);
+      const { orgId: entryOrgId, connectionId } = this._parseOrgKey(key);
       if (orgId && entryOrgId !== orgId) continue;
       results.push({
         orgId: entryOrgId,

@@ -814,10 +814,15 @@ admin.get("/connections/pool/orgs", async (c) => {
   const { authResult } = preamble;
 
   return withRequestContext({ requestId, user: authResult.user }, () => {
-    const orgId = c.req.query("orgId");
-    const metrics = connections.getOrgPoolMetrics(orgId || undefined);
-    const config = connections.getOrgPoolConfig();
-    return c.json({ metrics, config, orgCount: connections.listOrgs().length });
+    try {
+      const orgId = c.req.query("orgId");
+      const metrics = connections.getOrgPoolMetrics(orgId || undefined);
+      const config = connections.getOrgPoolConfig();
+      return c.json({ metrics, config, orgCount: connections.listOrgs().length });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to retrieve org pool metrics");
+      return c.json({ error: "metrics_failed", message: err instanceof Error ? err.message : "Failed to retrieve metrics" }, 500);
+    }
   });
 });
 
@@ -834,9 +839,14 @@ admin.post("/connections/pool/orgs/:orgId/drain", async (c) => {
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     const orgId = c.req.param("orgId");
-    const result = await connections.drainOrg(orgId);
-    log.info({ orgId, drained: result.drained, requestId, userId: authResult.user?.id }, "Org pools drained via admin API");
-    return c.json(result);
+    try {
+      const result = await connections.drainOrg(orgId);
+      log.info({ orgId, drained: result.drained, requestId, userId: authResult.user?.id }, "Org pools drained via admin API");
+      return c.json(result);
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), orgId, requestId }, "Org pool drain failed");
+      return c.json({ error: "drain_failed", message: err instanceof Error ? err.message : "Org drain failed" }, 500);
+    }
   });
 });
 

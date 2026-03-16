@@ -196,6 +196,23 @@ export interface UpdateScheduledTaskInput {
 }
 
 // ---------------------------------------------------------------------------
+// Validate SQL types
+// ---------------------------------------------------------------------------
+
+/** Validation layer identifiers returned by the validate-sql endpoint. */
+export type ValidationLayer =
+  | "empty_check"
+  | "connection"
+  | "regex_guard"
+  | "ast_parse"
+  | "table_whitelist";
+
+/** Discriminated union response from the validate-sql endpoint. */
+export type ValidateSQLResponse =
+  | { valid: true; errors: []; tables: string[] }
+  | { valid: false; errors: Array<{ layer: ValidationLayer; message: string }>; tables: [] };
+
+// ---------------------------------------------------------------------------
 // Action types
 // ---------------------------------------------------------------------------
 
@@ -521,6 +538,19 @@ export function createAtlasClient(options: AtlasClientOptions) {
         0,
       );
     }
+  }
+
+  /** Build the audit log query path with optional filters. */
+  function buildAuditPath(opts?: AuditLogOptions): string {
+    const params = new URLSearchParams();
+    if (opts?.limit != null) params.set("limit", String(opts.limit));
+    if (opts?.offset != null) params.set("offset", String(opts.offset));
+    if (opts?.user != null) params.set("user", opts.user);
+    if (opts?.success != null) params.set("success", String(opts.success));
+    if (opts?.from != null) params.set("from", opts.from);
+    if (opts?.to != null) params.set("to", opts.to);
+    const qs = params.toString();
+    return `/api/v1/admin/audit${qs ? `?${qs}` : ""}`;
   }
 
   // -------------------------------------------------------------------------
@@ -896,15 +926,7 @@ export function createAtlasClient(options: AtlasClientOptions) {
 
       /** Query audit log (paginated, filterable). */
       async audit(opts?: AuditLogOptions): Promise<AuditLogResponse> {
-        const params = new URLSearchParams();
-        if (opts?.limit != null) params.set("limit", String(opts.limit));
-        if (opts?.offset != null) params.set("offset", String(opts.offset));
-        if (opts?.user != null) params.set("user", opts.user);
-        if (opts?.success != null) params.set("success", String(opts.success));
-        if (opts?.from != null) params.set("from", opts.from);
-        if (opts?.to != null) params.set("to", opts.to);
-        const qs = params.toString();
-        const res = await get(`/api/v1/admin/audit${qs ? `?${qs}` : ""}`);
+        const res = await get(buildAuditPath(opts));
         return unwrap<AuditLogResponse>(res);
       },
 
@@ -936,6 +958,28 @@ export function createAtlasClient(options: AtlasClientOptions) {
     async rollbackAction(id: string): Promise<RollbackActionResponse> {
       const res = await post(`/api/v1/actions/${encodeURIComponent(id)}/rollback`, {});
       return unwrap<RollbackActionResponse>(res);
+    },
+
+    /**
+     * Validate a SQL query without executing it. Runs the full validation
+     * pipeline (empty check → regex guard → AST parse → table whitelist)
+     * and returns the result with any errors and referenced tables.
+     */
+    async validateSQL(sql: string, connectionId?: string): Promise<ValidateSQLResponse> {
+      const res = await post("/api/v1/validate-sql", {
+        sql,
+        ...(connectionId && { connectionId }),
+      });
+      return unwrap<ValidateSQLResponse>(res);
+    },
+
+    /**
+     * Query the audit log (paginated, filterable). Convenience method that
+     * wraps the same endpoint as `admin.audit()` — requires admin role.
+     */
+    async getAuditLog(opts?: AuditLogOptions): Promise<AuditLogResponse> {
+      const res = await get(buildAuditPath(opts));
+      return unwrap<AuditLogResponse>(res);
     },
 
     /**

@@ -715,3 +715,118 @@ describe("AtlasError constructor", () => {
     expect(e.retryable).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// validateSQL
+// ---------------------------------------------------------------------------
+
+describe("validateSQL", () => {
+  const client = createAtlasClient({ baseUrl: "http://localhost:3001", apiKey: "key" });
+
+  test("sends POST /api/v1/validate-sql with sql", async () => {
+    installFetchMock(jsonResponse({ valid: true, errors: [], tables: ["users"] }));
+    const result = await client.validateSQL("SELECT * FROM users");
+    expect(lastRequest).not.toBeNull();
+    expect(lastRequest!.method).toBe("POST");
+    expect(new URL(lastRequest!.url).pathname).toBe("/api/v1/validate-sql");
+    const body = (await lastRequest!.json()) as Record<string, unknown>;
+    expect(body.sql).toBe("SELECT * FROM users");
+    expect(body.connectionId).toBeUndefined();
+    expect(result.valid).toBe(true);
+    expect(result.tables).toEqual(["users"]);
+  });
+
+  test("includes connectionId when provided", async () => {
+    installFetchMock(jsonResponse({ valid: true, errors: [], tables: ["events"] }));
+    await client.validateSQL("SELECT * FROM events", "clickhouse-prod");
+    const body = (await lastRequest!.json()) as Record<string, unknown>;
+    expect(body.connectionId).toBe("clickhouse-prod");
+  });
+
+  test("omits connectionId when undefined", async () => {
+    installFetchMock(jsonResponse({ valid: true, errors: [], tables: [] }));
+    await client.validateSQL("SELECT 1");
+    const body = (await lastRequest!.json()) as Record<string, unknown>;
+    expect("connectionId" in body).toBe(false);
+  });
+
+  test("returns errors for invalid SQL", async () => {
+    installFetchMock(jsonResponse({
+      valid: false,
+      errors: [{ layer: "regex_guard", message: "Forbidden SQL operation" }],
+      tables: [],
+    }));
+    const result = await client.validateSQL("DROP TABLE users");
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.errors[0].layer).toBe("regex_guard");
+    }
+  });
+
+  test("throws AtlasError on auth failure", async () => {
+    installFetchMock(jsonResponse({ error: "auth_error", message: "Unauthorized" }, 401));
+    try {
+      await client.validateSQL("SELECT 1");
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(AtlasError);
+      expect((err as AtlasError).status).toBe(401);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getAuditLog
+// ---------------------------------------------------------------------------
+
+describe("getAuditLog", () => {
+  const client = createAtlasClient({ baseUrl: "http://localhost:3001", apiKey: "key" });
+
+  test("sends GET /api/v1/admin/audit with no params when opts omitted", async () => {
+    installFetchMock(jsonResponse({ rows: [], total: 0, limit: 50, offset: 0 }));
+    await client.getAuditLog();
+    expect(lastRequest).not.toBeNull();
+    expect(lastRequest!.method).toBe("GET");
+    expect(new URL(lastRequest!.url).pathname).toBe("/api/v1/admin/audit");
+    expect(new URL(lastRequest!.url).search).toBe("");
+  });
+
+  test("passes all filter params including success: false", async () => {
+    installFetchMock(jsonResponse({ rows: [], total: 0, limit: 20, offset: 10 }));
+    await client.getAuditLog({
+      limit: 20,
+      offset: 10,
+      user: "user-123",
+      success: false,
+      from: "2026-03-01",
+      to: "2026-03-15",
+    });
+    const url = new URL(lastRequest!.url);
+    expect(url.searchParams.get("limit")).toBe("20");
+    expect(url.searchParams.get("offset")).toBe("10");
+    expect(url.searchParams.get("user")).toBe("user-123");
+    expect(url.searchParams.get("success")).toBe("false");
+    expect(url.searchParams.get("from")).toBe("2026-03-01");
+    expect(url.searchParams.get("to")).toBe("2026-03-15");
+  });
+
+  test("passes limit: 0 and offset: 0 correctly", async () => {
+    installFetchMock(jsonResponse({ rows: [], total: 0, limit: 0, offset: 0 }));
+    await client.getAuditLog({ limit: 0, offset: 0 });
+    const url = new URL(lastRequest!.url);
+    expect(url.searchParams.get("limit")).toBe("0");
+    expect(url.searchParams.get("offset")).toBe("0");
+  });
+
+  test("throws AtlasError on 403 forbidden", async () => {
+    installFetchMock(jsonResponse({ error: "forbidden", message: "Admin role required." }, 403));
+    try {
+      await client.getAuditLog();
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(AtlasError);
+      expect((err as AtlasError).code).toBe("forbidden");
+      expect((err as AtlasError).status).toBe(403);
+    }
+  });
+});

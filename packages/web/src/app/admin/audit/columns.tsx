@@ -9,14 +9,14 @@ import { Clock, User, Code, Timer, Rows3, CheckCircle } from "lucide-react";
 
 export interface AuditRow {
   id: string;
-  user_id: string;
+  user_id: string | null;
   sql: string;
   success: boolean;
   duration_ms: number;
-  row_count: number;
+  row_count: number | null;
   timestamp: string;
   user_email?: string | null;
-  error?: string;
+  error?: string | null;
   source_id?: string | null;
 }
 
@@ -120,7 +120,7 @@ export function getAuditColumns(): ColumnDef<AuditRow>[] {
       ),
       cell: ({ row }) => (
         <span className="text-right text-xs tabular-nums block">
-          {row.getValue<number>("row_count")}
+          {row.getValue<number | null>("row_count") ?? "—"}
         </span>
       ),
       meta: {

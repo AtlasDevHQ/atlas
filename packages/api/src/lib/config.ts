@@ -280,6 +280,19 @@ const AtlasConfigSchema = z.object({
    * blocked or allowed in the defense-in-depth import checker.
    */
   python: PythonConfigSchema.optional(),
+
+  /**
+   * Session timeout configuration. Idle timeout invalidates sessions that
+   * haven't been used within the specified duration. Absolute timeout
+   * invalidates sessions after a fixed duration regardless of activity.
+   * Values are in seconds. 0 means disabled.
+   */
+  session: z.object({
+    /** Seconds of inactivity before a session is invalidated. 0 = disabled. */
+    idleTimeout: z.number().int().nonnegative().default(0),
+    /** Maximum session lifetime in seconds from creation. 0 = disabled. */
+    absoluteTimeout: z.number().int().nonnegative().default(0),
+  }).optional(),
 });
 
 /** The output type after Zod parsing (defaults applied, all fields present). */
@@ -319,6 +332,8 @@ export interface ResolvedConfig {
   sandbox?: SandboxConfig;
   /** Python tool import guard overrides. */
   python?: PythonConfig;
+  /** Session timeout configuration. */
+  session?: { idleTimeout: number; absoluteTimeout: number };
   /** Whether the config was loaded from a file or synthesized from env vars. */
   source: "file" | "env";
 }
@@ -465,6 +480,14 @@ export function configFromEnv(): ResolvedConfig {
     ...(scheduler ? { scheduler } : {}),
     ...(rls ? { rls } : {}),
     ...(sandbox ? { sandbox } : {}),
+    // Session timeout from env vars
+    ...((() => {
+      const idle = parseInt(process.env.ATLAS_SESSION_IDLE_TIMEOUT ?? "", 10);
+      const abs = parseInt(process.env.ATLAS_SESSION_ABSOLUTE_TIMEOUT ?? "", 10);
+      const idleTimeout = Number.isFinite(idle) && idle > 0 ? idle : 0;
+      const absoluteTimeout = Number.isFinite(abs) && abs > 0 ? abs : 0;
+      return (idleTimeout > 0 || absoluteTimeout > 0) ? { session: { idleTimeout, absoluteTimeout } } : {};
+    })()),
     source: "env",
   };
 }
@@ -810,6 +833,7 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
     ...(config.rls ? { rls: config.rls } : {}),
     ...(config.sandbox ? { sandbox: config.sandbox } : {}),
     ...(config.python ? { python: config.python } : {}),
+    ...(config.session ? { session: config.session } : {}),
     source: "file",
   };
 }

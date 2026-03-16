@@ -170,4 +170,115 @@ describe("validateManaged()", () => {
       }
     });
   });
+
+  describe("session timeout enforcement", () => {
+    afterEach(() => {
+      delete process.env.ATLAS_SESSION_IDLE_TIMEOUT;
+      delete process.env.ATLAS_SESSION_ABSOLUTE_TIMEOUT;
+    });
+
+    function validSession(overrides?: { updatedAt?: string; createdAt?: string }) {
+      const now = new Date().toISOString();
+      return {
+        user: { id: "usr_123", email: "alice@example.com" },
+        session: {
+          id: "sess_abc",
+          userId: "usr_123",
+          updatedAt: overrides?.updatedAt ?? now,
+          createdAt: overrides?.createdAt ?? now,
+        },
+      };
+    }
+
+    it("authenticates when timeouts are disabled (default)", async () => {
+      mockGetSession.mockResolvedValueOnce(validSession());
+      const result = await validateManaged(makeRequest());
+      expect(result.authenticated).toBe(true);
+    });
+
+    it("authenticates when session is within idle timeout", async () => {
+      process.env.ATLAS_SESSION_IDLE_TIMEOUT = "3600";
+      mockGetSession.mockResolvedValueOnce(validSession({
+        updatedAt: new Date(Date.now() - 1000).toISOString(), // 1 second ago
+      }));
+      const result = await validateManaged(makeRequest());
+      expect(result.authenticated).toBe(true);
+    });
+
+    it("rejects session that exceeds idle timeout", async () => {
+      process.env.ATLAS_SESSION_IDLE_TIMEOUT = "60"; // 60 seconds
+      mockGetSession.mockResolvedValueOnce(validSession({
+        updatedAt: new Date(Date.now() - 120_000).toISOString(), // 2 minutes ago
+      }));
+      const result = await validateManaged(makeRequest());
+      expect(result.authenticated).toBe(false);
+      if (!result.authenticated) {
+        expect(result.status).toBe(401);
+        expect(result.error).toBe("Session expired (idle timeout)");
+      }
+    });
+
+    it("authenticates when session is within absolute timeout", async () => {
+      process.env.ATLAS_SESSION_ABSOLUTE_TIMEOUT = "86400";
+      mockGetSession.mockResolvedValueOnce(validSession({
+        createdAt: new Date(Date.now() - 3600_000).toISOString(), // 1 hour ago
+      }));
+      const result = await validateManaged(makeRequest());
+      expect(result.authenticated).toBe(true);
+    });
+
+    it("rejects session that exceeds absolute timeout", async () => {
+      process.env.ATLAS_SESSION_ABSOLUTE_TIMEOUT = "3600"; // 1 hour
+      mockGetSession.mockResolvedValueOnce(validSession({
+        createdAt: new Date(Date.now() - 7200_000).toISOString(), // 2 hours ago
+      }));
+      const result = await validateManaged(makeRequest());
+      expect(result.authenticated).toBe(false);
+      if (!result.authenticated) {
+        expect(result.status).toBe(401);
+        expect(result.error).toBe("Session expired");
+      }
+    });
+
+    it("rejects session with invalid updatedAt date (fail-closed)", async () => {
+      process.env.ATLAS_SESSION_IDLE_TIMEOUT = "3600";
+      mockGetSession.mockResolvedValueOnce(validSession({
+        updatedAt: "not-a-date",
+      }));
+      const result = await validateManaged(makeRequest());
+      expect(result.authenticated).toBe(false);
+      if (!result.authenticated) {
+        expect(result.status).toBe(401);
+        expect(result.error).toBe("Session data is invalid");
+      }
+    });
+
+    it("rejects session with invalid createdAt date (fail-closed)", async () => {
+      process.env.ATLAS_SESSION_ABSOLUTE_TIMEOUT = "86400";
+      mockGetSession.mockResolvedValueOnce(validSession({
+        createdAt: "garbage",
+      }));
+      const result = await validateManaged(makeRequest());
+      expect(result.authenticated).toBe(false);
+      if (!result.authenticated) {
+        expect(result.status).toBe(401);
+        expect(result.error).toBe("Session data is invalid");
+      }
+    });
+
+    it("idle timeout checked before absolute timeout", async () => {
+      process.env.ATLAS_SESSION_IDLE_TIMEOUT = "60";
+      process.env.ATLAS_SESSION_ABSOLUTE_TIMEOUT = "86400";
+      // Session is idle-expired but not absolute-expired
+      mockGetSession.mockResolvedValueOnce(validSession({
+        updatedAt: new Date(Date.now() - 120_000).toISOString(), // 2 min idle
+        createdAt: new Date(Date.now() - 600_000).toISOString(), // 10 min old
+      }));
+      const result = await validateManaged(makeRequest());
+      expect(result.authenticated).toBe(false);
+      if (!result.authenticated) {
+        expect(result.error).toBe("Session expired (idle timeout)");
+      }
+    });
+  });
 });

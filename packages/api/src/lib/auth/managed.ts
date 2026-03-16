@@ -13,6 +13,7 @@ import { createAtlasUser } from "@atlas/api/lib/auth/types";
 import { parseRole } from "@atlas/api/lib/auth/permissions";
 import { getAuthInstance } from "@atlas/api/lib/auth/server";
 import { createLogger } from "@atlas/api/lib/logger";
+import { getSetting } from "@atlas/api/lib/settings";
 
 const log = createLogger("auth:managed");
 
@@ -59,6 +60,40 @@ export async function validateManaged(req: Request): Promise<AuthResult> {
     role = undefined;
     if (rawRole !== undefined && rawRole !== null) {
       log.warn({ type: typeof rawRole }, "Session user role is not a string — ignoring");
+    }
+  }
+
+  // Session timeout enforcement (idle + absolute)
+  const sessionData = session.session as Record<string, unknown> | undefined;
+  if (sessionData) {
+    const now = Date.now();
+
+    const idleRaw = parseInt(getSetting("ATLAS_SESSION_IDLE_TIMEOUT") ?? "0", 10);
+    const idleTimeout = Number.isFinite(idleRaw) && idleRaw > 0 ? idleRaw : 0;
+    if (idleTimeout > 0 && sessionData.updatedAt) {
+      const updatedAt = new Date(sessionData.updatedAt as string).getTime();
+      if (Number.isNaN(updatedAt)) {
+        log.warn({ userId, updatedAt: sessionData.updatedAt }, "Session updatedAt is not a valid date — rejecting session");
+        return { authenticated: false, mode: "managed", status: 401, error: "Session data is invalid" };
+      }
+      if (now - updatedAt > idleTimeout * 1000) {
+        log.info({ userId, idleMs: now - updatedAt, idleTimeout }, "Session idle timeout exceeded");
+        return { authenticated: false, mode: "managed", status: 401, error: "Session expired (idle timeout)" };
+      }
+    }
+
+    const absRaw = parseInt(getSetting("ATLAS_SESSION_ABSOLUTE_TIMEOUT") ?? "0", 10);
+    const absoluteTimeout = Number.isFinite(absRaw) && absRaw > 0 ? absRaw : 0;
+    if (absoluteTimeout > 0 && sessionData.createdAt) {
+      const createdAt = new Date(sessionData.createdAt as string).getTime();
+      if (Number.isNaN(createdAt)) {
+        log.warn({ userId, createdAt: sessionData.createdAt }, "Session createdAt is not a valid date — rejecting session");
+        return { authenticated: false, mode: "managed", status: 401, error: "Session data is invalid" };
+      }
+      if (now - createdAt > absoluteTimeout * 1000) {
+        log.info({ userId, ageMs: now - createdAt, absoluteTimeout }, "Session absolute timeout exceeded");
+        return { authenticated: false, mode: "managed", status: 401, error: "Session expired" };
+      }
     }
   }
 

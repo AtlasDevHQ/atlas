@@ -123,6 +123,26 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
   },
 
+  // Sessions
+  {
+    key: "ATLAS_SESSION_IDLE_TIMEOUT",
+    section: "Sessions",
+    label: "Idle Timeout",
+    description: "Seconds of inactivity before a session is invalidated (0 = disabled)",
+    type: "number",
+    default: "0",
+    envVar: "ATLAS_SESSION_IDLE_TIMEOUT",
+  },
+  {
+    key: "ATLAS_SESSION_ABSOLUTE_TIMEOUT",
+    section: "Sessions",
+    label: "Absolute Timeout",
+    description: "Maximum session lifetime in seconds from creation (0 = disabled)",
+    type: "number",
+    default: "0",
+    envVar: "ATLAS_SESSION_ABSOLUTE_TIMEOUT",
+  },
+
   // Agent
   {
     key: "ATLAS_AGENT_MAX_STEPS",

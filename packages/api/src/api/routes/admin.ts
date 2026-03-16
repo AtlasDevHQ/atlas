@@ -1973,6 +1973,203 @@ admin.post("/me/password", async (c) => {
 });
 
 // ---------------------------------------------------------------------------
+// Session management routes (requires managed auth mode + internal DB)
+// ---------------------------------------------------------------------------
+
+// GET /sessions — list all active sessions with user info
+admin.get("/sessions", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  if (!hasInternalDB() || detectAuthMode() !== "managed") {
+    return c.json({ error: "not_available", message: "Session management requires managed auth mode." }, 404);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const rawLimit = parseInt(c.req.query("limit") ?? "50", 10);
+    const rawOffset = parseInt(c.req.query("offset") ?? "0", 10);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 200) : 50;
+    const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
+    const search = c.req.query("search");
+
+    try {
+      const conditions: string[] = [];
+      const params: unknown[] = [];
+      let paramIdx = 1;
+
+      if (search) {
+        conditions.push(`(u.email ILIKE $${paramIdx} OR s."ipAddress" ILIKE $${paramIdx})`);
+        params.push(`%${escapeIlike(search)}%`);
+        paramIdx++;
+      }
+
+      const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+      const [rows, countResult] = await Promise.all([
+        internalQuery<{
+          id: string;
+          userId: string;
+          userEmail: string | null;
+          createdAt: string;
+          updatedAt: string;
+          expiresAt: string;
+          ipAddress: string | null;
+          userAgent: string | null;
+        }>(
+          `SELECT s.id, s."userId" AS "userId", u.email AS "userEmail",
+                  s."createdAt" AS "createdAt", s."updatedAt" AS "updatedAt",
+                  s."expiresAt" AS "expiresAt",
+                  s."ipAddress" AS "ipAddress", s."userAgent" AS "userAgent"
+           FROM session s
+           LEFT JOIN "user" u ON s."userId" = u.id
+           ${where}
+           ORDER BY s."updatedAt" DESC
+           LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
+          [...params, limit, offset],
+        ),
+        internalQuery<{ count: string }>(
+          `SELECT COUNT(*) AS count FROM session s LEFT JOIN "user" u ON s."userId" = u.id ${where}`,
+          params,
+        ),
+      ]);
+
+      return c.json({
+        sessions: rows.map((r) => ({
+          id: r.id,
+          userId: r.userId,
+          userEmail: r.userEmail,
+          createdAt: r.createdAt,
+          updatedAt: r.updatedAt,
+          expiresAt: r.expiresAt,
+          ipAddress: r.ipAddress,
+          userAgent: r.userAgent,
+        })),
+        total: parseInt(String(countResult[0]?.count ?? "0"), 10),
+        limit,
+        offset,
+      });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to list sessions");
+      return c.json({ error: "internal_error", message: "Failed to list sessions." }, 500);
+    }
+  });
+});
+
+// GET /sessions/stats — session counts
+admin.get("/sessions/stats", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  if (!hasInternalDB() || detectAuthMode() !== "managed") {
+    return c.json({ error: "not_available", message: "Session management requires managed auth mode." }, 404);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    try {
+      const [totalResult, activeResult, uniqueUsersResult] = await Promise.all([
+        internalQuery<{ count: string }>(`SELECT COUNT(*) AS count FROM session`),
+        internalQuery<{ count: string }>(`SELECT COUNT(*) AS count FROM session WHERE "expiresAt" > NOW()`),
+        internalQuery<{ count: string }>(`SELECT COUNT(DISTINCT "userId") AS count FROM session WHERE "expiresAt" > NOW()`),
+      ]);
+
+      return c.json({
+        total: parseInt(String(totalResult[0]?.count ?? "0"), 10),
+        active: parseInt(String(activeResult[0]?.count ?? "0"), 10),
+        uniqueUsers: parseInt(String(uniqueUsersResult[0]?.count ?? "0"), 10),
+      });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to get session stats");
+      return c.json({ error: "internal_error", message: "Failed to get session stats." }, 500);
+    }
+  });
+});
+
+// DELETE /sessions/:id — revoke a single session by ID
+admin.delete("/sessions/:id", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  if (!hasInternalDB() || detectAuthMode() !== "managed") {
+    return c.json({ error: "not_available", message: "Session management requires managed auth mode." }, 404);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const sessionId = c.req.param("id");
+
+    try {
+      const deleted = await internalQuery<{ id: string }>(
+        `DELETE FROM session WHERE id = $1 RETURNING id`,
+        [sessionId],
+      );
+      if (deleted.length === 0) {
+        return c.json({ error: "not_found", message: "Session not found." }, 404);
+      }
+
+      log.info({ requestId, sessionId, actorId: authResult.user?.id }, "Session revoked");
+      return c.json({ success: true });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), sessionId }, "Failed to revoke session");
+      return c.json({ error: "internal_error", message: "Failed to revoke session." }, 500);
+    }
+  });
+});
+
+// DELETE /sessions/user/:userId — revoke all sessions for a user
+admin.delete("/sessions/user/:userId", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  if (!hasInternalDB() || detectAuthMode() !== "managed") {
+    return c.json({ error: "not_available", message: "Session management requires managed auth mode." }, 404);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const userId = c.req.param("userId");
+
+    try {
+      const deleted = await internalQuery<{ id: string }>(
+        `DELETE FROM session WHERE "userId" = $1 RETURNING id`,
+        [userId],
+      );
+      if (deleted.length === 0) {
+        return c.json({ error: "not_found", message: "No sessions found for this user." }, 404);
+      }
+
+      const count = deleted.length;
+      log.info({ requestId, targetUserId: userId, count, actorId: authResult.user?.id }, "All user sessions revoked");
+      return c.json({ success: true, count });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to revoke user sessions");
+      return c.json({ error: "internal_error", message: "Failed to revoke user sessions." }, 500);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // User management routes (requires managed auth mode + Better Auth admin plugin)
 // ---------------------------------------------------------------------------
 

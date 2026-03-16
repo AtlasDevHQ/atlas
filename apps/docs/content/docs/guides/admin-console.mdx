@@ -243,6 +243,52 @@ Settings overrides require an internal database (`DATABASE_URL`). Without it, th
 
 ---
 
+## Sessions
+
+**Route:** `/admin/sessions`
+
+<Callout type="info">
+Requires managed auth with an internal database (`DATABASE_URL`). Not available in simple-key, BYOT, or no-auth modes.
+</Callout>
+
+Manage active user sessions across all users:
+
+- **Stats** — Total sessions, active sessions, unique users
+- **Search** — Filter by email or IP address
+- **Session table** — User, created time, last active, IP address, user agent
+
+**Actions:**
+- **Revoke session** — Immediately invalidate a specific session (user gets 401 on next request)
+- **Revoke all for user** — Force logout a user across all devices
+- **Bulk revoke** — Select multiple sessions and revoke them at once
+
+### Session Timeouts
+
+Configure automatic session timeout policies via environment variables or `atlas.config.ts`:
+
+| Setting | Env Var | Description | Default |
+|---------|---------|-------------|---------|
+| Idle timeout | `ATLAS_SESSION_IDLE_TIMEOUT` | Seconds of inactivity before invalidation | `0` (disabled) |
+| Absolute timeout | `ATLAS_SESSION_ABSOLUTE_TIMEOUT` | Max session lifetime in seconds | `0` (disabled) |
+
+```typescript
+// atlas.config.ts
+export default defineConfig({
+  session: {
+    idleTimeout: 3600,       // 1 hour idle timeout
+    absoluteTimeout: 86400,  // 24 hour absolute timeout
+  },
+});
+```
+
+These can also be changed at runtime via Admin > Settings without a server restart.
+
+### User Self-Service
+
+Non-admin users can manage their own sessions via `GET /api/v1/sessions` and `DELETE /api/v1/sessions/:id`. Users can only see and revoke their own sessions.
+
+---
+
 ## User Management
 
 **Route:** `/admin/users`
@@ -318,6 +364,10 @@ All admin endpoints are at `/api/v1/admin/` and require the `admin` role. See th
 | `POST` | `/plugins/:id/disable` | Disable a plugin |
 | `GET` | `/plugins/:id/schema` | Get config schema and values |
 | `PUT` | `/plugins/:id/config` | Update plugin config |
+| `GET` | `/sessions` | List all sessions |
+| `GET` | `/sessions/stats` | Session count stats |
+| `DELETE` | `/sessions/:id` | Revoke a session |
+| `DELETE` | `/sessions/user/:userId` | Revoke all sessions for user |
 | `GET` | `/users` | List users |
 | `GET` | `/users/stats` | User stats |
 | `PATCH` | `/users/:id/role` | Change role |

@@ -250,6 +250,21 @@ ATLAS_TRUST_PROXY=true
 
 See [Rate Limiting & Retry](/guides/rate-limiting) for client-side handling, SDK retry patterns, and troubleshooting.
 
+### Session Timeouts
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_SESSION_IDLE_TIMEOUT` | `0` (disabled) | Seconds of inactivity before a session is invalidated |
+| `ATLAS_SESSION_ABSOLUTE_TIMEOUT` | `0` (disabled) | Maximum session lifetime in seconds from creation |
+
+```bash
+# 1 hour idle timeout, 24 hour absolute timeout
+ATLAS_SESSION_IDLE_TIMEOUT=3600
+ATLAS_SESSION_ABSOLUTE_TIMEOUT=86400
+```
+
+These can also be configured via [`atlas.config.ts`](/reference/config#session-timeouts) or changed at runtime via Admin > Settings.
+
 ---
 
 ## Row-Level Security

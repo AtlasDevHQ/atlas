@@ -53,10 +53,15 @@ Agent requests action → pending
          ↓                ↓
   success/failed/    success/failed/
     timed_out          timed_out
+         ↓                ↓
+    rolled_back*     rolled_back*
+
+* reversible actions only
 ```
 
 - **auto** mode: `pending` → `auto_approved` → `executed` (or `failed` / `timed_out`)
 - **manual** / **admin-only** mode: `pending` → `approved` / `denied` → `executed` (or `failed` / `timed_out`)
+- **rollback** (reversible actions): `executed` / `auto_approved` → `rolled_back`
 
 When execution exceeds the configured timeout, the action transitions to `timed_out` instead of remaining in-flight. The timeout duration is logged in the audit trail.
 
@@ -146,6 +151,10 @@ Admins can rollback actions from the admin console at `/admin/actions`. Executed
 In your action plugin, set `reversible: true` and return `rollbackInfo` from the execute handler:
 
 ```typescript
+import { z } from "zod";
+import { tool } from "@useatlas/plugin-sdk/ai";
+import type { PluginAction } from "@useatlas/plugin-sdk";
+
 const action: PluginAction = {
   name: "createJiraIssue",
   description: "Create a JIRA issue",

@@ -1,0 +1,238 @@
+---
+title: Webhook
+description: Accept inbound HTTP requests from Zapier, Make, n8n, and other automation tools to query Atlas.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The Webhook interaction plugin accepts inbound HTTP requests with a query, runs the Atlas agent, and returns structured results. It is designed for integration with automation platforms like Zapier, Make, and n8n.
+
+Each webhook channel has its own authentication (API key header or HMAC signature) and can optionally deliver results asynchronously via a callback URL.
+
+## Installation
+
+```bash
+bun add @useatlas/webhook
+```
+
+### Prerequisites
+
+- At least one webhook channel configured with a secret
+- An `executeQuery` callback wired to the Atlas agent
+
+## Configuration
+
+```typescript
+import { defineConfig } from "@atlas/api/lib/config";
+import { executeAgentQuery } from "@atlas/api/lib/agent-query";
+import { webhookPlugin } from "@useatlas/webhook";
+
+export default defineConfig({
+  plugins: [
+    webhookPlugin({
+      channels: [
+        {
+          channelId: "zapier-prod",
+          authType: "api-key",
+          secret: process.env.WEBHOOK_SECRET!,
+          responseFormat: "json",
+        },
+      ],
+      executeQuery: executeAgentQuery,
+    }),
+  ],
+});
+```
+
+For multiple channels with different auth methods:
+
+```typescript
+export default defineConfig({
+  plugins: [
+    webhookPlugin({
+      channels: [
+        {
+          channelId: "zapier",
+          authType: "api-key",
+          secret: process.env.ZAPIER_WEBHOOK_SECRET!,
+          responseFormat: "json",
+        },
+        {
+          channelId: "n8n",
+          authType: "hmac",
+          secret: process.env.N8N_HMAC_SECRET!,
+          responseFormat: "json",
+          callbackUrl: "https://n8n.example.com/webhook-response",
+        },
+      ],
+      executeQuery: executeAgentQuery,
+    }),
+  ],
+});
+```
+
+### Options
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `channels` | `WebhookChannel[]` | Yes | Array of webhook channel configurations. At least one channel is required. |
+| `executeQuery` | `function` | Yes | Callback that runs the Atlas agent on a question and returns structured results. |
+
+### Channel Options
+
+| Option | Type | Required | Default | Description |
+|--------|------|----------|---------|-------------|
+| `channelId` | `string` | Yes | — | Unique identifier for this webhook channel. Used in the endpoint URL. |
+| `authType` | `"api-key" \| "hmac"` | Yes | — | Authentication method for this channel. |
+| `secret` | `string` | Yes | — | API key or HMAC secret for request verification. |
+| `responseFormat` | `"json" \| "text"` | No | `"json"` | Response format. `"json"` returns structured data; `"text"` returns the answer string only. |
+| `callbackUrl` | `string` | No | — | When set, the plugin accepts requests immediately and POSTs results to this URL when done. |
+
+## Endpoint Reference
+
+### `POST /webhook/:channelId`
+
+The main inbound endpoint. Replace `:channelId` with the channel's `channelId` value from your configuration. The full URL path depends on how the host mounts the plugin (typically `/api/plugins/webhook-interaction/webhook/:channelId`).
+
+#### Authentication
+
+**API key mode** (`authType: "api-key"`): Send the secret in the `X-Webhook-Secret` header.
+
+```bash
+curl -X POST https://api.example.com/api/plugins/webhook-interaction/webhook/zapier \
+  -H "Content-Type: application/json" \
+  -H "X-Webhook-Secret: your-secret-here" \
+  -d '{"query": "How many active users last month?"}'
+```
+
+**HMAC mode** (`authType: "hmac"`): Compute an HMAC-SHA256 of the request body using the shared secret, and send the hex digest in the `X-Webhook-Signature` header.
+
+```bash
+BODY='{"query": "How many active users last month?"}'
+SIGNATURE=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "your-secret" | cut -d' ' -f2)
+
+curl -X POST https://api.example.com/api/plugins/webhook-interaction/webhook/n8n \
+  -H "Content-Type: application/json" \
+  -H "X-Webhook-Signature: $SIGNATURE" \
+  -d "$BODY"
+```
+
+#### Request Body
+
+```json
+{
+  "query": "How many active users last month?",
+  "context": { "source": "zapier", "workflow_id": "abc123" },
+  "callbackUrl": "https://example.com/callback"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `query` | `string` | Yes | The question to ask Atlas. |
+| `context` | `Record<string, string>` | No | Optional metadata. Accepted but not forwarded — reserved for future use. |
+| `callbackUrl` | `string` | No | Overrides the channel-level callback URL for this request. Must be a valid HTTP/HTTPS URL (internal/private IPs are rejected). |
+
+#### Synchronous Response (200)
+
+When no `callbackUrl` is configured (channel or request level):
+
+```json
+{
+  "success": true,
+  "result": {
+    "answer": "There were 1,247 active users last month.",
+    "sql": ["SELECT COUNT(*) FROM users WHERE active = true AND last_seen > NOW() - INTERVAL '30 days'"],
+    "columns": ["count"],
+    "rows": [{ "count": 1247 }]
+  }
+}
+```
+
+With `responseFormat: "text"`:
+
+```json
+{
+  "success": true,
+  "result": "There were 1,247 active users last month."
+}
+```
+
+#### Asynchronous Response (202)
+
+When a `callbackUrl` is present:
+
+```json
+{
+  "accepted": true,
+  "requestId": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+The plugin POSTs the full result to the callback URL when ready. Delivery is at-most-once — if the callback endpoint is unreachable, results are logged but not retried. If the query fails, an error payload is delivered instead:
+
+```json
+{
+  "requestId": "550e8400-e29b-41d4-a716-446655440000",
+  "success": true,
+  "result": {
+    "answer": "There were 1,247 active users last month.",
+    "sql": ["SELECT COUNT(*) FROM users WHERE active = true AND last_seen > NOW() - INTERVAL '30 days'"],
+    "columns": ["count"],
+    "rows": [{ "count": 1247 }]
+  }
+}
+```
+
+#### Error Responses
+
+| Status | Meaning |
+|--------|---------|
+| `400` | Missing or empty `query`, or invalid JSON body |
+| `401` | Invalid API key or HMAC signature |
+| `404` | Unknown `channelId` |
+| `500` | Agent query execution failed |
+
+## Platform Setup Guides
+
+### Zapier
+
+1. Create a new Zap and add a **Webhooks by Zapier** action (or use a trigger from any app).
+2. Add a **Webhooks by Zapier > POST** action step.
+3. Set the URL to `https://your-atlas-api.com/api/plugins/webhook-interaction/webhook/zapier`.
+4. Add a header: `X-Webhook-Secret` with your secret value.
+5. Set the body to `{"query": "your question here"}`. Use Zapier template fields to make the query dynamic.
+
+### Make (Integromat)
+
+1. Add an **HTTP > Make a request** module.
+2. Set method to `POST` and URL to `https://your-atlas-api.com/api/plugins/webhook-interaction/webhook/make`.
+3. Add header `X-Webhook-Secret` with your secret.
+4. Set the body type to JSON: `{"query": "your question"}`.
+5. For async mode, add `"callbackUrl"` pointing to a **Webhooks > Custom webhook** trigger in another scenario.
+
+### n8n
+
+1. Add an **HTTP Request** node.
+2. Set method to `POST` and URL to `https://your-atlas-api.com/api/plugins/webhook-interaction/webhook/n8n`.
+3. Under **Authentication**, add a header auth with `X-Webhook-Secret`.
+4. Set the JSON body: `{"query": "{{$json.question}}"}`.
+5. For HMAC auth, use a **Code** node to compute the signature and set `X-Webhook-Signature`.
+
+<Callout type="info">
+The `executeQuery` callback is the bridge between the webhook plugin and the Atlas agent. It receives the user's question, runs the agent, and returns structured results with the SQL query, column names, and row data.
+</Callout>
+
+## Troubleshooting
+
+### 401 errors on all requests
+
+Verify that the secret in your automation tool matches the `secret` in your channel configuration. For HMAC mode, ensure you are computing SHA-256 over the raw request body (not URL-encoded).
+
+### Timeouts on synchronous requests
+
+Complex queries may take longer than your automation platform's timeout. Use async mode by setting a `callbackUrl` — the plugin will accept the request immediately and deliver results when ready.
+
+### 404 for a configured channel
+
+Ensure the `:channelId` in the URL matches the `channelId` in your channel configuration exactly (case-sensitive).

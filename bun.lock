@@ -574,6 +574,20 @@
         "@vercel/sandbox",
       ],
     },
+    "plugins/webhook": {
+      "name": "@useatlas/webhook",
+      "version": "0.0.5",
+      "devDependencies": {
+        "@useatlas/plugin-sdk": "workspace:*",
+        "hono": "^4.12.3",
+        "zod": "^4.3.6",
+      },
+      "peerDependencies": {
+        "@useatlas/plugin-sdk": ">=0.0.1",
+        "hono": "^4.0.0",
+        "zod": "^4.0.0",
+      },
+    },
     "plugins/yaml-context": {
       "name": "@useatlas/yaml-context",
       "version": "0.0.5",
@@ -1833,6 +1847,8 @@
     "@useatlas/types": ["@useatlas/types@workspace:packages/types"],
 
     "@useatlas/vercel-sandbox": ["@useatlas/vercel-sandbox@workspace:plugins/vercel-sandbox"],
+
+    "@useatlas/webhook": ["@useatlas/webhook@workspace:plugins/webhook"],
 
     "@useatlas/yaml-context": ["@useatlas/yaml-context@workspace:plugins/yaml-context"],
 

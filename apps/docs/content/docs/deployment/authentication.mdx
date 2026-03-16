@@ -82,7 +82,7 @@ ATLAS_RLS_CLAIMS='{"tenant_id": "acme-corp"}'
 
 ## Managed Auth
 
-Full user management with email/password login, sessions, and role-based access. Built on [Better Auth](https://www.better-auth.com/). Requires an internal Postgres database (`DATABASE_URL`).
+Full user management with email/password login, sessions, and role-based access. Built on [Better Auth](https://www.better-auth.com/). Requires an internal Postgres database (`DATABASE_URL`). Supports [social login providers](/guides/social-providers) (Google, GitHub, Microsoft) alongside email/password.
 
 ### Managed auth setup
 
@@ -297,6 +297,7 @@ Set `ATLAS_LOG_LEVEL=debug` to see per-step agent actions in the logs.
 
 ## Related
 
+- [Social Login Providers](/guides/social-providers) — configure Google, GitHub, and Microsoft sign-in
 - [Choosing an Integration](/guides/choosing-an-integration) — compare auth modes side-by-side with setup examples
 - [Row-Level Security](/security/row-level-security) — automatic data isolation per tenant using JWT claims
 - [Actions Framework](/guides/actions) — approval-gated write operations (requires auth)

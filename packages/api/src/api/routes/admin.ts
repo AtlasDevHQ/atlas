@@ -1011,8 +1011,14 @@ function buildAuditFilters(query: (key: string) => string | undefined): AuditFil
 
   const table = query("table");
   if (table) {
-    conditions.push(`a.sql ILIKE $${paramIdx++}`);
-    params.push(`%${escapeIlike(table)}%`);
+    conditions.push(`a.tables_accessed ? $${paramIdx++}`);
+    params.push(table.toLowerCase());
+  }
+
+  const column = query("column");
+  if (column) {
+    conditions.push(`a.columns_accessed ? $${paramIdx++}`);
+    params.push(column.toLowerCase());
   }
 
   const search = query("search");
@@ -1082,6 +1088,8 @@ admin.get("/audit", async (c) => {
         user_label: string | null;
         auth_mode: string;
         user_email: string | null;
+        tables_accessed: string[] | null;
+        columns_accessed: string[] | null;
       }>(
         `SELECT a.*, u.email AS user_email
          FROM audit_log a
@@ -1143,15 +1151,17 @@ admin.get("/audit/export", async (c) => {
         error: string | null;
         source_id: string | null;
         user_email: string | null;
+        tables_accessed: string[] | null;
+        columns_accessed: string[] | null;
       }>(
-        `SELECT a.id, a.timestamp, a.user_id, a.sql, a.duration_ms, a.row_count, a.success, a.error, a.source_id, u.email AS user_email
+        `SELECT a.id, a.timestamp, a.user_id, a.sql, a.duration_ms, a.row_count, a.success, a.error, a.source_id, a.tables_accessed, a.columns_accessed, u.email AS user_email
          FROM audit_log a
          LEFT JOIN "user" u ON a.user_id = u.id
          ${whereClause} ORDER BY a.timestamp DESC LIMIT $${paramIdx++}`,
         [...params, exportLimit],
       );
 
-      const csvHeader = "id,timestamp,user,sql,duration_ms,row_count,success,error,connection\n";
+      const csvHeader = "id,timestamp,user,sql,duration_ms,row_count,success,error,connection,tables_accessed,columns_accessed\n";
       const csvRows = rows.map((r) => {
         const fields = [
           csvField(r.id),
@@ -1163,6 +1173,8 @@ admin.get("/audit/export", async (c) => {
           String(r.success),
           csvField(r.error),
           csvField(r.source_id),
+          csvField(r.tables_accessed ? r.tables_accessed.join("; ") : null),
+          csvField(r.columns_accessed ? r.columns_accessed.join("; ") : null),
         ];
         return fields.join(",");
       });
@@ -1231,6 +1243,43 @@ admin.get("/audit/stats", async (c) => {
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Audit stats query failed");
       return c.json({ error: "internal_error", message: "Failed to query audit stats." }, 500);
+    }
+  });
+});
+
+// GET /audit/facets — distinct tables and columns for filter dropdowns
+admin.get("/audit/facets", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    try {
+      const [tableRows, columnRows] = await Promise.all([
+        internalQuery<{ val: string }>(
+          `SELECT DISTINCT jsonb_array_elements_text(tables_accessed) AS val FROM audit_log WHERE tables_accessed IS NOT NULL ORDER BY val LIMIT 200`,
+        ),
+        internalQuery<{ val: string }>(
+          `SELECT DISTINCT jsonb_array_elements_text(columns_accessed) AS val FROM audit_log WHERE columns_accessed IS NOT NULL ORDER BY val LIMIT 200`,
+        ),
+      ]);
+
+      return c.json({
+        tables: tableRows.map((r) => r.val),
+        columns: columnRows.map((r) => r.val),
+      });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Audit facets query failed");
+      return c.json({ error: "internal_error", message: "Failed to query audit facets." }, 500);
     }
   });
 });

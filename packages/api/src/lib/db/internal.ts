@@ -324,6 +324,11 @@ export async function migrateInternalDB(): Promise<void> {
   await pool.query(`ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS source_id TEXT, ADD COLUMN IF NOT EXISTS source_type TEXT, ADD COLUMN IF NOT EXISTS target_host TEXT;`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_log_source_id ON audit_log(source_id);`);
 
+  // Data classification tags: store table/column references for compliance filtering
+  await pool.query(`ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS tables_accessed JSONB, ADD COLUMN IF NOT EXISTS columns_accessed JSONB;`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_log_tables_accessed ON audit_log USING GIN (tables_accessed);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_log_columns_accessed ON audit_log USING GIN (columns_accessed);`);
+
   // Saved/starred conversations
   await pool.query(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS starred BOOLEAN NOT NULL DEFAULT false;`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_conversations_starred ON conversations(user_id, starred) WHERE starred = true;`);

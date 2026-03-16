@@ -27,8 +27,8 @@ const PINO_SQL_LIMIT = 500;
 const DB_SQL_LIMIT = 2000;
 
 export type AuditEntry =
-  | { sql: string; durationMs: number; rowCount: number; success: true; sourceId?: string; sourceType?: DBType; targetHost?: string }
-  | { sql: string; durationMs: number; rowCount: null; success: false; error?: string; sourceId?: string; sourceType?: DBType; targetHost?: string };
+  | { sql: string; durationMs: number; rowCount: number; success: true; sourceId?: string; sourceType?: DBType; targetHost?: string; tablesAccessed?: string[]; columnsAccessed?: string[] }
+  | { sql: string; durationMs: number; rowCount: null; success: false; error?: string; sourceId?: string; sourceType?: DBType; targetHost?: string; tablesAccessed?: string[]; columnsAccessed?: string[] };
 
 function scrubError(error: string | undefined): string | undefined {
   if (!error) return undefined;
@@ -58,6 +58,8 @@ export function logQueryAudit(entry: AuditEntry): void {
       ...(entry.sourceId && { sourceId: entry.sourceId }),
       ...(entry.sourceType && { sourceType: entry.sourceType }),
       ...(entry.targetHost && { targetHost: entry.targetHost }),
+      ...(entry.tablesAccessed?.length && { tablesAccessed: entry.tablesAccessed }),
+      ...(entry.columnsAccessed?.length && { columnsAccessed: entry.columnsAccessed }),
     },
     entry.success ? "query_success" : "query_failure",
   );
@@ -66,8 +68,8 @@ export function logQueryAudit(entry: AuditEntry): void {
   if (hasInternalDB()) {
     try {
       internalExecute(
-        `INSERT INTO audit_log (user_id, user_label, auth_mode, sql, duration_ms, row_count, success, error, source_id, source_type, target_host)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        `INSERT INTO audit_log (user_id, user_label, auth_mode, sql, duration_ms, row_count, success, error, source_id, source_type, target_host, tables_accessed, columns_accessed)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
         [
           userId,
           userLabel,
@@ -80,6 +82,8 @@ export function logQueryAudit(entry: AuditEntry): void {
           entry.sourceId ?? null,
           entry.sourceType ?? null,
           entry.targetHost ?? null,
+          entry.tablesAccessed?.length ? JSON.stringify(entry.tablesAccessed) : null,
+          entry.columnsAccessed?.length ? JSON.stringify(entry.columnsAccessed) : null,
         ],
       );
     } catch (err) {

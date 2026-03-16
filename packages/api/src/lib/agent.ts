@@ -490,7 +490,9 @@ export async function runAgent({
       ]);
       orgSemanticIndex = idx || undefined;
     } catch (err) {
-      log.warn({ orgId, err: err instanceof Error ? err.message : String(err) }, "Failed to load org semantic data — falling back to file-based");
+      log.error({ orgId, err: err instanceof Error ? err.message : String(err) }, "Failed to load org semantic data — agent will use file-based fallback");
+      if (!warnings) warnings = [];
+      warnings.push("Your organization's semantic layer could not be loaded. Using default configuration. Contact your admin if this persists.");
     }
   }
 

@@ -422,11 +422,13 @@ export async function loadOrgWhitelist(orgId: string): Promise<Map<string, Set<s
   const rows = await listEntities(orgId, "entity");
 
   const byConnection = new Map<string, Set<string>>();
+  let parseFailures = 0;
   for (const row of rows) {
     try {
       const raw = yaml.load(row.yaml_content);
       const parsed = EntityShape.safeParse(raw);
       if (!parsed.success) {
+        parseFailures++;
         log.warn({ orgId, entity: row.name, err: parsed.error.message }, "Skipping org entity — failed to validate");
         continue;
       }
@@ -437,6 +439,7 @@ export async function loadOrgWhitelist(orgId: string): Promise<Map<string, Set<s
       tables.add(parts[parts.length - 1].toLowerCase());
       tables.add(parsed.data.table.toLowerCase());
     } catch (err) {
+      parseFailures++;
       log.warn(
         { orgId, entity: row.name, err: err instanceof Error ? err.message : String(err) },
         "Skipping org entity — failed to parse YAML",
@@ -444,8 +447,13 @@ export async function loadOrgWhitelist(orgId: string): Promise<Map<string, Set<s
     }
   }
 
+  if (parseFailures === rows.length && rows.length > 0) {
+    log.error({ orgId, entityCount: rows.length, parseFailures }, "All org entities failed to parse — whitelist is empty");
+  }
+
   _orgWhitelists.set(orgId, byConnection);
-  log.info({ orgId, entityCount: rows.length, connections: Array.from(byConnection.keys()) }, "Loaded org whitelist from DB");
+  const totalTables = Array.from(byConnection.values()).reduce((s, set) => s + set.size, 0);
+  log.info({ orgId, entityCount: rows.length, parsedCount: rows.length - parseFailures, tableCount: totalTables, connections: Array.from(byConnection.keys()) }, "Loaded org whitelist from DB");
   return byConnection;
 }
 
@@ -457,7 +465,10 @@ export async function loadOrgWhitelist(orgId: string): Promise<Map<string, Set<s
  */
 export function getOrgWhitelistedTables(orgId: string, connectionId: string = "default"): Set<string> {
   const byConnection = _orgWhitelists.get(orgId);
-  if (!byConnection) return new Set();
+  if (!byConnection) {
+    log.warn({ orgId, connectionId }, "Org whitelist not loaded — all tables will be rejected");
+    return new Set();
+  }
 
   const hasNonDefault = Array.from(byConnection.keys()).some((k) => k !== "default");
   if (!hasNonDefault) {
@@ -519,8 +530,8 @@ export async function getOrgSemanticIndex(orgId: string): Promise<string> {
     // Clean up temp directory
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
-    } catch {
-      // Ignore cleanup errors
+    } catch (cleanupErr) {
+      log.debug({ orgId, tmpDir, err: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr) }, "Failed to clean up temp semantic directory");
     }
   }
 }

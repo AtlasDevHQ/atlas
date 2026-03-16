@@ -2,7 +2,7 @@
 
 Final review and closeout for a completed milestone. Verify everything shipped, docs are current, public-facing sites reflect the work, and tracking is clean.
 
-**Run after the last issue in a milestone ships** — before `/kickoff` on the next milestone.
+**Run after the last issue in a milestone ships.**
 
 ---
 
@@ -185,9 +185,8 @@ Output a summary:
 - Project board: all items Done
 - ROADMAP.md: all items [x]
 
-### Ready for next
-- Next milestone: 0.Y.0 — [Name]
-- Run `/kickoff` to create issues and start work
+### Next milestone
+- 0.Y.0 — [Name]
 ```
 
 ---

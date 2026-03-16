@@ -5,13 +5,13 @@
  * and the action's approval mode. Roles are extracted from the authenticated
  * user, with defaults that vary by auth mode.
  *
- * Role hierarchy: admin > analyst > viewer
+ * Role hierarchy: owner > admin > member
  *
- * | Approval mode | viewer | analyst | admin |
- * |---------------|--------|---------|-------|
- * | auto          | yes*   | yes*    | yes*  |
- * | manual        | no     | yes     | yes   |
- * | admin-only    | no     | no      | yes   |
+ * | Approval mode | member | admin | owner |
+ * |---------------|--------|-------|-------|
+ * | auto          | yes*   | yes*  | yes*  |
+ * | manual        | no     | yes   | yes   |
+ * | admin-only    | no     | no    | yes   |
  *
  * * Auto-approved actions are executed immediately in handleAction and never
  *   reach the approval endpoint. canApprove returns true for any authenticated
@@ -30,9 +30,9 @@ const log = createLogger("auth:permissions");
 // ---------------------------------------------------------------------------
 
 const ROLE_LEVEL: Record<AtlasRole, number> = {
-  viewer: 0,
-  analyst: 1,
-  admin: 2,
+  member: 0,
+  admin: 1,
+  owner: 2,
 };
 
 // ---------------------------------------------------------------------------
@@ -42,14 +42,14 @@ const ROLE_LEVEL: Record<AtlasRole, number> = {
 /**
  * Default role for each auth mode when the user object does not carry
  * an explicit role.
- * - simple-key: analyst (overridable via ATLAS_API_KEY_ROLE)
- * - managed: viewer (role comes from Better Auth organization plugin)
- * - byot: viewer (role comes from JWT claim)
+ * - simple-key: admin (overridable via ATLAS_API_KEY_ROLE)
+ * - managed: member (role comes from Better Auth organization plugin)
+ * - byot: member (role comes from JWT claim)
  */
 const AUTH_MODE_DEFAULT_ROLE: Record<string, AtlasRole> = {
-  "simple-key": "analyst",
-  managed: "viewer",
-  byot: "viewer",
+  "simple-key": "admin",
+  managed: "member",
+  byot: "member",
 };
 
 /**
@@ -58,7 +58,7 @@ const AUTH_MODE_DEFAULT_ROLE: Record<string, AtlasRole> = {
  */
 export function getUserRole(user: AtlasUser): AtlasRole {
   if (user.role) return user.role;
-  return AUTH_MODE_DEFAULT_ROLE[user.mode] ?? "viewer";
+  return AUTH_MODE_DEFAULT_ROLE[user.mode] ?? "member";
 }
 
 /**
@@ -82,9 +82,12 @@ export function parseRole(value: string | undefined): AtlasRole | undefined {
  * Auto-approved actions bypass this check entirely (no human approval needed).
  */
 const APPROVAL_MODE_MIN_ROLE: Record<ActionApprovalMode, AtlasRole> = {
-  auto: "viewer", // Not actually checked — auto actions don't need approval
-  manual: "analyst",
-  "admin-only": "admin",
+  auto: "member", // Not actually checked — auto actions don't need approval
+  manual: "admin",
+  // "admin-only" requires the owner role. The name is a legacy holdover from
+  // when admin was the highest role. With the owner > admin > member hierarchy,
+  // this effectively means "owner-only". Renaming would be a config-breaking change.
+  "admin-only": "owner",
 };
 
 /**

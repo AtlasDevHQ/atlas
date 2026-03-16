@@ -246,7 +246,7 @@ describe("Admin session routes", () => {
         Promise.resolve({
           authenticated: true,
           mode: "managed",
-          user: { id: "user-1", mode: "managed", label: "user@test.com", role: "viewer" },
+          user: { id: "user-1", mode: "managed", label: "user@test.com", role: "member" },
         }),
       );
       const res = await get("/api/v1/admin/sessions");
@@ -320,7 +320,7 @@ describe("User self-service session routes", () => {
       Promise.resolve({
         authenticated: true,
         mode: "managed",
-        user: { id: "user-1", mode: "managed", label: "user@test.com", role: "viewer" },
+        user: { id: "user-1", mode: "managed", label: "user@test.com", role: "member" },
       }),
     );
   });

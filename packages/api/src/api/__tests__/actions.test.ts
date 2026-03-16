@@ -799,7 +799,7 @@ describe("actions routes", () => {
       mockGetAction.mockResolvedValueOnce(action);
       mockGetActionConfig.mockReturnValueOnce({ approval: "admin-only" });
 
-      // User with simple-key mode defaults to analyst role, which can't approve admin-only
+      // User with simple-key mode defaults to admin role, which can't approve admin-only (requires owner)
       const response = await app.fetch(
         new Request(`http://localhost/api/v1/actions/${VALID_ID}/rollback`, {
           method: "POST",

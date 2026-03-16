@@ -200,14 +200,14 @@ describe("Admin routes — user invitations", () => {
       const res = await app.fetch(
         adminRequest("/api/v1/admin/users/invite", "POST", {
           email: "new@example.com",
-          role: "analyst",
+          role: "member",
         }),
       );
 
       expect(res.status).toBe(200);
       const body = (await res.json()) as Record<string, unknown>;
       expect(body.email).toBe("new@example.com");
-      expect(body.role).toBe("analyst");
+      expect(body.role).toBe("member");
       expect(body.inviteUrl).toBeTruthy();
       expect(typeof body.token).toBe("string");
       expect(body.emailSent).toBe(false);
@@ -216,7 +216,7 @@ describe("Admin routes — user invitations", () => {
     it("rejects missing email", async () => {
       const res = await app.fetch(
         adminRequest("/api/v1/admin/users/invite", "POST", {
-          role: "analyst",
+          role: "member",
         }),
       );
       expect(res.status).toBe(400);
@@ -228,7 +228,7 @@ describe("Admin routes — user invitations", () => {
       const res = await app.fetch(
         adminRequest("/api/v1/admin/users/invite", "POST", {
           email: "not-an-email",
-          role: "analyst",
+          role: "member",
         }),
       );
       expect(res.status).toBe(400);
@@ -255,7 +255,7 @@ describe("Admin routes — user invitations", () => {
       const res = await app.fetch(
         adminRequest("/api/v1/admin/users/invite", "POST", {
           email: "existing@example.com",
-          role: "viewer",
+          role: "member",
         }),
       );
       expect(res.status).toBe(409);
@@ -272,7 +272,7 @@ describe("Admin routes — user invitations", () => {
       const res = await app.fetch(
         adminRequest("/api/v1/admin/users/invite", "POST", {
           email: "pending@example.com",
-          role: "analyst",
+          role: "member",
         }),
       );
       expect(res.status).toBe(409);
@@ -305,7 +305,7 @@ describe("Admin routes — user invitations", () => {
       const res = await app.fetch(
         adminRequest("/api/v1/admin/users/invite", "POST", {
           email: "test@example.com",
-          role: "analyst",
+          role: "member",
         }),
       );
       expect(res.status).toBe(404);
@@ -318,7 +318,7 @@ describe("Admin routes — user invitations", () => {
         {
           id: "inv-1",
           email: "a@b.com",
-          role: "analyst",
+          role: "member",
           status: "pending",
           invited_by: "admin-1",
           expires_at: new Date(Date.now() + 86400000).toISOString(),
@@ -338,7 +338,7 @@ describe("Admin routes — user invitations", () => {
         {
           id: "inv-2",
           email: "expired@b.com",
-          role: "viewer",
+          role: "member",
           status: "pending",
           invited_by: "admin-1",
           expires_at: new Date(Date.now() - 86400000).toISOString(), // yesterday

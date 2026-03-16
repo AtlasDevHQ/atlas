@@ -47,6 +47,11 @@ export type {
   RollbackInfo,
   SemanticDiffResponse,
   SemanticTableDiff,
+  Organization,
+  OrgMember,
+  OrgInvitation,
+  OrgRole,
+  ORG_ROLES,
 } from "@useatlas/types";
 export { SHARE_MODES, SHARE_EXPIRY_OPTIONS } from "@useatlas/types";
 export { authErrorMessage, parseChatError, classifyClientError } from "@useatlas/types/errors";

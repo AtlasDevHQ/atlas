@@ -61,11 +61,11 @@ export function validateApiKey(req: Request): AuthResult {
   const id = `api-key-${sha256(key).slice(0, 8)}`;
   const label = `api-key-${key.slice(0, 4)}`;
 
-  // Role override via ATLAS_API_KEY_ROLE (default: analyst — see permissions.ts)
+  // Role override via ATLAS_API_KEY_ROLE (default: admin — see permissions.ts)
   const rawRole = process.env.ATLAS_API_KEY_ROLE;
   const role = parseRole(rawRole);
   if (rawRole && !role) {
-    log.warn({ value: rawRole, validRoles: ["viewer", "analyst", "admin"] }, "ATLAS_API_KEY_ROLE is set to an invalid value — defaulting to 'analyst'. Valid values: viewer, analyst, admin.");
+    log.warn({ value: rawRole, validRoles: ["member", "admin", "owner"] }, "ATLAS_API_KEY_ROLE is set to an invalid value — defaulting to 'admin'. Valid values: member, admin, owner.");
   }
 
   // Parse optional claims from env var for RLS policy evaluation
@@ -87,6 +87,6 @@ export function validateApiKey(req: Request): AuthResult {
   return {
     authenticated: true,
     mode: "simple-key",
-    user: createAtlasUser(id, "simple-key", label, role, claims),
+    user: createAtlasUser(id, "simple-key", label, role, undefined, claims),
   };
 }

@@ -416,7 +416,7 @@ export async function migrateInternalDB(): Promise<void> {
     CREATE TABLE IF NOT EXISTS invitations (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       email TEXT NOT NULL,
-      role TEXT NOT NULL DEFAULT 'analyst',
+      role TEXT NOT NULL DEFAULT 'member',
       token TEXT NOT NULL UNIQUE,
       status TEXT NOT NULL DEFAULT 'pending',
       invited_by TEXT,
@@ -450,7 +450,23 @@ export async function migrateInternalDB(): Promise<void> {
     );
   `);
 
-  log.info("Internal DB migration complete (audit_log, conversations, messages, slack, action_log, scheduled_tasks, connections, token_usage, invitations, plugin_settings, settings)");
+  // Organization scoping — add org_id to all tenant-scoped tables
+  await pool.query(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS org_id TEXT;`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_conversations_org ON conversations(org_id);`);
+  await pool.query(`ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS org_id TEXT;`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_log_org ON audit_log(org_id);`);
+  await pool.query(`ALTER TABLE action_log ADD COLUMN IF NOT EXISTS org_id TEXT;`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_action_log_org ON action_log(org_id);`);
+  await pool.query(`ALTER TABLE connections ADD COLUMN IF NOT EXISTS org_id TEXT;`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_connections_org ON connections(org_id);`);
+  await pool.query(`ALTER TABLE token_usage ADD COLUMN IF NOT EXISTS org_id TEXT;`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_token_usage_org ON token_usage(org_id);`);
+  await pool.query(`ALTER TABLE scheduled_tasks ADD COLUMN IF NOT EXISTS org_id TEXT;`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_org ON scheduled_tasks(org_id);`);
+  await pool.query(`ALTER TABLE settings ADD COLUMN IF NOT EXISTS org_id TEXT;`);
+  await pool.query(`ALTER TABLE plugin_settings ADD COLUMN IF NOT EXISTS org_id TEXT;`);
+
+  log.info("Internal DB migration complete (audit_log, conversations, messages, slack, action_log, scheduled_tasks, connections, token_usage, invitations, plugin_settings, settings, org scoping)");
 }
 
 /**

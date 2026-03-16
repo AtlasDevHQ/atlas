@@ -32,7 +32,7 @@ let currentUser: AtlasUser | undefined = {
   id: "u1",
   label: "test@test.com",
   mode: "simple-key",
-  role: "analyst",
+  role: "admin",
 };
 
 const mockAuthenticateRequest: Mock<
@@ -244,9 +244,9 @@ describe("action permissions integration", () => {
   // Viewer cannot approve any actions
   // -------------------------------------------------------------------------
 
-  describe("viewer role", () => {
+  describe("member role", () => {
     beforeEach(() => {
-      setUser("managed", "viewer");
+      setUser("managed", "member");
     });
 
     it("cannot approve manual actions", async () => {
@@ -306,12 +306,12 @@ describe("action permissions integration", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Analyst can approve manual, blocked from admin-only
+  // Admin can approve manual, blocked from admin-only (owner-only)
   // -------------------------------------------------------------------------
 
-  describe("analyst role", () => {
+  describe("admin role (approval)", () => {
     beforeEach(() => {
-      setUser("simple-key", "analyst");
+      setUser("simple-key", "admin");
     });
 
     it("can approve manual actions", async () => {
@@ -397,6 +397,29 @@ describe("action permissions integration", () => {
       expect(response.status).toBe(200);
     });
 
+    it("cannot approve admin-only (owner-only) actions", async () => {
+      const action = makeAction();
+      mockGetAction.mockResolvedValueOnce(action);
+      currentActionConfig = { approval: "admin-only" };
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/actions/${VALID_ID}/approve`, {
+          method: "POST",
+        }),
+      );
+      expect(response.status).toBe(403);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Owner role — full permissions including admin-only
+  // -------------------------------------------------------------------------
+
+  describe("owner role", () => {
+    beforeEach(() => {
+      setUser("managed", "owner");
+    });
+
     it("can approve admin-only actions", async () => {
       const action = makeAction();
       const approved = makeAction({ status: "approved", approved_by: "u1" });
@@ -433,8 +456,8 @@ describe("action permissions integration", () => {
   // -------------------------------------------------------------------------
 
   describe("simple-key default role", () => {
-    it("defaults to analyst — can approve manual", async () => {
-      setUser("simple-key"); // no explicit role — defaults to analyst
+    it("defaults to admin — can approve manual", async () => {
+      setUser("simple-key"); // no explicit role — defaults to admin
       const action = makeAction();
       const approved = makeAction({ status: "approved", approved_by: "u1" });
       mockGetAction.mockResolvedValueOnce(action);
@@ -449,8 +472,8 @@ describe("action permissions integration", () => {
       expect(response.status).toBe(200);
     });
 
-    it("defaults to analyst — blocked from admin-only", async () => {
-      setUser("simple-key"); // no explicit role — defaults to analyst
+    it("defaults to admin — blocked from admin-only (owner-only)", async () => {
+      setUser("simple-key"); // no explicit role — defaults to admin
       const action = makeAction();
       mockGetAction.mockResolvedValueOnce(action);
       currentActionConfig = { approval: "admin-only" };
@@ -469,11 +492,11 @@ describe("action permissions integration", () => {
   // -------------------------------------------------------------------------
 
   describe("per-action requiredRole override", () => {
-    it("requiredRole=admin blocks analyst on manual action", async () => {
-      setUser("simple-key", "analyst");
+    it("requiredRole=owner blocks admin on manual action", async () => {
+      setUser("simple-key", "admin");
       const action = makeAction();
       mockGetAction.mockResolvedValueOnce(action);
-      currentActionConfig = { approval: "manual", requiredRole: "admin" };
+      currentActionConfig = { approval: "manual", requiredRole: "owner" };
 
       const response = await app.fetch(
         new Request(`http://localhost/api/v1/actions/${VALID_ID}/approve`, {
@@ -499,13 +522,13 @@ describe("action permissions integration", () => {
       expect(response.status).toBe(200);
     });
 
-    it("requiredRole=viewer allows viewer on manual action", async () => {
-      setUser("managed", "viewer");
+    it("requiredRole=member allows member on manual action", async () => {
+      setUser("managed", "member");
       const action = makeAction();
       const approved = makeAction({ status: "approved", approved_by: "u1" });
       mockGetAction.mockResolvedValueOnce(action);
       mockApproveAction.mockResolvedValueOnce(approved);
-      currentActionConfig = { approval: "manual", requiredRole: "viewer" };
+      currentActionConfig = { approval: "manual", requiredRole: "member" };
 
       const response = await app.fetch(
         new Request(`http://localhost/api/v1/actions/${VALID_ID}/approve`, {
@@ -563,15 +586,15 @@ describe("action permissions integration", () => {
       approval: ActionApprovalMode;
       expectStatus: 200 | 403;
     }> = [
-      // viewer: blocked from manual and admin-only
-      { role: "viewer", approval: "manual", expectStatus: 403 },
-      { role: "viewer", approval: "admin-only", expectStatus: 403 },
-      // analyst: can approve manual, blocked from admin-only
-      { role: "analyst", approval: "manual", expectStatus: 200 },
-      { role: "analyst", approval: "admin-only", expectStatus: 403 },
-      // admin: can approve all
+      // member: blocked from manual and admin-only
+      { role: "member", approval: "manual", expectStatus: 403 },
+      { role: "member", approval: "admin-only", expectStatus: 403 },
+      // admin: can approve manual, blocked from admin-only (owner-only)
       { role: "admin", approval: "manual", expectStatus: 200 },
-      { role: "admin", approval: "admin-only", expectStatus: 200 },
+      { role: "admin", approval: "admin-only", expectStatus: 403 },
+      // owner: can approve all
+      { role: "owner", approval: "manual", expectStatus: 200 },
+      { role: "owner", approval: "admin-only", expectStatus: 200 },
     ];
 
     for (const mode of modes) {

@@ -77,6 +77,7 @@ describe("logQueryAudit()", () => {
       null, // target_host
       null, // tables_accessed
       null, // columns_accessed
+      null, // org_id
     ]);
   });
 

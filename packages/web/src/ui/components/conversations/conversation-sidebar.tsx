@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Conversation } from "../../lib/types";
 import { ConversationList } from "./conversation-list";
+import { OrgSwitcher } from "../org-switcher";
 
 type SidebarFilter = "all" | "saved";
 
@@ -48,6 +49,7 @@ export function ConversationSidebar({
 
   const sidebar = (
     <div className="flex h-full flex-col border-r border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950">
+      <OrgSwitcher />
       <div className="flex items-center justify-between border-b border-zinc-200 px-3 py-3 dark:border-zinc-800">
         <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">History</span>
         <button

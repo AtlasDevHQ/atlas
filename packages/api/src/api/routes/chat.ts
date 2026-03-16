@@ -207,6 +207,7 @@ chat.post("/", async (c) => {
               userId: authResult.user?.id,
               title,
               surface: "web",
+              orgId: authResult.user?.activeOrganizationId,
             });
             if (created) conversationId = created.id;
           } catch (err) {

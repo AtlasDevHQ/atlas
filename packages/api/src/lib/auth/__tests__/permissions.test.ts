@@ -30,21 +30,21 @@ function makeUser(mode: "simple-key" | "managed" | "byot", role?: AtlasRole) {
 
 describe("getUserRole()", () => {
   it("returns explicit role when set", () => {
-    expect(getUserRole(makeUser("simple-key", "admin"))).toBe("admin");
-    expect(getUserRole(makeUser("managed", "analyst"))).toBe("analyst");
-    expect(getUserRole(makeUser("byot", "viewer"))).toBe("viewer");
+    expect(getUserRole(makeUser("simple-key", "owner"))).toBe("owner");
+    expect(getUserRole(makeUser("managed", "admin"))).toBe("admin");
+    expect(getUserRole(makeUser("byot", "member"))).toBe("member");
   });
 
-  it("defaults to analyst for simple-key mode", () => {
-    expect(getUserRole(makeUser("simple-key"))).toBe("analyst");
+  it("defaults to admin for simple-key mode", () => {
+    expect(getUserRole(makeUser("simple-key"))).toBe("admin");
   });
 
-  it("defaults to viewer for managed mode", () => {
-    expect(getUserRole(makeUser("managed"))).toBe("viewer");
+  it("defaults to member for managed mode", () => {
+    expect(getUserRole(makeUser("managed"))).toBe("member");
   });
 
-  it("defaults to viewer for byot mode", () => {
-    expect(getUserRole(makeUser("byot"))).toBe("viewer");
+  it("defaults to member for byot mode", () => {
+    expect(getUserRole(makeUser("byot"))).toBe("member");
   });
 });
 
@@ -54,15 +54,15 @@ describe("getUserRole()", () => {
 
 describe("parseRole()", () => {
   it("returns valid roles", () => {
-    expect(parseRole("viewer")).toBe("viewer");
-    expect(parseRole("analyst")).toBe("analyst");
+    expect(parseRole("member")).toBe("member");
     expect(parseRole("admin")).toBe("admin");
+    expect(parseRole("owner")).toBe("owner");
   });
 
   it("is case-insensitive", () => {
     expect(parseRole("ADMIN")).toBe("admin");
-    expect(parseRole("Analyst")).toBe("analyst");
-    expect(parseRole("VIEWER")).toBe("viewer");
+    expect(parseRole("Member")).toBe("member");
+    expect(parseRole("OWNER")).toBe("owner");
   });
 
   it("trims whitespace", () => {
@@ -74,6 +74,9 @@ describe("parseRole()", () => {
     expect(parseRole("")).toBeUndefined();
     expect(parseRole(undefined)).toBeUndefined();
     expect(parseRole("root")).toBeUndefined();
+    // Old roles are no longer valid
+    expect(parseRole("viewer")).toBeUndefined();
+    expect(parseRole("analyst")).toBeUndefined();
   });
 });
 
@@ -84,8 +87,6 @@ describe("parseRole()", () => {
 describe("canApprove()", () => {
   describe("with undefined user (no-auth mode)", () => {
     it("denies all approval modes (no user = no approval ability)", () => {
-      // Even auto is denied because canApprove only runs on manual approval endpoints.
-      // Auto-approved actions are auto-executed by handleAction — they never reach canApprove.
       expect(canApprove(undefined, "auto")).toBe(false);
       expect(canApprove(undefined, "manual")).toBe(false);
       expect(canApprove(undefined, "admin-only")).toBe(false);
@@ -94,22 +95,16 @@ describe("canApprove()", () => {
 
   describe("auto approval mode", () => {
     it("allows all roles (no human approval needed)", () => {
-      expect(canApprove(makeUser("managed", "viewer"), "auto")).toBe(true);
-      expect(canApprove(makeUser("simple-key", "analyst"), "auto")).toBe(true);
-      expect(canApprove(makeUser("byot", "admin"), "auto")).toBe(true);
+      expect(canApprove(makeUser("managed", "member"), "auto")).toBe(true);
+      expect(canApprove(makeUser("simple-key", "admin"), "auto")).toBe(true);
+      expect(canApprove(makeUser("byot", "owner"), "auto")).toBe(true);
     });
   });
 
   describe("manual approval mode", () => {
-    it("denies viewer", () => {
-      expect(canApprove(makeUser("managed", "viewer"), "manual")).toBe(false);
-      expect(canApprove(makeUser("byot", "viewer"), "manual")).toBe(false);
-    });
-
-    it("allows analyst", () => {
-      expect(canApprove(makeUser("simple-key", "analyst"), "manual")).toBe(true);
-      expect(canApprove(makeUser("managed", "analyst"), "manual")).toBe(true);
-      expect(canApprove(makeUser("byot", "analyst"), "manual")).toBe(true);
+    it("denies member", () => {
+      expect(canApprove(makeUser("managed", "member"), "manual")).toBe(false);
+      expect(canApprove(makeUser("byot", "member"), "manual")).toBe(false);
     });
 
     it("allows admin", () => {
@@ -117,24 +112,27 @@ describe("canApprove()", () => {
       expect(canApprove(makeUser("managed", "admin"), "manual")).toBe(true);
       expect(canApprove(makeUser("byot", "admin"), "manual")).toBe(true);
     });
+
+    it("allows owner", () => {
+      expect(canApprove(makeUser("simple-key", "owner"), "manual")).toBe(true);
+      expect(canApprove(makeUser("managed", "owner"), "manual")).toBe(true);
+    });
   });
 
   describe("admin-only approval mode", () => {
-    it("denies viewer", () => {
-      expect(canApprove(makeUser("managed", "viewer"), "admin-only")).toBe(false);
-      expect(canApprove(makeUser("byot", "viewer"), "admin-only")).toBe(false);
+    it("denies member", () => {
+      expect(canApprove(makeUser("managed", "member"), "admin-only")).toBe(false);
     });
 
-    it("denies analyst", () => {
-      expect(canApprove(makeUser("simple-key", "analyst"), "admin-only")).toBe(false);
-      expect(canApprove(makeUser("managed", "analyst"), "admin-only")).toBe(false);
-      expect(canApprove(makeUser("byot", "analyst"), "admin-only")).toBe(false);
+    it("denies admin", () => {
+      expect(canApprove(makeUser("simple-key", "admin"), "admin-only")).toBe(false);
+      expect(canApprove(makeUser("managed", "admin"), "admin-only")).toBe(false);
     });
 
-    it("allows admin", () => {
-      expect(canApprove(makeUser("simple-key", "admin"), "admin-only")).toBe(true);
-      expect(canApprove(makeUser("managed", "admin"), "admin-only")).toBe(true);
-      expect(canApprove(makeUser("byot", "admin"), "admin-only")).toBe(true);
+    it("allows owner", () => {
+      expect(canApprove(makeUser("simple-key", "owner"), "admin-only")).toBe(true);
+      expect(canApprove(makeUser("managed", "owner"), "admin-only")).toBe(true);
+      expect(canApprove(makeUser("byot", "owner"), "admin-only")).toBe(true);
     });
   });
 
@@ -143,31 +141,28 @@ describe("canApprove()", () => {
   // -------------------------------------------------------------------------
 
   describe("with requiredRole override", () => {
-    it("overrides manual default — requires admin", () => {
-      // manual normally allows analyst, but requiredRole=admin blocks them
-      expect(canApprove(makeUser("simple-key", "analyst"), "manual", "admin")).toBe(false);
-      expect(canApprove(makeUser("simple-key", "admin"), "manual", "admin")).toBe(true);
+    it("overrides manual default — requires owner", () => {
+      expect(canApprove(makeUser("simple-key", "admin"), "manual", "owner")).toBe(false);
+      expect(canApprove(makeUser("simple-key", "owner"), "manual", "owner")).toBe(true);
     });
 
-    it("overrides admin-only default — requires analyst", () => {
-      // admin-only normally requires admin, but requiredRole=analyst lowers the bar
-      expect(canApprove(makeUser("managed", "analyst"), "admin-only", "analyst")).toBe(true);
-      expect(canApprove(makeUser("managed", "viewer"), "admin-only", "analyst")).toBe(false);
+    it("overrides admin-only default — requires admin", () => {
+      expect(canApprove(makeUser("managed", "admin"), "admin-only", "admin")).toBe(true);
+      expect(canApprove(makeUser("managed", "member"), "admin-only", "admin")).toBe(false);
     });
 
-    it("viewer requiredRole allows all authenticated users", () => {
-      expect(canApprove(makeUser("managed", "viewer"), "manual", "viewer")).toBe(true);
-      expect(canApprove(makeUser("simple-key", "analyst"), "manual", "viewer")).toBe(true);
-      expect(canApprove(makeUser("byot", "admin"), "manual", "viewer")).toBe(true);
+    it("member requiredRole allows all authenticated users", () => {
+      expect(canApprove(makeUser("managed", "member"), "manual", "member")).toBe(true);
+      expect(canApprove(makeUser("simple-key", "admin"), "manual", "member")).toBe(true);
+      expect(canApprove(makeUser("byot", "owner"), "manual", "member")).toBe(true);
     });
 
-    it("still denies undefined user even with viewer requiredRole", () => {
-      expect(canApprove(undefined, "manual", "viewer")).toBe(false);
+    it("still denies undefined user even with member requiredRole", () => {
+      expect(canApprove(undefined, "manual", "member")).toBe(false);
     });
 
     it("does not apply to auto mode", () => {
-      // Auto mode always returns true regardless of requiredRole
-      expect(canApprove(makeUser("managed", "viewer"), "auto", "admin")).toBe(true);
+      expect(canApprove(makeUser("managed", "member"), "auto", "owner")).toBe(true);
     });
   });
 
@@ -176,20 +171,20 @@ describe("canApprove()", () => {
   // -------------------------------------------------------------------------
 
   describe("with auth mode default roles (no explicit role)", () => {
-    it("simple-key defaults to analyst — can approve manual, blocked from admin-only", () => {
-      const user = makeUser("simple-key"); // defaults to analyst
+    it("simple-key defaults to admin — can approve manual, blocked from admin-only", () => {
+      const user = makeUser("simple-key"); // defaults to admin
       expect(canApprove(user, "manual")).toBe(true);
       expect(canApprove(user, "admin-only")).toBe(false);
     });
 
-    it("managed defaults to viewer — blocked from manual and admin-only", () => {
-      const user = makeUser("managed"); // defaults to viewer
+    it("managed defaults to member — blocked from manual and admin-only", () => {
+      const user = makeUser("managed"); // defaults to member
       expect(canApprove(user, "manual")).toBe(false);
       expect(canApprove(user, "admin-only")).toBe(false);
     });
 
-    it("byot defaults to viewer — blocked from manual and admin-only", () => {
-      const user = makeUser("byot"); // defaults to viewer
+    it("byot defaults to member — blocked from manual and admin-only", () => {
+      const user = makeUser("byot"); // defaults to member
       expect(canApprove(user, "manual")).toBe(false);
       expect(canApprove(user, "admin-only")).toBe(false);
     });
@@ -202,14 +197,14 @@ describe("canApprove()", () => {
 
 describe("full permission matrix", () => {
   const modes = ["simple-key", "managed", "byot"] as const;
-  const roles: AtlasRole[] = ["viewer", "analyst", "admin"];
+  const roles: AtlasRole[] = ["member", "admin", "owner"];
   const approvalModes: ActionApprovalMode[] = ["auto", "manual", "admin-only"];
 
   // Expected results: [role][approvalMode] => boolean
   const expected: Record<AtlasRole, Record<ActionApprovalMode, boolean>> = {
-    viewer: { auto: true, manual: false, "admin-only": false },
-    analyst: { auto: true, manual: true, "admin-only": false },
-    admin: { auto: true, manual: true, "admin-only": true },
+    member: { auto: true, manual: false, "admin-only": false },
+    admin: { auto: true, manual: true, "admin-only": false },
+    owner: { auto: true, manual: true, "admin-only": true },
   };
 
   for (const mode of modes) {

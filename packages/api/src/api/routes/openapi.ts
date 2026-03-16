@@ -1322,7 +1322,7 @@ function buildSpec(): Record<string, unknown> {
           parameters: [
             ...paginationParams({ limit: 50, maxLimit: 200 }),
             { name: "search", in: "query", required: false, schema: { type: "string" }, description: "Search by email (contains match)." },
-            { name: "role", in: "query", required: false, schema: { type: "string", enum: ["viewer", "analyst", "admin"] }, description: "Filter by role." },
+            { name: "role", in: "query", required: false, schema: { type: "string", enum: ["member", "admin", "owner"] }, description: "Filter by role." },
           ],
           responses: {
             "200": {
@@ -1354,9 +1354,9 @@ function buildSpec(): Record<string, unknown> {
                       byRole: {
                         type: "object",
                         properties: {
+                          owner: { type: "integer" },
                           admin: { type: "integer" },
-                          analyst: { type: "integer" },
-                          viewer: { type: "integer" },
+                          member: { type: "integer" },
                         },
                       },
                     },
@@ -1385,7 +1385,7 @@ function buildSpec(): Record<string, unknown> {
                   type: "object",
                   required: ["role"],
                   properties: {
-                    role: { type: "string", enum: ["viewer", "analyst", "admin"] },
+                    role: { type: "string", enum: ["member", "admin", "owner"] },
                   },
                 },
               },

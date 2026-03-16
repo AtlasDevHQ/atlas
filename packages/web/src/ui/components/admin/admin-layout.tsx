@@ -54,7 +54,7 @@ export function AdminLayout({ children }: { children: ReactNode }) {
 
   // Signed in but not admin
   const role = (session.data.user as Record<string, unknown>).role;
-  if (role !== "admin") {
+  if (role !== "admin" && role !== "owner") {
     return (
       <main id="main" tabIndex={-1} className="flex h-dvh items-center justify-center">
         <div className="w-full max-w-sm space-y-3 rounded-lg border border-zinc-200 bg-zinc-50 p-6 text-center dark:border-zinc-700 dark:bg-zinc-900">
@@ -63,7 +63,7 @@ export function AdminLayout({ children }: { children: ReactNode }) {
           </h2>
           <p className="text-sm text-zinc-500 dark:text-zinc-400">
             The admin console requires the <strong>admin</strong> role. You are signed in
-            as <strong>{session.data.user.email}</strong> with role <strong>{String(role ?? "viewer")}</strong>.
+            as <strong>{session.data.user.email}</strong> with role <strong>{String(role ?? "member")}</strong>.
           </p>
           <button
             onClick={() => authClient.signOut()}

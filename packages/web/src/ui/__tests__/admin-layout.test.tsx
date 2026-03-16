@@ -81,15 +81,15 @@ describe("AdminLayout", () => {
   });
 
   test("shows access denied for non-admin users", () => {
-    mockSession = { data: { user: { email: "user@test.com", role: "viewer" } } };
+    mockSession = { data: { user: { email: "user@test.com", role: "member" } } };
     const { container } = renderLayout();
     expect(container.textContent).toContain("Access Denied");
     expect(container.textContent).toContain("user@test.com");
-    expect(container.textContent).toContain("viewer");
+    expect(container.textContent).toContain("member");
   });
 
   test("shows sign out button for non-admin users", () => {
-    mockSession = { data: { user: { email: "user@test.com", role: "viewer" } } };
+    mockSession = { data: { user: { email: "user@test.com", role: "member" } } };
     const { container } = renderLayout();
     const button = container.querySelector("button");
     expect(button).not.toBeNull();
@@ -97,7 +97,7 @@ describe("AdminLayout", () => {
   });
 
   test("calls signOut when sign out button is clicked", () => {
-    mockSession = { data: { user: { email: "user@test.com", role: "analyst" } } };
+    mockSession = { data: { user: { email: "user@test.com", role: "member" } } };
     const { container } = renderLayout();
     const button = container.querySelector("button")!;
     fireEvent.click(button);

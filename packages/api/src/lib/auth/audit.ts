@@ -68,8 +68,8 @@ export function logQueryAudit(entry: AuditEntry): void {
   if (hasInternalDB()) {
     try {
       internalExecute(
-        `INSERT INTO audit_log (user_id, user_label, auth_mode, sql, duration_ms, row_count, success, error, source_id, source_type, target_host, tables_accessed, columns_accessed)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+        `INSERT INTO audit_log (user_id, user_label, auth_mode, sql, duration_ms, row_count, success, error, source_id, source_type, target_host, tables_accessed, columns_accessed, org_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
         [
           userId,
           userLabel,
@@ -84,6 +84,7 @@ export function logQueryAudit(entry: AuditEntry): void {
           entry.targetHost ?? null,
           entry.tablesAccessed?.length ? JSON.stringify(entry.tablesAccessed) : null,
           entry.columnsAccessed?.length ? JSON.stringify(entry.columnsAccessed) : null,
+          ctx?.user?.activeOrganizationId ?? null,
         ],
       );
     } catch (err) {

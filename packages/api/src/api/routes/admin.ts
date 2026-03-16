@@ -43,10 +43,14 @@ import {
   findEntityFile,
 } from "@atlas/api/lib/semantic-files";
 import { runDiff } from "@atlas/api/lib/semantic-diff";
+import { adminOrgs } from "./admin-orgs";
 
 const log = createLogger("admin-routes");
 
 const admin = new Hono();
+
+// Mount organization management sub-router
+admin.route("/organizations", adminOrgs);
 
 // Re-export for backward compatibility with tests that import from admin routes
 export { getSemanticRoot } from "@atlas/api/lib/semantic-files";
@@ -81,7 +85,7 @@ async function adminAuthPreamble(req: Request, requestId: string) {
   // Enforce admin role — when auth mode is "none" (no auth configured, e.g.
   // local dev), treat the request as an implicit admin since there is no
   // identity boundary to enforce.
-  if (authResult.mode !== "none" && (!authResult.user || authResult.user.role !== "admin")) {
+  if (authResult.mode !== "none" && (!authResult.user || (authResult.user.role !== "admin" && authResult.user.role !== "owner"))) {
     return { error: { error: "forbidden", message: "Admin role required." }, status: 403 as const };
   }
 
@@ -2330,7 +2334,7 @@ admin.get("/users", async (c) => {
           id: u.id,
           email: u.email,
           name: u.name,
-          role: u.role ?? "viewer",
+          role: u.role ?? "member",
           banned: u.banned ?? false,
           banReason: u.banReason ?? null,
           banExpires: u.banExpires ?? null,
@@ -2368,7 +2372,7 @@ admin.get("/users/stats", async (c) => {
         `SELECT COUNT(*) as count FROM "user"`,
       );
       const roleResult = await internalQuery<{ role: string; count: string }>(
-        `SELECT COALESCE(role, 'viewer') as role, COUNT(*) as count FROM "user" GROUP BY COALESCE(role, 'viewer')`,
+        `SELECT COALESCE(role, 'member') as role, COUNT(*) as count FROM "user" GROUP BY COALESCE(role, 'member')`,
       );
       const bannedResult = await internalQuery<{ count: string }>(
         `SELECT COUNT(*) as count FROM "user" WHERE banned = true`,

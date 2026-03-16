@@ -12,12 +12,13 @@
  */
 
 import { betterAuth } from "better-auth";
-import { bearer, admin } from "better-auth/plugins";
+import { bearer, admin, organization } from "better-auth/plugins";
 // @better-auth/api-key must match the better-auth core version.
 // Both are pinned to ^1.5.1 in package.json — update together.
 import { apiKey } from "@better-auth/api-key";
 import { getInternalDB, hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import { ac, owner as ownerRole, admin as adminRole, member as memberRole } from "@atlas/api/lib/auth/org-permissions";
 
 const log = createLogger("auth:server");
 
@@ -98,7 +99,23 @@ export function getAuthInstance(): AuthInstance {
       updateAge: 60 * 60 * 24,
       cookieCache: { enabled: true, maxAge: 5 * 60 },
     },
-    plugins: [bearer(), apiKey(), admin({ defaultRole: "analyst", adminRoles: ["admin"] })],
+    plugins: [
+      bearer(),
+      apiKey(),
+      admin({ defaultRole: "member", adminRoles: ["admin", "owner"] }),
+      organization({
+        ac,
+        roles: { owner: ownerRole, admin: adminRole, member: memberRole },
+        async sendInvitationEmail(data) {
+          // Log the invitation for now. Email delivery can be wired up via
+          // a plugin (e.g. email-digest) or env-configured SMTP later.
+          log.warn(
+            { email: data.email, orgName: data.organization.name, inviterId: data.inviter.user.id },
+            "Organization invitation created but email delivery is not configured — share the invite link manually",
+          );
+        },
+      }),
+    ],
     trustedOrigins:
       process.env.BETTER_AUTH_TRUSTED_ORIGINS?.split(",")
         .map((s) => s.trim())
@@ -131,35 +148,6 @@ export function getAuthInstance(): AuthInstance {
 
             } catch (err) {
               log.error({ err }, "Bootstrap admin check failed — defaulting to normal role assignment");
-            }
-
-            // Check for pending invitation and auto-assign the invited role.
-            // Separate try/catch so invitation failures don't mask admin bootstrap errors.
-            try {
-              if (hasInternalDB() && user.email) {
-                const invitations = await internalQuery<{ id: string; role: string; token: string }>(
-                  `SELECT id, role, token FROM invitations WHERE email = $1 AND status = 'pending' AND expires_at > now() ORDER BY created_at DESC LIMIT 1`,
-                  [user.email.toLowerCase().trim()],
-                );
-                if (invitations.length > 0) {
-                  const inv = invitations[0];
-                  log.info({ email: user.email, role: inv.role, invitationId: inv.id }, "Invitation match: assigning invited role on signup");
-                  try {
-                    await internalQuery(
-                      `UPDATE invitations SET status = 'accepted', accepted_at = now() WHERE id = $1`,
-                      [inv.id],
-                    );
-                  } catch (err) {
-                    log.error(
-                      { err, email: user.email, invitationId: inv.id, role: inv.role },
-                      "Failed to mark invitation as accepted — user will receive invited role but invitation remains pending in admin view",
-                    );
-                  }
-                  return { data: { ...user, role: inv.role } };
-                }
-              }
-            } catch (err) {
-              log.error({ err, email: user.email }, "Invitation lookup failed during signup — user will receive default role");
             }
           },
         },

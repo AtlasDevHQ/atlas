@@ -281,4 +281,55 @@ describe("validateManaged()", () => {
       }
     });
   });
+
+  // -------------------------------------------------------------------------
+  // activeOrganizationId extraction
+  // -------------------------------------------------------------------------
+
+  describe("activeOrganizationId extraction", () => {
+    it("extracts activeOrganizationId from session data", async () => {
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_123", email: "alice@example.com", role: "admin" },
+        session: { id: "sess_abc", userId: "usr_123", activeOrganizationId: "org-456" },
+      });
+
+      const result = await validateManaged(makeRequest());
+
+      expect(result.authenticated).toBe(true);
+      if (result.authenticated && result.user) {
+        expect(result.user.activeOrganizationId).toBe("org-456");
+        expect(result.user.claims?.org_id).toBe("org-456");
+      }
+    });
+
+    it("leaves activeOrganizationId undefined when not in session", async () => {
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_123", email: "alice@example.com" },
+        session: { id: "sess_abc", userId: "usr_123" },
+      });
+
+      const result = await validateManaged(makeRequest());
+
+      expect(result.authenticated).toBe(true);
+      if (result.authenticated && result.user) {
+        expect(result.user.activeOrganizationId).toBeUndefined();
+        expect(result.user.claims?.org_id).toBeUndefined();
+      }
+    });
+
+    it("treats null activeOrganizationId as no org", async () => {
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_123", email: "alice@example.com" },
+        session: { id: "sess_abc", userId: "usr_123", activeOrganizationId: null },
+      });
+
+      const result = await validateManaged(makeRequest());
+
+      expect(result.authenticated).toBe(true);
+      if (result.authenticated && result.user) {
+        expect(result.user.activeOrganizationId).toBeUndefined();
+        expect(result.user.claims?.org_id).toBeUndefined();
+      }
+    });
+  });
 });

@@ -159,6 +159,7 @@ conversations.get("/", async (c) => {
     const starred = starredParam === "true" ? true : starredParam === "false" ? false : undefined;
     const result = await listConversations({
       userId: authResult.user?.id,
+      orgId: authResult.user?.activeOrganizationId,
       starred,
       limit,
       offset,

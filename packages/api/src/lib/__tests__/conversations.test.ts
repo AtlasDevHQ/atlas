@@ -124,7 +124,7 @@ describe("conversations module", () => {
       const result = await createConversation({ userId: "u1", title: "Test" });
       expect(result).toEqual({ id: "conv-123" });
       expect(queryCalls[0].sql).toContain("INSERT INTO conversations");
-      expect(queryCalls[0].params).toEqual(["u1", "Test", "web", null]);
+      expect(queryCalls[0].params).toEqual(["u1", "Test", "web", null, null]);
     });
 
     it("returns null when no DB", async () => {
@@ -145,7 +145,7 @@ describe("conversations module", () => {
       setResults({ rows: [{ id: "conv-456" }] });
 
       await createConversation({});
-      expect(queryCalls[0].params).toEqual([null, null, "web", null]);
+      expect(queryCalls[0].params).toEqual([null, null, "web", null, null]);
     });
 
     it("accepts custom surface and connectionId", async () => {
@@ -153,7 +153,16 @@ describe("conversations module", () => {
       setResults({ rows: [{ id: "conv-789" }] });
 
       await createConversation({ surface: "api", connectionId: "wh" });
-      expect(queryCalls[0].params).toEqual([null, null, "api", "wh"]);
+      expect(queryCalls[0].params).toEqual([null, null, "api", "wh", null]);
+    });
+
+    it("includes orgId when provided", async () => {
+      enableInternalDB();
+      setResults({ rows: [{ id: "conv-org" }] });
+
+      const result = await createConversation({ userId: "u1", orgId: "org-123" });
+      expect(result).toEqual({ id: "conv-org" });
+      expect(queryCalls[0].params).toEqual(["u1", null, "web", null, "org-123"]);
     });
   });
 
@@ -334,6 +343,25 @@ describe("conversations module", () => {
 
       await listConversations();
       expect(queryCalls[0].sql).not.toContain("user_id = $1");
+    });
+
+    it("scopes by orgId when provided", async () => {
+      enableInternalDB();
+      setResults({ rows: [{ total: 2 }] }, { rows: [] });
+
+      await listConversations({ orgId: "org-123" });
+      expect(queryCalls[0].sql).toContain("org_id");
+      expect(queryCalls[0].params).toEqual(["org-123"]);
+    });
+
+    it("scopes by both userId and orgId", async () => {
+      enableInternalDB();
+      setResults({ rows: [{ total: 1 }] }, { rows: [] });
+
+      await listConversations({ userId: "u1", orgId: "org-456" });
+      expect(queryCalls[0].sql).toContain("user_id");
+      expect(queryCalls[0].sql).toContain("org_id");
+      expect(queryCalls[0].params).toEqual(["u1", "org-456"]);
     });
 
     it("uses default limit=20, offset=0", async () => {

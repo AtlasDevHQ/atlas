@@ -17,8 +17,9 @@
 
 import { createAuthClient } from "better-auth/react";
 import { apiKeyClient } from "@better-auth/api-key/client";
-import { adminClient } from "better-auth/client/plugins";
+import { adminClient, organizationClient } from "better-auth/client/plugins";
 import { API_URL } from "@/lib/api-url";
+import { ac, owner, admin, member } from "./org-permissions";
 
 function getBaseURL(): string {
   if (API_URL) return API_URL + "/api/auth";
@@ -28,7 +29,14 @@ function getBaseURL(): string {
 
 export const authClient = createAuthClient({
   baseURL: getBaseURL(),
-  plugins: [apiKeyClient(), adminClient()],
+  plugins: [
+    apiKeyClient(),
+    adminClient(),
+    organizationClient({
+      ac,
+      roles: { owner, admin, member },
+    }),
+  ],
   // Cross-origin deployments (app.useatlas.dev → api.useatlas.dev) require
   // credentials: "include" so the browser stores and sends session cookies.
   fetchOptions: API_URL ? { credentials: "include" as RequestCredentials } : {},

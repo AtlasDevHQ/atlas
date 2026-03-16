@@ -75,13 +75,14 @@ export async function createConversation(opts: {
   title?: string | null;
   surface?: string;
   connectionId?: string | null;
+  orgId?: string | null;
 }): Promise<{ id: string } | null> {
   if (!hasInternalDB()) return null;
   try {
     const rows = opts.id
       ? await internalQuery<{ id: string }>(
-          `INSERT INTO conversations (id, user_id, title, surface, connection_id)
-           VALUES ($1, $2, $3, $4, $5)
+          `INSERT INTO conversations (id, user_id, title, surface, connection_id, org_id)
+           VALUES ($1, $2, $3, $4, $5, $6)
            RETURNING id`,
           [
             opts.id,
@@ -89,17 +90,19 @@ export async function createConversation(opts: {
             opts.title ?? null,
             opts.surface ?? "web",
             opts.connectionId ?? null,
+            opts.orgId ?? null,
           ],
         )
       : await internalQuery<{ id: string }>(
-          `INSERT INTO conversations (user_id, title, surface, connection_id)
-           VALUES ($1, $2, $3, $4)
+          `INSERT INTO conversations (user_id, title, surface, connection_id, org_id)
+           VALUES ($1, $2, $3, $4, $5)
            RETURNING id`,
           [
             opts.userId ?? null,
             opts.title ?? null,
             opts.surface ?? "web",
             opts.connectionId ?? null,
+            opts.orgId ?? null,
           ],
         );
     return rows[0] ?? null;
@@ -174,9 +177,10 @@ export async function getConversation(
   }
 }
 
-/** List conversations (metadata only, no messages). Auth-scoped when userId is provided. */
+/** List conversations (metadata only, no messages). Auth-scoped when userId/orgId is provided. */
 export async function listConversations(opts?: {
   userId?: string | null;
+  orgId?: string | null;
   starred?: boolean;
   limit?: number;
   offset?: number;
@@ -196,6 +200,10 @@ export async function listConversations(opts?: {
     if (opts?.userId) {
       conditions.push(`user_id = $${paramIdx++}`);
       params.push(opts.userId);
+    }
+    if (opts?.orgId) {
+      conditions.push(`org_id = $${paramIdx++}`);
+      params.push(opts.orgId);
     }
     if (opts?.starred !== undefined) {
       conditions.push(`starred = $${paramIdx++}`);

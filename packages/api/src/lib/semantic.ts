@@ -471,10 +471,20 @@ export function getOrgWhitelistedTables(orgId: string, connectionId: string = "d
   }
 
   const hasNonDefault = Array.from(byConnection.keys()).some((k) => k !== "default");
+  let tables: Set<string>;
   if (!hasNonDefault) {
-    return new Set(byConnection.get("default") ?? []);
+    tables = new Set(byConnection.get("default") ?? []);
+  } else {
+    tables = new Set(byConnection.get(connectionId) ?? []);
   }
-  return new Set(byConnection.get(connectionId) ?? []);
+
+  // Merge plugin-provided entities (same behavior as file-based getWhitelistedTables)
+  const pluginTables = _pluginEntities.get(connectionId);
+  if (pluginTables && pluginTables.size > 0) {
+    for (const t of pluginTables) tables.add(t);
+  }
+
+  return tables;
 }
 
 /** Invalidate the cached whitelist for an org (call after entity CRUD). */

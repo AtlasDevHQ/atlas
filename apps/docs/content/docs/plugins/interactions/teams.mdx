@@ -1,0 +1,146 @@
+---
+title: Microsoft Teams Bot
+description: Integrate Microsoft Teams as an interaction surface for Atlas with Bot Framework messaging and Adaptive Cards.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The Teams interaction plugin integrates Microsoft Teams as an interaction surface for Atlas. Users can @mention the bot in channels or send direct messages, and the bot replies with Adaptive Cards containing formatted query results, SQL, and data tables.
+
+This plugin uses the `routes()` interface to mount Hono routes directly into the Atlas API server, and receives runtime dependencies (agent execution, rate limiting) via config callbacks rather than importing from `@atlas/api`.
+
+## Installation
+
+```bash
+bun add @useatlas/teams jose
+```
+
+### Prerequisites
+
+- An Azure Bot registration with Microsoft App ID and App Password
+- The bot registered in a Teams app manifest
+- A publicly accessible endpoint for the Bot Framework messaging webhook
+
+## Azure Bot Registration
+
+### 1. Create an Azure Bot resource
+
+1. Go to the [Azure Portal](https://portal.azure.com)
+2. Search for **Azure Bot** and create a new resource
+3. Choose **Multi Tenant** for the bot type (or **Single Tenant** if restricting to one Azure AD tenant)
+4. Note the **Microsoft App ID** — this is your `appId`
+
+### 2. Create an App Password
+
+1. In the Azure Bot resource, go to **Configuration**
+2. Click **Manage Password** next to the Microsoft App ID
+3. Click **New client secret** and note the value — this is your `appPassword`
+
+<Callout type="warn">
+The App Password is only shown once. Copy it immediately and store it securely. If lost, create a new one.
+</Callout>
+
+### 3. Configure the messaging endpoint
+
+Set the **Messaging endpoint** to your Atlas API's Teams messages route:
+
+```
+https://your-atlas-api.example.com/api/v1/teams/messages
+```
+
+### 4. Enable the Teams channel
+
+In the Azure Bot resource, go to **Channels** and add **Microsoft Teams**.
+
+### 5. Create a Teams app manifest
+
+Create a Teams app with the bot capability pointing to your Azure Bot registration. You can use the [Teams Developer Portal](https://dev.teams.microsoft.com/) to create and install the app.
+
+## Configuration
+
+```typescript
+import { defineConfig } from "@atlas/api/lib/config";
+import { executeAgentQuery } from "@atlas/api/lib/agent-query";
+import { teamsPlugin } from "@useatlas/teams";
+
+export default defineConfig({
+  plugins: [
+    teamsPlugin({
+      appId: process.env.TEAMS_APP_ID!,
+      appPassword: process.env.TEAMS_APP_PASSWORD!,
+      executeQuery: executeAgentQuery,
+    }),
+  ],
+});
+```
+
+With optional tenant restriction and rate limiting:
+
+```typescript
+export default defineConfig({
+  plugins: [
+    teamsPlugin({
+      appId: process.env.TEAMS_APP_ID!,
+      appPassword: process.env.TEAMS_APP_PASSWORD!,
+      tenantId: process.env.TEAMS_TENANT_ID,
+      executeQuery: executeAgentQuery,
+      checkRateLimit: myRateLimiter,
+    }),
+  ],
+});
+```
+
+### Options
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `appId` | `string` | Yes | Microsoft App ID from your Azure Bot registration. |
+| `appPassword` | `string` | Yes | Microsoft App Password (client secret) from Azure AD. |
+| `tenantId` | `string` | No | Restrict the bot to a specific Azure AD tenant. Tokens from other tenants are rejected. |
+| `executeQuery` | `function` | Yes | Callback that runs the Atlas agent on a question and returns structured results. |
+| `checkRateLimit` | `function` | No | Optional rate limiting callback. |
+| `scrubError` | `function` | No | Optional error scrubbing callback to strip sensitive information from error messages. |
+
+## Mounted Routes
+
+The plugin mounts the following Hono route under the plugin's base path:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/messages` | Bot Framework messaging endpoint — receives all activities from Teams |
+
+## How It Works
+
+1. A user @mentions the bot or sends a direct message in Teams
+2. Teams sends a Bot Framework activity to the `/messages` endpoint
+3. The plugin verifies the JWT in the Authorization header against Azure AD's public keys
+4. The bot's @mention is stripped from the message text to extract the query
+5. The `executeQuery` callback runs the Atlas agent
+6. Results are formatted as an Adaptive Card with answer, SQL, and data table
+7. The reply is sent back via the Bot Connector API
+
+<Callout type="info">
+The `executeQuery` callback is the bridge between the Teams plugin and the Atlas agent. It receives the user's question, runs the agent, and returns structured results that the plugin formats into Adaptive Cards.
+</Callout>
+
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `TEAMS_APP_ID` | Microsoft App ID |
+| `TEAMS_APP_PASSWORD` | Microsoft App Password |
+| `TEAMS_TENANT_ID` | Optional Azure AD tenant ID |
+
+## Troubleshooting
+
+### Bot not responding to messages
+
+Verify the messaging endpoint URL in your Azure Bot Configuration matches your Atlas API's Teams route. For local development, use a tunnel service like ngrok or dev tunnels (`devtunnel`).
+
+### Authorization failures
+
+Ensure `TEAMS_APP_ID` and `TEAMS_APP_PASSWORD` match the Azure Bot registration credentials. If using tenant restriction, verify the tenant ID matches the Azure AD tenant where Teams is configured.
+
+### Adaptive Cards not rendering
+
+Teams requires Adaptive Card schema version 1.5 or lower. The plugin uses version 1.5 which is supported by all current Teams clients.

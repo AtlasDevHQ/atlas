@@ -33,6 +33,7 @@
         "@useatlas/sidecar",
         "@useatlas/vercel-sandbox",
         "@useatlas/slack",
+        "@useatlas/teams",
         "@useatlas/mcp",
         "@useatlas/email",
         "@useatlas/jira",

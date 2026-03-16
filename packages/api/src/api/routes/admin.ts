@@ -487,11 +487,12 @@ admin.get("/semantic/diff", async (c) => {
       const result = await runDiff(connectionId);
       return c.json(result);
     } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error";
       log.error(
         { err: err instanceof Error ? err : new Error(String(err)), connectionId, requestId },
         "Schema diff failed",
       );
-      return c.json({ error: "internal_error", message: "Failed to compute schema diff." }, 500);
+      return c.json({ error: "internal_error", message: `Schema diff failed: ${message}` }, 500);
     }
   });
 });

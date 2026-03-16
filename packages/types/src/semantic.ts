@@ -80,6 +80,7 @@ export interface SemanticDiffResponse {
     changed: number;
     unchanged: number;
   };
+  warnings?: string[];
 }
 
 /** Column info returned by the public tables endpoint. */

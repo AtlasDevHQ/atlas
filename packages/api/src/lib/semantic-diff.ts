@@ -7,6 +7,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import type { SemanticTableDiff, SemanticDiffResponse } from "@useatlas/types";
 import { createLogger } from "@atlas/api/lib/logger";
 import { connections } from "@atlas/api/lib/db/connection";
 import { getSemanticRoot, readYamlFile, discoverEntities } from "@atlas/api/lib/semantic-files";
@@ -23,34 +24,11 @@ export interface EntitySnapshot {
   foreignKeys: Set<string>;     // "from_col→target_table.target_col"
 }
 
-export interface TableDiff {
-  table: string;
-  addedColumns: { name: string; type: string }[];
-  removedColumns: { name: string; type: string }[];
-  typeChanges: { name: string; yamlType: string; dbType: string }[];
-}
-
 export interface DiffResult {
   newTables: string[];
   removedTables: string[];
-  tableDiffs: TableDiff[];
+  tableDiffs: SemanticTableDiff[];
   unchangedCount: number;
-}
-
-/** JSON-serializable wire format for the API response. */
-export interface DiffResponse {
-  connection: string;
-  newTables: string[];
-  removedTables: string[];
-  tableDiffs: TableDiff[];
-  unchangedCount: number;
-  summary: {
-    total: number;
-    new: number;
-    removed: number;
-    changed: number;
-    unchanged: number;
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -130,7 +108,7 @@ export function computeDiff(
   const newTables = [...dbTables].filter((t) => !yamlTables.has(t)).sort();
   const removedTables = [...yamlTables].filter((t) => !dbTables.has(t)).sort();
 
-  const tableDiffs: TableDiff[] = [];
+  const tableDiffs: SemanticTableDiff[] = [];
   let unchangedCount = 0;
 
   for (const table of [...dbTables].filter((t) => yamlTables.has(t)).sort()) {
@@ -176,12 +154,19 @@ export async function getDBSchema(connectionId: string = "default"): Promise<Map
   let sql: string;
   if (dbType === "mysql") {
     sql = `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = DATABASE() ORDER BY table_name, ordinal_position`;
-  } else {
-    // PostgreSQL default — use the resolved schema (search_path handles this)
+  } else if (dbType === "postgres") {
     sql = `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = current_schema() ORDER BY table_name, ordinal_position`;
+  } else {
+    throw new Error(`Schema diff is not yet supported for ${dbType} connections. Supported: postgres, mysql.`);
   }
 
-  const result = await conn.query(sql, 15000);
+  let result;
+  try {
+    result = await conn.query(sql, 15000);
+  } catch (err) {
+    throw new Error(`Database schema query failed for connection "${connectionId}": ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+  }
+
   const snapshots = new Map<string, EntitySnapshot>();
 
   for (const row of result.rows) {
@@ -202,12 +187,23 @@ export async function getDBSchema(connectionId: string = "default"): Promise<Map
 // getYAMLSnapshots — read entity YAML files for a given connection
 // ---------------------------------------------------------------------------
 
-export function getYAMLSnapshots(connectionId: string = "default"): Map<string, EntitySnapshot> {
+export function getYAMLSnapshots(
+  connectionId: string = "default",
+): { snapshots: Map<string, EntitySnapshot>; warnings: string[] } {
   const root = getSemanticRoot();
   const snapshots = new Map<string, EntitySnapshot>();
+  const warnings: string[] = [];
+
+  if (!fs.existsSync(root)) {
+    warnings.push(`Semantic root not found: ${root}. Run 'atlas init' to create it.`);
+    return { snapshots, warnings };
+  }
 
   // Discover entities to find their source/connection mapping
-  const { entities } = discoverEntities(root);
+  const { entities, warnings: discoverWarnings } = discoverEntities(root);
+  if (discoverWarnings.length > 0) {
+    warnings.push(...discoverWarnings);
+  }
 
   for (const entity of entities) {
     // Match entities to the requested connection:
@@ -232,22 +228,22 @@ export function getYAMLSnapshots(connectionId: string = "default"): Map<string, 
       const snapshot = parseEntityYAML(doc);
       snapshots.set(snapshot.table, snapshot);
     } catch (err) {
-      log.warn({ err: err instanceof Error ? err : new Error(String(err)), filePath }, "Failed to parse entity YAML for diff");
+      const msg = `Failed to parse ${entity.table}.yml: ${err instanceof Error ? err.message : String(err)}`;
+      log.warn({ err: err instanceof Error ? err : new Error(String(err)), filePath }, msg);
+      warnings.push(msg);
     }
   }
 
-  return snapshots;
+  return { snapshots, warnings };
 }
 
 // ---------------------------------------------------------------------------
 // runDiff — orchestrates the full diff for a connection
 // ---------------------------------------------------------------------------
 
-export async function runDiff(connectionId: string = "default"): Promise<DiffResponse> {
-  const [dbSnapshots, yamlSnapshots] = await Promise.all([
-    getDBSchema(connectionId),
-    Promise.resolve(getYAMLSnapshots(connectionId)),
-  ]);
+export async function runDiff(connectionId: string = "default"): Promise<SemanticDiffResponse> {
+  const dbSnapshots = await getDBSchema(connectionId);
+  const { snapshots: yamlSnapshots, warnings } = getYAMLSnapshots(connectionId);
 
   const diff = computeDiff(dbSnapshots, yamlSnapshots);
 
@@ -266,5 +262,6 @@ export async function runDiff(connectionId: string = "default"): Promise<DiffRes
       changed: diff.tableDiffs.length,
       unchanged: diff.unchangedCount,
     },
+    ...(warnings.length > 0 && { warnings }),
   };
 }

@@ -303,7 +303,7 @@ mock.module("@atlas/api/lib/semantic-diff", () => ({
   parseEntityYAML: () => ({ table: "", columns: new Map(), foreignKeys: new Set() }),
   computeDiff: () => ({ newTables: [], removedTables: [], tableDiffs: [], unchangedCount: 0 }),
   getDBSchema: async () => new Map(),
-  getYAMLSnapshots: () => new Map(),
+  getYAMLSnapshots: () => ({ snapshots: new Map(), warnings: [] }),
 }));
 
 mock.module("@atlas/api/lib/conversations", () => ({
@@ -1344,12 +1344,13 @@ describe("Admin routes — semantic diff", () => {
     expect(body.error).toBe("not_found");
   });
 
-  it("returns 500 when runDiff throws", async () => {
+  it("returns 500 with specific message when runDiff throws", async () => {
     mockRunDiff.mockRejectedValueOnce(new Error("DB unreachable"));
     const res = await app.fetch(adminRequest("/api/v1/admin/semantic/diff"));
     expect(res.status).toBe(500);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.error).toBe("internal_error");
+    expect(body.message).toContain("DB unreachable");
   });
 
   it("requires admin role", async () => {

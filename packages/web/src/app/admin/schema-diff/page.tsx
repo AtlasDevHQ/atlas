@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import { useQueryStates } from "nuqs";
+import { schemaDiffSearchParams } from "./search-params";
 import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
@@ -47,7 +49,8 @@ import type { SemanticDiffResponse, SemanticTableDiff, ConnectionInfo } from "@/
 // ---------------------------------------------------------------------------
 
 export default function SchemaDiffPage() {
-  const [connectionId, setConnectionId] = useState("default");
+  const [{ connection: connectionId }, setParams] = useQueryStates(schemaDiffSearchParams);
+  const setConnectionId = (id: string) => setParams({ connection: id });
 
   const { data: connectionsData } = useAdminFetch<ConnectionInfo[]>(
     "/api/v1/admin/connections",
@@ -238,6 +241,20 @@ export default function SchemaDiffPage() {
               <div className="space-y-2">
                 {diff.tableDiffs.map((td) => (
                   <ChangedTableCard key={td.table} diff={td} />
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* Warnings */}
+          {diff.warnings && diff.warnings.length > 0 && (
+            <section>
+              <div className="space-y-1.5">
+                {diff.warnings.map((w, i) => (
+                  <div key={i} className="flex items-start gap-2 rounded-md border border-amber-500/20 bg-amber-50/30 px-3 py-2 text-xs text-amber-700 dark:bg-amber-950/10 dark:text-amber-400">
+                    <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+                    <span>{w}</span>
+                  </div>
                 ))}
               </div>
             </section>

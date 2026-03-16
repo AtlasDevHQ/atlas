@@ -129,6 +129,28 @@ describe("parseEntityYAML", () => {
     });
     expect(snap.columns.size).toBe(0);
   });
+
+  it("handles non-array joins gracefully", () => {
+    const snap = parseEntityYAML({
+      table: "orders",
+      dimensions: [{ name: "id", type: "number" }],
+      joins: "invalid",
+    });
+    expect(snap.columns.size).toBe(1);
+    expect(snap.foreignKeys.size).toBe(0);
+  });
+
+  it("skips dimensions without name or type", () => {
+    const snap = parseEntityYAML({
+      table: "t",
+      dimensions: [
+        { name: "valid", type: "string" },
+        { name: 42, type: "number" },
+        { sql: "COUNT(*)" },
+      ],
+    });
+    expect(snap.columns.size).toBe(1);
+  });
 });
 
 // ---------------------------------------------------------------------------

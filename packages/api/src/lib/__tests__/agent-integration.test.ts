@@ -61,6 +61,9 @@ mock.module("@atlas/api/lib/db/connection", () => ({
     getForbiddenPatterns: () => [],
     list: () => ["default"],
     describe: () => [{ id: "default", dbType: "postgres" as const }],
+    recordQuery: () => {},
+    recordError: () => {},
+    recordSuccess: () => {},
   },
   detectDBType: () => "postgres" as const,
   ConnectionNotRegisteredError: class extends Error {

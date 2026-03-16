@@ -439,8 +439,8 @@ function PoolStatsSection({
       if (!res.ok) return;
       const data = await res.json();
       if (!cancelledRef.current) setMetrics(data.metrics ?? []);
-    } catch {
-      // silent — pool stats are non-critical
+    } catch (err) {
+      console.warn("Pool stats fetch failed:", err instanceof Error ? err.message : String(err));
     } finally {
       if (!cancelledRef.current) setPoolLoading(false);
     }

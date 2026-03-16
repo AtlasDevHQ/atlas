@@ -731,8 +731,8 @@ Rules:
       const durationMs = Math.round(performance.now() - start);
       const truncated = result.rows.length >= rowLimit;
 
-      connections.recordQuery?.(connId, durationMs);
-      connections.recordSuccess?.(connId);
+      connections.recordQuery(connId, durationMs);
+      connections.recordSuccess(connId);
 
       try {
         logQueryAudit({
@@ -772,8 +772,8 @@ Rules:
       const message =
         err instanceof Error ? err.message : "Unknown database error";
 
-      connections.recordQuery?.(connId, durationMs);
-      connections.recordError?.(connId);
+      connections.recordQuery(connId, durationMs);
+      connections.recordError(connId);
 
       try {
         logQueryAudit({

@@ -155,6 +155,15 @@ describe("conversations module", () => {
       await createConversation({ surface: "api", connectionId: "wh" });
       expect(queryCalls[0].params).toEqual([null, null, "api", "wh", null]);
     });
+
+    it("includes orgId when provided", async () => {
+      enableInternalDB();
+      setResults({ rows: [{ id: "conv-org" }] });
+
+      const result = await createConversation({ userId: "u1", orgId: "org-123" });
+      expect(result).toEqual({ id: "conv-org" });
+      expect(queryCalls[0].params).toEqual(["u1", null, "web", null, "org-123"]);
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -334,6 +343,25 @@ describe("conversations module", () => {
 
       await listConversations();
       expect(queryCalls[0].sql).not.toContain("user_id = $1");
+    });
+
+    it("scopes by orgId when provided", async () => {
+      enableInternalDB();
+      setResults({ rows: [{ total: 2 }] }, { rows: [] });
+
+      await listConversations({ orgId: "org-123" });
+      expect(queryCalls[0].sql).toContain("org_id");
+      expect(queryCalls[0].params).toEqual(["org-123"]);
+    });
+
+    it("scopes by both userId and orgId", async () => {
+      enableInternalDB();
+      setResults({ rows: [{ total: 1 }] }, { rows: [] });
+
+      await listConversations({ userId: "u1", orgId: "org-456" });
+      expect(queryCalls[0].sql).toContain("user_id");
+      expect(queryCalls[0].sql).toContain("org_id");
+      expect(queryCalls[0].params).toEqual(["u1", "org-456"]);
     });
 
     it("uses default limit=20, offset=0", async () => {

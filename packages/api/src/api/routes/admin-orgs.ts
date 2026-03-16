@@ -17,6 +17,12 @@ import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 
 const log = createLogger("admin-orgs");
 
+const MAX_ID_LENGTH = 128;
+
+function isValidOrgId(id: string | undefined): id is string {
+  return !!id && id.length > 0 && id.length <= MAX_ID_LENGTH;
+}
+
 const adminOrgs = new Hono();
 
 // ---------------------------------------------------------------------------
@@ -118,6 +124,10 @@ adminOrgs.get("/:id", async (c) => {
   const requestId = crypto.randomUUID();
   const orgId = c.req.param("id");
 
+  if (!isValidOrgId(orgId)) {
+    return c.json({ error: "bad_request", message: "Invalid organization ID." }, 400);
+  }
+
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
     return c.json(preamble.error, { status: preamble.status, headers: (preamble as { headers?: Record<string, string> }).headers });
@@ -208,6 +218,10 @@ adminOrgs.get("/:id/stats", async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
   const orgId = c.req.param("id");
+
+  if (!isValidOrgId(orgId)) {
+    return c.json({ error: "bad_request", message: "Invalid organization ID." }, 400);
+  }
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {

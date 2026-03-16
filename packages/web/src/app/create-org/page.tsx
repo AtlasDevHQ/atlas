@@ -58,11 +58,16 @@ export default function CreateOrgPage() {
         return;
       }
 
-      // Set the new org as active
+      // Set the new org as active — if this fails, the org was still created
+      // so we redirect anyway and the user can switch to it via the org switcher.
       if (result.data?.id) {
-        await authClient.organization.setActive({
-          organizationId: result.data.id,
-        });
+        try {
+          await authClient.organization.setActive({
+            organizationId: result.data.id,
+          });
+        } catch (err) {
+          console.error("Organization created but failed to set as active:", err);
+        }
       }
 
       // Redirect to chat

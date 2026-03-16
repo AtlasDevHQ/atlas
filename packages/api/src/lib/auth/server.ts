@@ -109,9 +109,9 @@ export function getAuthInstance(): AuthInstance {
         async sendInvitationEmail(data) {
           // Log the invitation for now. Email delivery can be wired up via
           // a plugin (e.g. email-digest) or env-configured SMTP later.
-          log.info(
+          log.warn(
             { email: data.email, orgName: data.organization.name, inviterId: data.inviter.user.id },
-            "Organization invitation created (email delivery not configured)",
+            "Organization invitation created but email delivery is not configured — share the invite link manually",
           );
         },
       }),

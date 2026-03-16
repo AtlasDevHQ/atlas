@@ -102,6 +102,7 @@ export default function OrganizationsPage() {
   const [selectedOrg, setSelectedOrg] = useState<OrgDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
 
   // Fetch organizations
   useEffect(() => {
@@ -141,15 +142,19 @@ export default function OrganizationsPage() {
   async function openDetail(orgId: string) {
     setDetailOpen(true);
     setDetailLoading(true);
+    setDetailError(null);
     try {
       const res = await fetch(`${apiUrl}/api/v1/admin/organizations/${orgId}`, { credentials });
       if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setDetailError(body.message ?? `Failed to load organization (HTTP ${res.status})`);
         setSelectedOrg(null);
         return;
       }
       const data = await res.json();
       setSelectedOrg(data);
-    } catch {
+    } catch (err) {
+      setDetailError(err instanceof Error ? err.message : "Network error loading organization");
       setSelectedOrg(null);
     } finally {
       setDetailLoading(false);
@@ -385,9 +390,13 @@ export default function OrganizationsPage() {
                 </div>
               )}
             </div>
+          ) : detailError ? (
+            <div className="flex h-32 items-center justify-center text-sm text-destructive">
+              {detailError}
+            </div>
           ) : (
             <div className="flex h-32 items-center justify-center text-muted-foreground">
-              Failed to load organization details
+              No data available
             </div>
           )}
         </SheetContent>

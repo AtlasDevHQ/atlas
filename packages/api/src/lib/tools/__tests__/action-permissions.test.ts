@@ -472,8 +472,8 @@ describe("action permissions integration", () => {
       expect(response.status).toBe(200);
     });
 
-    it("defaults to analyst — blocked from admin-only", async () => {
-      setUser("simple-key"); // no explicit role — defaults to analyst
+    it("defaults to admin — blocked from admin-only (owner-only)", async () => {
+      setUser("simple-key"); // no explicit role — defaults to admin
       const action = makeAction();
       mockGetAction.mockResolvedValueOnce(action);
       currentActionConfig = { approval: "admin-only" };

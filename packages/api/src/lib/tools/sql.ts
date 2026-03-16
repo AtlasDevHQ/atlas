@@ -391,19 +391,28 @@ Rules:
   execute: async ({ sql, explanation, connectionId }) => {
     const connId = connectionId ?? "default";
 
+    // Resolve org context for tenant-scoped pool isolation.
+    // Only active when pool.perOrg is explicitly configured in atlas.config.ts.
+    const reqCtx = getRequestContext();
+    const orgId = connections.isOrgPoolingEnabled()
+      ? reqCtx?.user?.activeOrganizationId
+      : undefined;
+
     // Validate connection exists before proceeding.
+    // Use getForOrg() when orgId is present for tenant isolation.
     // Use getDefault() for "default" to trigger lazy initialization from
     // ATLAS_DATASOURCE_URL — plain get("default") throws on fresh startup.
     let db: DBConnection;
     let dbType: DBType;
     try {
-      if (connId === "default") {
+      if (orgId) {
+        db = connections.getForOrg(orgId, connId);
+      } else if (connId === "default") {
         db = connections.getDefault();
-        dbType = connections.getDBType(connId);
       } else {
         db = connections.get(connId);
-        dbType = connections.getDBType(connId);
       }
+      dbType = connections.getDBType(connId);
     } catch (err) {
       // Narrow the catch to distinguish registration/config errors from
       // unexpected failures (unsupported DB scheme, internal errors).
@@ -771,8 +780,8 @@ Rules:
       const durationMs = Math.round(performance.now() - start);
       const truncated = result.rows.length >= rowLimit;
 
-      connections.recordQuery(connId, durationMs);
-      connections.recordSuccess(connId);
+      connections.recordQuery(connId, durationMs, orgId);
+      connections.recordSuccess(connId, orgId);
 
       // Store in cache on success — fail open if cache backend is broken
       if (cacheKey) {
@@ -827,8 +836,8 @@ Rules:
       const message =
         err instanceof Error ? err.message : "Unknown database error";
 
-      connections.recordQuery(connId, durationMs);
-      connections.recordError(connId);
+      connections.recordQuery(connId, durationMs, orgId);
+      connections.recordError(connId, orgId);
 
       try {
         logQueryAudit({

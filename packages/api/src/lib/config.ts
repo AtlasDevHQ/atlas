@@ -199,6 +199,27 @@ const PythonConfigSchema = z.object({
 
 export type PythonConfig = z.infer<typeof PythonConfigSchema>;
 
+const OrgPoolConfigSchema = z.object({
+  /** Max connections per pool per org. Default 5. */
+  maxConnections: z.number().int().positive().default(5),
+  /** Idle timeout in ms for per-org pool connections. Default 30000. */
+  idleTimeoutMs: z.number().int().positive().default(30000),
+  /** Max org pool sets before LRU eviction. Default 50. */
+  maxOrgs: z.number().int().positive().default(50),
+  /** Warmup probes when an org pool is first created. Default 2. */
+  warmupProbes: z.number().int().nonnegative().default(2),
+  /** Consecutive query errors before auto-drain of an org pool. Default 5. */
+  drainThreshold: z.number().int().positive().default(5),
+});
+
+export type OrgPoolConfigInput = z.input<typeof OrgPoolConfigSchema>;
+
+const PoolConfigSchema = z.object({
+  /** Per-org pool isolation settings. When configured, each org gets its own
+   *  connection pool for noisy-neighbor isolation in SaaS mode. */
+  perOrg: OrgPoolConfigSchema.optional(),
+});
+
 const AtlasConfigSchema = z.object({
   /**
    * Named datasource connections. The "default" key is used when no
@@ -305,6 +326,13 @@ const AtlasConfigSchema = z.object({
   }).optional(),
 
   /**
+   * Connection pool configuration. The `perOrg` sub-key enables tenant-scoped
+   * pooling in SaaS mode — each org gets isolated pool instances to prevent
+   * noisy-neighbor issues.
+   */
+  pool: PoolConfigSchema.optional(),
+
+  /**
    * Query result cache configuration. When enabled (default), identical
    * queries return cached results within the TTL. Cache keys include
    * orgId for tenant isolation.
@@ -326,7 +354,7 @@ export type AtlasConfig = z.infer<typeof AtlasConfigSchema>;
 export type AtlasConfigInput = z.input<typeof AtlasConfigSchema>;
 
 /** Expose schemas and formatter for external validation (e.g. tests, CLI). */
-export { AtlasConfigSchema, RateLimitConfigSchema, RLSConditionSchema, RLSPolicySchema, RLSConfigSchema, SandboxConfigSchema, PythonConfigSchema };
+export { AtlasConfigSchema, RateLimitConfigSchema, RLSConditionSchema, RLSPolicySchema, RLSConfigSchema, SandboxConfigSchema, PythonConfigSchema, PoolConfigSchema, OrgPoolConfigSchema };
 
 /**
  * The resolved config after merging the config file with env var defaults.
@@ -360,6 +388,8 @@ export interface ResolvedConfig {
   session?: { idleTimeout: number; absoluteTimeout: number };
   /** Semantic index configuration. */
   semanticIndex?: { enabled: boolean };
+  /** Connection pool configuration for tenant-scoped pooling. */
+  pool?: { perOrg?: { maxConnections: number; idleTimeoutMs: number; maxOrgs: number; warmupProbes: number; drainThreshold: number } };
   /** Query result cache configuration. */
   cache?: { enabled: boolean; ttl: number; maxSize: number };
   /** Whether the config was loaded from a file or synthesized from env vars. */
@@ -880,6 +910,7 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
     ...(config.python ? { python: config.python } : {}),
     ...(config.session ? { session: config.session } : {}),
     ...(config.semanticIndex ? { semanticIndex: config.semanticIndex } : {}),
+    ...(config.pool ? { pool: config.pool } : {}),
     ...(config.cache ? { cache: config.cache } : {}),
     source: "file",
   };
@@ -966,6 +997,10 @@ export async function applyDatasources(
   const connRegistry = registry ?? (await import("./db/connection")).connections;
 
   connRegistry.setMaxTotalConnections(config.maxTotalConnections);
+
+  if (config.pool?.perOrg) {
+    connRegistry.setOrgPoolConfig(config.pool.perOrg);
+  }
 
   for (const [id, ds] of Object.entries(config.datasources)) {
     try {

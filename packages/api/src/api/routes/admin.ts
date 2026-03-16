@@ -802,6 +802,54 @@ admin.get("/connections/pool", async (c) => {
   });
 });
 
+// GET /connections/pool/orgs — org-scoped pool metrics
+admin.get("/connections/pool/orgs", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  return withRequestContext({ requestId, user: authResult.user }, () => {
+    try {
+      const orgId = c.req.query("orgId");
+      const metrics = connections.getOrgPoolMetrics(orgId || undefined);
+      const config = connections.getOrgPoolConfig();
+      return c.json({ metrics, config, orgCount: connections.listOrgs().length });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to retrieve org pool metrics");
+      return c.json({ error: "metrics_failed", message: err instanceof Error ? err.message : "Failed to retrieve metrics" }, 500);
+    }
+  });
+});
+
+// POST /connections/pool/orgs/:orgId/drain — drain all pools for an org
+admin.post("/connections/pool/orgs/:orgId/drain", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    const orgId = c.req.param("orgId");
+    try {
+      const result = await connections.drainOrg(orgId);
+      log.info({ orgId, drained: result.drained, requestId, userId: authResult.user?.id }, "Org pools drained via admin API");
+      return c.json(result);
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), orgId, requestId }, "Org pool drain failed");
+      return c.json({ error: "drain_failed", message: err instanceof Error ? err.message : "Org drain failed" }, 500);
+    }
+  });
+});
+
 // POST /connections/:id/drain — drain and recreate a pool
 admin.post("/connections/:id/drain", async (c) => {
   const req = c.req.raw;

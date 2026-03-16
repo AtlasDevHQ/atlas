@@ -67,7 +67,7 @@ export interface QueryResult {
   rows: Record<string, unknown>[];
 }
 
-export type { PoolStats } from "@useatlas/types";
+export type { PoolStats, OrgPoolMetrics } from "@useatlas/types";
 
 export interface DBConnection {
   query(sql: string, timeoutMs?: number): Promise<QueryResult>;
@@ -376,19 +376,252 @@ interface RegistryEntry {
   consecutiveQueryFailures: number;
 }
 
+/** Configuration for per-org pool isolation. */
+export interface OrgPoolSettings {
+  /** Whether org-scoped pooling is active. Only true when pool.perOrg is explicitly configured. */
+  enabled: boolean;
+  maxConnections: number;
+  idleTimeoutMs: number;
+  maxOrgs: number;
+  warmupProbes: number;
+  drainThreshold: number;
+}
+
+const DEFAULT_ORG_POOL_SETTINGS: OrgPoolSettings = {
+  enabled: false,
+  maxConnections: 5,
+  idleTimeoutMs: 30000,
+  maxOrgs: 50,
+  warmupProbes: 2,
+  drainThreshold: 5,
+};
+
 /**
- * Named connection registry. Connections can be created from a ConnectionConfig
- * (URL + optional schema) via register(), or injected as pre-built DBConnection
- * instances via registerDirect(). The "default" connection auto-initializes from
- * ATLAS_DATASOURCE_URL on first access via getDefault().
+ * Named connection registry with tenant-scoped pool isolation.
+ *
+ * Base connections are created from a ConnectionConfig (URL + optional schema) via
+ * register(), or injected as pre-built DBConnection instances via registerDirect().
+ * The "default" connection auto-initializes from ATLAS_DATASOURCE_URL on first access.
+ *
+ * When an orgId is provided via getForOrg(), the registry creates an isolated pool
+ * instance for that org+connection pair, using the same URL/config as the base
+ * connection but with org-specific pool limits. This prevents noisy-neighbor issues
+ * in SaaS mode. When no orgId is present (self-hosted), the existing single pool
+ * is used unchanged.
  */
 export class ConnectionRegistry {
   private entries = new Map<string, RegistryEntry>();
   private maxTotalConnections = 100;
   private healthCheckInterval: ReturnType<typeof setInterval> | null = null;
 
+  // --- Org-scoped pool isolation ---
+  /** Org pool entries keyed by "orgId:connectionId". */
+  private orgEntries = new Map<string, RegistryEntry>();
+  /** Monotonic access counter per orgId — used for LRU eviction. Monotonic counter
+   *  avoids issues with Date.now() returning the same value for synchronous calls. */
+  private orgAccessSeq = new Map<string, number>();
+  /** Next sequence number for org access ordering. */
+  private _orgSeq = 0;
+  /** Per-org pool configuration. */
+  private orgPoolSettings: OrgPoolSettings = { ...DEFAULT_ORG_POOL_SETTINGS };
+
   setMaxTotalConnections(n: number): void {
     this.maxTotalConnections = n;
+  }
+
+  /** Configure per-org pool settings. Called from applyDatasources when pool.perOrg is set. Marks org pooling as enabled. */
+  setOrgPoolConfig(config: Partial<Omit<OrgPoolSettings, "enabled">>): void {
+    const merged = { ...this.orgPoolSettings, ...config, enabled: true };
+    if (merged.maxConnections < 1 || merged.maxOrgs < 1 || merged.drainThreshold < 1) {
+      throw new Error("Invalid org pool config: maxConnections, maxOrgs, and drainThreshold must be >= 1");
+    }
+    this.orgPoolSettings = merged;
+  }
+
+  /** Whether org-scoped pooling is enabled (pool.perOrg configured). */
+  isOrgPoolingEnabled(): boolean {
+    return this.orgPoolSettings.enabled;
+  }
+
+  /** Return the current org pool settings (for admin API / diagnostics). */
+  getOrgPoolConfig(): Readonly<OrgPoolSettings> {
+    return this.orgPoolSettings;
+  }
+
+  private _orgKey(orgId: string, connectionId: string): string {
+    if (process.env.NODE_ENV !== "production") {
+      if (orgId.includes(":") || connectionId.includes(":")) {
+        throw new Error(`orgId/connectionId must not contain ':' — got orgId="${orgId}", connectionId="${connectionId}"`);
+      }
+    }
+    return `${orgId}:${connectionId}`;
+  }
+
+  private _parseOrgKey(key: string): { orgId: string; connectionId: string } {
+    const sepIdx = key.indexOf(":");
+    return { orgId: key.slice(0, sepIdx), connectionId: key.slice(sepIdx + 1) };
+  }
+
+  /**
+   * Get an org-scoped connection pool. Lazy-creates on first access.
+   *
+   * Each org gets its own pool instance using the same URL/config as the base
+   * connection but with org-specific pool limits (maxConnections, idleTimeoutMs).
+   * Plugin-managed connections (no config) are returned directly since plugins
+   * manage their own pooling.
+   *
+   * Warmup probes fire asynchronously in the background after pool creation.
+   * LRU eviction removes the least recently used org's pools when maxOrgs is exceeded.
+   */
+  getForOrg(orgId: string, connectionId: string = "default"): DBConnection {
+    const key = this._orgKey(orgId, connectionId);
+    const existing = this.orgEntries.get(key);
+    if (existing) {
+      existing.lastQueryAt = Date.now();
+      this.orgAccessSeq.set(orgId, ++this._orgSeq);
+      return existing.conn;
+    }
+
+    // Ensure the base connection exists (trigger lazy init for "default")
+    if (connectionId === "default" && !this.entries.has("default")) {
+      this.getDefault();
+    }
+
+    const baseEntry = this.entries.get(connectionId);
+    if (!baseEntry) {
+      throw new ConnectionNotRegisteredError(connectionId);
+    }
+
+    // Plugin-managed connections don't have config — return base directly
+    if (!baseEntry.config) {
+      return baseEntry.conn;
+    }
+
+    // Evict LRU org if at capacity
+    this._evictLRUOrg();
+
+    // Create org-scoped pool with org-specific limits
+    const orgConfig: ConnectionConfig = {
+      ...baseEntry.config,
+      maxConnections: this.orgPoolSettings.maxConnections,
+      idleTimeoutMs: this.orgPoolSettings.idleTimeoutMs,
+    };
+
+    let newConn: DBConnection;
+    try {
+      newConn = createConnection(baseEntry.dbType, orgConfig);
+    } catch (err) {
+      log.error(
+        { orgId, connectionId, err: err instanceof Error ? err.message : String(err) },
+        "Failed to create org-scoped pool after LRU eviction",
+      );
+      throw err;
+    }
+    const entry: RegistryEntry = {
+      conn: newConn,
+      dbType: baseEntry.dbType,
+      description: baseEntry.description,
+      lastQueryAt: Date.now(),
+      config: orgConfig,
+      targetHost: baseEntry.targetHost,
+      consecutiveFailures: 0,
+      lastHealth: null,
+      firstFailureAt: null,
+      validate: baseEntry.validate,
+      pluginMeta: baseEntry.pluginMeta,
+      totalQueries: 0,
+      totalErrors: 0,
+      totalQueryTimeMs: 0,
+      lastDrainAt: null,
+      consecutiveQueryFailures: 0,
+    };
+
+    this.orgEntries.set(key, entry);
+    this.orgAccessSeq.set(orgId, ++this._orgSeq);
+    log.info({ orgId, connectionId }, "Created org-scoped connection pool");
+
+    // Fire warmup probes in background (don't block the first request)
+    if (this.orgPoolSettings.warmupProbes > 0) {
+      this._warmupEntry(entry, this.orgPoolSettings.warmupProbes, { orgId, connectionId });
+    }
+
+    return newConn;
+  }
+
+  /** Check if an org-scoped pool exists for the given org + connection. */
+  hasOrgPool(orgId: string, connectionId: string = "default"): boolean {
+    return this.orgEntries.has(this._orgKey(orgId, connectionId));
+  }
+
+  /** Return all org IDs that have active pools. */
+  listOrgs(): string[] {
+    return Array.from(this.orgAccessSeq.keys());
+  }
+
+  /** Return connection IDs with active pools for a specific org. */
+  listOrgConnections(orgId: string): string[] {
+    const prefix = `${orgId}:`;
+    const connections: string[] = [];
+    for (const key of this.orgEntries.keys()) {
+      if (key.startsWith(prefix)) {
+        connections.push(key.slice(prefix.length));
+      }
+    }
+    return connections;
+  }
+
+  /** Evict the least recently used org's pools when maxOrgs is exceeded. */
+  private _evictLRUOrg(): void {
+    const orgCount = this.orgAccessSeq.size;
+    if (orgCount < this.orgPoolSettings.maxOrgs) return;
+
+    let lruOrg: string | null = null;
+    let lruTime = Infinity;
+    for (const [orgId, seq] of this.orgAccessSeq) {
+      if (seq < lruTime) {
+        lruTime = seq;
+        lruOrg = orgId;
+      }
+    }
+
+    if (lruOrg) {
+      log.info({ orgId: lruOrg }, "Evicting LRU org pools to free capacity");
+      this._closeOrgPools(lruOrg);
+    }
+  }
+
+  /** Close all pools for a specific org (used by LRU eviction and drainOrg). */
+  private _closeOrgPools(orgId: string): void {
+    const prefix = `${orgId}:`;
+    const keysToDelete: string[] = [];
+    for (const [key, entry] of this.orgEntries) {
+      if (key.startsWith(prefix)) {
+        keysToDelete.push(key);
+        entry.conn.close().catch((err) => {
+          log.error({ key, err: err instanceof Error ? err.message : String(err) }, "Failed to close org pool — connections may be leaked");
+        });
+      }
+    }
+    for (const key of keysToDelete) {
+      this.orgEntries.delete(key);
+    }
+    this.orgAccessSeq.delete(orgId);
+  }
+
+  /** Run warmup probes on a single entry (used for org pool warmup). Never rejects — logs failures. */
+  private async _warmupEntry(entry: RegistryEntry, count: number, context?: { orgId?: string; connectionId?: string }): Promise<void> {
+    let failures = 0;
+    for (let i = 0; i < count; i++) {
+      try {
+        await entry.conn.query("SELECT 1", 5000);
+      } catch (err) {
+        failures++;
+        log.warn({ probe: i + 1, total: count, err: err instanceof Error ? err.message : String(err), ...context }, "Warmup probe failed");
+      }
+    }
+    if (failures === count && count > 0) {
+      log.error({ failures, total: count, ...context }, "All warmup probes failed — pool may be unhealthy");
+    }
   }
 
   private _totalPoolSlots(): number {
@@ -515,36 +748,42 @@ export class ConnectionRegistry {
     return entry.conn;
   }
 
-  /** Record a query execution (success or failure) for metrics tracking. */
-  recordQuery(id: string, durationMs: number): void {
-    const entry = this.entries.get(id);
+  /** Record a query execution (success or failure) for metrics tracking. When orgId is provided, records against the org pool entry. */
+  recordQuery(id: string, durationMs: number, orgId?: string): void {
+    const entry = orgId
+      ? this.orgEntries.get(this._orgKey(orgId, id))
+      : this.entries.get(id);
     if (!entry) return;
     entry.totalQueries++;
     entry.totalQueryTimeMs += durationMs;
   }
 
-  /** Record a query error for metrics tracking and auto-drain evaluation. */
-  recordError(id: string): void {
-    const entry = this.entries.get(id);
+  /** Record a query error for metrics tracking and auto-drain evaluation. When orgId is provided, operates on the org pool entry. */
+  recordError(id: string, orgId?: string): void {
+    const entry = orgId
+      ? this.orgEntries.get(this._orgKey(orgId, id))
+      : this.entries.get(id);
     if (!entry) return;
     entry.totalErrors++;
     entry.consecutiveQueryFailures++;
 
     // Auto-drain when consecutive query failures exceed threshold
-    const threshold = getPoolDrainThreshold();
+    const threshold = orgId ? this.orgPoolSettings.drainThreshold : getPoolDrainThreshold();
     if (entry.consecutiveQueryFailures >= threshold && entry.config) {
       if (entry.lastDrainAt && Date.now() - entry.lastDrainAt < DRAIN_COOLDOWN_MS) {
-        log.debug({ connectionId: id }, "Pool drain skipped — cooldown active");
+        log.debug({ connectionId: id, orgId }, "Pool drain skipped — cooldown active");
         return;
       }
-      log.warn({ connectionId: id, consecutiveQueryFailures: entry.consecutiveQueryFailures }, "Pool drain triggered: consecutive error threshold exceeded");
-      this._drainAndRecreate(id, entry);
+      log.warn({ connectionId: id, orgId, consecutiveQueryFailures: entry.consecutiveQueryFailures }, "Pool drain triggered: consecutive error threshold exceeded");
+      this._drainAndRecreate(orgId ? this._orgKey(orgId, id) : id, entry);
     }
   }
 
-  /** Reset consecutive failure counters (called on successful query). */
-  recordSuccess(id: string): void {
-    const entry = this.entries.get(id);
+  /** Reset consecutive failure counters (called on successful query). When orgId is provided, operates on the org pool entry. */
+  recordSuccess(id: string, orgId?: string): void {
+    const entry = orgId
+      ? this.orgEntries.get(this._orgKey(orgId, id))
+      : this.entries.get(id);
     if (entry) {
       entry.consecutiveFailures = 0;
       entry.consecutiveQueryFailures = 0;
@@ -792,6 +1031,59 @@ export class ConnectionRegistry {
   }
 
   /**
+   * Return pool metrics for org-scoped pools.
+   * When orgId is provided, returns only that org's pools.
+   * When omitted, returns metrics for all org pools.
+   */
+  getOrgPoolMetrics(orgId?: string): import("@useatlas/types").OrgPoolMetrics[] {
+    const results: import("@useatlas/types").OrgPoolMetrics[] = [];
+    for (const [key, entry] of this.orgEntries) {
+      const { orgId: entryOrgId, connectionId } = this._parseOrgKey(key);
+      if (orgId && entryOrgId !== orgId) continue;
+      results.push({
+        orgId: entryOrgId,
+        connectionId,
+        dbType: entry.dbType,
+        pool: entry.conn.getPoolStats?.() ?? null,
+        totalQueries: entry.totalQueries,
+        totalErrors: entry.totalErrors,
+        avgQueryTimeMs: entry.totalQueries > 0 ? Math.round(entry.totalQueryTimeMs / entry.totalQueries) : 0,
+        consecutiveFailures: entry.consecutiveQueryFailures,
+        lastDrainAt: entry.lastDrainAt ? new Date(entry.lastDrainAt).toISOString() : null,
+      });
+    }
+    return results;
+  }
+
+  /**
+   * Gracefully drain all pools for an org. In-flight queries complete on
+   * the old pool before it is closed. Used when an org is deactivated or
+   * when an admin needs to force-recycle an org's connections.
+   */
+  async drainOrg(orgId: string): Promise<{ drained: number }> {
+    const prefix = `${orgId}:`;
+    let drained = 0;
+    const closing: Promise<void>[] = [];
+
+    for (const [key, entry] of this.orgEntries) {
+      if (key.startsWith(prefix)) {
+        closing.push(
+          entry.conn.close().catch((err) => {
+            log.warn({ key, err: err instanceof Error ? err.message : String(err) }, "Failed to close org pool during drain");
+          }),
+        );
+        this.orgEntries.delete(key);
+        drained++;
+      }
+    }
+
+    this.orgAccessSeq.delete(orgId);
+    await Promise.all(closing);
+    log.info({ orgId, drained }, "Org pools drained");
+    return { drained };
+  }
+
+  /**
    * Graceful shutdown: stop health checks, close all connections (awaited), and
    * reset whitelists. Use this in production shutdown paths instead of _reset().
    */
@@ -805,12 +1097,21 @@ export class ConnectionRegistry {
         }),
       );
     }
+    for (const [key, entry] of this.orgEntries.entries()) {
+      closing.push(
+        entry.conn.close().catch((err) => {
+          log.warn({ err: err instanceof Error ? err.message : String(err), orgPoolKey: key }, "Failed to close org pool during shutdown");
+        }),
+      );
+    }
     await Promise.all(closing);
     this.entries.clear();
+    this.orgEntries.clear();
+    this.orgAccessSeq.clear();
     _resetWhitelists();
   }
 
-  /** Clears all registered connections and resets the table whitelist cache. Used during graceful shutdown, tests, and the benchmark harness. */
+  /** Clears all registered connections (base + org) and resets the table whitelist cache. Used during graceful shutdown, tests, and the benchmark harness. */
   _reset(): void {
     this.stopHealthChecks();
     for (const [id, entry] of this.entries.entries()) {
@@ -818,7 +1119,14 @@ export class ConnectionRegistry {
         log.warn({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to close connection during registry reset");
       });
     }
+    for (const [key, entry] of this.orgEntries.entries()) {
+      entry.conn.close().catch((err) => {
+        log.warn({ err: err instanceof Error ? err.message : String(err), orgPoolKey: key }, "Failed to close org pool during registry reset");
+      });
+    }
     this.entries.clear();
+    this.orgEntries.clear();
+    this.orgAccessSeq.clear();
     _resetWhitelists();
   }
 }

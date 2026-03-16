@@ -1335,3 +1335,62 @@ describe("configFromEnv session timeout", () => {
     expect(config.session).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Semantic index config
+// ---------------------------------------------------------------------------
+
+describe("semantic index config (validateAndResolve)", () => {
+  it("accepts semanticIndex.enabled = true", () => {
+    const resolved = validateAndResolve({
+      semanticIndex: { enabled: true },
+    });
+    expect(resolved.semanticIndex).toEqual({ enabled: true });
+  });
+
+  it("accepts semanticIndex.enabled = false", () => {
+    const resolved = validateAndResolve({
+      semanticIndex: { enabled: false },
+    });
+    expect(resolved.semanticIndex).toEqual({ enabled: false });
+  });
+
+  it("defaults enabled to true when semanticIndex block is provided empty", () => {
+    const resolved = validateAndResolve({ semanticIndex: {} });
+    expect(resolved.semanticIndex).toEqual({ enabled: true });
+  });
+
+  it("omits semanticIndex from resolved config when not provided", () => {
+    const resolved = validateAndResolve({});
+    expect(resolved.semanticIndex).toBeUndefined();
+  });
+});
+
+describe("configFromEnv ATLAS_SEMANTIC_INDEX_ENABLED", () => {
+  afterEach(() => {
+    delete process.env.ATLAS_SEMANTIC_INDEX_ENABLED;
+  });
+
+  it("sets semanticIndex.enabled = false when env var is 'false'", () => {
+    process.env.ATLAS_SEMANTIC_INDEX_ENABLED = "false";
+    const config = configFromEnv();
+    expect(config.semanticIndex).toEqual({ enabled: false });
+  });
+
+  it("omits semanticIndex when env var is not set (defaults to enabled)", () => {
+    const config = configFromEnv();
+    expect(config.semanticIndex).toBeUndefined();
+  });
+
+  it("omits semanticIndex when env var is 'true' (default behavior)", () => {
+    process.env.ATLAS_SEMANTIC_INDEX_ENABLED = "true";
+    const config = configFromEnv();
+    expect(config.semanticIndex).toBeUndefined();
+  });
+
+  it("omits semanticIndex for any value other than 'false'", () => {
+    process.env.ATLAS_SEMANTIC_INDEX_ENABLED = "0";
+    const config = configFromEnv();
+    expect(config.semanticIndex).toBeUndefined();
+  });
+});

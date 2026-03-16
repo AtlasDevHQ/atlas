@@ -22,6 +22,7 @@ import { getContextFragments, getDialectHints } from "./plugins/tools";
 import { connections, detectDBType, type ConnectionMetadata, type DBType } from "./db/connection";
 import { getCrossSourceJoins, type CrossSourceJoin } from "./semantic";
 import { getSemanticIndex } from "./semantic-index";
+import { getConfig } from "./config";
 import { createLogger, getRequestContext } from "./logger";
 import { getSetting } from "./settings";
 import { hasInternalDB, internalExecute } from "./db/internal";
@@ -207,10 +208,13 @@ function buildSystemPrompt(registry: ToolRegistry): string {
     base += "\n" + PYTHON_GUIDANCE;
   }
 
-  // Append the pre-indexed semantic layer summary
-  const semanticIndex = getSemanticIndex();
-  if (semanticIndex) {
-    base += "\n\n" + semanticIndex;
+  // Append the pre-indexed semantic layer summary (respects config)
+  const indexEnabled = getConfig()?.semanticIndex?.enabled !== false;
+  if (indexEnabled) {
+    const semanticIndex = getSemanticIndex();
+    if (semanticIndex) {
+      base += "\n\n" + semanticIndex;
+    }
   }
 
   // Append plugin context fragments (if any)

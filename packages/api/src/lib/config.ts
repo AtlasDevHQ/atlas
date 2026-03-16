@@ -293,6 +293,16 @@ const AtlasConfigSchema = z.object({
     /** Maximum session lifetime in seconds from creation. 0 = disabled. */
     absoluteTimeout: z.number().int().nonnegative().default(0),
   }).optional(),
+
+  /**
+   * Semantic index configuration. When enabled (default), a pre-computed
+   * summary of the semantic layer is injected into the agent system prompt
+   * to reduce explore tool calls.
+   */
+  semanticIndex: z.object({
+    /** Whether the semantic index is enabled. Default: true. */
+    enabled: z.boolean().default(true),
+  }).optional(),
 });
 
 /** The output type after Zod parsing (defaults applied, all fields present). */
@@ -334,6 +344,8 @@ export interface ResolvedConfig {
   python?: PythonConfig;
   /** Session timeout configuration. */
   session?: { idleTimeout: number; absoluteTimeout: number };
+  /** Semantic index configuration. */
+  semanticIndex?: { enabled: boolean };
   /** Whether the config was loaded from a file or synthesized from env vars. */
   source: "file" | "env";
 }
@@ -488,6 +500,10 @@ export function configFromEnv(): ResolvedConfig {
       const absoluteTimeout = Number.isFinite(abs) && abs > 0 ? abs : 0;
       return (idleTimeout > 0 || absoluteTimeout > 0) ? { session: { idleTimeout, absoluteTimeout } } : {};
     })()),
+    // Semantic index from env vars
+    ...(process.env.ATLAS_SEMANTIC_INDEX_ENABLED === "false"
+      ? { semanticIndex: { enabled: false } }
+      : {}),
     source: "env",
   };
 }
@@ -834,6 +850,7 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
     ...(config.sandbox ? { sandbox: config.sandbox } : {}),
     ...(config.python ? { python: config.python } : {}),
     ...(config.session ? { session: config.session } : {}),
+    ...(config.semanticIndex ? { semanticIndex: config.semanticIndex } : {}),
     source: "file",
   };
 }

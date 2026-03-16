@@ -1,3 +1,5 @@
+import type { AuthMode } from "./auth";
+
 // ---------------------------------------------------------------------------
 // Action approval modes (shared across API, frontend, SDK)
 // ---------------------------------------------------------------------------
@@ -12,8 +14,8 @@ export type ActionApprovalMode = (typeof ACTION_APPROVAL_MODES)[number];
 /**
  * Display status lifecycle for action tools that require user approval.
  *
- * Distinct from the server-internal `ActionStatus` in `@atlas/api` which
- * uses "pending" instead of "pending_approval".
+ * Distinct from the server-internal `ActionStatus` which uses "pending"
+ * instead of "pending_approval".
  */
 export type ActionDisplayStatus =
   | "pending_approval"
@@ -77,6 +79,13 @@ export const ACTION_STATUSES = [
 ] as const;
 export type ActionStatus = (typeof ACTION_STATUSES)[number];
 
+/**
+ * Compile-time check: every non-pending ActionStatus must be a valid
+ * ActionDisplayStatus. Prevents drift between server and display enums.
+ */
+type _AssertStatusAlignment = Exclude<ActionStatus, "pending"> extends ActionDisplayStatus ? true : never;
+const _statusAlignmentCheck: _AssertStatusAlignment = true;
+
 /** Information needed to undo an executed action. */
 export interface RollbackInfo {
   method: string;
@@ -90,8 +99,9 @@ export interface ActionLogEntry {
   resolved_at: string | null;
   executed_at: string | null;
   requested_by: string | null;
+  /** Stores the approver for approved actions and the denier for denied actions. */
   approved_by: string | null;
-  auth_mode: string;
+  auth_mode: AuthMode;
   action_type: string;
   target: string;
   summary: string;

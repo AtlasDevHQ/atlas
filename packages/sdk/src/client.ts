@@ -42,6 +42,7 @@ import type {
   ConnectionInfo,
   DeliveryChannel,
   ActionApprovalMode,
+  ActionStatus,
   RollbackInfo,
   Recipient,
   ScheduledTask,
@@ -222,7 +223,7 @@ export type ValidateSQLResponse =
 
 export interface RollbackActionResponse {
   id: string;
-  status: string;
+  status: ActionStatus;
   action_type: string;
   target: string;
   summary: string;

@@ -25,6 +25,7 @@ on:
       - 'slack-v*'
       - 'webhook-v*'
       - 'teams-v*'
+      - 'email-digest-v*'
       # mcp-v* excluded — @useatlas/mcp depends on unpublished @atlas/mcp
       # Plugins — action
       - 'email-v*'
@@ -134,6 +135,10 @@ jobs:
       - name: Publish @useatlas/teams
         if: startsWith(github.ref, 'refs/tags/teams-v')
         run: cd plugins/teams && npm publish --access public
+
+      - name: Publish @useatlas/email-digest
+        if: startsWith(github.ref, 'refs/tags/email-digest-v')
+        run: cd plugins/email-digest && npm publish --access public
 
       # @useatlas/mcp excluded — depends on unpublished @atlas/mcp (see #128)
 

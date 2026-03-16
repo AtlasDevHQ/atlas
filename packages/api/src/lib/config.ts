@@ -494,10 +494,6 @@ export function configFromEnv(): ResolvedConfig {
     ...(scheduler ? { scheduler } : {}),
     ...(rls ? { rls } : {}),
     ...(sandbox ? { sandbox } : {}),
-    // Semantic index from env vars
-    ...(process.env.ATLAS_SEMANTIC_INDEX_ENABLED === "false"
-      ? { semanticIndex: { enabled: false, maxEntitiesPerQuery: 10 } }
-      : {}),
     // Session timeout from env vars
     ...((() => {
       const idle = parseInt(process.env.ATLAS_SESSION_IDLE_TIMEOUT ?? "", 10);
@@ -506,6 +502,10 @@ export function configFromEnv(): ResolvedConfig {
       const absoluteTimeout = Number.isFinite(abs) && abs > 0 ? abs : 0;
       return (idleTimeout > 0 || absoluteTimeout > 0) ? { session: { idleTimeout, absoluteTimeout } } : {};
     })()),
+    // Semantic index from env vars
+    ...(process.env.ATLAS_SEMANTIC_INDEX_ENABLED === "false"
+      ? { semanticIndex: { enabled: false, maxEntitiesPerQuery: 10 } }
+      : {}),
     source: "env",
   };
 }

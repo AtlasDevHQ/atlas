@@ -3,13 +3,11 @@ import type { DataTableConfig } from "@/config/data-table";
 import type { FilterItemSchema } from "@/lib/parsers";
 
 declare module "@tanstack/react-table" {
-  // biome-ignore lint/correctness/noUnusedVariables: TData is used in the TableMeta interface
-  interface TableMeta<TData extends RowData> {
+  interface TableMeta<_TData extends RowData> {
     queryKeys?: QueryKeys;
   }
 
-  // biome-ignore lint/correctness/noUnusedVariables: TData and TValue are used in the ColumnMeta interface
-  interface ColumnMeta<TData extends RowData, TValue> {
+  interface ColumnMeta<_TData extends RowData, _TValue> {
     label?: string;
     placeholder?: string;
     variant?: FilterVariant;

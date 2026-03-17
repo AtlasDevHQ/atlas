@@ -9,7 +9,7 @@
 import { createLogger } from "@atlas/api/lib/logger";
 import { getConfig } from "@atlas/api/lib/config";
 import { LRUCacheBackend } from "./lru";
-import type { CacheBackend, CacheEntry } from "./types";
+import type { CacheBackend } from "./types";
 
 export type { CacheBackend, CacheEntry, CacheStats } from "./types";
 export { buildCacheKey } from "./keys";

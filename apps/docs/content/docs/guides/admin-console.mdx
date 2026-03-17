@@ -280,7 +280,7 @@ Settings overrides require an internal database (`DATABASE_URL`). Without it, th
 **Route:** `/admin/cache`
 
 <Callout type="info">
-Requires `ATLAS_CACHE_ENABLED=true`. Without it, this page shows a disabled notice.
+Query caching is enabled by default. Set `ATLAS_CACHE_ENABLED=false` to disable it. When disabled, the page shows zeroed stats with an inline notice.
 </Callout>
 
 Displays query result cache statistics and provides a manual flush control:

@@ -4006,7 +4006,7 @@ async function handleIndex(args: string[]): Promise<void> {
       return;
     }
 
-    // Full rebuild — stats already collected above, no double-load needed
+    // Full rebuild — buildSemanticIndex does its own loading; stats above are for validation + display
     const start = Date.now();
     buildSemanticIndex(SEMANTIC_DIR);
     const elapsed = Date.now() - start;

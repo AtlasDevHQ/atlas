@@ -27,3 +27,14 @@ export interface SidecarPythonRequest {
 
 /** Wire-format alias — canonical type lives in python.ts. */
 export type { PythonResult as SidecarPythonResponse } from "@atlas/api/lib/tools/python";
+
+// --- Python streaming execution ---
+
+/** NDJSON events emitted by the streaming Python endpoint. */
+export type SidecarPythonStreamEvent =
+  | { type: "stdout"; data: string }
+  | { type: "chart"; data: { base64: string; mimeType: "image/png" } }
+  | { type: "recharts"; data: { type: "line" | "bar" | "pie"; data: Record<string, unknown>[]; categoryKey: string; valueKeys: string[] } }
+  | { type: "table"; data: { columns: string[]; rows: unknown[][] } }
+  | { type: "done"; data: { success: true; exitCode: number } }
+  | { type: "error"; data: { error: string; output?: string } };

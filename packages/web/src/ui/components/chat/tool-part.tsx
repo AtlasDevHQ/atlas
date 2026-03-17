@@ -7,9 +7,16 @@ import { isActionToolResult } from "../../lib/action-types";
 import { ExploreCard } from "./explore-card";
 import { SQLResultCard } from "./sql-result-card";
 import { ActionApprovalCard } from "../actions/action-approval-card";
-import { PythonResultCard } from "./python-result-card";
+import { PythonResultCard, type PythonProgressData } from "./python-result-card";
 
-export const ToolPart = memo(function ToolPart({ part }: { part: unknown }) {
+/** Extract the tool invocation ID from an AI SDK tool part. */
+function getToolInvocationId(part: unknown): string | undefined {
+  if (part == null || typeof part !== "object") return undefined;
+  const p = part as Record<string, unknown>;
+  return typeof p.toolInvocationId === "string" ? p.toolInvocationId : undefined;
+}
+
+export const ToolPart = memo(function ToolPart({ part, pythonProgress }: { part: unknown; pythonProgress?: Map<string, PythonProgressData[]> }) {
   let name: string;
   try {
     name = getToolName(part as Parameters<typeof getToolName>[0]);
@@ -27,8 +34,11 @@ export const ToolPart = memo(function ToolPart({ part }: { part: unknown }) {
       return <ExploreCard part={part} />;
     case "executeSQL":
       return <SQLResultCard part={part} />;
-    case "executePython":
-      return <PythonResultCard part={part} />;
+    case "executePython": {
+      const invocationId = getToolInvocationId(part);
+      const events = invocationId ? pythonProgress?.get(invocationId) : undefined;
+      return <PythonResultCard part={part} progressEvents={events} />;
+    }
     default: {
       const result = getToolResult(part);
       if (isActionToolResult(result)) {
@@ -45,5 +55,7 @@ export const ToolPart = memo(function ToolPart({ part }: { part: unknown }) {
   // Once a tool part is complete, its output won't change — skip re-renders.
   // This prevents the Recharts render tree from contributing to React's update depth limit.
   if (isToolComplete(prev.part) && isToolComplete(next.part)) return true;
+  // Re-render if progress events changed (for streaming Python output)
+  if (prev.pythonProgress !== next.pythonProgress) return false;
   return false;
 });

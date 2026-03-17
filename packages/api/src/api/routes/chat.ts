@@ -7,7 +7,7 @@
 
 import { Hono } from "hono";
 import { z } from "zod";
-import { type UIMessage } from "ai";
+import { type UIMessage, createUIMessageStream, createUIMessageStreamResponse } from "ai";
 import { APICallError, LoadAPIKeyError, NoSuchModelError } from "ai";
 import { matchError, isRetryableError } from "@useatlas/types";
 import { runAgent } from "@atlas/api/lib/agent";
@@ -27,6 +27,7 @@ import {
   getConversation,
   generateTitle,
 } from "@atlas/api/lib/conversations";
+import { setStreamWriter, clearStreamWriter } from "@atlas/api/lib/tools/python-stream";
 
 const log = createLogger("chat");
 
@@ -218,7 +219,7 @@ chat.post("/", async (c) => {
 
       try {
         // Build a dynamic registry when actions are enabled
-        let toolRegistry;
+        let toolRegistry: import("@atlas/api/lib/tools/registry").ToolRegistry | undefined;
         const warnings: string[] = [];
         const includeActions = process.env.ATLAS_ACTIONS_ENABLED === "true";
         if (includeActions) {
@@ -262,28 +263,46 @@ chat.post("/", async (c) => {
           );
         }
 
-        const result = await runAgent({
+        // Call runAgent first so errors (provider auth, config, etc.) are
+        // caught by the outer try-catch and returned as proper JSON errors.
+        // The agent stream is then merged into a UIMessageStream that supports
+        // writing custom data parts (Python progress events).
+        const agentResult = await runAgent({
           messages,
           ...(toolRegistry && { tools: toolRegistry }),
           conversationId,
           ...(warnings.length > 0 && { warnings }),
         });
-        const streamResponse = result.toUIMessageStreamResponse();
 
-        // Prevent proxy buffering (Next.js rewrites, nginx, etc.) so chunks
-        // reach the client immediately for real-time streaming.
-        streamResponse.headers.set("X-Accel-Buffering", "no");
-        streamResponse.headers.set("Cache-Control", "no-cache, no-transform");
+        // Register stream writer so Python tool can send progress events.
+        // The writer is set before merge() triggers tool execution reads.
+        const stream = createUIMessageStream({
+          execute: ({ writer }) => {
+            setStreamWriter(requestId, writer);
+            writer.merge(agentResult.toUIMessageStream());
+          },
+          onFinish: () => {
+            clearStreamWriter(requestId);
+          },
+          onError: (error) => {
+            clearStreamWriter(requestId);
+            return typeof error === "string" ? error : error instanceof Error ? error.message : "Unknown error";
+          },
+        });
 
-        // Set conversation ID header so the client can track continuity
+        const streamResponse = createUIMessageStreamResponse({
+          stream,
+          headers: {
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache, no-transform",
+            ...(conversationId ? { "x-conversation-id": conversationId } : {}),
+          },
+        });
+
+        // Fire-and-forget: persist assistant response after stream completes.
         if (conversationId) {
-          streamResponse.headers.set("x-conversation-id", conversationId);
-
-          // Fire-and-forget: persist assistant response after stream completes.
-          // result.text rejects when the stream itself errors (provider failure,
-          // timeout, etc.) — distinguish that from an addMessage persistence failure.
           const cid = conversationId;
-          void Promise.resolve(result.text)
+          void Promise.resolve(agentResult.text)
             .then((text) => {
               try {
                 addMessage({ conversationId: cid, role: "assistant", content: [{ type: "text", text }] });

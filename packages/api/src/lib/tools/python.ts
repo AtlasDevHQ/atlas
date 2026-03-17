@@ -17,6 +17,7 @@ import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
 import { withSpan } from "@atlas/api/lib/tracing";
 import { getConfig } from "@atlas/api/lib/config";
+import { getStreamWriter } from "./python-stream";
 
 const log = createLogger("python");
 
@@ -256,14 +257,28 @@ export type PythonResult =
       output?: string;
     };
 
+// --- Progress events ---
+
+/** Events emitted during streaming Python execution. */
+export type PythonProgressEvent =
+  | { type: "stdout"; content: string }
+  | { type: "chart"; chart: PythonChart }
+  | { type: "recharts"; chart: RechartsChart };
+
 // --- Backend interface ---
 
 /**
  * Python execution backend. Implementations handle isolation (sidecar, Vercel sandbox, nsjail).
  * Each backend receives validated code + optional data and returns a structured result.
+ * Backends that support streaming implement the optional `execStream` method.
  */
 export interface PythonBackend {
   exec(code: string, data?: { columns: string[]; rows: unknown[][] }): Promise<PythonResult>;
+  execStream?(
+    code: string,
+    data: { columns: string[]; rows: unknown[][] } | undefined,
+    onProgress: (event: PythonProgressEvent) => void,
+  ): Promise<PythonResult>;
 }
 
 // --- Backend selection ---
@@ -282,9 +297,11 @@ async function getPythonBackend(): Promise<PythonBackend | { error: string }> {
   // 1. Sidecar
   const sidecarUrl = process.env.ATLAS_SANDBOX_URL;
   if (sidecarUrl) {
-    const { executePythonViaSidecar } = await import("./python-sidecar");
+    const { executePythonViaSidecar, executePythonViaSidecarStream } = await import("./python-sidecar");
     return {
       exec: (code, data) => executePythonViaSidecar(sidecarUrl, code, data),
+      execStream: (code, data, onProgress) =>
+        executePythonViaSidecarStream(sidecarUrl, code, data, onProgress),
     };
   }
 
@@ -378,7 +395,7 @@ Blocked: subprocess, os, socket, shutil, sys, ctypes, importlib, exec(), eval(),
       .describe("Optional data payload from a previous SQL query (columns + rows)"),
   }),
 
-  execute: async ({ code, explanation, data }) => {
+  execute: async ({ code, explanation, data }, options) => {
     // 0. Resolve backend
     const backend = await getPythonBackend();
     if ("error" in backend) {
@@ -393,18 +410,46 @@ Blocked: subprocess, os, socket, shutil, sys, ctypes, importlib, exec(), eval(),
       return { success: false, error: validation.reason };
     }
 
-    // 2. Execute via selected backend
+    // 2. Build streaming progress callback if stream writer is available
+    const writer = getStreamWriter();
+    const toolCallId = options?.toolCallId;
+    const canStream = writer && toolCallId && backend.execStream;
+
+    const onProgress = canStream
+      ? (event: PythonProgressEvent) => {
+          try {
+            // Custom data part — the AI SDK's typed data parts require compile-time
+            // registration via UIMessage generics. We bypass with a cast because Atlas
+            // uses dynamic data parts consumed via onData on the client.
+            writer.write({
+              type: "data-python-progress" as const,
+              id: toolCallId,
+              data: event,
+            } as unknown as Parameters<typeof writer.write>[0]);
+          } catch (err) {
+            log.debug(
+              { err: err instanceof Error ? err.message : String(err), toolCallId },
+              "Stream writer closed, Python progress events will not be delivered",
+            );
+          }
+        }
+      : undefined;
+
+    // 3. Execute via selected backend
     const start = performance.now();
     try {
       const result = await withSpan(
         "atlas.python.execute",
-        { "code.length": code.length },
-        () => backend.exec(code, data),
+        { "code.length": code.length, streaming: !!onProgress },
+        () =>
+          onProgress && backend.execStream
+            ? backend.execStream(code, data, onProgress)
+            : backend.exec(code, data),
       );
       const durationMs = Math.round(performance.now() - start);
 
       log.debug(
-        { durationMs, success: result.success, hasCharts: result.success && !!result.charts?.length },
+        { durationMs, success: result.success, hasCharts: result.success && !!result.charts?.length, streaming: !!onProgress },
         "python execution",
       );
 

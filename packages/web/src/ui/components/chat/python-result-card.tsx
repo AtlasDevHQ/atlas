@@ -1,6 +1,6 @@
 "use client";
 
-import { Component, type ReactNode, type ErrorInfo, useContext, useState } from "react";
+import { Component, type ReactNode, type ErrorInfo, useContext, useState, useRef, useEffect } from "react";
 import { getToolArgs, getToolResult, isToolComplete } from "../../lib/helpers";
 import { DarkModeContext } from "../../hooks/use-dark-mode";
 import dynamic from "next/dynamic";
@@ -24,6 +24,12 @@ interface PythonChart {
   base64: string;
   mimeType: "image/png";
 }
+
+/** Progress event from the server's streaming Python execution. */
+export type PythonProgressData =
+  | { type: "stdout"; content: string }
+  | { type: "chart"; chart: PythonChart }
+  | { type: "recharts"; chart: RechartsChartConfig };
 
 const ALLOWED_IMAGE_MIME = new Set(["image/png", "image/jpeg"]);
 
@@ -64,22 +70,89 @@ class PythonErrorBoundary extends Component<
 /*  Main component                                                     */
 /* ------------------------------------------------------------------ */
 
-export function PythonResultCard({ part }: { part: unknown }) {
+export function PythonResultCard({ part, progressEvents }: { part: unknown; progressEvents?: PythonProgressData[] }) {
   return (
     <PythonErrorBoundary>
-      <PythonResultCardInner part={part} />
+      <PythonResultCardInner part={part} progressEvents={progressEvents} />
     </PythonErrorBoundary>
   );
 }
 
-function PythonResultCardInner({ part }: { part: unknown }) {
+function PythonResultCardInner({ part, progressEvents }: { part: unknown; progressEvents?: PythonProgressData[] }) {
   const dark = useContext(DarkModeContext);
   const args = getToolArgs(part);
   const raw = getToolResult(part);
   const done = isToolComplete(part);
   const [open, setOpen] = useState(true);
+  const outputRef = useRef<HTMLPreElement>(null);
 
-  if (!done) return <LoadingCard label="Running Python..." />;
+  // Auto-scroll the streaming output to the bottom
+  useEffect(() => {
+    if (outputRef.current && !done) {
+      outputRef.current.scrollTop = outputRef.current.scrollHeight;
+    }
+  }, [progressEvents, done]);
+
+  // While executing: show progressive output from streaming events
+  if (!done) {
+    const hasProgress = progressEvents && progressEvents.length > 0;
+
+    if (!hasProgress) {
+      return <LoadingCard label="Running Python..." />;
+    }
+
+    // Accumulate stdout and charts from progress events
+    const stdoutParts: string[] = [];
+    const streamCharts: PythonChart[] = [];
+
+    for (const ev of progressEvents) {
+      switch (ev.type) {
+        case "stdout":
+          stdoutParts.push(ev.content);
+          break;
+        case "chart":
+          streamCharts.push(ev.chart);
+          break;
+        case "recharts":
+          // Recharts are rendered from the final result, not during streaming
+          break;
+      }
+    }
+
+    const partialOutput = stdoutParts.join("");
+
+    return (
+      <div className="my-2 overflow-hidden rounded-lg border border-emerald-200 bg-emerald-50/50 dark:border-emerald-800/50 dark:bg-emerald-950/20">
+        <div className="flex items-center gap-2 px-3 py-2 text-xs">
+          <span className="relative flex h-2 w-2">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+            <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+          </span>
+          <span className="font-medium text-emerald-700 dark:text-emerald-400">
+            Running Python...
+          </span>
+          <span className="flex-1 truncate text-zinc-500 dark:text-zinc-400">
+            {String(args.explanation ?? "")}
+          </span>
+        </div>
+        {(partialOutput || streamCharts.length > 0) && (
+          <div className="space-y-2 border-t border-emerald-100 px-3 py-2 dark:border-emerald-900/30">
+            {partialOutput && (
+              <pre
+                ref={outputRef}
+                className="max-h-64 overflow-y-auto rounded-md bg-zinc-100 px-3 py-2 text-xs whitespace-pre-wrap text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"
+              >
+                {partialOutput}
+              </pre>
+            )}
+            {streamCharts.map((chart, i) => (
+              <ChartImage key={i} chart={chart} index={i} />
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   // Structural validation — result must be a non-null object
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {

@@ -3,6 +3,7 @@
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, isToolUIPart } from "ai";
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import type { PythonProgressData } from "./chat/python-result-card";
 import { AUTH_MODES, type AuthMode } from "../lib/types";
 import { useAtlasConfig, ActionAuthProvider } from "../context";
 import { DarkModeContext, useDarkMode, useThemeMode, setTheme, applyBrandColor, type ThemeMode } from "../hooks/use-dark-mode";
@@ -274,7 +275,32 @@ export function AtlasChat() {
     });
   }, [apiKey, authMode, apiUrl, isCrossOrigin]);
 
-  const { messages, setMessages, sendMessage, status, error } = useChat({ transport });
+  // Python streaming progress — keyed by tool invocation ID
+  const [pythonProgress, setPythonProgress] = useState<Map<string, PythonProgressData[]>>(new Map());
+
+  const onData = useCallback((dataPart: { type: string; id?: string; data: unknown }) => {
+    if (dataPart.type === "data-python-progress" && dataPart.id && dataPart.data) {
+      const d = dataPart.data as Record<string, unknown>;
+      // Minimal runtime validation — ensure the event has a known type
+      if (typeof d.type !== "string" || !["stdout", "chart", "recharts"].includes(d.type)) return;
+      const event = d as unknown as PythonProgressData;
+      setPythonProgress((prev) => {
+        const next = new Map(prev);
+        const events = next.get(dataPart.id!) ?? [];
+        next.set(dataPart.id!, [...events, event]);
+        return next;
+      });
+    }
+  }, []);
+
+  // The AI SDK's onData expects DataUIPart<UIDataTypes> which structurally accepts
+  // { type: `data-${string}`; id?: string; data: unknown } — our callback matches.
+  // The cast is needed because the default UIMessage generic doesn't declare our custom
+  // data part type at compile time.
+  const { messages, setMessages, sendMessage, status, error } = useChat({
+    transport,
+    onData: onData as never,
+  });
 
   const isLoading = status === "streaming" || status === "submitted";
 
@@ -326,6 +352,7 @@ export function AtlasChat() {
     convos.setSelectedId(null);
     setInput("");
     setMobileMenuOpen(false);
+    setPythonProgress(new Map());
   }
 
   // Wait for auth mode detection before rendering — prevents flash of chat UI
@@ -517,7 +544,7 @@ export function AtlasChat() {
                           if (isToolUIPart(part)) {
                             return (
                               <div key={i} className="max-w-[95%]">
-                                <ToolPart part={part} />
+                                <ToolPart part={part} pythonProgress={pythonProgress} />
                               </div>
                             );
                           }

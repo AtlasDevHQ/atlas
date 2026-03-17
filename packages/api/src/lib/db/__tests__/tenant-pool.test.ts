@@ -425,4 +425,30 @@ describe("ConnectionRegistry org-scoped pools", () => {
       expect(() => registry.getForOrg("org-c")).toThrow("exceeding maxTotalConnections");
     });
   });
+
+  describe("getPoolWarnings", () => {
+    it("returns empty when org pooling is disabled", () => {
+      registry.register("default", { url: "postgresql://localhost/test" });
+      expect(registry.getPoolWarnings()).toEqual([]);
+    });
+
+    it("returns empty when capacity is within limits", () => {
+      registry.setMaxTotalConnections(100);
+      registry.register("default", { url: "postgresql://localhost/test" });
+      registry.setOrgPoolConfig({ maxConnections: 2, maxOrgs: 10 });
+      // 10 × 2 × 1 = 20 <= 100
+      expect(registry.getPoolWarnings()).toEqual([]);
+    });
+
+    it("returns warning when theoretical capacity exceeds maxTotalConnections", () => {
+      registry.setMaxTotalConnections(100);
+      registry.register("default", { url: "postgresql://localhost/test" });
+      registry.setOrgPoolConfig({ maxConnections: 5, maxOrgs: 50 });
+      // 50 × 5 × 1 = 250 > 100
+      const warnings = registry.getPoolWarnings();
+      expect(warnings.length).toBe(1);
+      expect(warnings[0]).toContain("exceeds maxTotalConnections");
+      expect(warnings[0]).toContain("2.5×");
+    });
+  });
 });

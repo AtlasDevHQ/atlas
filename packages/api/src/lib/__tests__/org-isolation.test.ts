@@ -544,7 +544,7 @@ describe("conversation isolation", () => {
 
     expect(result).toEqual({ id: "conv-alpha" });
     expect(mockInternalQuery).toHaveBeenCalledTimes(1);
-    const params = mockInternalQuery.mock.calls[0][1] as unknown[];
+    const params = (mockInternalQuery.mock.calls as unknown[][])[0][1] as unknown[];
     // orgId is the last parameter in the INSERT
     expect(params[params.length - 1]).toBe(ORG_ALPHA);
   });
@@ -561,7 +561,7 @@ describe("conversation isolation", () => {
     });
 
     expect(result).toEqual({ id: "conv-beta" });
-    const params = mockInternalQuery.mock.calls[0][1] as unknown[];
+    const params = (mockInternalQuery.mock.calls as unknown[][])[0][1] as unknown[];
     expect(params[params.length - 1]).toBe(ORG_BETA);
   });
 
@@ -587,10 +587,10 @@ describe("conversation isolation", () => {
     expect(result.conversations).toHaveLength(1);
     expect(result.conversations[0].id).toBe("conv-alpha");
     // Verify org_id was passed as a SQL parameter
-    const countParams = mockInternalQuery.mock.calls[0][1] as unknown[];
+    const countParams = (mockInternalQuery.mock.calls as unknown[][])[0][1] as unknown[];
     expect(countParams).toContain(ORG_ALPHA);
     // Verify the SQL includes org_id filter
-    const countSql = mockInternalQuery.mock.calls[0][0] as string;
+    const countSql = (mockInternalQuery.mock.calls as unknown[][])[0][0] as string;
     expect(countSql).toContain("org_id");
   });
 
@@ -608,12 +608,12 @@ describe("conversation isolation", () => {
     await listConversations({ orgId: ORG_BETA });
 
     // Alpha call params (calls 0 and 1)
-    const alphaParams = mockInternalQuery.mock.calls[0][1] as unknown[];
+    const alphaParams = (mockInternalQuery.mock.calls as unknown[][])[0][1] as unknown[];
     expect(alphaParams).toContain(ORG_ALPHA);
     expect(alphaParams).not.toContain(ORG_BETA);
 
     // Beta call params (calls 2 and 3)
-    const betaParams = mockInternalQuery.mock.calls[2][1] as unknown[];
+    const betaParams = (mockInternalQuery.mock.calls as unknown[][])[2][1] as unknown[];
     expect(betaParams).toContain(ORG_BETA);
     expect(betaParams).not.toContain(ORG_ALPHA);
   });

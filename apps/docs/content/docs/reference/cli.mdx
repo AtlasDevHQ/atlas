@@ -1,6 +1,6 @@
 ---
 title: CLI Reference
-description: Complete reference for the Atlas CLI — init, diff, query, doctor, validate, mcp, completions, and more.
+description: Complete reference for the Atlas CLI — init, diff, learn, query, doctor, validate, mcp, completions, and more.
 ---
 
 The Atlas CLI (`atlas`) profiles databases, generates semantic layers, validates configuration, and queries data from the terminal.
@@ -338,6 +338,39 @@ bun run atlas -- migrate [options]
 | Flag | Description |
 |------|-------------|
 | `--apply` | Execute migrations against internal database (default: dry-run) |
+
+## learn
+
+Analyze the audit log and propose semantic layer YAML improvements. This is Atlas's offline learning loop — it examines real query patterns and suggests additions to your entity files, joins, and glossary.
+
+```bash
+bun run atlas -- learn [options]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--apply` | Write proposed changes to YAML files (default: dry-run) |
+| `--limit <n>` | Max audit log entries to analyze (default: 1000) |
+| `--since <date>` | Only analyze queries after this date (ISO 8601, e.g. `2026-03-01`) |
+| `--source <name>` | Read from/write to `semantic/{name}/` subdirectory |
+
+**Requires** `DATABASE_URL` to be set (the audit log lives in the internal database).
+
+Proposals include:
+- **Query patterns** — frequently-used SQL not yet documented in entity YAML
+- **Join discoveries** — table pairs queried together but with no join defined
+- **Glossary terms** — column aliases used often enough to warrant a glossary entry
+
+```bash
+# Preview proposals (dry run, the default)
+atlas learn
+
+# Apply changes to YAML files
+atlas learn --apply
+
+# Only analyze recent queries
+atlas learn --since 2026-03-01 --limit 500
+```
 
 ## benchmark
 

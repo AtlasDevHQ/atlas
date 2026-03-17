@@ -440,6 +440,332 @@ async function handleExecPython(req: Request): Promise<Response> {
   }
 }
 
+// --- Streaming Python exec handler ---
+
+/**
+ * Streaming Python wrapper — sends stdout chunks and chart events as NDJSON
+ * lines to stdout in real-time, instead of capturing everything and returning
+ * a single result at the end.
+ *
+ * Protocol: each stdout line is prefixed with the stream marker. Lines are
+ * JSON objects with `type` and `data` fields. The sidecar reads these and
+ * forwards them directly to the client as NDJSON.
+ *
+ * The import guard + data injection + chart collection logic is identical
+ * to the non-streaming wrapper.
+ */
+const PYTHON_WRAPPER_STREAMING = `
+import sys, json, io, base64, glob, os, ast
+
+_marker = os.environ["ATLAS_RESULT_MARKER"]
+_stream_marker = os.environ["ATLAS_STREAM_MARKER"]
+_chart_dir = os.environ.get("ATLAS_CHART_DIR", "/tmp")
+
+def _emit(event_type, data):
+    """Write a streaming event line to stdout (bypassing user stdout capture)."""
+    _real_stdout.write(_stream_marker + json.dumps({"type": event_type, "data": data}) + "\\n")
+    _real_stdout.flush()
+
+# Save real stdout before any redirection
+_real_stdout = sys.stdout
+
+# --- Import guard (sidecar-side enforcement) ---
+_BLOCKED_MODULES = {
+    "subprocess", "os", "socket", "shutil", "sys", "ctypes", "importlib",
+    "code", "signal", "multiprocessing", "threading", "pty", "fcntl",
+    "termios", "resource", "posixpath",
+    "http", "urllib", "requests", "httpx", "aiohttp", "webbrowser",
+    "pickle", "tempfile", "pathlib",
+}
+_BLOCKED_BUILTINS = {
+    "compile", "exec", "eval", "__import__", "open", "breakpoint",
+    "getattr", "globals", "locals", "vars", "dir", "delattr", "setattr",
+}
+
+_user_code = open(sys.argv[1]).read()
+try:
+    _tree = ast.parse(_user_code)
+except SyntaxError as e:
+    _emit("error", {"error": f"SyntaxError: {e.msg} (line {e.lineno})"})
+    sys.exit(0)
+
+_blocked = None
+for _node in ast.walk(_tree):
+    if _blocked:
+        break
+    if isinstance(_node, ast.Import):
+        for _alias in _node.names:
+            _mod = _alias.name.split('.')[0]
+            if _mod in _BLOCKED_MODULES:
+                _blocked = f'Blocked import: "{_mod}" is not allowed'
+                break
+    elif isinstance(_node, ast.ImportFrom):
+        if _node.module:
+            _mod = _node.module.split('.')[0]
+            if _mod in _BLOCKED_MODULES:
+                _blocked = f'Blocked import: "{_mod}" is not allowed'
+    elif isinstance(_node, ast.Call):
+        _name = None
+        if isinstance(_node.func, ast.Name):
+            _name = _node.func.id
+        elif isinstance(_node.func, ast.Attribute):
+            _name = _node.func.attr
+        if _name and _name in _BLOCKED_BUILTINS:
+            _blocked = f'Blocked builtin: "{_name}()" is not allowed'
+
+if _blocked:
+    _emit("error", {"error": _blocked})
+    sys.exit(0)
+
+# --- Data injection ---
+_stdin_data = sys.stdin.read()
+_atlas_data = None
+if _stdin_data.strip():
+    _atlas_data = json.loads(_stdin_data)
+
+data = None
+df = None
+if _atlas_data:
+    try:
+        import pandas as pd
+        df = pd.DataFrame(_atlas_data["rows"], columns=_atlas_data["columns"])
+        data = df
+    except ImportError:
+        data = _atlas_data
+
+# Configure matplotlib for headless rendering + hook savefig for streaming
+try:
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    _orig_savefig = plt.Figure.savefig
+    def _atlas_savefig(self, fname, *args, **kwargs):
+        _orig_savefig(self, fname, *args, **kwargs)
+        if isinstance(fname, str) and fname.startswith(_chart_dir):
+            try:
+                with open(fname, "rb") as fh:
+                    b64 = base64.b64encode(fh.read()).decode()
+                _emit("chart", {"base64": b64, "mimeType": "image/png"})
+            except Exception:
+                pass
+    plt.Figure.savefig = _atlas_savefig
+except ImportError:
+    pass
+
+def chart_path(n=0):
+    return os.path.join(_chart_dir, f"chart_{n}.png")
+
+# --- Streaming stdout capture ---
+class _StreamingStdout:
+    """Intercepts print() calls and emits them as streaming events."""
+    def __init__(self):
+        self._buf = ""
+    def write(self, s):
+        if not s:
+            return
+        self._buf += s
+        # Flush on newlines for line-buffered streaming
+        while "\\n" in self._buf:
+            line, self._buf = self._buf.split("\\n", 1)
+            _emit("stdout", line + "\\n")
+    def flush(self):
+        if self._buf:
+            _emit("stdout", self._buf)
+            self._buf = ""
+    def isatty(self):
+        return False
+
+sys.stdout = _StreamingStdout()
+
+# --- Execute user code in isolated namespace ---
+_user_ns = {"chart_path": chart_path, "data": data, "df": df}
+_atlas_error = None
+try:
+    exec(_user_code, _user_ns)
+except Exception as e:
+    _atlas_error = f"{type(e).__name__}: {e}"
+
+# Flush any remaining buffered stdout
+sys.stdout.flush()
+sys.stdout = _real_stdout
+
+# --- Collect structured results ---
+_charts = []
+for f in sorted(glob.glob(os.path.join(_chart_dir, "chart_*.png"))):
+    with open(f, "rb") as fh:
+        _charts.append({"base64": base64.b64encode(fh.read()).decode(), "mimeType": "image/png"})
+
+if _atlas_error:
+    _emit("error", {"error": _atlas_error})
+else:
+    _done = {"success": True, "exitCode": 0}
+    if "_atlas_table" in _user_ns:
+        _emit("table", _user_ns["_atlas_table"])
+        _done["hasTable"] = True
+    if "_atlas_chart" in _user_ns:
+        _ac = _user_ns["_atlas_chart"]
+        if isinstance(_ac, dict):
+            _emit("recharts", _ac)
+        elif isinstance(_ac, list):
+            for _c in _ac:
+                _emit("recharts", _c)
+    _emit("done", _done)
+`;
+
+async function handleExecPythonStream(req: Request): Promise<Response> {
+  const authErr = checkAuth(req);
+  if (authErr) return authErr;
+
+  if (activeExecs >= MAX_CONCURRENT) {
+    return Response.json({ error: "Too many concurrent executions" }, { status: 429 });
+  }
+
+  let body: SidecarPythonRequest;
+  try {
+    body = (await req.json()) as SidecarPythonRequest;
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  if (!body.code || typeof body.code !== "string") {
+    return Response.json({ error: "Missing or invalid 'code' field" }, { status: 400 });
+  }
+
+  const timeout = clampTimeout(body.timeout, PYTHON_DEFAULT_TIMEOUT_MS, PYTHON_MAX_TIMEOUT_MS);
+
+  const execId = randomUUID();
+  const streamMarker = `__ATLAS_STREAM_${execId}__`;
+  const resultMarker = `__ATLAS_RESULT_${execId}__`;
+  const tmpDir = join("/tmp", `pyexec-${execId}`);
+  const codeFile = join(tmpDir, "user_code.py");
+  const wrapperFile = join(tmpDir, "wrapper_stream.py");
+  const chartDir = join(tmpDir, "charts");
+
+  console.log(`[sandbox-sidecar] python-stream=${execId} codeLen=${body.code.length} timeout=${timeout}`);
+
+  const startTime = Date.now();
+  activeExecs++;
+
+  // Create a ReadableStream that sends NDJSON events
+  const stream = new ReadableStream({
+    async start(controller) {
+      const encoder = new TextEncoder();
+      function send(line: string) {
+        try {
+          controller.enqueue(encoder.encode(line + "\n"));
+        } catch {
+          // Controller may be closed
+        }
+      }
+
+      try {
+        await mkdir(chartDir, { recursive: true });
+        writeFileSync(codeFile, body.code);
+        writeFileSync(wrapperFile, PYTHON_WRAPPER_STREAMING);
+
+        const stdinPayload = body.data ? JSON.stringify(body.data) : "";
+
+        const proc = Bun.spawn(["python3", wrapperFile, codeFile], {
+          cwd: tmpDir,
+          stdin: "pipe",
+          stdout: "pipe",
+          stderr: "pipe",
+          env: {
+            PATH: "/bin:/usr/bin:/usr/local/bin",
+            HOME: tmpDir,
+            LANG: "C.UTF-8",
+            TMPDIR: tmpDir,
+            MPLBACKEND: "Agg",
+            ATLAS_CHART_DIR: chartDir,
+            ATLAS_RESULT_MARKER: resultMarker,
+            ATLAS_STREAM_MARKER: streamMarker,
+          },
+        });
+
+        let timedOut = false;
+        const timer = setTimeout(() => {
+          timedOut = true;
+          proc.kill(9);
+        }, timeout);
+
+        try {
+          proc.stdin.write(stdinPayload);
+          proc.stdin.end();
+        } catch (err) {
+          const detail = err instanceof Error ? err.message : String(err);
+          console.warn(`[sandbox-sidecar] python-stream=${execId} stdin write error: ${detail}`);
+        }
+
+        // Read stdout line by line and forward streaming events
+        const reader = proc.stdout.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+
+          // Process complete lines
+          let newlineIdx;
+          while ((newlineIdx = buffer.indexOf("\n")) !== -1) {
+            const line = buffer.slice(0, newlineIdx);
+            buffer = buffer.slice(newlineIdx + 1);
+
+            if (line.startsWith(streamMarker)) {
+              // Forward the JSON event as an NDJSON line
+              send(line.slice(streamMarker.length));
+            }
+            // Non-marker lines are ignored (shouldn't occur with streaming wrapper)
+          }
+        }
+
+        // Process any remaining buffer content
+        if (buffer.trim() && buffer.startsWith(streamMarker)) {
+          send(buffer.slice(streamMarker.length));
+        }
+
+        clearTimeout(timer);
+        const exitCode = await proc.exited;
+
+        // Read stderr for error context
+        const stderr = await new Response(proc.stderr).text().catch(() => "");
+
+        const duration = Date.now() - startTime;
+
+        if (timedOut) {
+          console.log(`[sandbox-sidecar] python-stream=${execId} timed out after ${timeout}ms`);
+          send(JSON.stringify({ type: "error", data: { error: `Python execution timed out after ${timeout}ms` } }));
+        } else if (exitCode !== 0 && stderr.trim()) {
+          console.log(`[sandbox-sidecar] python-stream=${execId} exitCode=${exitCode} duration=${duration}ms`);
+          send(JSON.stringify({ type: "error", data: { error: stderr.trim().slice(0, 500) } }));
+        } else {
+          console.log(`[sandbox-sidecar] python-stream=${execId} exitCode=${exitCode} duration=${duration}ms`);
+        }
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        console.error(`[sandbox-sidecar] python-stream=${execId} error=${detail}`);
+        send(JSON.stringify({ type: "error", data: { error: `Execution failed: ${detail}` } }));
+      } finally {
+        activeExecs--;
+        controller.close();
+        rm(tmpDir, { recursive: true, force: true }).catch((err) => {
+          console.warn(`[sandbox-sidecar] Failed to clean up ${tmpDir}: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "application/x-ndjson",
+      "Cache-Control": "no-cache",
+      "X-Accel-Buffering": "no",
+    },
+  });
+}
+
 // --- Health endpoint ---
 
 function handleHealth(): Response {
@@ -487,6 +813,10 @@ Bun.serve({
 
     if (url.pathname === "/exec-python" && req.method === "POST") {
       return handleExecPython(req);
+    }
+
+    if (url.pathname === "/exec-python-stream" && req.method === "POST") {
+      return handleExecPythonStream(req);
     }
 
     return Response.json({ error: "Not found" }, { status: 404 });

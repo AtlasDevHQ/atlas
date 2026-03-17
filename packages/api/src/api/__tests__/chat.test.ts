@@ -49,12 +49,19 @@ const mockValidateEnvironment: Mock<
 const mockRunAgent = mock(() =>
   Promise.resolve({
     toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
+    toUIMessageStream: () => new ReadableStream({ start(c) { c.close(); } }),
     text: Promise.resolve("answer"),
   }),
 );
 
 mock.module("@atlas/api/lib/agent", () => ({
   runAgent: mockRunAgent,
+}));
+
+mock.module("@atlas/api/lib/tools/python-stream", () => ({
+  setStreamWriter: () => {},
+  clearStreamWriter: () => {},
+  getStreamWriter: () => undefined,
 }));
 
 // Mock modules needed by health and auth routes (loaded via ../index)
@@ -169,6 +176,7 @@ describe("POST /api/chat", () => {
     mockRunAgent.mockReset();
     mockRunAgent.mockResolvedValue({
       toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
+      toUIMessageStream: () => new ReadableStream({ start(c) { c.close(); } }),
       text: Promise.resolve("answer"),
     });
     mockCreateConversation.mockReset();
@@ -214,8 +222,8 @@ describe("POST /api/chat", () => {
   it("returns 200 stream on success", async () => {
     const response = await app.fetch(makeRequest());
     expect(response.status).toBe(200);
-    const text = await response.text();
-    expect(text).toBe("stream");
+    // Response is a UI message SSE stream, not plain text
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
   });
 
   it("returns 401 when authenticateRequest returns unauthenticated", async () => {

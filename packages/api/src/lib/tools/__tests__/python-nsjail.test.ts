@@ -12,6 +12,7 @@ mock.module("@atlas/api/lib/logger", () => ({
     warn: () => {},
     error: () => {},
   }),
+  getRequestContext: () => undefined,
 }));
 
 // Mock tracing

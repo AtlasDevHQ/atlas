@@ -269,18 +269,18 @@ function proposeJoins(
     if (join.count < 2) continue; // Need at least 2 observations
 
     // Check both directions — propose the join on the "from" table
-    for (const [sourceTable, targetTable] of [[join.fromTable, join.toTable], [join.toTable, join.fromTable]]) {
-      const entry = entities.get(sourceTable!);
+    for (const [sourceTable, targetTable] of [[join.fromTable, join.toTable], [join.toTable, join.fromTable]] as [string, string][]) {
+      const entry = entities.get(sourceTable);
       if (!entry) continue;
 
-      const targetEntry = entities.get(targetTable!);
-      const targetName = targetEntry?.entity.name ?? inferEntityName(targetTable!);
+      const targetEntry = entities.get(targetTable);
+      const targetName = targetEntry?.entity.name ?? inferEntityName(targetTable);
 
       if (joinExists(entry.entity, targetName)) continue;
 
       let joinColumns: { from: string; to: string } | null = null;
       if (join.onClause) {
-        joinColumns = parseOnClause(join.onClause, sourceTable!, targetTable!);
+        joinColumns = parseOnClause(join.onClause, sourceTable, targetTable);
       }
 
       const joinEntry = {
@@ -295,7 +295,7 @@ function proposeJoins(
       proposals.push({
         type: "join",
         filePath: entry.filePath,
-        table: sourceTable!,
+        table: sourceTable,
         description: `Add join: ${sourceTable} → ${targetName} (observed ${join.count}x)`,
         observedCount: join.count,
         yamlAddition: yaml.dump([joinEntry], { lineWidth: -1 }).trim(),

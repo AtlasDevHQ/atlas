@@ -270,8 +270,8 @@ export async function executePythonViaSidecarStream(
             onProgress({ type: "chart", chart: event.data });
             break;
           case "recharts":
-            rechartsCharts.push(event.data as RechartsChart);
-            onProgress({ type: "recharts", chart: event.data as RechartsChart });
+            rechartsCharts.push(event.data);
+            onProgress({ type: "recharts", chart: event.data });
             break;
           case "table":
             table = event.data;

@@ -16,7 +16,6 @@ import {
   mock,
   type Mock,
 } from "bun:test";
-import { createConnectionMock } from "@atlas/api/testing/connection";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -159,25 +158,50 @@ const mockListOrgs: Mock<() => string[]> = mock(() => []);
 const mockDrainOrg: Mock<(orgId: string) => Promise<unknown>> = mock(() =>
   Promise.resolve({ drained: 2 }),
 );
+const mockGetPoolWarnings: Mock<() => string[]> = mock(() => []);
 
-mock.module("@atlas/api/lib/db/connection", () =>
-  createConnectionMock({
-    getDB: () => mockDBConnection,
-    connections: {
-      get: () => mockDBConnection,
-      getDefault: () => mockDBConnection,
-      describe: () => [
-        { id: "default", dbType: "postgres", description: "Test DB" },
-      ],
-      healthCheck: mockHealthCheck,
-      getOrgPoolMetrics: mockGetOrgPoolMetrics,
-      getOrgPoolConfig: mockGetOrgPoolConfig,
-      listOrgs: mockListOrgs,
-      drainOrg: mockDrainOrg,
-      getForOrg: () => mockDBConnection,
-    },
-  }),
-);
+mock.module("@atlas/api/lib/db/connection", () => ({
+  getDB: () => mockDBConnection,
+  connections: {
+    get: () => mockDBConnection,
+    getDefault: () => mockDBConnection,
+    getDBType: () => "postgres" as const,
+    getTargetHost: () => "localhost",
+    getValidator: () => undefined,
+    getParserDialect: () => undefined,
+    getForbiddenPatterns: () => [],
+    list: () => ["default"],
+    describe: () => [
+      { id: "default", dbType: "postgres", description: "Test DB" },
+    ],
+    healthCheck: mockHealthCheck,
+    getOrgPoolMetrics: mockGetOrgPoolMetrics,
+    getOrgPoolConfig: mockGetOrgPoolConfig,
+    listOrgs: mockListOrgs,
+    drainOrg: mockDrainOrg,
+    getPoolWarnings: mockGetPoolWarnings,
+    recordQuery: () => {},
+    recordError: () => {},
+    recordSuccess: () => {},
+    isOrgPoolingEnabled: () => false,
+    getForOrg: () => mockDBConnection,
+  },
+  detectDBType: () => "postgres" as const,
+  extractTargetHost: () => "localhost",
+  ConnectionRegistry: class {},
+  ConnectionNotRegisteredError: class extends Error {
+    constructor(id: string) { super(`Connection "${id}" is not registered.`); this.name = "ConnectionNotRegisteredError"; }
+  },
+  NoDatasourceConfiguredError: class extends Error {
+    constructor() { super("No analytics datasource configured."); this.name = "NoDatasourceConfiguredError"; }
+  },
+  PoolCapacityExceededError: class extends Error {
+    constructor(current: number, newSlots: number, max: number) {
+      super(`Cannot create org pool: would use ${current + newSlots} connection slots, exceeding maxTotalConnections (${max}).`);
+      this.name = "PoolCapacityExceededError";
+    }
+  },
+}));
 
 mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
@@ -493,6 +517,26 @@ describe("GET /api/v1/admin/overview", () => {
     expect(body.glossaryTerms).toBe(2);
     expect(body.plugins).toBe(1);
     expect(Array.isArray(body.pluginHealth)).toBe(true);
+  });
+
+  it("omits poolWarnings when none", async () => {
+    mockGetPoolWarnings.mockReturnValue([]);
+    const res = await app.fetch(adminRequest("/api/v1/admin/overview"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.poolWarnings).toBeUndefined();
+  });
+
+  it("includes poolWarnings when capacity is over-provisioned", async () => {
+    mockGetPoolWarnings.mockReturnValue([
+      "Org pool capacity (50 orgs × 5 conns × 1 datasources = 250 slots) exceeds maxTotalConnections (100) by 2.5×.",
+    ]);
+    const res = await app.fetch(adminRequest("/api/v1/admin/overview"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(Array.isArray(body.poolWarnings)).toBe(true);
+    expect((body.poolWarnings as string[]).length).toBe(1);
+    expect((body.poolWarnings as string[])[0]).toContain("exceeds maxTotalConnections");
   });
 });
 

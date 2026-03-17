@@ -224,6 +224,8 @@ admin.get("/overview", async (c) => {
       }
     }
 
+    const poolWarnings = connections.getPoolWarnings();
+
     return c.json({
       connections: connList.length,
       entities: entities.length,
@@ -237,6 +239,7 @@ admin.get("/overview", async (c) => {
         status: p.status,
       })),
       ...(warnings.length > 0 && { warnings }),
+      ...(poolWarnings.length > 0 && { poolWarnings }),
     });
   });
 });

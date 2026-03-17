@@ -457,7 +457,9 @@ export class ConnectionRegistry {
     const numDatasources = Math.max(this.entries.size, 1);
     const theoreticalSlots = merged.maxOrgs * merged.maxConnections * numDatasources;
     if (theoreticalSlots > this.maxTotalConnections) {
-      log.warn(
+      const severity = theoreticalSlots > this.maxTotalConnections * 2 ? "error" : "warn";
+      const logFn = severity === "error" ? log.error.bind(log) : log.warn.bind(log);
+      logFn(
         {
           maxOrgs: merged.maxOrgs,
           maxConnections: merged.maxConnections,
@@ -484,6 +486,24 @@ export class ConnectionRegistry {
   /** Return the current org pool settings (for admin API / diagnostics). */
   getOrgPoolConfig(): Readonly<OrgPoolSettings> {
     return this.orgPoolSettings;
+  }
+
+  /** Return pool capacity warnings for the admin health check. Empty array when healthy. */
+  getPoolWarnings(): string[] {
+    const warnings: string[] = [];
+    if (!this.orgPoolSettings.enabled) return warnings;
+
+    const numDatasources = Math.max(this.entries.size, 1);
+    const theoreticalSlots = this.orgPoolSettings.maxOrgs * this.orgPoolSettings.maxConnections * numDatasources;
+    if (theoreticalSlots > this.maxTotalConnections) {
+      const ratio = Math.round(theoreticalSlots / this.maxTotalConnections * 10) / 10;
+      warnings.push(
+        `Org pool capacity (${this.orgPoolSettings.maxOrgs} orgs × ${this.orgPoolSettings.maxConnections} conns × ${numDatasources} datasources = ${theoreticalSlots} slots) ` +
+        `exceeds maxTotalConnections (${this.maxTotalConnections}) by ${ratio}×. ` +
+        `LRU eviction prevents exceeding the limit, but tenants may hit PoolCapacityExceededError under load.`
+      );
+    }
+    return warnings;
   }
 
   private _orgKey(orgId: string, connectionId: string): string {

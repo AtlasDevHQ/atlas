@@ -127,7 +127,7 @@ export function invalidateSemanticIndex(): void {
   _cachedEntityCount = 0;
 }
 
-export interface SemanticStats {
+export interface SemanticIndexStats {
   entities: number;
   dimensions: number;
   measures: number;
@@ -137,27 +137,27 @@ export interface SemanticStats {
 }
 
 /** Collect stats from the semantic layer without building the full index text. */
-export function getSemanticStats(semanticRoot: string): SemanticStats {
+export function getSemanticIndexStats(semanticRoot: string): SemanticIndexStats {
   const entities = loadEntities(semanticRoot);
   const metrics = loadMetrics(semanticRoot);
   const glossary = loadGlossary(semanticRoot);
 
-  let dimensions = 0;
-  let measures = 0;
+  let dimensionCount = 0;
+  let measureCount = 0;
   const keywords = new Set<string>();
 
   for (const e of entities) {
     const dims = e.dimensions ?? [];
-    dimensions += dims.length;
-    measures += e.measures?.length ?? 0;
+    const meas = e.measures ?? [];
+    dimensionCount += dims.length;
+    measureCount += meas.length;
 
-    // Collect keywords from entity names, descriptions, dimension names
     if (e.table) keywords.add(e.table.toLowerCase());
     if (e.name) keywords.add(e.name.toLowerCase());
     for (const d of dims) {
       if (d.name) keywords.add(d.name.toLowerCase());
     }
-    for (const m of e.measures ?? []) {
+    for (const m of meas) {
       if (m.name) keywords.add(m.name.toLowerCase());
     }
   }
@@ -172,8 +172,8 @@ export function getSemanticStats(semanticRoot: string): SemanticStats {
 
   return {
     entities: entities.length,
-    dimensions,
-    measures,
+    dimensions: dimensionCount,
+    measures: measureCount,
     metrics: metrics.length,
     glossaryTerms: glossary.length,
     keywords: keywords.size,

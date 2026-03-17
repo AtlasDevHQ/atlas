@@ -3985,39 +3985,42 @@ async function handleIndex(args: string[]): Promise<void> {
     process.exit(1);
   }
 
-  // Check for at least one .yml file
-  const hasYml = fs.existsSync(path.join(SEMANTIC_DIR, "entities")) &&
-    fs.readdirSync(path.join(SEMANTIC_DIR, "entities")).some(f => f.endsWith(".yml"));
-  if (!hasYml) {
-    console.error(pc.red("No entity YAML files found in semantic/entities/. Run 'atlas init' first."));
+  try {
+    const { getSemanticIndexStats, buildSemanticIndex } = await import("@atlas/api/lib/semantic-index");
+
+    // Use stats-based validation — works for both default and per-source layouts
+    const stats = getSemanticIndexStats(SEMANTIC_DIR);
+
+    if (stats.entities === 0) {
+      console.error(pc.red("No valid entity YAML files found in semantic/. Run 'atlas init' first."));
+      process.exit(1);
+    }
+
+    if (statsOnly) {
+      console.log(
+        `${pc.bold("Semantic index stats:")} ` +
+        `${stats.entities} entities, ${stats.dimensions} dimensions, ` +
+        `${stats.measures} measures, ${stats.metrics} metrics, ` +
+        `${stats.glossaryTerms} glossary terms (${stats.keywords} keywords)`
+      );
+      return;
+    }
+
+    // Full rebuild — stats already collected above, no double-load needed
+    const start = Date.now();
+    buildSemanticIndex(SEMANTIC_DIR);
+    const elapsed = Date.now() - start;
+
+    console.log(
+      pc.green("✓") + ` Indexed ${stats.entities} entities, ` +
+      `${stats.dimensions} dimensions, ${stats.measures} measures ` +
+      `(${stats.keywords} keywords) in ${elapsed}ms`
+    );
+  } catch (err) {
+    console.error(pc.red("Failed to build semantic index."));
+    console.error(`  ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
   }
-
-  const { getSemanticStats } = await import("@atlas/api/lib/semantic-index");
-
-  if (statsOnly) {
-    const stats = getSemanticStats(SEMANTIC_DIR);
-    console.log(
-      `${pc.bold("Semantic index stats:")} ` +
-      `${stats.entities} entities, ${stats.dimensions} dimensions, ` +
-      `${stats.measures} measures, ${stats.metrics} metrics, ` +
-      `${stats.glossaryTerms} glossary terms (${stats.keywords} keywords)`
-    );
-    return;
-  }
-
-  // Full rebuild
-  const { buildSemanticIndex } = await import("@atlas/api/lib/semantic-index");
-  const start = Date.now();
-  buildSemanticIndex(SEMANTIC_DIR);
-  const elapsed = Date.now() - start;
-
-  const stats = getSemanticStats(SEMANTIC_DIR);
-  console.log(
-    pc.green("✓") + ` Indexed ${stats.entities} entities, ` +
-    `${stats.dimensions} dimensions, ${stats.measures} measures ` +
-    `(${stats.keywords} keywords) in ${elapsed}ms`
-  );
 }
 
 // --- Diff CLI handler ---

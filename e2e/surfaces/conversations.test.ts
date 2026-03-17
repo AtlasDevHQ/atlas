@@ -18,6 +18,7 @@ import {
   mock,
   type Mock,
 } from "bun:test";
+import { createConnectionMock } from "../../packages/api/src/__mocks__/connection";
 
 // ---------------------------------------------------------------------------
 // In-memory conversation store
@@ -99,37 +100,23 @@ mock.module("@atlas/api/lib/startup", () => ({
   resetStartupCache: mock(() => {}),
 }));
 
-mock.module("@atlas/api/lib/db/connection", () => ({
-  getDB: () => ({
+mock.module("@atlas/api/lib/db/connection", () => {
+  const mockDBConn = {
     query: async () => ({ columns: ["?column?"], rows: [{ "?column?": 1 }] }),
     close: async () => {},
-  }),
-  connections: {
-    get: () => ({
-      query: async () => ({ columns: ["?column?"], rows: [{ "?column?": 1 }] }),
-      close: async () => {},
-    }),
-    getDefault: () => ({
-      query: async () => ({ columns: ["?column?"], rows: [{ "?column?": 1 }] }),
-      close: async () => {},
-    }),
-    getDBType: () => "postgres" as const,
-    getTargetHost: () => "localhost",
-    list: () => [],
-    describe: () => [],
-  },
-  detectDBType: () => "postgres" as const,
-  extractTargetHost: () => "localhost",
-  rewriteClickHouseUrl: (url: string) => url,
-  parseSnowflakeURL: () => ({}),
-  ConnectionRegistry: class {},
-  PoolCapacityExceededError: class extends Error {
-    constructor(current: number, requested: number, max: number) {
-      super(`Cannot create org pool: would use ${current + requested} connection slots, exceeding maxTotalConnections (${max}).`);
-      this.name = "PoolCapacityExceededError";
-    }
-  },
-}));
+  };
+  return createConnectionMock({
+    getDB: () => mockDBConn,
+    connections: {
+      get: () => mockDBConn,
+      getDefault: () => mockDBConn,
+      list: () => [],
+      describe: () => [],
+    },
+    rewriteClickHouseUrl: (url: string) => url,
+    parseSnowflakeURL: () => ({}),
+  });
+});
 
 // Internal DB — return true so conversation routes pass the hasInternalDB gate
 mock.module("@atlas/api/lib/db/internal", () => ({

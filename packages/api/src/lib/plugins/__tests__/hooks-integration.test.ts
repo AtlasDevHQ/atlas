@@ -12,6 +12,7 @@
 import { describe, expect, it, beforeEach, afterEach, mock, type Mock } from "bun:test";
 import { PluginRegistry } from "../registry";
 import type { PluginLike, PluginContextLike } from "../registry";
+import { createConnectionMock } from "@atlas/api/testing/connection";
 
 // --- Mocks ---
 
@@ -34,37 +35,16 @@ const mockConn = {
   close: async () => {},
 };
 
-mock.module("@atlas/api/lib/db/connection", () => ({
-  getDB: () => mockConn,
-  connections: {
-    get: () => mockConn,
-    getDefault: () => mockConn,
-    getDBType: () => "postgres",
-    getTargetHost: () => "localhost",
-    getValidator: () => undefined,
-    getParserDialect: () => undefined,
-    getForbiddenPatterns: () => [],
-    list: () => ["default"],
-    recordQuery: () => {},
-    recordError: () => {},
-    recordSuccess: () => {},
-    isOrgPoolingEnabled: () => false,
-    getForOrg: () => mockConn,
-  },
-  detectDBType: () => "postgres",
-  ConnectionNotRegisteredError: class extends Error {
-    constructor(id: string) { super(`Connection "${id}" is not registered.`); this.name = "ConnectionNotRegisteredError"; }
-  },
-  NoDatasourceConfiguredError: class extends Error {
-    constructor() { super("No analytics datasource configured."); this.name = "NoDatasourceConfiguredError"; }
-  },
-  PoolCapacityExceededError: class extends Error {
-    constructor(current: number, requested: number, max: number) {
-      super(`Cannot create org pool: would use ${current + requested} connection slots, exceeding maxTotalConnections (${max}).`);
-      this.name = "PoolCapacityExceededError";
-    }
-  },
-}));
+mock.module("@atlas/api/lib/db/connection", () =>
+  createConnectionMock({
+    getDB: () => mockConn,
+    connections: {
+      get: () => mockConn,
+      getDefault: () => mockConn,
+      getForOrg: () => mockConn,
+    },
+  }),
+);
 
 mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async (

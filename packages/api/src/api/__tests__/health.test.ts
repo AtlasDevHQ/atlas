@@ -16,6 +16,7 @@ import {
   type Mock,
 } from "bun:test";
 import type { ConnectionMetadata, HealthCheckResult } from "@atlas/api/lib/db/connection";
+import { createConnectionMock } from "@atlas/api/testing/connection";
 
 // --- Mocks ---
 
@@ -37,40 +38,19 @@ const mockDBConnection = {
   close: async () => {},
 };
 
-mock.module("@atlas/api/lib/db/connection", () => ({
-  getDB: () => mockDBConnection,
-  connections: {
-    get: () => mockDBConnection,
-    getDefault: () => mockDBConnection,
-    getDBType: () => "postgres" as const,
-    getTargetHost: () => "localhost",
-    getValidator: () => undefined,
-    getParserDialect: () => undefined,
-    getForbiddenPatterns: () => [],
-    list: () => connMetadata.map((m) => m.id),
-    describe: () => connMetadata,
-    recordQuery: () => {},
-    recordError: () => {},
-    recordSuccess: () => {},
-    isOrgPoolingEnabled: () => false,
-    getForOrg: () => mockDBConnection,
-  },
-  detectDBType: () => "postgres" as const,
-  resolveDatasourceUrl: () => process.env.ATLAS_DATASOURCE_URL || null,
-  ConnectionRegistry: class {},
-  ConnectionNotRegisteredError: class extends Error {
-    constructor(id: string) { super(`Connection "${id}" is not registered.`); this.name = "ConnectionNotRegisteredError"; }
-  },
-  NoDatasourceConfiguredError: class extends Error {
-    constructor() { super("No analytics datasource configured."); this.name = "NoDatasourceConfiguredError"; }
-  },
-  PoolCapacityExceededError: class extends Error {
-    constructor(current: number, requested: number, max: number) {
-      super(`Cannot create org pool: would use ${current + requested} connection slots, exceeding maxTotalConnections (${max}).`);
-      this.name = "PoolCapacityExceededError";
-    }
-  },
-}));
+mock.module("@atlas/api/lib/db/connection", () =>
+  createConnectionMock({
+    getDB: () => mockDBConnection,
+    connections: {
+      get: () => mockDBConnection,
+      getDefault: () => mockDBConnection,
+      list: () => connMetadata.map((m) => m.id),
+      describe: () => connMetadata,
+      getForOrg: () => mockDBConnection,
+    },
+    resolveDatasourceUrl: () => process.env.ATLAS_DATASOURCE_URL || null,
+  }),
+);
 
 mock.module("@atlas/api/lib/providers", () => ({
   getDefaultProvider: () => "anthropic",

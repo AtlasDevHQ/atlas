@@ -7,6 +7,7 @@
  */
 
 import { describe, expect, it, beforeEach, mock, type Mock } from "bun:test";
+import { createConnectionMock } from "@atlas/api/testing/connection";
 
 // --- Mocks ---
 
@@ -47,38 +48,20 @@ mock.module("@atlas/api/lib/semantic", () => ({
   _resetWhitelists: () => {},
 }));
 
-mock.module("@atlas/api/lib/db/connection", () => ({
-  getDB: () => mockBaseDBConnection,
-  connections: {
-    get: () => mockBaseDBConnection,
-    getDefault: () => mockBaseDBConnection,
-    getDBType: () => "postgres" as const,
-    getTargetHost: () => "localhost",
-    getValidator: () => undefined,
-    getParserDialect: () => undefined,
-    getForbiddenPatterns: () => [],
-    list: () => ["default"],
-    has: () => true,
-    isOrgPoolingEnabled: () => mockOrgPoolingEnabled,
-    getForOrg: mockGetForOrg,
-    recordQuery: mockRecordQuery,
-    recordSuccess: mockRecordSuccess,
-    recordError: mockRecordError,
-  },
-  detectDBType: () => "postgres" as const,
-  ConnectionNotRegisteredError: class extends Error {
-    constructor(id: string) { super(`Connection "${id}" is not registered.`); this.name = "ConnectionNotRegisteredError"; }
-  },
-  NoDatasourceConfiguredError: class extends Error {
-    constructor() { super("No analytics datasource configured."); this.name = "NoDatasourceConfiguredError"; }
-  },
-  PoolCapacityExceededError: class extends Error {
-    constructor(current: number, newSlots: number, max: number) {
-      super(`Cannot create org pool: would use ${current + newSlots} connection slots, exceeding maxTotalConnections (${max}).`);
-      this.name = "PoolCapacityExceededError";
-    }
-  },
-}));
+mock.module("@atlas/api/lib/db/connection", () =>
+  createConnectionMock({
+    getDB: () => mockBaseDBConnection,
+    connections: {
+      get: () => mockBaseDBConnection,
+      getDefault: () => mockBaseDBConnection,
+      isOrgPoolingEnabled: () => mockOrgPoolingEnabled,
+      getForOrg: mockGetForOrg,
+      recordQuery: mockRecordQuery,
+      recordSuccess: mockRecordSuccess,
+      recordError: mockRecordError,
+    },
+  }),
+);
 
 // Mock the request context to inject user with activeOrganizationId
 let mockRequestContext: Record<string, unknown> | undefined;

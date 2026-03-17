@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, mock, type Mock } from "bun:test";
 import { resetAuthModeCache } from "@atlas/api/lib/auth/detect";
+import { createConnectionMock } from "@atlas/api/testing/connection";
 
 // ---------------------------------------------------------------------------
 // Mock heavy I/O modules so validateEnvironment() skips DB/filesystem checks
@@ -13,22 +14,11 @@ mock.module("fs", () => ({
 }));
 
 // Mock db/connection — avoid real DB imports
-mock.module("@atlas/api/lib/db/connection", () => ({
-  detectDBType: () => "postgres",
-  resolveDatasourceUrl: () => process.env.ATLAS_DATASOURCE_URL || null,
-  ConnectionNotRegisteredError: class extends Error {
-    constructor(id: string) { super(`Connection "${id}" is not registered.`); this.name = "ConnectionNotRegisteredError"; }
-  },
-  NoDatasourceConfiguredError: class extends Error {
-    constructor() { super("No analytics datasource configured."); this.name = "NoDatasourceConfiguredError"; }
-  },
-  PoolCapacityExceededError: class extends Error {
-    constructor(current: number, requested: number, max: number) {
-      super(`Cannot create org pool: would use ${current + requested} connection slots, exceeding maxTotalConnections (${max}).`);
-      this.name = "PoolCapacityExceededError";
-    }
-  },
-}));
+mock.module("@atlas/api/lib/db/connection", () =>
+  createConnectionMock({
+    resolveDatasourceUrl: () => process.env.ATLAS_DATASOURCE_URL || null,
+  }),
+);
 
 mock.module("@atlas/api/lib/providers", () => ({
   getDefaultProvider: () => "anthropic",

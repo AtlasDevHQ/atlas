@@ -15,6 +15,7 @@ import {
   mock,
   type Mock,
 } from "bun:test";
+import { createConnectionMock } from "@atlas/api/testing/connection";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -119,41 +120,14 @@ mock.module("@atlas/api/lib/startup", () => ({
   getStartupWarnings: mock(() => []),
 }));
 
-mock.module("@atlas/api/lib/db/connection", () => ({
-  getDB: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
-  connections: {
-    get: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
-    getDefault: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
-    getDBType: () => "postgres" as const,
-    getTargetHost: () => "localhost",
-    getValidator: () => undefined,
-    getParserDialect: () => undefined,
-    getForbiddenPatterns: () => [],
-    list: () => ["default"],
-    describe: () => [{ id: "default", dbType: "postgres", description: "Test DB" }],
-    healthCheck: mock(() => Promise.resolve({ status: "healthy", latencyMs: 5, checkedAt: new Date() })),
-    recordQuery: () => {},
-    recordError: () => {},
-    recordSuccess: () => {},
-    isOrgPoolingEnabled: () => false,
-    getForOrg: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
-  },
-  detectDBType: () => "postgres" as const,
-  extractTargetHost: () => "localhost",
-  ConnectionRegistry: class {},
-  ConnectionNotRegisteredError: class extends Error {
-    constructor(id: string) { super(`Connection "${id}" is not registered.`); this.name = "ConnectionNotRegisteredError"; }
-  },
-  NoDatasourceConfiguredError: class extends Error {
-    constructor() { super("No analytics datasource configured."); this.name = "NoDatasourceConfiguredError"; }
-  },
-  PoolCapacityExceededError: class extends Error {
-    constructor(current: number, requested: number, max: number) {
-      super(`Cannot create org pool: would use ${current + requested} connection slots, exceeding maxTotalConnections (${max}).`);
-      this.name = "PoolCapacityExceededError";
-    }
-  },
-}));
+mock.module("@atlas/api/lib/db/connection", () =>
+  createConnectionMock({
+    connections: {
+      describe: () => [{ id: "default", dbType: "postgres", description: "Test DB" }],
+      healthCheck: mock(() => Promise.resolve({ status: "healthy", latencyMs: 5, checkedAt: new Date() })),
+    },
+  }),
+);
 
 mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),

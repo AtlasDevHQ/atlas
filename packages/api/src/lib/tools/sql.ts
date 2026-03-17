@@ -16,7 +16,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { Parser } from "node-sql-parser";
-import { connections, detectDBType, ConnectionNotRegisteredError, NoDatasourceConfiguredError } from "@atlas/api/lib/db/connection";
+import { connections, detectDBType, ConnectionNotRegisteredError, NoDatasourceConfiguredError, PoolCapacityExceededError } from "@atlas/api/lib/db/connection";
 import type { DBConnection, DBType } from "@atlas/api/lib/db/connection";
 import { getWhitelistedTables, getOrgWhitelistedTables } from "@atlas/api/lib/semantic";
 import { logQueryAudit } from "@atlas/api/lib/auth/audit";
@@ -429,6 +429,13 @@ Rules:
         return {
           success: false,
           error: err.message,
+        };
+      }
+      if (err instanceof PoolCapacityExceededError) {
+        log.warn({ connectionId: connId, orgId }, "Org pool capacity exceeded");
+        return {
+          success: false,
+          error: "Connection pool capacity reached — the system is handling many concurrent tenants. Try again shortly.",
         };
       }
       const message = err instanceof Error ? err.message : String(err);

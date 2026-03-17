@@ -347,4 +347,82 @@ describe("ConnectionRegistry org-scoped pools", () => {
       }
     });
   });
+
+  // --- Pool capacity guard (#530) ---
+
+  describe("pool capacity guard", () => {
+    it("throws PoolCapacityExceededError when base pool consumes all capacity", () => {
+      // Base pool uses all 10 slots. Org pool needs 5 more — no org pools to evict.
+      registry.setMaxTotalConnections(10);
+      registry.register("default", { url: "postgresql://localhost/test", maxConnections: 10 });
+      registry.setOrgPoolConfig({ maxConnections: 5, maxOrgs: 50 });
+
+      expect(() => registry.getForOrg("org-1")).toThrow("exceeding maxTotalConnections");
+    });
+
+    it("fills exactly to maxTotalConnections without error", () => {
+      registry.setMaxTotalConnections(15);
+      registry.register("default", { url: "postgresql://localhost/test", maxConnections: 10 });
+      registry.setOrgPoolConfig({ maxConnections: 5, maxOrgs: 50 });
+
+      // 10 + 5 = 15 — exactly at cap, should succeed
+      expect(() => registry.getForOrg("org-1")).not.toThrow();
+    });
+
+    it("evicts LRU org to free slot capacity before throwing", () => {
+      registry.setMaxTotalConnections(15);
+      registry.register("default", { url: "postgresql://localhost/test", maxConnections: 10 });
+      registry.setOrgPoolConfig({ maxConnections: 5, maxOrgs: 50 });
+
+      // Create org-1 pool (10 + 5 = 15, at cap)
+      registry.getForOrg("org-1");
+      expect(registry.hasOrgPool("org-1")).toBe(true);
+
+      // org-2 would exceed cap, but eviction loop evicts org-1 to free 5 slots
+      expect(() => registry.getForOrg("org-2")).not.toThrow();
+      expect(registry.hasOrgPool("org-1")).toBe(false); // evicted
+      expect(registry.hasOrgPool("org-2")).toBe(true);
+    });
+
+    it("PoolCapacityExceededError carries structured fields", () => {
+      registry.setMaxTotalConnections(10);
+      registry.register("default", { url: "postgresql://localhost/test", maxConnections: 10 });
+      registry.setOrgPoolConfig({ maxConnections: 5, maxOrgs: 50 });
+
+      // 10 + 5 = 15 > 10, no org pools to evict — should throw with structured fields
+      try {
+        registry.getForOrg("org-new");
+        expect.unreachable("should have thrown");
+      } catch (err) {
+        const e = err as import("../connection").PoolCapacityExceededError;
+        expect(e.name).toBe("PoolCapacityExceededError");
+        expect(e.currentSlots).toBe(10);
+        expect(e.requestedSlots).toBe(5);
+        expect(e.maxTotalConnections).toBe(10);
+      }
+    });
+
+    it("_totalPoolSlots includes org pool entries", () => {
+      registry.setMaxTotalConnections(100);
+      registry.register("default", { url: "postgresql://localhost/test", maxConnections: 10 });
+      registry.setOrgPoolConfig({ maxConnections: 3, maxOrgs: 50 });
+
+      // Create 2 org pools: base (10) + 2 org (3+3) = 16
+      registry.getForOrg("org-a");
+      registry.getForOrg("org-b");
+
+      // Set maxTotal to 16 — at cap. Third org needs 3 more.
+      // Eviction loop will evict one org (3 slots freed), making room.
+      // But if we set to 13 (base=10 + one org=3), only room for 1 org pool.
+      // After eviction of LRU org, 10+3=13, new org needs 3 → 16 > 13 → evict again.
+      // With no orgs left after evicting both, 10+3=13 → succeeds at exactly 13.
+      // So to trigger the error, set cap below base + 1 org pool.
+      registry.setMaxTotalConnections(12);
+      // Currently 10 + 3 + 3 = 16 > 12. Evict org-a → 10+3=13 > 12. Evict org-b → 10 < 12. Fits.
+      // Hmm — that succeeds. Need cap at base only.
+      registry.setMaxTotalConnections(10);
+      // 10 + 3 + 3 = 16 > 10. Evict org-a → 10+3=13 > 10. Evict org-b → 10. 10+3=13 > 10 → throws
+      expect(() => registry.getForOrg("org-c")).toThrow("exceeding maxTotalConnections");
+    });
+  });
 });

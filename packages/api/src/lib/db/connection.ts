@@ -36,9 +36,13 @@ export class ConnectionNotRegisteredError extends Error {
 
 /** Thrown when creating an org pool would exceed maxTotalConnections. */
 export class PoolCapacityExceededError extends Error {
-  constructor(currentSlots: number, newSlots: number, maxTotal: number) {
+  constructor(
+    public readonly currentSlots: number,
+    public readonly requestedSlots: number,
+    public readonly maxTotalConnections: number,
+  ) {
     super(
-      `Cannot create org pool: would use ${currentSlots + newSlots} connection slots, exceeding maxTotalConnections (${maxTotal}). ` +
+      `Cannot create org pool: would use ${currentSlots + requestedSlots} connection slots, exceeding maxTotalConnections (${maxTotalConnections}). ` +
       `Reduce pool.perOrg.maxConnections, pool.perOrg.maxOrgs, or increase maxTotalConnections.`
     );
     this.name = "PoolCapacityExceededError";
@@ -531,11 +535,19 @@ export class ConnectionRegistry {
       return baseEntry.conn;
     }
 
-    // Evict LRU org if at capacity
+    // Evict LRU org if at org-count capacity
     this._evictLRUOrg();
 
-    // Check total pool capacity before creating a new org pool
+    // Evict LRU orgs if at total connection slot capacity.
+    // Mirrors the while-loop in register() for base connections.
     const newSlots = this.orgPoolSettings.maxConnections;
+    while (this._totalPoolSlots() + newSlots > this.maxTotalConnections && this.orgAccessSeq.size > 0) {
+      const before = this.orgAccessSeq.size;
+      this._evictLRUOrgUnconditional();
+      if (this.orgAccessSeq.size === before) break; // no more evictable orgs
+    }
+
+    // Hard check after all eviction attempts
     const currentSlots = this._totalPoolSlots();
     if (currentSlots + newSlots > this.maxTotalConnections) {
       throw new PoolCapacityExceededError(currentSlots, newSlots, this.maxTotalConnections);
@@ -613,14 +625,17 @@ export class ConnectionRegistry {
 
   /** Evict the least recently used org's pools when maxOrgs is exceeded. */
   private _evictLRUOrg(): void {
-    const orgCount = this.orgAccessSeq.size;
-    if (orgCount < this.orgPoolSettings.maxOrgs) return;
+    if (this.orgAccessSeq.size < this.orgPoolSettings.maxOrgs) return;
+    this._evictLRUOrgUnconditional();
+  }
 
+  /** Unconditionally evict the least recently used org's pools. */
+  private _evictLRUOrgUnconditional(): void {
     let lruOrg: string | null = null;
-    let lruTime = Infinity;
+    let lruSeq = Infinity;
     for (const [orgId, seq] of this.orgAccessSeq) {
-      if (seq < lruTime) {
-        lruTime = seq;
+      if (seq < lruSeq) {
+        lruSeq = seq;
         lruOrg = orgId;
       }
     }

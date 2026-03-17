@@ -38,6 +38,12 @@ mock.module("@atlas/api/lib/db/connection", () => ({
   getDB: () => mockConn,
   ConnectionNotRegisteredError,
   NoDatasourceConfiguredError,
+  PoolCapacityExceededError: class extends Error {
+    constructor(current: number, requested: number, max: number) {
+      super(`Cannot create org pool: would use ${current + requested} connection slots, exceeding maxTotalConnections (${max}).`);
+      this.name = "PoolCapacityExceededError";
+    }
+  },
   connections: {
     get: (id: string) => getFn(id),
     getDefault: () => getDefaultFn(),

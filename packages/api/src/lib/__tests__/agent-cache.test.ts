@@ -57,6 +57,12 @@ mock.module("@atlas/api/lib/db/connection", () => ({
   NoDatasourceConfiguredError: class extends Error {
     constructor() { super("No analytics datasource configured."); this.name = "NoDatasourceConfiguredError"; }
   },
+  PoolCapacityExceededError: class extends Error {
+    constructor(current: number, requested: number, max: number) {
+      super(`Cannot create org pool: would use ${current + requested} connection slots, exceeding maxTotalConnections (${max}).`);
+      this.name = "PoolCapacityExceededError";
+    }
+  },
 }));
 
 // Mutable reference so individual tests can override cross-source join data

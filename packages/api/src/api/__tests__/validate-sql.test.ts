@@ -100,6 +100,12 @@ mock.module("@atlas/api/lib/db/connection", () => ({
   detectDBType: mockDetectDBType,
   getDB: mock(() => ({})),
   resolveDatasourceUrl: mock(() => "postgresql://test"),
+  PoolCapacityExceededError: class extends Error {
+    constructor(current: number, requested: number, max: number) {
+      super(`Cannot create org pool: would use ${current + requested} connection slots, exceeding maxTotalConnections (${max}).`);
+      this.name = "PoolCapacityExceededError";
+    }
+  },
 }));
 
 mock.module("@atlas/api/lib/auth/detect", () => ({

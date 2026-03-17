@@ -270,4 +270,24 @@ describe("executeSQL org-scoped routing", () => {
     expect((mockGetForOrg.mock.calls as unknown[][])[0]?.[0]).toBe("org-99");
     expect((mockGetForOrg.mock.calls as unknown[][])[0]?.[1]).toBe("warehouse");
   });
+
+  it("returns agent-friendly error when PoolCapacityExceededError is thrown", async () => {
+    mockOrgPoolingEnabled = true;
+    mockRequestContext = { user: { id: "u1", activeOrganizationId: "org-full" } };
+
+    // Simulate capacity exceeded
+    const CapacityError = (await import("@atlas/api/lib/db/connection")).PoolCapacityExceededError;
+    mockGetForOrg.mockImplementation(() => {
+      throw new CapacityError(100, 5, 100);
+    });
+
+    const result = await executeTool(
+      { sql: "SELECT id FROM companies", explanation: "test", connectionId: undefined },
+      { toolCallId: "tc-cap", messages: [], abortSignal: undefined as unknown as AbortSignal },
+    );
+    expect(result.success).toBe(false);
+    // Should get agent-friendly message, not operator-facing "failed to initialize"
+    expect(result.error).toContain("pool capacity reached");
+    expect(result.error).not.toContain("failed to initialize");
+  });
 });

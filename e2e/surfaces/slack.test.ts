@@ -92,6 +92,12 @@ mock.module("@atlas/api/lib/db/connection", () => ({
   rewriteClickHouseUrl: (url: string) => url,
   parseSnowflakeURL: () => ({}),
   ConnectionRegistry: class {},
+  PoolCapacityExceededError: class extends Error {
+    constructor(current: number, requested: number, max: number) {
+      super(`Cannot create org pool: would use ${current + requested} connection slots, exceeding maxTotalConnections (${max}).`);
+      this.name = "PoolCapacityExceededError";
+    }
+  },
 }));
 
 mock.module("@atlas/api/lib/db/internal", () => ({

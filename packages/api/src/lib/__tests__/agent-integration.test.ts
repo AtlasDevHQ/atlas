@@ -71,6 +71,8 @@ mock.module("@atlas/api/lib/db/connection", () => ({
     recordQuery: () => {},
     recordError: () => {},
     recordSuccess: () => {},
+    isOrgPoolingEnabled: () => false,
+    getForOrg: () => mockDBConnectionObj,
   },
   detectDBType: () => "postgres" as const,
   ConnectionNotRegisteredError: class extends Error {

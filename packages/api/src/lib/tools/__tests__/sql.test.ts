@@ -47,6 +47,11 @@ mock.module("@atlas/api/lib/db/connection", () => ({
     getParserDialect: () => undefined,
     getForbiddenPatterns: () => [],
     list: () => ["default"],
+    recordQuery: () => {},
+    recordError: () => {},
+    recordSuccess: () => {},
+    isOrgPoolingEnabled: () => false,
+    getForOrg: () => mockDBConnection,
   },
   detectDBType: mockDetectDBType,
   ConnectionNotRegisteredError: class extends Error {

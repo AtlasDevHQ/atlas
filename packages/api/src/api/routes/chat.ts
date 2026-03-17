@@ -484,8 +484,9 @@ chat.post("/", async (c) => {
         // Fallback — safe 500 with requestId for log correlation.
         // Full error details (stack trace, original message) are logged
         // server-side; only a generic message + request ID reach the client.
+        log.debug({ stack: errObj.stack }, "Unclassified error stack trace");
         log.error(
-          { err: errObj, category: "internal_error", stack: errObj.stack },
+          { err: errObj, category: "internal_error" },
           "Unclassified error",
         );
         return c.json(

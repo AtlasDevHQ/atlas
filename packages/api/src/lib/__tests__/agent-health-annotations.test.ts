@@ -7,13 +7,9 @@
 
 import { describe, expect, test, beforeEach, mock } from "bun:test";
 import type { ConnectionMetadata, HealthCheckResult } from "../db/connection";
+import { createConnectionMock } from "@atlas/api/testing/connection";
 
 // --- Mocks ---
-
-const mockDBConnection = {
-  query: async () => ({ columns: [], rows: [] }),
-  close: async () => {},
-};
 
 // Stateful mock — tests push entries to simulate different connection states
 const mockEntries: ConnectionMetadata[] = [];
@@ -22,50 +18,27 @@ function resetMockEntries() {
   mockEntries.length = 0;
 }
 
-mock.module("@atlas/api/lib/db/connection", () => ({
-  getDB: () => mockDBConnection,
-  connections: {
-    get: () => mockDBConnection,
-    getDefault: () => mockDBConnection,
-    getDBType: (id: string) => {
-      const entry = mockEntries.find((e) => e.id === id);
-      return entry?.dbType ?? ("postgres" as const);
+mock.module("@atlas/api/lib/db/connection", () =>
+  createConnectionMock({
+    connections: {
+      getDBType: (id: string) => {
+        const entry = mockEntries.find((e) => e.id === id);
+        return entry?.dbType ?? ("postgres" as const);
+      },
+      list: () => mockEntries.map((e) => e.id),
+      describe: () =>
+        mockEntries.map((e) => ({
+          id: e.id,
+          dbType: e.dbType,
+          description: e.description,
+          ...(e.health ? { health: e.health } : {}),
+        })),
+      _reset: () => {
+        mockEntries.length = 0;
+      },
     },
-    getValidator: () => undefined,
-    getParserDialect: () => undefined,
-    getForbiddenPatterns: () => [],
-    list: () => mockEntries.map((e) => e.id),
-    describe: () =>
-      mockEntries.map((e) => ({
-        id: e.id,
-        dbType: e.dbType,
-        description: e.description,
-        ...(e.health ? { health: e.health } : {}),
-      })),
-    _reset: () => {
-      mockEntries.length = 0;
-    },
-    recordQuery: () => {},
-    recordError: () => {},
-    recordSuccess: () => {},
-    isOrgPoolingEnabled: () => false,
-    getForOrg: () => mockDBConnection,
-  },
-  detectDBType: () => "postgres" as const,
-  ConnectionRegistry: class {},
-  ConnectionNotRegisteredError: class extends Error {
-    constructor(id: string) { super(`Connection "${id}" is not registered.`); this.name = "ConnectionNotRegisteredError"; }
-  },
-  NoDatasourceConfiguredError: class extends Error {
-    constructor() { super("No analytics datasource configured."); this.name = "NoDatasourceConfiguredError"; }
-  },
-  PoolCapacityExceededError: class extends Error {
-    constructor(current: number, requested: number, max: number) {
-      super(`Cannot create org pool: would use ${current + requested} connection slots, exceeding maxTotalConnections (${max}).`);
-      this.name = "PoolCapacityExceededError";
-    }
-  },
-}));
+  }),
+);
 
 mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),

@@ -8,6 +8,7 @@
  * Uses mock.module() — all named exports mocked.
  */
 import { describe, it, expect, mock, beforeEach } from "bun:test";
+import { createConnectionMock } from "@atlas/api/testing/connection";
 
 // ---------------------------------------------------------------------------
 // Mock request context to simulate org-scoped requests
@@ -57,46 +58,15 @@ mock.module("@atlas/api/lib/semantic", () => ({
   getCrossSourceJoins: () => [],
 }));
 
-mock.module("@atlas/api/lib/db/connection", () => ({
-  getDB: () => ({
-    query: async () => ({ columns: [], rows: [] }),
-    close: async () => {},
+mock.module("@atlas/api/lib/db/connection", () =>
+  createConnectionMock({
+    connections: {
+      list: () => ["default"],
+      describe: () => [{ id: "default", dbType: "postgres" as const }],
+      _reset: () => {},
+    },
   }),
-  connections: {
-    get: () => ({
-      query: async () => ({ columns: [], rows: [] }),
-      close: async () => {},
-    }),
-    getDefault: () => ({
-      query: async () => ({ columns: [], rows: [] }),
-      close: async () => {},
-    }),
-    getDBType: () => "postgres" as const,
-    getValidator: () => undefined,
-    getParserDialect: () => undefined,
-    getForbiddenPatterns: () => [],
-    list: () => ["default"],
-    describe: () => [{ id: "default", dbType: "postgres" as const }],
-    _reset: () => {},
-    recordQuery: () => {},
-    recordError: () => {},
-    recordSuccess: () => {},
-    isOrgPoolingEnabled: () => false,
-    getForOrg: () => ({
-      query: async () => ({ columns: [], rows: [] }),
-      close: async () => {},
-    }),
-  },
-  detectDBType: () => "postgres" as const,
-  ConnectionNotRegisteredError: class extends Error {},
-  NoDatasourceConfiguredError: class extends Error {},
-  PoolCapacityExceededError: class extends Error {
-    constructor(current: number, requested: number, max: number) {
-      super(`Cannot create org pool: would use ${current + requested} connection slots, exceeding maxTotalConnections (${max}).`);
-      this.name = "PoolCapacityExceededError";
-    }
-  },
-}));
+);
 
 mock.module("@atlas/api/lib/auth/audit", () => ({
   logQueryAudit: () => {},

@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeEach, mock } from "bun:test";
+import { createConnectionMock } from "@atlas/api/testing/connection";
 
 // Mock getWhitelistedTables before importing the module under test.
 // This avoids hitting the filesystem for semantic layer YAML files.
@@ -19,13 +20,6 @@ mock.module("@atlas/api/lib/semantic", () => ({
   _resetWhitelists: () => {},
 }));
 
-// Mock the DB connection — validateSQL doesn't need it, but the module
-// imports it at the top level.
-const mockDBConnection = {
-  query: async () => ({ columns: [], rows: [] }),
-  close: async () => {},
-};
-
 const mockDetectDBType = () => {
   const url = process.env.ATLAS_DATASOURCE_URL ?? "";
   if (url.startsWith("postgresql://") || url.startsWith("postgres://")) {
@@ -37,36 +31,14 @@ const mockDetectDBType = () => {
   throw new Error(`Unsupported database URL: "${url.slice(0, 40)}…".`);
 };
 
-mock.module("@atlas/api/lib/db/connection", () => ({
-  getDB: () => mockDBConnection,
-  connections: {
-    get: () => mockDBConnection,
-    getDefault: () => mockDBConnection,
-    getDBType: () => mockDetectDBType(),
-    getValidator: () => undefined,
-    getParserDialect: () => undefined,
-    getForbiddenPatterns: () => [],
-    list: () => ["default"],
-    recordQuery: () => {},
-    recordError: () => {},
-    recordSuccess: () => {},
-    isOrgPoolingEnabled: () => false,
-    getForOrg: () => mockDBConnection,
-  },
-  detectDBType: mockDetectDBType,
-  ConnectionNotRegisteredError: class extends Error {
-    constructor(id: string) { super(`Connection "${id}" is not registered.`); this.name = "ConnectionNotRegisteredError"; }
-  },
-  NoDatasourceConfiguredError: class extends Error {
-    constructor() { super("No analytics datasource configured."); this.name = "NoDatasourceConfiguredError"; }
-  },
-  PoolCapacityExceededError: class extends Error {
-    constructor(current: number, requested: number, max: number) {
-      super(`Cannot create org pool: would use ${current + requested} connection slots, exceeding maxTotalConnections (${max}).`);
-      this.name = "PoolCapacityExceededError";
-    }
-  },
-}));
+mock.module("@atlas/api/lib/db/connection", () =>
+  createConnectionMock({
+    connections: {
+      getDBType: () => mockDetectDBType(),
+    },
+    detectDBType: mockDetectDBType,
+  }),
+);
 
 // Import after mocks are registered
 const { validateSQL } = await import("@atlas/api/lib/tools/sql");

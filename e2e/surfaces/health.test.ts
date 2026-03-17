@@ -6,6 +6,7 @@
  */
 
 import { describe, it, expect, mock } from "bun:test";
+import { createConnectionMock } from "../../packages/api/src/__mocks__/connection";
 
 // --- Mocks (isolate from real DB/providers) ---
 
@@ -14,34 +15,21 @@ mock.module("@atlas/api/lib/startup", () => ({
   getStartupWarnings: mock(() => []),
 }));
 
-mock.module("@atlas/api/lib/db/connection", () => ({
-  getDB: () => ({
+mock.module("@atlas/api/lib/db/connection", () => {
+  const mockDBConn = {
     query: async () => ({ columns: ["?column?"], rows: [{ "?column?": 1 }] }),
     close: async () => {},
-  }),
-  connections: {
-    get: () => ({
-      query: async () => ({ columns: ["?column?"], rows: [{ "?column?": 1 }] }),
-      close: async () => {},
-    }),
-    getDefault: () => ({
-      query: async () => ({ columns: ["?column?"], rows: [{ "?column?": 1 }] }),
-      close: async () => {},
-    }),
-    getDBType: () => "postgres" as const,
-    getTargetHost: () => "localhost",
-    list: () => [],
-    describe: () => [],
-  },
-  detectDBType: () => "postgres" as const,
-  ConnectionRegistry: class {},
-  PoolCapacityExceededError: class extends Error {
-    constructor(current: number, requested: number, max: number) {
-      super(`Cannot create org pool: would use ${current + requested} connection slots, exceeding maxTotalConnections (${max}).`);
-      this.name = "PoolCapacityExceededError";
-    }
-  },
-}));
+  };
+  return createConnectionMock({
+    getDB: () => mockDBConn,
+    connections: {
+      get: () => mockDBConn,
+      getDefault: () => mockDBConn,
+      list: () => [],
+      describe: () => [],
+    },
+  });
+});
 
 mock.module("@atlas/api/lib/semantic", () => ({
   getWhitelistedTables: () => new Set(["test_orders"]),

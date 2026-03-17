@@ -9,7 +9,8 @@
     "./lib/auth/*": "./src/lib/auth/*.ts",
     "./lib/db/*": "./src/lib/db/*.ts",
     "./lib/tools/*": "./src/lib/tools/*.ts",
-    "./lib/plugins/*": "./src/lib/plugins/*.ts"
+    "./lib/plugins/*": "./src/lib/plugins/*.ts",
+    "./testing/*": "./src/__mocks__/*.ts"
   },
   "scripts": {
     "dev": "bun run --hot src/api/server.ts",

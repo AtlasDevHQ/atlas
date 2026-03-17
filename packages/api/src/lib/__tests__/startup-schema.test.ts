@@ -8,6 +8,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { resetAuthModeCache } from "@atlas/api/lib/auth/detect";
+import { createConnectionMock } from "@atlas/api/testing/connection";
 
 // ---------------------------------------------------------------------------
 // Control variables for mocks
@@ -28,25 +29,15 @@ mock.module("fs", () => ({
   readdirSync: () => ["orders.yml"],
 }));
 
-mock.module("@atlas/api/lib/db/connection", () => ({
-  detectDBType: (url: string) => {
-    if (url.startsWith("mysql")) return "mysql";
-    return "postgres";
-  },
-  resolveDatasourceUrl: () => mockDatasourceUrl,
-  ConnectionNotRegisteredError: class extends Error {
-    constructor(id: string) { super(`Connection "${id}" is not registered.`); this.name = "ConnectionNotRegisteredError"; }
-  },
-  NoDatasourceConfiguredError: class extends Error {
-    constructor() { super("No analytics datasource configured."); this.name = "NoDatasourceConfiguredError"; }
-  },
-  PoolCapacityExceededError: class extends Error {
-    constructor(current: number, requested: number, max: number) {
-      super(`Cannot create org pool: would use ${current + requested} connection slots, exceeding maxTotalConnections (${max}).`);
-      this.name = "PoolCapacityExceededError";
-    }
-  },
-}));
+mock.module("@atlas/api/lib/db/connection", () =>
+  createConnectionMock({
+    detectDBType: (url: string) => {
+      if (url.startsWith("mysql")) return "mysql";
+      return "postgres";
+    },
+    resolveDatasourceUrl: () => mockDatasourceUrl,
+  }),
+);
 
 mock.module("@atlas/api/lib/providers", () => ({
   getDefaultProvider: () => "anthropic",

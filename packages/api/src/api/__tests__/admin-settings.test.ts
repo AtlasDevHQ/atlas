@@ -13,6 +13,7 @@ import {
   mock,
   type Mock,
 } from "bun:test";
+import { createConnectionMock } from "@atlas/api/testing/connection";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -57,45 +58,21 @@ mock.module("@atlas/api/lib/startup", () => ({
   getStartupWarnings: mock(() => []),
 }));
 
-mock.module("@atlas/api/lib/db/connection", () => ({
-  getDB: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
-  connections: {
-    get: () => null,
-    getDefault: () => null,
-    getDBType: () => "postgres",
-    getTargetHost: () => "localhost",
-    getValidator: () => undefined,
-    getParserDialect: () => undefined,
-    getForbiddenPatterns: () => [],
-    list: () => ["default"],
-    describe: () => [{ id: "default", dbType: "postgres" }],
-    healthCheck: mock(() => Promise.resolve({ status: "healthy" })),
-    register: mock(() => {}),
-    unregister: mock(() => {}),
-    has: mock(() => false),
-    recordQuery: () => {},
-    recordError: () => {},
-    recordSuccess: () => {},
-    isOrgPoolingEnabled: () => false,
-    getForOrg: () => null,
-  },
-  detectDBType: () => "postgres",
-  extractTargetHost: () => "localhost",
-  resolveDatasourceUrl: () => "postgresql://stub",
-  ConnectionRegistry: class {},
-  ConnectionNotRegisteredError: class extends Error {
-    constructor(id: string) { super(`Connection "${id}" is not registered.`); this.name = "ConnectionNotRegisteredError"; }
-  },
-  NoDatasourceConfiguredError: class extends Error {
-    constructor() { super("No analytics datasource configured."); this.name = "NoDatasourceConfiguredError"; }
-  },
-  PoolCapacityExceededError: class extends Error {
-    constructor(current: number, requested: number, max: number) {
-      super(`Cannot create org pool: would use ${current + requested} connection slots, exceeding maxTotalConnections (${max}).`);
-      this.name = "PoolCapacityExceededError";
-    }
-  },
-}));
+mock.module("@atlas/api/lib/db/connection", () =>
+  createConnectionMock({
+    connections: {
+      get: () => null,
+      getDefault: () => null,
+      describe: () => [{ id: "default", dbType: "postgres" }],
+      healthCheck: mock(() => Promise.resolve({ status: "healthy" })),
+      register: mock(() => {}),
+      unregister: mock(() => {}),
+      has: mock(() => false),
+      getForOrg: () => null,
+    },
+    resolveDatasourceUrl: () => "postgresql://stub",
+  }),
+);
 
 mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),

@@ -18,6 +18,7 @@ import {
 } from "ai/test";
 import type { LanguageModelV3StreamPart } from "@ai-sdk/provider";
 import type { UIMessage } from "ai";
+import { createConnectionMock } from "@atlas/api/testing/connection";
 
 // ---------------------------------------------------------------------------
 // Environment — must be set before module imports
@@ -56,38 +57,18 @@ const mockDBConnectionObj = {
   query: (...args: [string, number?]) => mockDBQuery(...args),
   close: async () => {},
 };
-mock.module("@atlas/api/lib/db/connection", () => ({
-  getDB: () => mockDBConnectionObj,
-  connections: {
-    get: () => mockDBConnectionObj,
-    getDefault: () => mockDBConnectionObj,
-    getDBType: () => "postgres" as const,
-    getTargetHost: () => "localhost:5432",
-    getValidator: () => undefined,
-    getParserDialect: () => undefined,
-    getForbiddenPatterns: () => [],
-    list: () => ["default"],
-    describe: () => [{ id: "default", dbType: "postgres" as const }],
-    recordQuery: () => {},
-    recordError: () => {},
-    recordSuccess: () => {},
-    isOrgPoolingEnabled: () => false,
-    getForOrg: () => mockDBConnectionObj,
-  },
-  detectDBType: () => "postgres" as const,
-  ConnectionNotRegisteredError: class extends Error {
-    constructor(id: string) { super(`Connection "${id}" is not registered.`); this.name = "ConnectionNotRegisteredError"; }
-  },
-  NoDatasourceConfiguredError: class extends Error {
-    constructor() { super("No analytics datasource configured."); this.name = "NoDatasourceConfiguredError"; }
-  },
-  PoolCapacityExceededError: class extends Error {
-    constructor(current: number, requested: number, max: number) {
-      super(`Cannot create org pool: would use ${current + requested} connection slots, exceeding maxTotalConnections (${max}).`);
-      this.name = "PoolCapacityExceededError";
-    }
-  },
-}));
+mock.module("@atlas/api/lib/db/connection", () =>
+  createConnectionMock({
+    getDB: () => mockDBConnectionObj,
+    connections: {
+      get: () => mockDBConnectionObj,
+      getDefault: () => mockDBConnectionObj,
+      getTargetHost: () => "localhost:5432",
+      describe: () => [{ id: "default", dbType: "postgres" as const }],
+      getForOrg: () => mockDBConnectionObj,
+    },
+  }),
+);
 
 // Mock just-bash to avoid OverlayFs/filesystem dependency in CI.
 // The mock Bash.exec() returns canned stdout for known commands and

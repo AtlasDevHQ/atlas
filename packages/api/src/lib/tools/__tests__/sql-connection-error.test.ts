@@ -7,6 +7,7 @@
  * message instead of being silently swallowed.
  */
 import { describe, it, expect, mock, beforeEach, afterEach } from "bun:test";
+import { createConnectionMock } from "@atlas/api/testing/connection";
 
 mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
@@ -35,31 +36,15 @@ let getFn: (id: string) => typeof mockConn;
 let getDBTypeFn: (id: string) => string;
 
 mock.module("@atlas/api/lib/db/connection", () => ({
-  getDB: () => mockConn,
+  ...createConnectionMock(),
   ConnectionNotRegisteredError,
   NoDatasourceConfiguredError,
-  PoolCapacityExceededError: class extends Error {
-    constructor(current: number, requested: number, max: number) {
-      super(`Cannot create org pool: would use ${current + requested} connection slots, exceeding maxTotalConnections (${max}).`);
-      this.name = "PoolCapacityExceededError";
-    }
-  },
   connections: {
+    ...createConnectionMock().connections,
     get: (id: string) => getFn(id),
     getDefault: () => getDefaultFn(),
     getDBType: (id: string) => getDBTypeFn(id),
-    getTargetHost: () => "localhost",
-    getValidator: () => undefined,
-    getParserDialect: () => undefined,
-    getForbiddenPatterns: () => [],
-    list: () => ["default"],
-    recordQuery: () => {},
-    recordError: () => {},
-    recordSuccess: () => {},
-    isOrgPoolingEnabled: () => false,
-    getForOrg: () => mockConn,
   },
-  detectDBType: () => "postgres",
 }));
 
 mock.module("@atlas/api/lib/tracing", () => ({

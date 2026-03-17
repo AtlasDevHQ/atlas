@@ -15,6 +15,7 @@ import {
   type Mock,
 } from "bun:test";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
+import { createConnectionMock } from "@atlas/api/testing/connection";
 
 // --- Mocks ---
 
@@ -81,32 +82,24 @@ mock.module("node-sql-parser", () => ({
 const mockDetectDBType: Mock<() => string> = mock(() => "postgres");
 const mockGetDBType: Mock<(id: string) => string> = mock(() => "postgres");
 
-mock.module("@atlas/api/lib/db/connection", () => ({
-  connections: {
-    getDBType: mockGetDBType,
-    get: mock(() => ({})),
-    getDefault: mock(() => ({})),
-    list: mock(() => ["default"]),
-    getTargetHost: mock(() => null),
-    getParserDialect: mock(() => null),
-    getForbiddenPatterns: mock(() => []),
-    getValidator: mock(() => null),
-    recordQuery: () => {},
-    recordError: () => {},
-    recordSuccess: () => {},
-    isOrgPoolingEnabled: () => false,
-    getForOrg: () => ({}),
-  },
-  detectDBType: mockDetectDBType,
-  getDB: mock(() => ({})),
-  resolveDatasourceUrl: mock(() => "postgresql://test"),
-  PoolCapacityExceededError: class extends Error {
-    constructor(current: number, requested: number, max: number) {
-      super(`Cannot create org pool: would use ${current + requested} connection slots, exceeding maxTotalConnections (${max}).`);
-      this.name = "PoolCapacityExceededError";
-    }
-  },
-}));
+mock.module("@atlas/api/lib/db/connection", () =>
+  createConnectionMock({
+    connections: {
+      getDBType: mockGetDBType,
+      get: mock(() => ({})),
+      getDefault: mock(() => ({})),
+      list: mock(() => ["default"]),
+      getTargetHost: mock(() => null),
+      getParserDialect: mock(() => null),
+      getForbiddenPatterns: mock(() => []),
+      getValidator: mock(() => null),
+      getForOrg: () => ({}),
+    },
+    detectDBType: mockDetectDBType,
+    getDB: mock(() => ({})),
+    resolveDatasourceUrl: mock(() => "postgresql://test"),
+  }),
+);
 
 mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => "none",

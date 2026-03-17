@@ -5,6 +5,7 @@
  * getWhitelistedTables that respects the connectionId parameter.
  */
 import { describe, it, expect, mock } from "bun:test";
+import { createConnectionMock } from "@atlas/api/testing/connection";
 
 // Mock getWhitelistedTables to return different sets per connectionId
 mock.module("@atlas/api/lib/semantic", () => ({
@@ -30,57 +31,22 @@ mock.module("@atlas/api/lib/semantic", () => ({
 
 // Mock the DB connection — validateSQL doesn't need it, but the module
 // imports it at the top level.
-mock.module("@atlas/api/lib/db/connection", () => ({
-  getDB: () => ({
-    query: async () => ({ columns: [], rows: [] }),
-    close: async () => {},
-  }),
-  connections: {
-    get: () => ({
-      query: async () => ({ columns: [], rows: [] }),
-      close: async () => {},
-    }),
-    getDefault: () => ({
-      query: async () => ({ columns: [], rows: [] }),
-      close: async () => {},
-    }),
-    getDBType: (id?: string) => {
-      if (id === "nonexistent") throw new Error(`Connection "nonexistent" is not registered.`);
-      return "postgres" as const;
+mock.module("@atlas/api/lib/db/connection", () =>
+  createConnectionMock({
+    connections: {
+      getDBType: (id?: string) => {
+        if (id === "nonexistent") throw new Error(`Connection "nonexistent" is not registered.`);
+        return "postgres" as const;
+      },
+      list: () => ["default", "warehouse"],
+      describe: () => [
+        { id: "default", dbType: "postgres" as const },
+        { id: "warehouse", dbType: "postgres" as const },
+      ],
+      _reset: () => {},
     },
-    getValidator: () => undefined,
-    getParserDialect: () => undefined,
-    getForbiddenPatterns: () => [],
-    list: () => ["default", "warehouse"],
-    describe: () => [
-      { id: "default", dbType: "postgres" as const },
-      { id: "warehouse", dbType: "postgres" as const },
-    ],
-    _reset: () => {},
-    recordQuery: () => {},
-    recordError: () => {},
-    recordSuccess: () => {},
-    isOrgPoolingEnabled: () => false,
-    getForOrg: () => ({
-      query: async () => ({ columns: [], rows: [] }),
-      close: async () => {},
-    }),
-  },
-  detectDBType: () => "postgres" as const,
-  ConnectionRegistry: class {},
-  ConnectionNotRegisteredError: class extends Error {
-    constructor(id: string) { super(`Connection "${id}" is not registered.`); this.name = "ConnectionNotRegisteredError"; }
-  },
-  NoDatasourceConfiguredError: class extends Error {
-    constructor() { super("No analytics datasource configured."); this.name = "NoDatasourceConfiguredError"; }
-  },
-  PoolCapacityExceededError: class extends Error {
-    constructor(current: number, requested: number, max: number) {
-      super(`Cannot create org pool: would use ${current + requested} connection slots, exceeding maxTotalConnections (${max}).`);
-      this.name = "PoolCapacityExceededError";
-    }
-  },
-}));
+  }),
+);
 
 const { validateSQL } = await import("../sql");
 

@@ -6,6 +6,7 @@
  */
 
 import { describe, expect, it, beforeEach, mock, type Mock } from "bun:test";
+import { createConnectionMock } from "@atlas/api/testing/connection";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyResult = any;
@@ -70,37 +71,18 @@ function soqlValidator(query: string): { valid: boolean; reason?: string } {
 // Connections mock with getValidator support
 let validatorMap: Map<string, ((q: string) => { valid: boolean; reason?: string } | Promise<{ valid: boolean; reason?: string }>) | undefined>;
 
-mock.module("@atlas/api/lib/db/connection", () => ({
-  getDB: () => mockConn,
-  connections: {
-    get: () => mockConn,
-    getDefault: () => mockConn,
-    getDBType: () => "postgres",
-    getTargetHost: () => "localhost",
-    list: () => ["default", "salesforce-plugin"],
-    getValidator: (id: string) => validatorMap.get(id),
-    getParserDialect: () => undefined,
-    getForbiddenPatterns: () => [],
-    recordQuery: () => {},
-    recordError: () => {},
-    recordSuccess: () => {},
-    isOrgPoolingEnabled: () => false,
-    getForOrg: () => mockConn,
-  },
-  detectDBType: () => "postgres",
-  ConnectionNotRegisteredError: class extends Error {
-    constructor(id: string) { super(`Connection "${id}" is not registered.`); this.name = "ConnectionNotRegisteredError"; }
-  },
-  NoDatasourceConfiguredError: class extends Error {
-    constructor() { super("No analytics datasource configured."); this.name = "NoDatasourceConfiguredError"; }
-  },
-  PoolCapacityExceededError: class extends Error {
-    constructor(current: number, requested: number, max: number) {
-      super(`Cannot create org pool: would use ${current + requested} connection slots, exceeding maxTotalConnections (${max}).`);
-      this.name = "PoolCapacityExceededError";
-    }
-  },
-}));
+mock.module("@atlas/api/lib/db/connection", () =>
+  createConnectionMock({
+    getDB: () => mockConn,
+    connections: {
+      get: () => mockConn,
+      getDefault: () => mockConn,
+      list: () => ["default", "salesforce-plugin"],
+      getValidator: (id: string) => validatorMap.get(id),
+      getForOrg: () => mockConn,
+    },
+  }),
+);
 
 mock.module("@atlas/api/lib/cache/index", () => ({
   getCache: () => ({ get: () => null, set: () => {}, stats: () => ({ hits: 0, misses: 0, entryCount: 0, maxSize: 1000, ttl: 300000 }) }),

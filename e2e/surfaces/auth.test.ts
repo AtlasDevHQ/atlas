@@ -28,6 +28,7 @@ import {
 } from "jose";
 
 import { createMockServer, type MockServer } from "../helpers/mock-server";
+import { createConnectionMock } from "../../packages/api/src/__mocks__/connection";
 
 // ---------------------------------------------------------------------------
 // Mocks — everything except auth
@@ -39,37 +40,23 @@ mock.module("@atlas/api/lib/startup", () => ({
   resetStartupCache: mock(() => {}),
 }));
 
-mock.module("@atlas/api/lib/db/connection", () => ({
-  getDB: () => ({
+mock.module("@atlas/api/lib/db/connection", () => {
+  const mockDBConn = {
     query: async () => ({ columns: ["?column?"], rows: [{ "?column?": 1 }] }),
     close: async () => {},
-  }),
-  connections: {
-    get: () => ({
-      query: async () => ({ columns: ["?column?"], rows: [{ "?column?": 1 }] }),
-      close: async () => {},
-    }),
-    getDefault: () => ({
-      query: async () => ({ columns: ["?column?"], rows: [{ "?column?": 1 }] }),
-      close: async () => {},
-    }),
-    getDBType: () => "postgres" as const,
-    getTargetHost: () => "localhost",
-    list: () => [],
-    describe: () => [],
-  },
-  detectDBType: () => "postgres" as const,
-  extractTargetHost: () => "localhost",
-  rewriteClickHouseUrl: (url: string) => url,
-  parseSnowflakeURL: () => ({}),
-  ConnectionRegistry: class {},
-  PoolCapacityExceededError: class extends Error {
-    constructor(current: number, requested: number, max: number) {
-      super(`Cannot create org pool: would use ${current + requested} connection slots, exceeding maxTotalConnections (${max}).`);
-      this.name = "PoolCapacityExceededError";
-    }
-  },
-}));
+  };
+  return createConnectionMock({
+    getDB: () => mockDBConn,
+    connections: {
+      get: () => mockDBConn,
+      getDefault: () => mockDBConn,
+      list: () => [],
+      describe: () => [],
+    },
+    rewriteClickHouseUrl: (url: string) => url,
+    parseSnowflakeURL: () => ({}),
+  });
+});
 
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => false,

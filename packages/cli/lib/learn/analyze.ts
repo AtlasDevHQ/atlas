@@ -32,7 +32,7 @@ export interface ObservedJoin {
 
 /** A query pattern extracted from audit log. */
 export interface ObservedPattern {
-  /** Normalized SQL (whitespace-collapsed, lowercased keywords). */
+  /** Original SQL with whitespace collapsed to single spaces. */
   sql: string;
   /** Tables referenced in this query. */
   tables: string[];
@@ -133,24 +133,26 @@ interface ParsedQuery {
 function parseQuery(sql: string): ParsedQuery | null {
   // Try PostgreSQL first, then MySQL
   for (const dialect of ["PostgresQL", "MySQL"] as const) {
+    let ast;
     try {
-      const ast = parser.astify(sql, { database: dialect });
-      const stmt = Array.isArray(ast) ? ast[0] : ast;
-      if (!stmt || stmt.type !== "select") return null;
-
-      // Cast through unknown — node-sql-parser's Select type lacks index signature
-      const stmtObj = stmt as unknown as Record<string, unknown>;
-      const tables = extractTablesFromAst(stmt);
-      const columns = extractColumnsFromAst(stmt);
-      const joinPairs = extractJoinsFromAst(stmtObj);
-      const hasGroupBy = !!stmtObj.groupby;
-      const hasAggregation = detectAggregation(stmtObj);
-      const aliases = extractAliases(stmtObj);
-
-      return { tables, columns, joinPairs, hasGroupBy, hasAggregation, aliases };
+      ast = parser.astify(sql, { database: dialect });
     } catch {
-      continue;
+      continue; // Try next dialect
     }
+
+    const stmt = Array.isArray(ast) ? ast[0] : ast;
+    if (!stmt || stmt.type !== "select") return null;
+
+    // Cast through unknown — node-sql-parser's Select type lacks index signature
+    const stmtObj = stmt as unknown as Record<string, unknown>;
+    const tables = extractTablesFromAst(stmt);
+    const columns = extractColumnsFromAst(stmt);
+    const joinPairs = extractJoinsFromAst(stmtObj);
+    const hasGroupBy = !!stmtObj.groupby;
+    const hasAggregation = detectAggregation(stmtObj);
+    const aliases = extractAliases(stmtObj);
+
+    return { tables, columns, joinPairs, hasGroupBy, hasAggregation, aliases };
   }
   return null;
 }
@@ -190,10 +192,11 @@ function extractJoinsFromAst(stmt: Record<string, unknown>): Array<{ from: strin
   const from = stmt.from as Array<Record<string, unknown>> | undefined;
   if (!Array.isArray(from)) return results;
 
-  for (const item of from) {
+  for (let i = 0; i < from.length; i++) {
+    const item = from[i]!;
     if (item.join && item.table) {
-      // Find the "left" table — the first table in the from clause or the previous joined table
-      const leftTable = from[0]?.table as string | undefined;
+      // Left side is the previous table in the FROM clause (handles multi-join chains)
+      const leftTable = (i > 0 ? from[i - 1]?.table : from[0]?.table) as string | undefined;
       const rightTable = item.table as string;
       if (leftTable && rightTable) {
         let onClause: string | null = null;

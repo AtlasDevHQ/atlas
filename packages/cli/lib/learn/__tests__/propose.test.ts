@@ -214,8 +214,9 @@ describe("applyProposals", () => {
     });
 
     const proposalSet = generateProposals(analysis, entities, null);
-    const written = applyProposals(proposalSet);
+    const { written, failed } = applyProposals(proposalSet);
     expect(written.length).toBe(1);
+    expect(failed.length).toBe(0);
 
     // Verify the file was updated
     const content = fs.readFileSync(written[0]!, "utf-8");

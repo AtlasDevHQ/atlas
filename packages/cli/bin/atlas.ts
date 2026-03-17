@@ -4053,25 +4053,37 @@ async function handleLearn(args: string[]): Promise<void> {
     process.exit(1);
   }
 
+  // Validate --limit
+  const limit = limitArg ? parseInt(limitArg, 10) : 1000;
+  if (Number.isNaN(limit) || limit <= 0) {
+    console.error(pc.red(`Invalid value for --limit: "${limitArg}". Expected a positive integer.`));
+    process.exit(1);
+  }
+
+  // Validate --since
+  if (sinceArg) {
+    const sinceDate = new Date(sinceArg);
+    if (Number.isNaN(sinceDate.getTime())) {
+      console.error(pc.red(`Invalid value for --since: "${sinceArg}". Expected ISO 8601 format (e.g., 2026-03-01).`));
+      process.exit(1);
+    }
+  }
+
   console.log(`\nAtlas Learn — analyzing audit log for YAML improvements...\n`);
 
+  const { getInternalDB, closeInternalDB } = await import("@atlas/api/lib/db/internal");
   try {
-    const { getInternalDB, closeInternalDB } = await import("@atlas/api/lib/db/internal");
     const { fetchAuditLog, analyzeQueries } = await import("../lib/learn/analyze");
     const { loadEntities, loadGlossary, generateProposals, applyProposals } = await import("../lib/learn/propose");
     const { formatDiff, formatSummary } = await import("../lib/learn/diff");
 
     // 1. Fetch audit log
     const pool = getInternalDB();
-    const rows = await fetchAuditLog(pool, {
-      limit: limitArg ? parseInt(limitArg, 10) : 1000,
-      since: sinceArg,
-    });
+    const rows = await fetchAuditLog(pool, { limit, since: sinceArg });
 
     if (rows.length === 0) {
       console.log(pc.yellow("No successful queries found in the audit log."));
       console.log("  Run some queries first, then try again.");
-      await closeInternalDB();
       return;
     }
 
@@ -4089,7 +4101,6 @@ async function handleLearn(args: string[]): Promise<void> {
 
     if (entities.size === 0) {
       console.error(pc.red(`No valid entity YAML files found in ${entitiesDir}.`));
-      await closeInternalDB();
       process.exit(1);
     }
 
@@ -4105,21 +4116,30 @@ async function handleLearn(args: string[]): Promise<void> {
       console.log(formatDiff(proposalSet));
 
       if (applyMode) {
-        const written = applyProposals(proposalSet);
-        console.log(pc.green(`\n✓ Applied changes to ${written.length} file(s):`));
-        for (const f of written) {
-          console.log(`  ${f.replace(process.cwd() + "/", "")}`);
+        const { written, failed } = applyProposals(proposalSet);
+        if (written.length > 0) {
+          console.log(pc.green(`\n✓ Applied changes to ${written.length} file(s):`));
+          for (const f of written) {
+            console.log(`  ${f.replace(process.cwd() + "/", "")}`);
+          }
+        }
+        if (failed.length > 0) {
+          console.error(pc.red(`\n✗ Failed to write ${failed.length} file(s):`));
+          for (const f of failed) {
+            console.error(`  ${f.path.replace(process.cwd() + "/", "")}: ${f.error}`);
+          }
+          process.exit(1);
         }
       } else {
         console.log(pc.dim("\nDry run — no files modified. Use --apply to write changes."));
       }
     }
-
-    await closeInternalDB();
   } catch (err) {
     console.error(pc.red("Failed to analyze audit log."));
     console.error(`  ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
+  } finally {
+    await closeInternalDB();
   }
 }
 

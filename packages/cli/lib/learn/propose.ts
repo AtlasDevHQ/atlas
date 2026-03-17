@@ -79,8 +79,9 @@ export function loadEntities(entitiesDir: string): Map<string, { filePath: strin
       if (entity?.table) {
         result.set(entity.table.toLowerCase(), { filePath, entity });
       }
-    } catch {
-      // Skip unparseable files
+    } catch (err) {
+      // Re-throw I/O errors (permissions, etc.); only skip YAML parse failures
+      if (!(err instanceof yaml.YAMLException)) throw err;
     }
   }
   return result;
@@ -93,13 +94,10 @@ export function loadGlossary(semanticDir: string): { glossary: GlossaryYaml; fil
   const filePath = path.join(semanticDir, "glossary.yml");
   if (!fs.existsSync(filePath)) return null;
 
-  try {
-    const content = fs.readFileSync(filePath, "utf-8");
-    const glossary = yaml.load(content) as GlossaryYaml;
-    if (glossary?.terms) return { glossary, filePath };
-  } catch {
-    // Skip unparseable glossary
-  }
+  // Let I/O errors propagate — only the "file doesn't exist" case returns null
+  const content = fs.readFileSync(filePath, "utf-8");
+  const glossary = yaml.load(content) as GlossaryYaml;
+  if (glossary?.terms) return { glossary, filePath };
   return null;
 }
 
@@ -141,7 +139,7 @@ function termExists(glossary: GlossaryYaml, term: string): boolean {
  * Handles simple cases like "table_a.col = table_b.col".
  */
 function parseOnClause(onClause: string, fromTable: string, _toTable: string): { from: string; to: string } | null {
-  // Match "a.col = b.col" or "a.col = b.col" patterns
+  // Match "a.col = b.col" equality patterns
   const match = onClause.match(
     /(\w+)\.(\w+)\s*=\s*(\w+)\.(\w+)/i,
   );
@@ -195,15 +193,19 @@ export function generateProposals(
   let glossaryUpdate: GlossaryYaml | null = null;
   let glossaryPath: string | null = null;
 
+  // Clone glossary upfront and redirect the reference so apply closures
+  // (which capture glossaryData) write to the clone, not the original.
+  if (glossaryData && proposals.some((p) => p.type === "glossary_term")) {
+    glossaryUpdate = structuredClone(glossaryData.glossary);
+    glossaryPath = glossaryData.filePath;
+    // Redirect: apply closures capture glossaryData by reference
+    glossaryData.glossary = glossaryUpdate;
+  }
+
   for (const proposal of proposals) {
     if (proposal.type === "glossary_term") {
-      if (!glossaryUpdate && glossaryData) {
-        glossaryUpdate = structuredClone(glossaryData.glossary);
-        glossaryPath = glossaryData.filePath;
-      }
       if (glossaryUpdate) {
-        // Apply glossary term additions in-memory
-        proposal.apply({} as EntityYaml); // no-op for entity, but we handle glossary separately
+        proposal.apply({} as EntityYaml);
       }
     } else if (proposal.table) {
       const entry = entities.get(proposal.table);
@@ -355,32 +357,32 @@ function proposeGlossaryTerms(
 // ── File writing ───────────────────────────────────────────────────
 
 /**
- * Write updated entity YAML files to disk.
+ * Write updated entity and glossary YAML files to disk.
+ * Returns written paths and any write failures (partial apply is possible).
  */
-export function applyProposals(proposalSet: ProposalSet): string[] {
+export function applyProposals(proposalSet: ProposalSet): { written: string[]; failed: Array<{ path: string; error: string }> } {
   const written: string[] = [];
+  const failed: Array<{ path: string; error: string }> = [];
+
+  const dumpOpts = { lineWidth: -1, noRefs: true, sortKeys: false, quotingType: "'" as const };
 
   for (const [filePath, entity] of proposalSet.entityUpdates) {
-    const content = yaml.dump(entity, {
-      lineWidth: -1,
-      noRefs: true,
-      sortKeys: false,
-      quotingType: "'",
-    });
-    fs.writeFileSync(filePath, content, "utf-8");
-    written.push(filePath);
+    try {
+      fs.writeFileSync(filePath, yaml.dump(entity, dumpOpts), "utf-8");
+      written.push(filePath);
+    } catch (err) {
+      failed.push({ path: filePath, error: err instanceof Error ? err.message : String(err) });
+    }
   }
 
   if (proposalSet.glossaryUpdate && proposalSet.glossaryPath) {
-    const content = yaml.dump(proposalSet.glossaryUpdate, {
-      lineWidth: -1,
-      noRefs: true,
-      sortKeys: false,
-      quotingType: "'",
-    });
-    fs.writeFileSync(proposalSet.glossaryPath, content, "utf-8");
-    written.push(proposalSet.glossaryPath);
+    try {
+      fs.writeFileSync(proposalSet.glossaryPath, yaml.dump(proposalSet.glossaryUpdate, dumpOpts), "utf-8");
+      written.push(proposalSet.glossaryPath);
+    } catch (err) {
+      failed.push({ path: proposalSet.glossaryPath, error: err instanceof Error ? err.message : String(err) });
+    }
   }
 
-  return written;
+  return { written, failed };
 }

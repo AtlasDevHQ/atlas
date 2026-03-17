@@ -57,10 +57,8 @@ describe("analyzeQueries", () => {
     const result = analyzeQueries(rows);
     // Both normalize to the same pattern → count = 2
     const matching = result.patterns.filter((p) => p.tables.includes("users"));
-    expect(matching.length).toBeLessThanOrEqual(1);
-    if (matching.length > 0) {
-      expect(matching[0]!.count).toBe(2);
-    }
+    expect(matching).toHaveLength(1);
+    expect(matching[0]!.count).toBe(2);
   });
 
   test("filters patterns below frequency threshold", () => {
@@ -77,9 +75,8 @@ describe("analyzeQueries", () => {
     const rows = [makeRow(sql), makeRow(sql)];
     const result = analyzeQueries(rows);
     const totalUsers = result.aliases.find((a) => a.alias === "total_users");
-    if (totalUsers) {
-      expect(totalUsers.count).toBe(2);
-    }
+    expect(totalUsers).toBeDefined();
+    expect(totalUsers!.count).toBe(2);
   });
 
   test("handles unparseable SQL gracefully", () => {

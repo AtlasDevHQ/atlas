@@ -457,7 +457,6 @@ async function handleExecPython(req: Request): Promise<Response> {
 const PYTHON_WRAPPER_STREAMING = `
 import sys, json, io, base64, glob, os, ast
 
-_marker = os.environ["ATLAS_RESULT_MARKER"]
 _stream_marker = os.environ["ATLAS_STREAM_MARKER"]
 _chart_dir = os.environ.get("ATLAS_CHART_DIR", "/tmp")
 
@@ -630,7 +629,6 @@ async function handleExecPythonStream(req: Request): Promise<Response> {
 
   const execId = randomUUID();
   const streamMarker = `__ATLAS_STREAM_${execId}__`;
-  const resultMarker = `__ATLAS_RESULT_${execId}__`;
   const tmpDir = join("/tmp", `pyexec-${execId}`);
   const codeFile = join(tmpDir, "user_code.py");
   const wrapperFile = join(tmpDir, "wrapper_stream.py");
@@ -675,7 +673,6 @@ async function handleExecPythonStream(req: Request): Promise<Response> {
             TMPDIR: tmpDir,
             MPLBACKEND: "Agg",
             ATLAS_CHART_DIR: chartDir,
-            ATLAS_RESULT_MARKER: resultMarker,
             ATLAS_STREAM_MARKER: streamMarker,
           },
         });

@@ -77,6 +77,15 @@ export const COMMANDS: Record<string, CommandSpec> = {
       "--port": "Port for SSE transport",
     },
   },
+  learn: {
+    description: "Analyze audit log and propose YAML improvements",
+    flags: {
+      "--apply": "Write proposed changes to YAML files",
+      "--limit": "Max audit log entries to analyze",
+      "--since": "Only analyze queries after this date",
+      "--source": "Read from/write to semantic/{name}/ subdirectory",
+    },
+  },
   migrate: {
     description: "Generate/apply plugin schema migrations",
     flags: {

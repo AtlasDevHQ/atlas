@@ -3975,6 +3975,54 @@ async function handleQuery(args: string[]): Promise<void> {
   }
 }
 
+// --- Index CLI handler ---
+
+async function handleIndex(args: string[]): Promise<void> {
+  const statsOnly = args.includes("--stats");
+
+  if (!fs.existsSync(SEMANTIC_DIR)) {
+    console.error(pc.red("No semantic/ directory found. Run 'atlas init' first."));
+    process.exit(1);
+  }
+
+  try {
+    const { getSemanticIndexStats, buildSemanticIndex } = await import("@atlas/api/lib/semantic-index");
+
+    // Use stats-based validation — works for both default and per-source layouts
+    const stats = getSemanticIndexStats(SEMANTIC_DIR);
+
+    if (stats.entities === 0) {
+      console.error(pc.red("No valid entity YAML files found in semantic/. Run 'atlas init' first."));
+      process.exit(1);
+    }
+
+    if (statsOnly) {
+      console.log(
+        `${pc.bold("Semantic index stats:")} ` +
+        `${stats.entities} entities, ${stats.dimensions} dimensions, ` +
+        `${stats.measures} measures, ${stats.metrics} metrics, ` +
+        `${stats.glossaryTerms} glossary terms (${stats.keywords} keywords)`
+      );
+      return;
+    }
+
+    // Full rebuild — buildSemanticIndex does its own loading; stats above are for validation + display
+    const start = Date.now();
+    buildSemanticIndex(SEMANTIC_DIR);
+    const elapsed = Date.now() - start;
+
+    console.log(
+      pc.green("✓") + ` Indexed ${stats.entities} entities, ` +
+      `${stats.dimensions} dimensions, ${stats.measures} measures ` +
+      `(${stats.keywords} keywords) in ${elapsed}ms`
+    );
+  } catch (err) {
+    console.error(pc.red("Failed to build semantic index."));
+    console.error(`  ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+}
+
 // --- Diff CLI handler ---
 
 async function handleDiff(args: string[]): Promise<void> {
@@ -4968,6 +5016,17 @@ const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
       "atlas import --connection warehouse",
     ],
   },
+  index: {
+    description: "Rebuild the semantic index from current YAML files, or print index statistics.",
+    usage: "index [options]",
+    flags: [
+      { flag: "--stats", description: "Print current index statistics without rebuilding" },
+    ],
+    examples: [
+      "atlas index",
+      "atlas index --stats",
+    ],
+  },
   migrate: {
     description: "Generate or apply plugin schema migrations.",
     usage: "migrate [options]",
@@ -5062,6 +5121,7 @@ function printOverviewHelp(): void {
     "Commands:\n" +
     "  init          Profile DB and generate semantic layer\n" +
     "  import        Import semantic YAML files from disk into DB\n" +
+    "  index         Rebuild or inspect the semantic index\n" +
     "  diff          Compare DB schema against existing semantic layer\n" +
     "  query         Ask a question via the Atlas API\n" +
     "  validate      Validate config, semantic layer, and connectivity\n" +
@@ -5140,6 +5200,10 @@ async function main() {
     const offline = args.includes("--offline");
     const exitCode = await runValidate({ offline });
     process.exit(exitCode);
+  }
+
+  if (command === "index") {
+    return handleIndex(args);
   }
 
   if (command === "diff") {

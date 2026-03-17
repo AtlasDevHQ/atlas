@@ -661,6 +661,104 @@ describe("applyDatasources", () => {
 });
 
 // ---------------------------------------------------------------------------
+// pool.perOrg config validation (#531)
+// ---------------------------------------------------------------------------
+
+describe("pool.perOrg validation", () => {
+  it("accepts valid pool.perOrg config via validateAndResolve", () => {
+    const resolved = validateAndResolve({
+      datasources: { default: { url: "postgresql://host/db" } },
+      pool: {
+        perOrg: {
+          maxConnections: 3,
+          idleTimeoutMs: 15000,
+          maxOrgs: 10,
+          warmupProbes: 1,
+          drainThreshold: 3,
+        },
+      },
+    });
+    expect(resolved.pool!.perOrg!.maxConnections).toBe(3);
+    expect(resolved.pool!.perOrg!.idleTimeoutMs).toBe(15000);
+    expect(resolved.pool!.perOrg!.maxOrgs).toBe(10);
+    expect(resolved.pool!.perOrg!.warmupProbes).toBe(1);
+    expect(resolved.pool!.perOrg!.drainThreshold).toBe(3);
+  });
+
+  it("applies defaults when pool.perOrg is an empty object", () => {
+    const resolved = validateAndResolve({
+      datasources: { default: { url: "postgresql://host/db" } },
+      pool: { perOrg: {} },
+    });
+    expect(resolved.pool!.perOrg!.maxConnections).toBe(5);
+    expect(resolved.pool!.perOrg!.idleTimeoutMs).toBe(30000);
+    expect(resolved.pool!.perOrg!.maxOrgs).toBe(50);
+    expect(resolved.pool!.perOrg!.warmupProbes).toBe(2);
+    expect(resolved.pool!.perOrg!.drainThreshold).toBe(5);
+  });
+
+  it("rejects negative maxConnections", () => {
+    expect(() =>
+      validateAndResolve({
+        datasources: { default: { url: "postgresql://host/db" } },
+        pool: { perOrg: { maxConnections: -1 } },
+      }),
+    ).toThrow();
+  });
+
+  it("rejects zero maxConnections", () => {
+    expect(() =>
+      validateAndResolve({
+        datasources: { default: { url: "postgresql://host/db" } },
+        pool: { perOrg: { maxConnections: 0 } },
+      }),
+    ).toThrow();
+  });
+
+  it("rejects zero maxOrgs", () => {
+    expect(() =>
+      validateAndResolve({
+        datasources: { default: { url: "postgresql://host/db" } },
+        pool: { perOrg: { maxOrgs: 0 } },
+      }),
+    ).toThrow();
+  });
+
+  it("rejects negative drainThreshold", () => {
+    expect(() =>
+      validateAndResolve({
+        datasources: { default: { url: "postgresql://host/db" } },
+        pool: { perOrg: { drainThreshold: -5 } },
+      }),
+    ).toThrow();
+  });
+
+  it("rejects non-integer maxConnections", () => {
+    expect(() =>
+      validateAndResolve({
+        datasources: { default: { url: "postgresql://host/db" } },
+        pool: { perOrg: { maxConnections: 2.5 } },
+      }),
+    ).toThrow();
+  });
+
+  it("allows warmupProbes of zero", () => {
+    const resolved = validateAndResolve({
+      datasources: { default: { url: "postgresql://host/db" } },
+      pool: { perOrg: { warmupProbes: 0 } },
+    });
+    expect(resolved.pool!.perOrg!.warmupProbes).toBe(0);
+  });
+
+  it("omits pool.perOrg when pool key is absent", () => {
+    const resolved = validateAndResolve({
+      datasources: { default: { url: "postgresql://host/db" } },
+    });
+    expect(resolved.pool).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // validateToolConfig
 // ---------------------------------------------------------------------------
 

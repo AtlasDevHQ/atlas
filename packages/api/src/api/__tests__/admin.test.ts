@@ -145,6 +145,20 @@ const mockHealthCheck: Mock<(id: string) => Promise<unknown>> = mock(() =>
   }),
 );
 
+const mockGetOrgPoolMetrics: Mock<(orgId?: string) => unknown[]> = mock(() => []);
+const mockGetOrgPoolConfig: Mock<() => unknown> = mock(() => ({
+  enabled: true,
+  maxConnections: 5,
+  idleTimeoutMs: 30000,
+  maxOrgs: 50,
+  warmupProbes: 2,
+  drainThreshold: 5,
+}));
+const mockListOrgs: Mock<() => string[]> = mock(() => []);
+const mockDrainOrg: Mock<(orgId: string) => Promise<unknown>> = mock(() =>
+  Promise.resolve({ drained: 2 }),
+);
+
 mock.module("@atlas/api/lib/db/connection", () => ({
   getDB: () => mockDBConnection,
   connections: {
@@ -160,6 +174,15 @@ mock.module("@atlas/api/lib/db/connection", () => ({
       { id: "default", dbType: "postgres", description: "Test DB" },
     ],
     healthCheck: mockHealthCheck,
+    getOrgPoolMetrics: mockGetOrgPoolMetrics,
+    getOrgPoolConfig: mockGetOrgPoolConfig,
+    listOrgs: mockListOrgs,
+    drainOrg: mockDrainOrg,
+    recordQuery: () => {},
+    recordError: () => {},
+    recordSuccess: () => {},
+    isOrgPoolingEnabled: () => false,
+    getForOrg: () => mockDBConnection,
   },
   detectDBType: () => "postgres" as const,
   extractTargetHost: () => "localhost",
@@ -169,6 +192,12 @@ mock.module("@atlas/api/lib/db/connection", () => ({
   },
   NoDatasourceConfiguredError: class extends Error {
     constructor() { super("No analytics datasource configured."); this.name = "NoDatasourceConfiguredError"; }
+  },
+  PoolCapacityExceededError: class extends Error {
+    constructor(current: number, newSlots: number, max: number) {
+      super(`Cannot create org pool: would use ${current + newSlots} connection slots, exceeding maxTotalConnections (${max}).`);
+      this.name = "PoolCapacityExceededError";
+    }
   },
 }));
 
@@ -1518,5 +1547,111 @@ describe("DELETE /api/v1/admin/semantic/org/entities/:name", () => {
     const res = await app.fetch(adminRequest("/api/v1/admin/semantic/org/entities/users", "DELETE"));
     expect(res.status).toBe(200);
     expect(((await res.json()) as Record<string, unknown>).ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Org pool admin endpoints (#531)
+// ---------------------------------------------------------------------------
+
+describe("GET /api/v1/admin/connections/pool/orgs", () => {
+  beforeEach(() => {
+    setAdmin();
+    mockGetOrgPoolMetrics.mockReset();
+    mockGetOrgPoolConfig.mockReset();
+    mockListOrgs.mockReset();
+    mockGetOrgPoolMetrics.mockReturnValue([]);
+    mockGetOrgPoolConfig.mockReturnValue({
+      enabled: true,
+      maxConnections: 5,
+      idleTimeoutMs: 30000,
+      maxOrgs: 50,
+      warmupProbes: 2,
+      drainThreshold: 5,
+    });
+    mockListOrgs.mockReturnValue([]);
+  });
+
+  it("requires admin auth", async () => {
+    mockAuthenticateRequest.mockResolvedValue({
+      authenticated: true,
+      mode: "simple-key",
+      user: { id: "user-1", mode: "simple-key", label: "Member", role: "member" },
+    });
+    const res = await app.fetch(adminRequest("/api/v1/admin/connections/pool/orgs"));
+    expect(res.status).toBe(403);
+  });
+
+  it("returns metrics, config, and orgCount", async () => {
+    mockGetOrgPoolMetrics.mockReturnValue([
+      {
+        orgId: "org-1",
+        connectionId: "default",
+        dbType: "postgres",
+        pool: { totalSize: 5, activeCount: 2, idleCount: 3, waitingCount: 0 },
+        totalQueries: 100,
+        totalErrors: 1,
+        avgQueryTimeMs: 50,
+        consecutiveFailures: 0,
+        lastDrainAt: null,
+      },
+    ]);
+    mockListOrgs.mockReturnValue(["org-1"]);
+
+    const res = await app.fetch(adminRequest("/api/v1/admin/connections/pool/orgs"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.orgCount).toBe(1);
+    expect(body.config).toBeDefined();
+    expect(Array.isArray(body.metrics)).toBe(true);
+    expect((body.metrics as unknown[]).length).toBe(1);
+  });
+
+  it("passes orgId query parameter to getOrgPoolMetrics", async () => {
+    const res = await app.fetch(adminRequest("/api/v1/admin/connections/pool/orgs?orgId=org-42"));
+    expect(res.status).toBe(200);
+    expect((mockGetOrgPoolMetrics.mock.calls as unknown[][])[0]?.[0]).toBe("org-42");
+  });
+
+  it("returns empty metrics when no orgs", async () => {
+    const res = await app.fetch(adminRequest("/api/v1/admin/connections/pool/orgs"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.orgCount).toBe(0);
+    expect((body.metrics as unknown[]).length).toBe(0);
+  });
+});
+
+describe("POST /api/v1/admin/connections/pool/orgs/:orgId/drain", () => {
+  beforeEach(() => {
+    setAdmin();
+    mockDrainOrg.mockReset();
+    mockDrainOrg.mockResolvedValue({ drained: 2 });
+  });
+
+  it("requires admin auth", async () => {
+    mockAuthenticateRequest.mockResolvedValue({
+      authenticated: true,
+      mode: "simple-key",
+      user: { id: "user-1", mode: "simple-key", label: "Member", role: "member" },
+    });
+    const res = await app.fetch(adminRequest("/api/v1/admin/connections/pool/orgs/org-1/drain", "POST"));
+    expect(res.status).toBe(403);
+  });
+
+  it("drains org pools and returns count", async () => {
+    const res = await app.fetch(adminRequest("/api/v1/admin/connections/pool/orgs/org-1/drain", "POST"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.drained).toBe(2);
+    expect((mockDrainOrg.mock.calls as unknown[][])[0]?.[0]).toBe("org-1");
+  });
+
+  it("returns 500 when drainOrg throws", async () => {
+    mockDrainOrg.mockRejectedValue(new Error("Pool close failed"));
+    const res = await app.fetch(adminRequest("/api/v1/admin/connections/pool/orgs/org-1/drain", "POST"));
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("drain_failed");
   });
 });

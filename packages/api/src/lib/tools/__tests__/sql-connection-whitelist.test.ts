@@ -57,6 +57,14 @@ mock.module("@atlas/api/lib/db/connection", () => ({
       { id: "warehouse", dbType: "postgres" as const },
     ],
     _reset: () => {},
+    recordQuery: () => {},
+    recordError: () => {},
+    recordSuccess: () => {},
+    isOrgPoolingEnabled: () => false,
+    getForOrg: () => ({
+      query: async () => ({ columns: [], rows: [] }),
+      close: async () => {},
+    }),
   },
   detectDBType: () => "postgres" as const,
   ConnectionRegistry: class {},
@@ -65,6 +73,12 @@ mock.module("@atlas/api/lib/db/connection", () => ({
   },
   NoDatasourceConfiguredError: class extends Error {
     constructor() { super("No analytics datasource configured."); this.name = "NoDatasourceConfiguredError"; }
+  },
+  PoolCapacityExceededError: class extends Error {
+    constructor(current: number, requested: number, max: number) {
+      super(`Cannot create org pool: would use ${current + requested} connection slots, exceeding maxTotalConnections (${max}).`);
+      this.name = "PoolCapacityExceededError";
+    }
   },
 }));
 

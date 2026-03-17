@@ -34,6 +34,21 @@ export class ConnectionNotRegisteredError extends Error {
   }
 }
 
+/** Thrown when creating an org pool would exceed maxTotalConnections. */
+export class PoolCapacityExceededError extends Error {
+  constructor(
+    public readonly currentSlots: number,
+    public readonly requestedSlots: number,
+    public readonly maxTotalConnections: number,
+  ) {
+    super(
+      `Cannot create org pool: would use ${currentSlots + requestedSlots} connection slots, exceeding maxTotalConnections (${maxTotalConnections}). ` +
+      `Reduce pool.perOrg.maxConnections, pool.perOrg.maxOrgs, or increase maxTotalConnections.`
+    );
+    this.name = "PoolCapacityExceededError";
+  }
+}
+
 /** Thrown when no analytics datasource URL is configured. */
 export class NoDatasourceConfiguredError extends Error {
   constructor() {
@@ -436,6 +451,29 @@ export class ConnectionRegistry {
       throw new Error("Invalid org pool config: maxConnections, maxOrgs, and drainThreshold must be >= 1");
     }
     this.orgPoolSettings = merged;
+
+    // Warn at startup if theoretical org pool capacity exceeds maxTotalConnections.
+    // datasource count = base entries (or 1 if none registered yet)
+    const numDatasources = Math.max(this.entries.size, 1);
+    const theoreticalSlots = merged.maxOrgs * merged.maxConnections * numDatasources;
+    if (theoreticalSlots > this.maxTotalConnections) {
+      log.warn(
+        {
+          maxOrgs: merged.maxOrgs,
+          maxConnections: merged.maxConnections,
+          numDatasources,
+          theoreticalSlots,
+          maxTotalConnections: this.maxTotalConnections,
+        },
+        "Org pool capacity (%d orgs × %d conns × %d datasources = %d slots) exceeds maxTotalConnections (%d). " +
+        "LRU eviction and capacity checks will prevent exceeding the limit, but consider adjusting pool.perOrg or maxTotalConnections.",
+        merged.maxOrgs,
+        merged.maxConnections,
+        numDatasources,
+        theoreticalSlots,
+        this.maxTotalConnections,
+      );
+    }
   }
 
   /** Whether org-scoped pooling is enabled (pool.perOrg configured). */
@@ -497,8 +535,23 @@ export class ConnectionRegistry {
       return baseEntry.conn;
     }
 
-    // Evict LRU org if at capacity
+    // Evict LRU org if at org-count capacity
     this._evictLRUOrg();
+
+    // Evict LRU orgs if at total connection slot capacity.
+    // Mirrors the while-loop in register() for base connections.
+    const newSlots = this.orgPoolSettings.maxConnections;
+    while (this._totalPoolSlots() + newSlots > this.maxTotalConnections && this.orgAccessSeq.size > 0) {
+      const before = this.orgAccessSeq.size;
+      this._evictLRUOrgUnconditional();
+      if (this.orgAccessSeq.size === before) break; // no more evictable orgs
+    }
+
+    // Hard check after all eviction attempts
+    const currentSlots = this._totalPoolSlots();
+    if (currentSlots + newSlots > this.maxTotalConnections) {
+      throw new PoolCapacityExceededError(currentSlots, newSlots, this.maxTotalConnections);
+    }
 
     // Create org-scoped pool with org-specific limits
     const orgConfig: ConnectionConfig = {
@@ -572,14 +625,17 @@ export class ConnectionRegistry {
 
   /** Evict the least recently used org's pools when maxOrgs is exceeded. */
   private _evictLRUOrg(): void {
-    const orgCount = this.orgAccessSeq.size;
-    if (orgCount < this.orgPoolSettings.maxOrgs) return;
+    if (this.orgAccessSeq.size < this.orgPoolSettings.maxOrgs) return;
+    this._evictLRUOrgUnconditional();
+  }
 
+  /** Unconditionally evict the least recently used org's pools. */
+  private _evictLRUOrgUnconditional(): void {
     let lruOrg: string | null = null;
-    let lruTime = Infinity;
+    let lruSeq = Infinity;
     for (const [orgId, seq] of this.orgAccessSeq) {
-      if (seq < lruTime) {
-        lruTime = seq;
+      if (seq < lruSeq) {
+        lruSeq = seq;
         lruOrg = orgId;
       }
     }
@@ -630,6 +686,10 @@ export class ConnectionRegistry {
       // Direct-registered connections (plugins) don't have config and manage
       // their own pooling — count as 1 slot instead of the default 10.
       total += entry.config?.maxConnections ?? (entry.targetHost === "(direct)" ? 1 : 10);
+    }
+    // Include org pool slots — each org pool uses its own maxConnections setting
+    for (const entry of this.orgEntries.values()) {
+      total += entry.config?.maxConnections ?? 1;
     }
     return total;
   }

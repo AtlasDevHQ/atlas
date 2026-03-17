@@ -20,6 +20,12 @@ mock.module("@atlas/api/lib/db/connection", () => ({
   NoDatasourceConfiguredError: class extends Error {
     constructor() { super("No analytics datasource configured."); this.name = "NoDatasourceConfiguredError"; }
   },
+  PoolCapacityExceededError: class extends Error {
+    constructor(current: number, requested: number, max: number) {
+      super(`Cannot create org pool: would use ${current + requested} connection slots, exceeding maxTotalConnections (${max}).`);
+      this.name = "PoolCapacityExceededError";
+    }
+  },
 }));
 
 mock.module("@atlas/api/lib/providers", () => ({

@@ -1,4 +1,4 @@
-Open a PR for the current branch's work. Branch, commit, push, create PR, update project board.
+Open a PR for the current branch's work. Branch, commit, push, create PR.
 
 **Step 1: Understand what's being shipped**
 
@@ -63,31 +63,17 @@ This catches lint errors, type issues, syncpack drift, and template drift that w
    gh pr edit <PR_NUMBER> -R AtlasDevHQ/atlas --add-label "feature,area: cli"
    ```
 
-**Step 7: Move issue to "In Review" on the project board**
-
-1. Find the item ID for the linked issue:
-   ```
-   gh project item-list 2 --owner AtlasDevHQ --format json | jq '.items[] | select(.content.number == N) | .id'
-   ```
-
-2. Move to "In Review" (NOT "Done" — the PR still needs review/merge):
-   ```
-   gh project item-edit --project-id PVT_kwDOD8aze84BRASF --id <ITEM_ID> --field-id PVTSSF_lADOD8aze84BRASFzg-9gBo --single-select-option-id df73e18b
-   ```
-
-**Step 8: Confirm**
+**Step 7: Confirm**
 
 Output a summary:
 - PR URL
 - Issue linked
 - Milestone the issue belongs to
-- Board status: "In Review" (will move to "Done" when PR merges and issue auto-closes)
 - Any follow-up items noticed during review
 
 **Rules:**
 - Always use `-R AtlasDevHQ/atlas` with all `gh` commands
 - Never force-push or amend without asking
 - **Do NOT close the issue** — `Closes #N` in the PR body handles that automatically on merge
-- **Do NOT move the board item to "Done"** — that happens when the issue closes on merge
 - Do NOT run `gh issue close`
 - **CI gates must pass** — `/ci` is mandatory in Step 4, not optional

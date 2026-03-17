@@ -1,6 +1,6 @@
 # Project Tidy
 
-Reconcile recent work (commits, PRs) against GitHub issues, project board, and ROADMAP. Fix drift, close gaps, clean up stale items.
+Reconcile recent work (commits, PRs) against GitHub issues and ROADMAP. Fix drift, close gaps, clean up stale items.
 
 **Run after a burst of work** — merging PRs, shipping features, fixing bugs — to keep tracking in sync.
 
@@ -27,7 +27,7 @@ Run these in parallel:
 
 4. All open issues:
    ```
-   gh issue list -R AtlasDevHQ/atlas --state open --limit 50 --json number,title,labels,milestone,projectItems
+   gh issue list -R AtlasDevHQ/atlas --state open --limit 50 --json number,title,labels,milestone
    ```
 
 5. Recently closed issues (last 2 days):
@@ -36,12 +36,7 @@ Run these in parallel:
    ```
    (Replace YYYY-MM-DD with 2 days ago)
 
-6. Full project board:
-   ```
-   gh project item-list 2 --owner AtlasDevHQ --format json --limit 100 | jq -r '.items[] | "\(.status)\t#\(.content.number // "draft")\t\(.title)"' | sort
-   ```
-
-7. CI status (last 5 runs on main):
+6. CI status (last 5 runs on main):
    ```
    gh run list -R AtlasDevHQ/atlas --branch main --limit 5 --json status,conclusion,name,createdAt,databaseId
    ```
@@ -50,9 +45,9 @@ Run these in parallel:
    gh run view <run_id> -R AtlasDevHQ/atlas --log-failed 2>&1 | tail -30
    ```
 
-8. `.claude/research/ROADMAP.md` — Read the current milestone sections (if it exists)
+7. `.claude/research/ROADMAP.md` — Read the current milestone sections (if it exists)
 
-9. `apps/docs/content/docs/roadmap.mdx` — Read the public docs site roadmap
+8. `apps/docs/content/docs/roadmap.mdx` — Read the public docs site roadmap
 
 ---
 
@@ -73,16 +68,7 @@ The public roadmap is a prose summary (no checkboxes). Keep it in sync with the 
 - Don't add issue/PR numbers to the docs roadmap — keep it clean and user-facing
 - If a milestone's scope changed significantly (items added/removed), update its bullet points to match
 
-### 2c. Project board status
-- Items marked "Done" on board but issue still OPEN with open sub-issues -> move to "In Progress"
-- Issues that are CLOSED but board shows "Todo" or "In Progress" -> move to "Done"
-- Duplicate items (same title, issue + PR both on board) -> remove the PR entry, keep the issue
-- Board item IDs:
-  - Project: `PVT_kwDOD8aze84BRASF`
-  - Status field: `PVTSSF_lADOD8aze84BRASFzg-9gBo`
-  - Backlog: `f75ad846`, Ready: `61e4505c`, In Progress: `47fc9ee4`, In Review: `df73e18b`, Done: `98236657`
-
-### 2d. Issue hygiene
+### 2c. Issue hygiene
 - Open issues whose work is fully shipped (all items done, PR merged) -> close with comment
 - **Issues missing labels** -> every issue needs a type label AND area label(s):
   - Type (exactly one): `bug`, `feature`, `refactor`, `chore`, `docs`
@@ -92,43 +78,28 @@ The public roadmap is a prose summary (no checkboxes). Keep it in sync with the 
   - 0.2.0 — Plugin Ecosystem (CLOSED)
   - 0.3.0 — Admin & Operations (CLOSED)
   - 0.4.0 — Chat Experience (CLOSED)
-  - 0.5.0 — Launch
-  - 0.6.0 — Governance & Integrations
+  - 0.5.0 — Launch (CLOSED)
+  - 0.6.0 — Governance & Operational Hardening (CLOSED)
   - 0.7.0 — Performance & Scale
   - 0.8.0 — Intelligence & Learning
 - Parent issues with shipped sub-issues -> add status comment listing what shipped and what remains
 
-### 2e. CI health
+### 2d. CI health
 - If CI is failing on main, this is **urgent** — diagnose the failure and fix it before other tidy work
 - Check if failures are from recently merged PRs (regressions) or pre-existing
 - Common causes: type errors in new code, missing test mocks, dependency drift
 
-### 2f. Untracked work
+### 2e. Untracked work
 - Merged PRs or commits that don't reference any issue -> assess whether a new issue should be created or if it's too minor (bug fixes, typos = skip)
-- New issues needed for significant untracked features or infrastructure changes -> create with appropriate labels, milestone, and add to project board
+- New issues needed for significant untracked features or infrastructure changes -> create with appropriate labels and milestone
 
 ---
 
 **Step 3: Execute changes**
 
-Make all changes — ROADMAP edits, board moves, issue updates, new issues. Group related operations.
+Make all changes — ROADMAP edits, issue updates, new issues. Group related operations.
 
 For ROADMAP changes: use Edit tool to update checkboxes and add new items.
-
-For board changes:
-```bash
-# Get item ID
-ITEM_ID=$(gh project item-list 2 --owner AtlasDevHQ --format json --limit 100 | jq -r '.items[] | select(.content.number == N) | .id')
-
-# Move to status
-gh project item-edit --project-id PVT_kwDOD8aze84BRASF --id "$ITEM_ID" --field-id PVTSSF_lADOD8aze84BRASFzg-9gBo --single-select-option-id <STATUS_ID>
-
-# Remove duplicate
-gh project item-delete 2 --owner AtlasDevHQ --id "$ITEM_ID"
-
-# Add issue to board
-gh project item-add 2 --owner AtlasDevHQ --url <issue_url>
-```
 
 For issue updates:
 ```bash
@@ -136,7 +107,7 @@ For issue updates:
 gh issue edit N -R AtlasDevHQ/atlas --add-label "feature,area: api"
 
 # Set milestone
-gh issue edit N -R AtlasDevHQ/atlas --milestone "0.1.0 — Documentation & DX"
+gh issue edit N -R AtlasDevHQ/atlas --milestone "0.7.0 — Performance & Scale"
 
 # Add comment
 gh issue comment N -R AtlasDevHQ/atlas --body "status update..."
@@ -151,16 +122,8 @@ For new issues:
 gh issue create -R AtlasDevHQ/atlas \
   --title "..." \
   --label "feature,area: api" \
-  --milestone "0.1.0 — Documentation & DX" \
+  --milestone "0.7.0 — Performance & Scale" \
   --body "..."
-
-# Then add to board
-gh project item-add 2 --owner AtlasDevHQ --url <issue_url>
-
-# Then set priority and size on board
-ITEM_ID=$(gh project item-list 2 --owner AtlasDevHQ --format json --limit 100 | jq -r '.items[] | select(.content.number == N) | .id')
-gh project item-edit --project-id PVT_kwDOD8aze84BRASF --id "$ITEM_ID" --field-id PVTSSF_lADOD8aze84BRASFzg-9gDc --single-select-option-id <PRIORITY_ID>
-gh project item-edit --project-id PVT_kwDOD8aze84BRASF --id "$ITEM_ID" --field-id PVTSSF_lADOD8aze84BRASFzg-9gDg --single-select-option-id <SIZE_ID>
 ```
 
 ---
@@ -177,8 +140,6 @@ If `apps/docs/content/docs/roadmap.mdx` was changed:
 Output a summary:
 - ROADMAP items checked off (count)
 - ROADMAP items added (count)
-- Board items moved (list: #N from X -> Y)
-- Board items removed (duplicates)
 - Issues updated (labels, milestones, comments, closed)
 - New issues created
 - Label/milestone gaps fixed
@@ -188,10 +149,9 @@ Output a summary:
 
 **Rules:**
 - Always use `-R AtlasDevHQ/atlas` with all `gh` commands
-- Don't close issues that have open sub-issues — move to "In Progress" instead
+- Don't close issues that have open sub-issues — add a status comment instead
 - Don't create issues for trivial fixes (typos, one-line bug fixes)
 - Don't duplicate existing issues — search before creating
 - Keep ROADMAP style consistent with existing sections (use `[x]`, link PRs/issues, match formatting)
 - When adding status comments to parent issues, use bold headers and bullet lists
 - Every issue must have: type label, area label(s), milestone
-- Every board item should have: status, priority, size

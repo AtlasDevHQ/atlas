@@ -1,6 +1,6 @@
 # Milestone Kickoff
 
-Spin up the next milestone: create GitHub issues from ROADMAP line items, label them, assign milestones, and populate the project board.
+Spin up the next milestone: create GitHub issues from ROADMAP line items, label them, and assign milestones.
 
 **Run when starting a new milestone** — all previous milestones should be shipped and tidied first.
 
@@ -15,11 +15,7 @@ Run these in parallel:
    ```
    gh issue list -R AtlasDevHQ/atlas --state open --limit 30 --json number,title,labels,milestone
    ```
-3. Current board state:
-   ```
-   gh project item-list 2 --owner AtlasDevHQ --format json --limit 100 | jq -r '.items[] | select(.status != "Done") | "\(.status)\t#\(.content.number // "draft")\t\(.title)"' | sort
-   ```
-4. Available milestones:
+3. Available milestones:
    ```
    gh api repos/AtlasDevHQ/atlas/milestones --jq '.[] | "\(.number)\t\(.title)\t\(.state)\t\(.open_issues)/\(.closed_issues)"'
    ```
@@ -66,7 +62,7 @@ Proceed? (y/n)
 
 Wait for user confirmation before creating issues.
 
-**Step 4: Create issues and populate board**
+**Step 4: Create issues**
 
 For each approved issue, run sequentially (to get issue numbers for cross-references):
 
@@ -94,34 +90,7 @@ EOF
 )" 2>&1 | tail -1)
 
 echo "Created: $ISSUE_URL"
-
-# Add to project board
-gh project item-add 2 --owner AtlasDevHQ --url "$ISSUE_URL"
-
-# Get the item ID for board field updates
-ISSUE_NUM=$(echo "$ISSUE_URL" | grep -o '[0-9]*$')
-sleep 1  # board indexing delay
-ITEM_ID=$(gh project item-list 2 --owner AtlasDevHQ --format json --limit 200 | jq -r ".items[] | select(.content.number == $ISSUE_NUM) | .id")
-
-# Set priority
-gh project item-edit --project-id PVT_kwDOD8aze84BRASF --id "$ITEM_ID" \
-  --field-id PVTSSF_lADOD8aze84BRASFzg-9gDc \
-  --single-select-option-id <PRIORITY_ID>
-
-# Set size
-gh project item-edit --project-id PVT_kwDOD8aze84BRASF --id "$ITEM_ID" \
-  --field-id PVTSSF_lADOD8aze84BRASFzg-9gDg \
-  --single-select-option-id <SIZE_ID>
-
-# Set status to Backlog (new milestone items start in backlog)
-gh project item-edit --project-id PVT_kwDOD8aze84BRASF --id "$ITEM_ID" \
-  --field-id PVTSSF_lADOD8aze84BRASFzg-9gBo \
-  --single-select-option-id f75ad846
 ```
-
-**Priority IDs:** P0=`79628723`, P1=`0a877460`, P2=`da944a9c`
-**Size IDs:** XS=`6c6483d2`, S=`f784b110`, M=`7515a9f1`, L=`817d0097`, XL=`db339eb2`
-**Status IDs:** Backlog=`f75ad846`, Ready=`61e4505c`, In Progress=`47fc9ee4`, In Review=`df73e18b`, Done=`98236657`
 
 **Step 5: Update ROADMAP**
 
@@ -146,7 +115,6 @@ Output session prompts in the same format as `/next` — detailed enough for a f
 - Every issue must have: type label, area label(s), milestone
 - Issue bodies should be actionable — include file paths, acceptance criteria
 - Dependencies should reference issue numbers (use `Depends on #N`)
-- Start all new items in Backlog status on the board
 - If a ROADMAP line item is vague, flesh it out based on codebase analysis before creating the issue
 - Keep issue titles concise (< 80 chars) and action-oriented ("Add X", "Implement Y", not "X feature")
 - Group related sub-tasks under a parent issue when a line item is too large for a single issue (L or XL)
@@ -156,8 +124,8 @@ Output session prompts in the same format as `/next` — detailed enough for a f
 - `0.2.0 — Plugin Ecosystem` (milestone #2, CLOSED)
 - `0.3.0 — Admin & Operations` (milestone #3, CLOSED)
 - `0.4.0 — Chat Experience` (milestone #4, CLOSED)
-- `0.5.0 — Launch` (milestone #5)
+- `0.5.0 — Launch` (milestone #5, CLOSED)
+- `0.6.0 — Governance & Operational Hardening` (milestone #7, CLOSED)
 - `0.0.x — Pre-release` (milestone #6)
-- `0.6.0 — Governance & Integrations` (milestone #7)
 - `0.7.0 — Performance & Scale` (milestone #8)
 - `0.8.0 — Intelligence & Learning` (milestone #9)

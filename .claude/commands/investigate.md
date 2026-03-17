@@ -24,7 +24,7 @@ If a matching issue exists, tell the user and link it. Add any new findings as a
 ```bash
 gh issue comment <N> -R AtlasDevHQ/atlas --body "<new findings>"
 ```
-Then skip to Step 5.
+Then skip to Step 4.
 
 **Step 3: Classify and file the issue**
 
@@ -66,37 +66,7 @@ EOF
 echo "Created: $ISSUE_URL"
 ```
 
-**Step 4: Add to project board with priority and size**
-
-```bash
-# Add to board
-gh project item-add 2 --owner AtlasDevHQ --url "$ISSUE_URL"
-
-# Get item ID
-ISSUE_NUM=$(echo "$ISSUE_URL" | grep -o '[0-9]*$')
-sleep 1
-ITEM_ID=$(gh project item-list 2 --owner AtlasDevHQ --format json --limit 200 | jq -r ".items[] | select(.content.number == $ISSUE_NUM) | .id")
-
-# Set priority
-gh project item-edit --project-id PVT_kwDOD8aze84BRASF --id "$ITEM_ID" \
-  --field-id PVTSSF_lADOD8aze84BRASFzg-9gDc \
-  --single-select-option-id <PRIORITY_ID>
-
-# Set size
-gh project item-edit --project-id PVT_kwDOD8aze84BRASF --id "$ITEM_ID" \
-  --field-id PVTSSF_lADOD8aze84BRASFzg-9gDg \
-  --single-select-option-id <SIZE_ID>
-
-# Set status to Backlog
-gh project item-edit --project-id PVT_kwDOD8aze84BRASF --id "$ITEM_ID" \
-  --field-id PVTSSF_lADOD8aze84BRASFzg-9gBo \
-  --single-select-option-id f75ad846
-```
-
-**Priority IDs:** P0=`79628723`, P1=`0a877460`, P2=`da944a9c`
-**Size IDs:** XS=`6c6483d2`, S=`f784b110`, M=`7515a9f1`, L=`817d0097`, XL=`db339eb2`
-
-**Step 5: Summarize and recommend next steps**
+**Step 4: Summarize and recommend next steps**
 
 Output a summary:
 
@@ -117,20 +87,15 @@ Output a summary:
 
 Then ask the user to choose:
 
-1. **Park it** — Issue is filed and on the board. Pick it up later via `/next`. Done.
-2. **Fix it now** — Output a session prompt (same format as `/next`) so the user can start immediately. Move the board item to "In Progress":
-   ```bash
-   gh project item-edit --project-id PVT_kwDOD8aze84BRASF --id "$ITEM_ID" \
-     --field-id PVTSSF_lADOD8aze84BRASFzg-9gBo \
-     --single-select-option-id 47fc9ee4
-   ```
+1. **Park it** — Issue is filed. Pick it up later via `/next`. Done.
+2. **Fix it now** — Output a session prompt (same format as `/next`) so the user can start immediately.
 
 ---
 
 **Rules:**
 - Always use `-R AtlasDevHQ/atlas` with all `gh` commands
 - Don't create duplicate issues — always search first (Step 2)
-- Every issue must have: type label, area label(s), milestone, priority, size
+- Every issue must have: type label, area label(s), milestone
 - Issue titles should be action-oriented and prefixed with type: `fix:`, `feat:`, `refactor:`, `chore:`, `docs:`
 - The issue body should contain enough context for someone to pick it up cold — include file paths, code snippets, and reproduction steps where applicable
 - If research reveals multiple distinct issues, file them separately — don't bundle unrelated findings

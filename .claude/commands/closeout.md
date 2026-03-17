@@ -19,11 +19,6 @@ Run these in parallel:
 
 3. Read `apps/docs/content/docs/roadmap.mdx` — check milestone status in public roadmap
 
-4. Board state (confirm no In Progress / In Review items for this milestone):
-   ```
-   gh project item-list 2 --owner AtlasDevHQ --format json --limit 200 | jq '[.items[] | select(.status != "Done") | {status: .status, number: .content.number, title: .title}]'
-   ```
-
 If any issues are still open or ROADMAP items unchecked, **stop and report** — the milestone isn't ready for closeout.
 
 ---
@@ -182,7 +177,6 @@ Output a summary:
 
 ### Tracking
 - GitHub milestone: CLOSED
-- Project board: all items Done
 - ROADMAP.md: all items [x]
 
 ### Next milestone

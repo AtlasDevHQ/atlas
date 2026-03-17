@@ -60,23 +60,15 @@ SDK gained `listTables()` convenience method and a complete error code catalog w
 
 Production-readiness hardening across infrastructure, governance, and integrations. Action timeout enforcement with `timed_out` status transitions, rollback API for reversible actions, configurable agent step limits and Python import guards, and operator-controlled explore backend priority. Advanced RLS with multi-column policies, array claims, and OR-logic between policies. Session management with admin listing/revoking and idle/absolute timeouts. Audit log gained CSV export, full-text search, connection/table filtering, and data classification tags extracted from the SQL AST. Plugin SDK shipped typed peer dep re-exports, beforeToolCall/afterToolCall hooks, and custom query validation for non-SQL datasources. SDK added `validateSQL()` and `getAuditLog()` methods. New interaction plugins for Microsoft Teams (Bot Framework, Adaptive Cards), generic webhooks (Zapier/Make/n8n), and email digest subscriptions. Admin console gained a semantic layer diff view comparing DB schema against YAML entities.
 
----
+### 0.7.0 — Performance & Multi-Tenancy
 
-## 0.7.0 — Performance & Multi-Tenancy
-
-The current milestone. Handle larger semantic layers, more concurrent users, and bigger result sets.
-
-- **Multi-tenancy** — ~~Better Auth organization plugin~~ ✅ (#514), ~~org-scoped semantic layers~~ ✅ (#508), ~~DB-backed filesystem for explore tool~~ ✅ (#522), ~~CLI dual-write import~~ ✅ (#523), ~~tenant-scoped connection pooling~~ ✅ (#509), ~~isolation validation tests~~ ✅ (#510)
-- **Caching** — ~~Query result caching with configurable TTL~~ ✅ (#504), ~~cache admin UI~~ ✅ (#505), ~~semantic layer indexing~~ ✅ (#506), ~~atlas index CLI~~ ✅ (#507)
-- **Infrastructure** — ~~Connection pool improvements~~ ✅ (#511), ~~streaming Python output~~ ✅ (#512)
-- **Hardening** — ~~Pool capacity guard fix~~ ✅ (#530), ~~tenant pool integration tests~~ ✅ (#531), ~~health check pool warnings~~ ✅ (#536)
-- **Learning** — ~~`atlas learn` CLI for offline YAML amendments~~ ✅ (#513)
+Multi-tenant foundation via Better Auth organization plugin with org-scoped semantic layers, connections, caching, and explore tool. Tenant-scoped connection pooling with health-based drain and per-org metrics. Query result caching with configurable TTL and admin flush UI. Pre-computed semantic index for faster agent context loading with `atlas index` CLI. Streaming Python execution output with progressive stdout and inline chart renders. `atlas learn` CLI for offline semantic layer improvements — analyzes audit logs and proposes YAML amendments for query patterns, join discoveries, and glossary terms.
 
 ---
 
 ## 0.8.0 — Intelligence & Learning
 
-An agent that gets smarter over time.
+The current milestone. An agent that gets smarter over time.
 
 - **Knowledge** — Curated prompt library per industry, query suggestion engine from usage history
 - **Advanced** — Self-hosted model benchmarks, notebook-style interface, multi-agent collaboration

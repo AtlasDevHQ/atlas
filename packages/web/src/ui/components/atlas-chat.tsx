@@ -280,7 +280,10 @@ export function AtlasChat() {
 
   const onData = useCallback((dataPart: { type: string; id?: string; data: unknown }) => {
     if (dataPart.type === "data-python-progress" && dataPart.id && dataPart.data) {
-      const event = dataPart.data as PythonProgressData;
+      const d = dataPart.data as Record<string, unknown>;
+      // Minimal runtime validation — ensure the event has a known type
+      if (typeof d.type !== "string" || !["stdout", "chart", "recharts"].includes(d.type)) return;
+      const event = d as unknown as PythonProgressData;
       setPythonProgress((prev) => {
         const next = new Map(prev);
         const events = next.get(dataPart.id!) ?? [];
@@ -290,9 +293,13 @@ export function AtlasChat() {
     }
   }, []);
 
+  // The AI SDK's onData expects DataUIPart<UIDataTypes> which structurally accepts
+  // { type: `data-${string}`; id?: string; data: unknown } — our callback matches.
+  // The cast is needed because the default UIMessage generic doesn't declare our custom
+  // data part type at compile time.
   const { messages, setMessages, sendMessage, status, error } = useChat({
     transport,
-    onData: onData as never, // type erasure for untyped data parts
+    onData: onData as never,
   });
 
   const isLoading = status === "streaming" || status === "submitted";

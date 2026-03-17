@@ -546,8 +546,8 @@ try:
                 with open(fname, "rb") as fh:
                     b64 = base64.b64encode(fh.read()).decode()
                 _emit("chart", {"base64": b64, "mimeType": "image/png"})
-            except Exception:
-                pass
+            except Exception as _chart_err:
+                _emit("stdout", f"[Warning: chart streaming failed: {_chart_err}]\\n")
     plt.Figure.savefig = _atlas_savefig
 except ImportError:
     pass
@@ -589,12 +589,7 @@ except Exception as e:
 sys.stdout.flush()
 sys.stdout = _real_stdout
 
-# --- Collect structured results ---
-_charts = []
-for f in sorted(glob.glob(os.path.join(_chart_dir, "chart_*.png"))):
-    with open(f, "rb") as fh:
-        _charts.append({"base64": base64.b64encode(fh.read()).decode(), "mimeType": "image/png"})
-
+# --- Emit structured results ---
 if _atlas_error:
     _emit("error", {"error": _atlas_error})
 else:
@@ -650,11 +645,14 @@ async function handleExecPythonStream(req: Request): Promise<Response> {
   const stream = new ReadableStream({
     async start(controller) {
       const encoder = new TextEncoder();
+      let controllerClosed = false;
       function send(line: string) {
+        if (controllerClosed) return;
         try {
           controller.enqueue(encoder.encode(line + "\n"));
-        } catch {
-          // Controller may be closed
+        } catch (err) {
+          controllerClosed = true;
+          console.warn(`[sandbox-sidecar] python-stream=${execId} controller closed, dropping events: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
 
@@ -696,52 +694,72 @@ async function handleExecPythonStream(req: Request): Promise<Response> {
           console.warn(`[sandbox-sidecar] python-stream=${execId} stdin write error: ${detail}`);
         }
 
-        // Read stdout line by line and forward streaming events
+        // Read stdout line by line and forward streaming events.
+        // Enforce MAX_OUTPUT_BYTES to match non-streaming handler safety.
         const reader = proc.stdout.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
+        let totalBytes = 0;
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
 
-          buffer += decoder.decode(value, { stream: true });
-
-          // Process complete lines
-          let newlineIdx;
-          while ((newlineIdx = buffer.indexOf("\n")) !== -1) {
-            const line = buffer.slice(0, newlineIdx);
-            buffer = buffer.slice(newlineIdx + 1);
-
-            if (line.startsWith(streamMarker)) {
-              // Forward the JSON event as an NDJSON line
-              send(line.slice(streamMarker.length));
+            totalBytes += value.byteLength;
+            if (totalBytes > MAX_OUTPUT_BYTES) {
+              proc.kill(9);
+              send(JSON.stringify({ type: "error", data: { error: `Output exceeded ${MAX_OUTPUT_BYTES} byte limit` } }));
+              break;
             }
-            // Non-marker lines are ignored (shouldn't occur with streaming wrapper)
+
+            buffer += decoder.decode(value, { stream: true });
+
+            // Process complete lines
+            let newlineIdx;
+            while ((newlineIdx = buffer.indexOf("\n")) !== -1) {
+              const line = buffer.slice(0, newlineIdx);
+              buffer = buffer.slice(newlineIdx + 1);
+
+              if (line.startsWith(streamMarker)) {
+                send(line.slice(streamMarker.length));
+              } else if (line.trim()) {
+                // Non-marker output (C extensions writing to fd 1, python warnings)
+                console.debug(`[sandbox-sidecar] python-stream=${execId} non-marker stdout: ${line.slice(0, 200)}`);
+              }
+            }
           }
-        }
 
-        // Process any remaining buffer content
-        if (buffer.trim() && buffer.startsWith(streamMarker)) {
-          send(buffer.slice(streamMarker.length));
-        }
+          // Process any remaining buffer content
+          if (buffer.trim() && buffer.startsWith(streamMarker)) {
+            send(buffer.slice(streamMarker.length));
+          }
 
-        clearTimeout(timer);
-        const exitCode = await proc.exited;
+          const exitCode = await proc.exited;
 
-        // Read stderr for error context
-        const stderr = await new Response(proc.stderr).text().catch(() => "");
+          // Read stderr for error context
+          let stderr: string;
+          try {
+            stderr = await new Response(proc.stderr).text();
+          } catch (err) {
+            console.warn(`[sandbox-sidecar] python-stream=${execId} failed to read stderr: ${err instanceof Error ? err.message : String(err)}`);
+            stderr = "(stderr unavailable)";
+          }
 
-        const duration = Date.now() - startTime;
+          const duration = Date.now() - startTime;
 
-        if (timedOut) {
-          console.log(`[sandbox-sidecar] python-stream=${execId} timed out after ${timeout}ms`);
-          send(JSON.stringify({ type: "error", data: { error: `Python execution timed out after ${timeout}ms` } }));
-        } else if (exitCode !== 0 && stderr.trim()) {
-          console.log(`[sandbox-sidecar] python-stream=${execId} exitCode=${exitCode} duration=${duration}ms`);
-          send(JSON.stringify({ type: "error", data: { error: stderr.trim().slice(0, 500) } }));
-        } else {
-          console.log(`[sandbox-sidecar] python-stream=${execId} exitCode=${exitCode} duration=${duration}ms`);
+          if (timedOut) {
+            console.log(`[sandbox-sidecar] python-stream=${execId} timed out after ${timeout}ms`);
+            send(JSON.stringify({ type: "error", data: { error: `Python execution timed out after ${timeout}ms` } }));
+          } else if (exitCode !== 0 && stderr.trim()) {
+            console.log(`[sandbox-sidecar] python-stream=${execId} exitCode=${exitCode} duration=${duration}ms`);
+            send(JSON.stringify({ type: "error", data: { error: stderr.trim().slice(0, 500) } }));
+          } else {
+            console.log(`[sandbox-sidecar] python-stream=${execId} exitCode=${exitCode} duration=${duration}ms`);
+          }
+        } finally {
+          clearTimeout(timer);
+          reader.releaseLock();
         }
       } catch (err) {
         const detail = err instanceof Error ? err.message : String(err);

@@ -418,13 +418,19 @@ Blocked: subprocess, os, socket, shutil, sys, ctypes, importlib, exec(), eval(),
     const onProgress = canStream
       ? (event: PythonProgressEvent) => {
           try {
+            // Custom data part — the AI SDK's typed data parts require compile-time
+            // registration via UIMessage generics. We bypass with a cast because Atlas
+            // uses dynamic data parts consumed via onData on the client.
             writer.write({
               type: "data-python-progress" as const,
               id: toolCallId,
               data: event,
-            } as never); // data part type erasure — client handles dynamically
-          } catch {
-            // Writer may be closed — non-critical
+            } as unknown as Parameters<typeof writer.write>[0]);
+          } catch (err) {
+            log.debug(
+              { err: err instanceof Error ? err.message : String(err), toolCallId },
+              "Stream writer closed, Python progress events will not be delivered",
+            );
           }
         }
       : undefined;

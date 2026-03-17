@@ -26,11 +26,10 @@ interface PythonChart {
 }
 
 /** Progress event from the server's streaming Python execution. */
-export interface PythonProgressData {
-  type: "stdout" | "chart" | "recharts";
-  content?: string;
-  chart?: PythonChart | RechartsChartConfig;
-}
+export type PythonProgressData =
+  | { type: "stdout"; content: string }
+  | { type: "chart"; chart: PythonChart }
+  | { type: "recharts"; chart: RechartsChartConfig };
 
 const ALLOWED_IMAGE_MIME = new Set(["image/png", "image/jpeg"]);
 
@@ -107,10 +106,16 @@ function PythonResultCardInner({ part, progressEvents }: { part: unknown; progre
     const streamCharts: PythonChart[] = [];
 
     for (const ev of progressEvents) {
-      if (ev.type === "stdout" && ev.content) {
-        stdoutParts.push(ev.content);
-      } else if (ev.type === "chart" && ev.chart && "base64" in ev.chart) {
-        streamCharts.push(ev.chart as PythonChart);
+      switch (ev.type) {
+        case "stdout":
+          stdoutParts.push(ev.content);
+          break;
+        case "chart":
+          streamCharts.push(ev.chart);
+          break;
+        case "recharts":
+          // Recharts are rendered from the final result, not during streaming
+          break;
       }
     }
 

@@ -284,6 +284,10 @@ chat.post("/", async (c) => {
           onFinish: () => {
             clearStreamWriter(requestId);
           },
+          onError: (error) => {
+            clearStreamWriter(requestId);
+            return typeof error === "string" ? error : error instanceof Error ? error.message : "Unknown error";
+          },
         });
 
         const streamResponse = createUIMessageStreamResponse({

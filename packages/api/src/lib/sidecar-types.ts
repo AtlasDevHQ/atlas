@@ -34,7 +34,7 @@ export type { PythonResult as SidecarPythonResponse } from "@atlas/api/lib/tools
 export type SidecarPythonStreamEvent =
   | { type: "stdout"; data: string }
   | { type: "chart"; data: { base64: string; mimeType: "image/png" } }
-  | { type: "recharts"; data: { type: string; data: Record<string, unknown>[]; categoryKey: string; valueKeys: string[] } }
+  | { type: "recharts"; data: { type: "line" | "bar" | "pie"; data: Record<string, unknown>[]; categoryKey: string; valueKeys: string[] } }
   | { type: "table"; data: { columns: string[]; rows: unknown[][] } }
   | { type: "done"; data: { success: true; exitCode: number } }
   | { type: "error"; data: { error: string; output?: string } };

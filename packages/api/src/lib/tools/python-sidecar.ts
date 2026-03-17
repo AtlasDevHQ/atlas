@@ -194,14 +194,28 @@ export async function executePythonViaSidecarStream(
       signal: AbortSignal.timeout(timeout + HTTP_OVERHEAD_MS),
     });
   } catch (err) {
-    // Fall back to non-streaming on connection failure
-    log.warn({ err: err instanceof Error ? err.message : String(err) }, "Streaming endpoint unavailable, falling back to non-streaming");
-    return executePythonViaSidecar(sidecarUrl, code, data);
+    const detail = err instanceof Error ? err.message : String(err);
+    const isConnectionError =
+      detail.includes("ECONNREFUSED") ||
+      detail.includes("fetch failed") ||
+      detail.includes("Failed to connect");
+
+    if (isConnectionError) {
+      log.warn({ err: detail }, "Streaming endpoint unreachable, falling back to non-streaming");
+      return executePythonViaSidecar(sidecarUrl, code, data);
+    }
+
+    log.error({ err: detail }, "Unexpected error calling streaming Python endpoint");
+    return pythonError(`Streaming Python execution failed: ${detail}`);
   }
 
   if (!response.ok || !response.body) {
-    // Fall back to non-streaming for HTTP errors or missing body
-    log.warn({ status: response.status }, "Streaming endpoint error, falling back to non-streaming");
+    if (response.status === 404) {
+      // Sidecar doesn't support streaming — expected for older versions
+      log.info("Streaming endpoint not found (404), falling back to non-streaming");
+      return executePythonViaSidecar(sidecarUrl, code, data);
+    }
+    log.error({ status: response.status, hasBody: !!response.body }, "Streaming Python endpoint returned unexpected HTTP error, falling back");
     return executePythonViaSidecar(sidecarUrl, code, data);
   }
 
@@ -217,6 +231,8 @@ export async function executePythonViaSidecarStream(
   let table: { columns: string[]; rows: unknown[][] } | undefined;
   let error: string | undefined;
   let success = true;
+  let receivedTerminal = false;
+  let parseFailures = 0;
 
   try {
     while (true) {
@@ -235,8 +251,12 @@ export async function executePythonViaSidecarStream(
         let event: SidecarPythonStreamEvent;
         try {
           event = JSON.parse(line) as SidecarPythonStreamEvent;
-        } catch {
-          log.debug({ line: line.slice(0, 200) }, "Skipping unparseable NDJSON line");
+        } catch (parseErr) {
+          parseFailures++;
+          log.warn(
+            { line: line.slice(0, 200), err: parseErr instanceof Error ? parseErr.message : String(parseErr), parseFailures },
+            "Skipping unparseable NDJSON line from Python stream",
+          );
           continue;
         }
 
@@ -257,13 +277,20 @@ export async function executePythonViaSidecarStream(
             table = event.data;
             break;
           case "done":
-            // Success — final result assembled below
+            receivedTerminal = true;
             break;
           case "error":
+            receivedTerminal = true;
             success = false;
             error = event.data.error;
             if (event.data.output) outputParts.push(event.data.output);
             break;
+          default: {
+            // Exhaustiveness guard — new event types added to SidecarPythonStreamEvent
+            // will cause a compile error here until handled.
+            const _exhaustive: never = event;
+            log.warn({ type: (_exhaustive as { type: string }).type }, "Unknown Python stream event type");
+          }
         }
       }
     }
@@ -271,9 +298,21 @@ export async function executePythonViaSidecarStream(
     const detail = err instanceof Error ? err.message : String(err);
     log.error({ err: detail }, "Error reading Python stream");
     return pythonError(`Stream read failed: ${detail}`);
+  } finally {
+    reader.releaseLock();
+  }
+
+  if (parseFailures > 0) {
+    log.warn({ parseFailures }, "Python stream had unparseable NDJSON lines — result may be incomplete");
   }
 
   const output = outputParts.join("").trim() || undefined;
+
+  // If the stream ended without a terminal event, the execution was interrupted
+  if (!receivedTerminal) {
+    log.warn("Python stream ended without done/error event — execution may have been interrupted");
+    return { success: false, error: "Python execution was interrupted (no completion signal received)", ...(output && { output }) };
+  }
 
   if (!success) {
     return { success: false, error: error ?? "Unknown error", ...(output && { output }) };

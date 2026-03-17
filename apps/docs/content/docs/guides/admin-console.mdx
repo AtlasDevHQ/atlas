@@ -275,6 +275,29 @@ Settings overrides require an internal database (`DATABASE_URL`). Without it, th
 
 ---
 
+## Cache
+
+**Route:** `/admin/cache`
+
+<Callout type="info">
+Query caching is enabled by default. Set `ATLAS_CACHE_ENABLED=false` to disable it. When disabled, the page shows zeroed stats with an inline notice.
+</Callout>
+
+Displays query result cache statistics and provides a manual flush control:
+
+- **Hit Rate** — Cache hit percentage with a visual progress bar, plus hit and miss counts
+- **Storage** — Current entry count vs max size, fill percentage, and TTL
+- **Flush Cache** — Removes all cached entries with a confirmation dialog. After flushing, subsequent queries hit the database directly until the cache repopulates
+
+**API endpoints:**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/admin/cache/stats` | Cache hit rate, entry count, max size, TTL |
+| `POST` | `/api/v1/admin/cache/flush` | Flush all cached entries |
+
+---
+
 ## Sessions
 
 **Route:** `/admin/sessions`
@@ -381,6 +404,8 @@ All admin endpoints are at `/api/v1/admin/` and require the `admin` role. See th
 | `GET` | `/semantic/org/entities/:name` | Get org entity detail |
 | `PUT` | `/semantic/org/entities/:name` | Create/update org entity |
 | `DELETE` | `/semantic/org/entities/:name` | Delete org entity |
+| `GET` | `/cache/stats` | Cache statistics (hit rate, entries, TTL) |
+| `POST` | `/cache/flush` | Flush all cached entries |
 | `GET` | `/audit` | Query audit log (supports `table` and `column` filters) |
 | `GET` | `/audit/stats` | Audit aggregates |
 | `GET` | `/audit/facets` | Distinct tables and columns for filter dropdowns |

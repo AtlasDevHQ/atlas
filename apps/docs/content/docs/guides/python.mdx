@@ -98,6 +98,10 @@ The sandbox itself is configured via the standard sandbox variables. See [Enviro
 
 The agent decides when to use Python based on the question -- statistical analysis, trend detection, and visualization requests typically trigger Python execution.
 
+### Streaming output
+
+When using the sidecar backend, Python output streams progressively to the chat UI — stdout appears line-by-line as the script runs, and matplotlib charts render inline as soon as `savefig` is called, rather than waiting for the entire script to complete. Recharts and plotly output is delivered after the script finishes. This uses the sidecar's NDJSON streaming endpoint (`/exec-python-stream`). If the sidecar does not support the streaming endpoint (older versions), Atlas falls back to the non-streaming sidecar endpoint. Non-sidecar backends (Vercel sandbox, nsjail) always use the standard execution path.
+
 ---
 
 ## Troubleshooting

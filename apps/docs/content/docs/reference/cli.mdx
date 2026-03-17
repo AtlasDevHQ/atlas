@@ -1,6 +1,6 @@
 ---
 title: CLI Reference
-description: Complete reference for the Atlas CLI — init, diff, learn, query, doctor, validate, mcp, completions, and more.
+description: Complete reference for the Atlas CLI — init, diff, index, learn, query, doctor, validate, mcp, completions, and more.
 ---
 
 The Atlas CLI (`atlas`) profiles databases, generates semantic layers, validates configuration, and queries data from the terminal.
@@ -338,6 +338,32 @@ bun run atlas -- migrate [options]
 | Flag | Description |
 |------|-------------|
 | `--apply` | Execute migrations against internal database (default: dry-run) |
+
+## index
+
+Rebuild the semantic index from current YAML files, or print index statistics. The semantic index is a pre-computed text summary of the semantic layer that the agent receives as context — it condenses all entities, columns, metrics, and glossary terms so the agent can find relevant tables without reading every YAML file via the explore tool.
+
+```bash
+bun run atlas -- index [options]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--stats` | Print current index statistics without rebuilding |
+
+**Examples:**
+
+```bash
+# Rebuild the semantic index
+bun run atlas -- index
+
+# Check index stats without rebuilding
+bun run atlas -- index --stats
+```
+
+`--stats` prints a one-line summary: entity count, dimensions, measures, metrics, glossary terms, and total keywords. Use this to verify the index covers your semantic layer after adding or removing entity files.
+
+A full rebuild loads all YAML files under `semantic/` (including per-source subdirectories) and validates they parse correctly. The command prints the number of indexed entities, dimensions, measures, keyword count, and elapsed time on success.
 
 ## learn
 

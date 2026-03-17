@@ -227,7 +227,7 @@ export default function Home() {
               ),
               title: "Semantic Layer",
               description:
-                "YAML-based entity definitions with auto-profiling, glossary terms, metrics, and LLM enrichment. Version-controlled on disk.",
+                "YAML-based entity definitions with auto-profiling, glossary terms, metrics, and LLM enrichment. Learns from usage with atlas learn.",
             },
             {
               icon: (
@@ -547,6 +547,7 @@ export default function App() {
             "Encrypted credentials",
             "Audit logging",
             "Data classification",
+            "Multi-tenant isolation",
           ]}
         />
       </section>

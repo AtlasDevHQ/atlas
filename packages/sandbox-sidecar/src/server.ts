@@ -10,6 +10,7 @@
  *   GET  /health        — { status: "ok" }
  *   POST /exec          — { command, timeout? } → { stdout, stderr, exitCode }
  *   POST /exec-python   — { code, data?, timeout? } → PythonResult
+ *   POST /exec-python-stream — { code, data?, timeout? } → NDJSON stream
  */
 
 import type {
@@ -168,26 +169,22 @@ async function handleExec(req: Request): Promise<Response> {
   }
 }
 
-// --- Python exec handler ---
+// --- Shared Python wrapper code ---
 
 /**
- * Python wrapper script injected into the sidecar.
+ * Common Python code shared between streaming and non-streaming wrappers.
  *
- * Security:
- * - AST-based import guard runs before exec (sidecar-side enforcement)
- * - User code runs in an isolated namespace (cannot see/modify wrapper vars)
- * - Per-execution randomized result marker prevents stdout spoofing
+ * Expects the caller to have already imported: sys, json, os, ast
  *
- * Handles data injection (JSON on stdin → DataFrame/dict), stdout capture,
- * chart collection (PNG files + Recharts dicts), and structured output.
+ * Expects the caller to have already defined:
+ * - _chart_dir: str — path to chart output directory
+ * - _report_error(msg: str) — emit error and exit the process
+ *
+ * Enforces the AST-based import guard (exits via _report_error on violation),
+ * injects data from stdin, configures a headless matplotlib backend, and
+ * makes available: _user_code, data, df, chart_path().
  */
-const PYTHON_WRAPPER = `
-import sys, json, io, base64, glob, os, ast
-
-_marker = os.environ["ATLAS_RESULT_MARKER"]
-_chart_dir = os.environ.get("ATLAS_CHART_DIR", "/tmp")
-
-# --- Import guard (sidecar-side enforcement) ---
+const PYTHON_COMMON = `# --- Import guard (sidecar-side enforcement) ---
 _BLOCKED_MODULES = {
     "subprocess", "os", "socket", "shutil", "sys", "ctypes", "importlib",
     "code", "signal", "multiprocessing", "threading", "pty", "fcntl",
@@ -204,8 +201,7 @@ _user_code = open(sys.argv[1]).read()
 try:
     _tree = ast.parse(_user_code)
 except SyntaxError as e:
-    print(_marker + json.dumps({"success": False, "error": f"SyntaxError: {e.msg} (line {e.lineno})"}))
-    sys.exit(0)
+    _report_error(f"SyntaxError: {e.msg} (line {e.lineno})")
 
 _blocked = None
 for _node in ast.walk(_tree):
@@ -232,8 +228,7 @@ for _node in ast.walk(_tree):
             _blocked = f'Blocked builtin: "{_name}()" is not allowed'
 
 if _blocked:
-    print(_marker + json.dumps({"success": False, "error": _blocked}))
-    sys.exit(0)
+    _report_error(_blocked)
 
 # --- Data injection ---
 _stdin_data = sys.stdin.read()
@@ -259,7 +254,30 @@ except ImportError:
     pass
 
 def chart_path(n=0):
-    return os.path.join(_chart_dir, f"chart_{n}.png")
+    return os.path.join(_chart_dir, f"chart_{n}.png")`;
+
+// --- Python exec handler ---
+
+/**
+ * Non-streaming Python wrapper. Composes PYTHON_COMMON with stdout capture
+ * and a single structured result emitted via a randomized marker.
+ *
+ * Security:
+ * - AST-based import guard runs before exec (via PYTHON_COMMON)
+ * - User code runs in an isolated namespace (cannot see/modify wrapper vars)
+ * - Per-execution randomized result marker prevents stdout spoofing
+ */
+const PYTHON_WRAPPER = `
+import sys, json, io, base64, glob, os, ast
+
+_marker = os.environ["ATLAS_RESULT_MARKER"]
+_chart_dir = os.environ.get("ATLAS_CHART_DIR", "/tmp")
+
+def _report_error(msg):
+    print(_marker + json.dumps({"success": False, "error": msg}))
+    sys.exit(0)
+
+${PYTHON_COMMON}
 
 # --- Execute user code in isolated namespace ---
 _old_stdout = sys.stdout
@@ -443,16 +461,13 @@ async function handleExecPython(req: Request): Promise<Response> {
 // --- Streaming Python exec handler ---
 
 /**
- * Streaming Python wrapper — sends stdout chunks and chart events as NDJSON
- * lines to stdout in real-time, instead of capturing everything and returning
- * a single result at the end.
+ * Streaming Python wrapper. Composes PYTHON_COMMON with real-time NDJSON
+ * event emission via _emit(), a savefig hook for chart streaming, and
+ * a _StreamingStdout class that intercepts print() calls.
  *
  * Protocol: each stdout line is prefixed with the stream marker. Lines are
  * JSON objects with `type` and `data` fields. The sidecar reads these and
  * forwards them directly to the client as NDJSON.
- *
- * The import guard + data injection + chart collection logic is identical
- * to the non-streaming wrapper.
  */
 const PYTHON_WRAPPER_STREAMING = `
 import sys, json, io, base64, glob, os, ast
@@ -460,82 +475,22 @@ import sys, json, io, base64, glob, os, ast
 _stream_marker = os.environ["ATLAS_STREAM_MARKER"]
 _chart_dir = os.environ.get("ATLAS_CHART_DIR", "/tmp")
 
+# Save real stdout before any redirection
+_real_stdout = sys.stdout
+
 def _emit(event_type, data):
     """Write a streaming event line to stdout (bypassing user stdout capture)."""
     _real_stdout.write(_stream_marker + json.dumps({"type": event_type, "data": data}) + "\\n")
     _real_stdout.flush()
 
-# Save real stdout before any redirection
-_real_stdout = sys.stdout
-
-# --- Import guard (sidecar-side enforcement) ---
-_BLOCKED_MODULES = {
-    "subprocess", "os", "socket", "shutil", "sys", "ctypes", "importlib",
-    "code", "signal", "multiprocessing", "threading", "pty", "fcntl",
-    "termios", "resource", "posixpath",
-    "http", "urllib", "requests", "httpx", "aiohttp", "webbrowser",
-    "pickle", "tempfile", "pathlib",
-}
-_BLOCKED_BUILTINS = {
-    "compile", "exec", "eval", "__import__", "open", "breakpoint",
-    "getattr", "globals", "locals", "vars", "dir", "delattr", "setattr",
-}
-
-_user_code = open(sys.argv[1]).read()
-try:
-    _tree = ast.parse(_user_code)
-except SyntaxError as e:
-    _emit("error", {"error": f"SyntaxError: {e.msg} (line {e.lineno})"})
+def _report_error(msg):
+    _emit("error", {"error": msg})
     sys.exit(0)
 
-_blocked = None
-for _node in ast.walk(_tree):
-    if _blocked:
-        break
-    if isinstance(_node, ast.Import):
-        for _alias in _node.names:
-            _mod = _alias.name.split('.')[0]
-            if _mod in _BLOCKED_MODULES:
-                _blocked = f'Blocked import: "{_mod}" is not allowed'
-                break
-    elif isinstance(_node, ast.ImportFrom):
-        if _node.module:
-            _mod = _node.module.split('.')[0]
-            if _mod in _BLOCKED_MODULES:
-                _blocked = f'Blocked import: "{_mod}" is not allowed'
-    elif isinstance(_node, ast.Call):
-        _name = None
-        if isinstance(_node.func, ast.Name):
-            _name = _node.func.id
-        elif isinstance(_node.func, ast.Attribute):
-            _name = _node.func.attr
-        if _name and _name in _BLOCKED_BUILTINS:
-            _blocked = f'Blocked builtin: "{_name}()" is not allowed'
+${PYTHON_COMMON}
 
-if _blocked:
-    _emit("error", {"error": _blocked})
-    sys.exit(0)
-
-# --- Data injection ---
-_stdin_data = sys.stdin.read()
-_atlas_data = None
-if _stdin_data.strip():
-    _atlas_data = json.loads(_stdin_data)
-
-data = None
-df = None
-if _atlas_data:
-    try:
-        import pandas as pd
-        df = pd.DataFrame(_atlas_data["rows"], columns=_atlas_data["columns"])
-        data = df
-    except ImportError:
-        data = _atlas_data
-
-# Configure matplotlib for headless rendering + hook savefig for streaming
+# Hook savefig for streaming chart emission
 try:
-    import matplotlib
-    matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     _orig_savefig = plt.Figure.savefig
     def _atlas_savefig(self, fname, *args, **kwargs):
@@ -550,9 +505,6 @@ try:
     plt.Figure.savefig = _atlas_savefig
 except ImportError:
     pass
-
-def chart_path(n=0):
-    return os.path.join(_chart_dir, f"chart_{n}.png")
 
 # --- Streaming stdout capture ---
 class _StreamingStdout:

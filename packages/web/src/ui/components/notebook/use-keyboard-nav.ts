@@ -8,6 +8,17 @@ export interface UseKeyboardNavOptions {
   editing: boolean;
 }
 
+/**
+ * Keyboard navigation for notebook cells.
+ *
+ * Bindings (when focus is on a cell, not in an input/textarea):
+ *   ArrowUp/Down         — navigate between cells
+ *   Enter                — enter edit mode for focused cell
+ *   Escape               — exit edit mode, return focus to cell
+ *   Ctrl+Shift+Backspace — delete focused cell (shows confirmation dialog)
+ *
+ * When inside an INPUT/TEXTAREA, only Escape is handled (exits edit mode).
+ */
 export function useKeyboardNav({
   cellCount,
   onEnterEdit,

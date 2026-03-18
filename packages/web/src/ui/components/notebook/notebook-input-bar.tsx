@@ -3,6 +3,7 @@
 import { useRef } from "react";
 import { Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 
 interface InputBarProps {
   value: string;
@@ -24,7 +25,7 @@ export function NotebookInputBar({ value, onChange, onSubmit, disabled }: InputB
   return (
     <div className="sticky bottom-0 border-t border-zinc-200 bg-white/80 px-4 py-3 backdrop-blur-sm dark:border-zinc-800 dark:bg-zinc-950/80">
       <div className="mx-auto flex max-w-5xl items-end gap-2">
-        <textarea
+        <Textarea
           ref={inputRef}
           value={value}
           onChange={(e) => onChange(e.target.value)}
@@ -32,7 +33,7 @@ export function NotebookInputBar({ value, onChange, onSubmit, disabled }: InputB
           placeholder="Ask a question to add a new cell..."
           disabled={disabled}
           rows={1}
-          className="min-h-[40px] flex-1 resize-none rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder:text-zinc-400"
+          className="min-h-[40px] flex-1 resize-none"
         />
         <Button
           size="icon"

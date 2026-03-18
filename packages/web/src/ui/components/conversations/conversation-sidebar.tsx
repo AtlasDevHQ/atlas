@@ -50,7 +50,7 @@ export function ConversationSidebar({
 
   const sidebar = (
     <div className="flex h-full flex-col border-r border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950">
-      <ErrorBoundary fallback={null}>
+      <ErrorBoundary fallback={<></>}>
         <OrgSwitcher />
       </ErrorBoundary>
       <div className="flex items-center justify-between border-b border-zinc-200 px-3 py-3 dark:border-zinc-800">

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { buttonVariants } from "@/components/ui/button";
 import {
   fetchSharedConversation,
   extractTextContent,
@@ -93,16 +94,13 @@ export default async function SharedConversationPage({
           </h1>
           <p className="mt-2 text-zinc-500 dark:text-zinc-400">{message}</p>
           <div className="mt-4 flex items-center justify-center gap-3">
-            <Link
-              href="/"
-              className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
-            >
+            <Link href="/" className={buttonVariants()}>
               Go to Atlas
             </Link>
             {result.reason !== "not-found" && (
               <Link
                 href={`/shared/${token}`}
-                className="rounded-md border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                className={buttonVariants({ variant: "outline" })}
               >
                 Try again
               </Link>

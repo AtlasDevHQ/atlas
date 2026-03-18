@@ -38,7 +38,7 @@ export function NotebookShell({ notebook, focusCellId }: NotebookShellProps) {
     if (!focusCellId) return;
     const idx = notebook.cells.findIndex((c) => c.id === focusCellId);
     if (idx !== -1) focusCell(idx);
-  }, [focusCellId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [focusCellId]); // Only scroll on mount/deep-link change
 
   // Scroll to bottom when a new cell is appended
   const prevCellCount = useRef(notebook.cells.length);

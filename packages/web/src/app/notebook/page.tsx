@@ -20,7 +20,7 @@ export default function NotebookPage() {
 
   // Auth bootstrap
   const [authMode, setAuthMode] = useState<AuthMode | null>(null);
-  const [apiKey, setApiKey] = useState("");
+  const [apiKey] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -165,7 +165,7 @@ export default function NotebookPage() {
     return () => {
       cancelled = true;
     };
-  }, [conversationId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [conversationId]); // Only re-run when conversationId changes
 
   // useNotebook
   const notebook = useNotebook({

@@ -1,5 +1,6 @@
+import { useState, useEffect, useCallback, useRef } from "react";
 import type { UIMessage } from "@ai-sdk/react";
-import type { NotebookCell, NotebookState } from "./types";
+import type { NotebookCell, NotebookState, ResolvedCell } from "./types";
 
 const STORAGE_PREFIX = "atlas:notebook:";
 
@@ -125,4 +126,177 @@ export function extractTextContent(message: UIMessage): string {
     .filter((part): part is Extract<typeof part, { type: "text" }> => part.type === "text")
     .map((part) => part.text)
     .join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// React hook
+// ---------------------------------------------------------------------------
+
+export interface UseNotebookOptions {
+  chat: {
+    messages: UIMessage[];
+    setMessages: (messages: UIMessage[]) => void;
+    sendMessage: (opts: { text: string }) => Promise<void>;
+    status: string;
+    error: Error | null;
+  };
+  conversationId: string;
+}
+
+export interface UseNotebookReturn {
+  cells: ResolvedCell[];
+  status: string;
+  error: Error | null;
+  appendCell: (question: string) => void;
+  rerunCell: (cellId: string, newQuestion: string) => void;
+  deleteCell: (cellId: string) => void;
+  toggleEdit: (cellId: string) => void;
+  toggleCollapse: (cellId: string) => void;
+  copyCell: (cellId: string) => Promise<void>;
+  input: string;
+  setInput: (value: string) => void;
+}
+
+export function useNotebook({ chat, conversationId }: UseNotebookOptions): UseNotebookReturn {
+  const [input, setInput] = useState("");
+  const [cellState, setCellState] = useState<NotebookCell[]>(() => {
+    if (typeof window === "undefined") return [];
+    const saved = loadNotebookState(conversationId);
+    return saved?.cells ?? buildCellsFromMessages(chat.messages);
+  });
+
+  const pendingRerun = useRef<string | null>(null);
+
+  // Reconcile cells when messages change
+  useEffect(() => {
+    const fresh = buildCellsFromMessages(chat.messages);
+    setCellState((prev) =>
+      fresh.map((fc) => {
+        const existing = prev.find((pc) => pc.messageId === fc.messageId);
+        return existing
+          ? { ...fc, collapsed: existing.collapsed, editing: existing.editing }
+          : fc;
+      }),
+    );
+  }, [chat.messages]);
+
+  // Persist to localStorage
+  useEffect(() => {
+    if (!conversationId) return;
+    saveNotebookState({ conversationId, cells: cellState, version: 1 });
+  }, [cellState, conversationId]);
+
+  // Fire sendMessage after setMessages settles (rerun)
+  useEffect(() => {
+    if (pendingRerun.current && chat.status === "idle") {
+      const text = pendingRerun.current;
+      pendingRerun.current = null;
+      chat.sendMessage({ text }).catch((err: unknown) => {
+        console.error(
+          "Failed to re-run cell:",
+          err instanceof Error ? err.message : String(err),
+        );
+      });
+    }
+  }, [chat.messages, chat.status, chat]);
+
+  // Resolve cells with their messages
+  const cells: ResolvedCell[] = cellState.map((cell) => {
+    const userMsg = chat.messages.find((m) => m.id === cell.messageId);
+    const userIdx = chat.messages.findIndex((m) => m.id === cell.messageId);
+    const nextMsg = userIdx !== -1 ? chat.messages[userIdx + 1] : undefined;
+    const assistantMsg = nextMsg?.role === "assistant" ? nextMsg : null;
+
+    const isLastCell = userIdx === chat.messages.length - 1 || (userIdx === chat.messages.length - 2 && !assistantMsg);
+    const isRunning = chat.status !== "idle" && !assistantMsg && isLastCell;
+
+    return {
+      ...cell,
+      userMessage: userMsg ?? { id: cell.messageId, role: "user" as const, parts: [], createdAt: new Date() },
+      assistantMessage: assistantMsg ?? null,
+      status: isRunning ? "running" : cell.status,
+    };
+  });
+
+  const appendCell = useCallback(
+    (question: string) => {
+      chat.sendMessage({ text: question }).catch((err: unknown) => {
+        console.error(
+          "Failed to send message:",
+          err instanceof Error ? err.message : String(err),
+        );
+      });
+      setInput("");
+    },
+    [chat],
+  );
+
+  const rerunCell = useCallback(
+    (cellId: string, newQuestion: string) => {
+      const cell = cellState.find((c) => c.id === cellId);
+      if (!cell) return;
+      const truncated = truncateMessagesForRerun(chat.messages, cell.messageId);
+      chat.setMessages(truncated);
+      pendingRerun.current = newQuestion;
+    },
+    [cellState, chat],
+  );
+
+  const deleteCell = useCallback(
+    (cellId: string) => {
+      const cell = cellState.find((c) => c.id === cellId);
+      if (!cell) return;
+      const truncated = truncateMessagesForRerun(chat.messages, cell.messageId);
+      chat.setMessages(truncated);
+      setCellState((prev) => prev.filter((c) => c.number < cell.number));
+    },
+    [cellState, chat],
+  );
+
+  const toggleEdit = useCallback((cellId: string) => {
+    setCellState((prev) =>
+      prev.map((c) => (c.id === cellId ? { ...c, editing: !c.editing } : c)),
+    );
+  }, []);
+
+  const toggleCollapse = useCallback((cellId: string) => {
+    setCellState((prev) =>
+      prev.map((c) => (c.id === cellId ? { ...c, collapsed: !c.collapsed } : c)),
+    );
+  }, []);
+
+  const copyCell = useCallback(
+    async (cellId: string) => {
+      const resolved = cells.find((c) => c.id === cellId);
+      if (!resolved) return;
+      const questionText = extractTextContent(resolved.userMessage);
+      const answerText = resolved.assistantMessage
+        ? extractTextContent(resolved.assistantMessage)
+        : "";
+      const combined = answerText ? `${questionText}\n\n${answerText}` : questionText;
+      try {
+        await navigator.clipboard.writeText(combined);
+      } catch (err: unknown) {
+        console.warn(
+          "Failed to copy to clipboard:",
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    },
+    [cells],
+  );
+
+  return {
+    cells,
+    status: chat.status,
+    error: chat.error,
+    appendCell,
+    rerunCell,
+    deleteCell,
+    toggleEdit,
+    toggleCollapse,
+    copyCell,
+    input,
+    setInput,
+  };
 }

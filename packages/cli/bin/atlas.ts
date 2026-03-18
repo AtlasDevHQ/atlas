@@ -89,9 +89,9 @@ const ENTITIES_DIR = path.join(SEMANTIC_DIR, "entities");
 
 // --- Interfaces ---
 
-export type ObjectType = "table" | "view" | "materialized_view";
+type ObjectType = "table" | "view" | "materialized_view";
 
-export interface DatabaseObject {
+interface DatabaseObject {
   name: string;
   type: ObjectType;
 }
@@ -111,7 +111,7 @@ export interface ColumnProfile {
   profiler_notes: string[];
 }
 
-export interface ForeignKey {
+interface ForeignKey {
   from_column: string;
   to_table: string;
   to_column: string;
@@ -290,7 +290,7 @@ async function queryForeignKeys(
   );
 }
 
-export async function listPostgresObjects(connectionString: string, schema: string = "public"): Promise<DatabaseObject[]> {
+async function listPostgresObjects(connectionString: string, schema: string = "public"): Promise<DatabaseObject[]> {
   const pool = new Pool({ connectionString, max: 1, connectionTimeoutMillis: 5000 });
   try {
     const result = await pool.query(
@@ -327,7 +327,7 @@ export async function listPostgresObjects(connectionString: string, schema: stri
   }
 }
 
-export async function listMySQLObjects(connectionString: string): Promise<DatabaseObject[]> {
+async function listMySQLObjects(connectionString: string): Promise<DatabaseObject[]> {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const mysql = require("mysql2/promise");
   const pool = mysql.createPool({
@@ -350,7 +350,7 @@ export async function listMySQLObjects(connectionString: string): Promise<Databa
   }
 }
 
-export async function profilePostgres(
+async function profilePostgres(
   connectionString: string,
   filterTables?: string[],
   prefetchedObjects?: DatabaseObject[],
@@ -689,7 +689,7 @@ async function queryMySQLForeignKeys(
   }));
 }
 
-export async function profileMySQL(
+async function profileMySQL(
   connectionString: string,
   filterTables?: string[],
   prefetchedObjects?: DatabaseObject[],
@@ -901,7 +901,7 @@ function rewriteClickHouseUrl(url: string): string {
   return url.replace(/^clickhouses:\/\//, "https://").replace(/^clickhouse:\/\//, "http://");
 }
 
-export async function listClickHouseObjects(connectionString: string): Promise<DatabaseObject[]> {
+async function listClickHouseObjects(connectionString: string): Promise<DatabaseObject[]> {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { createClient } = require("@clickhouse/client");
   const client = createClient({ url: rewriteClickHouseUrl(connectionString) });
@@ -947,7 +947,7 @@ function mapClickHouseType(chType: string): string {
   return "string";
 }
 
-export async function profileClickHouse(
+async function profileClickHouse(
   connectionString: string,
   filterTables?: string[],
   prefetchedObjects?: DatabaseObject[],
@@ -1181,7 +1181,7 @@ async function createSnowflakePool(connectionString: string, max = 1) {
   return { pool, opts };
 }
 
-export async function listSnowflakeObjects(connectionString: string): Promise<DatabaseObject[]> {
+async function listSnowflakeObjects(connectionString: string): Promise<DatabaseObject[]> {
   const { pool } = await createSnowflakePool(connectionString, 1);
 
   try {
@@ -1261,7 +1261,7 @@ function mapSnowflakeType(sfType: string): string {
   return "text";
 }
 
-export async function profileSnowflake(
+async function profileSnowflake(
   connectionString: string,
   filterTables?: string[],
   prefetchedObjects?: DatabaseObject[],
@@ -1509,7 +1509,7 @@ function mapSalesforceFieldType(sfType: string): string {
   }
 }
 
-export async function listSalesforceObjects(connectionString: string): Promise<DatabaseObject[]> {
+async function listSalesforceObjects(connectionString: string): Promise<DatabaseObject[]> {
   const { parseSalesforceURL, createSalesforceConnection } = await import("../../../plugins/salesforce/src/connection");
   const config = parseSalesforceURL(connectionString);
   const source = createSalesforceConnection(config);
@@ -1524,7 +1524,7 @@ export async function listSalesforceObjects(connectionString: string): Promise<D
   }
 }
 
-export async function profileSalesforce(
+async function profileSalesforce(
   connectionString: string,
   filterTables?: string[],
   prefetchedObjects?: DatabaseObject[],
@@ -4362,7 +4362,7 @@ async function handleDiff(args: string[]): Promise<void> {
 
 // --- Profile a single datasource ---
 
-export interface ProfileDatasourceOpts {
+interface ProfileDatasourceOpts {
   id: string;              // "default", "warehouse", etc.
   url: string;
   dbType: DBType;
@@ -4386,7 +4386,7 @@ export function outputDirForDatasource(id: string, orgId?: string): string {
   return id === "default" ? base : path.join(base, id);
 }
 
-export interface DatasourceEntry {
+interface DatasourceEntry {
   id: string;
   url: string;
   schema: string;

@@ -301,12 +301,12 @@ export async function cleanupOrgDirectory(orgId: string): Promise<void> {
 // Disk → DB import
 // ---------------------------------------------------------------------------
 
-export interface ImportError {
+interface ImportError {
   file: string;
   reason: string;
 }
 
-export interface ImportResult {
+interface ImportResult {
   imported: number;
   skipped: number;
   errors: ImportError[];

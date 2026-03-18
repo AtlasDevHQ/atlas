@@ -37,7 +37,7 @@ export interface ValidateResult {
   fix?: string;
 }
 
-export interface ValidateOptions {
+interface ValidateOptions {
   offline?: boolean;
   /** "strict" (default) exits 1 on any failure. "doctor" excludes NON_CRITICAL_CHECKS from exit 1. */
   mode?: "strict" | "doctor";

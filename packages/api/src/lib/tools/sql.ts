@@ -35,12 +35,12 @@ const parser = new Parser();
 
 // ── Classification ──────────────────────────────────────────────────
 
-export interface SQLClassification {
+interface SQLClassification {
   readonly tablesAccessed: string[];
   readonly columnsAccessed: string[];
 }
 
-export type SQLValidationResult =
+type SQLValidationResult =
   | { valid: true; error?: undefined; classification: SQLClassification }
   | { valid: false; error: string; classification?: undefined };
 

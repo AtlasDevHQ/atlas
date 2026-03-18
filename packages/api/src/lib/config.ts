@@ -40,7 +40,7 @@ import { ATLAS_ROLES } from "@atlas/api/lib/auth/types";
  * Backend names operators can use in `sandbox.priority`.
  * Plugin backends are always tried first and are not included here.
  */
-export const SANDBOX_BACKEND_NAMES = ["vercel-sandbox", "nsjail", "sidecar", "just-bash"] as const;
+const SANDBOX_BACKEND_NAMES = ["vercel-sandbox", "nsjail", "sidecar", "just-bash"] as const;
 export type SandboxBackendName = (typeof SANDBOX_BACKEND_NAMES)[number];
 
 const log = createLogger("config");

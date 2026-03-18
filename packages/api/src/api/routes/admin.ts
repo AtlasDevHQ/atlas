@@ -52,9 +52,6 @@ const admin = new Hono();
 // Mount organization management sub-router
 admin.route("/organizations", adminOrgs);
 
-// Re-export for backward compatibility with tests that import from admin routes
-export { getSemanticRoot } from "@atlas/api/lib/semantic-files";
-
 // ---------------------------------------------------------------------------
 // Admin auth preamble — reuses existing auth then enforces admin role.
 // ---------------------------------------------------------------------------

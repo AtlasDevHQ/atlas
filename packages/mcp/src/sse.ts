@@ -32,7 +32,7 @@ const log = createLogger("mcp-sse");
 const DEFAULT_PORT = 8080;
 const DEFAULT_MAX_SESSIONS = 100;
 
-export interface SseServerOptions {
+interface SseServerOptions {
   /** Port to listen on. 0 for OS-assigned ephemeral port. Default: 8080. */
   port?: number;
   /** Hostname to bind to. Default: "0.0.0.0". */
@@ -43,7 +43,7 @@ export interface SseServerOptions {
   maxSessions?: number;
 }
 
-export interface SseServerHandle {
+interface SseServerHandle {
   /** Read-only info about the running server. */
   readonly server: {
     readonly port: number;

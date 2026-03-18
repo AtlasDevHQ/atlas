@@ -93,12 +93,3 @@ export function useInProgressSet() {
       }),
   };
 }
-
-/**
- * Returns fetch options with correct credentials for admin API calls.
- */
-export function useAdminFetchOpts() {
-  const { apiUrl, isCrossOrigin } = useAtlasConfig();
-  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
-  return { apiUrl, fetchOpts: { credentials } as RequestInit };
-}

@@ -2,20 +2,20 @@
 // Shared utilities for the public shared-conversation routes (/shared/[token])
 // ---------------------------------------------------------------------------
 
-export interface SharedMessage {
+interface SharedMessage {
   role: "user" | "assistant" | "system" | "tool";
   content: unknown;
   createdAt: string;
 }
 
-export interface SharedConversation {
+interface SharedConversation {
   title: string | null;
   surface: string;
   createdAt: string;
   messages: SharedMessage[];
 }
 
-export type FetchResult =
+type FetchResult =
   | { ok: true; data: SharedConversation }
   | { ok: false; reason: "not-found" | "server-error" | "network-error" };
 

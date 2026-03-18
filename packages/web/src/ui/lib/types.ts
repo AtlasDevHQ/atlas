@@ -6,30 +6,21 @@
 
 import type { ShareMode } from "@useatlas/types";
 
-export { AUTH_MODES, DB_TYPES, CHAT_ERROR_CODES, CLIENT_ERROR_CODES } from "@useatlas/types";
+export { AUTH_MODES } from "@useatlas/types";
 export type {
   AuthMode,
-  MessageRole,
-  Surface,
   Conversation,
   Message,
   ConversationWithMessages,
-  ShareLink,
   ShareMode,
   ShareExpiryKey,
   DeliveryChannel,
-  DeliveryStatus,
-  Recipient,
   ScheduledTask,
-  ScheduledTaskRun,
   ScheduledTaskWithRuns,
   ScheduledTaskRunWithTaskName,
-  DBType,
-  HealthStatus,
   ConnectionHealth,
   ConnectionInfo,
   ConnectionDetail,
-  PoolStats,
   PoolMetrics,
   ChatErrorCode,
   ChatErrorInfo,
@@ -43,18 +34,11 @@ export type {
   EntityData,
   ActionApprovalMode,
   ActionLogEntry,
-  ActionStatus,
-  RollbackInfo,
   SemanticDiffResponse,
   SemanticTableDiff,
-  Organization,
-  OrgMember,
-  OrgInvitation,
-  OrgRole,
-  ORG_ROLES,
 } from "@useatlas/types";
-export { SHARE_MODES, SHARE_EXPIRY_OPTIONS } from "@useatlas/types";
-export { authErrorMessage, parseChatError, classifyClientError } from "@useatlas/types/errors";
+export { SHARE_EXPIRY_OPTIONS } from "@useatlas/types";
+export { parseChatError } from "@useatlas/types/errors";
 
 // --- Web-only types (not in @useatlas/types) ---
 

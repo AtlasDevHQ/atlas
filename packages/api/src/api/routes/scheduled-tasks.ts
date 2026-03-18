@@ -41,7 +41,7 @@ const RecipientSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("webhook"), url: z.string().url(), headers: z.record(z.string(), z.string()).optional() }),
 ]);
 
-export const CreateScheduledTaskSchema = z.object({
+const CreateScheduledTaskSchema = z.object({
   name: z.string().min(1).max(200),
   question: z.string().min(1).max(2000),
   cronExpression: z.string().min(1),
@@ -51,7 +51,7 @@ export const CreateScheduledTaskSchema = z.object({
   approvalMode: z.enum(ACTION_APPROVAL_MODES).default("auto"),
 });
 
-export const UpdateScheduledTaskSchema = z.object({
+const UpdateScheduledTaskSchema = z.object({
   name: z.string().min(1).max(200).optional(),
   question: z.string().min(1).max(2000).optional(),
   cronExpression: z.string().min(1).optional(),

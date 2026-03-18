@@ -17,7 +17,7 @@ import { registerResources } from "./resources.js";
 
 const VERSION = "0.1.0";
 
-export interface CreateMcpServerOptions {
+interface CreateMcpServerOptions {
   /** Skip config initialization (useful when config is already loaded). */
   skipConfig?: boolean;
 }

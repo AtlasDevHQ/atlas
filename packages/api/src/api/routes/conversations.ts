@@ -38,7 +38,7 @@ const log = createLogger("conversations");
 // Zod schemas — exported for OpenAPI spec generation
 // ---------------------------------------------------------------------------
 
-export const ConversationSchema = z.object({
+const ConversationSchema = z.object({
   id: z.string().uuid(),
   userId: z.string().nullable(),
   title: z.string().nullable(),
@@ -53,7 +53,7 @@ export const StarConversationBodySchema = z.object({
   starred: z.boolean(),
 });
 
-export const MessageSchema = z.object({
+const MessageSchema = z.object({
   id: z.string().uuid(),
   conversationId: z.string().uuid(),
   role: z.enum(["user", "assistant", "system", "tool"]),
@@ -72,7 +72,7 @@ export const ListConversationsResponseSchema = z.object({
 
 const EXPIRY_KEYS = Object.keys(SHARE_EXPIRY_OPTIONS) as [ShareExpiryKey, ...ShareExpiryKey[]];
 
-export const ShareConversationBodySchema = z.object({
+const ShareConversationBodySchema = z.object({
   expiresIn: z.enum(EXPIRY_KEYS).optional(),
   shareMode: z.enum(SHARE_MODES).optional(),
 }).optional();
@@ -421,31 +421,6 @@ conversations.delete("/:id", async (c) => {
 // ---------------------------------------------------------------------------
 
 const SHARE_TOKEN_RE = /^[A-Za-z0-9_-]{20,64}$/;
-
-export const ShareStatusResponseSchema = z.discriminatedUnion("shared", [
-  z.object({ shared: z.literal(false) }),
-  z.object({
-    shared: z.literal(true),
-    token: z.string(),
-    url: z.string(),
-    expiresAt: z.string().nullable(),
-    shareMode: z.enum(SHARE_MODES),
-  }),
-]);
-
-export const SharedConversationMessageSchema = z.object({
-  role: z.enum(["user", "assistant", "system", "tool"]),
-  content: z.unknown(),
-  createdAt: z.string().datetime(),
-});
-
-export const SharedConversationResponseSchema = z.object({
-  title: z.string().nullable(),
-  surface: z.enum(["web", "api", "mcp", "slack"]),
-  createdAt: z.string().datetime(),
-  shareMode: z.enum(SHARE_MODES),
-  messages: z.array(SharedConversationMessageSchema),
-});
 
 // ---------------------------------------------------------------------------
 // In-memory rate limiter for public route

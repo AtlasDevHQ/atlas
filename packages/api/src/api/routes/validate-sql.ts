@@ -26,7 +26,7 @@ const ValidateSQLRequestSchema = z.object({
 });
 
 /** Validation layer identifiers returned in the `errors` array. */
-export type ValidationLayer =
+type ValidationLayer =
   | "empty_check"
   | "connection"
   | "regex_guard"

@@ -67,7 +67,7 @@ export interface EntitySummary {
  * directory are tagged with source "default"; those under
  * semantic/{name}/entities/ use the subdirectory name as source.
  */
-export interface DiscoverEntitiesResult {
+interface DiscoverEntitiesResult {
   entities: EntitySummary[];
   warnings: string[];
 }
@@ -155,7 +155,7 @@ export type { TableInfo };
  * Discover all entity YAML files and return a simplified table view
  * with column details. Used by the public `GET /api/v1/tables` endpoint.
  */
-export interface DiscoverTablesResult {
+interface DiscoverTablesResult {
   tables: TableInfo[];
   warnings: string[];
 }

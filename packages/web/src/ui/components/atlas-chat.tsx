@@ -1,12 +1,12 @@
 "use client";
 
 import { useChat } from "@ai-sdk/react";
-import { DefaultChatTransport, isToolUIPart, getToolName } from "ai";
-import { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import { isToolUIPart, getToolName } from "ai";
+import { useState, useRef, useEffect, useCallback } from "react";
 import type { PythonProgressData } from "./chat/python-result-card";
-import { AUTH_MODES, type AuthMode } from "../lib/types";
 import { useAtlasConfig, ActionAuthProvider } from "../context";
-import { DarkModeContext, useDarkMode, useThemeMode, setTheme, applyBrandColor, type ThemeMode } from "../hooks/use-dark-mode";
+import { DarkModeContext, useDarkMode, useThemeMode, setTheme, type ThemeMode } from "../hooks/use-dark-mode";
+import { useAtlasTransport } from "../hooks/use-atlas-transport";
 import { useConversations } from "../hooks/use-conversations";
 import { ErrorBanner } from "./chat/error-banner";
 import { ApiKeyBar } from "./chat/api-key-bar";
@@ -35,8 +35,6 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { parseSuggestions } from "../lib/helpers";
 import { ErrorBoundary } from "./error-boundary";
-
-const API_KEY_STORAGE_KEY = "atlas-api-key";
 
 /* Static SVG icons — hoisted to avoid recreation on every render */
 const MenuIcon = (
@@ -132,10 +130,8 @@ export function AtlasChat() {
   const { apiUrl, isCrossOrigin, authClient } = useAtlasConfig();
   const dark = useDarkMode();
   const [input, setInput] = useState("");
-  const [authMode, setAuthMode] = useState<AuthMode | null>(null);
-  const [healthWarning, setHealthWarning] = useState("");
-  const [apiKey, setApiKey] = useState("");
   const [conversationId, setConversationId] = useState<string | null>(null);
+  const [transientWarning, setTransientWarning] = useState("");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [loadingConversation, setLoadingConversation] = useState(false);
   const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
@@ -146,20 +142,35 @@ export function AtlasChat() {
   const [relatedSuggestions, setRelatedSuggestions] = useState<QuerySuggestion[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  const {
+    transport,
+    authMode,
+    apiKey,
+    setApiKey,
+    getHeaders,
+    getCredentials,
+    healthWarning,
+    authResolved,
+  } = useAtlasTransport({
+    apiUrl,
+    isCrossOrigin,
+    getConversationId: () => conversationId,
+    onNewConversationId: (id) => {
+      setConversationId(id);
+      setTimeout(() => {
+        refreshConvosRef.current().catch((err: unknown) => {
+          console.warn(
+            "Sidebar refresh failed:",
+            err instanceof Error ? err.message : String(err),
+          );
+        });
+      }, 500);
+    },
+  });
+
   const managedSession = authClient.useSession();
-  const authResolved = authMode !== null;
   const isManaged = authMode === "managed";
   const isSignedIn = isManaged && !!managedSession.data?.user;
-
-  const getHeaders = useCallback(() => {
-    const headers: Record<string, string> = {};
-    if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
-    return headers;
-  }, [apiKey]);
-
-  const getCredentials = useCallback((): RequestCredentials => {
-    return isCrossOrigin ? "include" : "same-origin";
-  }, [isCrossOrigin]);
 
   const convos = useConversations({
     apiUrl,
@@ -170,55 +181,6 @@ export function AtlasChat() {
 
   const refreshConvosRef = useRef(convos.refresh);
   refreshConvosRef.current = convos.refresh;
-
-  const conversationIdRef = useRef(conversationId);
-  conversationIdRef.current = conversationId;
-
-  // Load API key from sessionStorage on mount + fetch auth mode + conversations
-  useEffect(() => {
-    try {
-      const stored = sessionStorage.getItem(API_KEY_STORAGE_KEY);
-      if (stored) setApiKey(stored);
-    } catch (err) {
-      console.warn("Cannot read API key from sessionStorage:", err);
-    }
-
-    async function fetchHealth(attempt: number): Promise<void> {
-      try {
-        const res = await fetch(`${apiUrl}/api/health`, {
-          credentials: isCrossOrigin ? "include" : "same-origin",
-        });
-        if (!res.ok) {
-          console.warn(`Health check returned ${res.status}`);
-          if (attempt < 2) {
-            await new Promise((r) => setTimeout(r, 2000));
-            return fetchHealth(attempt + 1);
-          }
-          setHealthWarning("Health check failed — check server logs. Try refreshing the page.");
-          setAuthMode("none");
-          return;
-        }
-        const data = await res.json();
-        const mode = data?.checks?.auth?.mode;
-        if (typeof mode === "string" && AUTH_MODES.includes(mode as AuthMode)) {
-          setAuthMode(mode as AuthMode);
-        }
-        // Apply admin-configured brand color
-        if (typeof data?.brandColor === "string") {
-          applyBrandColor(data.brandColor);
-        }
-      } catch (err) {
-        console.warn("Health endpoint unavailable:", err);
-        if (attempt < 2) {
-          await new Promise((r) => setTimeout(r, 2000));
-          return fetchHealth(attempt + 1);
-        }
-        setHealthWarning("Unable to reach the API server. Try refreshing the page.");
-        setAuthMode("none");
-      }
-    }
-    fetchHealth(1);
-  }, [apiUrl]);
 
   // Fetch conversation list after auth is resolved
   useEffect(() => {
@@ -243,44 +205,6 @@ export function AtlasChat() {
     }
     checkPasswordStatus();
   }, [isManaged, managedSession.data?.user, apiUrl, isCrossOrigin]);
-
-  const handleSaveApiKey = useCallback((key: string) => {
-    setApiKey(key);
-    try {
-      sessionStorage.setItem(API_KEY_STORAGE_KEY, key);
-    } catch (err) {
-      console.warn("Could not persist API key to sessionStorage:", err);
-    }
-  }, []);
-
-  // Dynamic transport — captures x-conversation-id from response.
-  // conversationId is accessed via ref to avoid recreating the transport mid-stream
-  // (which causes an infinite re-render loop in useChat).
-  const transport = useMemo(() => {
-    const headers: Record<string, string> = {};
-    if (apiKey) {
-      headers["Authorization"] = `Bearer ${apiKey}`;
-    }
-    return new DefaultChatTransport({
-      api: `${apiUrl}/api/v1/chat`,
-      headers,
-      credentials: isCrossOrigin ? "include" : undefined,
-      body: () => (conversationIdRef.current ? { conversationId: conversationIdRef.current } : {}),
-      fetch: (async (input, init) => {
-        const response = await globalThis.fetch(input, init);
-        const convId = response.headers.get("x-conversation-id");
-        if (convId && convId !== conversationIdRef.current) {
-          setConversationId(convId);
-          setTimeout(() => {
-            refreshConvosRef.current().catch((err) => {
-              console.warn("Sidebar refresh failed:", err);
-            });
-          }, 500);
-        }
-        return response;
-      }) as typeof fetch,
-    });
-  }, [apiKey, authMode, apiUrl, isCrossOrigin]);
 
   // Python streaming progress — keyed by tool invocation ID
   const [pythonProgress, setPythonProgress] = useState<Map<string, PythonProgressData[]>>(new Map());
@@ -398,8 +322,8 @@ export function AtlasChat() {
     sendMessage({ text: saved }).catch((err) => {
       console.error("Failed to send message:", err);
       setInput(saved);
-      setHealthWarning("Failed to send message. Please try again.");
-      setTimeout(() => setHealthWarning(""), 5000);
+      setTransientWarning("Failed to send message. Please try again.");
+      setTimeout(() => setTransientWarning(""), 5000);
     });
   }
 
@@ -425,13 +349,13 @@ export function AtlasChat() {
         convos.setSelectedId(id);
         setMobileMenuOpen(false);
       } else {
-        setHealthWarning("Could not load conversation. It may have been deleted.");
-        setTimeout(() => setHealthWarning(""), 5000);
+        setTransientWarning("Could not load conversation. It may have been deleted.");
+        setTimeout(() => setTransientWarning(""), 5000);
       }
     } catch (err) {
       console.warn("Failed to load conversation:", err);
-      setHealthWarning("Failed to load conversation. Please try again.");
-      setTimeout(() => setHealthWarning(""), 5000);
+      setTransientWarning("Failed to load conversation. Please try again.");
+      setTimeout(() => setTransientWarning(""), 5000);
     } finally {
       setLoadingConversation(false);
     }
@@ -528,8 +452,8 @@ export function AtlasChat() {
                         onClick={() => {
                           authClient.signOut().catch((err: unknown) => {
                             console.error("Sign out failed:", err);
-                            setHealthWarning("Sign out failed. Please try again.");
-                            setTimeout(() => setHealthWarning(""), 5000);
+                            setTransientWarning("Sign out failed. Please try again.");
+                            setTimeout(() => setTransientWarning(""), 5000);
                           });
                         }}
                         className="text-xs text-zinc-500 dark:text-zinc-400"
@@ -542,8 +466,8 @@ export function AtlasChat() {
               </div>
             </header>
 
-            {healthWarning && (
-              <p className="mb-2 text-xs text-zinc-400 dark:text-zinc-500">{healthWarning}</p>
+            {(healthWarning || transientWarning) && (
+              <p className="mb-2 text-xs text-zinc-400 dark:text-zinc-500">{healthWarning || transientWarning}</p>
             )}
 
             {isManaged && !isSignedIn ? (
@@ -552,7 +476,7 @@ export function AtlasChat() {
               <ActionAuthProvider getHeaders={getHeaders} getCredentials={getCredentials}>
                 {authMode === "simple-key" && (
                   <div className="mb-3 flex-none">
-                    <ApiKeyBar apiKey={apiKey} onSave={handleSaveApiKey} />
+                    <ApiKeyBar apiKey={apiKey} onSave={setApiKey} />
                   </div>
                 )}
 

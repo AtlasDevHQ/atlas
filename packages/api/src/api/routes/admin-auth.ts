@@ -43,7 +43,7 @@ export async function adminAuthPreamble(req: Request, requestId: string) {
       { err: err instanceof Error ? err : new Error(String(err)), requestId },
       "Auth dispatch failed",
     );
-    return { error: { error: "auth_error", message: "Authentication system error" }, status: 500 as const };
+    return { error: { error: "auth_error", message: "Authentication system error", requestId }, status: 500 as const };
   }
   if (!authResult.authenticated) {
     log.warn({ requestId, status: authResult.status }, "Authentication failed");

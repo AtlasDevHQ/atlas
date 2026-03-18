@@ -109,7 +109,22 @@ export function useAtlasTransport(
           }
           return;
         }
-        const data = await res.json();
+        let data: Record<string, unknown>;
+        try {
+          data = await res.json();
+        } catch (parseErr: unknown) {
+          console.warn(
+            "Health check returned invalid JSON:",
+            parseErr instanceof Error ? parseErr.message : String(parseErr),
+          );
+          if (!cancelled) {
+            setHealthWarning(
+              "Health check returned an unreadable response. Check that no reverse proxy is modifying API responses.",
+            );
+            setAuthMode("none");
+          }
+          return;
+        }
         const mode = data?.checks?.auth?.mode;
         if (!cancelled) {
           if (
@@ -142,10 +157,9 @@ export function useAtlasTransport(
           return fetchHealth(attempt + 1);
         }
         if (!cancelled) {
+          const detail = err instanceof Error ? err.message : String(err);
           setHealthWarning(
-            err instanceof Error
-              ? err.message
-              : "Unable to reach the API server. Try refreshing the page.",
+            `Unable to reach the API server (${detail}). Try refreshing the page.`,
           );
           setAuthMode("none");
         }
@@ -159,6 +173,10 @@ export function useAtlasTransport(
   }, [apiUrl, isCrossOrigin]);
 
   // --- Transport ---
+  // conversationId is accessed via ref (not state) to avoid recreating the
+  // transport mid-stream, which triggers an infinite re-render loop in useChat.
+  // Callback refs (getConversationId, onNewConversationId) follow the same pattern.
+  // authMode: not read directly, but forces transport re-creation after auth resolves.
   const transport = useMemo(() => {
     const headers: Record<string, string> = {};
     if (apiKey) {
@@ -173,10 +191,19 @@ export function useAtlasTransport(
           ? { conversationId: conversationIdRef.current }
           : {},
       fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
-        const response = await globalThis.fetch(input, init);
+        let response: Response;
+        try {
+          response = await globalThis.fetch(input, init);
+        } catch (err: unknown) {
+          console.error(
+            "Chat transport fetch failed:",
+            err instanceof Error ? err.message : String(err),
+          );
+          throw err;
+        }
         const convId = response.headers.get("x-conversation-id");
         if (convId && convId !== conversationIdRef.current) {
-          conversationIdRef.current = convId; // eager write
+          conversationIdRef.current = convId; // Write immediately so the next request in this stream uses the new ID (before React re-renders)
           onNewConversationIdRef.current(convId);
         }
         return response;

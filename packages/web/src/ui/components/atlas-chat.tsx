@@ -159,7 +159,10 @@ export function AtlasChat() {
       setConversationId(id);
       setTimeout(() => {
         refreshConvosRef.current().catch((err: unknown) => {
-          console.warn("Sidebar refresh failed:", err);
+          console.warn(
+            "Sidebar refresh failed:",
+            err instanceof Error ? err.message : String(err),
+          );
         });
       }, 500);
     },

@@ -286,7 +286,11 @@ chat.post("/", async (c) => {
           },
           onError: (error) => {
             clearStreamWriter(requestId);
-            return typeof error === "string" ? error : error instanceof Error ? error.message : "Unknown error";
+            log.error(
+              { err: error instanceof Error ? error : new Error(String(error)), requestId },
+              "Stream error",
+            );
+            return `An error occurred while generating a response (ref: ${requestId.slice(0, 8)}). Try sending your message again.`;
           },
         });
 

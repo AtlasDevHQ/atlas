@@ -47,6 +47,18 @@ import { adminOrgs } from "./admin-orgs";
 
 const log = createLogger("admin-routes");
 
+/** Known auth error messages that indicate an expired session or token. */
+const EXPIRED_AUTH_ERRORS = new Set([
+  "Session expired",
+  "Session expired (idle timeout)",
+  "Invalid or expired token",
+  "Session data is invalid",
+]);
+
+function authErrorCode(error: string): "session_expired" | "auth_error" {
+  return EXPIRED_AUTH_ERRORS.has(error) ? "session_expired" : "auth_error";
+}
+
 const admin = new Hono();
 
 // Mount organization management sub-router
@@ -76,7 +88,7 @@ async function adminAuthPreamble(req: Request, requestId: string) {
   }
   if (!authResult.authenticated) {
     log.warn({ requestId, status: authResult.status }, "Authentication failed");
-    const code = /expired/i.test(authResult.error) ? "session_expired" : "auth_error";
+    const code = authErrorCode(authResult.error);
     return { error: { error: code, message: authResult.error }, status: authResult.status as 401 | 403 | 500 };
   }
 
@@ -2340,7 +2352,7 @@ admin.get("/me/password-status", async (c) => {
     return c.json({ error: "auth_error", message: "Authentication system error" }, 500);
   }
   if (!authResult.authenticated) {
-    const code = /expired/i.test(authResult.error) ? "session_expired" : "auth_error";
+    const code = authErrorCode(authResult.error);
     return c.json({ error: code, message: authResult.error }, authResult.status);
   }
   const user = authResult.user;
@@ -2375,7 +2387,7 @@ admin.post("/me/password", async (c) => {
     return c.json({ error: "auth_error", message: "Authentication system error" }, 500);
   }
   if (!authResult.authenticated) {
-    const code = /expired/i.test(authResult.error) ? "session_expired" : "auth_error";
+    const code = authErrorCode(authResult.error);
     return c.json({ error: code, message: authResult.error }, authResult.status);
   }
   const user = authResult.user;

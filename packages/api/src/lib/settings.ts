@@ -159,7 +159,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     label: "LLM Provider",
     description: "LLM provider for the agent",
     type: "select",
-    options: ["anthropic", "openai", "bedrock", "ollama", "gateway"],
+    options: ["anthropic", "openai", "bedrock", "ollama", "openai-compatible", "gateway"],
     default: "anthropic",
     envVar: "ATLAS_PROVIDER",
     requiresRestart: true,

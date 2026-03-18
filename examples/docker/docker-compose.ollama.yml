@@ -1,0 +1,83 @@
+# Atlas + Ollama: fully local AI-powered data analyst.
+#
+# Usage:
+#   docker compose -f examples/docker/docker-compose.ollama.yml up
+#
+# Ollama auto-pulls the model on first start (may take several minutes).
+# GPU passthrough requires the NVIDIA Container Toolkit:
+#   https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html
+#
+# CPU-only: remove the `deploy` block from the ollama service.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: atlas
+      POSTGRES_USER: atlas
+      POSTGRES_PASSWORD: atlas
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../../packages/cli/data/init-demo-db.sql:/docker-entrypoint-initdb.d/00-init.sql
+      - ../../packages/cli/data/demo.sql:/data/demo.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atlas"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # Pull the model after Ollama is healthy. Runs once then exits.
+  ollama-pull:
+    image: curlimages/curl:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    entrypoint: >
+      sh -c "curl -sf http://ollama:11434/api/pull -d '{\"name\": \"${OLLAMA_MODEL:-llama3.1:8b}\"}' && echo 'Model pulled successfully'"
+    restart: "no"
+
+  app:
+    build:
+      context: ../..
+      dockerfile: examples/docker/Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      DATABASE_URL: postgresql://atlas:atlas@postgres:5432/atlas
+      ATLAS_DATASOURCE_URL: postgresql://atlas:atlas@postgres:5432/atlas_demo
+      ATLAS_PROVIDER: ollama
+      ATLAS_MODEL: ${OLLAMA_MODEL:-llama3.1:8b}
+      OLLAMA_BASE_URL: http://ollama:11434/v1
+    env_file:
+      - ../../.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama-pull:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:
+  ollama_data:

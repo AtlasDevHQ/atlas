@@ -1,0 +1,84 @@
+# Atlas + vLLM: high-throughput local inference for production self-hosted deployments.
+#
+# Usage:
+#   HUGGING_FACE_HUB_TOKEN=hf_... docker compose -f examples/docker/docker-compose.vllm.yml up
+#
+# Requires:
+#   - NVIDIA GPU with sufficient VRAM (see docs for per-model requirements)
+#   - NVIDIA Container Toolkit installed on the host
+#   - Hugging Face token for gated models (Llama, Mistral)
+#
+# The vLLM server exposes an OpenAI-compatible API at http://localhost:8000/v1.
+# First start downloads the model weights (~15 GB for 8B, ~140 GB for 70B).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: atlas
+      POSTGRES_USER: atlas
+      POSTGRES_PASSWORD: atlas
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../../packages/cli/data/init-demo-db.sql:/docker-entrypoint-initdb.d/00-init.sql
+      - ../../packages/cli/data/demo.sql:/data/demo.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atlas"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  vllm:
+    image: vllm/vllm-openai:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      - vllm_cache:/root/.cache/huggingface
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+    command: >
+      --model ${VLLM_MODEL:-meta-llama/Llama-3.1-8B-Instruct}
+      --served-model-name ${VLLM_SERVED_NAME:-llama3.1}
+      --enable-auto-tool-choice
+      --tool-call-parser hermes
+      --max-model-len ${VLLM_MAX_MODEL_LEN:-8192}
+      --gpu-memory-utilization 0.9
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 120s
+
+  app:
+    build:
+      context: ../..
+      dockerfile: examples/docker/Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      DATABASE_URL: postgresql://atlas:atlas@postgres:5432/atlas
+      ATLAS_DATASOURCE_URL: postgresql://atlas:atlas@postgres:5432/atlas_demo
+      ATLAS_PROVIDER: openai-compatible
+      ATLAS_MODEL: ${VLLM_SERVED_NAME:-llama3.1}
+      OPENAI_COMPATIBLE_BASE_URL: http://vllm:8000/v1
+    env_file:
+      - ../../.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      vllm:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  vllm_cache:

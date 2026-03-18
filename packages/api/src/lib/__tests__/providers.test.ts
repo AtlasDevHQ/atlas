@@ -2,7 +2,7 @@ import { describe, expect, test, afterEach } from "bun:test";
 
 // Import after mocks — getProviderType reads process.env at call time, so no
 // module-level mocking is needed.
-const { getProviderType, getDefaultProvider } = await import("@atlas/api/lib/providers");
+const { getProviderType, getDefaultProvider, getModel } = await import("@atlas/api/lib/providers");
 
 // ---------------------------------------------------------------------------
 // Env snapshot — capture/restore only the vars this test touches
@@ -11,6 +11,8 @@ const { getProviderType, getDefaultProvider } = await import("@atlas/api/lib/pro
 const origProvider = process.env.ATLAS_PROVIDER;
 const origModel = process.env.ATLAS_MODEL;
 const origVercel = process.env.VERCEL;
+const origCompatBaseURL = process.env.OPENAI_COMPATIBLE_BASE_URL;
+const origCompatApiKey = process.env.OPENAI_COMPATIBLE_API_KEY;
 
 afterEach(() => {
   if (origProvider !== undefined) process.env.ATLAS_PROVIDER = origProvider;
@@ -21,6 +23,12 @@ afterEach(() => {
 
   if (origVercel !== undefined) process.env.VERCEL = origVercel;
   else delete process.env.VERCEL;
+
+  if (origCompatBaseURL !== undefined) process.env.OPENAI_COMPATIBLE_BASE_URL = origCompatBaseURL;
+  else delete process.env.OPENAI_COMPATIBLE_BASE_URL;
+
+  if (origCompatApiKey !== undefined) process.env.OPENAI_COMPATIBLE_API_KEY = origCompatApiKey;
+  else delete process.env.OPENAI_COMPATIBLE_API_KEY;
 });
 
 // ---------------------------------------------------------------------------
@@ -94,6 +102,20 @@ describe("getProviderType", () => {
     expect(getProviderType()).toBe("bedrock");
   });
 
+  // --- OpenAI-compatible provider -------------------------------------------
+
+  test("returns 'openai-compatible' when ATLAS_PROVIDER=openai-compatible", () => {
+    process.env.ATLAS_PROVIDER = "openai-compatible";
+    process.env.ATLAS_MODEL = "llama3.1";
+    expect(getProviderType()).toBe("openai-compatible");
+  });
+
+  test("throws when openai-compatible is used without ATLAS_MODEL", () => {
+    process.env.ATLAS_PROVIDER = "openai-compatible";
+    delete process.env.ATLAS_MODEL;
+    expect(() => getProviderType()).toThrow("ATLAS_MODEL is required");
+  });
+
   // --- Vercel auto-detection ------------------------------------------------
 
   test("defaults to 'gateway' when VERCEL env var is set and no ATLAS_PROVIDER", () => {
@@ -126,5 +148,22 @@ describe("getDefaultProvider", () => {
   test("returns 'gateway' when VERCEL is set", () => {
     process.env.VERCEL = "1";
     expect(getDefaultProvider()).toBe("gateway");
+  });
+});
+
+describe("getModel — openai-compatible", () => {
+  test("throws when OPENAI_COMPATIBLE_BASE_URL is not set", () => {
+    process.env.ATLAS_PROVIDER = "openai-compatible";
+    process.env.ATLAS_MODEL = "llama3.1";
+    delete process.env.OPENAI_COMPATIBLE_BASE_URL;
+    expect(() => getModel()).toThrow("OPENAI_COMPATIBLE_BASE_URL is required");
+  });
+
+  test("returns a model when all required env vars are set", () => {
+    process.env.ATLAS_PROVIDER = "openai-compatible";
+    process.env.ATLAS_MODEL = "llama3.1";
+    process.env.OPENAI_COMPATIBLE_BASE_URL = "http://localhost:8000/v1";
+    const model = getModel();
+    expect(model).toBeDefined();
   });
 });

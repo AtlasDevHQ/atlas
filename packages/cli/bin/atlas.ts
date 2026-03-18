@@ -46,6 +46,8 @@ import * as yaml from "js-yaml";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import { type DBType } from "@atlas/api/lib/db/connection";
+import type { DuckDBConnection } from "@duckdb/node-api";
+import type { SObjectField } from "../../../plugins/salesforce/src/connection";
 import { checkEnvFile } from "../src/env-check";
 import { type ProfileProgressCallbacks, createProgressTracker, formatDuration } from "../src/progress";
 
@@ -877,8 +879,7 @@ export async function profileMySQL(
 
 // --- ClickHouse profiler ---
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type ClickHouseClient = { query: (opts: { query: string; format: string }) => Promise<{ json: () => Promise<any> }>; close: () => Promise<void> };
+type ClickHouseClient = { query: (opts: { query: string; format: string }) => Promise<{ json: () => Promise<{ data: Record<string, unknown>[] }> }>; close: () => Promise<void> };
 
 /** Run a single query against ClickHouse and return rows. */
 async function clickhouseQuery<T = Record<string, unknown>>(
@@ -1511,8 +1512,7 @@ function mapSalesforceFieldType(sfType: string): string {
 export async function listSalesforceObjects(connectionString: string): Promise<DatabaseObject[]> {
   const { parseSalesforceURL, createSalesforceConnection } = await import("../../../plugins/salesforce/src/connection");
   const config = parseSalesforceURL(connectionString);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const source: any = createSalesforceConnection(config);
+  const source = createSalesforceConnection(config);
   try {
     const objects = await source.listObjects();
     return objects.map((obj: { name: string }) => ({
@@ -1532,8 +1532,7 @@ export async function profileSalesforce(
 ): Promise<ProfilingResult> {
   const { parseSalesforceURL, createSalesforceConnection } = await import("../../../plugins/salesforce/src/connection");
   const config = parseSalesforceURL(connectionString);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const source: any = createSalesforceConnection(config);
+  const source = createSalesforceConnection(config);
 
   const profiles: TableProfile[] = [];
   const errors: ProfileError[] = [];
@@ -1585,8 +1584,7 @@ export async function profileSalesforce(
         const foreignKeys: ForeignKey[] = [];
         const primaryKeyColumns: string[] = [];
 
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const columns: ColumnProfile[] = desc.fields.map((field: any) => {
+        const columns: ColumnProfile[] = desc.fields.map((field: SObjectField) => {
           const isPK = field.name === "Id";
           if (isPK) primaryKeyColumns.push(field.name);
 
@@ -1604,8 +1602,7 @@ export async function profileSalesforce(
 
           // For picklist fields, extract active values as sample_values
           const sampleValues = isEnumLike
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            ? field.picklistValues.filter((pv: any) => pv.active).map((pv: any) => pv.value)
+            ? field.picklistValues.filter((pv) => pv.active).map((pv) => pv.value)
             : [];
 
           return {
@@ -2557,11 +2554,10 @@ export function mapSQLType(sqlType: string): string {
 
 /** Helper to run a DuckDB query and return typed rows. */
 async function duckdbQuery<T = Record<string, unknown>>(
-  conn: unknown,
+  conn: DuckDBConnection,
   sql: string,
 ): Promise<T[]> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const reader = await (conn as any).runAndReadAll(sql);
+  const reader = await conn.runAndReadAll(sql);
   return reader.getRowObjects() as T[];
 }
 
@@ -2602,18 +2598,15 @@ export async function ingestIntoDuckDB(
         ? `read_csv_auto('${absPath.replace(/'/g, "''")}')`
         : `read_parquet('${absPath.replace(/'/g, "''")}')`
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await (conn as any).run(`CREATE TABLE "${stem}" AS SELECT * FROM ${readFn}`);
+      await conn.run(`CREATE TABLE "${stem}" AS SELECT * FROM ${readFn}`);
       tableNames.push(stem);
       console.log(`  Loaded ${file.format.toUpperCase()} → table "${stem}" from ${file.path}`);
     }
     return tableNames;
   } finally {
     // DuckDB Neo API uses synchronous cleanup methods
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (conn as any).disconnectSync();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (instance as any).closeSync();
+    conn.disconnectSync();
+    instance.closeSync();
   }
 }
 
@@ -2637,10 +2630,8 @@ export async function listDuckDBObjects(dbPath: string): Promise<DatabaseObject[
     }));
   } finally {
     // DuckDB Neo API uses synchronous cleanup methods
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (conn as any).disconnectSync();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (instance as any).closeSync();
+    conn.disconnectSync();
+    instance.closeSync();
   }
 }
 
@@ -2798,10 +2789,8 @@ export async function profileDuckDB(
     }
   } finally {
     // DuckDB Neo API uses synchronous cleanup methods
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (conn as any).disconnectSync();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (instance as any).closeSync();
+    conn.disconnectSync();
+    instance.closeSync();
   }
 
   return { profiles, errors };
@@ -4236,8 +4225,7 @@ async function handleDiff(args: string[]): Promise<void> {
   } else if (dbType === "salesforce") {
     const { parseSalesforceURL, createSalesforceConnection } = await import("../../../plugins/salesforce/src/connection");
     const config = parseSalesforceURL(connStr);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const source: any = createSalesforceConnection(config);
+    const source = createSalesforceConnection(config);
     try {
       const objects = await source.listObjects();
       console.log(`Connected: Salesforce (${objects.length} queryable objects)`);
@@ -4496,14 +4484,11 @@ async function profileDatasource(opts: ProfileDatasourceOpts): Promise<void> {
       const DuckDBInstance = await loadDuckDB();
       const testInstance = await DuckDBInstance.create(duckConfig.path, { access_mode: "READ_ONLY" });
       const testConn = await testInstance.connect();
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const reader = await (testConn as any).runAndReadAll("SELECT version() as v");
+      const reader = await testConn.runAndReadAll("SELECT version() as v");
       const version = reader.getRowObjects()[0]?.v ?? "unknown";
       console.log(`Connected: DuckDB ${version}`);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (testConn as any).disconnectSync();
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (testInstance as any).closeSync();
+      testConn.disconnectSync();
+      testInstance.closeSync();
     } catch (err) {
       console.error(`\nError: Cannot open DuckDB database.`);
       console.error(err instanceof Error ? err.message : String(err));
@@ -4513,8 +4498,7 @@ async function profileDatasource(opts: ProfileDatasourceOpts): Promise<void> {
   } else if (dbType === "salesforce") {
     const { parseSalesforceURL, createSalesforceConnection } = await import("../../../plugins/salesforce/src/connection");
     const config = parseSalesforceURL(connStr);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const source: any = createSalesforceConnection(config);
+    const source = createSalesforceConnection(config);
     try {
       const objects = await source.listObjects();
       console.log(`Connected: Salesforce (${objects.length} queryable objects)`);

@@ -111,7 +111,7 @@ export async function downloadExcel(
   rows: Record<string, unknown>[],
   filename = "atlas-results.xlsx",
 ) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- xlsx is an optional dynamic import; typing as typeof import("xlsx") would fail when the package isn't installed
   let XLSX: any;
   try {
     XLSX = await import("xlsx" /* webpackIgnore: true */);

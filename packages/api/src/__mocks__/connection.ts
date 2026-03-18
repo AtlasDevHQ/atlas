@@ -21,7 +21,7 @@
  * @module
  */
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentionally generic mock function type for test overrides
 type AnyFn = (...args: any[]) => any;
 
 /** Shape of the `connections` object on the mock. */

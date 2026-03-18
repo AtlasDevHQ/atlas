@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any -- tests deliberately pass invalid config to verify runtime validation */
 import { describe, test, expect } from "bun:test";
 import { z } from "zod";
 import { tool } from "ai";
@@ -358,7 +359,7 @@ describe("definePlugin validation", () => {
       id: "test",
       types: ["datasource"],
       version: "1.0.0",
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     } as any)).toThrow('must have a "connection"');
   });
 
@@ -367,7 +368,7 @@ describe("definePlugin validation", () => {
       id: "test",
       types: ["action"],
       version: "1.0.0",
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     } as any)).toThrow('must have an "actions" array');
   });
 
@@ -386,7 +387,7 @@ describe("definePlugin validation", () => {
       types: ["interaction"],
       version: "1.0.0",
       routes: "not-a-function",
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     } as any)).toThrow('"routes" must be a function when provided');
   });
 
@@ -395,7 +396,7 @@ describe("definePlugin validation", () => {
       id: "test",
       types: ["context"],
       version: "1.0.0",
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     } as any)).toThrow('must have a "contextProvider"');
   });
 });
@@ -448,7 +449,7 @@ describe("createPlugin", () => {
     });
 
     // Missing required field — error is wrapped with context
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     expect(() => myPlugin({ projectId: "x" } as any)).toThrow("Plugin config validation failed");
   });
 
@@ -520,7 +521,7 @@ describe("createPlugin", () => {
       }),
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     const instance = myPlugin({} as any);
     expect(instance.config).toEqual({ host: "localhost", port: 5432 });
   });
@@ -770,7 +771,7 @@ describe("datasource plugin entities and dialect", () => {
         dbType: "postgres",
         validate: "not-a-function",
       },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     } as any)).toThrow('connection "validate" must be a function');
   });
 
@@ -851,7 +852,7 @@ describe("datasource plugin entities and dialect", () => {
         dbType: "postgres",
         parserDialect: "",
       },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     } as any)).toThrow('"parserDialect" must be a non-empty string');
   });
 
@@ -865,7 +866,7 @@ describe("datasource plugin entities and dialect", () => {
         dbType: "postgres",
         parserDialect: "   ",
       },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     } as any)).toThrow('"parserDialect" must be a non-empty string');
   });
 
@@ -879,7 +880,7 @@ describe("datasource plugin entities and dialect", () => {
         dbType: "postgres",
         parserDialect: 42,
       },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     } as any)).toThrow('"parserDialect" must be a non-empty string');
   });
 
@@ -893,7 +894,7 @@ describe("datasource plugin entities and dialect", () => {
         dbType: "postgres",
         forbiddenPatterns: "not-an-array",
       },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     } as any)).toThrow('"forbiddenPatterns" must be an array of RegExp');
   });
 
@@ -907,7 +908,7 @@ describe("datasource plugin entities and dialect", () => {
         dbType: "postgres",
         forbiddenPatterns: [/\bCOPY\b/i, "not-a-regex"],
       },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     } as any)).toThrow('"forbiddenPatterns" entries must each be a RegExp');
   });
 
@@ -921,7 +922,7 @@ describe("datasource plugin entities and dialect", () => {
         dbType: "postgres",
         forbiddenPatterns: [{ test: () => true, exec: () => null }],
       },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     } as any)).toThrow('"forbiddenPatterns" entries must each be a RegExp');
   });
 
@@ -1201,7 +1202,7 @@ describe("sandbox plugin validation", () => {
       id: "test",
       types: ["sandbox"],
       version: "1.0.0",
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     } as any)).toThrow('must have a "sandbox"');
   });
 
@@ -1211,7 +1212,7 @@ describe("sandbox plugin validation", () => {
       types: ["sandbox"],
       version: "1.0.0",
       sandbox: { create: "not-a-function" },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     } as any)).toThrow('must have a "create()" factory function');
   });
 
@@ -1224,7 +1225,7 @@ describe("sandbox plugin validation", () => {
         create: () => ({ exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }) }),
         priority: "high",
       },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     } as any)).toThrow('"priority" must be a number');
   });
 
@@ -1237,7 +1238,7 @@ describe("sandbox plugin validation", () => {
         create: () => ({ exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }) }),
         priority: NaN,
       },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     } as any)).toThrow('"priority" must be a number');
   });
 });
@@ -1283,7 +1284,7 @@ describe("createPlugin with sandbox type", () => {
       }),
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     const instance = mySandbox({} as any);
     expect(instance.config).toEqual({ timeout: 10 });
   });

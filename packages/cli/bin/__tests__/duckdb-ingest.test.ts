@@ -8,6 +8,8 @@ import { describe, it, expect, afterEach } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import type { DuckDBConnection } from "@duckdb/node-api";
+import type { DuckDBInstance as DuckDBInstanceType } from "@duckdb/node-api";
 import { ingestIntoDuckDB, listDuckDBObjects, profileDuckDB } from "../atlas";
 
 let tmpDir: string;
@@ -83,15 +85,12 @@ describe("ingestIntoDuckDB", () => {
     // Create a Parquet file using DuckDB
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { DuckDBInstance } = require("@duckdb/node-api");
-    const inst = await DuckDBInstance.create(":memory:");
-    const c = await inst.connect();
+    const inst: DuckDBInstanceType = await DuckDBInstance.create(":memory:");
+    const c: DuckDBConnection = await inst.connect();
     const parquetPath = path.join(dir, "data.parquet");
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await (c as any).run(`COPY (SELECT 1 AS id, 'test' AS name) TO '${parquetPath.replace(/'/g, "''")}' (FORMAT PARQUET)`);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (c as any).disconnectSync();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (inst as any).closeSync();
+    await c.run(`COPY (SELECT 1 AS id, 'test' AS name) TO '${parquetPath.replace(/'/g, "''")}' (FORMAT PARQUET)`);
+    c.disconnectSync();
+    inst.closeSync();
 
     const dbPath = path.join(dir, "test.duckdb");
     const tables = await ingestIntoDuckDB(dbPath, [{ path: parquetPath, format: "parquet" }]);

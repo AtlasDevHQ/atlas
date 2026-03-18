@@ -123,7 +123,7 @@ describe("migrateAuthTables", () => {
     const { pool } = createTrackingPool();
     _resetPool(pool);
     const { instance, getMigrationCount } = createTrackingAuth();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- injecting partial auth mock for testing
     _setAuthInstance(instance as any);
 
     await migrateAuthTables();
@@ -137,7 +137,7 @@ describe("migrateAuthTables", () => {
     const { pool, queries } = createTrackingPool();
     _resetPool(pool);
     const { instance, getMigrationCount } = createTrackingAuth();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- injecting partial auth mock for testing
     _setAuthInstance(instance as any);
 
     await migrateAuthTables();

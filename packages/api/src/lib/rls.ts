@@ -192,13 +192,12 @@ export function resolveRLSFilters(
 // AST-based WHERE injection
 // ---------------------------------------------------------------------------
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
-
 /**
  * Walk the AST's FROM array to build a map of table_name → alias.
  * If a table has no alias, it maps to the table name itself.
  */
 function extractTableAliasMap(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- node-sql-parser FROM entries have varying runtime shapes not fully captured by the From union type
   from: any[],
   cteNames: Set<string>,
 ): Map<string, string> {
@@ -215,6 +214,7 @@ function extractTableAliasMap(
 }
 
 /** Collect CTE names from the WITH clause. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- node-sql-parser AST nodes are manipulated as plain objects; Select type doesn't cover all runtime properties
 function collectCTENames(ast: any): Set<string> {
   const names = new Set<string>();
   if (Array.isArray(ast.with)) {
@@ -271,6 +271,7 @@ function buildCondition(tableRef: string, filter: RLSFilter) {
  * using the `combineWith` operator (AND or OR).
  */
 function injectIntoSelectAST(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- node-sql-parser AST is mutated in place; Select type doesn't cover .parentheses, derived-table .expr, or constructed condition nodes
   ast: any,
   groups: RLSFilterGroup[],
   combineWith: "and" | "or",
@@ -294,8 +295,10 @@ function injectIntoSelectAST(
     const aliasMap = extractTableAliasMap(from, cteNames);
 
     // Build per-policy-group conditions
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- constructed AST condition nodes don't match Binary type exactly
     const groupConditions: any[] = [];
     for (const group of groups) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- accumulated binary_expr nodes built from plain objects
       let groupCondition: any = null;
       for (const filter of group.filters) {
         const alias = aliasMap.get(filter.table.toLowerCase());
@@ -368,6 +371,7 @@ function injectIntoSelectAST(
  * Injects RLS conditions into any nested SELECT statements.
  */
 function walkWhereForSubqueries(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- recursive AST walk traverses arbitrary node shapes (binary_expr, expr_list, subqueries) not fully captured by node-sql-parser types
   node: any,
   groups: RLSFilterGroup[],
   combineWith: "and" | "or",
@@ -391,8 +395,6 @@ function walkWhereForSubqueries(
     }
   }
 }
-
-/* eslint-enable @typescript-eslint/no-explicit-any */
 
 /**
  * Inject RLS WHERE conditions into a validated SQL query via AST manipulation.

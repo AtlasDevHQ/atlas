@@ -263,7 +263,7 @@ function request(path: string, init?: RequestInit) {
   return app.request(`http://localhost${path}`, init);
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- test helper for JSON response bodies
 async function json(res: Response): Promise<any> {
   return res.json();
 }

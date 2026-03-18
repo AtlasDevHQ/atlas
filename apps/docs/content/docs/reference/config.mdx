@@ -309,11 +309,11 @@ export default defineConfig({
 | `perOrg.maxConnections` | `number` | `5` | Max connections per pool per org |
 | `perOrg.idleTimeoutMs` | `number` | `30000` | Idle timeout in ms for per-org pool connections |
 | `perOrg.maxOrgs` | `number` | `50` | Max org pool sets before LRU eviction |
-| `perOrg.warmupProbes` | `number` | `2` | Warmup probes when an org pool is first created |
+| `perOrg.warmupProbes` | `number` | `2` | Warmup probes when an org pool is first created. `0` disables warmup |
 | `perOrg.drainThreshold` | `number` | `5` | Consecutive query errors before auto-drain of an org pool |
 
 <Callout type="info">
-Per-org pooling requires multi-tenancy (Better Auth organization plugin). When not configured, all orgs share the global pool. See [Multi-Tenancy](/guides/multi-tenancy) for the full setup.
+Per-org pooling requires multi-tenancy (Better Auth organization plugin). When not configured, all orgs share the global pool.
 </Callout>
 
 ---

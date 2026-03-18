@@ -276,7 +276,7 @@ These can also be configured via [`atlas.config.ts`](/reference/config#session-t
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ATLAS_ORG_ID` | — | Organization ID for org-scoped semantic layer selection. When set, the CLI reads/writes to `semantic/.orgs/{orgId}/` instead of `semantic/`. Can also be passed via `--org` flag |
+| `ATLAS_ORG_ID` | — | Organization ID for org-scoped semantic layer selection. CLI-only — when set, the CLI reads/writes to `semantic/.orgs/{orgId}/` instead of `semantic/`. Requires managed auth (`DATABASE_URL` + `BETTER_AUTH_SECRET`). Can also be passed via `--org` flag. The API server derives the org from the authenticated session, not this variable |
 
 ---
 

@@ -63,7 +63,7 @@ Cache keys include **all four components**, ensuring strict isolation:
 | Org ID | Multi-tenant isolation (even for identical SQL) |
 | User claims | RLS-aware — different claim sets produce different keys |
 
-Claims are sorted alphabetically before hashing, so key order doesn't affect the cache key.
+Claim **keys** are sorted alphabetically before hashing, so key insertion order doesn't affect the cache key.
 
 <Callout type="info">
 A query like `SELECT * FROM orders` with `role: "sales"` produces a different cache key than the same query with `role: "admin"`. This ensures RLS-filtered results are never served to users with different access levels.
@@ -89,6 +89,7 @@ Returns:
 | `hits` | Total cache hits |
 | `misses` | Total cache misses |
 | `hitRate` | Hit rate (0–1) |
+| `missRate` | Miss rate (0–1) |
 | `entryCount` | Current cached entries |
 | `maxSize` | Maximum capacity |
 | `ttl` | TTL in milliseconds |
@@ -121,7 +122,7 @@ const redisCacheBackend: PluginCacheBackend = {
 
 Return `cacheBackend` from your plugin object and Atlas will use it instead of the built-in LRU. Only one plugin cache backend is supported per server — the first plugin with a `cacheBackend` wins.
 
-If the plugin backend fails at runtime, Atlas logs the error and falls back to the built-in LRU cache.
+If the plugin backend fails to initialize at startup, Atlas logs the error and continues with the built-in LRU cache.
 
 See [Plugin Authoring Guide](/plugins/authoring-guide) for building custom plugins.
 

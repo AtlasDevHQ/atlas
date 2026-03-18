@@ -282,9 +282,11 @@ describe("generateProposals — edge cases", () => {
       "utf-8",
     );
     const parsed = yaml.load(content) as EntityYaml;
-    // Two proposals may be generated, but both point to same table/file
-    // The key invariant: the YAML is valid and proposals didn't crash
+    // generateProposals checks the original entity (not the clone being built),
+    // so both identical patterns pass the patternExists check → 2 proposals.
+    // The key invariant: the apply step doesn't crash and YAML is valid.
     expect(parsed.query_patterns).toBeDefined();
+    expect(parsed.query_patterns!.length).toBe(2);
 
     fs.rmSync(dir, { recursive: true });
   });

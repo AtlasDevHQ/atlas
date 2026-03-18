@@ -97,12 +97,18 @@ describe("analyzeQueries", () => {
     const rows = [
       // At runtime, DB rows may have NULL sql even though TypeScript types say string
       { sql: null as unknown as string, row_count: 10, tables_accessed: null, columns_accessed: null },
+      // Null sql but valid tables_accessed — still counts table usage, skips pattern extraction
+      { sql: null as unknown as string, row_count: 5, tables_accessed: ["orders"], columns_accessed: null },
       makeRow("SELECT id FROM users"),
       makeRow("SELECT id FROM users"),
     ];
     const result = analyzeQueries(rows);
-    expect(result.totalQueries).toBe(3);
+    expect(result.totalQueries).toBe(4);
     expect(result.tableUsage.get("users")).toBe(2);
+    // Table usage counted from tables_accessed even with null sql
+    expect(result.tableUsage.get("orders")).toBe(1);
+    // No patterns/joins from null-sql rows
+    expect(result.patterns.every((p) => !p.tables.includes("orders"))).toBe(true);
   });
 
   test("skips rows with empty SQL strings", () => {

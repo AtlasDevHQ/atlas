@@ -139,6 +139,12 @@ describe("applyCacheControl", () => {
     expect(result).toEqual(msgs);
   });
 
+  test("returns messages unchanged for 'openai-compatible'", () => {
+    const msgs = makeMessages(3);
+    const result = applyCacheControl(msgs, "openai-compatible");
+    expect(result).toEqual(msgs);
+  });
+
   // --- Single message -----------------------------------------------------
 
   test("works correctly with a single-message array", () => {
@@ -261,6 +267,11 @@ describe("buildSystemParam", () => {
 
   test("returns plain string for 'gateway'", () => {
     const result = buildSystemParam("gateway");
+    expect(typeof result).toBe("string");
+  });
+
+  test("returns plain string for 'openai-compatible'", () => {
+    const result = buildSystemParam("openai-compatible");
     expect(typeof result).toBe("string");
   });
 

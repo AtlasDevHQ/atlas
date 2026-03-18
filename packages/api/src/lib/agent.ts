@@ -265,8 +265,9 @@ function buildSystemPrompt(registry: ToolRegistry, orgSemanticIndex?: string): s
  *   `providerOptions.anthropic.cacheControl` (~80% savings on steps 2+).
  * - Bedrock (non-Anthropic): returns a SystemModelMessage with
  *   `providerOptions.bedrock.cachePoint`.
- * - OpenAI / Ollama / Gateway: returns a plain string (OpenAI caches
- *   automatically for prompts >= 1024 tokens; others have no caching).
+ * - OpenAI / Ollama / OpenAI-compatible / Gateway: returns a plain string
+ *   (OpenAI caches automatically for prompts >= 1024 tokens; others have
+ *   no caching).
  */
 export function buildSystemParam(
   providerType: ProviderType,
@@ -319,7 +320,7 @@ export function buildSystemParam(
  *
  * - Anthropic / Bedrock-Anthropic: `providerOptions.anthropic.cacheControl`
  * - Bedrock (non-Anthropic): `providerOptions.bedrock.cachePoint`
- * - OpenAI / Ollama / Gateway: no-op (OpenAI caches automatically)
+ * - OpenAI / Ollama / OpenAI-compatible / Gateway: no-op (OpenAI caches automatically)
  */
 export function applyCacheControl(
   messages: ModelMessage[],

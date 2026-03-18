@@ -95,6 +95,9 @@ export function getModel(): LanguageModel {
     case "ollama": {
       const ollama = createOpenAI({
         baseURL: process.env.OLLAMA_BASE_URL ?? "http://localhost:11434/v1",
+        // createOpenAI throws LoadAPIKeyError if no apiKey is provided and
+        // OPENAI_API_KEY is unset. Local servers don't need authentication.
+        apiKey: "not-needed",
       });
       return ollama(modelId);
     }
@@ -109,6 +112,8 @@ export function getModel(): LanguageModel {
       }
       const compatible = createOpenAI({
         baseURL,
+        // createOpenAI throws LoadAPIKeyError if no apiKey is provided and
+        // OPENAI_API_KEY is unset. Most local servers ignore the header.
         apiKey: process.env.OPENAI_COMPATIBLE_API_KEY ?? "not-needed",
       });
       return compatible(modelId);

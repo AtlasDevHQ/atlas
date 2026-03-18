@@ -610,7 +610,9 @@ function AtlasChatInner({
                         {isLastAssistant && !hasVisibleParts && !isLoading && error && (
                           <div className="max-w-[90%]">
                             <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-950/30 dark:text-red-400">
-                              Something went wrong generating a response. Try sending your message again.
+                              {error.message
+                                ? `Something went wrong generating a response: ${error.message}. Try sending your message again.`
+                                : "Something went wrong generating a response. Try sending your message again."}
                             </div>
                           </div>
                         )}

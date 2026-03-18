@@ -404,7 +404,7 @@ describe("Admin routes — auth enforcement", () => {
     const res = await app.fetch(adminRequest("/api/v1/admin/overview"));
     expect(res.status).toBe(403);
     const body = (await res.json()) as Record<string, unknown>;
-    expect(body.error).toBe("forbidden");
+    expect(body.error).toBe("forbidden_role");
   });
 
   it("returns 403 when user has no role", async () => {
@@ -1309,7 +1309,7 @@ describe("Admin routes — audit analytics", () => {
       const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/volume"));
       expect(res.status).toBe(403);
       const body = (await res.json()) as Record<string, unknown>;
-      expect(body.error).toBe("forbidden");
+      expect(body.error).toBe("forbidden_role");
     });
 
     it("checks auth before hasInternalDB (returns 401 not 404 for unauth)", async () => {
@@ -1442,7 +1442,7 @@ describe("GET /api/v1/admin/semantic/org/entities", () => {
     const res = await app.fetch(adminRequest("/api/v1/admin/semantic/org/entities"));
     expect(res.status).toBe(400);
     const body = (await res.json()) as Record<string, unknown>;
-    expect(body.error).toBe("bad_request");
+    expect(body.error).toBe("org_not_found");
   });
 
   it("returns 501 when no internal DB", async () => {

@@ -167,11 +167,12 @@ if (process.env.SLACK_SIGNING_SECRET) {
 }
 
 app.onError((err, c) => {
-  log.error({ err, path: c.req.path }, "Unhandled error");
+  const requestId = crypto.randomUUID();
+  log.error({ err, path: c.req.path, requestId }, "Unhandled error");
   return c.json(
     {
       error: "internal_error",
-      message: "An unexpected server error occurred. Please try again.",
+      message: `An unexpected server error occurred (ref: ${requestId.slice(0, 8)}). Please try again.`,
     },
     500,
   );

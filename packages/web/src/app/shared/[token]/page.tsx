@@ -81,14 +81,14 @@ export default async function SharedConversationPage({
     const message =
       result.reason === "not-found"
         ? "This conversation may have been removed or the link may be invalid."
-        : "Could not load this conversation. Please try again later.";
+        : "This conversation may have expired or been deleted. Check the link and try again.";
     return (
       <div className="flex min-h-screen items-center justify-center">
         <div className="text-center">
           <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-100">
             {result.reason === "not-found"
               ? "Conversation not found"
-              : "Something went wrong"}
+              : "Unable to load conversation"}
           </h1>
           <p className="mt-2 text-zinc-500 dark:text-zinc-400">{message}</p>
         </div>

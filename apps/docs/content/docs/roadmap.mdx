@@ -72,11 +72,15 @@ Post-sprint quality pass on 0.7.0 code. Resolved lint warnings (unused exports, 
 
 Systematic code quality pass across all packages. Eliminated non-null assertion operators, replaced explicit `any` types with proper typing, removed dead exports and unused code (net -1150 lines), and broke up complex functions over 50 lines into well-named helpers. Extracted shared Python wrapper code and fixed input mutation in the CLI learn module.
 
+### 0.7.3 — Error Handling & Resilience
+
+Comprehensive error handling audit across all packages. Eliminated silent catch blocks and standardized error type narrowing with `instanceof Error` guards. Replaced generic "Something went wrong" messages with actionable, context-specific guidance and added request IDs to all 500 responses. Audited fallback patterns for silent degradation and added logging where errors were being swallowed. Extended React error boundary coverage to organization context, streaming Python results, and shared conversations.
+
 ---
 
 ## 0.7.x — Refinement Arc
 
-Systematic quality review of everything shipped in 0.7.0 — error handling, test hardening, and docs completeness. Same pattern as the 0.5.x polish releases.
+Systematic quality review of everything shipped in 0.7.0 — test hardening and docs completeness. Same pattern as the 0.5.x polish releases.
 
 ---
 

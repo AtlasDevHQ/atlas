@@ -52,6 +52,7 @@ async function adminAuthPreamble(req: Request, requestId: string) {
   }
 
   if (authResult.mode !== "none" && (!authResult.user || (authResult.user.role !== "admin" && authResult.user.role !== "owner"))) {
+    log.warn({ requestId, userId: authResult.user?.id, role: authResult.user?.role }, "Non-admin access attempt");
     return { error: { error: "forbidden_role", message: "Admin role required." }, status: 403 as const };
   }
 
@@ -140,6 +141,7 @@ adminLearnedPatterns.get("/", async (c) => {
   const { authResult } = preamble;
 
   if (!hasInternalDB()) {
+    log.debug({ requestId }, "Learned patterns requested but no internal DB configured");
     return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
 
@@ -152,6 +154,30 @@ adminLearnedPatterns.get("/", async (c) => {
       const maxConfidence = url.searchParams.get("max_confidence");
       let limit = parseInt(url.searchParams.get("limit") ?? "50", 10);
       let offset = parseInt(url.searchParams.get("offset") ?? "0", 10);
+
+      if (status && !VALID_STATUSES.has(status)) {
+        return c.json({ error: "bad_request", message: `Invalid status filter. Must be one of: pending, approved, rejected.` }, 400);
+      }
+
+      if (minConfidence !== null) {
+        const val = parseFloat(minConfidence);
+        if (!Number.isFinite(val) || val < 0 || val > 1) {
+          return c.json({ error: "bad_request", message: "min_confidence must be a number between 0 and 1." }, 400);
+        }
+      }
+
+      if (maxConfidence !== null) {
+        const val = parseFloat(maxConfidence);
+        if (!Number.isFinite(val) || val < 0 || val > 1) {
+          return c.json({ error: "bad_request", message: "max_confidence must be a number between 0 and 1." }, 400);
+        }
+      }
+
+      if (minConfidence !== null && maxConfidence !== null) {
+        if (parseFloat(minConfidence) > parseFloat(maxConfidence)) {
+          return c.json({ error: "bad_request", message: "min_confidence must be less than or equal to max_confidence." }, 400);
+        }
+      }
 
       if (isNaN(limit) || limit < 1) limit = 50;
       if (limit > 200) limit = 200;
@@ -177,22 +203,16 @@ adminLearnedPatterns.get("/", async (c) => {
         nextIdx++;
       }
 
-      if (minConfidence) {
-        const val = parseFloat(minConfidence);
-        if (!isNaN(val)) {
-          params.push(val);
-          whereParts.push(`confidence >= $${nextIdx}`);
-          nextIdx++;
-        }
+      if (minConfidence !== null) {
+        params.push(parseFloat(minConfidence));
+        whereParts.push(`confidence >= $${nextIdx}`);
+        nextIdx++;
       }
 
-      if (maxConfidence) {
-        const val = parseFloat(maxConfidence);
-        if (!isNaN(val)) {
-          params.push(val);
-          whereParts.push(`confidence <= $${nextIdx}`);
-          nextIdx++;
-        }
+      if (maxConfidence !== null) {
+        params.push(parseFloat(maxConfidence));
+        whereParts.push(`confidence <= $${nextIdx}`);
+        nextIdx++;
       }
 
       const whereClause = `WHERE ${whereParts.join(" AND ")}`;
@@ -243,6 +263,7 @@ adminLearnedPatterns.get("/:id", async (c) => {
   const { authResult } = preamble;
 
   if (!hasInternalDB()) {
+    log.debug({ requestId }, "Learned patterns requested but no internal DB configured");
     return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
 
@@ -285,6 +306,7 @@ adminLearnedPatterns.patch("/:id", async (c) => {
   const { authResult } = preamble;
 
   if (!hasInternalDB()) {
+    log.debug({ requestId }, "Learned patterns requested but no internal DB configured");
     return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
 
@@ -383,6 +405,7 @@ adminLearnedPatterns.delete("/:id", async (c) => {
   const { authResult } = preamble;
 
   if (!hasInternalDB()) {
+    log.debug({ requestId }, "Learned patterns requested but no internal DB configured");
     return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
 
@@ -432,6 +455,7 @@ adminLearnedPatterns.post("/bulk", async (c) => {
   const { authResult } = preamble;
 
   if (!hasInternalDB()) {
+    log.debug({ requestId }, "Learned patterns requested but no internal DB configured");
     return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
 
@@ -463,32 +487,41 @@ adminLearnedPatterns.post("/bulk", async (c) => {
       const orgId = authResult.user?.activeOrganizationId;
       const updated: string[] = [];
       const notFound: string[] = [];
+      const errors: Array<{ id: string; error: string }> = [];
 
       for (const id of ids) {
-        const checkParams: unknown[] = [id];
-        const org = orgFilter(orgId, checkParams, checkParams.length + 1);
+        try {
+          const checkParams: unknown[] = [id];
+          const org = orgFilter(orgId, checkParams, checkParams.length + 1);
 
-        const existing = await internalQuery<Record<string, unknown>>(
-          `SELECT id FROM learned_patterns WHERE id = $1 AND ${org.clause}`,
-          checkParams,
-        );
+          const existing = await internalQuery<Record<string, unknown>>(
+            `SELECT id FROM learned_patterns WHERE id = $1 AND ${org.clause}`,
+            checkParams,
+          );
 
-        if (existing.length === 0) {
-          notFound.push(id);
-          continue;
+          if (existing.length === 0) {
+            notFound.push(id);
+            continue;
+          }
+
+          const updateParams: unknown[] = [status, authResult.user?.id ?? null, id];
+          const updateOrg = orgFilter(orgId, updateParams, updateParams.length + 1);
+          await internalQuery(
+            `UPDATE learned_patterns SET status = $1, reviewed_by = $2, reviewed_at = now(), updated_at = now() WHERE id = $3 AND ${updateOrg.clause}`,
+            updateParams,
+          );
+
+          updated.push(id);
+        } catch (itemErr) {
+          log.warn(
+            { err: itemErr instanceof Error ? itemErr.message : String(itemErr), requestId, patternId: id },
+            "Failed to update pattern in bulk operation",
+          );
+          errors.push({ id, error: itemErr instanceof Error ? itemErr.message : "Update failed" });
         }
-
-        const updateParams: unknown[] = [status, authResult.user?.id ?? null, id];
-        const updateOrg = orgFilter(orgId, updateParams, updateParams.length + 1);
-        await internalQuery(
-          `UPDATE learned_patterns SET status = $1, reviewed_by = $2, reviewed_at = now(), updated_at = now() WHERE id = $3 AND ${updateOrg.clause}`,
-          updateParams,
-        );
-
-        updated.push(id);
       }
 
-      return c.json({ updated, notFound });
+      return c.json({ updated, notFound, ...(errors.length > 0 ? { errors } : {}) });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to bulk update learned patterns");
       return c.json({ error: "internal_error", message: "Failed to bulk update learned patterns.", requestId }, 500);

@@ -299,7 +299,7 @@ export function analyzeQueries(rows: AuditRow[]): AnalysisResult {
 
   for (const row of rows) {
     // Use pre-computed tables_accessed if available, otherwise parse
-    let tables: string[] = row.tables_accessed ?? [];
+    let tables: string[] = Array.isArray(row.tables_accessed) ? row.tables_accessed : [];
     let parsed: ParsedQuery | null = null;
 
     if (tables.length === 0) {

@@ -36,8 +36,11 @@ Retrying these will not help — the request or configuration must be changed.
 
 | Code | HTTP Status | Description | Common Cause | Fix |
 |------|-------------|-------------|--------------|-----|
-| `auth_error` | 401 | Authentication failed | Invalid API key, expired session, or revoked token | Check your API key or sign in again. See [Authentication](/deployment/authentication) |
+| `auth_error` | 401 | Authentication failed | Invalid API key or revoked token | Check your API key or sign in again. See [Authentication](/deployment/authentication) |
+| `session_expired` | 401 | Session expired | Session token has expired or been revoked | Sign in again to get a new session |
 | `forbidden` | 403 | Access denied | User lacks the required role (e.g., admin endpoints require `admin` role) | Request the appropriate role from your Atlas administrator |
+| `forbidden_role` | 403 | Admin role required | Non-admin user tried to access an admin endpoint | Sign in with an admin account or request the admin role |
+| `org_not_found` | 400 | No active organization | Request requires an active organization but none is selected | Select an organization in the org switcher and try again |
 | `configuration_error` | 400 | Atlas is not fully configured | Missing environment variables, invalid config file, or startup diagnostics failed | Run `atlas doctor` to identify the issue. See [Troubleshooting](/guides/troubleshooting) |
 | `no_datasource` | 400 | No datasource configured | `ATLAS_DATASOURCE_URL` is not set | Set `ATLAS_DATASOURCE_URL` in your environment. See [Environment Variables](/reference/environment-variables) |
 | `invalid_request` | 400 | Invalid request | Malformed JSON body or missing required fields | Check the request body format. See [API Reference](/reference/api) |
@@ -186,8 +189,13 @@ try {
 
   switch (error.code) {
     case "auth_error":
+    case "session_expired":
       // Redirect to login or prompt for a new API key
       redirectToLogin();
+      break;
+    case "forbidden_role":
+      // User doesn't have admin access
+      showPermissionDenied(error.message);
       break;
     case "configuration_error":
     case "no_datasource":

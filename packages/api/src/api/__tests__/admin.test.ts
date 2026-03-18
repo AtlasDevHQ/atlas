@@ -216,6 +216,9 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getEncryptionKey: () => null,
   isPlaintextUrl: (value: string) => /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value),
   _resetEncryptionKeyCache: mock(() => {}),
+  findPatternBySQL: async () => null,
+  insertLearnedPattern: () => {},
+  incrementPatternCount: () => {},
 }));
 
 // Org-scoped semantic entities mock

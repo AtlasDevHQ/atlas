@@ -560,3 +560,95 @@ export async function loadSavedConnections(): Promise<number> {
     return 0;
   }
 }
+
+// ── Learned pattern helpers ─────────────────────────────────────────
+
+/**
+ * Find a learned pattern by exact normalized SQL match for the given org.
+ * Returns the pattern's id, confidence, and repetition count, or null if not found.
+ */
+export async function findPatternBySQL(
+  orgId: string | null | undefined,
+  patternSql: string,
+): Promise<{ id: string; confidence: number; repetitionCount: number } | null> {
+  const pool = getInternalDB();
+  const params: unknown[] = [patternSql];
+  let orgClause: string;
+  if (orgId) {
+    params.push(orgId);
+    orgClause = `org_id = $2`;
+  } else {
+    orgClause = `org_id IS NULL`;
+  }
+
+  const result = await pool.query(
+    `SELECT id, confidence, repetition_count FROM learned_patterns WHERE pattern_sql = $1 AND ${orgClause} LIMIT 1`,
+    params,
+  );
+
+  if (result.rows.length === 0) return null;
+  const row = result.rows[0];
+  return {
+    id: row.id as string,
+    confidence: row.confidence as number,
+    repetitionCount: row.repetition_count as number,
+  };
+}
+
+/**
+ * Insert a new learned pattern. Fire-and-forget — errors are logged, never thrown.
+ */
+export function insertLearnedPattern(pattern: {
+  orgId: string | null | undefined;
+  patternSql: string;
+  description: string;
+  sourceEntity: string;
+  sourceQueries: string[];
+  proposedBy: string;
+}): void {
+  internalExecute(
+    `INSERT INTO learned_patterns (org_id, pattern_sql, description, source_entity, source_queries, confidence, repetition_count, status, proposed_by)
+     VALUES ($1, $2, $3, $4, $5, 0.1, 1, 'pending', $6)`,
+    [
+      pattern.orgId ?? null,
+      pattern.patternSql,
+      pattern.description,
+      pattern.sourceEntity,
+      JSON.stringify(pattern.sourceQueries),
+      pattern.proposedBy,
+    ],
+  );
+}
+
+/**
+ * Increment repetition_count by 1 and increase confidence by 0.1 (capped at 1.0).
+ * When sourceFingerprint is provided, appends it to source_queries (capped at 100 entries).
+ * Fire-and-forget — errors are logged, never thrown.
+ */
+export function incrementPatternCount(id: string, sourceFingerprint?: string): void {
+  if (sourceFingerprint) {
+    const newEntry = JSON.stringify([sourceFingerprint]);
+    internalExecute(
+      `UPDATE learned_patterns SET
+        repetition_count = repetition_count + 1,
+        confidence = LEAST(1.0, confidence + 0.1),
+        source_queries = CASE
+          WHEN source_queries IS NULL THEN $2::jsonb
+          WHEN jsonb_array_length(source_queries) >= 100 THEN source_queries
+          ELSE source_queries || $2::jsonb
+        END,
+        updated_at = now()
+      WHERE id = $1`,
+      [id, newEntry],
+    );
+  } else {
+    internalExecute(
+      `UPDATE learned_patterns SET
+        repetition_count = repetition_count + 1,
+        confidence = LEAST(1.0, confidence + 0.1),
+        updated_at = now()
+      WHERE id = $1`,
+      [id],
+    );
+  }
+}

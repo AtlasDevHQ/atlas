@@ -28,6 +28,7 @@ import { getConfig } from "@atlas/api/lib/config";
 import { resolveRLSFilters, injectRLSConditions, type RLSFilterGroup } from "@atlas/api/lib/rls";
 import { getSetting } from "@atlas/api/lib/settings";
 import { getCache, buildCacheKey, cacheEnabled, getDefaultTtl } from "@atlas/api/lib/cache/index";
+import { proposePatternIfNovel } from "@atlas/api/lib/learn/pattern-proposer";
 
 const log = createLogger("sql");
 
@@ -615,6 +616,16 @@ async function executeAndAudit(opts: {
       connectionId: connId,
       result: { columns: result.columns, rows: result.rows },
       durationMs,
+    });
+
+    // Fire-and-forget: propose as learned pattern if novel.
+    // Note: querySql may include auto-appended LIMIT (stripped by normalizeSQL)
+    // and RLS-injected WHERE clauses (not stripped — same base query may produce
+    // different patterns for different RLS contexts).
+    proposePatternIfNovel({
+      sql: querySql,
+      dialect: parserDatabase(dbType, connId),
+      connectionId: connId,
     });
 
     const hasHookMeta = Object.keys(hookMetadata).length > 0;

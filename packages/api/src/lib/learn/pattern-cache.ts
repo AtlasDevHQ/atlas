@@ -25,9 +25,9 @@ interface CacheEntry {
 
 const cache = new Map<string, CacheEntry>();
 
-/** Canonical cache key — `"global"` for null orgId. */
+/** Canonical cache key — `"__global__"` for null orgId, prefixed to avoid collision. */
 function cacheKey(orgId: string | null): string {
-  return orgId ?? "global";
+  return orgId === null ? "__global__" : `org:${orgId}`;
 }
 
 /** Get approved patterns for an org, hitting cache first.
@@ -168,6 +168,13 @@ export async function getRelevantPatterns(
   }));
 }
 
+/** Sanitize text for safe prompt injection — truncate and strip markdown headings. */
+function sanitizeForPrompt(text: string, maxLen: number): string {
+  let safe = text.replace(/^#{1,6}\s/gm, "").replace(/\n/g, " ");
+  if (safe.length > maxLen) safe = safe.slice(0, maxLen - 3) + "...";
+  return safe;
+}
+
 /**
  * Build the learned patterns section for the system prompt.
  * Returns empty string if no relevant patterns found.
@@ -183,8 +190,9 @@ export async function buildLearnedPatternsSection(
 
     const lines = patterns.map((p) => {
       const entity = p.sourceEntity ? `[${p.sourceEntity}]` : "[general]";
-      const desc = p.description ?? "Query pattern";
-      return `- ${entity}: ${desc}\n  SQL: ${p.patternSql}`;
+      const desc = sanitizeForPrompt(p.description ?? "Query pattern", 200);
+      const sql = sanitizeForPrompt(p.patternSql, 500);
+      return `- ${entity}: ${desc}\n  SQL: ${sql}`;
     });
 
     return [

@@ -371,6 +371,7 @@ function writePythonStdin(
   proc: { stdin: { write(data: string): void; end(): void } },
   data: unknown,
   execId: string,
+  logPrefix: string = "python",
 ): void {
   const payload = data ? JSON.stringify(data) : "";
   try {
@@ -378,7 +379,7 @@ function writePythonStdin(
     proc.stdin.end();
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
-    console.warn(`[sandbox-sidecar] python=${execId} stdin write error: ${detail}`);
+    console.warn(`[sandbox-sidecar] ${logPrefix}=${execId} stdin write error: ${detail}`);
   }
 }
 
@@ -627,7 +628,7 @@ async function handleExecPythonStream(req: Request): Promise<Response> {
           proc.kill(9);
         }, timeout);
 
-        writePythonStdin(proc, body.data, execId);
+        writePythonStdin(proc, body.data, execId, "python-stream");
 
         // Read stdout line by line and forward streaming events.
         // Enforce MAX_OUTPUT_BYTES to match non-streaming handler safety.

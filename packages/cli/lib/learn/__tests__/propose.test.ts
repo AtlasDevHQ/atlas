@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test, spyOn } from "bun:test";
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
@@ -354,7 +354,7 @@ describe("generateProposals — edge cases", () => {
     fs.rmSync(dir, { recursive: true });
   });
 
-  test("loadEntities skips invalid YAML gracefully", () => {
+  test("loadEntities skips invalid YAML gracefully with warning", () => {
     const dir = makeTempDir();
     const entitiesDir = path.join(dir, "entities");
     fs.mkdirSync(entitiesDir, { recursive: true });
@@ -363,10 +363,94 @@ describe("generateProposals — edge cases", () => {
     // Write an invalid YAML file
     fs.writeFileSync(path.join(entitiesDir, "broken.yml"), ": : :\n  bad: [yaml", "utf-8");
 
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
     // Should load valid entities and skip the broken one
     const entities = loadEntities(entitiesDir);
     expect(entities.has("users")).toBe(true);
     expect(entities.size).toBe(1);
+    // Should warn about the broken file
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0]![0]).toContain("broken.yml");
+    warnSpy.mockRestore();
+
+    fs.rmSync(dir, { recursive: true });
+  });
+
+  test("caps query pattern proposals at MAX_PATTERNS_PER_ENTITY (5)", () => {
+    const dir = makeTempDir();
+    writeEntity(dir, "users.yml", { table: "users", name: "Users" });
+
+    const entities = loadEntities(path.join(dir, "entities"));
+    // Generate 7 distinct patterns for the same table
+    const patterns: ObservedPattern[] = Array.from({ length: 7 }, (_, i) => ({
+      sql: `SELECT col_${i} FROM users WHERE id = ${i}`,
+      tables: ["users"],
+      count: 10 - i,
+      primaryTable: "users",
+      description: `Pattern ${i}`,
+    }));
+
+    const analysis = makeAnalysis({ patterns });
+    const result = generateProposals(analysis, entities, null);
+    // Only 5 proposals allowed per entity
+    const patternProposals = result.proposals.filter((p) => p.type === "query_pattern");
+    expect(patternProposals).toHaveLength(5);
+
+    fs.rmSync(dir, { recursive: true });
+  });
+
+  test("skips joins observed fewer than 2 times", () => {
+    const dir = makeTempDir();
+    writeEntity(dir, "users.yml", { table: "users", name: "Users" });
+    writeEntity(dir, "orders.yml", { table: "orders", name: "Orders" });
+
+    const entities = loadEntities(path.join(dir, "entities"));
+    const joins = new Map<string, ObservedJoin>();
+    joins.set("orders::users", {
+      fromTable: "orders",
+      toTable: "users",
+      onClause: "orders.user_id = users.id",
+      count: 1, // Below threshold
+    });
+
+    const analysis = makeAnalysis({ joins });
+    const result = generateProposals(analysis, entities, null);
+    const joinProposals = result.proposals.filter((p) => p.type === "join");
+    expect(joinProposals).toHaveLength(0);
+
+    fs.rmSync(dir, { recursive: true });
+  });
+
+  test("applyProposals reports write failures", () => {
+    const dir = makeTempDir();
+    writeEntity(dir, "users.yml", { table: "users", name: "Users" });
+
+    const entities = loadEntities(path.join(dir, "entities"));
+    const analysis = makeAnalysis({
+      patterns: [
+        {
+          sql: "SELECT COUNT(*) FROM users",
+          tables: ["users"],
+          count: 5,
+          primaryTable: "users",
+          description: "Count users",
+        },
+      ] satisfies ObservedPattern[],
+    });
+
+    const proposalSet = generateProposals(analysis, entities, null);
+    // Point the entity update to a non-writable path
+    const entries = [...proposalSet.entityUpdates.entries()];
+    proposalSet.entityUpdates.clear();
+    for (const [, entity] of entries) {
+      proposalSet.entityUpdates.set("/nonexistent/readonly/path.yml", entity);
+    }
+
+    const { written, failed } = applyProposals(proposalSet);
+    expect(written).toHaveLength(0);
+    expect(failed).toHaveLength(1);
+    expect(failed[0]!.path).toBe("/nonexistent/readonly/path.yml");
+    expect(failed[0]!.error).toBeTruthy();
 
     fs.rmSync(dir, { recursive: true });
   });

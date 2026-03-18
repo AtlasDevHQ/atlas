@@ -92,6 +92,7 @@ export function loadEntities(entitiesDir: string): Map<string, { filePath: strin
     } catch (err) {
       // Re-throw I/O errors (permissions, etc.); only skip YAML parse failures
       if (!(err instanceof yaml.YAMLException)) throw err;
+      console.warn(`Warning: skipping ${file} — invalid YAML: ${err.message}`);
     }
   }
   return result;

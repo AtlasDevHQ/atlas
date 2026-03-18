@@ -222,6 +222,14 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getApprovedPatterns: mock(async () => []),
 }));
 
+mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
+  buildLearnedPatternsSection: async () => "",
+  getRelevantPatterns: async () => [],
+  invalidatePatternCache: () => {},
+  extractKeywords: () => new Set(),
+  _resetPatternCache: () => {},
+}));
+
 // Org-scoped semantic entities mock
 const mockListEntitiesAdmin: Mock<(orgId: string, type?: string) => Promise<unknown[]>> = mock(() => Promise.resolve([]));
 const mockGetEntityAdmin: Mock<(orgId: string, type: string, name: string) => Promise<unknown>> = mock(() => Promise.resolve(null));

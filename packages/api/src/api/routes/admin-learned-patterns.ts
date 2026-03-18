@@ -325,12 +325,6 @@ adminLearnedPatterns.patch("/:id", async (c) => {
       if (updated.length === 0) {
         return c.json({ error: "not_found", message: "Pattern was deleted before update completed." }, 404);
       }
-
-      // Invalidate pattern cache when status changes affect injection
-      if (status !== undefined) {
-        invalidatePatternCache(orgId ?? null);
-      }
-
       return c.json(toLearnedPattern(updated[0]));
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to update learned pattern");
@@ -380,6 +374,8 @@ adminLearnedPatterns.delete("/:id", async (c) => {
         `DELETE FROM learned_patterns WHERE id = $1 AND ${deleteOrg.clause}`,
         deleteParams,
       );
+
+      invalidatePatternCache(orgId ?? null);
 
       return c.json({ deleted: true });
     } catch (err) {
@@ -468,11 +464,6 @@ adminLearnedPatterns.post("/bulk", async (c) => {
           );
           errors.push({ id, error: itemErr instanceof Error ? itemErr.message : "Update failed" });
         }
-      }
-
-      // Invalidate pattern cache if any patterns were updated
-      if (updated.length > 0) {
-        invalidatePatternCache(orgId ?? null);
       }
 
       return c.json({ updated, notFound, ...(errors.length > 0 ? { errors } : {}) });

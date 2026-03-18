@@ -54,6 +54,14 @@ mock.module("@atlas/api/lib/semantic", () => ({
   getCrossSourceJoins: () => mockCrossSourceJoins,
 }));
 
+mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
+  buildLearnedPatternsSection: async () => "",
+  getRelevantPatterns: async () => [],
+  invalidatePatternCache: () => {},
+  extractKeywords: () => new Set(),
+  _resetPatternCache: () => {},
+}));
+
 const { applyCacheControl, buildSystemParam } = await import("@atlas/api/lib/agent");
 
 // ---------------------------------------------------------------------------

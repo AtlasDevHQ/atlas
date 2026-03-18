@@ -15,6 +15,8 @@ let mockConfigLearn: { confidenceThreshold: number } | undefined = {
   confidenceThreshold: 0.7,
 };
 
+let mockGetApprovedPatternsError: Error | null = null;
+
 // --- Mocks (all named exports) ---
 
 mock.module("@atlas/api/lib/db/internal", () => ({
@@ -32,7 +34,10 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   encryptUrl: (v: string) => v,
   decryptUrl: (v: string) => v,
   isPlaintextUrl: () => true,
-  getApprovedPatterns: async () => mockApprovedPatterns,
+  getApprovedPatterns: async () => {
+    if (mockGetApprovedPatternsError) throw mockGetApprovedPatternsError;
+    return mockApprovedPatterns;
+  },
 }));
 
 mock.module("@atlas/api/lib/config", () => ({
@@ -112,6 +117,7 @@ describe("getRelevantPatterns", () => {
     _resetPatternCache();
     mockApprovedPatterns = [];
     mockConfigLearn = { confidenceThreshold: 0.7 };
+    mockGetApprovedPatternsError = null;
   });
 
   test("returns patterns matching question keywords", async () => {
@@ -251,6 +257,7 @@ describe("buildLearnedPatternsSection", () => {
     _resetPatternCache();
     mockApprovedPatterns = [];
     mockConfigLearn = { confidenceThreshold: 0.7 };
+    mockGetApprovedPatternsError = null;
   });
 
   test("returns formatted section when patterns match", async () => {
@@ -316,6 +323,7 @@ describe("pattern cache invalidation", () => {
     _resetPatternCache();
     mockApprovedPatterns = [];
     mockConfigLearn = { confidenceThreshold: 0.7 };
+    mockGetApprovedPatternsError = null;
   });
 
   test("cache serves stale data until invalidated", async () => {
@@ -376,5 +384,70 @@ describe("pattern cache invalidation", () => {
     invalidatePatternCache("org-1");
     const fresh = await getRelevantPatterns("org-1", "What is the revenue?");
     expect(fresh.length).toBe(0);
+  });
+
+  test("DB failure returns empty without caching the failure", async () => {
+    mockGetApprovedPatternsError = new Error("relation learned_patterns does not exist");
+
+    // First call fails — returns empty
+    const result = await getRelevantPatterns(null, "What is the revenue?");
+    expect(result.length).toBe(0);
+
+    // Fix the DB
+    mockGetApprovedPatternsError = null;
+    mockApprovedPatterns = [
+      {
+        id: "1",
+        org_id: null,
+        pattern_sql: "SELECT SUM(revenue) FROM companies",
+        description: "Revenue",
+        source_entity: "companies",
+        confidence: 0.9,
+      },
+    ];
+
+    // Next call should succeed — failure was NOT cached
+    const afterFix = await getRelevantPatterns(null, "What is the revenue?");
+    expect(afterFix.length).toBe(1);
+  });
+});
+
+describe("buildLearnedPatternsSection error handling", () => {
+  beforeEach(() => {
+    _resetPatternCache();
+    mockApprovedPatterns = [];
+    mockConfigLearn = { confidenceThreshold: 0.7 };
+    mockGetApprovedPatternsError = null;
+  });
+
+  test("returns empty string on DB failure without throwing", async () => {
+    mockGetApprovedPatternsError = new Error("DB connection failed");
+    const section = await buildLearnedPatternsSection(null, "What is the total revenue?");
+    expect(section).toBe("");
+  });
+});
+
+describe("edge cases", () => {
+  beforeEach(() => {
+    _resetPatternCache();
+    mockApprovedPatterns = [];
+    mockConfigLearn = { confidenceThreshold: 0.7 };
+    mockGetApprovedPatternsError = null;
+  });
+
+  test("question with only stop words returns empty", async () => {
+    mockApprovedPatterns = [
+      {
+        id: "1",
+        org_id: null,
+        pattern_sql: "SELECT 1",
+        description: "Test",
+        source_entity: "test",
+        confidence: 0.9,
+      },
+    ];
+
+    const results = await getRelevantPatterns(null, "what is the");
+    expect(results.length).toBe(0);
   });
 });

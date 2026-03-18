@@ -488,41 +488,38 @@ export async function runAgent({
   const orgId = reqCtx?.user?.activeOrganizationId;
   const resolvedModelId = typeof model === "string" ? model : model.modelId;
 
-  // Pre-load org-scoped semantic data before the agent loop.
-  // The whitelist is loaded into the per-org cache so sql.ts can read it
-  // synchronously. The index is passed into buildSystemParam.
+  // Pre-load org-scoped semantic data and learned patterns before the agent loop.
+  // These are independent async operations — run in parallel to avoid waterfalls.
   let orgSemanticIndex: string | undefined;
-  if (orgId && hasInternalDB()) {
-    try {
-      const [, idx] = await Promise.all([
-        loadOrgWhitelist(orgId),
-        getOrgSemanticIndex(orgId),
-      ]);
-      orgSemanticIndex = idx || undefined;
-    } catch (err) {
-      log.error({ orgId, err: err instanceof Error ? err.message : String(err) }, "Failed to load org semantic data — agent will use file-based fallback");
-      if (!warnings) warnings = [];
-      warnings.push("Your organization's semantic layer could not be loaded. Using default configuration. Contact your admin if this persists.");
-    }
-  }
-
-  // Load relevant learned patterns for the current question.
   let learnedPatternsSection: string | undefined;
-  if (hasInternalDB()) {
-    try {
-      const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
-      const question = lastUserMsg?.parts
-        ?.filter((p): p is { type: "text"; text: string } => p.type === "text")
-        .map((p) => p.text)
-        .join(" ") ?? "";
-      if (question) {
-        const section = await buildLearnedPatternsSection(orgId ?? null, question);
-        if (section) learnedPatternsSection = section;
-      }
-    } catch (err) {
-      log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to load learned patterns — continuing without");
-    }
-  }
+
+  const orgSemanticPromise = (orgId && hasInternalDB())
+    ? Promise.all([loadOrgWhitelist(orgId), getOrgSemanticIndex(orgId)])
+        .then(([, idx]) => { orgSemanticIndex = idx || undefined; })
+        .catch((err: unknown) => {
+          log.error({ orgId, err: err instanceof Error ? err.message : String(err) }, "Failed to load org semantic data — agent will use file-based fallback");
+          if (!warnings) warnings = [];
+          warnings.push("Your organization's semantic layer could not be loaded. Using default configuration. Contact your admin if this persists.");
+        })
+    : Promise.resolve();
+
+  const learnedPatternsPromise = hasInternalDB()
+    ? (async () => {
+        const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
+        const question = lastUserMsg?.parts
+          ?.filter((p): p is { type: "text"; text: string } => p.type === "text")
+          .map((p) => p.text)
+          .join(" ") ?? "";
+        if (question) {
+          const section = await buildLearnedPatternsSection(orgId ?? null, question);
+          if (section) learnedPatternsSection = section;
+        }
+      })().catch((err: unknown) => {
+        log.warn({ orgId, err: err instanceof Error ? err.message : String(err) }, "Failed to load learned patterns — continuing without");
+      })
+    : Promise.resolve();
+
+  await Promise.all([orgSemanticPromise, learnedPatternsPromise]);
 
   const span = tracer.startSpan("atlas.agent", {
     attributes: {

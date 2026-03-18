@@ -118,6 +118,14 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getApprovedPatterns: mock(async () => []),
 }));
 
+mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
+  buildLearnedPatternsSection: async () => "",
+  getRelevantPatterns: async () => [],
+  invalidatePatternCache: () => {},
+  extractKeywords: () => new Set(),
+  _resetPatternCache: () => {},
+}));
+
 mock.module("@atlas/api/lib/plugins/registry", () => ({
   plugins: {
     describe: () => [],

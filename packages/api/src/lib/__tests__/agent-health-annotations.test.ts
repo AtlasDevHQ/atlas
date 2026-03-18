@@ -40,23 +40,6 @@ mock.module("@atlas/api/lib/db/connection", () =>
   }),
 );
 
-mock.module("@atlas/api/lib/plugins/tools", () => ({
-  getContextFragments: () => [],
-  getDialectHints: () => [],
-  setContextFragments: () => {},
-  setDialectHints: () => {},
-  setPluginTools: () => {},
-  getPluginTools: () => undefined,
-}));
-
-mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
-  buildLearnedPatternsSection: async () => "",
-  getRelevantPatterns: async () => [],
-  invalidatePatternCache: () => {},
-  extractKeywords: () => new Set(),
-  _resetPatternCache: () => {},
-}));
-
 mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),

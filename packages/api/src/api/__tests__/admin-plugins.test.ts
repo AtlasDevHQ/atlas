@@ -110,6 +110,14 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getApprovedPatterns: mock(async () => []),
 }));
 
+mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
+  buildLearnedPatternsSection: async () => "",
+  getRelevantPatterns: async () => [],
+  invalidatePatternCache: () => {},
+  extractKeywords: () => new Set(),
+  _resetPatternCache: () => {},
+}));
+
 const mockPluginGetConfigSchema = mock(() => [
   { key: "apiKey", type: "string", label: "API Key", required: true, secret: true },
   { key: "region", type: "select", label: "Region", options: ["us-east", "eu-west"] },

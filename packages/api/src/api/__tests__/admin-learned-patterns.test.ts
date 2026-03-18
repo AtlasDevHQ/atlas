@@ -128,7 +128,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
   buildLearnedPatternsSection: async () => "",
   getRelevantPatterns: async () => [],
-  invalidatePatternCache: mock(() => {}),
+  invalidatePatternCache: () => {},
   extractKeywords: () => new Set(),
   _resetPatternCache: () => {},
 }));

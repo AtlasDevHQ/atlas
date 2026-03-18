@@ -30,7 +30,8 @@ function cacheKey(orgId: string | null): string {
   return orgId ?? "global";
 }
 
-/** Get approved patterns for an org, hitting cache first. */
+/** Get approved patterns for an org, hitting cache first.
+ *  DB failures are logged and return [] without being cached. */
 async function getCachedPatterns(orgId: string | null): Promise<ApprovedPatternRow[]> {
   const key = cacheKey(orgId);
   const entry = cache.get(key);
@@ -39,9 +40,17 @@ async function getCachedPatterns(orgId: string | null): Promise<ApprovedPatternR
     return entry.patterns;
   }
 
-  const patterns = await getApprovedPatterns(orgId);
-  cache.set(key, { patterns, expiresAt: Date.now() + DEFAULT_TTL_MS });
-  return patterns;
+  try {
+    const patterns = await getApprovedPatterns(orgId);
+    cache.set(key, { patterns, expiresAt: Date.now() + DEFAULT_TTL_MS });
+    return patterns;
+  } catch (err) {
+    log.warn(
+      { orgId, err: err instanceof Error ? err.message : String(err) },
+      "Failed to load approved patterns (table may not exist yet) — not caching",
+    );
+    return [];
+  }
 }
 
 /** Invalidate the pattern cache for a specific org. */

@@ -654,14 +654,16 @@ export function incrementPatternCount(id: string, sourceFingerprint?: string): v
 }
 
 /** Row shape returned by getApprovedPatterns. */
-export type ApprovedPatternRow = Record<string, unknown> & {
+export interface ApprovedPatternRow {
   id: string;
   org_id: string | null;
   pattern_sql: string;
   description: string | null;
   source_entity: string | null;
+  /** Confidence score between 0.0 and 1.0. */
   confidence: number;
-};
+  [key: string]: unknown;
+}
 
 /**
  * Fetch approved learned patterns, scoped to an org (or global when orgId is null).
@@ -670,27 +672,18 @@ export type ApprovedPatternRow = Record<string, unknown> & {
 export async function getApprovedPatterns(orgId: string | null): Promise<ApprovedPatternRow[]> {
   if (!hasInternalDB()) return [];
 
-  try {
-    const rows = await internalQuery<ApprovedPatternRow>(
-      orgId
-        ? `SELECT id, org_id, pattern_sql, description, source_entity, confidence
-           FROM learned_patterns
-           WHERE status = 'approved' AND (org_id = $1 OR org_id IS NULL)
-           ORDER BY confidence DESC
-           LIMIT 100`
-        : `SELECT id, org_id, pattern_sql, description, source_entity, confidence
-           FROM learned_patterns
-           WHERE status = 'approved' AND org_id IS NULL
-           ORDER BY confidence DESC
-           LIMIT 100`,
-      orgId ? [orgId] : [],
-    );
-    return rows;
-  } catch (err) {
-    log.warn(
-      { orgId, err: err instanceof Error ? err.message : String(err) },
-      "Failed to load approved patterns (table may not exist yet)",
-    );
-    return [];
-  }
+  return internalQuery<ApprovedPatternRow>(
+    orgId
+      ? `SELECT id, org_id, pattern_sql, description, source_entity, confidence
+         FROM learned_patterns
+         WHERE status = 'approved' AND (org_id = $1 OR org_id IS NULL)
+         ORDER BY confidence DESC
+         LIMIT 100`
+      : `SELECT id, org_id, pattern_sql, description, source_entity, confidence
+         FROM learned_patterns
+         WHERE status = 'approved' AND org_id IS NULL
+         ORDER BY confidence DESC
+         LIMIT 100`,
+    orgId ? [orgId] : [],
+  );
 }

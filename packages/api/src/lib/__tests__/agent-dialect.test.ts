@@ -46,6 +46,18 @@ mock.module("@atlas/api/lib/semantic", () => ({
 mock.module("@atlas/api/lib/plugins/tools", () => ({
   getContextFragments: () => [],
   getDialectHints: () => mockDialectHints,
+  setContextFragments: () => {},
+  setDialectHints: () => {},
+  setPluginTools: () => {},
+  getPluginTools: () => undefined,
+}));
+
+mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
+  buildLearnedPatternsSection: async () => "",
+  getRelevantPatterns: async () => [],
+  invalidatePatternCache: () => {},
+  extractKeywords: () => new Set(),
+  _resetPatternCache: () => {},
 }));
 
 const { buildSystemParam } = await import("@atlas/api/lib/agent");

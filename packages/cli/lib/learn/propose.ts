@@ -145,15 +145,18 @@ function parseOnClause(onClause: string, fromTable: string, _toTable: string): {
   );
   if (!match) return null;
 
-  const [, leftTable, leftCol, rightTable, rightCol] = match;
-  if (leftTable!.toLowerCase() === fromTable.toLowerCase()) {
-    return { from: leftCol!, to: rightCol! };
+  const leftTable = match[1] ?? "";
+  const leftCol = match[2] ?? "";
+  const rightTable = match[3] ?? "";
+  const rightCol = match[4] ?? "";
+  if (leftTable.toLowerCase() === fromTable.toLowerCase()) {
+    return { from: leftCol, to: rightCol };
   }
-  if (rightTable!.toLowerCase() === fromTable.toLowerCase()) {
-    return { from: rightCol!, to: leftCol! };
+  if (rightTable.toLowerCase() === fromTable.toLowerCase()) {
+    return { from: rightCol, to: leftCol };
   }
   // If table names don't match exactly, try by position
-  return { from: leftCol!, to: rightCol! };
+  return { from: leftCol, to: rightCol };
 }
 
 /**

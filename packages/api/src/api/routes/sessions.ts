@@ -48,12 +48,13 @@ sessions.get("/", async (c) => {
     );
   }
 
-  if (!hasInternalDB() || detectAuthMode() !== "managed" || !authResult.user) {
+  const user = authResult.user;
+  if (!hasInternalDB() || detectAuthMode() !== "managed" || !user) {
     return c.json({ error: "not_available", message: "Session management requires managed auth mode." }, 404);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const userId = authResult.user!.id;
+  return withRequestContext({ requestId, user }, async () => {
+    const userId = user.id;
 
     try {
       const rows = await internalQuery<{
@@ -116,12 +117,13 @@ sessions.delete("/:id", async (c) => {
     );
   }
 
-  if (!hasInternalDB() || detectAuthMode() !== "managed" || !authResult.user) {
+  const user = authResult.user;
+  if (!hasInternalDB() || detectAuthMode() !== "managed" || !user) {
     return c.json({ error: "not_available", message: "Session management requires managed auth mode." }, 404);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const userId = authResult.user!.id;
+  return withRequestContext({ requestId, user }, async () => {
+    const userId = user.id;
     const sessionId = c.req.param("id");
 
     try {

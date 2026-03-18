@@ -359,7 +359,7 @@ function formatEntity(
     if (measureCount > 0) parts.push(`${measureCount} measures`);
     if (joinCount > 0)
       parts.push(
-        `joins: ${entity.joins!.map((j) => j.target_entity).join(", ")}`,
+        `joins: ${(entity.joins ?? []).map((j) => j.target_entity).join(", ")}`,
       );
     lines.push(parts.join(" | "));
   }

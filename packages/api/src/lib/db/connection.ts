@@ -723,11 +723,12 @@ export class ConnectionRegistry {
       }
     }
     if (oldest) {
-      log.info({ connectionId: oldest.id }, "Evicting LRU connection to free pool capacity");
+      const oldestId = oldest.id;
+      log.info({ connectionId: oldestId }, "Evicting LRU connection to free pool capacity");
       oldest.entry.conn.close().catch((err) => {
-        log.warn({ err: err instanceof Error ? err.message : String(err), connectionId: oldest!.id }, "Failed to close evicted connection");
+        log.warn({ err: err instanceof Error ? err.message : String(err), connectionId: oldestId }, "Failed to close evicted connection");
       });
-      this.entries.delete(oldest.id);
+      this.entries.delete(oldestId);
     }
   }
 

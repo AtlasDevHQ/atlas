@@ -316,8 +316,8 @@ export function TaskFormDialog({
 
     setSubmitting(true);
     try {
-      const url = isEdit
-        ? `${apiUrl}/api/v1/scheduled-tasks/${encodeURIComponent(task!.id)}`
+      const url = isEdit && task
+        ? `${apiUrl}/api/v1/scheduled-tasks/${encodeURIComponent(task.id)}`
         : `${apiUrl}/api/v1/scheduled-tasks`;
       const res = await fetch(url, {
         credentials,

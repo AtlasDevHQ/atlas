@@ -1,7 +1,7 @@
 "use client";
 
 import { useChat } from "@ai-sdk/react";
-import { DefaultChatTransport, isToolUIPart } from "ai";
+import { DefaultChatTransport, isToolUIPart, getToolName } from "ai";
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import type { PythonProgressData } from "./chat/python-result-card";
 import { AUTH_MODES, type AuthMode } from "../lib/types";
@@ -344,9 +344,16 @@ export function AtlasChat() {
     // Extract tables from executeSQL tool invocations
     const tables: string[] = [];
     for (const part of lastMsg.parts ?? []) {
-      if (part.type === "tool-invocation" && part.toolName === "executeSQL" && part.state === "result") {
-        const result = part.result as Record<string, unknown> | undefined;
-        if (result && Array.isArray(result.tablesAccessed)) {
+      if (!isToolUIPart(part)) continue;
+      try {
+        const name = getToolName(part as Parameters<typeof getToolName>[0]);
+        if (name !== "executeSQL") continue;
+      } catch {
+        continue;
+      }
+      if ("result" in part && part.result != null) {
+        const result = part.result as Record<string, unknown>;
+        if (Array.isArray(result.tablesAccessed)) {
           tables.push(...(result.tablesAccessed as string[]));
         }
       }

@@ -35,21 +35,33 @@ export interface GlossaryYaml {
 
 export type ProposalType = "query_pattern" | "join" | "glossary_term";
 
-export interface Proposal {
-  type: ProposalType;
+interface ProposalBase {
   /** File path being modified (entity YAML or glossary.yml). */
   filePath: string;
-  /** Table/entity this proposal applies to (null for glossary). */
-  table: string | null;
   /** Human-readable description. */
   description: string;
   /** Number of times this pattern was observed. */
   observedCount: number;
   /** The YAML content to add (serialized). */
   yamlAddition: string;
-  /** Apply this proposal to the entity YAML object in-memory. */
-  apply: (entity: EntityYaml, glossary?: GlossaryYaml) => void;
 }
+
+export interface EntityProposal extends ProposalBase {
+  type: "query_pattern" | "join";
+  /** Table/entity this proposal applies to. */
+  table: string;
+  /** Apply this proposal to the entity YAML object in-memory. */
+  apply: (entity: EntityYaml) => void;
+}
+
+export interface GlossaryProposal extends ProposalBase {
+  type: "glossary_term";
+  table: null;
+  /** Apply this proposal to the glossary YAML object in-memory. */
+  apply: (glossary: GlossaryYaml) => void;
+}
+
+export type Proposal = EntityProposal | GlossaryProposal;
 
 export interface ProposalSet {
   proposals: Proposal[];
@@ -177,23 +189,26 @@ export function generateProposals(
   entities: Map<string, { filePath: string; entity: EntityYaml }>,
   glossaryData: { glossary: GlossaryYaml; filePath: string } | null,
 ): ProposalSet {
-  const proposals: Proposal[] = [];
+  const entityProposals: EntityProposal[] = [];
+  const glossaryProposals: GlossaryProposal[] = [];
 
   // 1. Query pattern proposals
-  proposeQueryPatterns(analysis.patterns, entities, proposals);
+  proposeQueryPatterns(analysis.patterns, entities, entityProposals);
 
   // 2. Join discovery proposals
-  proposeJoins(analysis.joins, entities, proposals);
+  proposeJoins(analysis.joins, entities, entityProposals);
 
   // 3. Glossary term proposals
-  proposeGlossaryTerms(analysis.aliases, entities, glossaryData, proposals);
+  proposeGlossaryTerms(analysis.aliases, entities, glossaryData, glossaryProposals);
+
+  const proposals: Proposal[] = [...entityProposals, ...glossaryProposals];
 
   // Build entity update map (deep clone entities that have proposals)
   const entityUpdates = new Map<string, EntityYaml>();
   let glossaryUpdate: GlossaryYaml | null = null;
   let glossaryPath: string | null = null;
 
-  // Clone glossary upfront so apply closures write to the clone, not the original.
+  // Clone glossary upfront so proposals are applied to the clone, not the original.
   if (glossaryData && proposals.some((p) => p.type === "glossary_term")) {
     glossaryUpdate = structuredClone(glossaryData.glossary);
     glossaryPath = glossaryData.filePath;
@@ -202,9 +217,9 @@ export function generateProposals(
   for (const proposal of proposals) {
     if (proposal.type === "glossary_term") {
       if (glossaryUpdate) {
-        proposal.apply({} as EntityYaml, glossaryUpdate);
+        proposal.apply(glossaryUpdate);
       }
-    } else if (proposal.table) {
+    } else {
       const entry = entities.get(proposal.table);
       if (entry) {
         if (!entityUpdates.has(proposal.filePath)) {
@@ -221,7 +236,7 @@ export function generateProposals(
 function proposeQueryPatterns(
   patterns: ObservedPattern[],
   entities: Map<string, { filePath: string; entity: EntityYaml }>,
-  proposals: Proposal[],
+  proposals: EntityProposal[],
 ): void {
   const countsPerEntity = new Map<string, number>();
 
@@ -260,7 +275,7 @@ function proposeQueryPatterns(
 function proposeJoins(
   joins: Map<string, ObservedJoin>,
   entities: Map<string, { filePath: string; entity: EntityYaml }>,
-  proposals: Proposal[],
+  proposals: EntityProposal[],
 ): void {
   for (const [, join] of joins) {
     if (join.count < 2) continue; // Need at least 2 observations
@@ -310,7 +325,7 @@ function proposeGlossaryTerms(
   aliases: ObservedAlias[],
   entities: Map<string, { filePath: string; entity: EntityYaml }>,
   glossaryData: { glossary: GlossaryYaml; filePath: string } | null,
-  proposals: Proposal[],
+  proposals: GlossaryProposal[],
 ): void {
   if (!glossaryData) return;
 
@@ -343,8 +358,8 @@ function proposeGlossaryTerms(
       description: `Add glossary term: "${alias.alias}" = ${alias.expression} (observed ${alias.count}x)`,
       observedCount: alias.count,
       yamlAddition: yaml.dump({ [alias.alias]: termEntry }, { lineWidth: -1 }).trim(),
-      apply: (_entity: EntityYaml, glossary?: GlossaryYaml) => {
-        if (glossary) glossary.terms[alias.alias] = termEntry;
+      apply: (glossary: GlossaryYaml) => {
+        glossary.terms[alias.alias] = termEntry;
       },
     });
   }

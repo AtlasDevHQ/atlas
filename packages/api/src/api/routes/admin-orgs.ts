@@ -7,13 +7,8 @@
 
 import { Hono } from "hono";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
-import type { AuthResult } from "@atlas/api/lib/auth/types";
-import {
-  authenticateRequest,
-  checkRateLimit,
-  getClientIP,
-} from "@atlas/api/lib/auth/middleware";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { adminAuthPreamble } from "./admin-auth";
 
 const log = createLogger("admin-orgs");
 
@@ -24,44 +19,6 @@ function isValidOrgId(id: string | undefined): id is string {
 }
 
 const adminOrgs = new Hono();
-
-// ---------------------------------------------------------------------------
-// Admin auth preamble — reuses existing auth then enforces admin role.
-// ---------------------------------------------------------------------------
-
-async function adminAuthPreamble(req: Request, requestId: string) {
-  let authResult: AuthResult;
-  try {
-    authResult = await authenticateRequest(req);
-  } catch (err) {
-    log.error(
-      { err: err instanceof Error ? err : new Error(String(err)), requestId },
-      "Auth dispatch failed",
-    );
-    return { error: { error: "auth_error", message: "Authentication system error" }, status: 500 as const };
-  }
-  if (!authResult.authenticated) {
-    return { error: { error: "auth_error", message: authResult.error }, status: authResult.status as 401 | 403 | 500 };
-  }
-
-  if (authResult.mode !== "none" && (!authResult.user || (authResult.user.role !== "admin" && authResult.user.role !== "owner"))) {
-    return { error: { error: "forbidden", message: "Admin role required." }, status: 403 as const };
-  }
-
-  const ip = getClientIP(req);
-  const rateLimitKey = authResult.user?.id ?? (ip ? `ip:${ip}` : "anon");
-  const rateCheck = checkRateLimit(rateLimitKey);
-  if (!rateCheck.allowed) {
-    const retryAfterSeconds = Math.ceil((rateCheck.retryAfterMs ?? 60000) / 1000);
-    return {
-      error: { error: "rate_limited", message: "Too many requests.", retryAfterSeconds },
-      status: 429 as const,
-      headers: { "Retry-After": String(retryAfterSeconds) },
-    };
-  }
-
-  return { authResult };
-}
 
 // ---------------------------------------------------------------------------
 // GET / — list all organizations (platform admin view)

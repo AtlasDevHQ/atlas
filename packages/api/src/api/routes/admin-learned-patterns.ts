@@ -330,9 +330,11 @@ adminLearnedPatterns.patch("/:id", async (c) => {
 
       updateParams.push(id);
       const idIdx = paramIdx;
+      paramIdx++;
 
+      const updateOrg = orgFilter(orgId, updateParams, paramIdx);
       const updated = await internalQuery<Record<string, unknown>>(
-        `UPDATE learned_patterns SET ${setClauses.join(", ")} WHERE id = $${idIdx} RETURNING *`,
+        `UPDATE learned_patterns SET ${setClauses.join(", ")} WHERE id = $${idIdx} AND ${updateOrg.clause} RETURNING *`,
         updateParams,
       );
 
@@ -378,9 +380,11 @@ adminLearnedPatterns.delete("/:id", async (c) => {
         return c.json({ error: "not_found", message: "Learned pattern not found." }, 404);
       }
 
+      const deleteParams: unknown[] = [id];
+      const deleteOrg = orgFilter(orgId, deleteParams, deleteParams.length + 1);
       await internalQuery(
-        `DELETE FROM learned_patterns WHERE id = $1`,
-        [id],
+        `DELETE FROM learned_patterns WHERE id = $1 AND ${deleteOrg.clause}`,
+        deleteParams,
       );
 
       return c.json({ deleted: true });

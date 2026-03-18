@@ -272,6 +272,14 @@ These can also be configured via [`atlas.config.ts`](/reference/config#session-t
 
 ---
 
+## Multi-Tenancy
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_ORG_ID` | — | Organization ID for org-scoped semantic layer selection. CLI-only — when set, the CLI reads/writes to `semantic/.orgs/{orgId}/` instead of `semantic/`. Requires managed auth (`DATABASE_URL` + `BETTER_AUTH_SECRET`). Can also be passed via `--org` flag. The API server derives the org from the authenticated session, not this variable |
+
+---
+
 ## Semantic Index
 
 The semantic index pre-computes a summary of the semantic layer and injects it into the agent system prompt to reduce explore tool calls.

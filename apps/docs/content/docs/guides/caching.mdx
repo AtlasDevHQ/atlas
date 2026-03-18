@@ -1,0 +1,158 @@
+---
+title: Query Caching
+description: Cache query results for faster repeated queries with tenant-isolated, claim-scoped cache keys.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas caches query results in-memory so that identical queries return instantly within the TTL. Cache keys are scoped by SQL, connection, organization, and user claims — so RLS-filtered queries and multi-tenant deployments never leak cached data across boundaries.
+
+<Callout title="Prerequisites">
+- Atlas server running (`bun run dev`)
+- Caching is **enabled by default** — no configuration needed to start
+</Callout>
+
+## How It Works
+
+1. When `executeSQL` runs a query, Atlas builds a cache key from four components:
+   - **SQL text** (trimmed)
+   - **Connection ID** (which datasource)
+   - **Org ID** (multi-tenant isolation)
+   - **User claims** (RLS context — e.g., `role: "admin"` vs `role: "member"`)
+2. The key is a SHA-256 hash of these components, so different orgs or RLS contexts never share cached results
+3. On a **cache hit**, the stored result is returned instantly (0ms query duration, marked `cached: true` in audit logs)
+4. On a **cache miss**, the query runs against the database, and the result is stored in the cache for the configured TTL
+
+---
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_CACHE_ENABLED` | `true` | Enable/disable query result caching |
+| `ATLAS_CACHE_TTL` | `300000` | Cache TTL in milliseconds (default: 5 minutes) |
+| `ATLAS_CACHE_MAX_SIZE` | `1000` | Maximum cached entries. LRU eviction when full |
+
+### Config File
+
+```typescript
+// atlas.config.ts
+export default defineConfig({
+  cache: {
+    enabled: true,       // default: true
+    ttl: 300_000,        // 5 minutes in ms
+    maxSize: 1000,       // max cached entries
+  },
+});
+```
+
+See [Configuration](/reference/config#query-cache) for full details.
+
+---
+
+## Cache Key Scoping
+
+Cache keys include **all four components**, ensuring strict isolation:
+
+| Component | Purpose |
+|-----------|---------|
+| SQL text | Same query = same key |
+| Connection ID | Different datasources never share cache |
+| Org ID | Multi-tenant isolation (even for identical SQL) |
+| User claims | RLS-aware — different claim sets produce different keys |
+
+Claim **keys** are sorted alphabetically before hashing, so key insertion order doesn't affect the cache key.
+
+<Callout type="info">
+A query like `SELECT * FROM orders` with `role: "sales"` produces a different cache key than the same query with `role: "admin"`. This ensures RLS-filtered results are never served to users with different access levels.
+</Callout>
+
+---
+
+## Admin Cache Management
+
+The [admin console](/guides/admin-console) provides a cache management UI at `/admin/cache` with real-time stats and a flush button.
+
+### Stats Endpoint
+
+```
+GET /api/v1/admin/cache/stats
+```
+
+Returns:
+
+| Field | Description |
+|-------|-------------|
+| `enabled` | Whether caching is active |
+| `hits` | Total cache hits |
+| `misses` | Total cache misses |
+| `hitRate` | Hit rate (0–1) |
+| `missRate` | Miss rate (0–1) |
+| `entryCount` | Current cached entries |
+| `maxSize` | Maximum capacity |
+| `ttl` | TTL in milliseconds |
+
+### Flush Endpoint
+
+```
+POST /api/v1/admin/cache/flush
+```
+
+Clears all cached entries. Returns the count of flushed entries. The cache is also automatically flushed on config reload to prevent stale results from outdated settings.
+
+---
+
+## External Cache Backend (Redis)
+
+Plugins can replace the default in-memory LRU cache with an external backend (e.g., Redis) by implementing the `PluginCacheBackend` interface from `@useatlas/plugin-sdk`:
+
+```typescript
+import type { PluginCacheBackend, PluginCacheEntry } from "@useatlas/plugin-sdk";
+
+const redisCacheBackend: PluginCacheBackend = {
+  get(key: string): PluginCacheEntry | null { /* ... */ },
+  set(key: string, entry: PluginCacheEntry): void { /* ... */ },
+  delete(key: string): boolean { /* ... */ },
+  flush(): void { /* ... */ },
+  stats() { /* return { hits, misses, entryCount, maxSize, ttl } */ },
+};
+```
+
+Return `cacheBackend` from your plugin object and Atlas will use it instead of the built-in LRU. Only one plugin cache backend is supported per server — the first plugin with a `cacheBackend` wins.
+
+If the plugin backend fails to initialize at startup, Atlas logs the error and continues with the built-in LRU cache.
+
+See [Plugin Authoring Guide](/plugins/authoring-guide) for building custom plugins.
+
+---
+
+## Troubleshooting
+
+### Cache not reducing query latency
+
+**Cause:** Cache keys include user claims. If every request has unique claims (e.g., a timestamp), every query is a cache miss.
+
+**Fix:** Ensure RLS claims contain only stable values like `org_id` or `role`, not request-specific data.
+
+### Cache appears stale after schema changes
+
+**Cause:** The cache is not automatically invalidated when the database schema changes — only when the Atlas config file changes.
+
+**Fix:** Flush the cache via `POST /api/v1/admin/cache/flush` or the admin console after schema changes.
+
+### Hit rate is very low
+
+**Cause:** The `maxSize` may be too small for your query diversity, or the TTL is too short.
+
+**Fix:** Increase `ATLAS_CACHE_MAX_SIZE` and/or `ATLAS_CACHE_TTL`. Monitor stats via `GET /api/v1/admin/cache/stats`.
+
+---
+
+## See Also
+
+- [Configuration](/reference/config#query-cache) — Cache config options in `atlas.config.ts`
+- [Environment Variables](/reference/environment-variables) — `ATLAS_CACHE_*` variables
+- [Admin Console](/guides/admin-console) — Cache stats and flush UI
+- [Plugin Authoring Guide](/plugins/authoring-guide) — Building a custom cache backend plugin

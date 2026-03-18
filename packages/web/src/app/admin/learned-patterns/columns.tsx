@@ -31,7 +31,7 @@ function formatDate(iso: string): string {
 
 // ── Badge styles ──────────────────────────────────────────────────
 
-const statusBadge: Record<string, { variant: "outline"; className: string; label: string }> = {
+export const statusBadge: Record<string, { variant: "outline"; className: string; label: string }> = {
   pending: {
     variant: "outline",
     className: "border-amber-300 text-amber-700 dark:border-amber-700 dark:text-amber-400",

@@ -5,7 +5,7 @@ import { useQueryStates } from "nuqs";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { LearnedPattern, LearnedPatternStatus } from "@/ui/lib/types";
 import { learnedPatternsSearchParams } from "./search-params";
-import { getLearnedPatternColumns } from "./columns";
+import { getLearnedPatternColumns, statusBadge } from "./columns";
 import { useAtlasConfig } from "@/ui/context";
 import { DataTable } from "@/components/data-table/data-table";
 import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
@@ -86,26 +86,6 @@ const STATUS_LABELS: Record<string, string> = {
   pending: "Pending",
   approved: "Approved",
   rejected: "Rejected",
-};
-
-// ── Status badge ──────────────────────────────────────────────────
-
-const statusBadgeMap: Record<string, { variant: "outline"; className: string; label: string }> = {
-  pending: {
-    variant: "outline",
-    className: "border-amber-300 text-amber-700 dark:border-amber-700 dark:text-amber-400",
-    label: "Pending",
-  },
-  approved: {
-    variant: "outline",
-    className: "border-green-300 text-green-700 dark:border-green-700 dark:text-green-400",
-    label: "Approved",
-  },
-  rejected: {
-    variant: "outline",
-    className: "border-red-300 text-red-700 dark:border-red-700 dark:text-red-400",
-    label: "Rejected",
-  },
 };
 
 // ── Page ──────────────────────────────────────────────────────────
@@ -209,6 +189,10 @@ export default function LearnedPatternsPage() {
               rejected: rejected.total ?? 0,
             });
           }
+        } else {
+          console.debug("Some stats fetches failed:", {
+            all: allRes.status, pending: pendingRes.status, approved: approvedRes.status, rejected: rejectedRes.status,
+          });
         }
       } catch {
         // Stats are non-critical — don't block the page
@@ -220,7 +204,11 @@ export default function LearnedPatternsPage() {
     async function fetchEntities() {
       try {
         const res = await fetch(`${apiUrl}/api/v1/admin/learned-patterns?limit=200&offset=0`, { credentials });
-        if (cancelled || !res.ok) return;
+        if (cancelled) return;
+        if (!res.ok) {
+          console.debug(`Failed to fetch source entities: HTTP ${res.status}`);
+          return;
+        }
         const data = await res.json();
         const entities = new Set<string>();
         for (const p of data.patterns ?? []) {
@@ -241,6 +229,7 @@ export default function LearnedPatternsPage() {
   // ── Actions ─────────────────────────────────────────────────────
 
   async function updatePatternStatus(id: string, status: LearnedPatternStatus) {
+    setError(null);
     inProgress.start(id);
 
     // Optimistic update
@@ -282,6 +271,7 @@ export default function LearnedPatternsPage() {
   }
 
   async function deletePattern(id: string) {
+    setError(null);
     inProgress.start(id);
     try {
       const res = await fetch(`${apiUrl}/api/v1/admin/learned-patterns/${id}`, {
@@ -292,6 +282,7 @@ export default function LearnedPatternsPage() {
         let msg = `HTTP ${res.status}`;
         try { msg = (await res.json()).message ?? msg; } catch { /* intentionally ignored: response may not be JSON */ }
         setError({ message: msg, status: res.status });
+        setDeleteTarget(null);
         return;
       }
       setDeleteTarget(null);
@@ -299,6 +290,7 @@ export default function LearnedPatternsPage() {
       setFetchKey((k) => k + 1);
     } catch (err) {
       setError({ message: err instanceof Error ? err.message : "Failed to delete pattern" });
+      setDeleteTarget(null);
     } finally {
       inProgress.stop(id);
     }
@@ -307,6 +299,7 @@ export default function LearnedPatternsPage() {
   async function bulkUpdateStatus(status: LearnedPatternStatus) {
     const selected = table.getSelectedRowModel().rows.map((r) => r.original.id);
     if (selected.length === 0) return;
+    setError(null);
 
     // Optimistic update
     const ids = new Set(selected);
@@ -364,9 +357,7 @@ export default function LearnedPatternsPage() {
                   Reject
                 </DropdownMenuItem>
               )}
-              {(pattern.status !== "pending" && pattern.status !== "approved" && pattern.status !== "rejected") ? null : (
-                <DropdownMenuSeparator />
-              )}
+              <DropdownMenuSeparator />
               <DropdownMenuItem
                 className="text-destructive"
                 onClick={() => setDeleteTarget(pattern)}
@@ -519,7 +510,7 @@ export default function LearnedPatternsPage() {
           </div>
 
           {/* Content */}
-          {error && !error.status ? (
+          {error && (!error.status || ![401, 403, 404].includes(error.status)) ? (
             <ErrorBanner message={friendlyError(error)} onRetry={() => setFetchKey((k) => k + 1)} />
           ) : loading ? (
             <div className="flex h-64 items-center justify-center">
@@ -544,7 +535,10 @@ export default function LearnedPatternsPage() {
           ) : (
             <DataTable
               table={table}
-              onRowClick={(row) => setDetailPattern(row.original)}
+              onRowClick={(row, e) => {
+                if ((e.target as HTMLElement).closest('[role="checkbox"], button')) return;
+                setDetailPattern(row.original);
+              }}
             >
               <DataTableToolbar table={table}>
                 <DataTableSortList table={table} />
@@ -563,7 +557,7 @@ export default function LearnedPatternsPage() {
                 <SheetTitle className="flex items-center gap-2">
                   Learned Pattern
                   {(() => {
-                    const badge = statusBadgeMap[detailPattern.status] ?? statusBadgeMap.pending;
+                    const badge = statusBadge[detailPattern.status] ?? statusBadge.pending;
                     return <Badge variant={badge.variant} className={badge.className}>{badge.label}</Badge>;
                   })()}
                 </SheetTitle>

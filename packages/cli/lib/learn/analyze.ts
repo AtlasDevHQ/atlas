@@ -109,7 +109,7 @@ function parseJsonbArray(value: unknown): string[] | null {
     try {
       const parsed = JSON.parse(value);
       if (Array.isArray(parsed)) return parsed;
-    } catch { /* not JSON */ }
+    } catch (err) { console.debug("parseJsonbArray: failed to parse JSON string", err instanceof Error ? err.message : String(err)); }
   }
   return null;
 }
@@ -166,7 +166,8 @@ function extractTablesFromAst(ast: unknown): string[] {
         return parts.pop()?.toLowerCase() ?? "";
       }).filter(Boolean),
     )];
-  } catch {
+  } catch (err) {
+    console.debug("extractTablesFromAst: failed to extract tables", err instanceof Error ? err.message : String(err));
     return [];
   }
 }
@@ -182,7 +183,8 @@ function extractColumnsFromAst(ast: unknown): string[] {
         return col.toLowerCase();
       }).filter(Boolean),
     )];
-  } catch {
+  } catch (err) {
+    console.debug("extractColumnsFromAst: failed to extract columns", err instanceof Error ? err.message : String(err));
     return [];
   }
 }
@@ -204,7 +206,7 @@ function extractJoinsFromAst(stmt: Record<string, unknown>): Array<{ from: strin
           if (item.on) {
             onClause = parser.exprToSQL(item.on as Parameters<typeof parser.exprToSQL>[0]);
           }
-        } catch { /* best effort */ }
+        } catch (err) { console.debug("extractJoinsFromAst: failed to convert ON clause", err instanceof Error ? err.message : String(err)); }
         results.push({
           from: leftTable.toLowerCase(),
           to: rightTable.toLowerCase(),
@@ -233,7 +235,7 @@ function extractAliases(stmt: Record<string, unknown>): Array<{ alias: string; e
         if (expr && col.as !== expr) {
           aliases.push({ alias: String(col.as).toLowerCase(), expression: expr });
         }
-      } catch { /* best effort */ }
+      } catch (err) { console.debug("extractAliases: failed to convert alias expression", err instanceof Error ? err.message : String(err)); }
     }
   }
   return aliases;

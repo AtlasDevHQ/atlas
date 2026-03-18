@@ -316,12 +316,12 @@ export function TaskFormDialog({
 
     setSubmitting(true);
     try {
-      const url = isEdit && task
+      const url = task
         ? `${apiUrl}/api/v1/scheduled-tasks/${encodeURIComponent(task.id)}`
         : `${apiUrl}/api/v1/scheduled-tasks`;
       const res = await fetch(url, {
         credentials,
-        method: isEdit ? "PUT" : "POST",
+        method: task ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });

@@ -149,6 +149,9 @@ function parseOnClause(onClause: string, fromTable: string, _toTable: string): {
   const leftCol = match[2] ?? "";
   const rightTable = match[3] ?? "";
   const rightCol = match[4] ?? "";
+  if (!leftTable || !leftCol || !rightTable || !rightCol) {
+    return null;
+  }
   if (leftTable.toLowerCase() === fromTable.toLowerCase()) {
     return { from: leftCol, to: rightCol };
   }

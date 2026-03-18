@@ -17,10 +17,10 @@
  * - _report_error(msg: str) — emit error and exit the process
  *
  * Enforces the AST-based import guard (exits via _report_error on violation),
- * configures a headless matplotlib backend, and makes available:
- * _user_code, chart_path().
+ * configures a headless matplotlib backend, ensures _chart_dir exists,
+ * and makes available: _user_code, chart_path().
  */
-export const PYTHON_SECURITY_AND_SETUP = `# --- Import guard (sidecar-side enforcement) ---
+export const PYTHON_SECURITY_AND_SETUP = `# --- Import guard (AST-based enforcement) ---
 _BLOCKED_MODULES = {
     "subprocess", "os", "socket", "shutil", "sys", "ctypes", "importlib",
     "code", "signal", "multiprocessing", "threading", "pty", "fcntl",
@@ -73,7 +73,7 @@ try:
 except ImportError:
     pass
 
-os.makedirs(_chart_dir, exist_ok=True)
+os.makedirs(_chart_dir, exist_ok=True)  # no-op if pre-created by host (e.g. nsjail bind-mount)
 
 def chart_path(n=0):
     return os.path.join(_chart_dir, f"chart_{n}.png")`;
@@ -82,7 +82,7 @@ def chart_path(n=0):
  * Non-streaming execution: stdout capture, exec, result collection.
  *
  * Expects: sys, json, io, base64, glob, os imported;
- * _marker, _old_stdout, _chart_dir, _user_code, data, df, chart_path defined.
+ * _marker, _chart_dir, _user_code, data, df, chart_path defined.
  *
  * Captures stdout, executes user code in an isolated namespace, collects
  * charts and structured results, and emits a single JSON result via _marker.

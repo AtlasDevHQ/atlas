@@ -84,6 +84,7 @@ async function readLimited(stream: ReadableStream, max: number): Promise<string>
       chunks.push(value);
     }
   } finally {
+    // intentionally ignored: stream cancel errors are non-critical during cleanup
     await reader.cancel().catch(() => {});
   }
   return new TextDecoder().decode(Buffer.concat(chunks));

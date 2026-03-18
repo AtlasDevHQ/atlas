@@ -142,6 +142,7 @@ export async function startSseServer(
       if (sid && sessions.has(sid)) {
         const entry = sessions.get(sid)!;
         sessions.delete(sid);
+        // intentionally ignored: best-effort cleanup on transport close
         entry.server.close().catch(() => {});
       }
     };
@@ -149,6 +150,7 @@ export async function startSseServer(
     try {
       await mcpServer.connect(transport);
     } catch (err) {
+      // intentionally ignored: best-effort cleanup before re-throwing connect error
       await transport.close().catch(() => {});
       await mcpServer.close().catch(() => {});
       throw err;

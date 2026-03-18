@@ -66,7 +66,7 @@ export default function SessionsPage() {
       });
       if (!res.ok) {
         let msg = `HTTP ${res.status}`;
-        try { msg = (await res.json()).message ?? msg; } catch { /* ignore */ }
+        try { msg = (await res.json()).message ?? msg; } catch { /* intentionally ignored: response may not be JSON */ }
         setError({ message: msg, status: res.status });
         return;
       }
@@ -126,7 +126,7 @@ export default function SessionsPage() {
         if (!res.ok) {
           if (!cancelled) {
             let msg = `HTTP ${res.status}`;
-            try { msg = (await res.json()).message ?? msg; } catch { /* ignore */ }
+            try { msg = (await res.json()).message ?? msg; } catch { /* intentionally ignored: response may not be JSON */ }
             setError({ message: msg, status: res.status });
           }
           return;

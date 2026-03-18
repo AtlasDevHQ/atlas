@@ -82,7 +82,7 @@ export function downloadCSV(csv: string, filename = "atlas-results.csv") {
     a.download = filename;
     a.click();
   } catch (err) {
-    console.error("CSV download failed:", err);
+    console.error("CSV download failed:", err instanceof Error ? err.message : String(err));
     window.alert("CSV download failed");
   } finally {
     if (url) {
@@ -115,7 +115,7 @@ export async function downloadExcel(
   try {
     XLSX = await import("xlsx");
   } catch (err) {
-    console.error("Failed to load xlsx library:", err);
+    console.error("Failed to load xlsx library:", err instanceof Error ? err.message : String(err));
     window.alert("Excel export is unavailable. The spreadsheet library failed to load.");
     return;
   }
@@ -142,8 +142,8 @@ export async function downloadExcel(
     a.download = filename;
     a.click();
   } catch (err) {
-    console.error("Excel download failed:", err);
-    const detail = err instanceof Error ? err.message : "Unknown error";
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error("Excel download failed:", detail);
     window.alert(`Excel download failed: ${detail}\n\nYou can try the CSV download as an alternative.`);
   } finally {
     if (url) {

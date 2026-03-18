@@ -199,6 +199,7 @@ export async function checkDatabaseConnectivity(): Promise<CheckResult> {
           detail: `Connected (${version})`,
         };
       } finally {
+        // intentionally ignored: pool teardown errors are non-critical during diagnostics
         await pool.end().catch(() => {});
       }
     } else {
@@ -220,6 +221,7 @@ export async function checkDatabaseConnectivity(): Promise<CheckResult> {
           detail: `Connected (MySQL ${version})`,
         };
       } finally {
+        // intentionally ignored: pool teardown errors are non-critical during diagnostics
         await pool.end().catch(() => {});
       }
     }
@@ -407,6 +409,7 @@ export async function checkInternalDb(): Promise<CheckResult> {
         detail: `Connected (${tables.join(", ")})`,
       };
     } finally {
+      // intentionally ignored: pool teardown errors are non-critical during diagnostics
       await pool.end().catch(() => {});
     }
   } catch (err) {

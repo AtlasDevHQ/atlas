@@ -961,7 +961,7 @@ admin.post("/connections/test", async (c) => {
   const { authResult } = preamble;
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const body = await c.req.json().catch((err) => {
+    const body = await c.req.json().catch((err: unknown) => {
       log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in test connection request");
       return null;
     });

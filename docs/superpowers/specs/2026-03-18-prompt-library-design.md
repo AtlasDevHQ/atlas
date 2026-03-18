@@ -28,7 +28,7 @@ Add bounded-size LRU eviction to the existing cache Map (~30 lines):
 | File | Change |
 |------|--------|
 | `packages/api/src/lib/learn/pattern-cache.ts` | Add MAX_ENTRIES, lastAccessedAt tracking, eviction logic |
-| `packages/api/src/lib/__tests__/pattern-injection.test.ts` | Add test verifying eviction behavior |
+| `packages/api/src/lib/__tests__/pattern-cache.test.ts` | New test file for cache behavior including eviction |
 
 ---
 
@@ -60,6 +60,8 @@ export interface PromptItem {
   description: string | null;
   category: string | null;
   sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
 }
 ```
 
@@ -92,14 +94,16 @@ CREATE TABLE IF NOT EXISTS prompt_items (
   question TEXT NOT NULL,
   description TEXT,
   category TEXT,
-  sort_order INTEGER NOT NULL DEFAULT 0
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_prompt_items_collection ON prompt_items(collection_id);
 ```
 
 ### Seed Data
 
-A `seedPromptLibrary()` function called from `migrateInternalDB()`. Checks if built-in collections already exist (by `is_builtin = true` count) — skips if already seeded.
+A `seedPromptLibrary()` function called from `migrateInternalDB()`. Idempotent per-collection: checks for each built-in collection by name and inserts only missing ones (not by global count). This handles partial-seed recovery correctly.
 
 Three built-in collections:
 
@@ -115,7 +119,7 @@ Built-in collections have `is_builtin = true` and `org_id = NULL`.
 
 **File:** `packages/api/src/api/routes/prompts.ts`
 
-Auth via `authPreamble` (non-admin, any authenticated user).
+Auth via `authPreamble` (non-admin, any authenticated user). Both routes check `hasInternalDB()` — return `{ collections: [] }` / 404 when no internal DB is configured.
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -123,7 +127,9 @@ Auth via `authPreamble` (non-admin, any authenticated user).
 | GET | `/api/v1/prompts/:id` | Collection detail with items. Returns `{ collection: PromptCollection, items: PromptItem[] }` |
 
 Collections returned: `WHERE org_id IS NULL OR org_id = $userOrgId`, ordered by `sort_order ASC`.
+The GET /:id endpoint applies the same org-scoping filter — a user cannot fetch collections belonging to other orgs by guessing UUIDs.
 Items ordered by `sort_order ASC`.
+All 500 responses include `requestId` for log correlation.
 
 **Mounting:** `app.route("/api/v1/prompts", prompts)` in `packages/api/src/api/index.ts`.
 
@@ -131,7 +137,7 @@ Items ordered by `sort_order ASC`.
 
 **File:** `packages/api/src/api/routes/admin-prompts.ts`
 
-Auth via `adminAuthPreamble`. All mutations reject built-in collections (`is_builtin = true`).
+Auth via `adminAuthPreamble`. All mutations reject built-in collections (`is_builtin = true`). All item CRUD routes verify the parent collection belongs to the admin's org (`collection.org_id = activeOrganizationId`) before allowing mutations.
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -144,7 +150,9 @@ Auth via `adminAuthPreamble`. All mutations reject built-in collections (`is_bui
 | DELETE | `/admin/prompts/:collectionId/items/:itemId` | Delete item |
 | PUT | `/admin/prompts/:id/reorder` | Reorder items. Body: `{ itemIds: string[] }` |
 
-**Mounting:** `admin.route("/prompts", adminPrompts)` in `packages/api/src/api/routes/admin.ts`.
+**Reorder validation:** The `itemIds` array must contain exactly the set of item IDs belonging to the collection (no extras, no missing). Sort order is set to array index (0-based). The operation runs in a transaction for consistency. Returns 400 if IDs don't match.
+
+**Mounting:** `admin.route("/prompts", adminPrompts)` and `admin.route("/prompts/", adminPrompts)` (both with and without trailing slash) in `packages/api/src/api/routes/admin.ts`.
 
 ### Admin UI
 
@@ -176,7 +184,9 @@ A Sheet (drawer) component, triggered by a `BookOpen` icon button in the chat he
 - Click on an item closes the Sheet and calls `handleSend(question)` — immediate submission, matching existing `STARTER_PROMPTS` behavior
 - Simple keyword search/filter across all collections and items
 
-**Props:** `open: boolean`, `onOpenChange: (open: boolean) => void`, `onSendPrompt: (text: string) => void`
+**Props:** `open: boolean`, `onOpenChange: (open: boolean) => void`, `onSendPrompt: (text: string) => void`, `getHeaders: () => Record<string, string>`, `getCredentials: () => RequestCredentials`
+
+Fetches collections on open, caches in component state for the session (re-fetches only on re-mount).
 
 ### Empty State Enhancement
 

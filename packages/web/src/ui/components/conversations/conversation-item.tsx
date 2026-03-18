@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { Loader2, Star, Trash2 } from "lucide-react";
+import { Loader2, NotebookPen, Star, Trash2 } from "lucide-react";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import type { Conversation } from "../../lib/types";
 import { DeleteConfirmation } from "./delete-confirmation";
@@ -128,6 +129,14 @@ export function ConversationItem({
             <Star className="h-3.5 w-3.5" fill={conversation.starred ? "currentColor" : "none"} />
           )}
         </Button>
+        <Link
+          href={`/notebook?id=${conversation.id}`}
+          className="rounded p-1 text-zinc-400 opacity-100 md:opacity-0 transition-all hover:text-zinc-600 md:group-hover:opacity-100 dark:hover:text-zinc-300"
+          aria-label="Open in notebook"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <NotebookPen className="size-3.5" />
+        </Link>
         <Button
           variant="ghost"
           size="icon"

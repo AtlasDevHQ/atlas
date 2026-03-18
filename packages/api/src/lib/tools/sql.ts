@@ -404,35 +404,46 @@ function resolveConnection(
 
 /**
  * Run query validation using either a custom validator or standard SQL validation.
- * Returns a clean result without side effects — caller handles audit logging.
+ * Does not write audit log entries — the caller is responsible for audit logging on failure.
+ * `auditError` preserves the specific error detail for audit logs (e.g., original exception message).
  */
 async function runQueryValidation(
   sql: string,
   connId: string,
   dbType: DBType | string,
   customValidator: CustomValidator | undefined,
-): Promise<{ ok: true; classification?: SQLClassification } | { ok: false; error: string }> {
+): Promise<{ ok: true; classification?: SQLClassification } | { ok: false; error: string; auditError: string }> {
   if (customValidator) {
     let result: { valid: boolean; reason?: string };
     try {
       result = await customValidator(sql);
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
       log.error({ err, connectionId: connId, sql: sql.slice(0, 200) }, "Custom validator threw an exception");
-      return { ok: false, error: `Query validation failed for connection "${connId}": internal validator error` };
+      return {
+        ok: false,
+        error: `Query validation failed for connection "${connId}": internal validator error`,
+        auditError: `Custom validator error: ${message}`,
+      };
     }
     if (typeof result?.valid !== "boolean") {
       log.error({ connectionId: connId, returnValue: result }, "Custom validator returned invalid shape");
-      return { ok: false, error: `Query validation misconfigured for connection "${connId}"` };
+      return {
+        ok: false,
+        error: `Query validation misconfigured for connection "${connId}"`,
+        auditError: "Custom validator returned invalid result",
+      };
     }
     if (!result.valid) {
-      return { ok: false, error: result.reason ?? "Query rejected by custom validator" };
+      const reason = result.reason ?? "Query rejected by custom validator";
+      return { ok: false, error: reason, auditError: `Validation rejected: ${reason}` };
     }
     return { ok: true };
   }
 
   const validation = validateSQL(sql, connId);
   if (!validation.valid) {
-    return { ok: false, error: validation.error };
+    return { ok: false, error: validation.error, auditError: `Validation rejected: ${validation.error}` };
   }
   return { ok: true, classification: validation.classification };
 }
@@ -440,6 +451,7 @@ async function runQueryValidation(
 /**
  * Apply RLS conditions to a query. Returns the modified SQL or an error.
  * Handles table extraction, filter resolution, and condition injection.
+ * Unlike runQueryValidation, this function logs audit entries on failure paths.
  */
 function applyRLSToQuery(
   sql: string,
@@ -528,7 +540,12 @@ function applyRLSToQuery(
   return { ok: true, sql };
 }
 
-/** Execute a validated query, handle caching, audit logging, and error responses. */
+/**
+ * Execute a validated query with tracing, cache write, audit logging, plugin hooks,
+ * and error filtering. Releases the concurrency slot (decrementSourceConcurrency)
+ * in its finally block — callers must not release it separately.
+ * SQL content is NOT included in span attributes for security.
+ */
 async function executeAndAudit(opts: {
   db: DBConnection;
   dbType: DBType;
@@ -713,7 +730,7 @@ Rules:
         durationMs: 0,
         rowCount: null,
         success: false,
-        error: `Validation rejected: ${initial.error}`,
+        error: initial.auditError,
         sourceId: connId,
         sourceType: dbType,
       });
@@ -818,7 +835,7 @@ Rules:
           durationMs: 0,
           rowCount: null,
           success: false,
-          error: `Plugin-rewritten SQL failed validation: ${revalidation.error}`,
+          error: `Plugin-rewritten SQL failed validation: ${revalidation.auditError}`,
           sourceId: connId,
           sourceType: dbType,
           targetHost,

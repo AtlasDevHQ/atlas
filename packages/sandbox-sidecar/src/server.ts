@@ -366,7 +366,11 @@ async function parsePythonRequest(req: Request): Promise<PythonExecSetup | Respo
   };
 }
 
-/** Write stdin data and handle EPIPE gracefully. */
+/**
+ * Write stdin data and handle EPIPE gracefully. EPIPE occurs when the Python
+ * process exits before consuming stdin (e.g., syntax error in the import guard)
+ * — the real error will be surfaced via the process exit code.
+ */
 function writePythonStdin(
   proc: { stdin: { write(data: string): void; end(): void } },
   data: unknown,

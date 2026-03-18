@@ -659,18 +659,7 @@ export function extractRollbackInfo(result: unknown): RollbackInfo | null {
 // Rollback
 // ---------------------------------------------------------------------------
 
-/**
- * Roll back an executed action using its stored rollback_info.
- *
- * Rollback is best-effort: the status transitions to "rolled_back" via CAS,
- * then the rollback method handler is dispatched. If dispatch fails, the error
- * is logged and stored but the status remains "rolled_back".
- *
- * Returns the updated entry, or null if CAS failed (action not in rollbackable state).
- */
-/**
- * Best-effort dispatch of a rollback handler. Updates the entry with any error.
- */
+/** Best-effort dispatch of a rollback handler. Updates the entry with any error. */
 async function dispatchRollback(
   actionId: string,
   entry: ActionLogEntry,
@@ -701,6 +690,15 @@ async function dispatchRollback(
   }
 }
 
+/**
+ * Roll back an executed action using its stored rollback_info.
+ *
+ * Rollback is best-effort: the status transitions to "rolled_back" via CAS,
+ * then the rollback method handler is dispatched. If dispatch fails, the error
+ * is logged and stored but the status remains "rolled_back".
+ *
+ * Returns the updated entry, or null if CAS failed (action not in rollbackable state).
+ */
 export async function rollbackAction(
   actionId: string,
   userId: string,

@@ -789,6 +789,7 @@ async function checkExplicitNsjail(): Promise<void> {
 }
 
 async function checkSidecarHealth(): Promise<void> {
+  // Caller guarantees ATLAS_SANDBOX_URL is set
   const sidecarUrl = process.env.ATLAS_SANDBOX_URL!;
   const { markSidecarFailed } = await import(
     "@atlas/api/lib/tools/explore"

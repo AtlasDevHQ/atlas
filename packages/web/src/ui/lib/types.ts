@@ -36,6 +36,9 @@ export type {
   ActionLogEntry,
   SemanticDiffResponse,
   SemanticTableDiff,
+  LearnedPattern,
+  LearnedPatternStatus,
+  LearnedPatternSource,
 } from "@useatlas/types";
 export { SHARE_EXPIRY_OPTIONS } from "@useatlas/types";
 export { parseChatError } from "@useatlas/types/errors";

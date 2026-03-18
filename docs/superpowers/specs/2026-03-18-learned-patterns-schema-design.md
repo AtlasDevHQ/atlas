@@ -140,7 +140,7 @@ Hard delete. 404 if not found or wrong org.
 
 #### `POST /bulk` — Bulk status change
 
-Body: `{ ids: string[], status: 'approved' | 'rejected' }`. Max 100 IDs per request (returns 400 if exceeded).
+Body: `{ ids: string[], status: 'approved' | 'rejected' }`. `ids` must be a non-empty array (400 on `[]` or missing). Max 100 IDs per request (400 if exceeded).
 
 Processes each ID individually. Skips IDs not found or belonging to a different org. Sets `reviewed_by`/`reviewed_at` on each updated row.
 

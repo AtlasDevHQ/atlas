@@ -10,7 +10,7 @@ mock.module("@atlas/api/lib/logger", () => ({
   }),
 }));
 
-const { executePythonViaSidecar } = await import(
+const { executePythonViaSidecar, executePythonViaSidecarStream } = await import(
   "@atlas/api/lib/tools/python-sidecar"
 );
 
@@ -34,6 +34,46 @@ const originalFetch = globalThis.fetch;
 /** Override globalThis.fetch with a mock function. */
 function mockFetch(fn: (input: string | URL | Request, init?: RequestInit) => Promise<Response>) {
   globalThis.fetch = fn as typeof globalThis.fetch;
+}
+
+/** Build an NDJSON response body from event objects. */
+function ndjsonResponse(events: object[]): Response {
+  const body = events.map((e) => JSON.stringify(e)).join("\n") + "\n";
+  return new Response(body, { status: 200 });
+}
+
+/** Build a Response whose body yields string chunks then optionally errors. */
+function streamResponse(chunks: string[], error?: Error): Response {
+  const encoder = new TextEncoder();
+  let index = 0;
+  const stream = new ReadableStream({
+    pull(controller) {
+      if (index < chunks.length) {
+        controller.enqueue(encoder.encode(chunks[index]));
+        index++;
+      } else if (error) {
+        controller.error(error);
+      } else {
+        controller.close();
+      }
+    },
+  });
+  return new Response(stream, { status: 200 });
+}
+
+/** No-op progress callback. */
+const noop = () => {};
+
+/** Route-aware mock: returns different responses for streaming vs non-streaming. */
+function mockFetchByRoute(
+  streamHandler: () => Promise<Response>,
+  nonStreamHandler: () => Promise<Response>,
+) {
+  mockFetch((input) => {
+    const url = String(input);
+    if (url.includes("/exec-python-stream")) return streamHandler();
+    return nonStreamHandler();
+  });
 }
 
 afterEach(() => {
@@ -360,6 +400,391 @@ describe("executePythonViaSidecar", () => {
 
       const parsed = JSON.parse(capturedBody!);
       expect(parsed.timeout).toBe(30000); // DEFAULT_TIMEOUT_MS
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Streaming endpoint tests
+// ---------------------------------------------------------------------------
+
+describe("executePythonViaSidecarStream", () => {
+  describe("timeout paths", () => {
+    it("returns error when execution exceeds timeout", async () => {
+      mockFetchByRoute(
+        () => Promise.reject(new Error("TimeoutError: The operation was aborted due to timeout")),
+        () => Promise.resolve(Response.json({ success: true })),
+      );
+
+      const progress: unknown[] = [];
+      const result = await executePythonViaSidecarStream(
+        SIDECAR_URL, 'print("hello")', undefined, (e: unknown) => progress.push(e),
+      );
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain("Streaming Python execution failed");
+      }
+      expect(progress).toHaveLength(0);
+    });
+
+    it("has no leaked state between consecutive timeouts", async () => {
+      mockFetchByRoute(
+        () => Promise.reject(new Error("TimeoutError: timed out")),
+        () => Promise.resolve(Response.json({ success: true })),
+      );
+
+      const progress1: unknown[] = [];
+      const result1 = await executePythonViaSidecarStream(
+        SIDECAR_URL, "code1", undefined, (e: unknown) => progress1.push(e),
+      );
+
+      const progress2: unknown[] = [];
+      const result2 = await executePythonViaSidecarStream(
+        SIDECAR_URL, "code2", undefined, (e: unknown) => progress2.push(e),
+      );
+
+      expect(result1.success).toBe(false);
+      expect(result2.success).toBe(false);
+      expect(progress1).toHaveLength(0);
+      expect(progress2).toHaveLength(0);
+    });
+
+    it("handles timeout during SSE streaming — partial results captured", async () => {
+      const chunks = [
+        JSON.stringify({ type: "stdout", data: "partial output\n" }) + "\n",
+      ];
+
+      mockFetchByRoute(
+        () => Promise.resolve(streamResponse(chunks, new Error("TimeoutError: timed out"))),
+        () => Promise.resolve(Response.json({ success: true })),
+      );
+
+      const progress: unknown[] = [];
+      const result = await executePythonViaSidecarStream(
+        SIDECAR_URL, "code", undefined, (e: unknown) => progress.push(e),
+      );
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain("Stream read failed");
+      }
+      // The partial stdout event should have been delivered before the error
+      expect(progress).toHaveLength(1);
+      expect(progress[0]).toEqual({ type: "stdout", content: "partial output\n" });
+    });
+  });
+
+  describe("NDJSON protocol errors", () => {
+    it("skips malformed NDJSON lines — missing data: prefix, empty lines, binary garbage", async () => {
+      const body = [
+        JSON.stringify({ type: "stdout", data: "line 1\n" }),
+        "not json at all",
+        "\x00\x01\x02binary garbage",
+        "",
+        JSON.stringify({ type: "stdout", data: "line 2\n" }),
+        JSON.stringify({ type: "done", data: { success: true, exitCode: 0 } }),
+      ].join("\n") + "\n";
+
+      mockFetchByRoute(
+        () => Promise.resolve(new Response(body, { status: 200 })),
+        () => Promise.resolve(Response.json({ success: true })),
+      );
+
+      const progress: unknown[] = [];
+      const result = await executePythonViaSidecarStream(
+        SIDECAR_URL, "code", undefined, (e: unknown) => progress.push(e),
+      );
+
+      expect(result.success).toBe(true);
+      expect(progress).toHaveLength(2);
+      if (result.success) {
+        expect(result.output).toBe("line 1\nline 2");
+      }
+    });
+
+    it("reports interrupted execution on truncated stream (no terminal event)", async () => {
+      // Stream sends stdout but never sends done/error
+      const body = [
+        JSON.stringify({ type: "stdout", data: "before drop\n" }),
+      ].join("\n") + "\n";
+
+      mockFetchByRoute(
+        () => Promise.resolve(new Response(body, { status: 200 })),
+        () => Promise.resolve(Response.json({ success: true })),
+      );
+
+      const progress: unknown[] = [];
+      const result = await executePythonViaSidecarStream(
+        SIDECAR_URL, "code", undefined, (e: unknown) => progress.push(e),
+      );
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain("interrupted");
+        expect(result.output).toContain("before drop");
+      }
+      expect(progress).toHaveLength(1);
+    });
+
+    it("skips invalid JSON in NDJSON data field without crashing", async () => {
+      const body = [
+        '{"type":"stdout","data":"valid\\n"}',
+        '{"type":"stdout","data":}', // invalid JSON
+        '{"type":"stdout","data":"also valid\\n"}',
+        '{"type":"done","data":{"success":true,"exitCode":0}}',
+      ].join("\n") + "\n";
+
+      mockFetchByRoute(
+        () => Promise.resolve(new Response(body, { status: 200 })),
+        () => Promise.resolve(Response.json({ success: true })),
+      );
+
+      const progress: unknown[] = [];
+      const result = await executePythonViaSidecarStream(
+        SIDECAR_URL, "code", undefined, (e: unknown) => progress.push(e),
+      );
+
+      expect(result.success).toBe(true);
+      // Two valid stdout events processed, one invalid skipped
+      expect(progress).toHaveLength(2);
+    });
+
+    it("returns stream read error when connection drops mid-chunk", async () => {
+      const chunks = [
+        JSON.stringify({ type: "stdout", data: "chunk1\n" }) + "\n",
+      ];
+
+      mockFetchByRoute(
+        () => Promise.resolve(streamResponse(chunks, new Error("network connection lost"))),
+        () => Promise.resolve(Response.json({ success: true })),
+      );
+
+      const result = await executePythonViaSidecarStream(
+        SIDECAR_URL, "code", undefined, noop,
+      );
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain("Stream read failed");
+      }
+    });
+  });
+
+  describe("error response handling", () => {
+    it("falls back on sidecar 500 — extracts JSON error from non-streaming endpoint", async () => {
+      mockFetchByRoute(
+        () => Promise.resolve(new Response("Internal Server Error", { status: 500 })),
+        () => Promise.resolve(
+          new Response(JSON.stringify({ success: false, error: "crash" }), { status: 500 }),
+        ),
+      );
+
+      const result = await executePythonViaSidecarStream(
+        SIDECAR_URL, "code", undefined, noop,
+      );
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toBe("crash");
+      }
+    });
+
+    it("falls back on sidecar 500 with non-JSON body — fallback message", async () => {
+      mockFetchByRoute(
+        () => Promise.resolve(new Response("Internal Server Error", { status: 500 })),
+        () => Promise.resolve(new Response("Internal Server Error", { status: 500 })),
+      );
+
+      const result = await executePythonViaSidecarStream(
+        SIDECAR_URL, "code", undefined, noop,
+      );
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain("HTTP 500");
+      }
+    });
+
+    it("falls back on sidecar 429 — rate limit handling", async () => {
+      mockFetchByRoute(
+        () => Promise.resolve(new Response("Rate limited", { status: 429 })),
+        () => Promise.resolve(new Response("Rate limited", { status: 429 })),
+      );
+
+      const result = await executePythonViaSidecarStream(
+        SIDECAR_URL, "code", undefined, noop,
+      );
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain("HTTP 429");
+        expect(result.error).toContain("Rate limited");
+      }
+    });
+
+    it("falls back when sidecar unreachable — clean error", async () => {
+      let callCount = 0;
+      mockFetch((input) => {
+        callCount++;
+        const url = String(input);
+        if (url.includes("/exec-python-stream")) {
+          return Promise.reject(new Error("fetch failed: ECONNREFUSED"));
+        }
+        // Non-streaming fallback is also unreachable
+        return Promise.reject(new Error("fetch failed: ECONNREFUSED"));
+      });
+
+      const result = await executePythonViaSidecarStream(
+        SIDECAR_URL, "code", undefined, noop,
+      );
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain("sidecar unreachable");
+      }
+      // Verify fallback was attempted (streaming + non-streaming)
+      expect(callCount).toBe(2);
+    });
+
+    it("returns error event data from stream", async () => {
+      const events = [
+        { type: "stdout", data: "partial output\n" },
+        { type: "error", data: { error: "MemoryError: out of memory", output: "extra context" } },
+      ];
+
+      mockFetchByRoute(
+        () => Promise.resolve(ndjsonResponse(events)),
+        () => Promise.resolve(Response.json({ success: true })),
+      );
+
+      const result = await executePythonViaSidecarStream(
+        SIDECAR_URL, "code", undefined, noop,
+      );
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toBe("MemoryError: out of memory");
+        expect(result.output).toContain("partial output");
+        expect(result.output).toContain("extra context");
+      }
+    });
+  });
+
+  describe("output handling", () => {
+    it("captures large stdout output without truncation", async () => {
+      const bigChunk = "x".repeat(10_000);
+      const events = [
+        { type: "stdout", data: bigChunk },
+        { type: "stdout", data: "\n" },
+        { type: "stdout", data: bigChunk },
+        { type: "done", data: { success: true, exitCode: 0 } },
+      ];
+
+      mockFetchByRoute(
+        () => Promise.resolve(ndjsonResponse(events)),
+        () => Promise.resolve(Response.json({ success: true })),
+      );
+
+      const progress: unknown[] = [];
+      const result = await executePythonViaSidecarStream(
+        SIDECAR_URL, "code", undefined, (e: unknown) => progress.push(e),
+      );
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.output).toBe(`${bigChunk}\n${bigChunk}`);
+      }
+      // 3 stdout progress events
+      expect(progress).toHaveLength(3);
+    });
+
+    it("extracts base64 chart data from stream", async () => {
+      const chartData = { base64: "iVBORw0KGgo=", mimeType: "image/png" as const };
+      const events = [
+        { type: "chart", data: chartData },
+        { type: "done", data: { success: true, exitCode: 0 } },
+      ];
+
+      mockFetchByRoute(
+        () => Promise.resolve(ndjsonResponse(events)),
+        () => Promise.resolve(Response.json({ success: true })),
+      );
+
+      const progress: unknown[] = [];
+      const result = await executePythonViaSidecarStream(
+        SIDECAR_URL, "code", undefined, (e: unknown) => progress.push(e),
+      );
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.charts).toHaveLength(1);
+        expect(result.charts![0].base64).toBe("iVBORw0KGgo=");
+      }
+      expect(progress).toHaveLength(1);
+      expect(progress[0]).toEqual({ type: "chart", chart: chartData });
+    });
+
+    it("preserves ordering of mixed stdout + chart output", async () => {
+      const chart = { base64: "abc123", mimeType: "image/png" as const };
+      const rechartsChart = {
+        type: "bar" as const,
+        data: [{ x: 1, y: 2 }],
+        categoryKey: "x",
+        valueKeys: ["y"],
+      };
+      const events = [
+        { type: "stdout", data: "first output\n" },
+        { type: "chart", data: chart },
+        { type: "stdout", data: "second output\n" },
+        { type: "recharts", data: rechartsChart },
+        { type: "done", data: { success: true, exitCode: 0 } },
+      ];
+
+      mockFetchByRoute(
+        () => Promise.resolve(ndjsonResponse(events)),
+        () => Promise.resolve(Response.json({ success: true })),
+      );
+
+      const progress: unknown[] = [];
+      const result = await executePythonViaSidecarStream(
+        SIDECAR_URL, "code", undefined, (e: unknown) => progress.push(e),
+      );
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.output).toBe("first output\nsecond output");
+        expect(result.charts).toHaveLength(1);
+        expect(result.rechartsCharts).toHaveLength(1);
+      }
+
+      // Verify progress events in order
+      expect(progress).toHaveLength(4);
+      expect((progress[0] as { type: string }).type).toBe("stdout");
+      expect((progress[1] as { type: string }).type).toBe("chart");
+      expect((progress[2] as { type: string }).type).toBe("stdout");
+      expect((progress[3] as { type: string }).type).toBe("recharts");
+    });
+
+    it("handles table data in stream", async () => {
+      const events = [
+        { type: "table", data: { columns: ["id", "name"], rows: [[1, "alice"], [2, "bob"]] } },
+        { type: "done", data: { success: true, exitCode: 0 } },
+      ];
+
+      mockFetchByRoute(
+        () => Promise.resolve(ndjsonResponse(events)),
+        () => Promise.resolve(Response.json({ success: true })),
+      );
+
+      const result = await executePythonViaSidecarStream(
+        SIDECAR_URL, "code", undefined, noop,
+      );
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.table).toEqual({ columns: ["id", "name"], rows: [[1, "alice"], [2, "bob"]] });
+      }
     });
   });
 });

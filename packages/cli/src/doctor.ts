@@ -61,6 +61,7 @@ export function maskConnectionString(url: string): string {
     const portPart = port ? `:${port}` : "";
     return `${scheme}://${host}${portPart}/${dbName}`;
   } catch {
+    // intentionally ignored: URL masking is best-effort; invalid URLs produce a safe fallback
     return "(invalid URL)";
   }
 }
@@ -171,7 +172,7 @@ export async function checkDatabaseConnectivity(): Promise<CheckResult> {
                   schemaHint = ` Available schemas: ${schemas.join(", ")}.`;
                 }
               } catch {
-                // Schema listing failed — fall back to generic message
+                // intentionally ignored: schema listing is best-effort for error message enhancement
               }
               client.release();
               return {
@@ -181,7 +182,8 @@ export async function checkDatabaseConnectivity(): Promise<CheckResult> {
                 fix: `Check ATLAS_SCHEMA in your .env file.${schemaHint}`,
               };
             }
-          } catch {
+          } catch (err) {
+            console.warn(`Schema verification failed: ${err instanceof Error ? err.message : String(err)}`);
             client.release();
             return {
               status: "fail",
@@ -444,7 +446,7 @@ function findOnPath(binary: string): string | null {
       fs.accessSync(candidate, fs.constants.X_OK);
       return candidate;
     } catch {
-      // Not found in this dir
+      // intentionally ignored: expected failure when binary not in this PATH dir
     }
   }
   return null;

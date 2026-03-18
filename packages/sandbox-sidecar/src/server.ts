@@ -56,7 +56,8 @@ async function readLimited(stream: ReadableStream, max: number): Promise<string>
       chunks.push(value);
     }
   } finally {
-    await reader.cancel().catch(() => { /* stream cancel errors are non-critical */ });
+    // intentionally ignored: stream cancel errors are non-critical during cleanup
+    await reader.cancel().catch(() => {});
   }
   return new TextDecoder().decode(Buffer.concat(chunks));
 }
@@ -459,8 +460,8 @@ async function handleExecPython(req: Request): Promise<Response> {
         const parsed = JSON.parse(resultLine.slice(resultMarker.length)) as SidecarPythonResponse;
         console.log(`[sandbox-sidecar] python=${execId} success=${parsed.success} exitCode=${exitCode} duration=${duration}ms`);
         return Response.json(parsed);
-      } catch {
-        console.warn(`[sandbox-sidecar] python=${execId} failed to parse result JSON, exitCode=${exitCode}`);
+      } catch (err) {
+        console.warn(`[sandbox-sidecar] python=${execId} failed to parse result JSON: ${err instanceof Error ? err.message : String(err)}, exitCode=${exitCode}`);
         return Response.json({ success: false, error: `Python produced unparseable output. stderr: ${stderr.trim().slice(0, 500)}` } satisfies SidecarPythonResponse);
       }
     }

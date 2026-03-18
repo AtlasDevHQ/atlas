@@ -214,7 +214,7 @@ describe("GET /api/v1/admin/me/password-status", () => {
     expect(body.passwordChangeRequired).toBe(false);
   });
 
-  it("returns false for non-managed auth (header mode)", async () => {
+  it("returns false for non-managed auth (simple-key mode)", async () => {
     mockAuthenticateRequest.mockResolvedValue({
       authenticated: true,
       mode: "simple-key",
@@ -264,6 +264,9 @@ describe("GET /api/v1/admin/me/password-status", () => {
 
     const res = await app.fetch(req("/api/v1/admin/me/password-status"));
     expect(res.status).toBe(401);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("auth_error");
+    expect(body.message).toBe("No session found");
   });
 
   it("returns 500 when authenticateRequest throws", async () => {
@@ -326,7 +329,7 @@ describe("POST /api/v1/admin/me/password", () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string; message: string };
     expect(body.error).toBe("invalid_request");
-    expect(body.message).toContain("incorrect");
+    expect(body.message).toBe("Current password is incorrect.");
   });
 
   it("returns 400 when fields are missing", async () => {
@@ -391,6 +394,9 @@ describe("POST /api/v1/admin/me/password", () => {
       }),
     );
     expect(res.status).toBe(401);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("auth_error");
+    expect(body.message).toBe("No session found");
   });
 
   it("returns 500 on non-password-related changePassword error", async () => {
@@ -437,5 +443,49 @@ describe("POST /api/v1/admin/me/password", () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string };
     expect(body.error).toBe("invalid_request");
+  });
+
+  it("returns 500 when authenticateRequest throws", async () => {
+    mockAuthenticateRequest.mockRejectedValue(new Error("auth system down"));
+
+    const res = await app.fetch(
+      req("/api/v1/admin/me/password", "POST", {
+        currentPassword: "OldPass123",
+        newPassword: "NewPass456",
+      }),
+    );
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("auth_error");
+  });
+
+  it("returns 500 if flag-clear fails after successful password change", async () => {
+    mockInternalQuery.mockRejectedValue(new Error("disk full"));
+
+    const res = await app.fetch(
+      req("/api/v1/admin/me/password", "POST", {
+        currentPassword: "OldPass123",
+        newPassword: "NewPass456",
+      }),
+    );
+    // Password was changed in auth system but flag clear failed
+    expect(mockChangePassword).toHaveBeenCalledTimes(1);
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("internal_error");
+  });
+
+  it("returns 400 when error contains 'invalid' keyword", async () => {
+    mockChangePassword.mockRejectedValue(new Error("invalid credentials"));
+
+    const res = await app.fetch(
+      req("/api/v1/admin/me/password", "POST", {
+        currentPassword: "WrongPass",
+        newPassword: "NewPass456",
+      }),
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.message).toBe("Current password is incorrect.");
   });
 });

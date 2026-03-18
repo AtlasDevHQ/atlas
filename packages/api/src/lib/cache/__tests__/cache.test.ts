@@ -128,36 +128,37 @@ describe("LRUCacheBackend — TTL edge cases", () => {
     expect(cache.get("long-lived")).not.toBeNull();
   });
 
-  it("entry at exact TTL boundary is expired (> check, not >=)", () => {
-    const now = Date.now();
-    const cache = new LRUCacheBackend(5, 300_000);
-    // cachedAt is exactly ttl ms in the past — Date.now() - cachedAt === ttl
-    // The check is `>` so entry at exact boundary is NOT expired
-    const entry = makeEntry({ cachedAt: now - 300_000, ttl: 300_000 });
-    cache.set("boundary", entry);
-    // Since Date.now() advances, this will be > ttl by the time get() runs
-    // We just verify the behavior is deterministic: at boundary it's expired
-    const result = cache.get("boundary");
-    // Either still valid (if get() is fast enough) or expired — both are correct
-    // The important thing is no crash or inconsistent state
-    expect(result === null || result.columns.length === 2).toBe(true);
+  it("entry at exact TTL boundary is NOT expired (> check, not >=)", () => {
+    const now = 1_000_000;
+    const originalNow = Date.now;
+    Date.now = () => now;
+    try {
+      const cache = new LRUCacheBackend(5, 300_000);
+      // cachedAt is exactly ttl ms in the past — Date.now() - cachedAt === ttl
+      // The implementation uses `>` so at exact boundary the entry is still valid
+      const entry = makeEntry({ cachedAt: now - 300_000, ttl: 300_000 });
+      cache.set("boundary", entry);
+      expect(cache.get("boundary")).not.toBeNull();
+    } finally {
+      Date.now = originalNow;
+    }
   });
 
   it("constructor rejects maxSize < 1", () => {
-    expect(() => new LRUCacheBackend(0, 300_000)).toThrow("maxSize must be >= 1");
+    expect(() => new LRUCacheBackend(0, 300_000)).toThrow("Cache maxSize must be >= 1, got 0");
   });
 
   it("constructor rejects defaultTtl < 1", () => {
-    expect(() => new LRUCacheBackend(5, 0)).toThrow("defaultTtl must be >= 1");
+    expect(() => new LRUCacheBackend(5, 0)).toThrow("Cache defaultTtl must be >= 1ms, got 0");
   });
 });
 
 // ---------------------------------------------------------------------------
-// Concurrent access
+// Interleaved operations
 // ---------------------------------------------------------------------------
 
-describe("LRUCacheBackend — concurrent access", () => {
-  it("simultaneous set() for the same key — last write wins", () => {
+describe("LRUCacheBackend — interleaved operations", () => {
+  it("consecutive set() for the same key — last write wins", () => {
     const cache = new LRUCacheBackend(5, 300_000);
     const entry1 = makeEntry({ rows: [{ id: 1, name: "first" }] });
     const entry2 = makeEntry({ rows: [{ id: 2, name: "second" }] });
@@ -378,6 +379,19 @@ describe("LRUCacheBackend — stats accuracy", () => {
     expect(stats.hits).toBe(0);
     expect(stats.misses).toBe(1);
     expect(stats.entryCount).toBe(0);
+  });
+
+  it("flush() clears entries but preserves hit/miss stats", () => {
+    const cache = new LRUCacheBackend(5, 300_000);
+    cache.set("a", makeEntry());
+    cache.get("a"); // hit
+    cache.get("miss"); // miss
+    cache.flush();
+
+    const stats = cache.stats();
+    expect(stats.entryCount).toBe(0);
+    expect(stats.hits).toBe(1);
+    expect(stats.misses).toBe(1);
   });
 
   it("overwriting a key does not inflate entry count", () => {

@@ -64,10 +64,25 @@ function streamResponse(chunks: string[], error?: Error): Response {
 /** No-op progress callback. */
 const noop = () => {};
 
+/** Inferred PythonResult from the function's return type. */
+type PythonResult = Awaited<ReturnType<typeof executePythonViaSidecar>>;
+
+/** Assert result is a failure and narrow the type for subsequent assertions. */
+function expectFailure(result: PythonResult): asserts result is Extract<PythonResult, { success: false }> {
+  expect(result.success).toBe(false);
+}
+
+/** Assert result is a success and narrow the type for subsequent assertions. */
+function expectSuccess(result: PythonResult): asserts result is Extract<PythonResult, { success: true }> {
+  expect(result.success).toBe(true);
+}
+
+const OK_FALLBACK = () => Promise.resolve(Response.json({ success: true }));
+
 /** Route-aware mock: returns different responses for streaming vs non-streaming. */
 function mockFetchByRoute(
   streamHandler: () => Promise<Response>,
-  nonStreamHandler: () => Promise<Response>,
+  nonStreamHandler: () => Promise<Response> = OK_FALLBACK,
 ) {
   mockFetch((input) => {
     const url = String(input);
@@ -409,43 +424,49 @@ describe("executePythonViaSidecar", () => {
 // ---------------------------------------------------------------------------
 
 describe("executePythonViaSidecarStream", () => {
+  describe("URL validation", () => {
+    it("returns error for invalid sidecar URL", async () => {
+      const result = await executePythonViaSidecarStream(
+        "not-a-url", 'print("hello")', undefined, noop,
+      );
+      expectFailure(result);
+      expect(result.error).toContain("Invalid ATLAS_SANDBOX_URL");
+    });
+  });
+
   describe("timeout paths", () => {
     it("returns error when execution exceeds timeout", async () => {
       mockFetchByRoute(
         () => Promise.reject(new Error("TimeoutError: The operation was aborted due to timeout")),
-        () => Promise.resolve(Response.json({ success: true })),
       );
 
       const progress: unknown[] = [];
       const result = await executePythonViaSidecarStream(
-        SIDECAR_URL, 'print("hello")', undefined, (e: unknown) => progress.push(e),
+        SIDECAR_URL, 'print("hello")', undefined, (e) => progress.push(e),
       );
 
-      expect(result.success).toBe(false);
-      if (!result.success) {
-        expect(result.error).toContain("Streaming Python execution failed");
-      }
+      expectFailure(result);
+      expect(result.error).toContain("Streaming Python execution failed");
       expect(progress).toHaveLength(0);
     });
 
     it("has no leaked state between consecutive timeouts", async () => {
       mockFetchByRoute(
         () => Promise.reject(new Error("TimeoutError: timed out")),
-        () => Promise.resolve(Response.json({ success: true })),
       );
 
       const progress1: unknown[] = [];
       const result1 = await executePythonViaSidecarStream(
-        SIDECAR_URL, "code1", undefined, (e: unknown) => progress1.push(e),
+        SIDECAR_URL, "code1", undefined, (e) => progress1.push(e),
       );
 
       const progress2: unknown[] = [];
       const result2 = await executePythonViaSidecarStream(
-        SIDECAR_URL, "code2", undefined, (e: unknown) => progress2.push(e),
+        SIDECAR_URL, "code2", undefined, (e) => progress2.push(e),
       );
 
-      expect(result1.success).toBe(false);
-      expect(result2.success).toBe(false);
+      expectFailure(result1);
+      expectFailure(result2);
       expect(progress1).toHaveLength(0);
       expect(progress2).toHaveLength(0);
     });
@@ -457,18 +478,15 @@ describe("executePythonViaSidecarStream", () => {
 
       mockFetchByRoute(
         () => Promise.resolve(streamResponse(chunks, new Error("TimeoutError: timed out"))),
-        () => Promise.resolve(Response.json({ success: true })),
       );
 
       const progress: unknown[] = [];
       const result = await executePythonViaSidecarStream(
-        SIDECAR_URL, "code", undefined, (e: unknown) => progress.push(e),
+        SIDECAR_URL, "code", undefined, (e) => progress.push(e),
       );
 
-      expect(result.success).toBe(false);
-      if (!result.success) {
-        expect(result.error).toContain("Stream read failed");
-      }
+      expectFailure(result);
+      expect(result.error).toContain("Stream read failed");
       // The partial stdout event should have been delivered before the error
       expect(progress).toHaveLength(1);
       expect(progress[0]).toEqual({ type: "stdout", content: "partial output\n" });
@@ -488,42 +506,31 @@ describe("executePythonViaSidecarStream", () => {
 
       mockFetchByRoute(
         () => Promise.resolve(new Response(body, { status: 200 })),
-        () => Promise.resolve(Response.json({ success: true })),
       );
 
       const progress: unknown[] = [];
       const result = await executePythonViaSidecarStream(
-        SIDECAR_URL, "code", undefined, (e: unknown) => progress.push(e),
+        SIDECAR_URL, "code", undefined, (e) => progress.push(e),
       );
 
-      expect(result.success).toBe(true);
+      expectSuccess(result);
       expect(progress).toHaveLength(2);
-      if (result.success) {
-        expect(result.output).toBe("line 1\nline 2");
-      }
+      expect(result.output).toBe("line 1\nline 2");
     });
 
     it("reports interrupted execution on truncated stream (no terminal event)", async () => {
-      // Stream sends stdout but never sends done/error
-      const body = [
-        JSON.stringify({ type: "stdout", data: "before drop\n" }),
-      ].join("\n") + "\n";
-
       mockFetchByRoute(
-        () => Promise.resolve(new Response(body, { status: 200 })),
-        () => Promise.resolve(Response.json({ success: true })),
+        () => Promise.resolve(ndjsonResponse([{ type: "stdout", data: "before drop\n" }])),
       );
 
       const progress: unknown[] = [];
       const result = await executePythonViaSidecarStream(
-        SIDECAR_URL, "code", undefined, (e: unknown) => progress.push(e),
+        SIDECAR_URL, "code", undefined, (e) => progress.push(e),
       );
 
-      expect(result.success).toBe(false);
-      if (!result.success) {
-        expect(result.error).toContain("interrupted");
-        expect(result.output).toContain("before drop");
-      }
+      expectFailure(result);
+      expect(result.error).toContain("interrupted");
+      expect(result.output).toContain("before drop");
       expect(progress).toHaveLength(1);
     });
 
@@ -537,15 +544,14 @@ describe("executePythonViaSidecarStream", () => {
 
       mockFetchByRoute(
         () => Promise.resolve(new Response(body, { status: 200 })),
-        () => Promise.resolve(Response.json({ success: true })),
       );
 
       const progress: unknown[] = [];
       const result = await executePythonViaSidecarStream(
-        SIDECAR_URL, "code", undefined, (e: unknown) => progress.push(e),
+        SIDECAR_URL, "code", undefined, (e) => progress.push(e),
       );
 
-      expect(result.success).toBe(true);
+      expectSuccess(result);
       // Two valid stdout events processed, one invalid skipped
       expect(progress).toHaveLength(2);
     });
@@ -557,70 +563,99 @@ describe("executePythonViaSidecarStream", () => {
 
       mockFetchByRoute(
         () => Promise.resolve(streamResponse(chunks, new Error("network connection lost"))),
-        () => Promise.resolve(Response.json({ success: true })),
       );
 
       const result = await executePythonViaSidecarStream(
         SIDECAR_URL, "code", undefined, noop,
       );
 
-      expect(result.success).toBe(false);
-      if (!result.success) {
-        expect(result.error).toContain("Stream read failed");
-      }
+      expectFailure(result);
+      expect(result.error).toContain("Stream read failed");
     });
   });
 
   describe("error response handling", () => {
-    it("falls back on sidecar 500 — extracts JSON error from non-streaming endpoint", async () => {
-      mockFetchByRoute(
-        () => Promise.resolve(new Response("Internal Server Error", { status: 500 })),
-        () => Promise.resolve(
-          new Response(JSON.stringify({ success: false, error: "crash" }), { status: 500 }),
-        ),
-      );
+    it("falls back on sidecar 404 — older sidecar without streaming support", async () => {
+      let callCount = 0;
+      mockFetch((input) => {
+        callCount++;
+        const url = String(input);
+        if (url.includes("/exec-python-stream")) {
+          return Promise.resolve(new Response("Not Found", { status: 404 }));
+        }
+        return Promise.resolve(Response.json({ success: true, output: "fallback worked" }));
+      });
 
       const result = await executePythonViaSidecarStream(
         SIDECAR_URL, "code", undefined, noop,
       );
 
-      expect(result.success).toBe(false);
-      if (!result.success) {
-        expect(result.error).toBe("crash");
-      }
+      expectSuccess(result);
+      expect(result.output).toBe("fallback worked");
+      expect(callCount).toBe(2);
+    });
+
+    it("falls back on sidecar 500 — extracts JSON error from non-streaming endpoint", async () => {
+      let callCount = 0;
+      mockFetch((input) => {
+        callCount++;
+        const url = String(input);
+        if (url.includes("/exec-python-stream")) {
+          return Promise.resolve(new Response("Internal Server Error", { status: 500 }));
+        }
+        return Promise.resolve(
+          new Response(JSON.stringify({ success: false, error: "crash" }), { status: 500 }),
+        );
+      });
+
+      const result = await executePythonViaSidecarStream(
+        SIDECAR_URL, "code", undefined, noop,
+      );
+
+      expectFailure(result);
+      expect(result.error).toBe("crash");
+      expect(callCount).toBe(2);
     });
 
     it("falls back on sidecar 500 with non-JSON body — fallback message", async () => {
-      mockFetchByRoute(
-        () => Promise.resolve(new Response("Internal Server Error", { status: 500 })),
-        () => Promise.resolve(new Response("Internal Server Error", { status: 500 })),
-      );
+      let callCount = 0;
+      mockFetch((input) => {
+        callCount++;
+        const url = String(input);
+        if (url.includes("/exec-python-stream")) {
+          return Promise.resolve(new Response("Internal Server Error", { status: 500 }));
+        }
+        return Promise.resolve(new Response("Internal Server Error", { status: 500 }));
+      });
 
       const result = await executePythonViaSidecarStream(
         SIDECAR_URL, "code", undefined, noop,
       );
 
-      expect(result.success).toBe(false);
-      if (!result.success) {
-        expect(result.error).toContain("HTTP 500");
-      }
+      expectFailure(result);
+      expect(result.error).toContain("HTTP 500");
+      expect(callCount).toBe(2);
     });
 
     it("falls back on sidecar 429 — rate limit handling", async () => {
-      mockFetchByRoute(
-        () => Promise.resolve(new Response("Rate limited", { status: 429 })),
-        () => Promise.resolve(new Response("Rate limited", { status: 429 })),
-      );
+      let callCount = 0;
+      mockFetch((input) => {
+        callCount++;
+        const url = String(input);
+        if (url.includes("/exec-python-stream")) {
+          return Promise.resolve(new Response("Rate limited", { status: 429 }));
+        }
+        return Promise.resolve(new Response("Rate limited", { status: 429 }));
+      });
 
       const result = await executePythonViaSidecarStream(
         SIDECAR_URL, "code", undefined, noop,
       );
 
-      expect(result.success).toBe(false);
-      if (!result.success) {
-        expect(result.error).toContain("HTTP 429");
-        expect(result.error).toContain("Rate limited");
-      }
+      expectFailure(result);
+      expect(result.error).toContain("HTTP 429");
+      expect(result.error).toContain("Rate limited");
+      expect(callCount).toBe(2);
     });
 
     it("falls back when sidecar unreachable — clean error", async () => {
@@ -631,7 +666,6 @@ describe("executePythonViaSidecarStream", () => {
         if (url.includes("/exec-python-stream")) {
           return Promise.reject(new Error("fetch failed: ECONNREFUSED"));
         }
-        // Non-streaming fallback is also unreachable
         return Promise.reject(new Error("fetch failed: ECONNREFUSED"));
       });
 
@@ -639,88 +673,69 @@ describe("executePythonViaSidecarStream", () => {
         SIDECAR_URL, "code", undefined, noop,
       );
 
-      expect(result.success).toBe(false);
-      if (!result.success) {
-        expect(result.error).toContain("sidecar unreachable");
-      }
-      // Verify fallback was attempted (streaming + non-streaming)
+      expectFailure(result);
+      expect(result.error).toContain("sidecar unreachable");
       expect(callCount).toBe(2);
     });
 
     it("returns error event data from stream", async () => {
-      const events = [
-        { type: "stdout", data: "partial output\n" },
-        { type: "error", data: { error: "MemoryError: out of memory", output: "extra context" } },
-      ];
-
       mockFetchByRoute(
-        () => Promise.resolve(ndjsonResponse(events)),
-        () => Promise.resolve(Response.json({ success: true })),
+        () => Promise.resolve(ndjsonResponse([
+          { type: "stdout", data: "partial output\n" },
+          { type: "error", data: { error: "MemoryError: out of memory", output: "extra context" } },
+        ])),
       );
 
       const result = await executePythonViaSidecarStream(
         SIDECAR_URL, "code", undefined, noop,
       );
 
-      expect(result.success).toBe(false);
-      if (!result.success) {
-        expect(result.error).toBe("MemoryError: out of memory");
-        expect(result.output).toContain("partial output");
-        expect(result.output).toContain("extra context");
-      }
+      expectFailure(result);
+      expect(result.error).toBe("MemoryError: out of memory");
+      expect(result.output).toContain("partial output");
+      expect(result.output).toContain("extra context");
     });
   });
 
   describe("output handling", () => {
     it("captures large stdout output without truncation", async () => {
       const bigChunk = "x".repeat(10_000);
-      const events = [
-        { type: "stdout", data: bigChunk },
-        { type: "stdout", data: "\n" },
-        { type: "stdout", data: bigChunk },
-        { type: "done", data: { success: true, exitCode: 0 } },
-      ];
-
       mockFetchByRoute(
-        () => Promise.resolve(ndjsonResponse(events)),
-        () => Promise.resolve(Response.json({ success: true })),
+        () => Promise.resolve(ndjsonResponse([
+          { type: "stdout", data: bigChunk },
+          { type: "stdout", data: "\n" },
+          { type: "stdout", data: bigChunk },
+          { type: "done", data: { success: true, exitCode: 0 } },
+        ])),
       );
 
       const progress: unknown[] = [];
       const result = await executePythonViaSidecarStream(
-        SIDECAR_URL, "code", undefined, (e: unknown) => progress.push(e),
+        SIDECAR_URL, "code", undefined, (e) => progress.push(e),
       );
 
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.output).toBe(`${bigChunk}\n${bigChunk}`);
-      }
-      // 3 stdout progress events
+      expectSuccess(result);
+      expect(result.output).toBe(`${bigChunk}\n${bigChunk}`);
       expect(progress).toHaveLength(3);
     });
 
     it("extracts base64 chart data from stream", async () => {
       const chartData = { base64: "iVBORw0KGgo=", mimeType: "image/png" as const };
-      const events = [
-        { type: "chart", data: chartData },
-        { type: "done", data: { success: true, exitCode: 0 } },
-      ];
-
       mockFetchByRoute(
-        () => Promise.resolve(ndjsonResponse(events)),
-        () => Promise.resolve(Response.json({ success: true })),
+        () => Promise.resolve(ndjsonResponse([
+          { type: "chart", data: chartData },
+          { type: "done", data: { success: true, exitCode: 0 } },
+        ])),
       );
 
       const progress: unknown[] = [];
       const result = await executePythonViaSidecarStream(
-        SIDECAR_URL, "code", undefined, (e: unknown) => progress.push(e),
+        SIDECAR_URL, "code", undefined, (e) => progress.push(e),
       );
 
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.charts).toHaveLength(1);
-        expect(result.charts![0].base64).toBe("iVBORw0KGgo=");
-      }
+      expectSuccess(result);
+      expect(result.charts).toHaveLength(1);
+      expect(result.charts![0].base64).toBe("iVBORw0KGgo=");
       expect(progress).toHaveLength(1);
       expect(progress[0]).toEqual({ type: "chart", chart: chartData });
     });
@@ -733,58 +748,47 @@ describe("executePythonViaSidecarStream", () => {
         categoryKey: "x",
         valueKeys: ["y"],
       };
-      const events = [
-        { type: "stdout", data: "first output\n" },
-        { type: "chart", data: chart },
-        { type: "stdout", data: "second output\n" },
-        { type: "recharts", data: rechartsChart },
-        { type: "done", data: { success: true, exitCode: 0 } },
-      ];
-
       mockFetchByRoute(
-        () => Promise.resolve(ndjsonResponse(events)),
-        () => Promise.resolve(Response.json({ success: true })),
+        () => Promise.resolve(ndjsonResponse([
+          { type: "stdout", data: "first output\n" },
+          { type: "chart", data: chart },
+          { type: "stdout", data: "second output\n" },
+          { type: "recharts", data: rechartsChart },
+          { type: "done", data: { success: true, exitCode: 0 } },
+        ])),
       );
 
       const progress: unknown[] = [];
       const result = await executePythonViaSidecarStream(
-        SIDECAR_URL, "code", undefined, (e: unknown) => progress.push(e),
+        SIDECAR_URL, "code", undefined, (e) => progress.push(e),
       );
 
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.output).toBe("first output\nsecond output");
-        expect(result.charts).toHaveLength(1);
-        expect(result.rechartsCharts).toHaveLength(1);
-      }
+      expectSuccess(result);
+      expect(result.output).toBe("first output\nsecond output");
+      expect(result.charts).toHaveLength(1);
+      expect(result.rechartsCharts).toHaveLength(1);
 
       // Verify progress events in order
       expect(progress).toHaveLength(4);
-      expect((progress[0] as { type: string }).type).toBe("stdout");
-      expect((progress[1] as { type: string }).type).toBe("chart");
-      expect((progress[2] as { type: string }).type).toBe("stdout");
-      expect((progress[3] as { type: string }).type).toBe("recharts");
+      expect(progress.map((e) => (e as { type: string }).type)).toEqual([
+        "stdout", "chart", "stdout", "recharts",
+      ]);
     });
 
     it("handles table data in stream", async () => {
-      const events = [
-        { type: "table", data: { columns: ["id", "name"], rows: [[1, "alice"], [2, "bob"]] } },
-        { type: "done", data: { success: true, exitCode: 0 } },
-      ];
-
       mockFetchByRoute(
-        () => Promise.resolve(ndjsonResponse(events)),
-        () => Promise.resolve(Response.json({ success: true })),
+        () => Promise.resolve(ndjsonResponse([
+          { type: "table", data: { columns: ["id", "name"], rows: [[1, "alice"], [2, "bob"]] } },
+          { type: "done", data: { success: true, exitCode: 0 } },
+        ])),
       );
 
       const result = await executePythonViaSidecarStream(
         SIDECAR_URL, "code", undefined, noop,
       );
 
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.table).toEqual({ columns: ["id", "name"], rows: [[1, "alice"], [2, "bob"]] });
-      }
+      expectSuccess(result);
+      expect(result.table).toEqual({ columns: ["id", "name"], rows: [[1, "alice"], [2, "bob"]] });
     });
   });
 });

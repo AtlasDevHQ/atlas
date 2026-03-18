@@ -1241,7 +1241,7 @@ admin.put("/connections/:id", async (c) => {
           schema: current.schema_name ?? undefined,
         });
       } catch (restoreErr) {
-        log.error({ connectionId: id, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) }, "Failed to restore previous connection after encryption failure — connection unregistered");
+        log.error({ connectionId: id, requestId, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) }, "Failed to restore previous connection after encryption failure — connection unregistered");
         connections.unregister(id);
       }
       log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to encrypt connection URL");
@@ -1262,7 +1262,7 @@ admin.put("/connections/:id", async (c) => {
           schema: current.schema_name ?? undefined,
         });
       } catch (restoreErr) {
-        log.error({ connectionId: id, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) }, "Failed to restore previous connection after DB update failure — connection unregistered");
+        log.error({ connectionId: id, requestId, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) }, "Failed to restore previous connection after DB update failure — connection unregistered");
         connections.unregister(id);
       }
       log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Failed to update connection in DB");

@@ -170,7 +170,7 @@ defaultRegistry.register({
 
 defaultRegistry.freeze();
 
-export interface BuildRegistryResult {
+interface BuildRegistryResult {
   registry: ToolRegistry;
   warnings: string[];
 }

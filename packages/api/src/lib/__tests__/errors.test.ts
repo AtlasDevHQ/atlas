@@ -3,7 +3,7 @@ import {
   parseChatError,
   authErrorMessage,
   isChatErrorCode,
-} from "@atlas/api/lib/errors";
+} from "@useatlas/types/errors";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */

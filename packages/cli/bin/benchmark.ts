@@ -39,7 +39,7 @@ interface BIRDQuestion {
   difficulty: string;
 }
 
-export interface QuestionResult {
+interface QuestionResult {
   question_id: number;
   db_id: string;
   question: string;
@@ -56,7 +56,7 @@ export interface QuestionResult {
 // --- Result set comparison (re-exported from shared module) ---
 
 import { escapeIdent, compareResultSets } from "../lib/compare";
-export { escapeIdent, normalizeValue, sortRows, valuesMatch, compareResultSets, explainMismatch } from "../lib/compare";
+export { escapeIdent, normalizeValue, sortRows, valuesMatch, compareResultSets } from "../lib/compare";
 
 // --- Gold SQL execution (bun:sqlite) ---
 

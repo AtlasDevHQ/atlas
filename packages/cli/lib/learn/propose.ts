@@ -33,8 +33,6 @@ export interface GlossaryYaml {
   }>;
 }
 
-export type ProposalType = "query_pattern" | "join" | "glossary_term";
-
 interface ProposalBase {
   /** File path being modified (entity YAML or glossary.yml). */
   filePath: string;
@@ -46,7 +44,7 @@ interface ProposalBase {
   yamlAddition: string;
 }
 
-export interface EntityProposal extends ProposalBase {
+interface EntityProposal extends ProposalBase {
   type: "query_pattern" | "join";
   /** Table/entity this proposal applies to. */
   table: string;
@@ -54,14 +52,14 @@ export interface EntityProposal extends ProposalBase {
   apply: (entity: EntityYaml) => void;
 }
 
-export interface GlossaryProposal extends ProposalBase {
+interface GlossaryProposal extends ProposalBase {
   type: "glossary_term";
   table: null;
   /** Apply this proposal to the glossary YAML object in-memory. */
   apply: (glossary: GlossaryYaml) => void;
 }
 
-export type Proposal = EntityProposal | GlossaryProposal;
+type Proposal = EntityProposal | GlossaryProposal;
 
 export interface ProposalSet {
   proposals: Proposal[];

@@ -20,7 +20,7 @@
  *   atlas completions fish > ~/.config/fish/completions/atlas.fish
  */
 
-export type Shell = "bash" | "zsh" | "fish";
+type Shell = "bash" | "zsh" | "fish";
 
 interface CommandSpec {
   description: string;

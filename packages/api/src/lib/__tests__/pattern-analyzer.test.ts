@@ -2,7 +2,8 @@
  * Unit tests for pattern-analyzer.ts — SQL normalization, fingerprinting,
  * and structural pattern extraction.
  *
- * All functions under test are pure (no I/O) — no mocks needed.
+ * normalizeSQL, fingerprintSQL, and extractPatternInfo are pure (no I/O).
+ * loadYamlQueryPatterns reads the filesystem but is tested against a known fixture directory.
  */
 import { describe, test, expect } from "bun:test";
 import {

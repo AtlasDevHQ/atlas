@@ -564,10 +564,10 @@ export async function loadSavedConnections(): Promise<number> {
 // ── Learned pattern helpers ─────────────────────────────────────────
 
 /**
- * Find a learned pattern by normalized SQL for the given org.
+ * Find a learned pattern by exact normalized SQL match for the given org.
  * Returns the pattern's id, confidence, and repetition count, or null if not found.
  */
-export async function findSimilarPattern(
+export async function findPatternBySQL(
   orgId: string | null | undefined,
   patternSql: string,
 ): Promise<{ id: string; confidence: number; repetitionCount: number } | null> {
@@ -621,8 +621,8 @@ export function insertLearnedPattern(pattern: {
 }
 
 /**
- * Increment the repetition count and bump confidence for an existing learned pattern.
- * Appends the source fingerprint to source_queries (capped at 100 entries).
+ * Increment repetition_count by 1 and increase confidence by 0.1 (capped at 1.0).
+ * When sourceFingerprint is provided, appends it to source_queries (capped at 100 entries).
  * Fire-and-forget — errors are logged, never thrown.
  */
 export function incrementPatternCount(id: string, sourceFingerprint?: string): void {

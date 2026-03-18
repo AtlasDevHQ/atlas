@@ -108,7 +108,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getEncryptionKey: () => null,
   isPlaintextUrl: (value: string) => /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value),
   _resetEncryptionKeyCache: mock(() => {}),
-  findSimilarPattern: async () => null,
+  findPatternBySQL: async () => null,
   insertLearnedPattern: () => {},
   incrementPatternCount: () => {},
 }));

@@ -618,7 +618,10 @@ async function executeAndAudit(opts: {
       durationMs,
     });
 
-    // Fire-and-forget: propose as learned pattern if novel
+    // Fire-and-forget: propose as learned pattern if novel.
+    // Note: querySql may include auto-appended LIMIT (stripped by normalizeSQL)
+    // and RLS-injected WHERE clauses (not stripped — same base query may produce
+    // different patterns for different RLS contexts).
     proposePatternIfNovel({
       sql: querySql,
       dialect: parserDatabase(dbType, connId),

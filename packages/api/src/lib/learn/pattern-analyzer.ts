@@ -1,7 +1,8 @@
 /**
  * Pattern analysis for the learned patterns system.
  *
- * Extracted from packages/cli/lib/learn/analyze.ts for runtime use.
+ * Inspired by packages/cli/lib/learn/analyze.ts, adapted for runtime use
+ * with literal-placeholder normalization for stronger deduplication.
  * Provides SQL normalization, fingerprinting, and novelty detection
  * against YAML query_patterns in the semantic layer.
  */
@@ -39,7 +40,7 @@ export function normalizeSQL(sql: string): string {
 }
 
 /**
- * Generate a short fingerprint (SHA-256 hex prefix) for deduplication.
+ * Generate a 16-character SHA-256 hex prefix fingerprint for deduplication.
  */
 export function fingerprintSQL(normalizedSql: string): string {
   return crypto.createHash("sha256").update(normalizedSql).digest("hex").slice(0, 16);
@@ -195,8 +196,10 @@ function loadPatternsFromDir(dir: string, out: Set<string>): void {
 
 let _yamlPatternCache: Set<string> | null = null;
 
-/** Get cached YAML patterns. Lazily loaded on first access.
- * Empty results are not cached so subsequent calls retry the load. */
+/** Get YAML patterns. When semanticRoot is provided, reads directly from disk
+ * (bypasses cache). Otherwise, lazily loads from the default semantic directory
+ * and caches for subsequent calls. Empty results are not cached so subsequent
+ * calls retry the load. */
 export function getYamlPatterns(semanticRoot?: string): Set<string> {
   if (semanticRoot) return loadYamlQueryPatterns(semanticRoot);
   if (!_yamlPatternCache) {

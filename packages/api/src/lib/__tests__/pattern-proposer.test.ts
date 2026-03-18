@@ -77,12 +77,12 @@ describe("pattern-proposer", () => {
   // ── Novel pattern detection ────────────────────────────────────────
 
   test("inserts novel pattern when no match in YAML or DB", async () => {
-    // findSimilarPattern returns no match → INSERT fires
+    // findPatternBySQL returns no match → INSERT fires
     setResults({ rows: [] });
 
     await _analyzeAndPropose(defaultInput);
 
-    // First query: findSimilarPattern SELECT
+    // First query: findPatternBySQL SELECT
     expect(queryCalls.length).toBeGreaterThanOrEqual(1);
     const selectCall = queryCalls[0];
     expect(selectCall.sql).toContain("SELECT id, confidence, repetition_count FROM learned_patterns");
@@ -101,7 +101,7 @@ describe("pattern-proposer", () => {
   // ── Duplicate detection ────────────────────────────────────────────
 
   test("increments count when pattern already exists in DB", async () => {
-    // findSimilarPattern returns a match
+    // findPatternBySQL returns a match
     setResults({
       rows: [
         { id: "existing-123", confidence: 0.3, repetition_count: 5 },
@@ -110,7 +110,7 @@ describe("pattern-proposer", () => {
 
     await _analyzeAndPropose(defaultInput);
 
-    // First query: findSimilarPattern SELECT → found match
+    // First query: findPatternBySQL SELECT → found match
     expect(queryCalls[0].sql).toContain("SELECT id, confidence, repetition_count");
 
     // Second query: incrementPatternCount UPDATE (fire-and-forget)
@@ -134,7 +134,7 @@ describe("pattern-proposer", () => {
       await _analyzeAndPropose(defaultInput);
     });
 
-    // findSimilarPattern should use org_id = $2
+    // findPatternBySQL should use org_id = $2
     const selectCall = queryCalls[0];
     expect(selectCall.sql).toContain("org_id = $2");
     expect(selectCall.params).toContain("org-456");

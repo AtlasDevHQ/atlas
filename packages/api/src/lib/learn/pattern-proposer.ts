@@ -7,7 +7,7 @@
  */
 
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
-import { hasInternalDB, findSimilarPattern, insertLearnedPattern, incrementPatternCount } from "@atlas/api/lib/db/internal";
+import { hasInternalDB, findPatternBySQL, insertLearnedPattern, incrementPatternCount } from "@atlas/api/lib/db/internal";
 import { normalizeSQL, fingerprintSQL, extractPatternInfo, getYamlPatterns } from "@atlas/api/lib/learn/pattern-analyzer";
 
 const log = createLogger("pattern-proposer");
@@ -15,6 +15,7 @@ const log = createLogger("pattern-proposer");
 export interface PatternProposalInput {
   sql: string;
   dialect: string;
+  /** Used for debug logging only; not stored in the learned pattern record. */
   connectionId: string;
 }
 
@@ -56,7 +57,7 @@ export async function _analyzeAndPropose(input: PatternProposalInput): Promise<v
   const orgId = reqCtx?.user?.activeOrganizationId;
   const fingerprint = fingerprintSQL(normalized);
 
-  const existing = await findSimilarPattern(orgId, normalized);
+  const existing = await findPatternBySQL(orgId, normalized);
   if (existing) {
     // Duplicate — bump count and confidence, append source fingerprint
     incrementPatternCount(existing.id, fingerprint);

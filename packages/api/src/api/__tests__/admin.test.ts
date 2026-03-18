@@ -404,7 +404,7 @@ describe("Admin routes — auth enforcement", () => {
     const res = await app.fetch(adminRequest("/api/v1/admin/overview"));
     expect(res.status).toBe(403);
     const body = (await res.json()) as Record<string, unknown>;
-    expect(body.error).toBe("forbidden");
+    expect(body.error).toBe("forbidden_role");
   });
 
   it("returns 403 when user has no role", async () => {
@@ -428,6 +428,22 @@ describe("Admin routes — auth enforcement", () => {
 
     const res = await app.fetch(adminRequest("/api/v1/admin/overview"));
     expect(res.status).toBe(401);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("auth_error");
+  });
+
+  it("returns session_expired when auth error indicates expiry", async () => {
+    mockAuthenticateRequest.mockResolvedValue({
+      authenticated: false,
+      mode: "managed",
+      status: 401,
+      error: "Session expired (idle timeout)",
+    });
+
+    const res = await app.fetch(adminRequest("/api/v1/admin/overview"));
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("session_expired");
   });
 
   it("allows access when auth mode is none (implicit admin in dev)", async () => {
@@ -1309,7 +1325,7 @@ describe("Admin routes — audit analytics", () => {
       const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/volume"));
       expect(res.status).toBe(403);
       const body = (await res.json()) as Record<string, unknown>;
-      expect(body.error).toBe("forbidden");
+      expect(body.error).toBe("forbidden_role");
     });
 
     it("checks auth before hasInternalDB (returns 401 not 404 for unauth)", async () => {
@@ -1442,7 +1458,7 @@ describe("GET /api/v1/admin/semantic/org/entities", () => {
     const res = await app.fetch(adminRequest("/api/v1/admin/semantic/org/entities"));
     expect(res.status).toBe(400);
     const body = (await res.json()) as Record<string, unknown>;
-    expect(body.error).toBe("bad_request");
+    expect(body.error).toBe("org_not_found");
   });
 
   it("returns 501 when no internal DB", async () => {
@@ -1478,10 +1494,12 @@ describe("PUT /api/v1/admin/semantic/org/entities/:name", () => {
     mockUpsertEntityAdmin.mockResolvedValue(undefined);
   });
 
-  it("returns 400 when no active organization", async () => {
+  it("returns 400 with org_not_found when no active organization", async () => {
     setAdmin();
     const res = await app.fetch(adminRequest("/api/v1/admin/semantic/org/entities/users", "PUT", { yamlContent: "table: users" }));
     expect(res.status).toBe(400);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("org_not_found");
   });
 
   it("returns 400 when yamlContent is missing", async () => {
@@ -1532,6 +1550,14 @@ describe("DELETE /api/v1/admin/semantic/org/entities/:name", () => {
   beforeEach(() => {
     mockHasInternalDB = true;
     mockDeleteEntityAdmin.mockReset();
+  });
+
+  it("returns 400 with org_not_found when no active organization", async () => {
+    setAdmin();
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/org/entities/users", "DELETE"));
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("org_not_found");
   });
 
   it("returns 404 when entity not found", async () => {

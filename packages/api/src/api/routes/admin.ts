@@ -47,6 +47,18 @@ import { adminOrgs } from "./admin-orgs";
 
 const log = createLogger("admin-routes");
 
+/** Known auth error messages that indicate an expired session or token. */
+const EXPIRED_AUTH_ERRORS = new Set([
+  "Session expired",
+  "Session expired (idle timeout)",
+  "Invalid or expired token",
+  "Session data is invalid",
+]);
+
+function authErrorCode(error: string): "session_expired" | "auth_error" {
+  return EXPIRED_AUTH_ERRORS.has(error) ? "session_expired" : "auth_error";
+}
+
 const admin = new Hono();
 
 // Mount organization management sub-router
@@ -76,14 +88,15 @@ async function adminAuthPreamble(req: Request, requestId: string) {
   }
   if (!authResult.authenticated) {
     log.warn({ requestId, status: authResult.status }, "Authentication failed");
-    return { error: { error: "auth_error", message: authResult.error }, status: authResult.status as 401 | 403 | 500 };
+    const code = authErrorCode(authResult.error);
+    return { error: { error: code, message: authResult.error }, status: authResult.status as 401 | 403 | 500 };
   }
 
   // Enforce admin role — when auth mode is "none" (no auth configured, e.g.
   // local dev), treat the request as an implicit admin since there is no
   // identity boundary to enforce.
   if (authResult.mode !== "none" && (!authResult.user || (authResult.user.role !== "admin" && authResult.user.role !== "owner"))) {
-    return { error: { error: "forbidden", message: "Admin role required." }, status: 403 as const };
+    return { error: { error: "forbidden_role", message: "Admin role required." }, status: 403 as const };
   }
 
   const ip = getClientIP(req);
@@ -526,7 +539,7 @@ admin.get("/semantic/org/entities", async (c) => {
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     const orgId = authResult.user?.activeOrganizationId;
     if (!orgId) {
-      return c.json({ error: "bad_request", message: "Active organization required." }, 400);
+      return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
     }
 
     if (!hasInternalDB()) {
@@ -570,7 +583,7 @@ admin.get("/semantic/org/entities/:name", async (c) => {
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     const orgId = authResult.user?.activeOrganizationId;
     if (!orgId) {
-      return c.json({ error: "bad_request", message: "Active organization required." }, 400);
+      return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
     }
 
     if (!hasInternalDB()) {
@@ -616,7 +629,7 @@ admin.put("/semantic/org/entities/:name", async (c) => {
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     const orgId = authResult.user?.activeOrganizationId;
     if (!orgId) {
-      return c.json({ error: "bad_request", message: "Active organization required." }, 400);
+      return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
     }
 
     if (!hasInternalDB()) {
@@ -683,7 +696,7 @@ admin.delete("/semantic/org/entities/:name", async (c) => {
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     const orgId = authResult.user?.activeOrganizationId;
     if (!orgId) {
-      return c.json({ error: "bad_request", message: "Active organization required." }, 400);
+      return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
     }
 
     if (!hasInternalDB()) {
@@ -728,7 +741,7 @@ admin.post("/semantic/org/import", async (c) => {
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     const orgId = authResult.user?.activeOrganizationId;
     if (!orgId) {
-      return c.json({ error: "bad_request", message: "Active organization required." }, 400);
+      return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
     }
 
     if (!hasInternalDB()) {
@@ -2343,7 +2356,8 @@ admin.get("/me/password-status", async (c) => {
     return c.json({ error: "auth_error", message: "Authentication system error" }, 500);
   }
   if (!authResult.authenticated) {
-    return c.json({ error: "auth_error", message: authResult.error }, authResult.status);
+    const code = authErrorCode(authResult.error);
+    return c.json({ error: code, message: authResult.error }, authResult.status);
   }
   const user = authResult.user;
   if (authResult.mode !== "managed" || !user) {
@@ -2377,7 +2391,8 @@ admin.post("/me/password", async (c) => {
     return c.json({ error: "auth_error", message: "Authentication system error" }, 500);
   }
   if (!authResult.authenticated) {
-    return c.json({ error: "auth_error", message: authResult.error }, authResult.status);
+    const code = authErrorCode(authResult.error);
+    return c.json({ error: code, message: authResult.error }, authResult.status);
   }
   const user = authResult.user;
   if (authResult.mode !== "managed" || !user) {

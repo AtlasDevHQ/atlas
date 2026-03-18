@@ -257,10 +257,11 @@ export async function checkDatabaseConnectivity(): Promise<CheckResult> {
           }
           listConn.release();
         } finally {
+          // intentionally ignored: pool teardown errors are non-critical during diagnostics
           await listPool.end().catch(() => {});
         }
       } catch {
-        // Database listing failed — keep generic fix message
+        // intentionally ignored: database listing is best-effort for error message enhancement
       }
     }
     return {

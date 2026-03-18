@@ -69,6 +69,7 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
       }
 
       if (!res.ok) {
+        // intentionally ignored: response may not be JSON
         const errorBody = await res.json().catch(() => null);
         if (errorBody?.code === "not_available") {
           setAvailable(false);

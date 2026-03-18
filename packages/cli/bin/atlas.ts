@@ -4834,6 +4834,7 @@ async function handleImport(args: string[]): Promise<void> {
           const json = await resp.json() as { message?: string; error?: string };
           errorMsg = json.message ?? json.error ?? errorMsg;
         } catch {
+          // intentionally ignored: JSON parse failed, fall through to text() attempt
           errorMsg = await resp.text().catch(() => errorMsg);
         }
         console.error(`Import failed: ${errorMsg}`);
@@ -5825,6 +5826,7 @@ Next steps:
             const json = await resp.json() as { message?: string; error?: string };
             errorMsg = json.message ?? json.error ?? errorMsg;
           } catch {
+            // intentionally ignored: JSON parse failed, fall through to text() attempt
             errorMsg = await resp.text().catch(() => errorMsg);
           }
           console.warn(`  Warning: Import failed for ${ds.id}: ${errorMsg}`);

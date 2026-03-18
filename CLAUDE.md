@@ -20,6 +20,17 @@ Guidance for Claude Code when working in this repository.
 - [ ] **Readonly DB connections** — PostgreSQL uses read-only queries enforced by validation; MySQL uses a read-only session variable; ClickHouse uses `readonly: 1`
 - [ ] **Explore tool isolation** — Default priority: plugin > Vercel sandbox > nsjail explicit > sidecar > nsjail auto-detect > just-bash (dev fallback). Operators can override via `sandbox.priority` in `atlas.config.ts` or `ATLAS_SANDBOX_PRIORITY` env var. Plugin backends always take highest priority. When `ATLAS_SANDBOX_URL` is set, sidecar is the intended backend — nsjail auto-detection is skipped
 
+### Error Handling
+- [ ] **Never silently swallow errors** — Every `catch` must log (`log.warn`/`console.debug`) or re-throw. Empty `catch {}` blocks are forbidden. If intentional, add `// intentionally ignored: <reason>`
+- [ ] **Type-narrow caught errors** — Always `err instanceof Error ? err.message : String(err)`. Never access `.message` without guarding
+- [ ] **Request IDs on all 500s** — Every 500 response includes `requestId` for log correlation
+- [ ] **No generic error messages** — Replace "Something went wrong" with actionable, context-specific messages. Include retry guidance where appropriate
+- [ ] **Prefer errors over silent fallbacks** — `catch { return false }` on a security check is a bug. Return 500, not a false negative
+
+### Type Safety
+- [ ] **No explicit `any`** — Use proper types or `unknown` with narrowing. Keep `any` only where unavoidable (third-party constraints) with `eslint-disable` + justification comment
+- [ ] **Minimize non-null assertions** — Only use `!` when the value is provably non-null. Prefer optional chaining (`?.`) or explicit null checks
+
 ### Code Style
 - [ ] **bun only** — Package manager and runtime. Never npm, yarn, or node
 - [ ] **TypeScript strict mode** — Path aliases: `@atlas/api/*` for cross-package, `@/*` → `./src/*` within web only
@@ -37,6 +48,7 @@ Guidance for Claude Code when working in this repository.
 ### Testing
 - [ ] **`bun run test`, never `bun test`** — Project uses isolated test runner (each file in its own subprocess). Always `bun run test` or `bun test <single-file>`. Never bare `bun test` against a directory
 - [ ] **Mock all exports** — When using `mock.module()`, mock every named export. Partial mocks cause `SyntaxError` in other files
+- [ ] **Use shared mock factory** — Connection mocks use `createConnectionMock()` from `packages/api/src/__mocks__/connection.ts`. Don't create inline connection mocks
 
 ### Agent Tools
 - [ ] **Tools return structured data** — `executeSQL` returns `{ columns, rows }`

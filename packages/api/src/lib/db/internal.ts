@@ -484,7 +484,29 @@ export async function migrateInternalDB(): Promise<void> {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_semantic_entities_org ON semantic_entities(org_id);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_semantic_entities_org_type ON semantic_entities(org_id, entity_type);`);
 
-  log.info("Internal DB migration complete (audit_log, conversations, messages, slack, action_log, scheduled_tasks, connections, token_usage, invitations, plugin_settings, settings, org scoping, semantic_entities)");
+  // Learned query patterns (0.8.0 dynamic learning layer)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS learned_patterns (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      org_id TEXT,
+      pattern_sql TEXT NOT NULL,
+      description TEXT,
+      source_entity TEXT,
+      source_queries JSONB,
+      confidence REAL NOT NULL DEFAULT 0.1,
+      repetition_count INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'pending',
+      proposed_by TEXT,
+      reviewed_by TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      reviewed_at TIMESTAMPTZ
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_learned_patterns_org_status ON learned_patterns(org_id, status);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_learned_patterns_org_entity ON learned_patterns(org_id, source_entity);`);
+
+  log.info("Internal DB migration complete (audit_log, conversations, messages, slack, action_log, scheduled_tasks, connections, token_usage, invitations, plugin_settings, settings, org scoping, semantic_entities, learned_patterns)");
 }
 
 /**

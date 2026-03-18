@@ -44,6 +44,7 @@ import {
 } from "@atlas/api/lib/semantic-files";
 import { runDiff } from "@atlas/api/lib/semantic-diff";
 import { adminOrgs } from "./admin-orgs";
+import { adminLearnedPatterns } from "./admin-learned-patterns";
 
 const log = createLogger("admin-routes");
 
@@ -63,6 +64,8 @@ const admin = new Hono();
 
 // Mount organization management sub-router
 admin.route("/organizations", adminOrgs);
+admin.route("/learned-patterns", adminLearnedPatterns);
+admin.route("/learned-patterns/", adminLearnedPatterns);
 
 // ---------------------------------------------------------------------------
 // Admin auth preamble — reuses existing auth then enforces admin role.

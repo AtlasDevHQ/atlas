@@ -1,6 +1,6 @@
 /* Chart detection — pure functions, zero React deps. Kept framework-agnostic for direct unit testing. */
 
-export type ColumnType = "numeric" | "date" | "categorical" | "unknown";
+type ColumnType = "numeric" | "date" | "categorical" | "unknown";
 
 export type ClassifiedColumn = {
   index: number;

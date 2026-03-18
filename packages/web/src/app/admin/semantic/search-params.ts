@@ -1,13 +1,10 @@
 import { parseAsString, parseAsStringLiteral } from "nuqs"
-import { createSearchParamsCache } from "nuqs/server"
 import type { SemanticSelection } from "@/ui/components/admin/semantic-file-tree"
 
 export const semanticSearchParams = {
   file: parseAsString,
   view: parseAsStringLiteral(["pretty", "yaml"] as const).withDefault("pretty"),
 }
-
-export const semanticParamsCache = createSearchParamsCache(semanticSearchParams)
 
 /**
  * Convert a `file` query param string to a SemanticSelection.

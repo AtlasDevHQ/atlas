@@ -32,13 +32,13 @@ export interface Invitation {
 
 // ── Shared badge styles ──────────────────────────────────────────
 
-export const roleBadge: Record<string, { variant: "outline"; className: string }> = {
+const roleBadge: Record<string, { variant: "outline"; className: string }> = {
   owner: { variant: "outline", className: "border-purple-300 text-purple-700 dark:border-purple-700 dark:text-purple-400" },
   admin: { variant: "outline", className: "border-red-300 text-red-700 dark:border-red-700 dark:text-red-400" },
   member: { variant: "outline", className: "border-blue-300 text-blue-700 dark:border-blue-700 dark:text-blue-400" },
 };
 
-export const inviteStatusBadge: Record<string, { variant: "outline"; className: string }> = {
+const inviteStatusBadge: Record<string, { variant: "outline"; className: string }> = {
   pending: { variant: "outline", className: "border-amber-300 text-amber-700 dark:border-amber-700 dark:text-amber-400" },
   accepted: { variant: "outline", className: "border-green-300 text-green-700 dark:border-green-700 dark:text-green-400" },
   revoked: { variant: "outline", className: "border-zinc-300 text-zinc-600 dark:border-zinc-600 dark:text-zinc-400" },

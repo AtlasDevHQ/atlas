@@ -10,8 +10,6 @@ import { THEME_STORAGE_KEY } from "./theme-init-script";
 
 export type ThemeMode = "light" | "dark" | "system";
 
-export { THEME_STORAGE_KEY };
-
 /**
  * Default brand color — must match `brand.css` `:root { --atlas-brand }` and
  * the `ATLAS_BRAND_COLOR` default in `packages/api/src/lib/settings.ts`.

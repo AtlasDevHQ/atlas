@@ -620,6 +620,7 @@ async function seedPromptLibrary(pool: InternalPool): Promise<void> {
        VALUES ($1, $2, $3, true, $4) RETURNING id`,
       [collection.name, collection.industry, collection.description, ci],
     );
+    if (!result.rows[0]) continue; // guard for mock/test environments
     const collectionId = (result.rows[0] as Record<string, unknown>).id as string;
 
     // Insert items

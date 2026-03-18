@@ -163,7 +163,7 @@ export function createSlackRoutes(deps: SlackRuntimeDeps): Hono {
               await fetch(responseUrl, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ response_type: "ephemeral", text: "Atlas is not configured for this workspace. Ask an admin to install via /api/slack/install." }),
+                body: JSON.stringify({ response_type: "ephemeral", text: "Atlas is not configured for this workspace. Ask an admin to install via /api/v1/slack/install." }),
                 signal: AbortSignal.timeout(10_000),
               });
             } catch (urlErr) {

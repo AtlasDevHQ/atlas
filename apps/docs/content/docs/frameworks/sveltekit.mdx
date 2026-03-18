@@ -75,7 +75,7 @@ export function createAtlasChat(apiKey: () => string) {
   const conversationId = writable<string | null>(null);
 
   const transport = new DefaultChatTransport({
-    api: `${apiUrl}/api/chat`,
+    api: `${apiUrl}/api/v1/chat`,
     get headers() {
       const key = apiKey();
       const h: Record<string, string> = {};

@@ -1,10 +1,10 @@
 /**
  * Slack integration routes.
  *
- * - POST /api/slack/commands  — slash command handler (/atlas)
- * - POST /api/slack/events   — Events API (thread follow-ups, url_verification)
- * - GET  /api/slack/install   — OAuth install redirect
- * - GET  /api/slack/callback  — OAuth callback
+ * - POST /api/v1/slack/commands  — slash command handler (/atlas)
+ * - POST /api/v1/slack/events   — Events API (thread follow-ups, url_verification)
+ * - GET  /api/v1/slack/install   — OAuth install redirect
+ * - GET  /api/v1/slack/callback  — OAuth callback
  *
  * POST routes verify Slack request signatures. OAuth routes use Slack's
  * server-to-server code exchange. The slash command acks within 3 seconds
@@ -60,7 +60,7 @@ function scrubError(message: string): string {
   return message;
 }
 
-// --- POST /api/slack/commands ---
+// --- POST /api/v1/slack/commands ---
 
 slack.post("/commands", async (c) => {
   const { valid, body } = await verifyRequest(c);
@@ -96,7 +96,7 @@ slack.post("/commands", async (c) => {
             await fetch(responseUrl, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ response_type: "ephemeral", text: "Atlas is not configured for this workspace. Ask an admin to install via /api/slack/install." }),
+              body: JSON.stringify({ response_type: "ephemeral", text: "Atlas is not configured for this workspace. Ask an admin to install via /api/v1/slack/install." }),
               signal: AbortSignal.timeout(10_000),
             });
           } catch (urlErr) {
@@ -212,7 +212,7 @@ slack.post("/commands", async (c) => {
   });
 });
 
-// --- POST /api/slack/events ---
+// --- POST /api/v1/slack/events ---
 
 slack.post("/events", async (c) => {
   const { valid, body } = await verifyRequest(c);
@@ -368,7 +368,7 @@ slack.post("/events", async (c) => {
   return c.json({ ok: true });
 });
 
-// --- POST /api/slack/interactions ---
+// --- POST /api/v1/slack/interactions ---
 
 slack.post("/interactions", async (c) => {
   const { valid, body } = await verifyRequest(c);
@@ -538,7 +538,7 @@ setInterval(() => {
   }
 }, 600_000).unref();
 
-// --- GET /api/slack/install ---
+// --- GET /api/v1/slack/install ---
 
 slack.get("/install", (c) => {
   const clientId = process.env.SLACK_CLIENT_ID;
@@ -554,7 +554,7 @@ slack.get("/install", (c) => {
   return c.redirect(url);
 });
 
-// --- GET /api/slack/callback ---
+// --- GET /api/v1/slack/callback ---
 
 slack.get("/callback", async (c) => {
   const clientId = process.env.SLACK_CLIENT_ID;

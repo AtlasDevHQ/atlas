@@ -661,7 +661,7 @@ export function createAtlasClient(options: AtlasClientOptions) {
         parts: [{ type: "text", text: question }],
       }];
 
-      const res = await post("/api/chat", {
+      const res = await post("/api/v1/chat", {
         messages,
         conversationId: opts?.conversationId,
       }, { signal: opts?.signal });
@@ -998,7 +998,7 @@ export function createAtlasClient(options: AtlasClientOptions) {
       messages: ChatMessage[],
       opts?: ChatOptions,
     ): Promise<Response> {
-      const res = await post("/api/chat", {
+      const res = await post("/api/v1/chat", {
         messages,
         conversationId: opts?.conversationId,
       });

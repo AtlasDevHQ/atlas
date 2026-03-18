@@ -8,7 +8,7 @@ Atlas is a headless API. The built-in `@atlas/web` package is a Next.js referenc
 ┌─────────────────────┐
 │  Your Frontend      │     HTTP (same-origin or cross-origin)
 │  (Nuxt, Svelte,     │ ──────────────────────────────────────►  Atlas Hono API
-│   React/Vite,       │     POST /api/chat  (streaming)          ├── /api/health
+│   React/Vite,       │     POST /api/v1/chat  (streaming)          ├── /api/health
 │   TanStack, etc.)   │     POST /api/v1/query  (JSON)           ├── /api/v1/query
 │                     │     GET  /api/v1/conversations            └── /api/v1/conversations
 └─────────────────────┘
@@ -60,7 +60,7 @@ Atlas supports multiple auth modes. Your frontend only needs to handle the one y
 
 ### 3. Streaming chat
 
-The `POST /api/chat` endpoint accepts a Vercel AI SDK-compatible request body and returns a Data Stream response. The AI SDK framework adapters (`@ai-sdk/react`, `@ai-sdk/vue`, `@ai-sdk/svelte`) provide a `useChat` hook/composable that handles the protocol automatically.
+The `POST /api/v1/chat` endpoint accepts a Vercel AI SDK-compatible request body and returns a Data Stream response. The AI SDK framework adapters (`@ai-sdk/react`, `@ai-sdk/vue`, `@ai-sdk/svelte`) provide a `useChat` hook/composable that handles the protocol automatically.
 
 If you prefer not to use an adapter (e.g., TanStack Start), you can consume the stream directly with `fetch` and parse the Data Stream Protocol manually, or use the JSON endpoint (`POST /api/v1/query`) for synchronous responses.
 
@@ -79,7 +79,7 @@ Each framework guide shows how to detect and render these tool parts.
 
 Atlas supports persistent conversations via:
 
-- `POST /api/chat` with `{ conversationId }` in the body to continue a conversation
+- `POST /api/v1/chat` with `{ conversationId }` in the body to continue a conversation
 - Response header `x-conversation-id` contains the conversation ID (new or existing)
 - `GET /api/v1/conversations` to list conversations
 - `GET /api/v1/conversations/:id` to load a conversation with messages

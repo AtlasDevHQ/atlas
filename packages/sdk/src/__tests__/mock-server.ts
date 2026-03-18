@@ -355,8 +355,8 @@ async function handleRequest(req: Request): Promise<Response> {
     return json(MOCK_QUERY_RESPONSE);
   }
 
-  // ---- POST /api/chat ----
-  if (method === "POST" && pathname === "/api/chat") {
+  // ---- POST /api/v1/chat ----
+  if (method === "POST" && pathname === "/api/v1/chat") {
     const authErr = checkAuth(req);
     if (authErr) return authErr;
 

@@ -77,7 +77,7 @@ export function useAtlasChat() {
       headers["Authorization"] = `Bearer ${apiKey.value}`;
     }
     return new DefaultChatTransport({
-      api: `${apiUrl}/api/chat`,
+      api: `${apiUrl}/api/v1/chat`,
       headers,
     });
   });

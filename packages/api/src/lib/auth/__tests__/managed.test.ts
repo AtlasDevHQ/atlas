@@ -18,7 +18,7 @@ describe("validateManaged()", () => {
   });
 
   function makeRequest(headers?: Record<string, string>): Request {
-    return new Request("http://localhost/api/chat", {
+    return new Request("http://localhost/api/v1/chat", {
       method: "POST",
       headers: headers ?? {},
     });

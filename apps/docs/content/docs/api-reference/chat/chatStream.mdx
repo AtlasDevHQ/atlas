@@ -21,4 +21,4 @@ _openapi:
 
 Sends a conversation to the Atlas agent and streams the response as Server-Sent Events using the Vercel AI SDK UI message stream protocol. Each SSE event is a JSON object with a 'type' field: 'text-delta' for incremental text, 'tool-call' for tool invocations, 'tool-result' for tool outputs, 'step-start' for new agent steps, and 'finish' for completion. The response includes an `x-conversation-id` header when conversation persistence is enabled.
 
-<APIPage document={"./openapi.json"} operations={[{"path":"/api/chat","method":"post"}]} />
+<APIPage document={"./openapi.json"} operations={[{"path":"/api/v1/chat","method":"post"}]} />

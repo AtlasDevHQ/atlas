@@ -36,7 +36,7 @@ export default defineConfig({
 });
 ```
 
-With this setup, leave `VITE_ATLAS_API_URL` unset. Your app fetches `/api/chat` which Vite proxies to the Atlas API.
+With this setup, leave `VITE_ATLAS_API_URL` unset. Your app fetches `/api/v1/chat` which Vite proxies to the Atlas API.
 
 For production, configure your reverse proxy or CDN (nginx, Caddy, Cloudflare Pages) to forward `/api/*` to the Atlas API server.
 
@@ -82,7 +82,7 @@ export function useAtlasChat() {
     if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
 
     return new DefaultChatTransport({
-      api: `${API_URL}/api/chat`,
+      api: `${API_URL}/api/v1/chat`,
       headers,
     });
   }, [apiKey]);

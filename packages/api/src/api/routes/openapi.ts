@@ -108,9 +108,9 @@ function buildSpec(): Record<string, unknown> {
     ],
     paths: {
       // -----------------------------------------------------------------
-      // POST /api/chat — Streaming chat (SSE)
+      // POST /api/v1/chat — Streaming chat (SSE)
       // -----------------------------------------------------------------
-      "/api/chat": {
+      "/api/v1/chat": {
         post: {
           operationId: "chatStream",
           summary: "Chat with the agent (streaming)",
@@ -898,7 +898,7 @@ function buildSpec(): Record<string, unknown> {
       // -----------------------------------------------------------------
       // Slack integration
       // -----------------------------------------------------------------
-      "/api/slack/commands": {
+      "/api/v1/slack/commands": {
         post: {
           operationId: "slackCommand",
           summary: "Slack slash command",
@@ -943,7 +943,7 @@ function buildSpec(): Record<string, unknown> {
         },
       },
 
-      "/api/slack/events": {
+      "/api/v1/slack/events": {
         post: {
           operationId: "slackEvents",
           summary: "Slack Events API",
@@ -986,7 +986,7 @@ function buildSpec(): Record<string, unknown> {
         },
       },
 
-      "/api/slack/install": {
+      "/api/v1/slack/install": {
         get: {
           operationId: "slackInstall",
           summary: "Slack OAuth install",
@@ -1000,7 +1000,7 @@ function buildSpec(): Record<string, unknown> {
         },
       },
 
-      "/api/slack/callback": {
+      "/api/v1/slack/callback": {
         get: {
           operationId: "slackCallback",
           summary: "Slack OAuth callback",

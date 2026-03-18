@@ -255,7 +255,7 @@ export async function streamChat(opts: {
   };
   if (opts.apiKey) headers["Authorization"] = `Bearer ${opts.apiKey}`;
 
-  const res = await fetch(`${API_URL}/api/chat`, {
+  const res = await fetch(`${API_URL}/api/v1/chat`, {
     method: "POST",
     headers,
     body: JSON.stringify({ messages: opts.messages }),

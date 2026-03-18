@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { validateApiKey } from "../simple-key";
 
 function makeReq(headers?: Record<string, string>): Request {
-  return new Request("http://localhost/api/chat", { headers });
+  return new Request("http://localhost/api/v1/chat", { headers });
 }
 
 describe("validateApiKey()", () => {

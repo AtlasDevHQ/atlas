@@ -1,5 +1,5 @@
 /**
- * Route-level tests for /api/slack endpoints.
+ * Route-level tests for /api/v1/slack endpoints.
  *
  * Mocks the agent, Slack API calls, and internal DB to isolate route logic.
  * Tests signature verification, slash command ack, events API, and OAuth.
@@ -162,7 +162,7 @@ async function getApp() {
   return app;
 }
 
-describe("/api/slack", () => {
+describe("/api/v1/slack", () => {
   const savedSigningSecret = process.env.SLACK_SIGNING_SECRET;
   const savedClientId = process.env.SLACK_CLIENT_ID;
   const savedClientSecret = process.env.SLACK_CLIENT_SECRET;
@@ -198,13 +198,13 @@ describe("/api/slack", () => {
     else delete process.env.SLACK_CLIENT_SECRET;
   });
 
-  describe("POST /api/slack/commands", () => {
+  describe("POST /api/v1/slack/commands", () => {
     it("acks a slash command with 200 and in_channel response", async () => {
       const app = await getApp();
       const body = "token=xxx&team_id=T123&channel_id=C456&user_id=U789&text=how+many+users";
       const { signature, timestamp } = makeSignature(body);
 
-      const resp = await app.request("/api/slack/commands", {
+      const resp = await app.request("/api/v1/slack/commands", {
         method: "POST",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
@@ -225,7 +225,7 @@ describe("/api/slack", () => {
       const body = "token=xxx&team_id=T123&channel_id=C456&user_id=U789&text=";
       const { signature, timestamp } = makeSignature(body);
 
-      const resp = await app.request("/api/slack/commands", {
+      const resp = await app.request("/api/v1/slack/commands", {
         method: "POST",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
@@ -245,7 +245,7 @@ describe("/api/slack", () => {
       const app = await getApp();
       const body = "token=xxx&text=hello";
 
-      const resp = await app.request("/api/slack/commands", {
+      const resp = await app.request("/api/v1/slack/commands", {
         method: "POST",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
@@ -259,7 +259,7 @@ describe("/api/slack", () => {
     });
   });
 
-  describe("POST /api/slack/events", () => {
+  describe("POST /api/v1/slack/events", () => {
     it("responds to url_verification challenge", async () => {
       const app = await getApp();
       const payload = JSON.stringify({
@@ -268,7 +268,7 @@ describe("/api/slack", () => {
       });
       const { signature, timestamp } = makeSignature(payload);
 
-      const resp = await app.request("/api/slack/events", {
+      const resp = await app.request("/api/v1/slack/events", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -298,7 +298,7 @@ describe("/api/slack", () => {
       });
       const { signature, timestamp } = makeSignature(payload);
 
-      const resp = await app.request("/api/slack/events", {
+      const resp = await app.request("/api/v1/slack/events", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -326,7 +326,7 @@ describe("/api/slack", () => {
         },
       });
 
-      const resp = await app.request("/api/slack/events", {
+      const resp = await app.request("/api/v1/slack/events", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -346,7 +346,7 @@ describe("/api/slack", () => {
         challenge: "should_not_echo",
       });
 
-      const resp = await app.request("/api/slack/events", {
+      const resp = await app.request("/api/v1/slack/events", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -375,7 +375,7 @@ describe("/api/slack", () => {
       });
       const { signature, timestamp } = makeSignature(payload);
 
-      const resp = await app.request("/api/slack/events", {
+      const resp = await app.request("/api/v1/slack/events", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -402,7 +402,7 @@ describe("/api/slack", () => {
         "token=xxx&team_id=T123&channel_id=C456&user_id=U789&text=how+many+active+users";
       const { signature, timestamp } = makeSignature(body);
 
-      const resp = await app.request("/api/slack/commands", {
+      const resp = await app.request("/api/v1/slack/commands", {
         method: "POST",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
@@ -433,7 +433,7 @@ describe("/api/slack", () => {
         "token=xxx&team_id=T123&channel_id=C456&user_id=U789&text=how+many+active+users";
       const { signature, timestamp } = makeSignature(body);
 
-      await app.request("/api/slack/commands", {
+      await app.request("/api/v1/slack/commands", {
         method: "POST",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
@@ -479,7 +479,7 @@ describe("/api/slack", () => {
       });
       const { signature, timestamp } = makeSignature(payload);
 
-      await app.request("/api/slack/events", {
+      await app.request("/api/v1/slack/events", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -516,7 +516,7 @@ describe("/api/slack", () => {
       });
       const { signature, timestamp } = makeSignature(payload);
 
-      await app.request("/api/slack/events", {
+      await app.request("/api/v1/slack/events", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -546,7 +546,7 @@ describe("/api/slack", () => {
         "token=xxx&team_id=T123&channel_id=C456&user_id=U789&text=how+many+users";
       const { signature, timestamp } = makeSignature(body);
 
-      const resp = await app.request("/api/slack/commands", {
+      const resp = await app.request("/api/v1/slack/commands", {
         method: "POST",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
@@ -586,7 +586,7 @@ describe("/api/slack", () => {
       });
       const { signature, timestamp } = makeSignature(payload);
 
-      const resp = await app.request("/api/slack/events", {
+      const resp = await app.request("/api/v1/slack/events", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -613,7 +613,7 @@ describe("/api/slack", () => {
     });
   });
 
-  describe("POST /api/slack/interactions", () => {
+  describe("POST /api/v1/slack/interactions", () => {
     function makeInteractionPayload(actionId: string, action_id: string) {
       return JSON.stringify({
         type: "block_actions",
@@ -630,7 +630,7 @@ describe("/api/slack", () => {
       const formBody = `payload=${encodeURIComponent(payload)}`;
       const { signature, timestamp } = makeSignature(formBody);
 
-      const resp = await app.request("/api/slack/interactions", {
+      const resp = await app.request("/api/v1/slack/interactions", {
         method: "POST",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
@@ -657,7 +657,7 @@ describe("/api/slack", () => {
       const formBody = `payload=${encodeURIComponent(payload)}`;
       const { signature, timestamp } = makeSignature(formBody);
 
-      const resp = await app.request("/api/slack/interactions", {
+      const resp = await app.request("/api/v1/slack/interactions", {
         method: "POST",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
@@ -680,7 +680,7 @@ describe("/api/slack", () => {
       const payload = makeInteractionPayload("act-001", "atlas_action_approve");
       const formBody = `payload=${encodeURIComponent(payload)}`;
 
-      const resp = await app.request("/api/slack/interactions", {
+      const resp = await app.request("/api/v1/slack/interactions", {
         method: "POST",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
@@ -698,7 +698,7 @@ describe("/api/slack", () => {
       const formBody = "no_payload_here=true";
       const { signature, timestamp } = makeSignature(formBody);
 
-      const resp = await app.request("/api/slack/interactions", {
+      const resp = await app.request("/api/v1/slack/interactions", {
         method: "POST",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
@@ -714,12 +714,12 @@ describe("/api/slack", () => {
     });
   });
 
-  describe("GET /api/slack/install", () => {
+  describe("GET /api/v1/slack/install", () => {
     it("redirects to Slack OAuth URL when configured", async () => {
       process.env.SLACK_CLIENT_ID = "test_client_id";
       const app = await getApp();
 
-      const resp = await app.request("/api/slack/install", {
+      const resp = await app.request("/api/v1/slack/install", {
         method: "GET",
         redirect: "manual",
       });
@@ -734,12 +734,12 @@ describe("/api/slack", () => {
       delete process.env.SLACK_CLIENT_ID;
       const app = await getApp();
 
-      const resp = await app.request("/api/slack/install", { method: "GET" });
+      const resp = await app.request("/api/v1/slack/install", { method: "GET" });
       expect(resp.status).toBe(501);
     });
   });
 
-  describe("GET /api/slack/callback", () => {
+  describe("GET /api/v1/slack/callback", () => {
     it("completes OAuth flow and saves installation", async () => {
       process.env.SLACK_CLIENT_ID = "test_client_id";
       process.env.SLACK_CLIENT_SECRET = "test_client_secret";
@@ -753,7 +753,7 @@ describe("/api/slack", () => {
       const app = await getApp();
 
       // Get state from install redirect
-      const installResp = await app.request("/api/slack/install", {
+      const installResp = await app.request("/api/v1/slack/install", {
         method: "GET",
         redirect: "manual",
       });
@@ -761,7 +761,7 @@ describe("/api/slack", () => {
       const stateParam = new URL(location).searchParams.get("state");
 
       const resp = await app.request(
-        `/api/slack/callback?code=test_code&state=${stateParam}`,
+        `/api/v1/slack/callback?code=test_code&state=${stateParam}`,
         { method: "GET" },
       );
       expect(resp.status).toBe(200);
@@ -780,7 +780,7 @@ describe("/api/slack", () => {
       const app = await getApp();
 
       // Get a valid state
-      const installResp = await app.request("/api/slack/install", {
+      const installResp = await app.request("/api/v1/slack/install", {
         method: "GET",
         redirect: "manual",
       });
@@ -788,7 +788,7 @@ describe("/api/slack", () => {
       const stateParam = new URL(location).searchParams.get("state");
 
       const resp = await app.request(
-        `/api/slack/callback?code=test_code&state=${stateParam}`,
+        `/api/v1/slack/callback?code=test_code&state=${stateParam}`,
         { method: "GET" },
       );
       expect(resp.status).toBe(500);
@@ -803,7 +803,7 @@ describe("/api/slack", () => {
       const app = await getApp();
 
       // No state at all
-      const resp1 = await app.request("/api/slack/callback?code=test_code", {
+      const resp1 = await app.request("/api/v1/slack/callback?code=test_code", {
         method: "GET",
       });
       expect(resp1.status).toBe(400);
@@ -812,7 +812,7 @@ describe("/api/slack", () => {
 
       // Bogus state value
       const resp2 = await app.request(
-        "/api/slack/callback?code=test_code&state=bogus-state-value",
+        "/api/v1/slack/callback?code=test_code&state=bogus-state-value",
         { method: "GET" },
       );
       expect(resp2.status).toBe(400);
@@ -824,7 +824,7 @@ describe("/api/slack", () => {
       const app = await getApp();
 
       // Need a valid state but no code
-      const installResp = await app.request("/api/slack/install", {
+      const installResp = await app.request("/api/v1/slack/install", {
         method: "GET",
         redirect: "manual",
       });
@@ -832,7 +832,7 @@ describe("/api/slack", () => {
       const stateParam = new URL(location).searchParams.get("state");
 
       const resp = await app.request(
-        `/api/slack/callback?state=${stateParam}`,
+        `/api/v1/slack/callback?state=${stateParam}`,
         { method: "GET" },
       );
       expect(resp.status).toBe(400);
@@ -843,7 +843,7 @@ describe("/api/slack", () => {
       delete process.env.SLACK_CLIENT_SECRET;
       const app = await getApp();
 
-      const resp = await app.request("/api/slack/callback?code=test", {
+      const resp = await app.request("/api/v1/slack/callback?code=test", {
         method: "GET",
       });
       expect(resp.status).toBe(501);

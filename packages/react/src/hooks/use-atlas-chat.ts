@@ -52,7 +52,7 @@ export function useAtlasChat(options: UseAtlasChatOptions = {}): UseAtlasChatRet
     if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
 
     return new DefaultChatTransport({
-      api: `${apiUrl}/api/chat`,
+      api: `${apiUrl}/api/v1/chat`,
       headers,
       credentials: isCrossOrigin ? "include" : undefined,
       body: () =>

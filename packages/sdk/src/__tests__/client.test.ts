@@ -375,7 +375,7 @@ describe("listTables", () => {
 // ---------------------------------------------------------------------------
 
 describe("chat", () => {
-  test("calls POST /api/chat and returns Response", async () => {
+  test("calls POST /api/v1/chat and returns Response", async () => {
     installFetchMock(new Response("streaming data", { status: 200 }));
     const client = createAtlasClient({ baseUrl: "http://localhost:3001", apiKey: "k" });
 
@@ -383,7 +383,7 @@ describe("chat", () => {
     const res = await client.chat(messages);
 
     expect(lastRequest!.method).toBe("POST");
-    expect(new URL(lastRequest!.url).pathname).toBe("/api/chat");
+    expect(new URL(lastRequest!.url).pathname).toBe("/api/v1/chat");
     expect(res).toBeInstanceOf(Response);
 
     const body = (await lastRequest!.json()) as Record<string, unknown>;

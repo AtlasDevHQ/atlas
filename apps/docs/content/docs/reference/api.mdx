@@ -148,7 +148,7 @@ console.log(result.data);       // Raw query results ({ columns, rows }[]) — e
 
 ### Chat (Streaming)
 
-`POST /api/chat` streams the agent's response in real time using Server-Sent Events (SSE). This is what the web UI uses. The response includes tool calls, intermediate results, and the final answer as they happen.
+`POST /api/v1/chat` streams the agent's response in real time using Server-Sent Events (SSE). This is what the web UI uses. The response includes tool calls, intermediate results, and the final answer as they happen.
 
 **Request body:**
 
@@ -162,7 +162,7 @@ console.log(result.data);       // Raw query results ({ columns, rows }[]) — e
 ```bash
 # Stream the agent's response as Server-Sent Events.
 # -N disables output buffering so events print as they arrive.
-curl -N -X POST http://localhost:3001/api/chat \
+curl -N -X POST http://localhost:3001/api/v1/chat \
   -H "Authorization: Bearer your-atlas-api-key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -180,7 +180,7 @@ curl -N -X POST http://localhost:3001/api/chat \
 ```typescript
 // Stream the agent's response using the Fetch API.
 // Each SSE event contains a chunk of the agent's work (text, tool calls, data).
-const response = await fetch("http://localhost:3001/api/chat", {
+const response = await fetch("http://localhost:3001/api/v1/chat", {
   method: "POST",
   headers: {
     "Authorization": "Bearer your-atlas-api-key",

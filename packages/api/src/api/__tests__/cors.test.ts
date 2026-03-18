@@ -70,9 +70,9 @@ describe("CORS middleware", () => {
     else delete process.env.ATLAS_CORS_ORIGIN;
   });
 
-  it("OPTIONS preflight to /api/chat returns CORS headers", async () => {
+  it("OPTIONS preflight to /api/v1/chat returns CORS headers", async () => {
     const res = await app.fetch(
-      new Request("http://localhost/api/chat", {
+      new Request("http://localhost/api/v1/chat", {
         method: "OPTIONS",
         headers: {
           Origin: "http://example.com",
@@ -95,7 +95,7 @@ describe("CORS middleware", () => {
   it("default (no ATLAS_CORS_ORIGIN) sets Access-Control-Allow-Origin to *", async () => {
     // The app was imported without ATLAS_CORS_ORIGIN set, so it defaults to "*"
     const res = await app.fetch(
-      new Request("http://localhost/api/chat", {
+      new Request("http://localhost/api/v1/chat", {
         method: "OPTIONS",
         headers: {
           Origin: "http://example.com",

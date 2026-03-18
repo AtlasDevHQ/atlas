@@ -29,7 +29,7 @@ export async function* queryAtlas(
   apiKey: string,
   question: string
 ): AsyncGenerator<AtlasEvent> {
-  const url = `${baseUrl.replace(/\/+$/, "")}/api/chat`;
+  const url = `${baseUrl.replace(/\/+$/, "")}/api/v1/chat`;
 
   const response = await fetch(url, {
     method: "POST",

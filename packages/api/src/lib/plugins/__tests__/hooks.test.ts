@@ -146,7 +146,7 @@ describe("dispatchHook", () => {
     await registry.initializeAll(minimalCtx);
 
     // Should not throw
-    await dispatchHook("onRequest", { path: "/api/chat", method: "POST", headers: {} }, registry);
+    await dispatchHook("onRequest", { path: "/api/v1/chat", method: "POST", headers: {} }, registry);
   });
 
   test("plugins without the specific hook name are skipped", async () => {
@@ -174,7 +174,7 @@ describe("dispatchHook", () => {
     }, { type: "context" }));
     await registry.initializeAll(minimalCtx);
 
-    await dispatchHook("onRequest", { path: "/api/chat", method: "POST", headers: {} }, registry);
+    await dispatchHook("onRequest", { path: "/api/v1/chat", method: "POST", headers: {} }, registry);
 
     expect(dsHandler).toHaveBeenCalledTimes(1);
     expect(ctxHandler).toHaveBeenCalledTimes(1);

@@ -121,7 +121,7 @@ bun run atlas -- diff    # Compare DB schema vs semantic layer
 ### Agent Loop
 
 ```
-POST /api/chat → authenticateRequest → checkRateLimit → withRequestContext → validateEnvironment
+POST /api/v1/chat → authenticateRequest → checkRateLimit → withRequestContext → validateEnvironment
     → runAgent(messages)
     → streamText (AI SDK, ToolRegistry, stopWhen: stepCountIs(getAgentMaxSteps()))
         ├── explore → read semantic/*.yml (path-traversal protected)

@@ -46,14 +46,14 @@ Under **OAuth & Permissions**, add these **Bot Token Scopes**:
 Under **Slash Commands**, create a new command:
 
 - **Command:** `/atlas`
-- **Request URL:** `https://your-api-host/api/slack/commands`
+- **Request URL:** `https://your-api-host/api/v1/slack/commands`
 - **Description:** Ask a data question
 
 ### 4. Enable Events
 
 Under **Event Subscriptions**:
 
-- **Request URL:** `https://your-api-host/api/slack/events`
+- **Request URL:** `https://your-api-host/api/v1/slack/events`
 - **Subscribe to bot events:** `message.channels`, `message.groups`
 
 ### 5. Install and Configure
@@ -76,7 +76,7 @@ For distributing Atlas to multiple Slack workspaces. Requires an [internal datab
 
 In your Slack app settings, under **OAuth & Permissions**:
 
-- **Redirect URL:** `https://your-api-host/api/slack/callback`
+- **Redirect URL:** `https://your-api-host/api/v1/slack/callback`
 
 ### 2. Set Environment Variables
 
@@ -90,7 +90,7 @@ DATABASE_URL=postgresql://...        # Required — stores per-workspace bot tok
 
 ### 3. Install Flow
 
-Direct users to `https://your-api-host/api/slack/install`. This redirects to Slack's OAuth authorize page. After approval, the callback stores the bot token in the `slack_installations` table.
+Direct users to `https://your-api-host/api/v1/slack/install`. This redirects to Slack's OAuth authorize page. After approval, the callback stores the bot token in the `slack_installations` table.
 
 ---
 
@@ -102,7 +102,7 @@ Direct users to `https://your-api-host/api/slack/install`. This redirects to Sla
 /atlas What was last month's revenue?
 ```
 
-1. Slack sends the command to `POST /api/slack/commands`
+1. Slack sends the command to `POST /api/v1/slack/commands`
 2. Atlas verifies the request signature (HMAC-SHA256, 5-minute timestamp window)
 3. Atlas immediately acknowledges within 3 seconds (Slack requirement)
 4. In the background, Atlas posts a "Thinking..." message, runs the agent, and updates the message with the formatted response
@@ -120,7 +120,7 @@ This provides multi-turn conversations within Slack threads.
 
 ### Action Approvals
 
-When the [action framework](/guides/actions) is enabled and a query produces pending actions, Atlas posts approval buttons visible only to the requesting user. Clicking **Approve** or **Deny** triggers `POST /api/slack/interactions`.
+When the [action framework](/guides/actions) is enabled and a query produces pending actions, Atlas posts approval buttons visible only to the requesting user. Clicking **Approve** or **Deny** triggers `POST /api/v1/slack/interactions`.
 
 ---
 
@@ -164,7 +164,7 @@ See [Environment Variables](/reference/environment-variables) for the full refer
 
 **Events not being delivered** -- Verify the Request URL in your Slack app settings is HTTPS and publicly reachable. Slack retries failed deliveries but will disable the subscription after repeated failures.
 
-**OAuth callback fails** -- Ensure the Redirect URL in your Slack app settings matches `https://your-api-host/api/slack/callback` exactly. Check that `DATABASE_URL` is set (required for storing OAuth tokens).
+**OAuth callback fails** -- Ensure the Redirect URL in your Slack app settings matches `https://your-api-host/api/v1/slack/callback` exactly. Check that `DATABASE_URL` is set (required for storing OAuth tokens).
 
 **Bot doesn't respond in threads** -- The bot needs `message.channels` and `message.groups` event subscriptions. Also verify `DATABASE_URL` is set for conversation history persistence.
 

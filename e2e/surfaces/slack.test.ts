@@ -381,7 +381,7 @@ afterAll(() => {
 describe("E2E: Slack signature verification", () => {
   it("accepts requests with a valid HMAC-SHA256 signature", async () => {
     const body = makeSlackCommandBody("how many users?");
-    const req = makeSignedRequest("/api/slack/commands", body);
+    const req = makeSignedRequest("/api/v1/slack/commands", body);
     const res = await app.fetch(req);
     expect(res.status).toBe(200);
     // Wait for async processing to complete so it doesn't leak into the next test
@@ -390,7 +390,7 @@ describe("E2E: Slack signature verification", () => {
 
   it("rejects requests with an invalid signature", async () => {
     const body = makeSlackCommandBody("how many users?");
-    const req = makeSignedRequest("/api/slack/commands", body, "application/x-www-form-urlencoded", {
+    const req = makeSignedRequest("/api/v1/slack/commands", body, "application/x-www-form-urlencoded", {
       signature: "v0=0000000000000000000000000000000000000000000000000000000000000000",
     });
     const res = await app.fetch(req);
@@ -402,7 +402,7 @@ describe("E2E: Slack signature verification", () => {
   it("rejects requests with a stale timestamp (>5 minutes)", async () => {
     const body = makeSlackCommandBody("how many users?");
     const staleTimestamp = String(Math.floor(Date.now() / 1000) - 400); // 6+ minutes ago
-    const req = makeSignedRequest("/api/slack/commands", body, "application/x-www-form-urlencoded", {
+    const req = makeSignedRequest("/api/v1/slack/commands", body, "application/x-www-form-urlencoded", {
       timestamp: staleTimestamp,
     });
     // The signature will be computed with the stale timestamp, so HMAC is valid but timestamp check should fail
@@ -415,7 +415,7 @@ describe("E2E: Slack signature verification", () => {
     delete process.env.SLACK_SIGNING_SECRET;
     try {
       const body = makeSlackCommandBody("test");
-      const req = makeSignedRequest("/api/slack/commands", body);
+      const req = makeSignedRequest("/api/v1/slack/commands", body);
       const res = await app.fetch(req);
       expect(res.status).toBe(401);
     } finally {
@@ -427,7 +427,7 @@ describe("E2E: Slack signature verification", () => {
 describe("E2E: Slash command flow", () => {
   it("acks immediately with 200 and processes async", async () => {
     const body = makeSlackCommandBody("how many active users?");
-    const req = makeSignedRequest("/api/slack/commands", body);
+    const req = makeSignedRequest("/api/v1/slack/commands", body);
     const res = await app.fetch(req);
 
     // Immediate ack
@@ -457,7 +457,7 @@ describe("E2E: Slash command flow", () => {
 
   it("returns usage hint when slash command has no text", async () => {
     const body = makeSlackCommandBody("");
-    const req = makeSignedRequest("/api/slack/commands", body);
+    const req = makeSignedRequest("/api/v1/slack/commands", body);
     const res = await app.fetch(req);
 
     expect(res.status).toBe(200);
@@ -484,7 +484,7 @@ describe("E2E: Thread follow-up", () => {
       },
     });
 
-    const req = makeSignedRequest("/api/slack/events", eventPayload, "application/json");
+    const req = makeSignedRequest("/api/v1/slack/events", eventPayload, "application/json");
     const res = await app.fetch(req);
 
     // Events endpoint acks immediately
@@ -511,7 +511,7 @@ describe("E2E: Thread follow-up", () => {
       challenge,
     });
 
-    const req = makeSignedRequest("/api/slack/events", payload, "application/json");
+    const req = makeSignedRequest("/api/v1/slack/events", payload, "application/json");
     const res = await app.fetch(req);
 
     expect(res.status).toBe(200);
@@ -532,7 +532,7 @@ describe("E2E: Thread follow-up", () => {
       },
     });
 
-    const req = makeSignedRequest("/api/slack/events", eventPayload, "application/json");
+    const req = makeSignedRequest("/api/v1/slack/events", eventPayload, "application/json");
     const res = await app.fetch(req);
 
     expect(res.status).toBe(200);
@@ -569,7 +569,7 @@ describe("E2E: Action button interactions", () => {
     });
 
     const body = `payload=${encodeURIComponent(interactionPayload)}`;
-    const req = makeSignedRequest("/api/slack/interactions", body);
+    const req = makeSignedRequest("/api/v1/slack/interactions", body);
     const res = await app.fetch(req);
 
     // Interactions ack immediately
@@ -609,7 +609,7 @@ describe("E2E: Action button interactions", () => {
     });
 
     const body = `payload=${encodeURIComponent(interactionPayload)}`;
-    const req = makeSignedRequest("/api/slack/interactions", body);
+    const req = makeSignedRequest("/api/v1/slack/interactions", body);
     const res = await app.fetch(req);
 
     expect(res.status).toBe(200);
@@ -695,7 +695,7 @@ describe("E2E: Error scrubbing", () => {
     );
 
     const body = makeSlackCommandBody("query that fails");
-    const req = makeSignedRequest("/api/slack/commands", body);
+    const req = makeSignedRequest("/api/v1/slack/commands", body);
     const res = await app.fetch(req);
 
     // Ack is still 200
@@ -732,7 +732,7 @@ describe("E2E: Error scrubbing", () => {
     );
 
     const body = makeSlackCommandBody("another failing query");
-    const req = makeSignedRequest("/api/slack/commands", body);
+    const req = makeSignedRequest("/api/v1/slack/commands", body);
     await app.fetch(req);
 
     // Wait for the error message post
@@ -758,7 +758,7 @@ describe("E2E: Error scrubbing", () => {
     mockExecuteAgentQuery.mockRejectedValueOnce(new Error(longError));
 
     const body = makeSlackCommandBody("long error query");
-    const req = makeSignedRequest("/api/slack/commands", body);
+    const req = makeSignedRequest("/api/v1/slack/commands", body);
     await app.fetch(req);
 
     // Wait for the error message post

@@ -99,7 +99,7 @@ app.use("/api/*", async (c, next) => {
   });
 });
 
-app.route("/api/chat", chat);
+app.route("/api/v1/chat", chat);
 app.route("/api/health", health);
 app.route("/api/auth", auth);
 app.route("/api/v1/query", query);
@@ -160,7 +160,7 @@ try {
 // when Slack is disabled, and prevents mock.module leaks in test suites.
 if (process.env.SLACK_SIGNING_SECRET) {
   const { slack } = await import("./routes/slack");
-  app.route("/api/slack", slack);
+  app.route("/api/v1/slack", slack);
   log.info("Slack integration enabled");
 } else {
   log.debug("Slack integration disabled (SLACK_SIGNING_SECRET not set)");

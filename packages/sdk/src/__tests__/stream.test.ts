@@ -74,7 +74,7 @@ async function collectEvents(iter: AsyncIterable<StreamEvent>): Promise<StreamEv
 // ---------------------------------------------------------------------------
 
 describe("streamQuery", () => {
-  test("calls POST /api/chat with question wrapped in a message", async () => {
+  test("calls POST /api/v1/chat with question wrapped in a message", async () => {
     installFetchMock(sseResponse([
       { type: "text-delta", textDelta: "Hello" },
       { type: "finish", finishReason: "stop" },
@@ -85,7 +85,7 @@ describe("streamQuery", () => {
 
     expect(lastRequest).not.toBeNull();
     expect(lastRequest!.method).toBe("POST");
-    expect(new URL(lastRequest!.url).pathname).toBe("/api/chat");
+    expect(new URL(lastRequest!.url).pathname).toBe("/api/v1/chat");
 
     const body = (await lastRequest!.json()) as Record<string, unknown>;
     const messages = body.messages as Array<Record<string, unknown>>;

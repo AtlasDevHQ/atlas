@@ -79,7 +79,7 @@ describe("authenticateRequest()", () => {
   });
 
   function makeRequest(headers?: Record<string, string>): Request {
-    return new Request("http://localhost/api/chat", {
+    return new Request("http://localhost/api/v1/chat", {
       method: "POST",
       headers: headers ?? {},
     });
@@ -394,7 +394,7 @@ describe("getClientIP()", () => {
   });
 
   function req(headers: Record<string, string>): Request {
-    return new Request("http://localhost/api/chat", {
+    return new Request("http://localhost/api/v1/chat", {
       method: "POST",
       headers,
     });

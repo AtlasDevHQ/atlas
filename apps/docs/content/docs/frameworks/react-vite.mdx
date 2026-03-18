@@ -86,7 +86,7 @@ export function useAtlasChat() {
     if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
 
     return new DefaultChatTransport({
-      api: `${API_URL}/api/chat`,
+      api: `${API_URL}/api/v1/chat`,
       headers,
       // Required for managed auth (cookie-based) when cross-origin
       credentials: isCrossOrigin ? "include" : undefined,

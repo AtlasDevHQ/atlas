@@ -152,7 +152,7 @@ mock.module("@atlas/api/lib/plugins/tools", () => ({
 // Import after mocks are registered
 const { app } = await import("../index");
 
-describe("POST /api/chat", () => {
+describe("POST /api/v1/chat", () => {
   const origDatasource = process.env.ATLAS_DATASOURCE_URL;
   const origDatabaseUrl = process.env.DATABASE_URL;
   const origActionsEnabled = process.env.ATLAS_ACTIONS_ENABLED;
@@ -202,7 +202,7 @@ describe("POST /api/chat", () => {
   });
 
   function makeRequest(body?: unknown): Request {
-    return new Request("http://localhost/api/chat", {
+    return new Request("http://localhost/api/v1/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(

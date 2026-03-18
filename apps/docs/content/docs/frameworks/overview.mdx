@@ -11,7 +11,7 @@ Atlas is a headless API. The built-in `@atlas/web` package is a Next.js referenc
 ┌─────────────────────┐
 │  Your Frontend      │     HTTP (same-origin or cross-origin)
 │  (Nuxt, Svelte,     │ ──────────────────────────────────────►  Atlas Hono API
-│   React/Vite,       │     POST /api/chat  (streaming)          ├── /api/health
+│   React/Vite,       │     POST /api/v1/chat  (streaming)          ├── /api/health
 │   TanStack, etc.)   │     POST /api/v1/query  (JSON)           ├── /api/v1/query
 │                     │     GET  /api/v1/conversations            └── /api/v1/conversations
 └─────────────────────┘
@@ -63,7 +63,7 @@ Atlas supports multiple auth modes. Your frontend only needs to handle the one y
 
 ### 3. Streaming chat
 
-The `POST /api/chat` endpoint accepts a Vercel AI SDK-compatible request body and returns a Data Stream response. The AI SDK framework adapters (`@ai-sdk/react`, `@ai-sdk/vue`, `@ai-sdk/svelte`) provide a `useChat` hook/composable that handles the protocol automatically.
+The `POST /api/v1/chat` endpoint accepts a Vercel AI SDK-compatible request body and returns a Data Stream response. The AI SDK framework adapters (`@ai-sdk/react`, `@ai-sdk/vue`, `@ai-sdk/svelte`) provide a `useChat` hook/composable that handles the protocol automatically.
 
 If you prefer not to use an adapter (e.g., TanStack Start), you can consume the stream directly with `fetch` and parse the Data Stream Protocol manually, or use the JSON endpoint (`POST /api/v1/query`) for synchronous responses.
 
@@ -80,7 +80,7 @@ Each framework guide shows how to detect and render these tool parts.
 
 Atlas supports persistent conversations via:
 
-- `POST /api/chat` with `{ conversationId }` in the body to continue a conversation
+- `POST /api/v1/chat` with `{ conversationId }` in the body to continue a conversation
 - Response header `x-conversation-id` contains the conversation ID (new or existing)
 - `GET /api/v1/conversations` to list conversations
 - `GET /api/v1/conversations/:id` to load a conversation with messages
@@ -90,7 +90,7 @@ Conversation support requires `DATABASE_URL` to be configured on the API.
 
 ## Data Stream Protocol
 
-The `POST /api/chat` endpoint returns a [Vercel AI SDK Data Stream](https://sdk.vercel.ai/docs/ai-sdk-ui/stream-protocol#data-stream-protocol). The stream contains text chunks and structured tool call parts. The AI SDK adapters (`useChat` in `@ai-sdk/react`, `@ai-sdk/vue`, `@ai-sdk/svelte`) parse the stream automatically and expose tool calls as message parts.
+The `POST /api/v1/chat` endpoint returns a [Vercel AI SDK Data Stream](https://sdk.vercel.ai/docs/ai-sdk-ui/stream-protocol#data-stream-protocol). The stream contains text chunks and structured tool call parts. The AI SDK adapters (`useChat` in `@ai-sdk/react`, `@ai-sdk/vue`, `@ai-sdk/svelte`) parse the stream automatically and expose tool calls as message parts.
 
 ### Tool call parts (AI SDK v6)
 
@@ -191,7 +191,7 @@ A single assistant message might contain these parts, in order:
 
 ### Streaming vs. synchronous
 
-| | `POST /api/chat` | `POST /api/v1/query` |
+| | `POST /api/v1/chat` | `POST /api/v1/query` |
 |---|---|---|
 | Response | Data Stream (chunked) | JSON (single response) |
 | Tool visibility | Real-time tool call parts as they execute | Aggregated in `sql[]` and `data[]` arrays |
@@ -228,7 +228,7 @@ The sync endpoint runs the same agent loop but waits for completion and returns 
 
 To build a working Atlas frontend, you only need:
 
-1. **A chat loop** -- `POST /api/chat` with `{ messages }`, parse the Data Stream response (or use `useChat` from an AI SDK adapter)
+1. **A chat loop** -- `POST /api/v1/chat` with `{ messages }`, parse the Data Stream response (or use `useChat` from an AI SDK adapter)
 2. **Text rendering** -- display `type: "text"` parts from assistant messages
 3. **Tool result rendering** -- detect tool parts using `isToolUIPart(part)` from `"ai"` and render SQL results as a table
 

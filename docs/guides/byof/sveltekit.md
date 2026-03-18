@@ -66,7 +66,7 @@ const apiUrl = env.PUBLIC_ATLAS_API_URL ?? "";
 
 export function createAtlasChat(apiKey: () => string) {
   const transport = new DefaultChatTransport({
-    api: `${apiUrl}/api/chat`,
+    api: `${apiUrl}/api/v1/chat`,
     get headers() {
       const key = apiKey();
       const h: Record<string, string> = {};

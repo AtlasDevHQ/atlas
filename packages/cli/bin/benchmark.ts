@@ -25,6 +25,8 @@ import {
   type ColumnProfile,
 } from "./atlas";
 import { connections, type DBConnection, type QueryResult } from "@atlas/api/lib/db/connection";
+import type { DuckDBConnection } from "@duckdb/node-api";
+import type { DuckDBInstance as DuckDBInstanceType } from "@duckdb/node-api";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import { invalidateExploreBackend } from "@atlas/api/lib/tools/explore";
 
@@ -85,22 +87,20 @@ async function loadDuckDB() {
 }
 
 async function duckdbQuery<T = Record<string, unknown>>(
-  conn: unknown,
+  conn: DuckDBConnection,
   sql: string,
 ): Promise<T[]> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const reader = await (conn as any).runAndReadAll(sql);
+  const reader = await conn.runAndReadAll(sql);
   return reader.getRowObjects() as T[];
 }
 
 /**
  * Build a DBConnection wrapper around a DuckDB connection.
  */
-function wrapDuckDBConnection(conn: unknown): DBConnection {
+function wrapDuckDBConnection(conn: DuckDBConnection): DBConnection {
   return {
     async query(sql: string): Promise<QueryResult> {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const reader = await (conn as any).runAndReadAll(sql);
+      const reader = await conn.runAndReadAll(sql);
       const columns: string[] = reader.columnNames();
       const rows: Record<string, unknown>[] = reader.getRowObjects();
       return { columns, rows };
@@ -118,7 +118,7 @@ function wrapDuckDBConnection(conn: unknown): DBConnection {
  * Uses information_schema queries — no external DB connection needed.
  */
 async function profileFromConnection(
-  conn: unknown,
+  conn: DuckDBConnection,
   tableNames: string[],
 ): Promise<TableProfile[]> {
   const profiles: TableProfile[] = [];
@@ -273,8 +273,8 @@ function clearSemanticDir(): void {
 // --- Per-database setup ---
 
 interface DatabaseSetupResult {
-  instance: unknown;
-  conn: unknown;
+  instance: DuckDBInstanceType;
+  conn: DuckDBConnection;
   dbConnection: DBConnection;
 }
 
@@ -357,16 +357,14 @@ async function setupDatabase(
   return { instance, conn, dbConnection };
 }
 
-function closeDuckDB(instance: unknown, conn: unknown): void {
+function closeDuckDB(instance: DuckDBInstanceType, conn: DuckDBConnection): void {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (conn as any).disconnectSync();
+    conn.disconnectSync();
   } catch (err) {
     process.stderr.write(`WARNING: DuckDB disconnect failed: ${err instanceof Error ? err.message : String(err)}\n`);
   }
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (instance as any).closeSync();
+    instance.closeSync();
   } catch (err) {
     process.stderr.write(`WARNING: DuckDB close failed: ${err instanceof Error ? err.message : String(err)}\n`);
   }

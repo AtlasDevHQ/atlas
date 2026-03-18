@@ -14,7 +14,7 @@
  * - Injection runs after plugin beforeQuery hooks — plugins cannot strip RLS
  */
 
-import { Parser } from "node-sql-parser";
+import { Parser, type Select } from "node-sql-parser";
 import type { RLSConfig } from "@atlas/api/lib/config";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import type { DBType } from "@atlas/api/lib/db/connection";
@@ -192,13 +192,12 @@ export function resolveRLSFilters(
 // AST-based WHERE injection
 // ---------------------------------------------------------------------------
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
-
 /**
  * Walk the AST's FROM array to build a map of table_name → alias.
  * If a table has no alias, it maps to the table name itself.
  */
 function extractTableAliasMap(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- avoids narrowing boilerplate across the BaseFrom | Join | TableExpr | Dual union members
   from: any[],
   cteNames: Set<string>,
 ): Map<string, string> {
@@ -215,7 +214,7 @@ function extractTableAliasMap(
 }
 
 /** Collect CTE names from the WITH clause. */
-function collectCTENames(ast: any): Set<string> {
+function collectCTENames(ast: Select): Set<string> {
   const names = new Set<string>();
   if (Array.isArray(ast.with)) {
     for (const cte of ast.with) {
@@ -271,6 +270,7 @@ function buildCondition(tableRef: string, filter: RLSFilter) {
  * using the `combineWith` operator (AND or OR).
  */
 function injectIntoSelectAST(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- AST is mutated in place with hand-constructed condition nodes that don't conform to Binary type, and direct property assignment bypasses type narrowing
   ast: any,
   groups: RLSFilterGroup[],
   combineWith: "and" | "or",
@@ -294,8 +294,10 @@ function injectIntoSelectAST(
     const aliasMap = extractTableAliasMap(from, cteNames);
 
     // Build per-policy-group conditions
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- constructed AST condition nodes don't match Binary type exactly
     const groupConditions: any[] = [];
     for (const group of groups) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- accumulated binary_expr nodes built from plain objects
       let groupCondition: any = null;
       for (const filter of group.filters) {
         const alias = aliasMap.get(filter.table.toLowerCase());
@@ -368,6 +370,7 @@ function injectIntoSelectAST(
  * Injects RLS conditions into any nested SELECT statements.
  */
 function walkWhereForSubqueries(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- recursive duck-typed traversal of AST nodes; a union type would require discriminant checks at each step that would obscure the traversal logic
   node: any,
   groups: RLSFilterGroup[],
   combineWith: "and" | "or",
@@ -391,8 +394,6 @@ function walkWhereForSubqueries(
     }
   }
 }
-
-/* eslint-enable @typescript-eslint/no-explicit-any */
 
 /**
  * Inject RLS WHERE conditions into a validated SQL query via AST manipulation.

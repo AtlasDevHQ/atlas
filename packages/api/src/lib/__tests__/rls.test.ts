@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { Parser } from "node-sql-parser";
+import { Parser, type Select } from "node-sql-parser";
 import {
   resolveClaimPath,
   resolveRLSFilters,
@@ -852,12 +852,13 @@ describe("injectRLSConditions", () => {
     // not OR (which would widen access)
     const p = new Parser();
     const ast = p.astify(result, { database: "PostgresQL" });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const stmt = (Array.isArray(ast) ? ast[0] : ast) as any;
+    const stmt = (Array.isArray(ast) ? ast[0] : ast) as Select;
+    // Test-specific: the known query shape guarantees nested binary_expr with operator/right
+    const where = stmt.where as Select["where"] & { operator: string; right: { operator: string } };
     // Top-level WHERE operator must be AND (existing WHERE AND rls_group)
-    expect(stmt.where.operator).toBe("AND");
+    expect(where.operator).toBe("AND");
     // The right side of the AND should contain OR (the RLS groups)
-    expect(stmt.where.right.operator).toBe("OR");
+    expect(where.right.operator).toBe("OR");
   });
 });
 

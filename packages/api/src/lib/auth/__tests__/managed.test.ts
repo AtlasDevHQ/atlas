@@ -2,14 +2,14 @@ import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { validateManaged } from "../managed";
 import { _setAuthInstance } from "../server";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- mock return type is intentionally untyped to simulate Better Auth session responses
 const mockGetSession = mock((): Promise<any> => Promise.resolve(null));
 
 describe("validateManaged()", () => {
   beforeEach(() => {
     mockGetSession.mockReset();
     // Inject a fake auth instance whose api.getSession is our mock
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- injecting partial auth mock for testing
     _setAuthInstance({ api: { getSession: mockGetSession } } as any);
   });
 

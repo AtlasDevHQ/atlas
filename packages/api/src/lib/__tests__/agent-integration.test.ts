@@ -178,7 +178,7 @@ function userMessages(content: string): UIMessage[] {
  * every step's `toolResults` array by `toolName` and returns all
  * matching `.output` values in order.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- AI SDK step types are generic; test helper walks arbitrary step shapes
 function findToolResults(steps: any[], toolName: string): any[] {
   const results: unknown[] = [];
   for (const step of steps) {

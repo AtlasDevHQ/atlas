@@ -11,7 +11,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
 import {
@@ -378,8 +378,7 @@ admin.get("/semantic/catalog", async (c) => {
 // GET /semantic/raw/:file — serve raw YAML for top-level files (catalog.yml, glossary.yml)
 // GET /semantic/raw/:dir/:file — serve raw YAML for subdirectory files (entities/x.yml, metrics/x.yml)
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function serveRawYaml(c: any, requestId: string, filePath: string) {
+function serveRawYaml(c: Context, requestId: string, filePath: string) {
   // Validate: no traversal, must be .yml
   if (filePath.includes("..") || filePath.includes("\0") || filePath.includes("\\") || !filePath.endsWith(".yml")) {
     return c.json({ error: "invalid_request", message: "Invalid file path." }, 400);

@@ -212,7 +212,7 @@ describe("admin token usage routes", () => {
 
       const res = await app.fetch(adminRequest("/api/v1/admin/tokens/summary"));
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience for JSON response body
       const body = await res.json() as any;
       expect(body.totalPromptTokens).toBe(15000);
       expect(body.totalCompletionTokens).toBe(5000);
@@ -244,7 +244,7 @@ describe("admin token usage routes", () => {
       );
       const res = await app.fetch(adminRequest("/api/v1/admin/tokens/summary?from=2026-01-01&to=2026-03-01"));
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience for JSON response body
       const body = await res.json() as any;
       expect(body.from).toBe("2026-01-01");
       expect(body.to).toBe("2026-03-01");
@@ -253,7 +253,7 @@ describe("admin token usage routes", () => {
     it("returns 400 for invalid date format", async () => {
       const res = await app.fetch(adminRequest("/api/v1/admin/tokens/summary?from=not-a-date"));
       expect(res.status).toBe(400);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience for JSON response body
       const body = await res.json() as any;
       expect(body.error).toBe("invalid_request");
     });
@@ -262,7 +262,7 @@ describe("admin token usage routes", () => {
       mockInternalQuery.mockImplementation(() => Promise.reject(new Error("connection refused")));
       const res = await app.fetch(adminRequest("/api/v1/admin/tokens/summary"));
       expect(res.status).toBe(500);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience for JSON response body
       const body = await res.json() as any;
       expect(body.error).toBe("internal_error");
     });
@@ -291,7 +291,7 @@ describe("admin token usage routes", () => {
 
       const res = await app.fetch(adminRequest("/api/v1/admin/tokens/by-user"));
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience for JSON response body
       const body = await res.json() as any;
       expect(body.users).toHaveLength(2);
       expect(body.users[0].userId).toBe("user-1");
@@ -317,7 +317,7 @@ describe("admin token usage routes", () => {
 
       const res = await app.fetch(adminRequest("/api/v1/admin/tokens/trends"));
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience for JSON response body
       const body = await res.json() as any;
       expect(body.trends).toHaveLength(2);
       expect(body.trends[0].day).toBe("2026-03-08");
@@ -336,7 +336,7 @@ describe("admin token usage routes", () => {
       mockInternalQuery.mockImplementation(() => Promise.resolve([]));
       const res = await app.fetch(adminRequest("/api/v1/admin/tokens/trends"));
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience for JSON response body
       const body = await res.json() as any;
       expect(body.trends).toEqual([]);
     });

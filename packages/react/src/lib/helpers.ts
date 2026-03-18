@@ -111,7 +111,7 @@ export async function downloadExcel(
   rows: Record<string, unknown>[],
   filename = "atlas-results.xlsx",
 ) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- xlsx is an optional peer dependency; its types may not be available in consumer projects
   let XLSX: any;
   try {
     XLSX = await import("xlsx" /* webpackIgnore: true */);

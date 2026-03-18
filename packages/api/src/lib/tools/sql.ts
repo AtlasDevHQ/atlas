@@ -256,12 +256,9 @@ export function validateSQL(sql: string, connectionId?: string): SQLValidationRe
           error: `Only SELECT statements are allowed, got: ${stmt.type}`,
         };
       }
-      // CTE extraction: node-sql-parser doesn't expose .with in its type definitions,
-      // but the property exists at runtime for SELECT statements with CTEs.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      if (Array.isArray((stmt as any).with)) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        for (const cte of (stmt as any).with) {
+      // Extract CTE names so they can be excluded from the table whitelist check
+      if (Array.isArray(stmt.with)) {
+        for (const cte of stmt.with) {
           const name = cte?.name?.value ?? cte?.name;
           if (typeof name === "string") cteNames.add(name.toLowerCase());
         }

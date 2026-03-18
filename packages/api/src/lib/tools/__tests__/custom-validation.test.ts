@@ -180,7 +180,7 @@ describe("custom query validation", () => {
   });
 
   it("handles validator that returns undefined", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- deliberately invalid validator to test error handling
     validatorMap.set("bad-plugin", (() => undefined) as any);
 
     const result = await exec("SELECT 1", "bad-plugin");
@@ -191,7 +191,7 @@ describe("custom query validation", () => {
   });
 
   it("handles validator that returns non-boolean valid field", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- deliberately invalid validator return shape to test error handling
     validatorMap.set("bad-valid", (() => ({ valid: "yes" })) as any);
 
     const result = await exec("SELECT 1", "bad-valid");
@@ -251,7 +251,7 @@ describe("custom query validation", () => {
   });
 
   it("async validator resolving to undefined is treated as misconfigured", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- deliberately invalid async validator to test error handling
     validatorMap.set("async-undef", (async () => undefined) as any);
 
     const result = await exec("SELECT 1", "async-undef");
@@ -262,7 +262,7 @@ describe("custom query validation", () => {
   });
 
   it("async validator resolving to wrong shape ({ valid: 'yes' }) is treated as misconfigured", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- deliberately invalid async validator return shape to test error handling
     validatorMap.set("async-bad-shape", (async () => ({ valid: "yes" })) as any);
 
     const result = await exec("SELECT 1", "async-bad-shape");

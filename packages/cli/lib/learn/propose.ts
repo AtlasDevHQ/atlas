@@ -48,7 +48,7 @@ export interface Proposal {
   /** The YAML content to add (serialized). */
   yamlAddition: string;
   /** Apply this proposal to the entity YAML object in-memory. */
-  apply: (entity: EntityYaml) => void;
+  apply: (entity: EntityYaml, glossary?: GlossaryYaml) => void;
 }
 
 export interface ProposalSet {
@@ -193,19 +193,16 @@ export function generateProposals(
   let glossaryUpdate: GlossaryYaml | null = null;
   let glossaryPath: string | null = null;
 
-  // Clone glossary upfront and redirect the reference so apply closures
-  // (which capture glossaryData) write to the clone, not the original.
+  // Clone glossary upfront so apply closures write to the clone, not the original.
   if (glossaryData && proposals.some((p) => p.type === "glossary_term")) {
     glossaryUpdate = structuredClone(glossaryData.glossary);
     glossaryPath = glossaryData.filePath;
-    // Redirect: apply closures capture glossaryData by reference
-    glossaryData.glossary = glossaryUpdate;
   }
 
   for (const proposal of proposals) {
     if (proposal.type === "glossary_term") {
       if (glossaryUpdate) {
-        proposal.apply({} as EntityYaml);
+        proposal.apply({} as EntityYaml, glossaryUpdate);
       }
     } else if (proposal.table) {
       const entry = entities.get(proposal.table);
@@ -346,9 +343,8 @@ function proposeGlossaryTerms(
       description: `Add glossary term: "${alias.alias}" = ${alias.expression} (observed ${alias.count}x)`,
       observedCount: alias.count,
       yamlAddition: yaml.dump({ [alias.alias]: termEntry }, { lineWidth: -1 }).trim(),
-      apply: () => {
-        // Glossary updates are handled separately in generateProposals
-        glossaryData.glossary.terms[alias.alias] = termEntry;
+      apply: (_entity: EntityYaml, glossary?: GlossaryYaml) => {
+        if (glossary) glossary.terms[alias.alias] = termEntry;
       },
     });
   }

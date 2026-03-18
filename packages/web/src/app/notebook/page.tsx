@@ -122,6 +122,7 @@ function NotebookContent() {
 
   // New chat handler
   function handleNewChat() {
+    setError(null);
     setMessages([]);
     setParams({ id: "", cell: "" });
     convos.setSelectedId(null);
@@ -130,6 +131,7 @@ function NotebookContent() {
   // Select conversation handler
   async function handleSelectConversation(id: string) {
     if (loadingConversation) return;
+    setError(null);
     setLoadingConversation(true);
     try {
       const uiMessages = await convos.loadConversation(id);
@@ -152,12 +154,12 @@ function NotebookContent() {
     }
   }
 
-  // Error state
-  if (healthWarning || error) {
+  // Health warning — blocks the entire page until resolved (requires reload)
+  if (healthWarning) {
     return (
       <div className="flex h-screen items-center justify-center p-8">
         <div className="text-center">
-          <p className="text-sm text-red-600 dark:text-red-400">{healthWarning || error}</p>
+          <p className="text-sm text-red-600 dark:text-red-400">{healthWarning}</p>
           <Button className="mt-4" onClick={() => window.location.reload()}>
             Retry
           </Button>
@@ -190,7 +192,15 @@ function NotebookContent() {
           onMobileClose={() => setMobileMenuOpen(false)}
         />
       )}
-      <main id="main" className="flex-1">
+      <main id="main" className="flex-1 flex flex-col">
+        {error && (
+          <div className="mx-4 mt-4 flex items-center justify-between rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
+            <p>{error}</p>
+            <Button variant="ghost" size="sm" onClick={() => setError(null)} className="shrink-0 text-red-600 dark:text-red-400">
+              Dismiss
+            </Button>
+          </div>
+        )}
         <NotebookShell notebook={notebook} focusCellId={focusCellId} />
       </main>
     </div>

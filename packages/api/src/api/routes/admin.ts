@@ -2377,8 +2377,8 @@ admin.get("/me/password-status", async (c) => {
       );
       return c.json({ passwordChangeRequired: rows[0]?.password_change_required === true });
     } catch (err) {
-      log.warn({ err: err instanceof Error ? err.message : String(err), userId: user.id }, "Failed to check password_change_required — defaulting to false");
-      return c.json({ passwordChangeRequired: false });
+      log.error({ err: err instanceof Error ? err.message : String(err), userId: user.id, requestId }, "Failed to check password_change_required — returning 500 to avoid bypassing forced password change");
+      return c.json({ error: "internal_error", message: "Unable to verify password status. Please try again." }, 500);
     }
   });
 });

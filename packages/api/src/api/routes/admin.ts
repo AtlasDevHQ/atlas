@@ -2345,17 +2345,18 @@ admin.get("/me/password-status", async (c) => {
   if (!authResult.authenticated) {
     return c.json({ error: "auth_error", message: authResult.error }, authResult.status);
   }
-  if (authResult.mode !== "managed" || !authResult.user) {
+  const user = authResult.user;
+  if (authResult.mode !== "managed" || !user) {
     return c.json({ passwordChangeRequired: false });
   }
 
   if (!hasInternalDB()) return c.json({ passwordChangeRequired: false });
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
+  return withRequestContext({ requestId, user }, async () => {
     try {
       const rows = await internalQuery<{ password_change_required: boolean }>(
         `SELECT password_change_required FROM "user" WHERE id = $1`,
-        [authResult.user!.id],
+        [user.id],
       );
       return c.json({ passwordChangeRequired: rows[0]?.password_change_required === true });
     } catch {
@@ -2378,11 +2379,12 @@ admin.post("/me/password", async (c) => {
   if (!authResult.authenticated) {
     return c.json({ error: "auth_error", message: authResult.error }, authResult.status);
   }
-  if (authResult.mode !== "managed" || !authResult.user) {
+  const user = authResult.user;
+  if (authResult.mode !== "managed" || !user) {
     return c.json({ error: "not_available", message: "Password change requires managed auth mode." }, 404);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
+  return withRequestContext({ requestId, user }, async () => {
     const body = await c.req.json().catch((err) => {
       log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in password change request");
       return null;
@@ -2411,11 +2413,11 @@ admin.post("/me/password", async (c) => {
       if (hasInternalDB()) {
         await internalQuery(
           `UPDATE "user" SET password_change_required = false WHERE id = $1`,
-          [authResult.user!.id],
+          [user.id],
         );
       }
 
-      log.info({ requestId, userId: authResult.user!.id }, "Password changed and flag cleared");
+      log.info({ requestId, userId: user.id }, "Password changed and flag cleared");
       return c.json({ success: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Password change failed";

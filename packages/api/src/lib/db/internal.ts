@@ -121,7 +121,8 @@ export function hasInternalDB(): boolean {
 /** Returns the singleton pg.Pool for the internal database. Throws if DATABASE_URL is not set. */
 export function getInternalDB(): InternalPool {
   if (!_pool) {
-    if (!process.env.DATABASE_URL) {
+    const databaseUrl = process.env.DATABASE_URL;
+    if (!databaseUrl) {
       throw new Error(
         "DATABASE_URL is not set. Atlas internal database requires a PostgreSQL connection string."
       );
@@ -129,7 +130,7 @@ export function getInternalDB(): InternalPool {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { Pool } = require("pg");
     // Normalize sslmode: pg v8 treats 'require' as 'verify-full' but warns.
-    const connString = process.env.DATABASE_URL!.replace(
+    const connString = databaseUrl.replace(
       /([?&])sslmode=require(?=&|$)/,
       "$1sslmode=verify-full",
     );

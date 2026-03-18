@@ -348,7 +348,7 @@ health.get("/", async (c) => {
         auth: {
           mode: authMode,
           enabled: authMode !== "none",
-          ...(hasAuthError && { error: authDiagnostic!.code }),
+          ...(authDiagnostic && { error: authDiagnostic.code }),
         },
         slack: {
           enabled: !!process.env.SLACK_SIGNING_SECRET,

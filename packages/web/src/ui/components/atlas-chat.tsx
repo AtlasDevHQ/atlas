@@ -16,6 +16,8 @@ import { ToolPart } from "./chat/tool-part";
 import { Markdown } from "./chat/markdown";
 import { STARTER_PROMPTS } from "./chat/starter-prompts";
 import { FollowUpChips } from "./chat/follow-up-chips";
+import { SuggestionChips } from "./chat/suggestion-chips";
+import type { QuerySuggestion } from "@/ui/lib/types";
 import { ShareDialog } from "./chat/share-dialog";
 import { ConversationSidebar } from "./conversations/conversation-sidebar";
 import { ChangePasswordDialog } from "./admin/change-password-dialog";
@@ -139,6 +141,9 @@ export function AtlasChat() {
   const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
   const [schemaExplorerOpen, setSchemaExplorerOpen] = useState(false);
   const [promptLibraryOpen, setPromptLibraryOpen] = useState(false);
+  const [popularSuggestions, setPopularSuggestions] = useState<QuerySuggestion[]>([]);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+  const [relatedSuggestions, setRelatedSuggestions] = useState<QuerySuggestion[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const managedSession = authClient.useSession();
@@ -239,6 +244,27 @@ export function AtlasChat() {
     checkPasswordStatus();
   }, [isManaged, managedSession.data?.user, apiUrl, isCrossOrigin]);
 
+  // Fetch popular suggestions for the empty state
+  useEffect(() => {
+    if (messages.length > 0) return;
+    let cancelled = false;
+    setSuggestionsLoading(true);
+    fetch("/api/v1/suggestions/popular?limit=6")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled && data?.suggestions) {
+          setPopularSuggestions(data.suggestions);
+        }
+      })
+      .catch(() => {
+        // intentionally ignored: suggestions are non-critical
+      })
+      .finally(() => {
+        if (!cancelled) setSuggestionsLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [messages.length]);
+
   const handleSaveApiKey = useCallback((key: string) => {
     setApiKey(key);
     try {
@@ -323,6 +349,13 @@ export function AtlasChat() {
       setHealthWarning("Failed to send message. Please try again.");
       setTimeout(() => setHealthWarning(""), 5000);
     });
+  }
+
+  function handleSuggestionSelect(text: string, id: string) {
+    fetch(`/api/v1/suggestions/${id}/click`, { method: "POST" }).catch(() => {
+      // intentionally ignored: click tracking is non-critical
+    });
+    handleSend(text);
   }
 
   async function handleSelectConversation(id: string) {
@@ -487,6 +520,12 @@ export function AtlasChat() {
                           Ask a question about your data to get started
                         </p>
                       </div>
+                      <SuggestionChips
+                        suggestions={popularSuggestions}
+                        onSelect={handleSuggestionSelect}
+                        loading={suggestionsLoading}
+                        label="Popular queries"
+                      />
                       <div className="grid w-full max-w-lg grid-cols-1 gap-2 sm:grid-cols-2">
                         {STARTER_PROMPTS.map((prompt) => (
                           <Button

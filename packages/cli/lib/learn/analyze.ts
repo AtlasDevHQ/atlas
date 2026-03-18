@@ -298,8 +298,13 @@ export function analyzeQueries(rows: AuditRow[]): AnalysisResult {
   const aliasMap = new Map<string, { expression: string; tables: Set<string>; count: number }>();
 
   for (const row of rows) {
+    // Guard: skip rows with null/non-string sql (can arrive from corrupted audit log rows)
+    if (!row.sql || typeof row.sql !== "string") {
+      continue;
+    }
+
     // Use pre-computed tables_accessed if available, otherwise parse
-    let tables: string[] = row.tables_accessed ?? [];
+    let tables: string[] = Array.isArray(row.tables_accessed) ? row.tables_accessed : [];
     let parsed: ParsedQuery | null = null;
 
     if (tables.length === 0) {

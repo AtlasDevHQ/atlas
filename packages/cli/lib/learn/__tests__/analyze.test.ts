@@ -90,4 +90,61 @@ describe("analyzeQueries", () => {
     // Should still extract what it can
     expect(result.tableUsage.get("users")).toBe(2);
   });
+
+  // ── Edge cases ──────────────────────────────────────────────────
+
+  test("skips rows with null sql (runtime data from DB)", () => {
+    const rows = [
+      // At runtime, DB rows may have NULL sql even though TypeScript types say string
+      { sql: null as unknown as string, row_count: 10, tables_accessed: null, columns_accessed: null },
+      // Null sql but valid tables_accessed — entire row skipped
+      { sql: null as unknown as string, row_count: 5, tables_accessed: ["orders"], columns_accessed: null },
+      makeRow("SELECT id FROM users"),
+      makeRow("SELECT id FROM users"),
+    ];
+    const result = analyzeQueries(rows);
+    // Null-sql rows are fully skipped — not counted
+    expect(result.totalQueries).toBe(4);
+    expect(result.tableUsage.get("users")).toBe(2);
+    expect(result.tableUsage.has("orders")).toBe(false);
+  });
+
+  test("skips rows with empty SQL strings", () => {
+    const rows = [
+      makeRow(""),
+      makeRow("   "),
+      makeRow("SELECT id FROM users"),
+      makeRow("SELECT id FROM users"),
+    ];
+    const result = analyzeQueries(rows);
+    // Empty/whitespace SQL rows are skipped — valid rows still extracted
+    expect(result.totalQueries).toBe(4);
+    expect(result.tableUsage.get("users")).toBe(2);
+  });
+
+  test("handles extremely long SQL without memory issues", () => {
+    // 10K+ character query — should not hang or OOM
+    const longColumns = Array.from({ length: 1500 }, (_, i) => `column_name_${i}`).join(", ");
+    const longSQL = `SELECT ${longColumns} FROM users WHERE id = 1`;
+    expect(longSQL.length).toBeGreaterThan(10_000);
+
+    const rows = [makeRow(longSQL), makeRow(longSQL)];
+    const result = analyzeQueries(rows);
+    // Should complete without error; may or may not produce patterns
+    expect(result.totalQueries).toBe(2);
+    expect(result.tableUsage.get("users")).toBe(2);
+  });
+
+  test("handles rows with corrupted non-string tables_accessed", () => {
+    const rows = [
+      // At runtime, JSONB can return unexpected shapes
+      makeRow("SELECT id FROM users", { tables_accessed: "not-an-array" as unknown as string[] }),
+      makeRow("SELECT id FROM users", { tables_accessed: 42 as unknown as string[] }),
+      makeRow("SELECT id FROM users"),
+    ];
+    // Should not throw — falls back to SQL parsing
+    const result = analyzeQueries(rows);
+    expect(result.totalQueries).toBe(3);
+    expect(result.tableUsage.get("users")).toBeGreaterThanOrEqual(1);
+  });
 });

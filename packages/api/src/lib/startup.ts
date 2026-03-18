@@ -77,8 +77,63 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
 
   const errors: DiagnosticError[] = [];
 
-  // 1. Analytics datasource — resolve from ATLAS_DATASOURCE_URL or Neon fallback
+  // 1. Analytics datasource URL presence
   const resolvedDatasourceUrl = resolveDatasourceUrl();
+  checkDatasourceUrlPresence(errors, resolvedDatasourceUrl);
+
+  // 2. API key for configured provider
+  checkProviderApiKey(errors);
+
+  // 3. Semantic layer presence
+  checkSemanticLayerPresence(errors);
+
+  // 4. Datasource connectivity (only if a datasource URL is resolved)
+  if (resolvedDatasourceUrl) {
+    await checkDatasourceConnectivity(errors, resolvedDatasourceUrl);
+  }
+
+  // 5. Internal database (DATABASE_URL) — optional, for auth/audit/settings
+  await checkInternalDbConnectivity(errors);
+
+  // Check if boot-time migration reported errors
+  const { getMigrationError } = await import("@atlas/api/lib/auth/migrate");
+  const migrationErr = getMigrationError();
+  if (migrationErr) {
+    errors.push({ code: "INTERNAL_DB_UNREACHABLE", message: migrationErr });
+  }
+
+  // 5.5. Config file validation (atlas.config.ts)
+  await checkConfigFile(errors);
+
+  // 6. Auth mode diagnostics + 6.5. encryption key check
+  const authMode = await checkAuthModeDiagnostics(errors);
+
+  // 7. Action framework diagnostics
+  if (process.env.ATLAS_ACTIONS_ENABLED === "true") {
+    await checkActionFramework(errors, authMode);
+  }
+
+  // 8. Slack integration — optional, informational only
+  if (process.env.SLACK_SIGNING_SECRET) {
+    const slackMode = process.env.SLACK_CLIENT_ID ? "oauth" : "single-workspace";
+    log.info({ slackMode }, "Slack integration enabled");
+  }
+
+  // 9. Sandbox plugins + 10. Sandbox pre-flight
+  await logSandboxPlugins();
+  await checkSandboxPreFlight();
+
+  _cached = errors;
+  _cachedAt = Date.now();
+  return errors;
+}
+
+// ── Startup validation helpers ──────────────────────────────────────────
+
+function checkDatasourceUrlPresence(
+  errors: DiagnosticError[],
+  resolvedDatasourceUrl: string | undefined,
+): void {
   if (!resolvedDatasourceUrl) {
     if (process.env.ATLAS_DEMO_DATA === "true") {
       const msg =
@@ -110,8 +165,9 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
     const source = process.env.DATABASE_URL_UNPOOLED ? "DATABASE_URL_UNPOOLED" : "DATABASE_URL";
     log.info("Demo mode: using %s as analytics datasource", source);
   }
+}
 
-  // 2. API key for configured provider
+function checkProviderApiKey(errors: DiagnosticError[]): void {
   const provider = process.env.ATLAS_PROVIDER ?? getDefaultProvider();
   const requiredKey = PROVIDER_KEY_MAP[provider];
 
@@ -126,8 +182,9 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
     }
     errors.push({ code: "MISSING_API_KEY", message });
   }
+}
 
-  // 3. Semantic layer presence
+function checkSemanticLayerPresence(errors: DiagnosticError[]): void {
   const semanticDir = path.resolve(process.cwd(), "semantic", "entities");
   let hasEntities = false;
   try {
@@ -136,7 +193,6 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
   } catch (err) {
     const code = err instanceof Error && "code" in err ? (err as NodeJS.ErrnoException).code : undefined;
     if (code !== "ENOENT") {
-      // Non-ENOENT errors (permissions, not a directory, etc.) — report the real problem
       errors.push({
         code: "MISSING_SEMANTIC_LAYER",
         message: `Could not read semantic layer directory: ${err instanceof Error ? err.message : String(err)}. Check file permissions.`,
@@ -151,192 +207,210 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
         "No semantic layer found. Run 'bun run atlas -- init' to generate one from your database, or 'bun run atlas -- init --demo' to load demo data.",
     });
   }
+}
 
-  // 4. Datasource connectivity (only if a datasource URL is resolved)
-  if (resolvedDatasourceUrl) {
-    let dbType: ReturnType<typeof detectDBType> | null = null;
-    try {
-      dbType = detectDBType(resolvedDatasourceUrl);
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      log.error({ err: detail }, "Unsupported datasource URL");
-      errors.push({ code: "DB_UNREACHABLE", message: detail });
-    }
-
-    if (dbType === "mysql") {
-      // MySQL: URL validation + connection test
-      if (!isValidUrl(resolvedDatasourceUrl)) {
-        errors.push({
-          code: "DB_UNREACHABLE",
-          message: "ATLAS_DATASOURCE_URL appears malformed. Expected format: mysql://user:pass@host:3306/dbname",
-        });
-      } else {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const mysql = require("mysql2/promise");
-        let pool;
-        try {
-          pool = mysql.createPool({
-            uri: resolvedDatasourceUrl,
-            connectionLimit: 1,
-            connectTimeout: 5000,
-          });
-          const conn = await pool.getConnection();
-          conn.release();
-        } catch (err) {
-          const detail = err instanceof Error ? err.message : "";
-          log.error({ err: detail }, "MySQL connection check failed");
-
-          const maskedUrl = maskConnectionUrl(resolvedDatasourceUrl);
-          const matched = matchError(err);
-          let message: string;
-          if (matched) {
-            message = `Cannot connect to ${maskedUrl}. ${matched.message}`;
-          } else if (/Access denied/i.test(detail) || /ER_ACCESS_DENIED/i.test(detail)) {
-            message = `Cannot connect to ${maskedUrl}. Authentication failed — check your username and password.`;
-          } else if (/ER_BAD_DB_ERROR/i.test(detail)) {
-            let dbHint = "";
-            try {
-              const noDatabaseUrl = resolvedDatasourceUrl.replace(/\/[^/?#]+(?=[?#]|$)/, "/");
-              const listPool = mysql.createPool({
-                uri: noDatabaseUrl,
-                connectionLimit: 1,
-                connectTimeout: 5000,
-              });
-              try {
-                const listConn = await listPool.getConnection();
-                const [dbRows] = await listConn.query(
-                  "SELECT schema_name FROM information_schema.schemata " +
-                  "WHERE schema_name NOT IN ('mysql', 'sys', 'performance_schema', 'information_schema') " +
-                  "ORDER BY schema_name"
-                );
-                const schemas = (dbRows as Array<{ schema_name: string }>).map(r => r.schema_name);
-                if (schemas.length > 0) {
-                  dbHint = ` Available databases: ${schemas.join(", ")}.`;
-                }
-                listConn.release();
-              } finally {
-                await listPool.end().catch(() => {});
-              }
-            } catch {
-              // Database listing failed — fall back to generic message
-            }
-            message = `Cannot connect to ${maskedUrl}. The specified database does not exist.${dbHint}`;
-          } else {
-            message = `Cannot connect to ${maskedUrl}. Check the connection string and ensure the database is running.`;
-          }
-
-          errors.push({ code: "DB_UNREACHABLE", message });
-        } finally {
-          if (pool) {
-            await pool.end().catch((err: unknown) => {
-              log.warn({ err: err instanceof Error ? err.message : String(err) }, "Pool cleanup warning");
-            });
-          }
-        }
-      }
-    } else if (dbType === "postgres") {
-      // PostgreSQL: existing URL validation + connection test + schema validation
-      const atlasSchema = process.env.ATLAS_SCHEMA;
-      const VALID_SQL_IDENTIFIER = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
-
-      // Validate ATLAS_SCHEMA format before attempting connection
-      if (atlasSchema && !VALID_SQL_IDENTIFIER.test(atlasSchema)) {
-        errors.push({
-          code: "INVALID_SCHEMA",
-          message: `Invalid ATLAS_SCHEMA "${atlasSchema}". Must be a valid SQL identifier (letters, digits, underscores).`,
-        });
-      }
-
-      if (!isValidUrl(resolvedDatasourceUrl)) {
-        errors.push({
-          code: "DB_UNREACHABLE",
-          message: "ATLAS_DATASOURCE_URL appears malformed. Expected format: postgresql://user:pass@host:5432/dbname",
-        });
-      } else {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const { Pool } = require("pg");
-        const pool = new Pool({
-          connectionString: resolvedDatasourceUrl,
-          max: 1,
-          connectionTimeoutMillis: 5000,
-        });
-        try {
-          const client = await pool.connect();
-
-          // Verify schema exists if ATLAS_SCHEMA is set and valid
-          if (atlasSchema && atlasSchema !== "public" && VALID_SQL_IDENTIFIER.test(atlasSchema)) {
-            try {
-              const result = await client.query(
-                "SELECT 1 FROM pg_namespace WHERE nspname = $1",
-                [atlasSchema]
-              );
-              if (result.rows.length === 0) {
-                let schemaHint = "";
-                try {
-                  const schemasResult = await client.query(
-                    "SELECT schema_name FROM information_schema.schemata " +
-                    "WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast') " +
-                    "AND schema_name NOT LIKE 'pg_temp_%' AND schema_name NOT LIKE 'pg_toast_temp_%' " +
-                    "ORDER BY schema_name"
-                  );
-                  const schemas = schemasResult.rows.map(
-                    (r: { schema_name: string }) => r.schema_name
-                  );
-                  if (schemas.length > 0) {
-                    schemaHint = ` Available schemas: ${schemas.join(", ")}.`;
-                  }
-                } catch {
-                  // Schema listing failed — fall back to generic message
-                }
-                errors.push({
-                  code: "INVALID_SCHEMA",
-                  message: `Schema "${atlasSchema}" does not exist in the database.${schemaHint} Check ATLAS_SCHEMA in your .env file.`,
-                });
-              }
-            } catch (schemaErr) {
-              log.error({ err: schemaErr instanceof Error ? schemaErr.message : String(schemaErr) }, "Schema existence check failed");
-              errors.push({
-                code: "INVALID_SCHEMA",
-                message: `Could not verify schema "${atlasSchema}". Check ATLAS_SCHEMA and database permissions.`,
-              });
-            }
-          }
-
-          client.release();
-        } catch (err) {
-          const detail = err instanceof Error ? err.message : "";
-          log.error({ err: detail }, "DB connection check failed");
-
-          const maskedUrl = maskConnectionUrl(resolvedDatasourceUrl);
-          const matched = matchError(err);
-          let message: string;
-          if (matched) {
-            message = `Cannot connect to ${maskedUrl}. ${matched.message}`;
-          } else if (/authentication/i.test(detail) || /password/i.test(detail)) {
-            message = `Cannot connect to ${maskedUrl}. Authentication failed — check your username and password.`;
-          } else {
-            message = `Cannot connect to ${maskedUrl}. Check the connection string and ensure the database is running.`;
-          }
-
-          errors.push({ code: "DB_UNREACHABLE", message });
-        } finally {
-          await pool.end().catch((err: unknown) => {
-            log.warn({ err: err instanceof Error ? err.message : String(err) }, "Pool cleanup warning");
-          });
-        }
-      }
-    }
-    // Non-core database types are validated by their respective datasource plugins.
-    if (dbType && dbType !== "postgres" && dbType !== "mysql") {
-      log.info(
-        { dbType },
-        "Non-core datasource type '%s' — connectivity validation deferred to plugin initialize()",
-        dbType,
-      );
-    }
+async function checkDatasourceConnectivity(
+  errors: DiagnosticError[],
+  resolvedDatasourceUrl: string,
+): Promise<void> {
+  let dbType: ReturnType<typeof detectDBType> | null = null;
+  try {
+    dbType = detectDBType(resolvedDatasourceUrl);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    log.error({ err: detail }, "Unsupported datasource URL");
+    errors.push({ code: "DB_UNREACHABLE", message: detail });
   }
 
-  // 5. Internal database (DATABASE_URL) — optional, for auth/audit/settings
+  if (dbType === "mysql") {
+    await checkMysqlConnectivity(errors, resolvedDatasourceUrl);
+  } else if (dbType === "postgres") {
+    await checkPostgresConnectivity(errors, resolvedDatasourceUrl);
+  }
+
+  // Non-core database types are validated by their respective datasource plugins.
+  if (dbType && dbType !== "postgres" && dbType !== "mysql") {
+    log.info(
+      { dbType },
+      "Non-core datasource type '%s' — connectivity validation deferred to plugin initialize()",
+      dbType,
+    );
+  }
+}
+
+async function checkMysqlConnectivity(
+  errors: DiagnosticError[],
+  url: string,
+): Promise<void> {
+  if (!isValidUrl(url)) {
+    errors.push({
+      code: "DB_UNREACHABLE",
+      message: "ATLAS_DATASOURCE_URL appears malformed. Expected format: mysql://user:pass@host:3306/dbname",
+    });
+    return;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const mysql = require("mysql2/promise");
+  let pool;
+  try {
+    pool = mysql.createPool({
+      uri: url,
+      connectionLimit: 1,
+      connectTimeout: 5000,
+    });
+    const conn = await pool.getConnection();
+    conn.release();
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : "";
+    log.error({ err: detail }, "MySQL connection check failed");
+
+    const maskedUrl = maskConnectionUrl(url);
+    const matched = matchError(err);
+    let message: string;
+    if (matched) {
+      message = `Cannot connect to ${maskedUrl}. ${matched.message}`;
+    } else if (/Access denied/i.test(detail) || /ER_ACCESS_DENIED/i.test(detail)) {
+      message = `Cannot connect to ${maskedUrl}. Authentication failed — check your username and password.`;
+    } else if (/ER_BAD_DB_ERROR/i.test(detail)) {
+      let dbHint = "";
+      try {
+        const noDatabaseUrl = url.replace(/\/[^/?#]+(?=[?#]|$)/, "/");
+        const listPool = mysql.createPool({
+          uri: noDatabaseUrl,
+          connectionLimit: 1,
+          connectTimeout: 5000,
+        });
+        try {
+          const listConn = await listPool.getConnection();
+          const [dbRows] = await listConn.query(
+            "SELECT schema_name FROM information_schema.schemata " +
+            "WHERE schema_name NOT IN ('mysql', 'sys', 'performance_schema', 'information_schema') " +
+            "ORDER BY schema_name"
+          );
+          const schemas = (dbRows as Array<{ schema_name: string }>).map(r => r.schema_name);
+          if (schemas.length > 0) {
+            dbHint = ` Available databases: ${schemas.join(", ")}.`;
+          }
+          listConn.release();
+        } finally {
+          await listPool.end().catch(() => {});
+        }
+      } catch {
+        // Database listing failed — fall back to generic message
+      }
+      message = `Cannot connect to ${maskedUrl}. The specified database does not exist.${dbHint}`;
+    } else {
+      message = `Cannot connect to ${maskedUrl}. Check the connection string and ensure the database is running.`;
+    }
+
+    errors.push({ code: "DB_UNREACHABLE", message });
+  } finally {
+    if (pool) {
+      await pool.end().catch((err: unknown) => {
+        log.warn({ err: err instanceof Error ? err.message : String(err) }, "Pool cleanup warning");
+      });
+    }
+  }
+}
+
+async function checkPostgresConnectivity(
+  errors: DiagnosticError[],
+  url: string,
+): Promise<void> {
+  const atlasSchema = process.env.ATLAS_SCHEMA;
+  const VALID_SQL_IDENTIFIER = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+
+  // Validate ATLAS_SCHEMA format before attempting connection
+  if (atlasSchema && !VALID_SQL_IDENTIFIER.test(atlasSchema)) {
+    errors.push({
+      code: "INVALID_SCHEMA",
+      message: `Invalid ATLAS_SCHEMA "${atlasSchema}". Must be a valid SQL identifier (letters, digits, underscores).`,
+    });
+  }
+
+  if (!isValidUrl(url)) {
+    errors.push({
+      code: "DB_UNREACHABLE",
+      message: "ATLAS_DATASOURCE_URL appears malformed. Expected format: postgresql://user:pass@host:5432/dbname",
+    });
+    return;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { Pool } = require("pg");
+  const pool = new Pool({
+    connectionString: url,
+    max: 1,
+    connectionTimeoutMillis: 5000,
+  });
+  try {
+    const client = await pool.connect();
+
+    // Verify schema exists if ATLAS_SCHEMA is set and valid
+    if (atlasSchema && atlasSchema !== "public" && VALID_SQL_IDENTIFIER.test(atlasSchema)) {
+      try {
+        const result = await client.query(
+          "SELECT 1 FROM pg_namespace WHERE nspname = $1",
+          [atlasSchema]
+        );
+        if (result.rows.length === 0) {
+          let schemaHint = "";
+          try {
+            const schemasResult = await client.query(
+              "SELECT schema_name FROM information_schema.schemata " +
+              "WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast') " +
+              "AND schema_name NOT LIKE 'pg_temp_%' AND schema_name NOT LIKE 'pg_toast_temp_%' " +
+              "ORDER BY schema_name"
+            );
+            const schemas = schemasResult.rows.map(
+              (r: { schema_name: string }) => r.schema_name
+            );
+            if (schemas.length > 0) {
+              schemaHint = ` Available schemas: ${schemas.join(", ")}.`;
+            }
+          } catch {
+            // Schema listing failed — fall back to generic message
+          }
+          errors.push({
+            code: "INVALID_SCHEMA",
+            message: `Schema "${atlasSchema}" does not exist in the database.${schemaHint} Check ATLAS_SCHEMA in your .env file.`,
+          });
+        }
+      } catch (schemaErr) {
+        log.error({ err: schemaErr instanceof Error ? schemaErr.message : String(schemaErr) }, "Schema existence check failed");
+        errors.push({
+          code: "INVALID_SCHEMA",
+          message: `Could not verify schema "${atlasSchema}". Check ATLAS_SCHEMA and database permissions.`,
+        });
+      }
+    }
+
+    client.release();
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : "";
+    log.error({ err: detail }, "DB connection check failed");
+
+    const maskedUrl = maskConnectionUrl(url);
+    const matched = matchError(err);
+    let message: string;
+    if (matched) {
+      message = `Cannot connect to ${maskedUrl}. ${matched.message}`;
+    } else if (/authentication/i.test(detail) || /password/i.test(detail)) {
+      message = `Cannot connect to ${maskedUrl}. Authentication failed — check your username and password.`;
+    } else {
+      message = `Cannot connect to ${maskedUrl}. Check the connection string and ensure the database is running.`;
+    }
+
+    errors.push({ code: "DB_UNREACHABLE", message });
+  } finally {
+    await pool.end().catch((err: unknown) => {
+      log.warn({ err: err instanceof Error ? err.message : String(err) }, "Pool cleanup warning");
+    });
+  }
+}
+
+async function checkInternalDbConnectivity(errors: DiagnosticError[]): Promise<void> {
   if (process.env.DATABASE_URL) {
     if (!isValidUrl(process.env.DATABASE_URL)) {
       errors.push({
@@ -383,15 +457,9 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
     }
     log.warn(msg);
   }
+}
 
-  // Check if boot-time migration reported errors
-  const { getMigrationError } = await import("@atlas/api/lib/auth/migrate");
-  const migrationErr = getMigrationError();
-  if (migrationErr) {
-    errors.push({ code: "INTERNAL_DB_UNREACHABLE", message: migrationErr });
-  }
-
-  // 5.5. Config file validation (atlas.config.ts)
+async function checkConfigFile(errors: DiagnosticError[]): Promise<void> {
   try {
     const configMod = await import("@atlas/api/lib/config");
     if (typeof configMod.loadConfig === "function" && !configMod.getConfig()) {
@@ -402,8 +470,9 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
     log.error({ err: detail }, "Config validation failed");
     errors.push({ code: "INVALID_CONFIG", message: detail });
   }
+}
 
-  // 6. Auth mode diagnostics
+async function checkAuthModeDiagnostics(errors: DiagnosticError[]): Promise<string> {
   const authMode = detectAuthMode();
   const authSource = getAuthModeSource();
   log.info({ authMode, source: authSource }, "Auth mode: %s (%s)", authMode, authSource);
@@ -438,80 +507,103 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
   }
 
   if (authMode === "managed") {
-    if (!process.env.DATABASE_URL) {
-      errors.push({
-        code: "INTERNAL_DB_UNREACHABLE",
-        message:
-          "Managed auth mode requires DATABASE_URL for session storage. " +
-          "Set DATABASE_URL to a PostgreSQL connection string (postgresql://user:pass@host:5432/atlas).",
-      });
-    }
-    const secret = process.env.BETTER_AUTH_SECRET ?? "";
-    if (secret.length < 32) {
-      errors.push({
-        code: "WEAK_AUTH_SECRET",
-        message:
-          `BETTER_AUTH_SECRET must be at least 32 characters (currently ${secret.length}). ` +
-          "Generate one with: openssl rand -base64 32",
-      });
-    }
-    if (!process.env.BETTER_AUTH_URL) {
-      const msg =
-        "BETTER_AUTH_URL is not set. Better Auth will auto-detect from the request, " +
-        "but setting it explicitly is recommended for production.";
-      if (!_startupWarnings.includes(msg)) {
-        _startupWarnings.push(msg);
-      }
-      log.warn(msg);
-    }
+    checkManagedAuthMode(errors);
   }
 
   if (authMode === "byot") {
-    const jwksUrl = process.env.ATLAS_AUTH_JWKS_URL ?? "";
-    let jwksUrlValid = false;
-    try {
-      new URL(jwksUrl);
-      jwksUrlValid = true;
-    } catch (err) {
-      errors.push({
-        code: "INVALID_JWKS_URL",
-        message:
-          `ATLAS_AUTH_JWKS_URL is not a valid URL (${err instanceof Error ? err.message : "parse error"}). Expected format: https://your-idp.com/.well-known/jwks.json`,
-      });
-    }
-
-    // Reachability check — non-blocking warning since the IdP might be temporarily down
-    if (jwksUrlValid) {
-      try {
-        const resp = await fetch(jwksUrl, { signal: AbortSignal.timeout(5000) });
-        if (!resp.ok) {
-          const msg = `JWKS endpoint returned HTTP ${resp.status}. Verify the URL is correct.`;
-          log.warn({ jwksUrl, status: resp.status }, msg);
-          if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
-        }
-      } catch (err) {
-        log.warn({ err: err instanceof Error ? err.message : String(err), jwksUrl }, "JWKS endpoint unreachable during startup check");
-      }
-    }
-
-    if (!process.env.ATLAS_AUTH_ISSUER) {
-      errors.push({
-        code: "MISSING_AUTH_ISSUER",
-        message:
-          "ATLAS_AUTH_ISSUER is required for BYOT auth mode. Set it to your identity provider's issuer URL (e.g. https://your-idp.com/).",
-      });
-    }
-
-    if (process.env.ATLAS_AUTH_AUDIENCE === "") {
-      const msg =
-        "ATLAS_AUTH_AUDIENCE is set to an empty string — audience validation will be skipped. " +
-        "Remove the variable entirely if audience checking is not needed, or set it to a valid audience value.";
-      if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
-      log.warn(msg);
-    }
+    await checkByotAuthMode(errors);
   }
 
   // Warn about orphaned auth env vars that suggest misconfiguration
+  warnOrphanedAuthVars(authMode, authSource);
+
+  // 6.5. Connection encryption key check — only relevant when internal DB stores connection URLs
+  if (process.env.DATABASE_URL && !process.env.ATLAS_ENCRYPTION_KEY && !process.env.BETTER_AUTH_SECRET) {
+    const msg =
+      "No encryption key available for connection URLs. Set ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET " +
+      "to encrypt connection credentials at rest.";
+    if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
+    log.warn(msg);
+  }
+
+  return authMode;
+}
+
+function checkManagedAuthMode(errors: DiagnosticError[]): void {
+  if (!process.env.DATABASE_URL) {
+    errors.push({
+      code: "INTERNAL_DB_UNREACHABLE",
+      message:
+        "Managed auth mode requires DATABASE_URL for session storage. " +
+        "Set DATABASE_URL to a PostgreSQL connection string (postgresql://user:pass@host:5432/atlas).",
+    });
+  }
+  const secret = process.env.BETTER_AUTH_SECRET ?? "";
+  if (secret.length < 32) {
+    errors.push({
+      code: "WEAK_AUTH_SECRET",
+      message:
+        `BETTER_AUTH_SECRET must be at least 32 characters (currently ${secret.length}). ` +
+        "Generate one with: openssl rand -base64 32",
+    });
+  }
+  if (!process.env.BETTER_AUTH_URL) {
+    const msg =
+      "BETTER_AUTH_URL is not set. Better Auth will auto-detect from the request, " +
+      "but setting it explicitly is recommended for production.";
+    if (!_startupWarnings.includes(msg)) {
+      _startupWarnings.push(msg);
+    }
+    log.warn(msg);
+  }
+}
+
+async function checkByotAuthMode(errors: DiagnosticError[]): Promise<void> {
+  const jwksUrl = process.env.ATLAS_AUTH_JWKS_URL ?? "";
+  let jwksUrlValid = false;
+  try {
+    new URL(jwksUrl);
+    jwksUrlValid = true;
+  } catch (err) {
+    errors.push({
+      code: "INVALID_JWKS_URL",
+      message:
+        `ATLAS_AUTH_JWKS_URL is not a valid URL (${err instanceof Error ? err.message : "parse error"}). Expected format: https://your-idp.com/.well-known/jwks.json`,
+    });
+  }
+
+  // Reachability check — non-blocking warning since the IdP might be temporarily down
+  if (jwksUrlValid) {
+    try {
+      const resp = await fetch(jwksUrl, { signal: AbortSignal.timeout(5000) });
+      if (!resp.ok) {
+        const msg = `JWKS endpoint returned HTTP ${resp.status}. Verify the URL is correct.`;
+        log.warn({ jwksUrl, status: resp.status }, msg);
+        if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
+      }
+    } catch (err) {
+      log.warn({ err: err instanceof Error ? err.message : String(err), jwksUrl }, "JWKS endpoint unreachable during startup check");
+    }
+  }
+
+  if (!process.env.ATLAS_AUTH_ISSUER) {
+    errors.push({
+      code: "MISSING_AUTH_ISSUER",
+      message:
+        "ATLAS_AUTH_ISSUER is required for BYOT auth mode. Set it to your identity provider's issuer URL (e.g. https://your-idp.com/).",
+    });
+  }
+
+  if (process.env.ATLAS_AUTH_AUDIENCE === "") {
+    const msg =
+      "ATLAS_AUTH_AUDIENCE is set to an empty string — audience validation will be skipped. " +
+      "Remove the variable entirely if audience checking is not needed, or set it to a valid audience value.";
+    if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
+    log.warn(msg);
+  }
+}
+
+function warnOrphanedAuthVars(authMode: string, authSource: string | null): void {
   if (authMode !== "byot" && process.env.ATLAS_AUTH_ISSUER) {
     const pinned = authSource === "explicit" || authSource === "config";
     const msg = pinned
@@ -533,87 +625,72 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
     if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
     log.warn(msg);
   }
+}
 
-  // 6.5. Connection encryption key check — only relevant when internal DB stores connection URLs
-  if (process.env.DATABASE_URL && !process.env.ATLAS_ENCRYPTION_KEY && !process.env.BETTER_AUTH_SECRET) {
+async function checkActionFramework(errors: DiagnosticError[], authMode: string): Promise<void> {
+  log.info("Action framework enabled");
+
+  // Actions require authentication — reject "none" auth mode
+  if (authMode === "none") {
+    errors.push({
+      code: "ACTIONS_REQUIRE_AUTH",
+      message:
+        "Actions require authentication. Set ATLAS_API_KEY, BETTER_AUTH_SECRET, or ATLAS_AUTH_JWKS_URL to enable an auth mode.",
+    });
+  }
+
+  // Check required credentials for registered actions (warnings only —
+  // missing optional action credentials should not block chat queries)
+  try {
+    const { buildRegistry } = await import("@atlas/api/lib/tools/registry");
+    const { registry: actionRegistry } = await buildRegistry({ includeActions: true });
+    const missingCreds = actionRegistry.validateActionCredentials();
+    for (const { action, missing } of missingCreds) {
+      const msg = `Action "${action}" missing credentials: ${missing.join(", ")}`;
+      if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
+      log.warn(msg);
+    }
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "Could not validate action credentials at startup",
+    );
+  }
+
+  // Warn if no internal DB for persistent tracking
+  if (!process.env.DATABASE_URL) {
     const msg =
-      "No encryption key available for connection URLs. Set ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET " +
-      "to encrypt connection credentials at rest.";
+      "Action framework requires DATABASE_URL for persistent tracking. " +
+      "Actions will use in-memory storage only (lost on restart).";
     if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
     log.warn(msg);
   }
 
-  // 7. Action framework diagnostics
-  if (process.env.ATLAS_ACTIONS_ENABLED === "true") {
-    log.info("Action framework enabled");
-
-    // Actions require authentication — reject "none" auth mode
-    if (authMode === "none") {
-      errors.push({
-        code: "ACTIONS_REQUIRE_AUTH",
-        message:
-          "Actions require authentication. Set ATLAS_API_KEY, BETTER_AUTH_SECRET, or ATLAS_AUTH_JWKS_URL to enable an auth mode.",
-      });
-    }
-
-    // Check required credentials for registered actions (warnings only —
-    // missing optional action credentials should not block chat queries)
-    try {
-      const { buildRegistry } = await import("@atlas/api/lib/tools/registry");
-      const { registry: actionRegistry } = await buildRegistry({ includeActions: true });
-      const missingCreds = actionRegistry.validateActionCredentials();
-      for (const { action, missing } of missingCreds) {
-        const msg = `Action "${action}" missing credentials: ${missing.join(", ")}`;
-        if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
-        log.warn(msg);
-      }
-    } catch (err) {
-      log.warn(
-        { err: err instanceof Error ? err.message : String(err) },
-        "Could not validate action credentials at startup",
-      );
-    }
-
-    // Warn if no internal DB for persistent tracking
-    if (!process.env.DATABASE_URL) {
-      const msg =
-        "Action framework requires DATABASE_URL for persistent tracking. " +
-        "Actions will use in-memory storage only (lost on restart).";
-      if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
-      log.warn(msg);
-    }
-
-    // Warn about high-risk actions set to auto-approve
-    try {
-      const { getConfig } = await import("@atlas/api/lib/config");
-      const config = getConfig();
-      const actionsConfig = config?.actions;
-      if (actionsConfig) {
-        const highRiskActions = ["email:send", "jira:create", "salesforce:update", "salesforce:create"];
-        for (const actionType of highRiskActions) {
-          const perAction = actionsConfig[actionType] as { approval?: string } | undefined;
-          if (perAction?.approval === "auto") {
-            const msg = `${actionType} configured for auto-approve — ensure you understand the risk`;
-            if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
-            log.warn(msg);
-          }
+  // Warn about high-risk actions set to auto-approve
+  try {
+    const { getConfig } = await import("@atlas/api/lib/config");
+    const config = getConfig();
+    const actionsConfig = config?.actions;
+    if (actionsConfig) {
+      const highRiskActions = ["email:send", "jira:create", "salesforce:update", "salesforce:create"];
+      for (const actionType of highRiskActions) {
+        const perAction = actionsConfig[actionType] as { approval?: string } | undefined;
+        if (perAction?.approval === "auto") {
+          const msg = `${actionType} configured for auto-approve — ensure you understand the risk`;
+          if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
+          log.warn(msg);
         }
       }
-    } catch (err) {
-      log.warn(
-        { err: err instanceof Error ? err.message : String(err) },
-        "Could not validate action config at startup",
-      );
     }
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "Could not validate action config at startup",
+    );
   }
+}
 
-  // 8. Slack integration — optional, informational only
-  if (process.env.SLACK_SIGNING_SECRET) {
-    const slackMode = process.env.SLACK_CLIENT_ID ? "oauth" : "single-workspace";
-    log.info({ slackMode }, "Slack integration enabled");
-  }
-
-  // 9. Sandbox plugins — log any registered sandbox plugins before built-in pre-flight
+async function logSandboxPlugins(): Promise<void> {
   try {
     const { plugins: pluginRegistry } = await import("@atlas/api/lib/plugins/registry");
     try {
@@ -639,8 +716,9 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
   } catch {
     // Plugin registry module not available — skip
   }
+}
 
-  // 10. Sandbox pre-flight (explore tool isolation)
+async function checkSandboxPreFlight(): Promise<void> {
   try {
     const { getConfig: getAtlasConfig } = await import("@atlas/api/lib/config");
     const sandboxPriority = getAtlasConfig()?.sandbox?.priority;
@@ -666,109 +744,115 @@ export async function validateEnvironment(): Promise<DiagnosticError[]> {
   if (isVercel) {
     log.info("Explore tool: Vercel sandbox active");
   } else if (process.env.ATLAS_SANDBOX === "nsjail") {
-    // Explicit nsjail — probe and warn/error, no sidecar check
-    try {
-      const { findNsjailBinary, testNsjailCapabilities } = await import(
-        "@atlas/api/lib/tools/explore-nsjail"
-      );
-      const { markNsjailFailed } = await import(
-        "@atlas/api/lib/tools/explore"
-      );
-      const nsjailPath = findNsjailBinary();
-      if (nsjailPath) {
-        const semanticRoot = path.resolve(process.cwd(), "semantic");
-        const capResult = await testNsjailCapabilities(nsjailPath, semanticRoot);
-        if (capResult.ok) {
-          log.info("Explore tool: nsjail sandbox active");
-        } else {
-          markNsjailFailed();
-          const msg =
-            `nsjail explicitly requested (ATLAS_SANDBOX=nsjail) but namespace creation failed: ${capResult.error}. ` +
-            "This platform may not support Linux namespaces. " +
-            "Set ATLAS_SANDBOX= (empty) to allow fallback to just-bash, or check platform documentation for namespace support.";
-          log.error(msg);
-          if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
-        }
-      } else {
-        const msg =
-          "ATLAS_SANDBOX=nsjail is set but nsjail binary was not found. " +
-          "Install nsjail or set ATLAS_NSJAIL_PATH to the binary location.";
-        log.error(msg);
-        if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
-      }
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      log.warn({ err: detail }, "Sandbox pre-flight check skipped");
-    }
+    await checkExplicitNsjail();
   } else if (process.env.ATLAS_SANDBOX_URL) {
-    // Sidecar is the intended backend — skip nsjail entirely (no noisy warnings)
-    const sidecarUrl = process.env.ATLAS_SANDBOX_URL;
-    const { markSidecarFailed } = await import(
+    await checkSidecarHealth();
+  } else {
+    await autoDetectNsjail();
+  }
+}
+
+async function checkExplicitNsjail(): Promise<void> {
+  try {
+    const { findNsjailBinary, testNsjailCapabilities } = await import(
+      "@atlas/api/lib/tools/explore-nsjail"
+    );
+    const { markNsjailFailed } = await import(
       "@atlas/api/lib/tools/explore"
     );
-    try {
-      const healthUrl = new URL("/health", sidecarUrl).toString();
-      const resp = await fetch(healthUrl, { signal: AbortSignal.timeout(5000) });
-      if (resp.ok) {
-        log.info({ url: sidecarUrl }, "Explore tool: sidecar sandbox active");
+    const nsjailPath = findNsjailBinary();
+    if (nsjailPath) {
+      const semanticRoot = path.resolve(process.cwd(), "semantic");
+      const capResult = await testNsjailCapabilities(nsjailPath, semanticRoot);
+      if (capResult.ok) {
+        log.info("Explore tool: nsjail sandbox active");
       } else {
-        markSidecarFailed();
+        markNsjailFailed();
         const msg =
-          `Sidecar health check returned HTTP ${resp.status} at ${sidecarUrl}. ` +
-          "Check that the sandbox-sidecar service is running and healthy.";
+          `nsjail explicitly requested (ATLAS_SANDBOX=nsjail) but namespace creation failed: ${capResult.error}. ` +
+          "This platform may not support Linux namespaces. " +
+          "Set ATLAS_SANDBOX= (empty) to allow fallback to just-bash, or check platform documentation for namespace support.";
         log.error(msg);
         if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
       }
-    } catch (err) {
-      markSidecarFailed();
-      const detail = err instanceof Error ? err.message : String(err);
+    } else {
       const msg =
-        `Sidecar unreachable at ${sidecarUrl}: ${detail}. ` +
-        "The sidecar may not be running yet — explore will retry on first use.";
+        "ATLAS_SANDBOX=nsjail is set but nsjail binary was not found. " +
+        "Install nsjail or set ATLAS_NSJAIL_PATH to the binary location.";
       log.error(msg);
       if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
     }
-  } else {
-    // Auto-detect nsjail, fall back to just-bash
-    let nsjailActive = false;
-    try {
-      const { findNsjailBinary, testNsjailCapabilities } = await import(
-        "@atlas/api/lib/tools/explore-nsjail"
-      );
-      const { markNsjailFailed } = await import(
-        "@atlas/api/lib/tools/explore"
-      );
-      const nsjailPath = findNsjailBinary();
-      if (nsjailPath) {
-        const semanticRoot = path.resolve(process.cwd(), "semantic");
-        const capResult = await testNsjailCapabilities(nsjailPath, semanticRoot);
-        if (capResult.ok) {
-          log.info("Explore tool: nsjail sandbox active");
-          nsjailActive = true;
-        } else {
-          markNsjailFailed();
-          const msg =
-            `nsjail available but namespace creation failed: ${capResult.error} — ` +
-            "falling back to just-bash (no process isolation).";
-          log.warn(msg);
-          if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
-        }
-      }
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      log.warn({ err: detail }, "Sandbox pre-flight check skipped");
-    }
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    log.warn({ err: detail }, "Sandbox pre-flight check skipped");
+  }
+}
 
-    if (!nsjailActive) {
-      log.info(
-        "Explore tool: just-bash (no process isolation). Install nsjail or configure ATLAS_SANDBOX_URL for sandboxed execution.",
-      );
+async function checkSidecarHealth(): Promise<void> {
+  // Caller guarantees ATLAS_SANDBOX_URL is set
+  const sidecarUrl = process.env.ATLAS_SANDBOX_URL!;
+  const { markSidecarFailed } = await import(
+    "@atlas/api/lib/tools/explore"
+  );
+  try {
+    const healthUrl = new URL("/health", sidecarUrl).toString();
+    const resp = await fetch(healthUrl, { signal: AbortSignal.timeout(5000) });
+    if (resp.ok) {
+      log.info({ url: sidecarUrl }, "Explore tool: sidecar sandbox active");
+    } else {
+      markSidecarFailed();
+      const msg =
+        `Sidecar health check returned HTTP ${resp.status} at ${sidecarUrl}. ` +
+        "Check that the sandbox-sidecar service is running and healthy.";
+      log.error(msg);
+      if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
     }
+  } catch (err) {
+    markSidecarFailed();
+    const detail = err instanceof Error ? err.message : String(err);
+    const msg =
+      `Sidecar unreachable at ${sidecarUrl}: ${detail}. ` +
+      "The sidecar may not be running yet — explore will retry on first use.";
+    log.error(msg);
+    if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
+  }
+}
+
+async function autoDetectNsjail(): Promise<void> {
+  let nsjailActive = false;
+  try {
+    const { findNsjailBinary, testNsjailCapabilities } = await import(
+      "@atlas/api/lib/tools/explore-nsjail"
+    );
+    const { markNsjailFailed } = await import(
+      "@atlas/api/lib/tools/explore"
+    );
+    const nsjailPath = findNsjailBinary();
+    if (nsjailPath) {
+      const semanticRoot = path.resolve(process.cwd(), "semantic");
+      const capResult = await testNsjailCapabilities(nsjailPath, semanticRoot);
+      if (capResult.ok) {
+        log.info("Explore tool: nsjail sandbox active");
+        nsjailActive = true;
+      } else {
+        markNsjailFailed();
+        const msg =
+          `nsjail available but namespace creation failed: ${capResult.error} — ` +
+          "falling back to just-bash (no process isolation).";
+        log.warn(msg);
+        if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
+      }
+    }
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    log.warn({ err: detail }, "Sandbox pre-flight check skipped");
   }
 
-  _cached = errors;
-  _cachedAt = Date.now();
-  return errors;
+  if (!nsjailActive) {
+    log.info(
+      "Explore tool: just-bash (no process isolation). Install nsjail or configure ATLAS_SANDBOX_URL for sandboxed execution.",
+    );
+  }
 }
 
 function isValidUrl(url: string): boolean {

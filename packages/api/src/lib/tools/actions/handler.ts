@@ -365,6 +365,78 @@ export async function handleAction(
 // ---------------------------------------------------------------------------
 
 /**
+ * Execute an approved action with timeout handling.
+ * Returns the final entry state (executed, timed_out, or failed).
+ */
+async function executeApprovedAction(
+  actionId: string,
+  entry: ActionLogEntry,
+  executeFn: ActionExecutor,
+  approverId: string,
+): Promise<ActionLogEntry> {
+  const { timeout } = getActionConfig(entry.action_type);
+  const startMs = Date.now();
+  try {
+    const result = await executeWithTimeout(
+      () => executeFn(entry.payload),
+      timeout,
+    );
+    const latencyMs = Date.now() - startMs;
+    const rbInfo = extractRollbackInfo(result);
+
+    await updateActionStatus(actionId, {
+      status: "executed",
+      executed_at: new Date().toISOString(),
+      result,
+      ...(rbInfo && { rollback_info: rbInfo }),
+    });
+    logActionAudit({
+      actionId,
+      actionType: entry.action_type,
+      status: "executed",
+      latencyMs,
+      approverId,
+    });
+
+    const updated = memoryStore.get(actionId);
+    return updated ?? { ...entry, status: "executed" as ActionStatus, executed_at: new Date().toISOString(), result, ...(rbInfo && { rollback_info: rbInfo }) };
+  } catch (err) {
+    const latencyMs = Date.now() - startMs;
+
+    if (err instanceof ActionTimeoutError) {
+      await updateActionStatus(actionId, {
+        status: "timed_out",
+        error: err.message,
+      });
+      logActionAudit({
+        actionId,
+        actionType: entry.action_type,
+        status: "timed_out",
+        latencyMs,
+        timeoutMs: err.timeoutMs,
+        approverId,
+      });
+      return memoryStore.get(actionId) ?? { ...entry, status: "timed_out" as ActionStatus, error: err.message };
+    }
+
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    await updateActionStatus(actionId, {
+      status: "failed",
+      error: errorMsg,
+    });
+    logActionAudit({
+      actionId,
+      actionType: entry.action_type,
+      status: "failed",
+      latencyMs,
+      approverId,
+      error: errorMsg,
+    });
+    return memoryStore.get(actionId) ?? { ...entry, status: "failed" as ActionStatus, error: errorMsg };
+  }
+}
+
+/**
  * Approve a pending action. Returns the updated entry, or null if CAS failed
  * (action already resolved — 409 scenario).
  */
@@ -396,87 +468,8 @@ export async function approveAction(
       approverId,
     });
 
-    // Execute the action
     if (resolveFn) {
-      const { timeout } = getActionConfig(entry.action_type);
-      const startMs = Date.now();
-      try {
-        const result = await executeWithTimeout(
-          () => resolveFn(entry.payload),
-          timeout,
-        );
-        const latencyMs = Date.now() - startMs;
-
-        const rbInfo = extractRollbackInfo(result);
-        const execRows = rbInfo
-          ? await internalQuery(
-              `UPDATE action_log SET status = 'executed', executed_at = now(), result = $1, rollback_info = $2 WHERE id = $3 RETURNING *`,
-              [JSON.stringify(result), JSON.stringify(rbInfo), actionId],
-            ) as unknown as ActionLogEntry[]
-          : await internalQuery(
-              `UPDATE action_log SET status = 'executed', executed_at = now(), result = $1 WHERE id = $2 RETURNING *`,
-              [JSON.stringify(result), actionId],
-            ) as unknown as ActionLogEntry[];
-        const updated = execRows[0] ?? { ...entry, status: "executed" as ActionStatus, executed_at: new Date().toISOString(), result, ...(rbInfo && { rollback_info: rbInfo }) };
-        memoryStore.set(actionId, updated);
-
-        logActionAudit({
-          actionId,
-          actionType: entry.action_type,
-          status: "executed",
-          latencyMs,
-          approverId,
-        });
-
-        return updated;
-      } catch (err) {
-        const latencyMs = Date.now() - startMs;
-
-        if (err instanceof ActionTimeoutError) {
-          const timedOut: ActionLogEntry = { ...entry, status: "timed_out" as ActionStatus, error: err.message };
-          try {
-            const timedOutRows = await internalQuery(
-              `UPDATE action_log SET status = 'timed_out', error = $1 WHERE id = $2 RETURNING *`,
-              [err.message, actionId],
-            ) as unknown as ActionLogEntry[];
-            if (timedOutRows[0]) Object.assign(timedOut, timedOutRows[0]);
-          } catch (dbErr) {
-            log.error({ err: dbErr, actionId }, "Failed to persist timed_out status to DB — memory store updated");
-          }
-          memoryStore.set(actionId, timedOut);
-
-          logActionAudit({
-            actionId,
-            actionType: entry.action_type,
-            status: "timed_out",
-            latencyMs,
-            timeoutMs: err.timeoutMs,
-            approverId,
-          });
-
-          return timedOut;
-        }
-
-        const errorMsg = err instanceof Error ? err.message : String(err);
-
-        const failRows = await internalQuery(
-          `UPDATE action_log SET status = 'failed', error = $1 WHERE id = $2 RETURNING *`,
-          [errorMsg, actionId],
-        ) as unknown as ActionLogEntry[];
-        const failed = failRows[0] ?? { ...entry, status: "failed" as ActionStatus, error: errorMsg };
-        memoryStore.set(actionId, failed);
-
-        logActionAudit({
-          actionId,
-          actionType: entry.action_type,
-          status: "failed",
-          latencyMs,
-          approverId,
-          error: errorMsg,
-        });
-
-        return failed;
-      }
+      return executeApprovedAction(actionId, entry, resolveFn, approverId);
     }
 
     log.warn({ actionId, actionType: entry.action_type }, "Action approved but no executor available — will not execute");
@@ -493,6 +486,7 @@ export async function approveAction(
     resolved_at: new Date().toISOString(),
     approved_by: approverId,
   };
+  memoryStore.set(actionId, approved);
 
   logActionAudit({
     actionId,
@@ -502,79 +496,10 @@ export async function approveAction(
   });
 
   if (resolveFn) {
-    const { timeout } = getActionConfig(entry.action_type);
-    const startMs = Date.now();
-    try {
-      const result = await executeWithTimeout(
-        () => resolveFn(entry.payload),
-        timeout,
-      );
-      const latencyMs = Date.now() - startMs;
-      const rbInfo = extractRollbackInfo(result);
-      const executed: ActionLogEntry = {
-        ...approved,
-        status: "executed",
-        executed_at: new Date().toISOString(),
-        result,
-        ...(rbInfo && { rollback_info: rbInfo }),
-      };
-      memoryStore.set(actionId, executed);
-
-      logActionAudit({
-        actionId,
-        actionType: entry.action_type,
-        status: "executed",
-        latencyMs,
-        approverId,
-      });
-
-      return executed;
-    } catch (err) {
-      const latencyMs = Date.now() - startMs;
-
-      if (err instanceof ActionTimeoutError) {
-        const timedOut: ActionLogEntry = {
-          ...approved,
-          status: "timed_out",
-          error: err.message,
-        };
-        memoryStore.set(actionId, timedOut);
-
-        logActionAudit({
-          actionId,
-          actionType: entry.action_type,
-          status: "timed_out",
-          latencyMs,
-          timeoutMs: err.timeoutMs,
-          approverId,
-        });
-
-        return timedOut;
-      }
-
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      const failed: ActionLogEntry = {
-        ...approved,
-        status: "failed",
-        error: errorMsg,
-      };
-      memoryStore.set(actionId, failed);
-
-      logActionAudit({
-        actionId,
-        actionType: entry.action_type,
-        status: "failed",
-        latencyMs,
-        approverId,
-        error: errorMsg,
-      });
-
-      return failed;
-    }
+    return executeApprovedAction(actionId, approved, resolveFn, approverId);
   }
 
   log.warn({ actionId, actionType: entry.action_type }, "Action approved but no executor available — will not execute");
-  memoryStore.set(actionId, approved);
   return approved;
 }
 
@@ -734,6 +659,37 @@ export function extractRollbackInfo(result: unknown): RollbackInfo | null {
 // Rollback
 // ---------------------------------------------------------------------------
 
+/** Best-effort dispatch of a rollback handler. Updates the entry with any error. */
+async function dispatchRollback(
+  actionId: string,
+  entry: ActionLogEntry,
+  rollbackInfo: RollbackInfo,
+  userId: string,
+): Promise<void> {
+  const handler = getRollbackMethod(rollbackInfo.method);
+  if (handler) {
+    try {
+      await handler(rollbackInfo.params);
+      log.info({ actionId, method: rollbackInfo.method }, "Rollback method executed successfully");
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      log.error({ actionId, method: rollbackInfo.method, err: errorMsg }, "Rollback method failed");
+      await updateActionStatus(actionId, { error: errorMsg });
+      logActionAudit({
+        actionId,
+        actionType: entry.action_type,
+        status: "rolled_back",
+        userId,
+        error: errorMsg,
+      });
+    }
+  } else {
+    const noHandlerMsg = `No rollback handler registered for method: ${rollbackInfo.method}`;
+    log.warn({ actionId, method: rollbackInfo.method }, "No rollback handler registered for method — status updated but rollback not dispatched");
+    await updateActionStatus(actionId, { error: noHandlerMsg });
+  }
+}
+
 /**
  * Roll back an executed action using its stored rollback_info.
  *
@@ -781,50 +737,8 @@ export async function rollbackAction(
       userId,
     });
 
-    // Best-effort dispatch
-    const handler = getRollbackMethod(rollbackInfo.method);
-    if (handler) {
-      try {
-        await handler(rollbackInfo.params);
-        log.info({ actionId, method: rollbackInfo.method }, "Rollback method executed successfully");
-      } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
-        log.error({ actionId, method: rollbackInfo.method, err: errorMsg }, "Rollback method failed");
-        try {
-          await internalQuery(
-            `UPDATE action_log SET error = $1 WHERE id = $2`,
-            [errorMsg, actionId],
-          );
-          entry.error = errorMsg;
-          memoryStore.set(actionId, entry);
-        } catch (dbErr) {
-          log.error({ err: dbErr, actionId }, "Failed to persist rollback error to DB");
-        }
-
-        logActionAudit({
-          actionId,
-          actionType: entry.action_type,
-          status: "rolled_back",
-          userId,
-          error: errorMsg,
-        });
-      }
-    } else {
-      const noHandlerMsg = `No rollback handler registered for method: ${rollbackInfo.method}`;
-      log.warn({ actionId, method: rollbackInfo.method }, "No rollback handler registered for method — status updated but rollback not dispatched");
-      try {
-        await internalQuery(
-          `UPDATE action_log SET error = $1 WHERE id = $2`,
-          [noHandlerMsg, actionId],
-        );
-      } catch (dbErr) {
-        log.error({ err: dbErr, actionId }, "Failed to persist missing-handler error to DB");
-      }
-      entry.error = noHandlerMsg;
-      memoryStore.set(actionId, entry);
-    }
-
-    return entry;
+    await dispatchRollback(actionId, entry, rollbackInfo, userId);
+    return memoryStore.get(actionId) ?? entry;
   }
 
   // Memory-only fallback
@@ -845,34 +759,8 @@ export async function rollbackAction(
     userId,
   });
 
-  // Best-effort dispatch
-  const handler = getRollbackMethod(rollbackInfo.method);
-  if (handler) {
-    try {
-      await handler(rollbackInfo.params);
-      log.info({ actionId, method: rollbackInfo.method }, "Rollback method executed successfully");
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      log.error({ actionId, method: rollbackInfo.method, err: errorMsg }, "Rollback method failed");
-      rolledBack.error = errorMsg;
-      memoryStore.set(actionId, rolledBack);
-
-      logActionAudit({
-        actionId,
-        actionType: entry.action_type,
-        status: "rolled_back",
-        userId,
-        error: errorMsg,
-      });
-    }
-  } else {
-    const noHandlerMsg = `No rollback handler registered for method: ${rollbackInfo.method}`;
-    log.warn({ actionId, method: rollbackInfo.method }, "No rollback handler registered for method — status updated but rollback not dispatched");
-    rolledBack.error = noHandlerMsg;
-    memoryStore.set(actionId, rolledBack);
-  }
-
-  return rolledBack;
+  await dispatchRollback(actionId, rolledBack, rollbackInfo, userId);
+  return memoryStore.get(actionId) ?? rolledBack;
 }
 
 // ---------------------------------------------------------------------------

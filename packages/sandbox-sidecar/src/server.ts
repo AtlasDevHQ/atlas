@@ -321,7 +321,19 @@ if _charts:
 print(_marker + json.dumps(_result), file=_old_stdout)
 `;
 
-async function handleExecPython(req: Request): Promise<Response> {
+// --- Shared Python request parsing ---
+
+interface PythonExecSetup {
+  body: SidecarPythonRequest;
+  timeout: number;
+  execId: string;
+  tmpDir: string;
+  codeFile: string;
+  chartDir: string;
+}
+
+/** Parse and validate a Python request. Returns setup info or an error Response. */
+async function parsePythonRequest(req: Request): Promise<PythonExecSetup | Response> {
   const authErr = checkAuth(req);
   if (authErr) return authErr;
 
@@ -341,13 +353,47 @@ async function handleExecPython(req: Request): Promise<Response> {
   }
 
   const timeout = clampTimeout(body.timeout, PYTHON_DEFAULT_TIMEOUT_MS, PYTHON_MAX_TIMEOUT_MS);
-
   const execId = randomUUID();
-  const resultMarker = `__ATLAS_RESULT_${execId}__`;
   const tmpDir = join("/tmp", `pyexec-${execId}`);
-  const codeFile = join(tmpDir, "user_code.py");
+
+  return {
+    body,
+    timeout,
+    execId,
+    tmpDir,
+    codeFile: join(tmpDir, "user_code.py"),
+    chartDir: join(tmpDir, "charts"),
+  };
+}
+
+/**
+ * Write stdin data and handle EPIPE gracefully. EPIPE occurs when the Python
+ * process exits before consuming stdin (e.g., syntax error in the import guard)
+ * — the real error will be surfaced via the process exit code.
+ */
+function writePythonStdin(
+  proc: { stdin: { write(data: string): void; end(): void } },
+  data: unknown,
+  execId: string,
+  logPrefix: string = "python",
+): void {
+  const payload = data ? JSON.stringify(data) : "";
+  try {
+    proc.stdin.write(payload);
+    proc.stdin.end();
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.warn(`[sandbox-sidecar] ${logPrefix}=${execId} stdin write error: ${detail}`);
+  }
+}
+
+async function handleExecPython(req: Request): Promise<Response> {
+  const setup = await parsePythonRequest(req);
+  if (setup instanceof Response) return setup;
+  const { body, timeout, execId, tmpDir, codeFile, chartDir } = setup;
+
+  const resultMarker = `__ATLAS_RESULT_${execId}__`;
   const wrapperFile = join(tmpDir, "wrapper.py");
-  const chartDir = join(tmpDir, "charts");
 
   console.log(`[sandbox-sidecar] python=${execId} codeLen=${body.code.length} timeout=${timeout}`);
 
@@ -357,8 +403,6 @@ async function handleExecPython(req: Request): Promise<Response> {
     await mkdir(chartDir, { recursive: true });
     writeFileSync(codeFile, body.code);
     writeFileSync(wrapperFile, PYTHON_WRAPPER);
-
-    const stdinPayload = body.data ? JSON.stringify(body.data) : "";
 
     const proc = Bun.spawn(["python3", wrapperFile, codeFile], {
       cwd: tmpDir,
@@ -376,21 +420,13 @@ async function handleExecPython(req: Request): Promise<Response> {
       },
     });
 
-    // SIGKILL — not catchable by Python
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
       proc.kill(9);
     }, timeout);
 
-    try {
-      proc.stdin.write(stdinPayload);
-      proc.stdin.end();
-    } catch (err) {
-      // EPIPE: python3 died before consuming stdin — will be caught by exit code
-      const detail = err instanceof Error ? err.message : String(err);
-      console.warn(`[sandbox-sidecar] python=${execId} stdin write error: ${detail}`);
-    }
+    writePythonStdin(proc, body.data, execId);
 
     let stdout: string;
     let stderr: string;
@@ -409,11 +445,7 @@ async function handleExecPython(req: Request): Promise<Response> {
 
     if (timedOut) {
       console.log(`[sandbox-sidecar] python=${execId} timed out after ${timeout}ms`);
-      const result: SidecarPythonResponse = {
-        success: false,
-        error: `Python execution timed out after ${timeout}ms`,
-      };
-      return Response.json(result);
+      return Response.json({ success: false, error: `Python execution timed out after ${timeout}ms` } satisfies SidecarPythonResponse);
     }
 
     // Extract structured result from the last marker line
@@ -427,29 +459,16 @@ async function handleExecPython(req: Request): Promise<Response> {
         return Response.json(parsed);
       } catch {
         console.warn(`[sandbox-sidecar] python=${execId} failed to parse result JSON, exitCode=${exitCode}`);
-        const result: SidecarPythonResponse = {
-          success: false,
-          error: `Python produced unparseable output. stderr: ${stderr.trim().slice(0, 500)}`,
-        };
-        return Response.json(result);
+        return Response.json({ success: false, error: `Python produced unparseable output. stderr: ${stderr.trim().slice(0, 500)}` } satisfies SidecarPythonResponse);
       }
     }
 
-    // No structured result — process errored before the wrapper could emit one
     console.log(`[sandbox-sidecar] python=${execId} no result line, exitCode=${exitCode} stderr=${stderr.slice(0, 200)} duration=${duration}ms`);
-    const result: SidecarPythonResponse = {
-      success: false,
-      error: stderr.trim() || `Python execution failed (exit code ${exitCode})`,
-    };
-    return Response.json(result);
+    return Response.json({ success: false, error: stderr.trim() || `Python execution failed (exit code ${exitCode})` } satisfies SidecarPythonResponse);
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     console.error(`[sandbox-sidecar] python=${execId} error=${detail}`);
-    const result: SidecarPythonResponse = {
-      success: false,
-      error: `Execution failed: ${detail}`,
-    };
-    return Response.json(result, { status: 500 });
+    return Response.json({ success: false, error: `Execution failed: ${detail}` } satisfies SidecarPythonResponse, { status: 500 });
   } finally {
     activeExecs--;
     rm(tmpDir, { recursive: true, force: true }).catch((err) => {
@@ -559,32 +578,12 @@ else:
 `;
 
 async function handleExecPythonStream(req: Request): Promise<Response> {
-  const authErr = checkAuth(req);
-  if (authErr) return authErr;
+  const setup = await parsePythonRequest(req);
+  if (setup instanceof Response) return setup;
+  const { body, timeout, execId, tmpDir, codeFile, chartDir } = setup;
 
-  if (activeExecs >= MAX_CONCURRENT) {
-    return Response.json({ error: "Too many concurrent executions" }, { status: 429 });
-  }
-
-  let body: SidecarPythonRequest;
-  try {
-    body = (await req.json()) as SidecarPythonRequest;
-  } catch {
-    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
-  }
-
-  if (!body.code || typeof body.code !== "string") {
-    return Response.json({ error: "Missing or invalid 'code' field" }, { status: 400 });
-  }
-
-  const timeout = clampTimeout(body.timeout, PYTHON_DEFAULT_TIMEOUT_MS, PYTHON_MAX_TIMEOUT_MS);
-
-  const execId = randomUUID();
   const streamMarker = `__ATLAS_STREAM_${execId}__`;
-  const tmpDir = join("/tmp", `pyexec-${execId}`);
-  const codeFile = join(tmpDir, "user_code.py");
   const wrapperFile = join(tmpDir, "wrapper_stream.py");
-  const chartDir = join(tmpDir, "charts");
 
   console.log(`[sandbox-sidecar] python-stream=${execId} codeLen=${body.code.length} timeout=${timeout}`);
 
@@ -611,8 +610,6 @@ async function handleExecPythonStream(req: Request): Promise<Response> {
         writeFileSync(codeFile, body.code);
         writeFileSync(wrapperFile, PYTHON_WRAPPER_STREAMING);
 
-        const stdinPayload = body.data ? JSON.stringify(body.data) : "";
-
         const proc = Bun.spawn(["python3", wrapperFile, codeFile], {
           cwd: tmpDir,
           stdin: "pipe",
@@ -635,13 +632,7 @@ async function handleExecPythonStream(req: Request): Promise<Response> {
           proc.kill(9);
         }, timeout);
 
-        try {
-          proc.stdin.write(stdinPayload);
-          proc.stdin.end();
-        } catch (err) {
-          const detail = err instanceof Error ? err.message : String(err);
-          console.warn(`[sandbox-sidecar] python-stream=${execId} stdin write error: ${detail}`);
-        }
+        writePythonStdin(proc, body.data, execId, "python-stream");
 
         // Read stdout line by line and forward streaming events.
         // Enforce MAX_OUTPUT_BYTES to match non-streaming handler safety.

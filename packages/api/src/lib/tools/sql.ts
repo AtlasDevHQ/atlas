@@ -362,6 +362,317 @@ function getQueryTimeout(): number {
   return n;
 }
 
+// ── executeSQL helpers ──────────────────────────────────────────────────
+
+type CustomValidator = (sql: string) => { valid: boolean; reason?: string } | Promise<{ valid: boolean; reason?: string }>;
+
+/** Resolve the database connection for a query. Returns the connection and dbType, or an error response. */
+function resolveConnection(
+  connId: string,
+  orgId: string | undefined,
+): { ok: true; db: DBConnection; dbType: DBType } | { ok: false; error: { success: false; error: string } } {
+  try {
+    let db: DBConnection;
+    if (orgId) {
+      db = connections.getForOrg(orgId, connId);
+    } else if (connId === "default") {
+      db = connections.getDefault();
+    } else {
+      db = connections.get(connId);
+    }
+    const dbType = connections.getDBType(connId);
+    return { ok: true, db, dbType };
+  } catch (err) {
+    if (err instanceof ConnectionNotRegisteredError) {
+      return { ok: false, error: { success: false, error: `Connection "${connId}" is not registered. Available: ${connections.list().join(", ") || "(none)"}` } };
+    }
+    if (err instanceof NoDatasourceConfiguredError) {
+      return { ok: false, error: { success: false, error: err.message } };
+    }
+    if (err instanceof PoolCapacityExceededError) {
+      log.warn({ connectionId: connId, orgId }, "Org pool capacity exceeded");
+      return { ok: false, error: { success: false, error: "Connection pool capacity reached — the system is handling many concurrent tenants. Try again shortly." } };
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    log.error({ err, connectionId: connId }, "Unexpected error during connection lookup");
+    return { ok: false, error: { success: false, error: `Connection "${connId}" failed to initialize: ${message}` } };
+  }
+}
+
+/**
+ * Run query validation using either a custom validator or standard SQL validation.
+ * Does not write audit log entries — the caller is responsible for audit logging on failure.
+ * `auditError` preserves the specific error detail for audit logs (e.g., original exception message).
+ */
+async function runQueryValidation(
+  sql: string,
+  connId: string,
+  dbType: DBType | string,
+  customValidator: CustomValidator | undefined,
+): Promise<{ ok: true; classification?: SQLClassification } | { ok: false; error: string; auditError: string }> {
+  if (customValidator) {
+    let result: { valid: boolean; reason?: string };
+    try {
+      result = await customValidator(sql);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.error({ err, connectionId: connId, sql: sql.slice(0, 200) }, "Custom validator threw an exception");
+      return {
+        ok: false,
+        error: `Query validation failed for connection "${connId}": internal validator error`,
+        auditError: `Custom validator error: ${message}`,
+      };
+    }
+    if (typeof result?.valid !== "boolean") {
+      log.error({ connectionId: connId, returnValue: result }, "Custom validator returned invalid shape");
+      return {
+        ok: false,
+        error: `Query validation misconfigured for connection "${connId}"`,
+        auditError: "Custom validator returned invalid result",
+      };
+    }
+    if (!result.valid) {
+      const reason = result.reason ?? "Query rejected by custom validator";
+      return { ok: false, error: reason, auditError: `Validation rejected: ${reason}` };
+    }
+    return { ok: true };
+  }
+
+  const validation = validateSQL(sql, connId);
+  if (!validation.valid) {
+    return { ok: false, error: validation.error, auditError: `Validation rejected: ${validation.error}` };
+  }
+  return { ok: true, classification: validation.classification };
+}
+
+/**
+ * Apply RLS conditions to a query. Returns the modified SQL or an error.
+ * Handles table extraction, filter resolution, and condition injection.
+ * Unlike runQueryValidation, this function logs audit entries on failure paths.
+ */
+function applyRLSToQuery(
+  sql: string,
+  connId: string,
+  dbType: DBType | string,
+  targetHost: string | undefined,
+): { ok: true; sql: string } | { ok: false; error: string } {
+  const config = getConfig();
+  const rlsConfig = config?.rls;
+  if (!rlsConfig?.enabled) return { ok: true, sql };
+
+  const ctx = getRequestContext();
+  const user = ctx?.user;
+
+  // Extract tables from the (possibly plugin-mutated) SQL
+  let queriedTables: Set<string>;
+  try {
+    const dialect = parserDatabase(dbType, connId);
+    const tableRefs = parser.tableList(sql, { database: dialect });
+    queriedTables = new Set(
+      tableRefs
+        .map((ref) => {
+          const parts = ref.split("::");
+          return parts.pop()?.toLowerCase() ?? "";
+        })
+        .filter(Boolean),
+    );
+  } catch (tableErr) {
+    const tableErrMsg = tableErr instanceof Error ? tableErr.message : String(tableErr);
+    log.error({ err: tableErr, sql: sql.slice(0, 200) }, "RLS: failed to extract table list from query");
+    logQueryAudit({
+      sql: sql.slice(0, 2000),
+      durationMs: 0,
+      rowCount: null,
+      success: false,
+      error: `RLS: could not extract tables from query: ${tableErrMsg}`,
+      sourceId: connId,
+      sourceType: dbType,
+      targetHost,
+    });
+    return { ok: false, error: "Query could not be analyzed for row-level security. Rewrite using standard SQL." };
+  }
+
+  const filterResult = resolveRLSFilters(user, queriedTables, rlsConfig);
+  if ("error" in filterResult) {
+    log.warn({ error: filterResult.error, userId: user?.id }, "RLS filter resolution failed — query blocked");
+    logQueryAudit({
+      sql: sql.slice(0, 2000),
+      durationMs: 0,
+      rowCount: null,
+      success: false,
+      error: `RLS blocked: ${filterResult.error}`,
+      sourceId: connId,
+      sourceType: dbType,
+      targetHost,
+    });
+    return { ok: false, error: filterResult.error };
+  }
+
+  const hasFilters = filterResult.groups.some((g: RLSFilterGroup) => g.filters.length > 0);
+  if (hasFilters) {
+    try {
+      const injected = injectRLSConditions(sql, filterResult.groups, filterResult.combineWith, dbType);
+      log.debug(
+        { groups: filterResult.groups.length, combineWith: filterResult.combineWith, userId: user?.id },
+        "RLS conditions injected",
+      );
+      return { ok: true, sql: injected };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.error({ err, userId: user?.id }, "RLS injection failed — query blocked");
+      logQueryAudit({
+        sql: sql.slice(0, 2000),
+        durationMs: 0,
+        rowCount: null,
+        success: false,
+        error: `RLS injection failed: ${msg}`,
+        sourceId: connId,
+        sourceType: dbType,
+        targetHost,
+      });
+      return { ok: false, error: "Query could not be processed for row-level security." };
+    }
+  }
+
+  return { ok: true, sql };
+}
+
+/**
+ * Execute a validated query with tracing, cache write, audit logging, plugin hooks,
+ * and error filtering. Releases the concurrency slot (decrementSourceConcurrency)
+ * in its finally block — callers must not release it separately.
+ * SQL content is NOT included in span attributes for security.
+ */
+async function executeAndAudit(opts: {
+  db: DBConnection;
+  dbType: DBType;
+  connId: string;
+  orgId: string | undefined;
+  targetHost: string | undefined;
+  querySql: string;
+  queryTimeout: number;
+  rowLimit: number;
+  explanation: string;
+  classification: SQLClassification | undefined;
+  cacheKey: string | null;
+  hookMetadata: Record<string, unknown>;
+  dispatchHook: (event: "afterQuery", ctx: Record<string, unknown>) => Promise<void>;
+}): Promise<Record<string, unknown>> {
+  const { db, dbType, connId, orgId, targetHost, querySql, queryTimeout, rowLimit, explanation, classification, cacheKey, hookMetadata, dispatchHook } = opts;
+
+  const start = performance.now();
+  try {
+    const result = await withSpan(
+      "atlas.sql.execute",
+      {
+        "db.system": dbType,
+        "atlas.connection_id": connId,
+      },
+      () => db.query(querySql, queryTimeout),
+      (r) => ({
+        "atlas.row_count": r.rows.length,
+        "atlas.column_count": r.columns.length,
+      }),
+    );
+    const durationMs = Math.round(performance.now() - start);
+    const truncated = result.rows.length >= rowLimit;
+
+    connections.recordQuery(connId, durationMs, orgId);
+    connections.recordSuccess(connId, orgId);
+
+    // Store in cache on success — fail open if cache backend is broken
+    if (cacheKey) {
+      try {
+        getCache().set(cacheKey, {
+          columns: result.columns,
+          rows: result.rows,
+          cachedAt: Date.now(),
+          ttl: getDefaultTtl(),
+        });
+      } catch (cacheErr) {
+        log.error({ err: cacheErr, connectionId: connId }, "Cache write failed — result not cached");
+      }
+    }
+
+    try {
+      logQueryAudit({
+        sql: querySql,
+        durationMs,
+        rowCount: result.rows.length,
+        success: true,
+        sourceId: connId,
+        sourceType: dbType,
+        targetHost,
+        tablesAccessed: classification?.tablesAccessed,
+        columnsAccessed: classification?.columnsAccessed,
+      });
+    } catch (auditErr) {
+      log.warn({ err: auditErr }, "Failed to write query audit log");
+    }
+
+    await dispatchHook("afterQuery", {
+      sql: querySql,
+      connectionId: connId,
+      result: { columns: result.columns, rows: result.rows },
+      durationMs,
+    });
+
+    const hasHookMeta = Object.keys(hookMetadata).length > 0;
+    return {
+      success: true,
+      explanation,
+      row_count: result.rows.length,
+      columns: result.columns,
+      rows: result.rows,
+      truncated,
+      cached: false,
+      ...(hasHookMeta && { metadata: hookMetadata }),
+    };
+  } catch (err) {
+    const durationMs = Math.round(performance.now() - start);
+    const message =
+      err instanceof Error ? err.message : "Unknown database error";
+
+    connections.recordQuery(connId, durationMs, orgId);
+    connections.recordError(connId, orgId);
+
+    try {
+      logQueryAudit({
+        sql: querySql,
+        durationMs,
+        rowCount: null,
+        success: false,
+        error: message,
+        sourceId: connId,
+        sourceType: dbType,
+        targetHost,
+        tablesAccessed: classification?.tablesAccessed,
+        columnsAccessed: classification?.columnsAccessed,
+      });
+    } catch (auditErr) {
+      log.warn({ err: auditErr }, "Failed to write query audit log");
+    }
+
+    // Block errors that might expose connection details or internal state
+    if (SENSITIVE_PATTERNS.test(message)) {
+      return { success: false, error: "Database query failed — check server logs for details." };
+    }
+
+    // Surface the full DB error to the agent for self-correction
+    const dbErr = err as { hint?: string; position?: string };
+    let detail = message;
+    if (dbErr.hint) {
+      detail += ` — Hint: ${dbErr.hint}`;
+    }
+    if (dbErr.position) {
+      detail += ` (at character ${dbErr.position})`;
+    }
+    return { success: false, error: detail };
+  } finally {
+    decrementSourceConcurrency(connId);
+  }
+}
+
 export const executeSQL = tool({
   description: `Execute a read-only SQL query against the database. Only SELECT statements are allowed.
 
@@ -396,52 +707,9 @@ Rules:
       : undefined;
 
     // Validate connection exists before proceeding.
-    // Use getForOrg() when orgId is present for tenant isolation.
-    // Use getDefault() for "default" to trigger lazy initialization from
-    // ATLAS_DATASOURCE_URL — plain get("default") throws on fresh startup.
-    let db: DBConnection;
-    let dbType: DBType;
-    try {
-      if (orgId) {
-        db = connections.getForOrg(orgId, connId);
-      } else if (connId === "default") {
-        db = connections.getDefault();
-      } else {
-        db = connections.get(connId);
-      }
-      dbType = connections.getDBType(connId);
-    } catch (err) {
-      // Narrow the catch to distinguish registration/config errors from
-      // unexpected failures (unsupported DB scheme, internal errors).
-      // Both return { success: false } so the agent stream stays alive, but
-      // known errors get curated messages while unexpected ones surface the
-      // original error for debuggability.
-      if (err instanceof ConnectionNotRegisteredError) {
-        return {
-          success: false,
-          error: `Connection "${connId}" is not registered. Available: ${connections.list().join(", ") || "(none)"}`,
-        };
-      }
-      if (err instanceof NoDatasourceConfiguredError) {
-        return {
-          success: false,
-          error: err.message,
-        };
-      }
-      if (err instanceof PoolCapacityExceededError) {
-        log.warn({ connectionId: connId, orgId }, "Org pool capacity exceeded");
-        return {
-          success: false,
-          error: "Connection pool capacity reached — the system is handling many concurrent tenants. Try again shortly.",
-        };
-      }
-      const message = err instanceof Error ? err.message : String(err);
-      log.error({ err, connectionId: connId }, "Unexpected error during connection lookup");
-      return {
-        success: false,
-        error: `Connection "${connId}" failed to initialize: ${message}`,
-      };
-    }
+    const resolved = resolveConnection(connId, orgId);
+    if (!resolved.ok) return resolved.error;
+    const { db, dbType } = resolved;
 
     const targetHost = connections.getTargetHost(connId);
 
@@ -450,70 +718,25 @@ Rules:
     // If absent, validateSQL is used instead — validators are mutually exclusive.
     const customValidator = connections.getValidator(connId);
     const normalizedSql = sql.trim().replace(/;\s*$/, "").trimEnd();
+
+    // Run initial validation (custom validator or standard SQL validation)
+    const initial = await runQueryValidation(normalizedSql, connId, dbType, customValidator);
+    if (!initial.ok) {
+      logQueryAudit({
+        sql: normalizedSql.slice(0, 2000),
+        durationMs: 0,
+        rowCount: null,
+        success: false,
+        error: initial.auditError,
+        sourceId: connId,
+        sourceType: dbType,
+      });
+      return { success: false, error: initial.error };
+    }
     // Classification is only populated for standard SQL (validateSQL path).
     // Custom validators (SOQL, GraphQL) bypass node-sql-parser so classification
     // stays undefined — their audit entries store NULL for tables/columns_accessed.
-    let classification: SQLClassification | undefined;
-    if (customValidator) {
-      let result: { valid: boolean; reason?: string };
-      try {
-        result = await customValidator(normalizedSql);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        log.error({ err, connectionId: connId, sql: normalizedSql.slice(0, 200) }, "Custom validator threw an exception");
-        logQueryAudit({
-          sql: normalizedSql.slice(0, 2000),
-          durationMs: 0,
-          rowCount: null,
-          success: false,
-          error: `Custom validator error: ${message}`,
-          sourceId: connId,
-          sourceType: dbType,
-        });
-        return { success: false, error: `Query validation failed for connection "${connId}": internal validator error` };
-      }
-      if (typeof result?.valid !== "boolean") {
-        log.error({ connectionId: connId, returnValue: result }, "Custom validator returned invalid shape");
-        logQueryAudit({
-          sql: normalizedSql.slice(0, 2000),
-          durationMs: 0,
-          rowCount: null,
-          success: false,
-          error: "Custom validator returned invalid result",
-          sourceId: connId,
-          sourceType: dbType,
-        });
-        return { success: false, error: `Query validation misconfigured for connection "${connId}"` };
-      }
-      if (!result.valid) {
-        logQueryAudit({
-          sql: normalizedSql.slice(0, 2000),
-          durationMs: 0,
-          rowCount: null,
-          success: false,
-          error: `Validation rejected: ${result.reason ?? "Query rejected by custom validator"}`,
-          sourceId: connId,
-          sourceType: dbType,
-        });
-        return { success: false, error: result.reason ?? "Query rejected by custom validator" };
-      }
-    } else {
-      const validation = validateSQL(sql, connId);
-      if (!validation.valid) {
-        logQueryAudit({
-          sql: sql.slice(0, 2000),
-          durationMs: 0,
-          rowCount: null,
-          success: false,
-          error: `Validation rejected: ${validation.error}`,
-          sourceId: connId,
-          sourceType: dbType,
-        });
-        return { success: false, error: validation.error };
-      }
-      // Capture classification from validated AST for audit logging
-      classification = validation.classification;
-    }
+    const classification = initial.classification;
 
     // Check cache before acquiring a concurrency slot — cache hits need no DB connection.
     // Wrapped in try-catch so a broken cache backend (plugin Redis down) fails open.
@@ -521,9 +744,9 @@ Rules:
     if (cacheEnabled()) {
       try {
         const ctx = getRequestContext();
-        const orgId = ctx?.user?.activeOrganizationId;
+        const cacheOrgId = ctx?.user?.activeOrganizationId;
         const claims = ctx?.user?.claims;
-        cacheKey = buildCacheKey(normalizedSql, connId, orgId, claims);
+        cacheKey = buildCacheKey(normalizedSql, connId, cacheOrgId, claims);
         const cached = getCache().get(cacheKey);
         if (cached) {
           logQueryAudit({
@@ -601,155 +824,33 @@ Rules:
     // disallowed tables, or invalid syntax that would bypass the initial validation
     let normalizedMutated = mutatedSql.trim().replace(/;\s*$/, "").trimEnd();
     if (normalizedMutated !== normalizedSql) {
-      if (customValidator) {
-        let reresult: { valid: boolean; reason?: string };
-        try {
-          reresult = await customValidator(normalizedMutated);
-        } catch (err) {
-          decrementSourceConcurrency(connId);
-          const message = err instanceof Error ? err.message : String(err);
-          log.error({ err, connectionId: connId, sql: normalizedMutated.slice(0, 200) }, "Custom validator threw during re-validation of plugin-mutated query");
-          logQueryAudit({
-            sql: normalizedMutated.slice(0, 2000),
-            durationMs: 0,
-            rowCount: null,
-            success: false,
-            error: `Custom validator error on rewritten query: ${message}`,
-            sourceId: connId,
-            sourceType: dbType,
-            targetHost,
-          });
-          return { success: false, error: `Re-validation failed for connection "${connId}": internal validator error` };
-        }
-        if (typeof reresult?.valid !== "boolean") {
-          decrementSourceConcurrency(connId);
-          log.error({ connectionId: connId, returnValue: reresult }, "Custom validator returned invalid shape during re-validation");
-          logQueryAudit({
-            sql: normalizedMutated.slice(0, 2000),
-            durationMs: 0,
-            rowCount: null,
-            success: false,
-            error: "Custom validator returned invalid result during re-validation",
-            sourceId: connId,
-            sourceType: dbType,
-            targetHost,
-          });
-          return { success: false, error: `Query validation misconfigured for connection "${connId}"` };
-        }
-        if (!reresult.valid) {
-          decrementSourceConcurrency(connId);
-          logQueryAudit({
-            sql: normalizedMutated.slice(0, 2000),
-            durationMs: 0,
-            rowCount: null,
-            success: false,
-            error: `Plugin-rewritten SQL failed validation: ${reresult.reason ?? "Query rejected by custom validator"}`,
-            sourceId: connId,
-            sourceType: dbType,
-            targetHost,
-          });
-          return { success: false, error: `Plugin-rewritten SQL failed validation: ${reresult.reason ?? "Query rejected by custom validator"}` };
-        }
-      } else {
-        const revalidation = validateSQL(mutatedSql, connId);
-        if (!revalidation.valid) {
-          decrementSourceConcurrency(connId);
-          logQueryAudit({
-            sql: mutatedSql.slice(0, 2000),
-            durationMs: 0,
-            rowCount: null,
-            success: false,
-            error: `Plugin-rewritten SQL failed validation: ${revalidation.error}`,
-            sourceId: connId,
-            sourceType: dbType,
-            targetHost,
-          });
-          return { success: false, error: `Plugin-rewritten SQL failed validation: ${revalidation.error}` };
-        }
+      const revalidation = await runQueryValidation(normalizedMutated, connId, dbType, customValidator);
+      if (!revalidation.ok) {
+        decrementSourceConcurrency(connId);
+        logQueryAudit({
+          sql: normalizedMutated.slice(0, 2000),
+          durationMs: 0,
+          rowCount: null,
+          success: false,
+          error: `Plugin-rewritten SQL failed validation: ${revalidation.auditError}`,
+          sourceId: connId,
+          sourceType: dbType,
+          targetHost,
+        });
+        return { success: false, error: `Plugin-rewritten SQL failed validation: ${revalidation.error}` };
       }
     }
 
     // --- RLS: inject WHERE conditions based on user claims ---
     // Applied after validation + plugin hooks so plugins cannot strip RLS.
     // Skipped for custom validators (non-SQL languages like SOQL).
-    const config = getConfig();
-    const rlsConfig = config?.rls;
-    if (rlsConfig?.enabled && !customValidator) {
-      const ctx = getRequestContext();
-      const user = ctx?.user;
-
-      // Extract tables from the (possibly plugin-mutated) SQL
-      let queriedTables: Set<string>;
-      try {
-        const dialect = parserDatabase(dbType, connId);
-        const tableRefs = parser.tableList(normalizedMutated, { database: dialect });
-        queriedTables = new Set(
-          tableRefs
-            .map((ref) => {
-              const parts = ref.split("::");
-              return parts.pop()?.toLowerCase() ?? "";
-            })
-            .filter(Boolean),
-        );
-      } catch (tableErr) {
+    if (!customValidator) {
+      const rlsResult = applyRLSToQuery(normalizedMutated, connId, dbType, targetHost);
+      if (!rlsResult.ok) {
         decrementSourceConcurrency(connId);
-        const tableErrMsg = tableErr instanceof Error ? tableErr.message : String(tableErr);
-        log.error({ err: tableErr, sql: normalizedMutated.slice(0, 200) }, "RLS: failed to extract table list from query");
-        logQueryAudit({
-          sql: normalizedMutated.slice(0, 2000),
-          durationMs: 0,
-          rowCount: null,
-          success: false,
-          error: `RLS: could not extract tables from query: ${tableErrMsg}`,
-          sourceId: connId,
-          sourceType: dbType,
-          targetHost,
-        });
-        return { success: false, error: "Query could not be analyzed for row-level security. Rewrite using standard SQL." };
+        return { success: false, error: rlsResult.error };
       }
-
-      const filterResult = resolveRLSFilters(user, queriedTables, rlsConfig);
-      if ("error" in filterResult) {
-        decrementSourceConcurrency(connId);
-        log.warn({ error: filterResult.error, userId: user?.id }, "RLS filter resolution failed — query blocked");
-        logQueryAudit({
-          sql: normalizedMutated.slice(0, 2000),
-          durationMs: 0,
-          rowCount: null,
-          success: false,
-          error: `RLS blocked: ${filterResult.error}`,
-          sourceId: connId,
-          sourceType: dbType,
-          targetHost,
-        });
-        return { success: false, error: filterResult.error };
-      }
-
-      const hasFilters = filterResult.groups.some((g: RLSFilterGroup) => g.filters.length > 0);
-      if (hasFilters) {
-        try {
-          normalizedMutated = injectRLSConditions(normalizedMutated, filterResult.groups, filterResult.combineWith, dbType);
-          log.debug(
-            { groups: filterResult.groups.length, combineWith: filterResult.combineWith, userId: user?.id },
-            "RLS conditions injected",
-          );
-        } catch (err) {
-          decrementSourceConcurrency(connId);
-          const msg = err instanceof Error ? err.message : String(err);
-          log.error({ err, userId: user?.id }, "RLS injection failed — query blocked");
-          logQueryAudit({
-            sql: normalizedMutated.slice(0, 2000),
-            durationMs: 0,
-            rowCount: null,
-            success: false,
-            error: `RLS injection failed: ${msg}`,
-            sourceId: connId,
-            sourceType: dbType,
-            targetHost,
-          });
-          return { success: false, error: "Query could not be processed for row-level security." };
-        }
-      }
+      normalizedMutated = rlsResult.sql;
     }
 
     // Read limits per-query so admin changes take effect immediately.
@@ -764,120 +865,11 @@ Rules:
       querySql += ` LIMIT ${rowLimit}`;
     }
 
-    // Includes connection acquisition time; the OTel span inside withSpan
-    // covers only the actual query execution against the database.
-    // SQL content is NOT included in span attributes for security.
-    const start = performance.now();
-    try {
-      const result = await withSpan(
-        "atlas.sql.execute",
-        {
-          "db.system": dbType,
-          "atlas.connection_id": connId,
-        },
-        () => db.query(querySql, queryTimeout),
-        (r) => ({
-          "atlas.row_count": r.rows.length,
-          "atlas.column_count": r.columns.length,
-        }),
-      );
-      const durationMs = Math.round(performance.now() - start);
-      const truncated = result.rows.length >= rowLimit;
-
-      connections.recordQuery(connId, durationMs, orgId);
-      connections.recordSuccess(connId, orgId);
-
-      // Store in cache on success — fail open if cache backend is broken
-      if (cacheKey) {
-        try {
-          getCache().set(cacheKey, {
-            columns: result.columns,
-            rows: result.rows,
-            cachedAt: Date.now(),
-            ttl: getDefaultTtl(),
-          });
-        } catch (cacheErr) {
-          log.error({ err: cacheErr, connectionId: connId }, "Cache write failed — result not cached");
-        }
-      }
-
-      try {
-        logQueryAudit({
-          sql: querySql,
-          durationMs,
-          rowCount: result.rows.length,
-          success: true,
-          sourceId: connId,
-          sourceType: dbType,
-          targetHost,
-          tablesAccessed: classification?.tablesAccessed,
-          columnsAccessed: classification?.columnsAccessed,
-        });
-      } catch (auditErr) {
-        log.warn({ err: auditErr }, "Failed to write query audit log");
-      }
-
-      await dispatchHook("afterQuery", {
-        sql: querySql,
-        connectionId: connId,
-        result: { columns: result.columns, rows: result.rows },
-        durationMs,
-      });
-
-      const hasHookMeta = Object.keys(hookMetadata).length > 0;
-      return {
-        success: true,
-        explanation,
-        row_count: result.rows.length,
-        columns: result.columns,
-        rows: result.rows,
-        truncated,
-        cached: false,
-        ...(hasHookMeta && { metadata: hookMetadata }),
-      };
-    } catch (err) {
-      const durationMs = Math.round(performance.now() - start);
-      const message =
-        err instanceof Error ? err.message : "Unknown database error";
-
-      connections.recordQuery(connId, durationMs, orgId);
-      connections.recordError(connId, orgId);
-
-      try {
-        logQueryAudit({
-          sql: querySql,
-          durationMs,
-          rowCount: null,
-          success: false,
-          error: message,
-          sourceId: connId,
-          sourceType: dbType,
-          targetHost,
-          tablesAccessed: classification?.tablesAccessed,
-          columnsAccessed: classification?.columnsAccessed,
-        });
-      } catch (auditErr) {
-        log.warn({ err: auditErr }, "Failed to write query audit log");
-      }
-
-      // Block errors that might expose connection details or internal state
-      if (SENSITIVE_PATTERNS.test(message)) {
-        return { success: false, error: "Database query failed — check server logs for details." };
-      }
-
-      // Surface the full DB error to the agent for self-correction
-      // (includes column-not-found, syntax, timeout, type mismatch, etc.)
-      const dbErr = err as { hint?: string; position?: string };
-      let detail = message;
-      if (dbErr.hint) {
-        detail += ` — Hint: ${dbErr.hint}`;
-      }
-      if (dbErr.position) {
-        detail += ` (at character ${dbErr.position})`;
-      }
-      return { success: false, error: detail };
-    } finally {
-      decrementSourceConcurrency(connId);
-    }
+    // Execute the query and handle results/errors
+    return executeAndAudit({
+      db, dbType, connId, orgId, targetHost, querySql, queryTimeout,
+      rowLimit, explanation, classification, cacheKey: cacheKey ?? null,
+      hookMetadata, dispatchHook,
+    });
   },
 });

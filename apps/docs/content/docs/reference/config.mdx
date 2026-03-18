@@ -286,6 +286,36 @@ Connection pools are automatically warmed at startup and drained when consecutiv
 
 Auto-drain has a 30-second cooldown to prevent drain storms. Manual drain is available via the [admin console](/guides/admin-console#pool-stats) or `POST /api/v1/admin/connections/:id/drain`.
 
+### Per-Org Pool Isolation
+
+For multi-tenant deployments, each organization can get its own isolated connection pool. This prevents noisy-neighbor issues where one org's heavy queries starve another org's connections.
+
+```typescript
+export default defineConfig({
+  pool: {
+    perOrg: {
+      maxConnections: 5,      // Max connections per org (default: 5)
+      idleTimeoutMs: 30000,   // Idle timeout in ms (default: 30000)
+      maxOrgs: 50,            // Max org pools before LRU eviction (default: 50)
+      warmupProbes: 2,        // Warmup probes when pool created (default: 2)
+      drainThreshold: 5,      // Consecutive errors before auto-drain (default: 5)
+    },
+  },
+});
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `perOrg.maxConnections` | `number` | `5` | Max connections per pool per org |
+| `perOrg.idleTimeoutMs` | `number` | `30000` | Idle timeout in ms for per-org pool connections |
+| `perOrg.maxOrgs` | `number` | `50` | Max org pool sets before LRU eviction |
+| `perOrg.warmupProbes` | `number` | `2` | Warmup probes when an org pool is first created |
+| `perOrg.drainThreshold` | `number` | `5` | Consecutive query errors before auto-drain of an org pool |
+
+<Callout type="info">
+Per-org pooling requires multi-tenancy (Better Auth organization plugin). When not configured, all orgs share the global pool. See [Multi-Tenancy](/guides/multi-tenancy) for the full setup.
+</Callout>
+
 ---
 
 ## Query Cache
@@ -745,6 +775,8 @@ export default defineConfig({
 | `sandbox` | `object` | — | Sandbox backend priority ([details](#sandbox)) |
 | `python` | `object` | — | Python import guard overrides ([details](#python-import-guard)) |
 | `session` | `object` | — | Session timeout configuration ([details](#session-timeouts)) |
+| `cache` | `object` | — | Query result caching ([details](#query-cache)) |
+| `pool` | `object` | — | Per-org connection pool isolation ([details](#per-org-pool-isolation)) |
 | `semanticIndex` | `object` | — | Semantic index configuration ([details](#semantic-index)) |
 
 ---

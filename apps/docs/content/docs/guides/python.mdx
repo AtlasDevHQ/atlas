@@ -55,13 +55,26 @@ The exact set of available libraries depends on the sandbox backend and its Pyth
 
 ## Chart Rendering
 
-When Python code generates charts (via matplotlib or plotly), they appear inline in the chat UI. The agent can produce:
+When Python code generates charts, they appear inline in the chat UI. Two output formats are supported:
 
-- Bar charts, line charts, pie charts, scatter plots
-- Statistical visualizations (histograms, box plots)
-- Multi-series and grouped charts
+### Static charts (matplotlib)
 
-Charts generated with **Recharts** format (a React charting library) are rendered natively in the web UI for interactive exploration.
+The agent calls `plt.savefig(chart_path(0))` to save a chart. The sandbox provides a `chart_path(n)` helper that returns the correct output path for the nth chart. Multiple charts can be generated in a single execution (`chart_path(0)`, `chart_path(1)`, etc.). Charts are returned as base64-encoded PNG images.
+
+### Interactive charts (Recharts)
+
+The agent sets a special `_atlas_chart` variable with structured chart data:
+
+```python
+_atlas_chart = {
+    "type": "line",           # "line", "bar", or "pie"
+    "data": [...],            # Array of data points
+    "categoryKey": "month",   # X-axis key
+    "valueKeys": ["revenue", "cost"],  # Y-axis keys
+}
+```
+
+Recharts output renders natively in the web UI as interactive charts with hover tooltips and legends. Multiple charts can be returned as a list.
 
 ---
 
@@ -69,7 +82,7 @@ Charts generated with **Recharts** format (a React charting library) are rendere
 
 Python execution is isolated at multiple layers:
 
-1. **Import guard** -- Defense-in-depth blocking of dangerous modules: `subprocess`, `os`, `socket`, `requests`, `pickle`, `tempfile`, `shutil`, and others. This is a first-pass filter; the sandbox backend is the real security boundary
+1. **Import guard** -- Defense-in-depth blocking of dangerous modules. Configurable via [`atlas.config.ts`](/reference/config#python-import-guard) — you can allow specific modules (e.g., `requests` for sandboxed API calls) or block additional ones. Critical modules (`os`, `subprocess`, `sys`, `shutil`) can never be unblocked
 2. **No filesystem writes** -- The sandbox environment is read-only
 3. **No network access** -- Outbound connections are blocked by the sandbox
 4. **No shell access** -- `os.system()`, `subprocess.run()`, and similar are blocked
@@ -82,7 +95,7 @@ Python execution is isolated at multiple layers:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ATLAS_PYTHON_ENABLED` | — | Set to `true` to enable Python execution |
-| `ATLAS_PYTHON_TIMEOUT` | — | Per-execution timeout |
+| `ATLAS_PYTHON_TIMEOUT` | `30000` | Per-execution timeout in milliseconds (default: 30 seconds) |
 
 The sandbox itself is configured via the standard sandbox variables. See [Environment Variables](/reference/environment-variables) and [Sandbox Architecture](/architecture/sandbox).
 

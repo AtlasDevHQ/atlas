@@ -23,6 +23,8 @@ export default function NotebookPage() {
   const [apiKey] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [loadingConversation, setLoadingConversation] = useState(false);
+  const tempIdRef = useRef(`temp:${Date.now()}`);
 
   useEffect(() => {
     let cancelled = false;
@@ -51,6 +53,7 @@ export default function NotebookPage() {
             setAuthMode(mode as AuthMode);
           } else {
             console.warn("Health check succeeded but returned no valid auth mode:", data);
+            setError("Server returned an unexpected authentication configuration.");
             setAuthMode("none");
           }
         }
@@ -156,9 +159,22 @@ export default function NotebookPage() {
     if (!conversationId) return;
     let cancelled = false;
     async function load() {
-      const uiMessages = await convos.loadConversation(conversationId!);
-      if (!cancelled && uiMessages) {
-        setMessages(uiMessages);
+      try {
+        const uiMessages = await convos.loadConversation(conversationId!);
+        if (cancelled) return;
+        if (uiMessages) {
+          setMessages(uiMessages);
+        } else {
+          setError("Could not load conversation. It may have been deleted.");
+        }
+      } catch (err: unknown) {
+        if (!cancelled) {
+          console.warn(
+            "Failed to load conversation:",
+            err instanceof Error ? err.message : String(err),
+          );
+          setError("Failed to load conversation. Please try again.");
+        }
       }
     }
     load();
@@ -176,7 +192,7 @@ export default function NotebookPage() {
       status,
       error: chatError ?? null,
     },
-    conversationId: conversationId ?? `temp:${Date.now()}`,
+    conversationId: conversationId ?? tempIdRef.current,
   });
 
   // New chat handler
@@ -188,12 +204,26 @@ export default function NotebookPage() {
 
   // Select conversation handler
   async function handleSelectConversation(id: string) {
-    const uiMessages = await convos.loadConversation(id);
-    if (uiMessages) {
-      setMessages(uiMessages);
-      setParams({ id, cell: "" });
-      convos.setSelectedId(id);
-      setMobileMenuOpen(false);
+    if (loadingConversation) return;
+    setLoadingConversation(true);
+    try {
+      const uiMessages = await convos.loadConversation(id);
+      if (uiMessages) {
+        setMessages(uiMessages);
+        setParams({ id, cell: "" });
+        convos.setSelectedId(id);
+        setMobileMenuOpen(false);
+      } else {
+        setError("Could not load conversation. It may have been deleted.");
+      }
+    } catch (err: unknown) {
+      console.warn(
+        "Failed to load conversation:",
+        err instanceof Error ? err.message : String(err),
+      );
+      setError("Failed to load conversation. Please try again.");
+    } finally {
+      setLoadingConversation(false);
     }
   }
 

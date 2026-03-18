@@ -5,9 +5,9 @@ import type { NotebookCell, NotebookState, ResolvedCell } from "./types";
 const STORAGE_PREFIX = "atlas:notebook:";
 
 /**
- * Pairs sequential user + assistant messages into notebook cells.
- * Each user message starts a new cell; assistant messages are associated
- * with the preceding user message. Non-user/assistant messages are skipped.
+ * Creates notebook cells from user messages in a conversation.
+ * Each user message becomes one cell; all other roles are ignored.
+ * Assistant messages are resolved later when building ResolvedCell objects.
  */
 export function buildCellsFromMessages(messages: UIMessage[]): NotebookCell[] {
   const cells: NotebookCell[] = [];
@@ -59,7 +59,7 @@ export function saveNotebookState(
   try {
     store.setItem(`${STORAGE_PREFIX}${state.conversationId}`, JSON.stringify(state));
   } catch (err: unknown) {
-    console.debug(
+    console.warn(
       "Failed to save notebook state:",
       err instanceof Error ? err.message : String(err),
     );
@@ -80,9 +80,20 @@ export function loadNotebookState(
   try {
     const raw = store.getItem(`${STORAGE_PREFIX}${conversationId}`);
     if (!raw) return null;
-    return JSON.parse(raw) as NotebookState;
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "version" in parsed &&
+      (parsed as { version: unknown }).version === 1 &&
+      "cells" in parsed &&
+      Array.isArray((parsed as { cells: unknown }).cells)
+    ) {
+      return parsed as NotebookState;
+    }
+    return null;
   } catch (err: unknown) {
-    console.debug(
+    console.warn(
       "Failed to load notebook state:",
       err instanceof Error ? err.message : String(err),
     );
@@ -111,7 +122,7 @@ export function migrateNotebookStateKey(
     store.setItem(`${STORAGE_PREFIX}${realId}`, JSON.stringify(state));
     store.removeItem(`${STORAGE_PREFIX}${tempId}`);
   } catch (err: unknown) {
-    console.debug(
+    console.warn(
       "Failed to migrate notebook state key:",
       err instanceof Error ? err.message : String(err),
     );
@@ -137,7 +148,7 @@ export interface UseNotebookOptions {
     messages: UIMessage[];
     setMessages: (messages: UIMessage[]) => void;
     sendMessage: (opts: { text: string }) => Promise<void>;
-    status: string;
+    status: "idle" | "streaming" | "submitted" | "error";
     error: Error | null;
   };
   conversationId: string;
@@ -145,7 +156,7 @@ export interface UseNotebookOptions {
 
 export interface UseNotebookReturn {
   cells: ResolvedCell[];
-  status: string;
+  status: "idle" | "streaming" | "submitted" | "error";
   error: Error | null;
   appendCell: (question: string) => void;
   rerunCell: (cellId: string, newQuestion: string) => void;
@@ -186,7 +197,20 @@ export function useNotebook({ chat, conversationId }: UseNotebookOptions): UseNo
     saveNotebookState({ conversationId, cells: cellState, version: 1 });
   }, [cellState, conversationId]);
 
-  // Fire sendMessage after setMessages settles (rerun)
+  // Migrate localStorage key when conversationId changes from temp to real
+  const prevConversationId = useRef(conversationId);
+  useEffect(() => {
+    const prev = prevConversationId.current;
+    if (prev.startsWith("temp:") && !conversationId.startsWith("temp:")) {
+      migrateNotebookStateKey(prev, conversationId);
+    }
+    prevConversationId.current = conversationId;
+  }, [conversationId]);
+
+  // Two-phase rerun: setMessages is async (React batches state updates), so we
+  // can't call sendMessage immediately after truncating — useChat would still see
+  // the old messages. Instead, store the question in a ref and fire sendMessage
+  // in a subsequent effect once the truncated messages are committed and status is idle.
   useEffect(() => {
     if (pendingRerun.current && chat.status === "idle") {
       const text = pendingRerun.current;
@@ -220,13 +244,14 @@ export function useNotebook({ chat, conversationId }: UseNotebookOptions): UseNo
 
   const appendCell = useCallback(
     (question: string) => {
+      setInput("");
       chat.sendMessage({ text: question }).catch((err: unknown) => {
+        setInput(question);
         console.error(
           "Failed to send message:",
           err instanceof Error ? err.message : String(err),
         );
       });
-      setInput("");
     },
     [chat],
   );

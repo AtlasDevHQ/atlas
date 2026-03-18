@@ -309,6 +309,39 @@ All status changes record the reviewer and timestamp. Approve/reject use optimis
 
 ---
 
+## Prompt Library
+
+**Route:** `/admin/prompts`
+
+<Callout type="info">
+Requires an internal database (`DATABASE_URL`). Atlas ships with three built-in collections; admins can create custom collections for their organization.
+</Callout>
+
+Manage curated prompt collections — pre-written questions organized by industry that help users get started with common analyses.
+
+### Built-in Collections
+
+Atlas seeds three built-in collections on first boot:
+- **SaaS Metrics** — MRR, churn, LTV, CAC, ARPU, and growth indicators
+- **E-commerce KPIs** — GMV, AOV, conversion rates, inventory, and fulfillment metrics
+- **Cybersecurity Compliance** — vulnerability tracking, incident response, and compliance scores
+
+Built-in collections are read-only and visible to all users.
+
+### Custom Collections
+
+Admins can create custom prompt collections scoped to their organization:
+1. Click **Create Collection** and fill in the name, industry, and description
+2. Add prompt items with questions, descriptions, and categories
+3. Reorder items within a collection
+4. Custom collections are only visible to members of the admin's organization
+
+### Chat Integration
+
+Users can access the prompt library from the chat interface via the book icon in the header. Clicking a prompt immediately sends it as a question.
+
+---
+
 ## Cache
 
 **Route:** `/admin/cache`
@@ -479,6 +512,14 @@ All admin endpoints are at `/api/v1/admin/` and require the `admin` role. See th
 | `PATCH` | `/learned-patterns/:id` | Update pattern (description, status) |
 | `DELETE` | `/learned-patterns/:id` | Delete learned pattern |
 | `POST` | `/learned-patterns/bulk` | Bulk approve/reject (body: `{ ids, status }`, max 100) |
+| `GET` | `/prompts` | List prompt collections |
+| `POST` | `/prompts` | Create prompt collection |
+| `PATCH` | `/prompts/:id` | Update prompt collection |
+| `DELETE` | `/prompts/:id` | Delete prompt collection |
+| `POST` | `/prompts/:id/items` | Add item to collection |
+| `PATCH` | `/prompts/:collectionId/items/:itemId` | Update item |
+| `DELETE` | `/prompts/:collectionId/items/:itemId` | Delete item |
+| `PUT` | `/prompts/:id/reorder` | Reorder items (body: `{ itemIds }`) |
 
 ---
 

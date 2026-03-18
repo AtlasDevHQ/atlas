@@ -262,8 +262,9 @@ function createPostgresDB(config: ConnectionConfig): DBConnection {
                 if (schemas.length > 0) {
                   schemaHint = ` Available schemas: ${schemas.join(", ")}.`;
                 }
-              } catch {
-                // Schema listing failed (permissions) — fall back to generic message
+              } catch (schemaListErr) {
+                // fallback: schema listing may fail due to permissions — generic message is sufficient
+                log.warn({ err: schemaListErr instanceof Error ? schemaListErr.message : String(schemaListErr) }, "Schema listing failed during schema validation — falling back to generic error message");
               }
               throw new Error(
                 `Schema "${pgSchema}" does not exist in the database.${schemaHint} Check ATLAS_SCHEMA in your .env file.`

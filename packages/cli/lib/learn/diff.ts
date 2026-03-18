@@ -128,7 +128,8 @@ export function formatDiff(proposalSet: ProposalSet): string {
     let originalContent: string;
     try {
       originalContent = fs.readFileSync(filePath, "utf-8");
-    } catch {
+    } catch (err) {
+      console.warn(`Warning: could not read ${filePath} (${err instanceof Error ? err.message : String(err)}) — diffing against empty file`);
       originalContent = "";
     }
 
@@ -149,7 +150,8 @@ export function formatDiff(proposalSet: ProposalSet): string {
     let originalContent: string;
     try {
       originalContent = fs.readFileSync(proposalSet.glossaryPath, "utf-8");
-    } catch {
+    } catch (err) {
+      console.warn(`Warning: could not read ${proposalSet.glossaryPath} (${err instanceof Error ? err.message : String(err)}) — diffing against empty file`);
       originalContent = "";
     }
 

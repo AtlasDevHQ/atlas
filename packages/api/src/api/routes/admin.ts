@@ -948,7 +948,10 @@ admin.post("/connections/test", async (c) => {
   const { authResult } = preamble;
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const body = await c.req.json().catch(() => null);
+    const body = await c.req.json().catch((err) => {
+      log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in test connection request");
+      return null;
+    });
     if (!body || typeof body !== "object") {
       return c.json({ error: "invalid_request", message: "Request body is required." }, 400);
     }
@@ -1237,7 +1240,8 @@ admin.put("/connections/:id", async (c) => {
           description: current.description ?? undefined,
           schema: current.schema_name ?? undefined,
         });
-      } catch {
+      } catch (restoreErr) {
+        log.error({ connectionId: id, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) }, "Failed to restore previous connection after encryption failure — connection unregistered");
         connections.unregister(id);
       }
       log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to encrypt connection URL");
@@ -3128,7 +3132,7 @@ admin.post("/users/invite", async (c) => {
           });
           emailSent = res.ok;
           if (!res.ok) {
-            const errorBody = await res.text().catch(() => "");
+            const errorBody = await res.text().catch(() => ""); // fallback: already in error path, body is best-effort for logging
             emailError = `Delivery failed (HTTP ${res.status})`;
             log.error({ status: res.status, email, responseBody: errorBody }, "Failed to send invite email via Resend");
           }

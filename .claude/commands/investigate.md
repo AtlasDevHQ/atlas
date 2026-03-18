@@ -31,7 +31,7 @@ Then skip to Step 4.
 Determine:
 - **Type label:** `bug` (broken behavior), `feature` (new capability), `refactor` (structural improvement), `chore` (maintenance/cleanup), `docs` (documentation gap)
 - **Area label(s):** `area: api`, `area: web`, `area: cli`, `area: plugins`, `area: sandbox`, `area: deploy`, `area: ci`, `area: sdk`, `area: mcp`, `area: starter`, `area: docs`, `area: testing`
-- **Milestone:** `0.0.x — Pre-release` (#6) for standalone fixes. If it clearly belongs to an upcoming milestone, use that instead
+- **Milestone:** Assign to the current active milestone (check `gh api repos/AtlasDevHQ/atlas/milestones --jq '.[] | select(.state=="open") | .title'`). If it doesn't fit an active milestone, use the next open one
 - **Priority:** P0 (security/correctness), P1 (important), P2 (nice-to-have)
 - **Size:** XS (< 1 hour), S (1-4 hours), M (half day), L (1-2 days), XL (3+ days)
 

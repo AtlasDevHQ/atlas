@@ -69,6 +69,13 @@ IMPORTANT — CI gates (mandatory before PR):
   - `SKIP_SYNCPACK=1 bash scripts/check-template-drift.sh` — template drift
 - To run a single test file: `bun test path/to/file.test.ts`
 - When using mock.module(), mock ALL named exports — partial mocks break other test files
+- Use `createConnectionMock()` from `packages/api/src/__mocks__/connection.ts` for connection mocks
+
+IMPORTANT — Error handling rules:
+- Never silently swallow errors — every catch block must log (log.warn/console.debug) or re-throw
+- Always type-narrow: `err instanceof Error ? err.message : String(err)`
+- All 500 responses must include requestId
+- No explicit `any` — use proper types or `unknown` with narrowing
 
 IMPORTANT — Labels:
 - Every issue needs a type label (bug, feature, refactor, chore, docs) and area label(s) (area: api, area: web, area: cli, area: plugins, area: sandbox, area: deploy, area: ci, area: sdk, area: mcp, area: starter)
@@ -108,13 +115,12 @@ IMPORTANT — Docs impact:
 - Community: `good first issue`, `help wanted`
 
 **Milestone reference:**
-- 0.1.0 — Documentation & DX (CLOSED)
-- 0.2.0 — Plugin Ecosystem (CLOSED)
-- 0.3.0 — Admin & Operations (CLOSED)
-- 0.4.0 — Chat Experience (CLOSED)
-- 0.5.0 — Launch (CLOSED)
+- 0.1.0–0.5.4 — All CLOSED (docs, plugins, admin, chat, launch, polish)
 - 0.6.0 — Governance & Operational Hardening (CLOSED)
-- 0.7.0 — Performance & Scale
+- 0.7.0 — Performance & Scale (CLOSED)
+- 0.7.1–0.7.4 — Refinement arc (CLOSED: cleanup, type safety, error handling, test hardening)
+- 0.7.5 — Docs Completeness (active)
 - 0.8.0 — Intelligence & Learning
+- Check live state: `gh api repos/AtlasDevHQ/atlas/milestones --jq '.[] | "\(.title) (\(.state))"'`
 
 **Strategic context:** `.claude/research/design/competitive-landscape.md` has competitive analysis and rationale for milestone ordering.

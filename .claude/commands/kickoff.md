@@ -120,12 +120,10 @@ Output session prompts in the same format as `/next` — detailed enough for a f
 - Group related sub-tasks under a parent issue when a line item is too large for a single issue (L or XL)
 
 **Milestone reference:**
-- `0.1.0 — Documentation & DX` (milestone #1, CLOSED)
-- `0.2.0 — Plugin Ecosystem` (milestone #2, CLOSED)
-- `0.3.0 — Admin & Operations` (milestone #3, CLOSED)
-- `0.4.0 — Chat Experience` (milestone #4, CLOSED)
-- `0.5.0 — Launch` (milestone #5, CLOSED)
-- `0.6.0 — Governance & Operational Hardening` (milestone #7, CLOSED)
-- `0.0.x — Pre-release` (milestone #6)
-- `0.7.0 — Performance & Scale` (milestone #8)
-- `0.8.0 — Intelligence & Learning` (milestone #9)
+- 0.1.0–0.5.4 — All CLOSED (docs, plugins, admin, chat, launch, polish)
+- 0.6.0 — Governance & Operational Hardening (milestone #7, CLOSED)
+- 0.7.0 — Performance & Scale (milestone #8, CLOSED)
+- 0.7.1–0.7.4 — Refinement arc (CLOSED: cleanup, type safety, error handling, test hardening)
+- 0.7.5 — Docs Completeness (milestone #19)
+- 0.8.0 — Intelligence & Learning (milestone #9)
+- Check live state: `gh api repos/AtlasDevHQ/atlas/milestones --jq '.[] | "\(.title) (\(.state))"'`

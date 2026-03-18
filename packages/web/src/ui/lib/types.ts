@@ -6,7 +6,7 @@
 
 import type { ShareMode } from "@useatlas/types";
 
-export { AUTH_MODES } from "@useatlas/types";
+export { AUTH_MODES, DB_TYPES } from "@useatlas/types";
 export type {
   AuthMode,
   Conversation,

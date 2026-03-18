@@ -107,6 +107,12 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   isPlaintextUrl: (value: string) => /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value),
   _resetEncryptionKeyCache: mock(() => {}),
   getApprovedPatterns: mock(async () => []),
+  upsertSuggestion: mock(() => Promise.resolve("created")),
+  getSuggestionsByTables: mock(() => Promise.resolve([])),
+  getPopularSuggestions: mock(() => Promise.resolve([])),
+  incrementSuggestionClick: mock(),
+  deleteSuggestion: mock(() => Promise.resolve(false)),
+  getAuditLogQueries: mock(() => Promise.resolve([])),
 }));
 
 mock.module("@atlas/api/lib/learn/pattern-cache", () => ({

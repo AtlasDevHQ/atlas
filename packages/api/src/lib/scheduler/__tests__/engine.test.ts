@@ -46,6 +46,12 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getEncryptionKey: mock(() => null),
   _resetEncryptionKeyCache: mock(() => {}),
   getApprovedPatterns: mock(async () => []),
+  upsertSuggestion: mock(() => Promise.resolve("created")),
+  getSuggestionsByTables: mock(() => Promise.resolve([])),
+  getPopularSuggestions: mock(() => Promise.resolve([])),
+  incrementSuggestionClick: mock(),
+  deleteSuggestion: mock(() => Promise.resolve(false)),
+  getAuditLogQueries: mock(() => Promise.resolve([])),
 }));
 
 const mockExecuteResult = {

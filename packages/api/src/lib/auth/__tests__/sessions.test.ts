@@ -97,6 +97,12 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   isPlaintextUrl: () => true,
   _resetEncryptionKeyCache: mock(() => {}),
   getApprovedPatterns: mock(async () => []),
+  upsertSuggestion: mock(() => Promise.resolve("created")),
+  getSuggestionsByTables: mock(() => Promise.resolve([])),
+  getPopularSuggestions: mock(() => Promise.resolve([])),
+  incrementSuggestionClick: mock(),
+  deleteSuggestion: mock(() => Promise.resolve(false)),
+  getAuditLogQueries: mock(() => Promise.resolve([])),
 }));
 
 mock.module("@atlas/api/lib/plugins/registry", () => ({

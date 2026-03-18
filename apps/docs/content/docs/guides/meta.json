@@ -15,6 +15,7 @@
     "sharing-conversations",
     "multi-datasource",
     "schema-evolution",
+    "multi-tenancy",
     "caching",
     "rate-limiting",
     "troubleshooting",

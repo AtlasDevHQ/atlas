@@ -275,6 +275,40 @@ Settings overrides require an internal database (`DATABASE_URL`). Without it, th
 
 ---
 
+## Learned Patterns
+
+**Route:** `/admin/learned-patterns`
+
+<Callout type="info">
+Requires an internal database (`DATABASE_URL`). Patterns are proposed by the agent during conversations or by the `atlas learn` CLI command.
+</Callout>
+
+Review, approve, and manage query patterns the agent has learned:
+
+- **Stats** — Total patterns, pending review, approved, rejected
+- **Status filter** — Tabs to filter by All / Pending / Approved / Rejected
+- **Entity filter** — Dropdown to filter by source entity (table)
+- **Pattern table** — Status badge, SQL pattern (monospace, truncated), description, source entity, confidence (progress bar), repetition count, source (Agent or CLI), created date
+
+**Detail sheet** — Click any row to open a side panel with:
+- Full SQL pattern in a monospace block
+- Metadata (entity, source, confidence, repetitions, timestamps)
+- Review history (who reviewed, when)
+- Source queries that originated the pattern
+
+**Actions (per pattern):**
+- **Approve** — Mark a pattern as approved for agent use
+- **Reject** — Mark a pattern as rejected
+- **Delete** — Permanently remove a pattern (with confirmation dialog)
+
+**Bulk actions:**
+- Select multiple patterns with checkboxes
+- **Approve selected** / **Reject selected** — Update all selected patterns at once (max 100 per operation)
+
+All status changes record the reviewer and timestamp. Approve/reject use optimistic UI updates — the table updates immediately, reverting on failure.
+
+---
+
 ## Cache
 
 **Route:** `/admin/cache`
@@ -440,6 +474,11 @@ All admin endpoints are at `/api/v1/admin/` and require the `admin` role. See th
 | `POST` | `/users/invite` | Invite user by email |
 | `GET` | `/users/invitations` | List invitations |
 | `DELETE` | `/users/invitations/:id` | Revoke invitation |
+| `GET` | `/learned-patterns` | List learned patterns (supports `status`, `source_entity`, `min_confidence`, `max_confidence` filters) |
+| `GET` | `/learned-patterns/:id` | Get single learned pattern |
+| `PATCH` | `/learned-patterns/:id` | Update pattern (description, status) |
+| `DELETE` | `/learned-patterns/:id` | Delete learned pattern |
+| `POST` | `/learned-patterns/bulk` | Bulk approve/reject (body: `{ ids, status }`, max 100) |
 
 ---
 

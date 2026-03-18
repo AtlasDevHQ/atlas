@@ -16,6 +16,7 @@ import {
   Zap,
   Coins,
   HardDrive,
+  Brain,
   Settings,
   ArrowLeft,
 } from "lucide-react";
@@ -46,6 +47,7 @@ const navItems = [
   { href: "/admin/scheduled-tasks", label: "Scheduled Tasks", icon: CalendarClock },
   { href: "/admin/token-usage", label: "Token Usage", icon: Coins },
   { href: "/admin/cache", label: "Cache", icon: HardDrive },
+  { href: "/admin/learned-patterns", label: "Learned Patterns", icon: Brain },
   { href: "/admin/actions", label: "Actions", icon: Zap },
   { href: "/admin/settings", label: "Settings", icon: Settings },
 ];

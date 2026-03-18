@@ -24,6 +24,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: mockHasInternalDB,
   internalQuery: mockInternalQuery,
   getInternalDB: mockGetInternalDB,
+  getApprovedPatterns: async () => [],
 }));
 
 mock.module("@atlas/api/lib/logger", () => ({

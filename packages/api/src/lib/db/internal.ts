@@ -652,3 +652,38 @@ export function incrementPatternCount(id: string, sourceFingerprint?: string): v
     );
   }
 }
+
+/** Row shape returned by getApprovedPatterns. */
+export interface ApprovedPatternRow {
+  id: string;
+  org_id: string | null;
+  pattern_sql: string;
+  description: string | null;
+  source_entity: string | null;
+  /** Confidence score between 0.0 and 1.0. */
+  confidence: number;
+  [key: string]: unknown;
+}
+
+/**
+ * Fetch approved learned patterns, scoped to an org (or global when orgId is null).
+ * Ordered by confidence DESC, capped at 100 rows.
+ */
+export async function getApprovedPatterns(orgId: string | null): Promise<ApprovedPatternRow[]> {
+  if (!hasInternalDB()) return [];
+
+  return internalQuery<ApprovedPatternRow>(
+    orgId
+      ? `SELECT id, org_id, pattern_sql, description, source_entity, confidence
+         FROM learned_patterns
+         WHERE status = 'approved' AND (org_id = $1 OR org_id IS NULL)
+         ORDER BY confidence DESC
+         LIMIT 100`
+      : `SELECT id, org_id, pattern_sql, description, source_entity, confidence
+         FROM learned_patterns
+         WHERE status = 'approved' AND org_id IS NULL
+         ORDER BY confidence DESC
+         LIMIT 100`,
+    orgId ? [orgId] : [],
+  );
+}

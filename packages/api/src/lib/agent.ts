@@ -26,6 +26,7 @@ import { getConfig } from "./config";
 import { createLogger, getRequestContext } from "./logger";
 import { getSetting } from "./settings";
 import { hasInternalDB, internalExecute } from "./db/internal";
+import { buildLearnedPatternsSection } from "./learn/pattern-cache";
 import { dispatchMutableHook } from "./plugins/hooks";
 import { plugins } from "./plugins/registry";
 import {
@@ -200,7 +201,7 @@ const PYTHON_GUIDANCE = `
 
 **Chart guidance:** prefer \`_atlas_chart\` (interactive Recharts) for bar/line/pie charts. Use \`chart_path()\` only for advanced matplotlib visualizations that Recharts cannot render.`;
 
-function buildSystemPrompt(registry: ToolRegistry, orgSemanticIndex?: string): string {
+function buildSystemPrompt(registry: ToolRegistry, orgSemanticIndex?: string, learnedPatternsSection?: string): string {
   let base = SYSTEM_PROMPT_PREFIX + "\n\n" + registry.describe() + "\n\n" + SYSTEM_PROMPT_SUFFIX;
 
   // Add Python guidance only when the tool is available
@@ -216,6 +217,11 @@ function buildSystemPrompt(registry: ToolRegistry, orgSemanticIndex?: string): s
     if (semanticIndex) {
       base += "\n\n" + semanticIndex;
     }
+  }
+
+  // Append learned patterns (if any)
+  if (learnedPatternsSection) {
+    base += "\n\n" + learnedPatternsSection;
   }
 
   // Append plugin context fragments (if any)
@@ -274,8 +280,9 @@ export function buildSystemParam(
   registry: ToolRegistry = defaultRegistry,
   warnings?: string[],
   orgSemanticIndex?: string,
+  learnedPatternsSection?: string,
 ): string | SystemModelMessage {
-  let content = buildSystemPrompt(registry, orgSemanticIndex);
+  let content = buildSystemPrompt(registry, orgSemanticIndex, learnedPatternsSection);
 
   if (warnings && warnings.length > 0) {
     content += "\n\n## Warnings\n\n" + warnings.map((w) => `- ${w}`).join("\n");
@@ -481,23 +488,38 @@ export async function runAgent({
   const orgId = reqCtx?.user?.activeOrganizationId;
   const resolvedModelId = typeof model === "string" ? model : model.modelId;
 
-  // Pre-load org-scoped semantic data before the agent loop.
-  // The whitelist is loaded into the per-org cache so sql.ts can read it
-  // synchronously. The index is passed into buildSystemParam.
+  // Pre-load org-scoped semantic data and learned patterns before the agent loop.
+  // These are independent async operations — run in parallel to avoid waterfalls.
   let orgSemanticIndex: string | undefined;
-  if (orgId && hasInternalDB()) {
-    try {
-      const [, idx] = await Promise.all([
-        loadOrgWhitelist(orgId),
-        getOrgSemanticIndex(orgId),
-      ]);
-      orgSemanticIndex = idx || undefined;
-    } catch (err) {
-      log.error({ orgId, err: err instanceof Error ? err.message : String(err) }, "Failed to load org semantic data — agent will use file-based fallback");
-      if (!warnings) warnings = [];
-      warnings.push("Your organization's semantic layer could not be loaded. Using default configuration. Contact your admin if this persists.");
-    }
-  }
+  let learnedPatternsSection: string | undefined;
+
+  const orgSemanticPromise = (orgId && hasInternalDB())
+    ? Promise.all([loadOrgWhitelist(orgId), getOrgSemanticIndex(orgId)])
+        .then(([, idx]) => { orgSemanticIndex = idx || undefined; })
+        .catch((err: unknown) => {
+          log.error({ orgId, err: err instanceof Error ? err.message : String(err) }, "Failed to load org semantic data — agent will use file-based fallback");
+          if (!warnings) warnings = [];
+          warnings.push("Your organization's semantic layer could not be loaded. Using default configuration. Contact your admin if this persists.");
+        })
+    : Promise.resolve();
+
+  const learnedPatternsPromise = hasInternalDB()
+    ? (async () => {
+        const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
+        const question = lastUserMsg?.parts
+          ?.filter((p): p is { type: "text"; text: string } => p.type === "text")
+          .map((p) => p.text)
+          .join(" ") ?? "";
+        if (question) {
+          const section = await buildLearnedPatternsSection(orgId ?? null, question);
+          if (section) learnedPatternsSection = section;
+        }
+      })().catch((err: unknown) => {
+        log.warn({ orgId, err: err instanceof Error ? err.message : String(err) }, "Failed to load learned patterns — continuing without");
+      })
+    : Promise.resolve();
+
+  await Promise.all([orgSemanticPromise, learnedPatternsPromise]);
 
   const span = tracer.startSpan("atlas.agent", {
     attributes: {
@@ -527,7 +549,7 @@ export async function runAgent({
   try {
     result = otelContext.with(agentCtx, () => streamText({
       model,
-      system: buildSystemParam(providerType, toolRegistry, warnings, orgSemanticIndex),
+      system: buildSystemParam(providerType, toolRegistry, warnings, orgSemanticIndex, learnedPatternsSection),
       messages: modelMessages,
       tools,
       temperature: 0.2,

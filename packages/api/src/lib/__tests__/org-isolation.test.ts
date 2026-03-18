@@ -65,6 +65,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   encryptUrl: (u: string) => u,
   decryptUrl: (u: string) => u,
   isPlaintextUrl: () => true,
+  getApprovedPatterns: async () => [],
 }));
 
 mock.module("@atlas/api/lib/config", () => ({

@@ -10,6 +10,7 @@ import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { LEARNED_PATTERN_STATUSES, type LearnedPattern } from "@useatlas/types";
 import { adminAuthPreamble } from "./admin-auth";
+import { invalidatePatternCache } from "@atlas/api/lib/learn/pattern-cache";
 
 const log = createLogger("admin-learned-patterns");
 
@@ -373,6 +374,8 @@ adminLearnedPatterns.delete("/:id", async (c) => {
         `DELETE FROM learned_patterns WHERE id = $1 AND ${deleteOrg.clause}`,
         deleteParams,
       );
+
+      invalidatePatternCache(orgId ?? null);
 
       return c.json({ deleted: true });
     } catch (err) {

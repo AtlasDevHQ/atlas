@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useRef, useEffect, useCallback } from "react";
+import { Suspense, useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import { useQueryStates } from "nuqs";
@@ -14,6 +14,20 @@ import { AUTH_MODES, type AuthMode } from "@/ui/lib/types";
 import { Button } from "@/components/ui/button";
 
 export default function NotebookPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex h-screen items-center justify-center">
+          <p className="text-sm text-zinc-500">Loading notebook...</p>
+        </div>
+      }
+    >
+      <NotebookContent />
+    </Suspense>
+  );
+}
+
+function NotebookContent() {
   const [params, setParams] = useQueryStates(notebookSearchParams);
   const conversationId = params.id || undefined;
   const focusCellId = params.cell || undefined;

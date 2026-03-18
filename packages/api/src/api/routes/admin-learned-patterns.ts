@@ -14,7 +14,7 @@ import {
   getClientIP,
 } from "@atlas/api/lib/auth/middleware";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
-import type { LearnedPattern } from "@useatlas/types";
+import { LEARNED_PATTERN_STATUSES, type LearnedPattern } from "@useatlas/types";
 
 const log = createLogger("admin-learned-patterns");
 
@@ -82,9 +82,16 @@ function toLearnedPattern(row: Record<string, unknown>): LearnedPattern {
     description: (row.description as string) ?? null,
     sourceEntity: (row.source_entity as string) ?? null,
     sourceQueries: row.source_queries
-      ? ((typeof row.source_queries === "string"
-          ? JSON.parse(row.source_queries)
-          : row.source_queries) as string[])
+      ? (() => {
+          try {
+            return (typeof row.source_queries === "string"
+              ? JSON.parse(row.source_queries)
+              : row.source_queries) as string[];
+          } catch {
+            log.warn({ rowId: row.id }, "Corrupt source_queries JSON in learned_patterns row — returning null");
+            return null;
+          }
+        })()
       : null,
     confidence: row.confidence as number,
     repetitionCount: row.repetition_count as number,
@@ -109,7 +116,7 @@ function orgFilter(
   return { clause: `org_id IS NULL`, nextIdx: paramIdx };
 }
 
-const VALID_STATUSES = new Set(["pending", "approved", "rejected"]);
+const VALID_STATUSES = new Set<string>(LEARNED_PATTERN_STATUSES);
 const BULK_STATUSES = new Set(["approved", "rejected"]);
 
 // ---------------------------------------------------------------------------
@@ -284,9 +291,21 @@ adminLearnedPatterns.patch("/:id", async (c) => {
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     try {
       const id = c.req.param("id");
-      const body = (await req.json()) as Record<string, unknown>;
+
+      let body: Record<string, unknown>;
+      try {
+        body = await c.req.json();
+      } catch (err) {
+        log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body");
+        return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
+      }
+
       const description = body.description as string | undefined;
       const status = body.status as string | undefined;
+
+      if (description === undefined && status === undefined) {
+        return c.json({ error: "bad_request", message: "No recognized fields to update. Supported: description, status." }, 400);
+      }
 
       if (status !== undefined && !VALID_STATUSES.has(status)) {
         return c.json({ error: "bad_request", message: `Invalid status. Must be one of: ${[...VALID_STATUSES].join(", ")}` }, 400);
@@ -338,6 +357,9 @@ adminLearnedPatterns.patch("/:id", async (c) => {
         updateParams,
       );
 
+      if (updated.length === 0) {
+        return c.json({ error: "not_found", message: "Pattern was deleted before update completed." }, 404);
+      }
       return c.json(toLearnedPattern(updated[0]));
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to update learned pattern");
@@ -415,7 +437,14 @@ adminLearnedPatterns.post("/bulk", async (c) => {
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     try {
-      const body = (await req.json()) as Record<string, unknown>;
+      let body: Record<string, unknown>;
+      try {
+        body = await c.req.json();
+      } catch (err) {
+        log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body");
+        return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
+      }
+
       const ids = body.ids as string[] | undefined;
       const status = body.status as string | undefined;
 
@@ -449,9 +478,11 @@ adminLearnedPatterns.post("/bulk", async (c) => {
           continue;
         }
 
+        const updateParams: unknown[] = [status, authResult.user?.id ?? null, id];
+        const updateOrg = orgFilter(orgId, updateParams, updateParams.length + 1);
         await internalQuery(
-          `UPDATE learned_patterns SET status = $1, reviewed_by = $2, reviewed_at = now(), updated_at = now() WHERE id = $3`,
-          [status, authResult.user?.id ?? null, id],
+          `UPDATE learned_patterns SET status = $1, reviewed_by = $2, reviewed_at = now(), updated_at = now() WHERE id = $3 AND ${updateOrg.clause}`,
+          updateParams,
         );
 
         updated.push(id);

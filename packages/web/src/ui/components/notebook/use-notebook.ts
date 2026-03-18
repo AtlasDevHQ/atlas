@@ -148,7 +148,7 @@ export interface UseNotebookOptions {
     messages: UIMessage[];
     setMessages: (messages: UIMessage[]) => void;
     sendMessage: (opts: { text: string }) => Promise<void>;
-    status: "idle" | "streaming" | "submitted" | "error";
+    status: "ready" | "streaming" | "submitted" | "error";
     error: Error | null;
   };
   conversationId: string;
@@ -156,7 +156,7 @@ export interface UseNotebookOptions {
 
 export interface UseNotebookReturn {
   cells: ResolvedCell[];
-  status: "idle" | "streaming" | "submitted" | "error";
+  status: "ready" | "streaming" | "submitted" | "error";
   error: Error | null;
   appendCell: (question: string) => void;
   rerunCell: (cellId: string, newQuestion: string) => void;
@@ -212,7 +212,7 @@ export function useNotebook({ chat, conversationId }: UseNotebookOptions): UseNo
   // the old messages. Instead, store the question in a ref and fire sendMessage
   // in a subsequent effect once the truncated messages are committed and status is idle.
   useEffect(() => {
-    if (pendingRerun.current && chat.status === "idle") {
+    if (pendingRerun.current && chat.status === "ready") {
       const text = pendingRerun.current;
       pendingRerun.current = null;
       chat.sendMessage({ text }).catch((err: unknown) => {
@@ -232,11 +232,11 @@ export function useNotebook({ chat, conversationId }: UseNotebookOptions): UseNo
     const assistantMsg = nextMsg?.role === "assistant" ? nextMsg : null;
 
     const isLastCell = userIdx === chat.messages.length - 1 || (userIdx === chat.messages.length - 2 && !assistantMsg);
-    const isRunning = chat.status !== "idle" && !assistantMsg && isLastCell;
+    const isRunning = chat.status !== "ready" && !assistantMsg && isLastCell;
 
     return {
       ...cell,
-      userMessage: userMsg ?? { id: cell.messageId, role: "user" as const, parts: [], createdAt: new Date() },
+      userMessage: userMsg ?? { id: cell.messageId, role: "user" as const, parts: [] },
       assistantMessage: assistantMsg ?? null,
       status: isRunning ? "running" : cell.status,
     };

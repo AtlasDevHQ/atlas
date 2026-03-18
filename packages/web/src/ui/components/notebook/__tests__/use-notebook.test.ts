@@ -14,7 +14,7 @@ function makeMessage(id: string, role: "user" | "assistant"): UIMessage {
     id,
     role,
     parts: [{ type: "text", text: `${role} message ${id}` }],
-    createdAt: new Date(),
+
   };
 }
 
@@ -53,7 +53,7 @@ describe("buildCellsFromMessages", () => {
   test("skips non-user/assistant messages", () => {
     const messages = [
       makeMessage("s1", "user"),
-      { id: "sys", role: "system" as const, parts: [{ type: "text" as const, text: "system" }], createdAt: new Date() },
+      { id: "sys", role: "system" as const, parts: [{ type: "text" as const, text: "system" }] },
       makeMessage("a1", "assistant"),
     ];
     const cells = buildCellsFromMessages(messages as UIMessage[]);

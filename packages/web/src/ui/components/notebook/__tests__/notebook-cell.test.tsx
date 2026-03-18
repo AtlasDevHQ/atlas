@@ -8,7 +8,7 @@ function makeMessage(id: string, role: "user" | "assistant", text: string): UIMe
     id,
     role,
     parts: [{ type: "text", text }],
-    createdAt: new Date(),
+
   };
 }
 
@@ -41,7 +41,7 @@ describe("extractTextContent", () => {
         { type: "text", text: "line one" },
         { type: "text", text: "line two" },
       ],
-      createdAt: new Date(),
+  
     };
     expect(extractTextContent(msg)).toBe("line one\nline two");
   });
@@ -51,7 +51,7 @@ describe("extractTextContent", () => {
       id: "1",
       role: "assistant",
       parts: [],
-      createdAt: new Date(),
+  
     };
     expect(extractTextContent(msg)).toBe("");
   });
@@ -64,7 +64,7 @@ describe("extractTextContent", () => {
         { type: "text", text: "visible" },
         { type: "tool-invocation", toolInvocationId: "t1", toolName: "test", state: "call", args: {} } as unknown as UIMessage["parts"][number],
       ],
-      createdAt: new Date(),
+  
     };
     expect(extractTextContent(msg)).toBe("visible");
   });

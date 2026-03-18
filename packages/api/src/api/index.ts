@@ -115,6 +115,19 @@ app.route("/widget", widget);
 app.route("/widget.js", widgetLoader);
 app.route("/widget.d.ts", widgetTypesLoader);
 
+// Suggestions routes — user-facing query suggestions.
+try {
+  const { suggestions } = await import("./routes/suggestions");
+  app.route("/api/v1/suggestions", suggestions);
+  // Also register trailing-slash variant so ?table=orders and GET / both match.
+  app.route("/api/v1/suggestions/", suggestions);
+} catch (err) {
+  log.error(
+    { err: err instanceof Error ? err : new Error(String(err)) },
+    "Failed to load suggestions routes",
+  );
+}
+
 // Action routes — lazy import, only loaded if ATLAS_ACTIONS_ENABLED is set.
 if (process.env.ATLAS_ACTIONS_ENABLED === "true") {
   const { actions } = await import("./routes/actions");

@@ -39,8 +39,11 @@ export type {
   LearnedPattern,
   LearnedPatternStatus,
   LearnedPatternSource,
+  PromptCollection,
+  PromptItem,
+  PromptIndustry,
 } from "@useatlas/types";
-export { SHARE_EXPIRY_OPTIONS } from "@useatlas/types";
+export { SHARE_EXPIRY_OPTIONS, PROMPT_INDUSTRIES } from "@useatlas/types";
 export { parseChatError } from "@useatlas/types/errors";
 
 // --- Web-only types (not in @useatlas/types) ---

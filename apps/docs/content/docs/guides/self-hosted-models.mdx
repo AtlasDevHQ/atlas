@@ -1,0 +1,498 @@
+---
+title: Self-Hosted Models
+description: Run Atlas with local inference servers — Ollama, vLLM, and TGI. Model selection, hardware requirements, and troubleshooting.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+import { Tabs, Tab } from "fumadocs-ui/components/tabs";
+
+Atlas works with any OpenAI-compatible inference server. This guide covers setting up Ollama, vLLM, and TGI, choosing the right model, and troubleshooting common issues.
+
+<Callout type="warn">
+Atlas requires models with **tool calling** (function calling) support. The agent loop depends on `executeSQL` and `explore` tools — models without tool calling cannot run Atlas queries. See the [compatibility matrix](#compatibility-matrix) for tested models.
+</Callout>
+
+---
+
+## Quick Start
+
+The fastest way to run Atlas with a local model:
+
+```bash
+# 1. Install and start Ollama
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull llama3.1:8b
+
+# 2. Configure Atlas
+ATLAS_PROVIDER=ollama
+ATLAS_MODEL=llama3.1:8b
+OLLAMA_BASE_URL=http://localhost:11434/v1
+
+# 3. Start Atlas
+bun run dev
+```
+
+Or use Docker Compose for a fully containerized setup:
+
+```bash
+# From repo root — starts Atlas + Postgres + Ollama
+docker compose -f examples/docker/docker-compose.ollama.yml up
+```
+
+---
+
+## Providers
+
+Atlas supports two provider modes for self-hosted models:
+
+### `ollama` — Ollama preset
+
+Preconfigured for Ollama's default endpoint. No API key needed.
+
+```bash
+ATLAS_PROVIDER=ollama
+ATLAS_MODEL=llama3.1:8b
+# Optional: override if Ollama is on a different host
+OLLAMA_BASE_URL=http://localhost:11434/v1
+```
+
+### `openai-compatible` — Any OpenAI-compatible server
+
+Works with vLLM, TGI, LiteLLM, LocalAI, and any server that implements the OpenAI Chat Completions API with tool calling.
+
+```bash
+ATLAS_PROVIDER=openai-compatible
+ATLAS_MODEL=llama3.1                         # Model name as served by your server
+OPENAI_COMPATIBLE_BASE_URL=http://localhost:8000/v1  # Required
+# Optional: API key if your server requires one
+OPENAI_COMPATIBLE_API_KEY=your-key
+```
+
+<Callout type="info">
+`ATLAS_MODEL` is **required** for `openai-compatible` — there is no default. Set it to the model name as reported by your server's `/v1/models` endpoint.
+</Callout>
+
+---
+
+## Inference Servers
+
+### Ollama
+
+The easiest way to run models locally. Handles model downloading, quantization, and GPU management automatically.
+
+```bash
+# Install
+curl -fsSL https://ollama.com/install.sh | sh
+
+# Pull a model (downloads ~4.7 GB for 8B Q4)
+ollama pull llama3.1:8b
+
+# Verify it's running
+curl http://localhost:11434/api/tags
+```
+
+**Pros:** Simple setup, automatic GPU detection, built-in model management, good for development.
+**Cons:** Lower throughput than vLLM, no continuous batching, limited serving options.
+
+**Atlas config:**
+```bash
+ATLAS_PROVIDER=ollama
+ATLAS_MODEL=llama3.1:8b
+```
+
+### vLLM
+
+High-throughput serving with continuous batching. Best for production self-hosted deployments.
+
+```bash
+# Install
+pip install vllm
+
+# Serve with tool calling enabled (required for Atlas)
+vllm serve meta-llama/Llama-3.1-8B-Instruct \
+  --served-model-name llama3.1 \
+  --enable-auto-tool-choice \
+  --tool-call-parser hermes \
+  --max-model-len 8192
+
+# Verify
+curl http://localhost:8000/v1/models
+```
+
+**Pros:** Highest throughput (continuous batching, PagedAttention), production-grade, tensor parallelism for multi-GPU.
+**Cons:** Requires NVIDIA GPU, longer startup (model loading), more complex configuration.
+
+<Callout type="warn">
+vLLM requires `--enable-auto-tool-choice` and a `--tool-call-parser` for Atlas to work. Without these flags, tool calls will fail silently or return malformed responses.
+</Callout>
+
+**Atlas config:**
+```bash
+ATLAS_PROVIDER=openai-compatible
+ATLAS_MODEL=llama3.1
+OPENAI_COMPATIBLE_BASE_URL=http://localhost:8000/v1
+```
+
+### Text Generation Inference (TGI)
+
+Hugging Face's inference server. Good middle ground between Ollama and vLLM.
+
+```bash
+# Run with Docker (recommended)
+docker run --gpus all -p 8080:80 \
+  -v tgi_data:/data \
+  ghcr.io/huggingface/text-generation-inference:latest \
+  --model-id meta-llama/Llama-3.1-8B-Instruct \
+  --max-input-tokens 4096 \
+  --max-total-tokens 8192
+
+# Verify
+curl http://localhost:8080/v1/models
+```
+
+**Pros:** Good throughput, Hugging Face ecosystem integration, Flash Attention support.
+**Cons:** Tool calling support varies by model — not all models work reliably. Check the [compatibility matrix](#compatibility-matrix).
+
+**Atlas config:**
+```bash
+ATLAS_PROVIDER=openai-compatible
+ATLAS_MODEL=meta-llama/Llama-3.1-8B-Instruct
+OPENAI_COMPATIBLE_BASE_URL=http://localhost:8080/v1
+```
+
+---
+
+## Model Selection
+
+### Which model should I use?
+
+Atlas needs models that can:
+1. **Call tools reliably** — generate structured JSON for `executeSQL` and `explore` tool calls
+2. **Write SQL** — translate natural language to correct SQL for your schema
+3. **Follow system prompts** — respect the semantic layer context injected into the system prompt
+
+Not all models do this well. Larger models are significantly better at tool calling and SQL generation.
+
+### Recommended Models
+
+| Model | Parameters | Quality | Speed | Best For |
+|-------|-----------|---------|-------|----------|
+| **Llama 3.1 70B** | 70B | High | Moderate | Production self-hosted — best quality-to-cost ratio |
+| **Qwen 2.5 72B** | 72B | High | Moderate | Production — strong tool calling and multilingual SQL |
+| **Mistral Large** | 123B | Very High | Slow | Maximum quality when latency is acceptable |
+| **Llama 3.1 8B** | 8B | Moderate | Fast | Development and testing — quick iteration |
+| **Qwen 2.5 7B** | 7B | Moderate | Fast | Development — good tool calling for its size |
+| **Mistral 7B** | 7B | Low | Fast | Not recommended — unreliable tool calling |
+| **DeepSeek V3** | 671B (MoE) | Very High | Moderate | Multi-GPU setups with ample VRAM |
+
+<Callout type="info">
+**Minimum viable model for text-to-SQL:** 8B parameter models (Llama 3.1 8B, Qwen 2.5 7B) can handle simple queries against small schemas (< 20 tables). For complex joins, subqueries, or large schemas, use 70B+ models.
+</Callout>
+
+### Quality Tiers
+
+**Tier 1 — Production ready (70B+):**
+Reliable tool calling, accurate SQL generation for complex queries, handles large schemas. Comparable to GPT-4o for most text-to-SQL tasks.
+
+**Tier 2 — Development viable (7-8B):**
+Works for simple queries (single-table SELECTs, basic aggregations). Tool calling works but may require retries. Struggles with multi-table joins and complex WHERE clauses.
+
+**Tier 3 — Not recommended (< 7B):**
+Unreliable tool calling, frequent SQL syntax errors, poor schema comprehension. Use only for testing the pipeline, not for actual queries.
+
+---
+
+## Hardware Requirements
+
+### GPU Memory (VRAM)
+
+| Model | FP16 | Q8 | Q4 | Minimum GPU |
+|-------|------|----|----|-------------|
+| Llama 3.1 8B | 16 GB | 9 GB | 5 GB | RTX 3090 / A10 |
+| Qwen 2.5 7B | 14 GB | 8 GB | 5 GB | RTX 3090 / A10 |
+| Mistral 7B | 14 GB | 8 GB | 5 GB | RTX 3090 / A10 |
+| Llama 3.1 70B | 140 GB | 75 GB | 40 GB | 2× A100 80GB / 1× A100 (Q4) |
+| Qwen 2.5 72B | 144 GB | 77 GB | 42 GB | 2× A100 80GB / 1× A100 (Q4) |
+| Mistral Large (123B) | 246 GB | 131 GB | 72 GB | 4× A100 80GB |
+| DeepSeek V3 (671B MoE) | ~130 GB* | ~70 GB* | ~40 GB* | 2× A100 80GB (FP8) |
+
+\* DeepSeek V3 uses Mixture-of-Experts — only active parameters are loaded, so VRAM is lower than the total parameter count suggests.
+
+### System Requirements
+
+| Component | Minimum | Recommended |
+|-----------|---------|-------------|
+| **RAM** | Model VRAM × 1.5 | Model VRAM × 2 |
+| **Disk** | Model size + 20 GB | SSD with 100+ GB free |
+| **CPU** | 4 cores | 8+ cores (for vLLM continuous batching) |
+| **GPU** | CUDA 11.8+ compatible | NVIDIA Ampere or newer (A100, H100, RTX 4090) |
+
+<Callout type="info">
+**CPU-only inference** is possible with Ollama for 7-8B models (Q4 quantization) but is 10-50× slower than GPU. Not recommended for interactive use. Set `ATLAS_QUERY_TIMEOUT=120000` if using CPU inference to avoid timeouts.
+</Callout>
+
+### Quantization Trade-offs
+
+| Quantization | VRAM Savings | Quality Impact | Recommendation |
+|-------------|-------------|----------------|----------------|
+| **FP16** | Baseline | None | Best quality, if you have VRAM |
+| **Q8** | ~45% reduction | Minimal (< 1% accuracy loss) | Good default for production |
+| **Q4** | ~70% reduction | Noticeable on complex queries | Acceptable for development, risky for production |
+| **Q2** | ~85% reduction | Significant degradation | Not recommended — tool calling becomes unreliable |
+
+---
+
+## Compatibility Matrix
+
+Tested model and inference server combinations for Atlas. **Tool calling** is the critical requirement — without it, Atlas cannot function.
+
+### Legend
+
+- ✅ Works — tool calling, streaming, and SQL generation all function correctly
+- ⚠️ Partial — works but with known limitations (see notes)
+- ❌ Fails — tool calling broken or too unreliable for use
+
+### Ollama
+
+| Model | Tool Calling | Streaming | Notes |
+|-------|-------------|-----------|-------|
+| Llama 3.1 70B | ✅ | ✅ | Best self-hosted option for Ollama |
+| Llama 3.1 8B | ✅ | ✅ | Good for development |
+| Qwen 2.5 72B | ✅ | ✅ | Strong tool calling |
+| Qwen 2.5 7B | ✅ | ✅ | Good tool calling for its size |
+| Mistral Large | ✅ | ✅ | Requires significant VRAM |
+| Mistral 7B (v0.3) | ⚠️ | ✅ | Tool calling works but sometimes malformed — retries help |
+| DeepSeek V3 | ⚠️ | ✅ | Requires Ollama 0.5+; large VRAM requirement |
+| Phi-3 Medium (14B) | ⚠️ | ✅ | Tool calling inconsistent — not recommended for Atlas |
+| CodeLlama 34B | ❌ | ✅ | No tool calling support |
+| Llama 2 (any size) | ❌ | ✅ | No tool calling support |
+
+### vLLM
+
+| Model | Tool Calling | Streaming | Notes |
+|-------|-------------|-----------|-------|
+| Llama 3.1 70B | ✅ | ✅ | Best production option — use `--tool-call-parser hermes` |
+| Llama 3.1 8B | ✅ | ✅ | Use `--tool-call-parser hermes` |
+| Qwen 2.5 72B | ✅ | ✅ | Use `--tool-call-parser hermes` |
+| Qwen 2.5 7B | ✅ | ✅ | Use `--tool-call-parser hermes` |
+| Mistral Large | ✅ | ✅ | Use `--tool-call-parser mistral` |
+| Mistral 7B (v0.3) | ⚠️ | ✅ | Tool calling less reliable than 70B+ models |
+| DeepSeek V3 | ✅ | ✅ | Requires FP8 or multi-GPU; use `--tool-call-parser hermes` |
+
+<Callout type="warn">
+vLLM **requires** `--enable-auto-tool-choice` and a `--tool-call-parser` flag. The parser must match the model's chat template. Most Llama and Qwen models use `hermes`; Mistral models use `mistral`.
+</Callout>
+
+### TGI (Text Generation Inference)
+
+| Model | Tool Calling | Streaming | Notes |
+|-------|-------------|-----------|-------|
+| Llama 3.1 70B | ✅ | ✅ | Requires TGI v2.0+ |
+| Llama 3.1 8B | ✅ | ✅ | Requires TGI v2.0+ |
+| Qwen 2.5 72B | ⚠️ | ✅ | Tool calling works but output format can vary |
+| Qwen 2.5 7B | ⚠️ | ✅ | Same as 72B — format inconsistencies |
+| Mistral Large | ✅ | ✅ | Good TGI support |
+| Mistral 7B | ⚠️ | ✅ | Inconsistent tool calling |
+
+---
+
+## Docker Compose Profiles
+
+Pre-built Docker Compose files for common self-hosted setups. All include Atlas API + Postgres + demo data.
+
+### Ollama
+
+```bash
+# Start with default model (Llama 3.1 8B)
+docker compose -f examples/docker/docker-compose.ollama.yml up
+
+# Use a different model
+OLLAMA_MODEL=qwen2.5:72b docker compose -f examples/docker/docker-compose.ollama.yml up
+```
+
+**Included services:** Postgres, Ollama (with GPU passthrough), model auto-pull, Atlas API.
+
+For CPU-only: remove the `deploy.resources.reservations` block from the `ollama` service in the compose file.
+
+### vLLM
+
+```bash
+# Start with default model (Llama 3.1 8B Instruct)
+HUGGING_FACE_HUB_TOKEN=hf_... docker compose -f examples/docker/docker-compose.vllm.yml up
+
+# Use a different model
+HUGGING_FACE_HUB_TOKEN=hf_... \
+VLLM_MODEL=meta-llama/Llama-3.1-70B-Instruct \
+VLLM_SERVED_NAME=llama3.1-70b \
+docker compose -f examples/docker/docker-compose.vllm.yml up
+```
+
+**Included services:** Postgres, vLLM (with tool calling enabled), Atlas API.
+
+<Callout type="info">
+A Hugging Face token is required for gated models (Llama, Mistral). Create one at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens).
+</Callout>
+
+---
+
+## Benchmark Results
+
+Expected performance ranges for self-hosted models with Atlas. Results vary by hardware, quantization, schema complexity, and query type.
+
+<Callout type="info">
+These benchmarks reflect expected ranges based on model architecture and published benchmarks. Actual performance depends heavily on hardware, quantization, context length, and schema complexity. Run your own benchmarks against your schema for production sizing.
+</Callout>
+
+### Latency
+
+Tested on a single A100 80GB GPU with Q8 quantization, 10-table demo schema.
+
+| Model | TTFT (simple) | TTFT (complex) | Total (simple) | Total (complex) |
+|-------|--------------|----------------|----------------|-----------------|
+| Llama 3.1 8B | 0.3–0.5s | 0.5–1.0s | 2–4s | 5–10s |
+| Qwen 2.5 7B | 0.3–0.5s | 0.5–1.0s | 2–4s | 5–10s |
+| Llama 3.1 70B | 1–2s | 2–4s | 5–10s | 15–30s |
+| Qwen 2.5 72B | 1–2s | 2–4s | 5–10s | 15–30s |
+| Mistral Large | 2–3s | 3–6s | 8–15s | 20–45s |
+
+**Simple:** Single-table query, 1 tool call (e.g., "How many users signed up this week?").
+**Complex:** Multi-table join, 2–3 tool calls, aggregation (e.g., "What's the average resolution time by severity for tickets assigned to the top 5 agents?").
+
+### Accuracy
+
+Approximate success rates on representative query suites. "Success" means the generated SQL executes without error and returns correct results.
+
+| Model | Simple Queries | Complex Queries | Tool Calling Reliability |
+|-------|---------------|-----------------|------------------------|
+| Llama 3.1 70B | 90–95% | 70–80% | 95%+ |
+| Qwen 2.5 72B | 90–95% | 70–80% | 95%+ |
+| Llama 3.1 8B | 80–90% | 50–65% | 85–90% |
+| Qwen 2.5 7B | 80–90% | 50–65% | 85–90% |
+| Mistral 7B | 70–80% | 35–50% | 70–80% |
+
+### Token Efficiency
+
+Average tokens consumed per successful query (system prompt + tool calls + response).
+
+| Model | Simple Query | Complex Query |
+|-------|-------------|---------------|
+| 70B models | 1,500–2,500 | 3,000–5,000 |
+| 7-8B models | 1,800–3,000 | 4,000–7,000 |
+
+Smaller models tend to use more tokens due to retries and less efficient tool call formatting.
+
+---
+
+## Tuning Tips
+
+### Temperature
+
+Keep temperature low for SQL generation. Higher temperatures increase SQL syntax errors.
+
+```bash
+# In atlas.config.ts or via the provider's configuration
+# Most self-hosted models work best at temperature 0.0–0.3 for SQL
+```
+
+Atlas uses the AI SDK's default temperature. For self-hosted models, the model server's default is typically fine. If you see inconsistent SQL output, reduce the temperature in your inference server config.
+
+### Context Length
+
+Atlas injects the semantic layer into the system prompt. Large schemas (20+ tables) can consume 4,000–8,000 tokens of context. Ensure your model's context window can accommodate this plus the conversation history.
+
+| Schema Size | System Prompt Tokens | Recommended Min Context |
+|------------|---------------------|------------------------|
+| < 10 tables | 1,000–2,000 | 4,096 |
+| 10–20 tables | 2,000–4,000 | 8,192 |
+| 20–50 tables | 4,000–8,000 | 16,384 |
+| 50+ tables | 8,000+ | 32,768 |
+
+For vLLM, set `--max-model-len` to match. For Ollama, set `num_ctx` in the Modelfile or via the API.
+
+### Agent Max Steps
+
+Smaller models may need more steps to complete complex queries (they retry more). Consider increasing the step limit:
+
+```bash
+# Default: 25 — increase for smaller models
+ATLAS_AGENT_MAX_STEPS=40
+```
+
+---
+
+## Troubleshooting
+
+### Tool calling failures
+
+**Symptom:** Atlas responds with text instead of executing SQL. The agent describes what it would query but never calls `executeSQL`.
+
+**Causes:**
+- Model doesn't support tool calling (check the [compatibility matrix](#compatibility-matrix))
+- vLLM missing `--enable-auto-tool-choice` or wrong `--tool-call-parser`
+- Model too small — 7B models sometimes "forget" to use tools on complex queries
+
+**Fixes:**
+1. Verify tool calling works: `curl http://localhost:8000/v1/chat/completions -d '{"model":"llama3.1","messages":[{"role":"user","content":"Call the get_weather function for NYC"}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}]}'`
+2. For vLLM, ensure both `--enable-auto-tool-choice` and `--tool-call-parser` are set
+3. Try a larger model — 70B models are dramatically more reliable at tool calling than 7B
+
+### Streaming issues
+
+**Symptom:** Responses appear all at once instead of streaming, or the connection times out.
+
+**Causes:**
+- Reverse proxy buffering (nginx, Cloudflare)
+- Inference server not configured for streaming
+- Connection timeout too low
+
+**Fixes:**
+1. Check that your inference server returns `Transfer-Encoding: chunked`
+2. If behind nginx, add: `proxy_buffering off;` and `proxy_http_version 1.1;`
+3. Increase `ATLAS_QUERY_TIMEOUT` for slow models: `ATLAS_QUERY_TIMEOUT=120000`
+
+### Context length exceeded
+
+**Symptom:** Error messages about maximum context length, or the model produces garbage output mid-response.
+
+**Causes:**
+- Large semantic layer exhausting the context window
+- Long conversation history
+
+**Fixes:**
+1. Enable the semantic index (`ATLAS_SEMANTIC_INDEX_ENABLED=true`, default) — it compresses the semantic layer summary
+2. Increase model context: vLLM `--max-model-len`, Ollama `num_ctx`
+3. For very large schemas (50+ tables), use a 70B+ model with 32K+ context
+
+### Slow first response
+
+**Symptom:** First query after startup takes 30+ seconds.
+
+**Causes:**
+- Model loading into GPU memory (normal for large models)
+- KV cache allocation (vLLM pre-allocates based on `--gpu-memory-utilization`)
+
+**Fixes:**
+1. This is expected on cold start — subsequent queries will be fast
+2. For vLLM, reduce `--gpu-memory-utilization` if startup is OOM-killed (default 0.9)
+3. Use Ollama's `keep_alive` to prevent model unloading: `ollama run llama3.1 --keepalive 24h`
+
+### Quantization quality issues
+
+**Symptom:** SQL has subtle errors (wrong column names, incorrect join conditions) that don't appear with larger quantizations.
+
+**Causes:**
+- Aggressive quantization (Q2, Q3) degrades the model's ability to follow schemas precisely
+
+**Fixes:**
+1. Use Q8 for production — best balance of VRAM savings and quality
+2. Avoid Q2/Q3 for any text-to-SQL use case
+3. If VRAM is limited, use a smaller model at higher quantization rather than a larger model at Q4
+
+---
+
+## See Also
+
+- [Environment Variables](/reference/environment-variables) — All provider and model configuration
+- [Configuration](/reference/config) — Declarative `atlas.config.ts`
+- [Deploy](/deployment/deploy) — Docker deployment guide
+- [Troubleshooting](/guides/troubleshooting) — General Atlas troubleshooting

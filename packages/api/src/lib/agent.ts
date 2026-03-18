@@ -300,6 +300,7 @@ export function buildSystemParam(
       };
     case "openai":
     case "ollama":
+    case "openai-compatible":
     case "gateway":
       return content;
     default: {
@@ -357,6 +358,7 @@ export function applyCacheControl(
     }
     case "openai":
     case "ollama":
+    case "openai-compatible":
     case "gateway":
       return messages;
     default: {

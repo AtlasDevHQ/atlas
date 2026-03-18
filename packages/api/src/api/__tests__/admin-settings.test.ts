@@ -158,7 +158,7 @@ const mockGetSettingsRegistry = mock(() => [
     label: "LLM Provider",
     description: "Provider",
     type: "select",
-    options: ["anthropic", "openai", "bedrock", "ollama", "gateway"],
+    options: ["anthropic", "openai", "bedrock", "ollama", "openai-compatible", "gateway"],
     default: "anthropic",
     envVar: "ATLAS_PROVIDER",
   },

@@ -94,6 +94,20 @@ describe("getProviderType", () => {
     expect(getProviderType()).toBe("bedrock");
   });
 
+  // --- OpenAI-compatible provider -------------------------------------------
+
+  test("returns 'openai-compatible' when ATLAS_PROVIDER=openai-compatible", () => {
+    process.env.ATLAS_PROVIDER = "openai-compatible";
+    process.env.ATLAS_MODEL = "llama3.1";
+    expect(getProviderType()).toBe("openai-compatible");
+  });
+
+  test("throws when openai-compatible is used without ATLAS_MODEL", () => {
+    process.env.ATLAS_PROVIDER = "openai-compatible";
+    delete process.env.ATLAS_MODEL;
+    expect(() => getProviderType()).toThrow("ATLAS_MODEL is required");
+  });
+
   // --- Vercel auto-detection ------------------------------------------------
 
   test("defaults to 'gateway' when VERCEL env var is set and no ATLAS_PROVIDER", () => {

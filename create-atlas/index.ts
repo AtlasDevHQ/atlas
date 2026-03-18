@@ -262,7 +262,7 @@ ${projectName}/
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| \`ATLAS_PROVIDER\` | Yes | LLM provider (\`anthropic\`, \`openai\`, \`bedrock\`, \`ollama\`, \`gateway\`) |
+| \`ATLAS_PROVIDER\` | Yes | LLM provider (\`anthropic\`, \`openai\`, \`bedrock\`, \`ollama\`, \`openai-compatible\`, \`gateway\`) |
 | Provider API key | Yes | e.g. \`ANTHROPIC_API_KEY=sk-ant-...\` |
 | \`ATLAS_DATASOURCE_URL\` | Yes | Analytics database connection string |
 | \`DATABASE_URL\` | No | Atlas internal Postgres (auth, audit). Auto-set on most platforms |

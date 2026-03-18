@@ -31,9 +31,11 @@ LLM provider and model configuration.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ATLAS_PROVIDER` | `anthropic` (`gateway` on Vercel) | LLM provider: `anthropic`, `openai`, `bedrock`, `ollama`, `gateway` |
-| `ATLAS_MODEL` | Provider default | Model ID override (e.g. `claude-sonnet-4-6`, `gpt-4o`) |
+| `ATLAS_PROVIDER` | `anthropic` (`gateway` on Vercel) | LLM provider: `anthropic`, `openai`, `bedrock`, `ollama`, `openai-compatible`, `gateway` |
+| `ATLAS_MODEL` | Provider default | Model ID override (e.g. `claude-sonnet-4-6`, `gpt-4o`). **Required** for `openai-compatible` (no default) |
 | `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Ollama server URL. Only used when `ATLAS_PROVIDER=ollama` |
+| `OPENAI_COMPATIBLE_BASE_URL` | — | Base URL for OpenAI-compatible servers (vLLM, TGI, LiteLLM). **Required** when `ATLAS_PROVIDER=openai-compatible` |
+| `OPENAI_COMPATIBLE_API_KEY` | `not-needed` | API key for OpenAI-compatible servers. Most local servers don't require one |
 
 Each provider requires its own API key:
 
@@ -43,6 +45,7 @@ Each provider requires its own API key:
 | `openai` | `OPENAI_API_KEY` |
 | `bedrock` | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` + `AWS_REGION` |
 | `ollama` | None (local) |
+| `openai-compatible` | `OPENAI_COMPATIBLE_API_KEY` (optional) |
 | `gateway` | `AI_GATEWAY_API_KEY` |
 
 **Default models per provider:**
@@ -53,9 +56,10 @@ Each provider requires its own API key:
 | `openai` | `gpt-4o` |
 | `bedrock` | `anthropic.claude-opus-4-6-v1:0` |
 | `ollama` | `llama3.1` |
+| `openai-compatible` | None — `ATLAS_MODEL` required |
 | `gateway` | `anthropic/claude-opus-4.6` |
 
-<Tabs items={["Anthropic", "OpenAI", "AWS Bedrock", "Ollama (local)"]}>
+<Tabs items={["Anthropic", "OpenAI", "AWS Bedrock", "Ollama (local)", "OpenAI-compatible (vLLM, TGI)"]}>
 <Tab value="Anthropic">
 ```bash
 # Anthropic (default provider)
@@ -90,6 +94,15 @@ ATLAS_PROVIDER=ollama
 OLLAMA_BASE_URL=http://localhost:11434/v1
 # Optional: override the default model
 # ATLAS_MODEL=llama3.1
+```
+</Tab>
+<Tab value="OpenAI-compatible (vLLM, TGI)">
+```bash
+# Any OpenAI-compatible server (vLLM, TGI, LiteLLM, LocalAI)
+ATLAS_PROVIDER=openai-compatible
+ATLAS_MODEL=llama3.1                           # Required — no default
+OPENAI_COMPATIBLE_BASE_URL=http://localhost:8000/v1  # Required
+# OPENAI_COMPATIBLE_API_KEY=...                # Optional — most local servers don't need one
 ```
 </Tab>
 </Tabs>

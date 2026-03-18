@@ -652,9 +652,14 @@ await pool.query(`
       score REAL NOT NULL DEFAULT 0,
       last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
+  // UNIQUE NULLS NOT DISTINCT treats NULL = NULL, so (NULL, hash) deduplicates correctly.
+  // Requires PostgreSQL 15+. Uses DO NOTHING on duplicate constraint to be idempotent.
+  await pool.query(`DO $$ BEGIN
+    ALTER TABLE query_suggestions ADD CONSTRAINT uq_query_suggestions_org_hash UNIQUE NULLS NOT DISTINCT (org_id, normalized_hash);
+  EXCEPTION WHEN duplicate_table THEN NULL; WHEN duplicate_object THEN NULL; END $$;`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_query_suggestions_org_table ON query_suggestions(org_id, primary_table);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_query_suggestions_org_score ON query_suggestions(org_id, score DESC);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_query_suggestions_tables ON query_suggestions USING GIN(tables_involved);`);
@@ -877,7 +882,7 @@ export async function upsertSuggestion(suggestion: {
     const rows = await internalQuery<{ id: string; created: boolean }>(
       `INSERT INTO query_suggestions (org_id, description, pattern_sql, normalized_hash, tables_involved, primary_table, frequency, score, last_seen_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       ON CONFLICT (org_id, normalized_hash) DO UPDATE SET
+       ON CONFLICT ON CONSTRAINT uq_query_suggestions_org_hash DO UPDATE SET
          frequency = EXCLUDED.frequency,
          score = EXCLUDED.score,
          last_seen_at = EXCLUDED.last_seen_at,
@@ -975,20 +980,15 @@ export async function deleteSuggestion(
   orgId: string | null
 ): Promise<boolean> {
   if (!hasInternalDB()) return false;
-  try {
-    const orgClause = orgId != null ? "org_id = $1" : "org_id IS NULL";
-    const params: unknown[] = orgId != null ? [orgId, id] : [id];
-    const idIdx = params.length;
+  const orgClause = orgId != null ? "org_id = $1" : "org_id IS NULL";
+  const params: unknown[] = orgId != null ? [orgId, id] : [id];
+  const idIdx = params.length;
 
-    const rows = await internalQuery<{ id: string }>(
-      `DELETE FROM query_suggestions WHERE ${orgClause} AND id = $${idIdx} RETURNING id`,
-      params
-    );
-    return rows.length > 0;
-  } catch (err) {
-    log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to delete suggestion");
-    return false;
-  }
+  const rows = await internalQuery<{ id: string }>(
+    `DELETE FROM query_suggestions WHERE ${orgClause} AND id = $${idIdx} RETURNING id`,
+    params
+  );
+  return rows.length > 0;
 }
 
 export async function getAuditLogQueries(

@@ -197,7 +197,7 @@ export function resolveRLSFilters(
  * If a table has no alias, it maps to the table name itself.
  */
 function extractTableAliasMap(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- node-sql-parser FROM entries have varying runtime shapes not fully captured by the From union type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- avoids narrowing boilerplate across the BaseFrom | Join | TableExpr | Dual union members
   from: any[],
   cteNames: Set<string>,
 ): Map<string, string> {

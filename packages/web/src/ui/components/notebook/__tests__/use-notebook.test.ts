@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   buildCellsFromMessages,
   loadNotebookState,
+  migrateNotebookStateKey,
   saveNotebookState,
   truncateMessagesForRerun,
 } from "../use-notebook";
@@ -138,5 +139,66 @@ describe("localStorage persistence", () => {
 
     const loaded = loadNotebookState("corrupt", mockStorage);
     expect(loaded).toBeNull();
+  });
+});
+
+describe("migrateNotebookStateKey", () => {
+  test("migrates state from temp key to real key", () => {
+    const state: NotebookState = {
+      conversationId: "temp:123",
+      cells: [
+        { id: "c1", messageId: "u1", number: 1, collapsed: false, editing: false, status: "idle" },
+      ],
+      version: 1,
+    };
+
+    const store: Record<string, string> = {};
+    const mockStorage = {
+      getItem: (key: string) => store[key] ?? null,
+      setItem: (key: string, value: string) => { store[key] = value; },
+      removeItem: (key: string) => { delete store[key]; },
+    } as Storage;
+
+    // Save under temp key
+    saveNotebookState(state, mockStorage);
+
+    // Migrate
+    migrateNotebookStateKey("temp:123", "real-uuid", mockStorage);
+
+    // Old key should be gone
+    expect(loadNotebookState("temp:123", mockStorage)).toBeNull();
+
+    // New key should have updated conversationId
+    const migrated = loadNotebookState("real-uuid", mockStorage);
+    expect(migrated).not.toBeNull();
+    expect(migrated!.conversationId).toBe("real-uuid");
+    expect(migrated!.cells).toHaveLength(1);
+  });
+
+  test("does nothing when temp key does not exist", () => {
+    const store: Record<string, string> = {};
+    const mockStorage = {
+      getItem: (key: string) => store[key] ?? null,
+      setItem: (key: string, value: string) => { store[key] = value; },
+      removeItem: (key: string) => { delete store[key]; },
+    } as Storage;
+
+    // Should not throw
+    migrateNotebookStateKey("temp:missing", "real-uuid", mockStorage);
+
+    // Real key should not exist
+    expect(loadNotebookState("real-uuid", mockStorage)).toBeNull();
+  });
+
+  test("handles corrupt JSON gracefully", () => {
+    const store: Record<string, string> = { "atlas:notebook:temp:bad": "not{json" };
+    const mockStorage = {
+      getItem: (key: string) => store[key] ?? null,
+      setItem: (key: string, value: string) => { store[key] = value; },
+      removeItem: (key: string) => { delete store[key]; },
+    } as Storage;
+
+    // Should not throw
+    migrateNotebookStateKey("temp:bad", "real-uuid", mockStorage);
   });
 });

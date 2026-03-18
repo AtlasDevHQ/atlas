@@ -46,6 +46,16 @@ describe("extractTextContent", () => {
     expect(extractTextContent(msg)).toBe("line one\nline two");
   });
 
+  test("returns empty string when message has no text parts", () => {
+    const msg: UIMessage = {
+      id: "1",
+      role: "assistant",
+      parts: [],
+      createdAt: new Date(),
+    };
+    expect(extractTextContent(msg)).toBe("");
+  });
+
   test("skips non-text parts", () => {
     const msg: UIMessage = {
       id: "1",

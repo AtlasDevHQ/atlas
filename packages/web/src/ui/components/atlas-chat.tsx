@@ -265,6 +265,45 @@ export function AtlasChat() {
     return () => { cancelled = true; };
   }, [messages.length]);
 
+  // Fetch related suggestions after a completed query with SQL results
+  useEffect(() => {
+    if (messages.length === 0 || isLoading) return;
+    const lastMsg = messages[messages.length - 1];
+    if (lastMsg.role !== "assistant") return;
+
+    // Extract tables from executeSQL tool invocations
+    const tables: string[] = [];
+    for (const part of lastMsg.parts ?? []) {
+      if (part.type === "tool-invocation" && part.toolName === "executeSQL" && part.state === "result") {
+        const result = part.result as Record<string, unknown> | undefined;
+        if (result && Array.isArray(result.tablesAccessed)) {
+          tables.push(...(result.tablesAccessed as string[]));
+        }
+      }
+    }
+
+    if (tables.length === 0) {
+      setRelatedSuggestions([]);
+      return;
+    }
+
+    const uniqueTables = [...new Set(tables)];
+    const params = uniqueTables.map((t) => `table=${encodeURIComponent(t)}`).join("&");
+
+    let cancelled = false;
+    fetch(`/api/v1/suggestions?${params}&limit=3`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled && data?.suggestions) {
+          setRelatedSuggestions(data.suggestions);
+        }
+      })
+      .catch(() => {
+        // intentionally ignored: suggestions are non-critical
+      });
+    return () => { cancelled = true; };
+  }, [messages, isLoading]);
+
   const handleSaveApiKey = useCallback((key: string) => {
     setApiKey(key);
     try {
@@ -622,6 +661,13 @@ export function AtlasChat() {
                               suggestions={suggestions}
                               onSelect={handleSend}
                             />
+                            {relatedSuggestions.length > 0 && (
+                              <SuggestionChips
+                                suggestions={relatedSuggestions}
+                                onSelect={handleSuggestionSelect}
+                                label="Related queries"
+                              />
+                            )}
                             {conversationId && convos.available && (
                               <div className="flex items-center gap-1">
                                 <SaveButton

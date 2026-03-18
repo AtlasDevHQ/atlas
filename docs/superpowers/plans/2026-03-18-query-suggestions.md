@@ -24,6 +24,7 @@
 | `packages/api/src/api/routes/admin-suggestions.ts` | Create | Admin GET/DELETE endpoints |
 | `packages/api/src/api/routes/admin.ts` | Edit (line 53) | Mount admin-suggestions sub-router |
 | `packages/api/src/api/index.ts` | Edit (line 114) | Mount user-facing suggestions route |
+| `packages/api/src/lib/learn/suggestion-helpers.ts` | Create | Shared `toQuerySuggestion` row-to-type converter |
 | `packages/cli/bin/atlas.ts` | Edit (line 4020) | Add `--suggestions` flag to `handleLearn` |
 | `packages/web/src/ui/components/chat/suggestion-chips.tsx` | Create | Reusable clickable chip component |
 | `packages/web/src/ui/components/atlas-chat.tsx` | Edit (line 469) | Empty state popular suggestions |
@@ -33,7 +34,16 @@
 | `packages/api/src/api/__tests__/suggestions.test.ts` | Create | API route tests |
 | `apps/docs/content/docs/reference/cli.mdx` | Edit | Document `--suggestions` flag |
 | `apps/docs/content/docs/guides/admin-console.mdx` | Edit | Document admin suggestions endpoints |
-| `.claude/research/ROADMAP.md` | Edit | Mark #591 complete |
+
+**Key API patterns (referenced throughout):**
+- Auth import: `import { authenticateRequest, checkRateLimit, getClientIP } from "@atlas/api/lib/auth/middleware"`
+- Logger import: `import { createLogger, withRequestContext } from "@atlas/api/lib/logger"`
+- Admin auth: `import { adminAuthPreamble } from "./admin-auth"` (relative)
+- Auth check: `if (!authResult.authenticated)` (not `"error" in authResult`)
+- Org ID: `authResult.user?.activeOrganizationId` (not `organizationId`)
+- `authenticateRequest(req)` takes one arg (no requestId)
+- `internalQuery<T>()` returns `T[]` directly (not `{ rows: T[] }`)
+- `internalExecute()` returns `void` (fire-and-forget) — use `internalQuery` with `RETURNING` for sequential ops
 
 ---
 
@@ -151,6 +161,8 @@ export interface QuerySuggestionRow {
 
 - [ ] **Step 3: Add `upsertSuggestion` helper**
 
+**Important:** `internalExecute` is fire-and-forget (returns `void`, not a Promise). For the batch job we need sequential execution, so use `internalQuery` which is async and returns results.
+
 ```typescript
 export async function upsertSuggestion(suggestion: {
   orgId: string | null;
@@ -162,17 +174,18 @@ export async function upsertSuggestion(suggestion: {
   frequency: number;
   score: number;
   lastSeenAt: Date;
-}): Promise<void> {
-  if (!hasInternalDB()) return;
+}): Promise<"created" | "updated" | "skipped"> {
+  if (!hasInternalDB()) return "skipped";
   try {
-    await internalExecute(
+    const rows = await internalQuery<{ id: string; created: boolean }>(
       `INSERT INTO query_suggestions (org_id, description, pattern_sql, normalized_hash, tables_involved, primary_table, frequency, score, last_seen_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT (org_id, normalized_hash) DO UPDATE SET
          frequency = EXCLUDED.frequency,
          score = EXCLUDED.score,
          last_seen_at = EXCLUDED.last_seen_at,
-         updated_at = NOW()`,
+         updated_at = NOW()
+       RETURNING id, (xmax = 0) AS created`,
       [
         suggestion.orgId,
         suggestion.description,
@@ -185,13 +198,17 @@ export async function upsertSuggestion(suggestion: {
         suggestion.lastSeenAt.toISOString(),
       ]
     );
+    return rows[0]?.created ? "created" : "updated";
   } catch (err) {
     log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to upsert suggestion");
+    return "skipped";
   }
 }
 ```
 
 - [ ] **Step 4: Add `getSuggestionsByTables` helper**
+
+**Note:** `internalQuery<T>()` returns `T[]` directly, not `{ rows: T[] }`.
 
 ```typescript
 export async function getSuggestionsByTables(
@@ -217,11 +234,10 @@ export async function getSuggestionsByTables(
     params.push(limit);
     const limitIdx = params.length;
 
-    const result = await internalQuery<QuerySuggestionRow>(
+    return await internalQuery<QuerySuggestionRow>(
       `SELECT * FROM query_suggestions WHERE ${orgClause} AND ${tableClause} ORDER BY score DESC LIMIT $${limitIdx}`,
       params
     );
-    return result?.rows ?? [];
   } catch (err) {
     log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to get suggestions by tables");
     return [];
@@ -242,11 +258,10 @@ export async function getPopularSuggestions(
     const params: unknown[] = orgId != null ? [orgId, limit] : [limit];
     const limitIdx = params.length;
 
-    const result = await internalQuery<QuerySuggestionRow>(
+    return await internalQuery<QuerySuggestionRow>(
       `SELECT * FROM query_suggestions WHERE ${orgClause} ORDER BY score DESC LIMIT $${limitIdx}`,
       params
     );
-    return result?.rows ?? [];
   } catch (err) {
     log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to get popular suggestions");
     return [];
@@ -279,6 +294,8 @@ export async function incrementSuggestionClick(
 
 - [ ] **Step 7: Add `deleteSuggestion` helper**
 
+**Note:** Use `internalQuery` with `RETURNING id` since `internalExecute` returns `void`.
+
 ```typescript
 export async function deleteSuggestion(
   id: string,
@@ -290,11 +307,11 @@ export async function deleteSuggestion(
     const params: unknown[] = orgId != null ? [orgId, id] : [id];
     const idIdx = params.length;
 
-    const result = await internalExecute(
-      `DELETE FROM query_suggestions WHERE ${orgClause} AND id = $${idIdx}`,
+    const rows = await internalQuery<{ id: string }>(
+      `DELETE FROM query_suggestions WHERE ${orgClause} AND id = $${idIdx} RETURNING id`,
       params
     );
-    return (result?.rowCount ?? 0) > 0;
+    return rows.length > 0;
   } catch (err) {
     log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to delete suggestion");
     return false;
@@ -315,11 +332,10 @@ export async function getAuditLogQueries(
     const params: unknown[] = orgId != null ? [orgId, limit] : [limit];
     const limitIdx = params.length;
 
-    const result = await internalQuery<{ sql: string; tables_accessed: string | null; timestamp: string }>(
+    return await internalQuery<{ sql: string; tables_accessed: string | null; timestamp: string }>(
       `SELECT sql, tables_accessed, timestamp FROM audit_log WHERE ${orgClause} AND success = true AND sql IS NOT NULL ORDER BY timestamp DESC LIMIT $${limitIdx}`,
       params
     );
-    return result?.rows ?? [];
   } catch (err) {
     log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to get audit log queries");
     return [];
@@ -422,7 +438,7 @@ describe("_groupAuditRows", () => {
     ];
     const groups = _groupAuditRows(rows);
     // First two normalize to same template (literals replaced), so 2 groups total
-    expect(groups.size).toBeLessThanOrEqual(2);
+    expect(groups.size).toBe(2);
   });
 
   test("tracks max timestamp per group", () => {
@@ -565,7 +581,7 @@ export async function generateSuggestions(
 
   for (const pattern of filtered) {
     const score = scoreSuggestion(pattern.count, pattern.lastSeen);
-    await upsertSuggestion({
+    const result = await upsertSuggestion({
       orgId,
       description: pattern.description,
       patternSql: pattern.normalizedSql,
@@ -576,16 +592,8 @@ export async function generateSuggestions(
       score,
       lastSeenAt: pattern.lastSeen,
     });
-    // We cannot easily distinguish insert vs update from the upsert,
-    // so count all as "updated" for simplicity. The first run will
-    // create all, subsequent runs update.
-    updated++;
-  }
-
-  // On first run, treat all as created
-  if (created === 0 && updated > 0) {
-    created = updated;
-    updated = 0;
+    if (result === "created") created++;
+    else if (result === "updated") updated++;
   }
 
   log.info({ orgId, created, updated, total: filtered.length }, "Suggestion generation complete");
@@ -658,49 +666,63 @@ git commit -m "feat(cli): add --suggestions flag to atlas learn (#591)"
 - Modify: `packages/api/src/api/index.ts` (line 114)
 - Test: `packages/api/src/api/__tests__/suggestions.test.ts`
 
-**Context:** Follow the auth pattern from existing routes. User-facing (not admin) — use `authenticateRequest` from `@atlas/api/lib/auth`. Look at `packages/api/src/api/routes/admin-learned-patterns.ts` lines 21-49 for the row-to-type converter pattern.
+**Context:** Follow the auth pattern from existing routes (e.g. `conversations.ts`). User-facing — use `authenticateRequest` from `@atlas/api/lib/auth/middleware`. Auth check: `!authResult.authenticated`. Org ID: `authResult.user?.activeOrganizationId`. The `toQuerySuggestion` converter lives in a shared helper file.
 
 - [ ] **Step 1: Write the API test file skeleton**
+
+**Critical:** Mock ALL named exports from each module. Check actual exports in the source files and include every one. The mock for `@atlas/api/lib/auth/middleware` must include `authenticateRequest`, `checkRateLimit`, `getClientIP`, and any other exports. The mock for `@atlas/api/lib/db/internal` must include ALL exports (query helpers, encryption, migration, pool reset, circuit breaker, etc.).
 
 ```typescript
 // packages/api/src/api/__tests__/suggestions.test.ts
 import { describe, test, expect, mock, beforeEach } from "bun:test";
 
-// Mock internal DB before imports
-const mockInternalQuery = mock(() => Promise.resolve({ rows: [], rowCount: 0 }));
-const mockInternalExecute = mock(() => Promise.resolve({ rows: [], rowCount: 0 }));
-const mockHasInternalDB = mock(() => true);
+// Mock internal DB — must list ALL exports from internal.ts
+const mockGetSuggestionsByTables = mock(() => Promise.resolve([]));
+const mockGetPopularSuggestions = mock(() => Promise.resolve([]));
+const mockIncrementSuggestionClick = mock(() => Promise.resolve());
 
 mock.module("@atlas/api/lib/db/internal", () => ({
-  internalQuery: mockInternalQuery,
-  internalExecute: mockInternalExecute,
-  hasInternalDB: mockHasInternalDB,
-  getSuggestionsByTables: mock(() => Promise.resolve([])),
-  getPopularSuggestions: mock(() => Promise.resolve([])),
-  incrementSuggestionClick: mock(() => Promise.resolve()),
-  // Include all other exports from internal.ts to avoid partial mock errors
+  internalQuery: mock(() => Promise.resolve([])),
+  internalExecute: mock(),
+  hasInternalDB: mock(() => true),
+  getInternalDB: mock(() => null),
+  closeInternalDB: mock(() => Promise.resolve()),
   migrateInternalDB: mock(() => Promise.resolve()),
+  getSuggestionsByTables: mockGetSuggestionsByTables,
+  getPopularSuggestions: mockGetPopularSuggestions,
+  incrementSuggestionClick: mockIncrementSuggestionClick,
+  deleteSuggestion: mock(() => Promise.resolve(false)),
+  getAuditLogQueries: mock(() => Promise.resolve([])),
+  upsertSuggestion: mock(() => Promise.resolve("created")),
   findPatternBySQL: mock(() => Promise.resolve(null)),
   insertLearnedPattern: mock(() => Promise.resolve()),
   incrementPatternCount: mock(() => Promise.resolve()),
   getApprovedPatterns: mock(() => Promise.resolve([])),
-  getAuditLogQueries: mock(() => Promise.resolve([])),
-  upsertSuggestion: mock(() => Promise.resolve()),
-  deleteSuggestion: mock(() => Promise.resolve(false)),
+  loadSavedConnections: mock(() => Promise.resolve([])),
+  getEncryptionKey: mock(() => Promise.resolve(null)),
+  _resetEncryptionKeyCache: mock(),
+  encryptUrl: mock((url: string) => url),
+  decryptUrl: mock((url: string) => url),
+  isPlaintextUrl: mock(() => true),
   _resetPool: mock(),
   _resetCircuitBreaker: mock(),
+  // Add any other exports found in internal.ts
 }));
 
-// Mock auth
-mock.module("@atlas/api/lib/auth", () => ({
+// Mock auth — from @atlas/api/lib/auth/middleware
+mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mock(() =>
-    Promise.resolve({ user: { id: "user-1", role: "member", organizationId: "org-1" } })
+    Promise.resolve({ authenticated: true, mode: "token", user: { id: "user-1", role: "member", activeOrganizationId: "org-1" } })
   ),
-  checkRateLimit: mock(() => Promise.resolve()),
+  checkRateLimit: mock(() => ({ allowed: true })),
+  getClientIP: mock(() => "127.0.0.1"),
 }));
 
-mock.module("@atlas/api/lib/log", () => ({
+// Mock logger
+mock.module("@atlas/api/lib/logger", () => ({
   log: { info: mock(), warn: mock(), error: mock(), debug: mock() },
+  createLogger: mock(() => ({ info: mock(), warn: mock(), error: mock(), debug: mock() })),
+  withRequestContext: mock((_ctx: unknown, fn: () => unknown) => fn()),
 }));
 
 // Import after mocks
@@ -718,8 +740,7 @@ function req(method: string, path: string, body?: unknown) {
 
 describe("GET /suggestions", () => {
   test("returns suggestions for given tables", async () => {
-    const { getSuggestionsByTables } = await import("@atlas/api/lib/db/internal");
-    (getSuggestionsByTables as ReturnType<typeof mock>).mockResolvedValueOnce([
+    mockGetSuggestionsByTables.mockResolvedValueOnce([
       {
         id: "s1",
         org_id: "org-1",
@@ -752,8 +773,7 @@ describe("GET /suggestions", () => {
 
 describe("GET /suggestions/popular", () => {
   test("returns popular suggestions", async () => {
-    const { getPopularSuggestions } = await import("@atlas/api/lib/db/internal");
-    (getPopularSuggestions as ReturnType<typeof mock>).mockResolvedValueOnce([]);
+    mockGetPopularSuggestions.mockResolvedValueOnce([]);
 
     const res = await suggestions.request(req("GET", "/popular"));
     expect(res.status).toBe(200);
@@ -770,29 +790,26 @@ describe("POST /suggestions/:id/click", () => {
 });
 ```
 
-**Note:** The mock list must include ALL named exports from `@atlas/api/lib/db/internal` to avoid `SyntaxError` in other files. Check the actual exports in `internal.ts` and add any missing ones.
-
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `bun test packages/api/src/api/__tests__/suggestions.test.ts`
 Expected: FAIL — route module not found
 
-- [ ] **Step 3: Implement the suggestions route**
+- [ ] **Step 2.5: Create shared `toQuerySuggestion` helper**
+
+Extract the row-to-type converter to avoid duplication between user and admin routes:
 
 ```typescript
-// packages/api/src/api/routes/suggestions.ts
-import { Hono } from "hono";
-import { authenticateRequest } from "@atlas/api/lib/auth";
-import { withRequestContext } from "@atlas/api/lib/context";
-import { hasInternalDB, getSuggestionsByTables, getPopularSuggestions, incrementSuggestionClick } from "@atlas/api/lib/db/internal";
-import { log } from "@atlas/api/lib/log";
+// packages/api/src/lib/learn/suggestion-helpers.ts
 import type { QuerySuggestion } from "@useatlas/types";
 import type { QuerySuggestionRow } from "@atlas/api/lib/db/internal";
 
-function toQuerySuggestion(row: QuerySuggestionRow): QuerySuggestion {
+export function toQuerySuggestion(row: QuerySuggestionRow): QuerySuggestion {
   let tablesInvolved: string[] = [];
   try {
-    tablesInvolved = typeof row.tables_involved === "string" ? JSON.parse(row.tables_involved) : row.tables_involved;
+    tablesInvolved = typeof row.tables_involved === "string"
+      ? JSON.parse(row.tables_involved)
+      : row.tables_involved;
   } catch {
     // intentionally ignored: malformed JSONB
   }
@@ -812,15 +829,38 @@ function toQuerySuggestion(row: QuerySuggestionRow): QuerySuggestion {
     updatedAt: row.updated_at,
   };
 }
+```
+
+- [ ] **Step 3: Implement the suggestions route**
+
+**Key patterns:** Import auth from `@atlas/api/lib/auth/middleware`. Import logger from `@atlas/api/lib/logger`. Auth check: `!authResult.authenticated`. Org ID: `authResult.user?.activeOrganizationId`. Apply `checkRateLimit` on all endpoints.
+
+```typescript
+// packages/api/src/api/routes/suggestions.ts
+import { Hono } from "hono";
+import { authenticateRequest, checkRateLimit, getClientIP } from "@atlas/api/lib/auth/middleware";
+import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
+import { hasInternalDB, getSuggestionsByTables, getPopularSuggestions, incrementSuggestionClick } from "@atlas/api/lib/db/internal";
+import { toQuerySuggestion } from "@atlas/api/lib/learn/suggestion-helpers";
+
+const log = createLogger("suggestions");
 
 export const suggestions = new Hono();
 
 // GET / — contextual suggestions by table
 suggestions.get("/", async (c) => {
   const requestId = crypto.randomUUID();
-  const authResult = await authenticateRequest(c.req.raw, requestId);
-  if ("error" in authResult) {
-    return c.json({ error: authResult.error }, { status: 401 });
+  const req = c.req.raw;
+  const authResult = await authenticateRequest(req);
+  if (!authResult.authenticated) {
+    return c.json({ error: authResult.error }, { status: authResult.status });
+  }
+
+  const ip = getClientIP(req);
+  const rateLimitKey = authResult.user?.id ?? (ip ? `ip:${ip}` : "anon");
+  const rateCheck = checkRateLimit(rateLimitKey);
+  if (!rateCheck.allowed) {
+    return c.json({ error: "Rate limit exceeded" }, { status: 429 });
   }
 
   if (!hasInternalDB()) {
@@ -834,7 +874,7 @@ suggestions.get("/", async (c) => {
 
   const limitParam = c.req.query("limit");
   const limit = Math.min(Math.max(parseInt(limitParam ?? "10", 10) || 10, 1), 50);
-  const orgId = authResult.user?.organizationId ?? null;
+  const orgId = authResult.user?.activeOrganizationId ?? null;
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     const rows = await getSuggestionsByTables(orgId, tables, limit);
@@ -845,9 +885,17 @@ suggestions.get("/", async (c) => {
 // GET /popular — top suggestions across all tables
 suggestions.get("/popular", async (c) => {
   const requestId = crypto.randomUUID();
-  const authResult = await authenticateRequest(c.req.raw, requestId);
-  if ("error" in authResult) {
-    return c.json({ error: authResult.error }, { status: 401 });
+  const req = c.req.raw;
+  const authResult = await authenticateRequest(req);
+  if (!authResult.authenticated) {
+    return c.json({ error: authResult.error }, { status: authResult.status });
+  }
+
+  const ip = getClientIP(req);
+  const rateLimitKey = authResult.user?.id ?? (ip ? `ip:${ip}` : "anon");
+  const rateCheck = checkRateLimit(rateLimitKey);
+  if (!rateCheck.allowed) {
+    return c.json({ error: "Rate limit exceeded" }, { status: 429 });
   }
 
   if (!hasInternalDB()) {
@@ -856,7 +904,7 @@ suggestions.get("/popular", async (c) => {
 
   const limitParam = c.req.query("limit");
   const limit = Math.min(Math.max(parseInt(limitParam ?? "10", 10) || 10, 1), 50);
-  const orgId = authResult.user?.organizationId ?? null;
+  const orgId = authResult.user?.activeOrganizationId ?? null;
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     const rows = await getPopularSuggestions(orgId, limit);
@@ -867,15 +915,23 @@ suggestions.get("/popular", async (c) => {
 // POST /:id/click — track engagement
 suggestions.post("/:id/click", async (c) => {
   const requestId = crypto.randomUUID();
-  const authResult = await authenticateRequest(c.req.raw, requestId);
-  if ("error" in authResult) {
-    return c.json({ error: authResult.error }, { status: 401 });
+  const req = c.req.raw;
+  const authResult = await authenticateRequest(req);
+  if (!authResult.authenticated) {
+    return c.json({ error: authResult.error }, { status: authResult.status });
   }
 
-  const orgId = authResult.user?.organizationId ?? null;
+  const ip = getClientIP(req);
+  const rateLimitKey = authResult.user?.id ?? (ip ? `ip:${ip}` : "anon");
+  const rateCheck = checkRateLimit(rateLimitKey);
+  if (!rateCheck.allowed) {
+    return new Response(null, { status: 429 });
+  }
+
+  const orgId = authResult.user?.activeOrganizationId ?? null;
   const { id } = c.req.param();
 
-  // Fire-and-forget: always return 204
+  // Fire-and-forget: always return 204, conditional UPDATE is no-op for invalid IDs
   incrementSuggestionClick(id, orgId).catch((err) => {
     log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Click tracking failed");
   });
@@ -926,38 +982,16 @@ git commit -m "feat(api): add user-facing suggestion endpoints (#591)"
 
 - [ ] **Step 1: Create admin suggestions route**
 
+**Key patterns:** Import `adminAuthPreamble` from `./admin-auth` (relative, not absolute). Import `withRequestContext` from `@atlas/api/lib/logger`. Use shared `toQuerySuggestion` helper. Org ID: `authResult.user?.activeOrganizationId`. `internalQuery` returns `T[]` directly.
+
 ```typescript
 // packages/api/src/api/routes/admin-suggestions.ts
 import { Hono } from "hono";
-import { adminAuthPreamble } from "@atlas/api/lib/auth";
-import { withRequestContext } from "@atlas/api/lib/context";
+import { adminAuthPreamble } from "./admin-auth";
+import { withRequestContext } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery, deleteSuggestion } from "@atlas/api/lib/db/internal";
-import type { QuerySuggestion } from "@useatlas/types";
+import { toQuerySuggestion } from "@atlas/api/lib/learn/suggestion-helpers";
 import type { QuerySuggestionRow } from "@atlas/api/lib/db/internal";
-
-function toQuerySuggestion(row: QuerySuggestionRow): QuerySuggestion {
-  let tablesInvolved: string[] = [];
-  try {
-    tablesInvolved = typeof row.tables_involved === "string" ? JSON.parse(row.tables_involved) : row.tables_involved;
-  } catch {
-    // intentionally ignored: malformed JSONB
-  }
-  return {
-    id: row.id,
-    orgId: row.org_id,
-    description: row.description,
-    patternSql: row.pattern_sql,
-    normalizedHash: row.normalized_hash,
-    tablesInvolved,
-    primaryTable: row.primary_table,
-    frequency: row.frequency,
-    clickedCount: row.clicked_count,
-    score: row.score,
-    lastSeenAt: row.last_seen_at,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
-}
 
 export const adminSuggestions = new Hono();
 
@@ -974,7 +1008,7 @@ adminSuggestions.get("/", async (c) => {
     return c.json({ error: "Internal database not configured" }, { status: 404 });
   }
 
-  const orgId = authResult.user?.organizationId ?? null;
+  const orgId = authResult.user?.activeOrganizationId ?? null;
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     const table = c.req.query("table");
@@ -1005,19 +1039,19 @@ adminSuggestions.get("/", async (c) => {
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
+    const filterParams = [...params]; // save filter-only params for count query
     params.push(limit, offset);
-    const result = await internalQuery<QuerySuggestionRow>(
+    const rows = await internalQuery<QuerySuggestionRow>(
       `SELECT * FROM query_suggestions ${where} ORDER BY score DESC LIMIT $${idx++} OFFSET $${idx++}`,
       params
     );
 
-    const countResult = await internalQuery<{ count: string }>(
+    const countRows = await internalQuery<{ count: string }>(
       `SELECT COUNT(*) as count FROM query_suggestions ${where}`,
-      params.slice(0, -2) // exclude limit/offset
+      filterParams
     );
 
-    const rows = result?.rows ?? [];
-    const total = parseInt(countResult?.rows[0]?.count ?? "0", 10);
+    const total = parseInt(countRows[0]?.count ?? "0", 10);
 
     return c.json({
       suggestions: rows.map(toQuerySuggestion),
@@ -1041,7 +1075,7 @@ adminSuggestions.delete("/:id", async (c) => {
     return c.json({ error: "Internal database not configured" }, { status: 404 });
   }
 
-  const orgId = authResult.user?.organizationId ?? null;
+  const orgId = authResult.user?.activeOrganizationId ?? null;
   const { id } = c.req.param();
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
@@ -1091,8 +1125,8 @@ git commit -m "feat(api): add admin suggestions management routes (#591)"
 // packages/web/src/ui/components/chat/suggestion-chips.tsx
 "use client";
 
-import { Button } from "@/ui/components/button";
-import { Skeleton } from "@/ui/components/skeleton";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Sparkles } from "lucide-react";
 import type { QuerySuggestion } from "@/ui/lib/types";
 
@@ -1327,7 +1361,6 @@ git commit -m "feat(web): show related suggestions after query results (#591)"
 **Files:**
 - Modify: `apps/docs/content/docs/reference/cli.mdx`
 - Modify: `apps/docs/content/docs/guides/admin-console.mdx`
-- Modify: `.claude/research/ROADMAP.md`
 
 - [ ] **Step 1: Update CLI docs**
 
@@ -1369,18 +1402,10 @@ DELETE /api/v1/admin/suggestions/:id
 ```
 ```
 
-- [ ] **Step 3: Update ROADMAP**
-
-In `.claude/research/ROADMAP.md`, find issue #591 and mark it complete with the PR number:
-
-```markdown
-- [x] #591 — Query suggestion engine (PR #XXX)
-```
-
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
-git add apps/docs/content/docs/reference/cli.mdx apps/docs/content/docs/guides/admin-console.mdx .claude/research/ROADMAP.md
+git add apps/docs/content/docs/reference/cli.mdx apps/docs/content/docs/guides/admin-console.mdx
 git commit -m "docs: document query suggestions CLI flag and admin endpoints (#591)"
 ```
 

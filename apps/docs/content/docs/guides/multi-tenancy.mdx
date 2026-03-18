@@ -1,0 +1,384 @@
+---
+title: Multi-Tenancy
+description: Isolate data, connections, and semantic layers per organization using Better Auth organizations.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+import { Tabs, Tab } from "fumadocs-ui/components/tabs";
+
+Atlas supports multi-tenancy through [Better Auth organizations](https://www.better-auth.com/docs/plugins/organization). Each organization gets isolated semantic layers, connection pools, and query caches — preventing data leakage and noisy-neighbor issues between tenants.
+
+<Callout title="Prerequisites">
+- [Managed auth](/deployment/authentication#managed-auth) enabled (`BETTER_AUTH_SECRET` set)
+- An internal database (`DATABASE_URL`) — organizations and their data are stored here
+- At least one analytics datasource (`ATLAS_DATASOURCE_URL`)
+</Callout>
+
+---
+
+## Overview
+
+In a multi-tenant Atlas deployment, each organization is a fully isolated tenant:
+
+| Resource | Isolation |
+|----------|-----------|
+| **Semantic layer** | Per-org entity YAMLs stored in the internal DB and synced to `semantic/.orgs/{orgId}/` on disk |
+| **Connection pools** | Optional per-org pool instances (separate connection limits per tenant) |
+| **Query cache** | Cache keys include `orgId` — same SQL in different orgs produces different cache entries |
+| **Conversations** | Scoped to the org via `org_id` column in the conversations table |
+| **Audit log** | Queries are attributed to both user and org |
+
+Without organizations enabled, Atlas operates in single-tenant mode — all users share the same semantic layer, connections, and cache namespace.
+
+---
+
+## Enabling organizations
+
+Organizations are automatically available when managed auth is configured. The Better Auth `organization` plugin is included in Atlas's auth server with a three-tier role hierarchy:
+
+| Org Role | Permissions |
+|----------|-------------|
+| **owner** | Full control — update/delete the org, manage members, connections, semantic layer, settings |
+| **admin** | Manage members, connections, semantic layer, and settings (cannot delete the org) |
+| **member** | Read connections and semantic layer, create and read conversations |
+
+### Create the first organization
+
+Use the Better Auth API to create an organization. The creating user becomes the owner:
+
+```bash
+# Create an organization (authenticated as a signed-in user)
+curl -X POST https://your-atlas.com/api/auth/organization/create \
+  -H "Content-Type: application/json" \
+  -H "Cookie: better-auth.session_token=<session>" \
+  -d '{
+    "name": "Acme Corp",
+    "slug": "acme-corp"
+  }'
+```
+
+Or via the Better Auth React client:
+
+```typescript
+import { authClient } from "@/lib/auth/client";
+
+await authClient.organization.create({
+  name: "Acme Corp",
+  slug: "acme-corp",
+});
+```
+
+### Set the active organization
+
+A user can belong to multiple organizations. The **active organization** determines which semantic layer, connection pool, and cache namespace are used for their queries:
+
+```typescript
+// Switch to an organization
+await authClient.organization.setActive({ organizationId: "org-id-here" });
+```
+
+The `activeOrganizationId` is stored in the user's session. All subsequent API requests use this org context until the user switches.
+
+---
+
+## Org-scoped semantic layers
+
+Each organization has its own semantic layer stored in the internal database (`semantic_entities` table). The DB is the source of truth; Atlas syncs entities to disk at `semantic/.orgs/{orgId}/` for the explore tool (the agent reads files via `ls`, `cat`, and `grep`).
+
+### How it works
+
+```
+semantic/
+├── entities/              # Default (no-org) entities
+│   ├── users.yml
+│   └── orders.yml
+└── .orgs/
+    ├── org-abc/           # Org "abc" entities (synced from DB)
+    │   └── entities/
+    │       ├── users.yml
+    │       └── custom_metrics.yml
+    └── org-xyz/           # Org "xyz" entities
+        └── entities/
+            └── events.yml
+```
+
+When an `activeOrganizationId` is present in the session, the agent reads from the org-specific directory instead of the top-level `semantic/entities/`.
+
+### Admin API for org entities
+
+Manage org-scoped entities via the admin API:
+
+```bash
+# List entities for the active org
+curl https://your-atlas.com/api/v1/admin/semantic/org/entities \
+  -H "Cookie: better-auth.session_token=<session>"
+
+# Create or update an entity
+curl -X PUT https://your-atlas.com/api/v1/admin/semantic/org/entities/users \
+  -H "Content-Type: application/json" \
+  -H "Cookie: better-auth.session_token=<session>" \
+  -d '{
+    "yaml_content": "table: users\ndescription: Application users\ndimensions:\n  - name: id\n    sql: id\n    type: string"
+  }'
+
+# Delete an entity
+curl -X DELETE https://your-atlas.com/api/v1/admin/semantic/org/entities/users \
+  -H "Cookie: better-auth.session_token=<session>"
+```
+
+Entity changes are written to the DB first, then synced to disk atomically (write-to-temp + rename to prevent partial reads by the explore tool).
+
+### Dual-write sync
+
+The sync layer (`semantic-sync.ts`) maintains two directions:
+
+1. **DB → disk** — Admin API entity CRUD writes to the DB, then syncs to `semantic/.orgs/{orgId}/`
+2. **Disk → DB** — `atlas init --org` writes to disk, then imports into the DB
+
+If the on-disk directory is empty on first access (e.g., after a container restart), Atlas rebuilds it from the DB automatically before building the semantic index.
+
+---
+
+## Org-scoped connections
+
+By default, all organizations share the same database connection pools. For SaaS deployments where tenant isolation is critical, enable **per-org pool isolation** — each org gets its own connection pool instances with independent limits.
+
+### Configuration
+
+```typescript
+// atlas.config.ts
+import { defineConfig } from "@atlas/api/lib/config";
+
+export default defineConfig({
+  datasources: {
+    default: { url: process.env.ATLAS_DATASOURCE_URL! },
+  },
+  pool: {
+    perOrg: {
+      maxConnections: 5,    // Connections per org per datasource (default: 5)
+      idleTimeoutMs: 30000, // Idle connection timeout (default: 30000)
+      maxOrgs: 50,          // Max concurrent org pools before LRU eviction (default: 50)
+      warmupProbes: 2,      // Health probes on pool creation (default: 2)
+      drainThreshold: 5,    // Consecutive failures before auto-drain (default: 5)
+    },
+  },
+  maxTotalConnections: 100, // Hard cap across all pools (default: 100)
+});
+```
+
+### How it works
+
+When `pool.perOrg` is configured and a request has an `activeOrganizationId`:
+
+1. The `ConnectionRegistry` creates an isolated pool for that org+datasource pair on first access
+2. The pool uses the same database URL as the base connection but with org-specific limits
+3. Pools are lazily created and cached — subsequent requests from the same org reuse the pool
+4. When `maxOrgs` concurrent org pools exist, the **least recently used** org's pools are evicted
+5. A hard capacity check prevents exceeding `maxTotalConnections` across all pools
+
+<Callout type="warn">
+Without `pool.perOrg`, all orgs share the base connection pool. This is fine for small deployments but risks noisy-neighbor issues at scale — one org running expensive queries can exhaust the shared pool.
+</Callout>
+
+### Pool monitoring
+
+Monitor org pool health via the admin API:
+
+```bash
+# Get org pool metrics
+curl https://your-atlas.com/api/v1/admin/connections \
+  -H "Cookie: better-auth.session_token=<session>"
+```
+
+The admin console's **Connections** page shows pool stats including active/idle connections, query counts, error rates, and drain history for both base and org-scoped pools.
+
+---
+
+## Org-scoped caching
+
+Query result caching is automatically org-aware. Cache keys are computed from:
+
+- The normalized SQL query
+- The connection ID
+- The `orgId` (from the session's `activeOrganizationId`)
+- The user's claims (for RLS differentiation)
+
+This means the same SQL query executed in two different organizations produces **different cache entries** — there is no cross-org cache leakage.
+
+### Per-org cache flush
+
+The admin cache flush endpoint clears all cached entries. There is no per-org flush API — flushing is global. However, since cache keys are org-scoped, entries naturally expire per the configured TTL.
+
+```bash
+# Flush all cached entries (admin only)
+curl -X POST https://your-atlas.com/api/v1/admin/cache/flush \
+  -H "Cookie: better-auth.session_token=<session>"
+```
+
+Configure cache behavior in `atlas.config.ts`:
+
+```typescript
+export default defineConfig({
+  cache: {
+    enabled: true,   // Default: true
+    ttl: 300,        // Seconds (default: 300 = 5 minutes)
+    maxSize: 1000,   // Max entries (default: 1000)
+  },
+});
+```
+
+---
+
+## Member management
+
+### Invite members
+
+Org admins and owners can invite users by email:
+
+```typescript
+await authClient.organization.inviteMember({
+  email: "analyst@example.com",
+  role: "member",           // "member" | "admin" | "owner"
+  organizationId: "org-id",
+});
+```
+
+<Callout type="info">
+Email delivery for invitations is not configured by default. Atlas logs a warning with the invite details — share the invite link manually, or configure an email plugin for automatic delivery.
+</Callout>
+
+### Manage roles
+
+```typescript
+// Update a member's role
+await authClient.organization.updateMemberRole({
+  memberId: "member-id",
+  role: "admin",
+  organizationId: "org-id",
+});
+
+// Remove a member
+await authClient.organization.removeMember({
+  memberId: "member-id",
+  organizationId: "org-id",
+});
+```
+
+### Platform admin view
+
+Platform admins (users with the `admin` role at the application level) can manage all organizations via the admin API:
+
+```bash
+# List all organizations with member counts
+curl https://your-atlas.com/api/v1/admin/organizations \
+  -H "Cookie: better-auth.session_token=<session>"
+
+# Get org details with members and invitations
+curl https://your-atlas.com/api/v1/admin/organizations/org-id \
+  -H "Cookie: better-auth.session_token=<session>"
+
+# Get org stats (conversations, members, queries)
+curl https://your-atlas.com/api/v1/admin/organizations/org-id/stats \
+  -H "Cookie: better-auth.session_token=<session>"
+```
+
+---
+
+## Org switcher UI
+
+When a user belongs to multiple organizations, the Atlas web UI displays an **org switcher** in the sidebar. The switcher:
+
+1. Lists all organizations the user belongs to
+2. Shows the currently active organization with a check mark
+3. Switches the active org on click (reloads the page to pick up the new org context)
+4. Hides automatically when the user belongs to only one (or zero) organizations
+
+The org switcher component is at `packages/web/src/ui/components/org-switcher.tsx`. It uses the Better Auth React client to fetch orgs and switch the active org.
+
+---
+
+## `atlas init` with organizations
+
+The CLI supports org-scoped initialization via the `--org` flag:
+
+```bash
+# Profile the datasource and write to org-specific directory + import to DB
+bun run atlas -- init --org org-abc
+```
+
+This performs a dual-write:
+
+1. Writes entity YAMLs to `semantic/.orgs/org-abc/entities/`
+2. Imports the entities into the `semantic_entities` DB table for that org
+
+You can also use the `ATLAS_ORG_ID` environment variable instead of the flag:
+
+```bash
+ATLAS_ORG_ID=org-abc bun run atlas -- init
+```
+
+Without `--org`, `atlas init` writes to the top-level `semantic/entities/` directory (single-tenant mode).
+
+---
+
+## Troubleshooting
+
+### "No internal database configured" when creating orgs
+
+**Cause:** Organizations require `DATABASE_URL` to be set. The Better Auth organization plugin stores org data in the internal Postgres database.
+
+**Fix:** Set `DATABASE_URL` to a PostgreSQL connection string and restart:
+
+```bash
+DATABASE_URL=postgresql://user:pass@host:5432/atlas
+```
+
+### User sees empty semantic layer after switching orgs
+
+**Cause:** The new org doesn't have any entities yet, or the disk sync hasn't completed.
+
+**Fix:**
+1. Check if entities exist for the org: `curl /api/v1/admin/semantic/org/entities`
+2. If empty, run `atlas init --org <orgId>` to profile the datasource for that org
+3. If entities exist in DB but the agent can't find them, the disk sync may have failed — check logs for `semantic-sync` errors. Atlas retries the sync on next access
+
+### PoolCapacityExceededError
+
+**Cause:** Creating a new org pool would exceed `maxTotalConnections`. This happens when many orgs are active simultaneously and the total pool slots (maxOrgs × maxConnections × datasources) exceed the hard cap.
+
+**Fix:** Adjust pool configuration:
+
+```typescript
+pool: {
+  perOrg: {
+    maxConnections: 3,   // Reduce per-org connections
+    maxOrgs: 30,         // Reduce max concurrent orgs
+  },
+},
+maxTotalConnections: 200,  // Increase total cap
+```
+
+LRU eviction automatically frees pools for inactive orgs, but under sustained load from many concurrent orgs, you may need to increase the cap or reduce per-org limits.
+
+### Org members can't see each other's conversations
+
+**This is expected behavior.** Conversations are scoped to the org via the `org_id` column. Users only see conversations created within their active organization. Switching orgs shows a different conversation history.
+
+### Cache not isolated between orgs
+
+**Cause:** This shouldn't happen — cache keys include the `orgId` by design. If you observe cross-org cache hits, check that the session's `activeOrganizationId` is correctly set.
+
+**Fix:** Verify the active org is set correctly:
+1. Check the session: the `activeOrganizationId` field should be present
+2. Ensure the user called `organization.setActive()` after switching orgs
+3. If using the API directly, confirm the session token belongs to a user with an active org
+
+---
+
+## See Also
+
+- [Authentication](/deployment/authentication#managed-auth) — Set up managed auth (required for organizations)
+- [Admin Console](/guides/admin-console) — Manage organizations, members, and connections via the web UI
+- [Multi-Datasource Routing](/guides/multi-datasource) — Configure multiple databases per deployment
+- [Configuration Reference](/reference/config) — All `atlas.config.ts` fields including `pool.perOrg`
+- [Troubleshooting](/guides/troubleshooting) — General diagnostic steps

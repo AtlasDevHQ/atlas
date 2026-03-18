@@ -17,10 +17,12 @@ const log = createLogger("pattern-cache");
 // ---------------------------------------------------------------------------
 
 const DEFAULT_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const MAX_ENTRIES = 500;
 
 interface CacheEntry {
   patterns: ApprovedPatternRow[];
   expiresAt: number;
+  lastAccessedAt: number;
 }
 
 const cache = new Map<string, CacheEntry>();
@@ -37,12 +39,28 @@ async function getCachedPatterns(orgId: string | null): Promise<ApprovedPatternR
   const entry = cache.get(key);
 
   if (entry && Date.now() < entry.expiresAt) {
+    entry.lastAccessedAt = Date.now();
     return entry.patterns;
   }
 
   try {
     const patterns = await getApprovedPatterns(orgId);
-    cache.set(key, { patterns, expiresAt: Date.now() + DEFAULT_TTL_MS });
+
+    // Evict oldest entry if cache is at capacity
+    if (cache.size >= MAX_ENTRIES) {
+      let oldestKey: string | undefined;
+      let oldestTime = Infinity;
+      for (const [k, v] of cache) {
+        if (v.lastAccessedAt < oldestTime) {
+          oldestTime = v.lastAccessedAt;
+          oldestKey = k;
+        }
+      }
+      if (oldestKey) cache.delete(oldestKey);
+    }
+
+    const now = Date.now();
+    cache.set(key, { patterns, expiresAt: now + DEFAULT_TTL_MS, lastAccessedAt: now });
     return patterns;
   } catch (err) {
     log.warn(

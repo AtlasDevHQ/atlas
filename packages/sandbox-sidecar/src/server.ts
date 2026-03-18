@@ -10,6 +10,7 @@
  *   GET  /health        — { status: "ok" }
  *   POST /exec          — { command, timeout? } → { stdout, stderr, exitCode }
  *   POST /exec-python   — { code, data?, timeout? } → PythonResult
+ *   POST /exec-python-stream — { code, data?, timeout? } → NDJSON stream
  */
 
 import type {
@@ -173,12 +174,15 @@ async function handleExec(req: Request): Promise<Response> {
 /**
  * Common Python code shared between streaming and non-streaming wrappers.
  *
+ * Expects the caller to have already imported: sys, json, os, ast
+ *
  * Expects the caller to have already defined:
  * - _chart_dir: str — path to chart output directory
- * - _report_error(msg: str) → NoReturn — report an error and sys.exit(0)
+ * - _report_error(msg: str) — emit error and exit the process
  *
- * Provides: _BLOCKED_MODULES, _BLOCKED_BUILTINS, _user_code, _tree,
- * data, df, chart_path(), and a headless matplotlib backend.
+ * Enforces the AST-based import guard (exits via _report_error on violation),
+ * injects data from stdin, configures a headless matplotlib backend, and
+ * makes available: _user_code, data, df, chart_path().
  */
 const PYTHON_COMMON = `# --- Import guard (sidecar-side enforcement) ---
 _BLOCKED_MODULES = {

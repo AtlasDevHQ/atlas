@@ -42,6 +42,7 @@ import { runDiff } from "@atlas/api/lib/semantic-diff";
 import { adminOrgs } from "./admin-orgs";
 import { adminLearnedPatterns } from "./admin-learned-patterns";
 import { adminPrompts } from "./admin-prompts";
+import { adminSuggestions } from "./admin-suggestions";
 import { adminAuthPreamble, authErrorCode } from "./admin-auth";
 
 const log = createLogger("admin-routes");
@@ -54,6 +55,8 @@ admin.route("/learned-patterns", adminLearnedPatterns);
 admin.route("/learned-patterns/", adminLearnedPatterns);
 admin.route("/prompts", adminPrompts);
 admin.route("/prompts/", adminPrompts);
+admin.route("/suggestions", adminSuggestions);
+admin.route("/suggestions/", adminSuggestions);
 
 // Path traversal guard, YAML helpers, entity discovery, and file finding
 // are all imported from @atlas/api/lib/semantic-files above.

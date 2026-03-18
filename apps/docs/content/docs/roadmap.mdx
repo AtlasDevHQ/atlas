@@ -76,11 +76,15 @@ Systematic code quality pass across all packages. Eliminated non-null assertion 
 
 Comprehensive error handling audit across all packages. Eliminated silent catch blocks and standardized error type narrowing with `instanceof Error` guards. Replaced generic "Something went wrong" messages with actionable, context-specific guidance and added request IDs to all 500 responses. Audited fallback patterns for silent degradation and added logging where errors were being swallowed. Extended React error boundary coverage to organization context, streaming Python results, and shared conversations.
 
+### 0.7.4 — Test Hardening
+
+Test coverage expansion for 0.7.0 features. Added password endpoint tests (status check, change workflow, validation, DB error paths). Cache edge case tests for TTL boundaries, concurrent access, oversized entries, and LRU eviction accuracy. Streaming Python timeout and SSE protocol error path tests. `atlas learn` edge case tests for malformed audit entries, conflicting proposals, and full pipeline integration. Migrated remaining inline connection mocks to the shared `createConnectionMock` factory for consistency.
+
 ---
 
 ## 0.7.x — Refinement Arc
 
-Systematic quality review of everything shipped in 0.7.0 — test hardening and docs completeness. Same pattern as the 0.5.x polish releases.
+Docs completeness pass — the final 0.7.x release. Same pattern as the 0.5.x polish releases.
 
 ---
 

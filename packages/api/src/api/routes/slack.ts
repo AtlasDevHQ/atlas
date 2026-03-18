@@ -386,7 +386,8 @@ slack.post("/interactions", async (c) => {
   let payload: Record<string, unknown>;
   try {
     payload = JSON.parse(payloadStr);
-  } catch {
+  } catch (err) {
+    log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to parse block_actions payload JSON");
     return c.json({ error: "Invalid payload JSON" }, 400);
   }
 

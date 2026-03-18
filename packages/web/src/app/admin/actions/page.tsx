@@ -163,7 +163,7 @@ export default function ActionsPage() {
           try {
             const body = await res.json();
             if (body?.message) serverMessage = body.message;
-          } catch { /* ignore parse errors */ }
+          } catch { /* intentionally ignored: response may not be JSON */ }
           setError({ message: serverMessage, status: res.status });
           return;
         }
@@ -231,7 +231,7 @@ export default function ActionsPage() {
         try {
           const body = await res.json();
           if (body?.message) serverMessage = body.message;
-        } catch { /* ignore parse errors */ }
+        } catch { /* intentionally ignored: response may not be JSON */ }
         throw new Error(serverMessage);
       }
       setRefetchKey((k) => k + 1);
@@ -257,7 +257,7 @@ export default function ActionsPage() {
         try {
           const body = await res.json();
           if (body?.message) serverMessage = body.message;
-        } catch { /* ignore parse errors */ }
+        } catch { /* intentionally ignored: response may not be JSON */ }
         throw new Error(serverMessage);
       }
       setRefetchKey((k) => k + 1);
@@ -283,7 +283,7 @@ export default function ActionsPage() {
         try {
           const body = await res.json();
           if (body?.message) serverMessage = body.message;
-        } catch { /* ignore parse errors */ }
+        } catch { /* intentionally ignored: response may not be JSON */ }
         throw new Error(serverMessage);
       }
       const body = await res.json();
@@ -320,7 +320,7 @@ export default function ActionsPage() {
               try {
                 const errBody = await res.json();
                 if (errBody?.message) serverMessage = errBody.message;
-              } catch { /* ignore parse errors */ }
+              } catch { /* intentionally ignored: response may not be JSON */ }
               throw new Error(serverMessage);
             }
           }),

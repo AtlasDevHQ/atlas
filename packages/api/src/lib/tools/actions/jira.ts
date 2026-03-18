@@ -109,12 +109,12 @@ export async function executeJiraCreate(
       ).map(([field, msg]) => `${field}: ${msg}`);
       detail = [...messages, ...fieldErrors].join("; ") || `HTTP ${response.status}`;
     } catch {
-      // JSON parsing failed — try to get raw text for diagnostics
+      // intentionally ignored: JSON parse failed, fall through to text() attempt
       let rawText = "";
       try {
         rawText = await response.text();
       } catch {
-        // ignore — body may already be consumed
+        // intentionally ignored: body may already be consumed
       }
       detail = rawText
         ? `HTTP ${response.status}: ${rawText.slice(0, 200)}`

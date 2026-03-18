@@ -69,6 +69,7 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
       }
 
       if (!res.ok) {
+        // intentionally ignored: response may not be JSON
         const errorBody = await res.json().catch(() => null);
         if (errorBody?.code === "not_available") {
           setAvailable(false);
@@ -83,7 +84,7 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
       setTotal(data.total ?? 0);
       fetchedRef.current = true;
     } catch (err) {
-      console.warn("fetchList error:", err);
+      console.warn("fetchList error:", err instanceof Error ? err.message : String(err));
       // Network error on first attempt — permanently disable conversations for this session. A page reload resets this.
       if (!fetchedRef.current) setAvailable(false);
     } finally {
@@ -106,7 +107,7 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
       const data: ConversationWithMessages = await res.json();
       return transformMessages(data.messages);
     } catch (err) {
-      console.warn("loadConversation error:", err);
+      console.warn("loadConversation error:", err instanceof Error ? err.message : String(err));
       return null;
     }
   }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);
@@ -131,7 +132,7 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
 
       return true;
     } catch (err) {
-      console.warn("deleteConversation error:", err);
+      console.warn("deleteConversation error:", err instanceof Error ? err.message : String(err));
       return false;
     }
   }, [opts.apiUrl, opts.getHeaders, opts.getCredentials, selectedId]);
@@ -160,7 +161,7 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
 
       return true;
     } catch (err) {
-      console.warn("starConversation error:", err);
+      console.warn("starConversation error:", err instanceof Error ? err.message : String(err));
       // Rollback
       setConversations((prev) =>
         prev.map((c) => (c.id === id ? { ...c, starred: !starred } : c)),
@@ -191,7 +192,7 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
         url: data.url ?? `${window.location.origin}/shared/${data.token}`,
       };
     } catch (err) {
-      console.warn("shareConversation error:", err);
+      console.warn("shareConversation error:", err instanceof Error ? err.message : String(err));
       return null;
     }
   }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);
@@ -209,7 +210,7 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
       }
       return true;
     } catch (err) {
-      console.warn("unshareConversation error:", err);
+      console.warn("unshareConversation error:", err instanceof Error ? err.message : String(err));
       return false;
     }
   }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);
@@ -227,7 +228,7 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
       const data: ShareStatus = await res.json();
       return data;
     } catch (err) {
-      console.warn("getShareStatus error:", err);
+      console.warn("getShareStatus error:", err instanceof Error ? err.message : String(err));
       return null;
     }
   }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);

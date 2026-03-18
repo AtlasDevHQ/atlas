@@ -3277,7 +3277,10 @@ export async function handleActionApproval(
       signal: AbortSignal.timeout(30_000),
     });
     if (!res.ok) {
-      const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+      const body = (await res.json().catch(() => {
+        // intentionally ignored: error response may not be JSON; fall back to status code
+        return {};
+      })) as Record<string, unknown>;
       return { ok: false, error: (body.message as string) ?? `HTTP ${res.status}` };
     }
     const body = (await res.json()) as Record<string, unknown>;
@@ -4831,6 +4834,7 @@ async function handleImport(args: string[]): Promise<void> {
           const json = await resp.json() as { message?: string; error?: string };
           errorMsg = json.message ?? json.error ?? errorMsg;
         } catch {
+          // intentionally ignored: JSON parse failed, fall through to text() attempt
           errorMsg = await resp.text().catch(() => errorMsg);
         }
         console.error(`Import failed: ${errorMsg}`);
@@ -5822,6 +5826,7 @@ Next steps:
             const json = await resp.json() as { message?: string; error?: string };
             errorMsg = json.message ?? json.error ?? errorMsg;
           } catch {
+            // intentionally ignored: JSON parse failed, fall through to text() attempt
             errorMsg = await resp.text().catch(() => errorMsg);
           }
           console.warn(`  Warning: Import failed for ${ds.id}: ${errorMsg}`);

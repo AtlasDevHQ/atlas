@@ -101,10 +101,12 @@ export async function executeEmailSend(
       const errorBody = (await response.json()) as { message?: string };
       detail = errorBody.message ?? `HTTP ${response.status}`;
     } catch {
+      // intentionally ignored: JSON parse failed, fall through to text() attempt
       try {
         const text = await response.text();
         detail = text ? `HTTP ${response.status}: ${text.slice(0, 200)}` : `HTTP ${response.status}`;
       } catch {
+        // intentionally ignored: body may already be consumed
         detail = `HTTP ${response.status}`;
       }
     }

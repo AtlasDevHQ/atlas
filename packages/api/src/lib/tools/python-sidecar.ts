@@ -36,6 +36,7 @@ export async function executePythonViaSidecar(
   try {
     baseUrl = new URL(sidecarUrl);
   } catch {
+    log.warn({ sidecarUrl }, "Invalid ATLAS_SANDBOX_URL — cannot parse as URL");
     return pythonError(
       `Invalid ATLAS_SANDBOX_URL: "${sidecarUrl}". Expected a valid URL (e.g. http://sandbox-sidecar:8080).`,
     );
@@ -92,6 +93,7 @@ export async function executePythonViaSidecar(
     try {
       errorBody = await response.text();
     } catch {
+      // intentionally ignored: body may already be consumed or unreadable
       errorBody = `HTTP ${response.status}`;
     }
 
@@ -112,7 +114,7 @@ export async function executePythonViaSidecar(
           return parsed;
         }
       } catch {
-        // Not structured — fall through
+        // intentionally ignored: best-effort structured parse; raw error already logged above
       }
     }
 
@@ -168,6 +170,7 @@ export async function executePythonViaSidecarStream(
   try {
     baseUrl = new URL(sidecarUrl);
   } catch {
+    log.warn({ sidecarUrl }, "Invalid ATLAS_SANDBOX_URL — cannot parse as URL (stream)");
     return pythonError(
       `Invalid ATLAS_SANDBOX_URL: "${sidecarUrl}". Expected a valid URL (e.g. http://sandbox-sidecar:8080).`,
     );

@@ -43,9 +43,8 @@ function listYamlFiles(subdir: string): string[] {
       .map((f) => f.replace(/\.yml$/, ""))
       .sort();
   } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") return [];
-    process.stderr.write(`[atlas-mcp] Failed to list YAML files in "${subdir}": ${err}\n`);
+    if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    process.stderr.write(`[atlas-mcp] Failed to list YAML files in "${subdir}": ${err instanceof Error ? err.message : String(err)}\n`);
     throw err;
   }
 }
@@ -57,9 +56,8 @@ function readSemanticFile(relativePath: string): string | null {
   try {
     return fs.readFileSync(filePath, "utf-8");
   } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") return null;
-    process.stderr.write(`[atlas-mcp] Failed to read "${relativePath}": ${err}\n`);
+    if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    process.stderr.write(`[atlas-mcp] Failed to read "${relativePath}": ${err instanceof Error ? err.message : String(err)}\n`);
     throw err;
   }
 }

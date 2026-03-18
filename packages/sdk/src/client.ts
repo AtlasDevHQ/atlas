@@ -573,6 +573,7 @@ export function createAtlasClient(options: AtlasClientOptions) {
 
     const onAbort = () => {
       aborted = true;
+      // intentionally ignored: best-effort stream cancel on abort
       reader.cancel().catch(() => {});
     };
     signal?.addEventListener("abort", onAbort, { once: true });
@@ -606,6 +607,7 @@ export function createAtlasClient(options: AtlasClientOptions) {
       }
     } finally {
       signal?.removeEventListener("abort", onAbort);
+      // intentionally ignored: best-effort stream cleanup
       await reader.cancel().catch(() => {});
       reader.releaseLock();
     }

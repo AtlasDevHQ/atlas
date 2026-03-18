@@ -88,6 +88,7 @@ function sandboxErrorDetail(err: unknown): string {
     try {
       return `${detail} — response: ${JSON.stringify(json)}`;
     } catch {
+      // intentionally ignored: JSON.stringify can fail on circular references
       return `${detail} — response: [unserializable object]`;
     }
   }

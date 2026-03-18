@@ -56,7 +56,8 @@ async function readLimited(stream: ReadableStream, max: number): Promise<string>
       chunks.push(value);
     }
   } finally {
-    await reader.cancel().catch(() => { /* stream cancel errors are non-critical */ });
+    // intentionally ignored: stream cancel errors are non-critical during cleanup
+    await reader.cancel().catch(() => {});
   }
   return new TextDecoder().decode(Buffer.concat(chunks));
 }
@@ -90,7 +91,8 @@ async function handleExec(req: Request): Promise<Response> {
   let body: SidecarExecRequest;
   try {
     body = (await req.json()) as SidecarExecRequest;
-  } catch {
+  } catch (err) {
+    console.warn(`[sandbox-sidecar] Invalid JSON body in /exec: ${err instanceof Error ? err.message : String(err)}`);
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
@@ -344,7 +346,8 @@ async function parsePythonRequest(req: Request): Promise<PythonExecSetup | Respo
   let body: SidecarPythonRequest;
   try {
     body = (await req.json()) as SidecarPythonRequest;
-  } catch {
+  } catch (err) {
+    console.warn(`[sandbox-sidecar] Invalid JSON body in Python request: ${err instanceof Error ? err.message : String(err)}`);
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
@@ -457,8 +460,8 @@ async function handleExecPython(req: Request): Promise<Response> {
         const parsed = JSON.parse(resultLine.slice(resultMarker.length)) as SidecarPythonResponse;
         console.log(`[sandbox-sidecar] python=${execId} success=${parsed.success} exitCode=${exitCode} duration=${duration}ms`);
         return Response.json(parsed);
-      } catch {
-        console.warn(`[sandbox-sidecar] python=${execId} failed to parse result JSON, exitCode=${exitCode}`);
+      } catch (err) {
+        console.warn(`[sandbox-sidecar] python=${execId} failed to parse result JSON: ${err instanceof Error ? err.message : String(err)}, exitCode=${exitCode}`);
         return Response.json({ success: false, error: `Python produced unparseable output. stderr: ${stderr.trim().slice(0, 500)}` } satisfies SidecarPythonResponse);
       }
     }
@@ -736,7 +739,7 @@ function handleHealth(): Response {
       const proc = Bun.spawnSync(["python3", "--version"]);
       pythonAvailable = proc.exitCode === 0;
     } catch {
-      // python3 not found
+      // intentionally ignored: python3 availability check — absence is expected in some environments
     }
 
     return Response.json({

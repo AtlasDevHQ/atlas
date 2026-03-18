@@ -640,7 +640,8 @@ admin.put("/semantic/org/entities/:name", async (c) => {
     let body: { yamlContent: string; entityType?: string; connectionId?: string };
     try {
       body = await c.req.json();
-    } catch {
+    } catch (err) {
+      log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in YAML upload request");
       return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
     }
 
@@ -961,7 +962,7 @@ admin.post("/connections/test", async (c) => {
   const { authResult } = preamble;
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const body = await c.req.json().catch((err) => {
+    const body = await c.req.json().catch((err: unknown) => {
       log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in test connection request");
       return null;
     });
@@ -2251,7 +2252,8 @@ admin.put("/plugins/:id/config", async (c) => {
     let body: Record<string, unknown>;
     try {
       body = await c.req.json();
-    } catch {
+    } catch (err) {
+      log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in invite request");
       return c.json({ error: "invalid_request", message: "Request body must be valid JSON." }, 400);
     }
 
@@ -2352,7 +2354,8 @@ admin.get("/me/password-status", async (c) => {
   let authResult: AuthResult;
   try {
     authResult = await authenticateRequest(req);
-  } catch {
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Authentication system error in password-status check");
     return c.json({ error: "auth_error", message: "Authentication system error" }, 500);
   }
   if (!authResult.authenticated) {
@@ -2373,7 +2376,8 @@ admin.get("/me/password-status", async (c) => {
         [user.id],
       );
       return c.json({ passwordChangeRequired: rows[0]?.password_change_required === true });
-    } catch {
+    } catch (err) {
+      log.warn({ err: err instanceof Error ? err.message : String(err), userId: user.id }, "Failed to check password_change_required — defaulting to false");
       return c.json({ passwordChangeRequired: false });
     }
   });
@@ -2387,7 +2391,8 @@ admin.post("/me/password", async (c) => {
   let authResult: AuthResult;
   try {
     authResult = await authenticateRequest(req);
-  } catch {
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Authentication system error in password change");
     return c.json({ error: "auth_error", message: "Authentication system error" }, 500);
   }
   if (!authResult.authenticated) {
@@ -3147,7 +3152,8 @@ admin.post("/users/invite", async (c) => {
           });
           emailSent = res.ok;
           if (!res.ok) {
-            const errorBody = await res.text().catch(() => ""); // fallback: already in error path, body is best-effort for logging
+            // intentionally ignored: best-effort error body extraction for logging
+            const errorBody = await res.text().catch(() => "");
             emailError = `Delivery failed (HTTP ${res.status})`;
             log.error({ status: res.status, email, responseBody: errorBody }, "Failed to send invite email via Resend");
           }
@@ -3542,7 +3548,8 @@ admin.put("/settings/:key", async (c) => {
     let body: { value?: unknown };
     try {
       body = (await c.req.json()) as { value?: unknown };
-    } catch {
+    } catch (err) {
+      log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in settings update request");
       return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
     }
 

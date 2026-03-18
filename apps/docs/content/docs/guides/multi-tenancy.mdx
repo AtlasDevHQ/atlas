@@ -4,7 +4,6 @@ description: Isolate data, connections, and semantic layers per organization usi
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
-import { Tabs, Tab } from "fumadocs-ui/components/tabs";
 
 Atlas supports multi-tenancy through [Better Auth organizations](https://www.better-auth.com/docs/plugins/organization). Each organization gets isolated semantic layers, connection pools, and query caches — preventing data leakage and noisy-neighbor issues between tenants.
 
@@ -83,7 +82,7 @@ The `activeOrganizationId` is stored in the user's session. All subsequent API r
 
 ## Org-scoped semantic layers
 
-Each organization has its own semantic layer stored in the internal database (`semantic_entities` table). The DB is the source of truth; Atlas syncs entities to disk at `semantic/.orgs/{orgId}/` for the explore tool (the agent reads files via `ls`, `cat`, and `grep`).
+Each organization has its own semantic layer stored in the internal database (`semantic_entities` table, auto-created by Atlas migrations). The DB is the source of truth; Atlas syncs entities to disk at `semantic/.orgs/{orgId}/` for the explore tool (the agent reads files via `ls`, `cat`, and `grep`).
 
 ### How it works
 
@@ -106,7 +105,7 @@ When an `activeOrganizationId` is present in the session, the agent reads from t
 
 ### Admin API for org entities
 
-Manage org-scoped entities via the admin API:
+Manage org-scoped entities via the admin API. The session must have an active organization set (via `organization.setActive()`) before calling these endpoints:
 
 ```bash
 # List entities for the active org
@@ -118,7 +117,7 @@ curl -X PUT https://your-atlas.com/api/v1/admin/semantic/org/entities/users \
   -H "Content-Type: application/json" \
   -H "Cookie: better-auth.session_token=<session>" \
   -d '{
-    "yaml_content": "table: users\ndescription: Application users\ndimensions:\n  - name: id\n    sql: id\n    type: string"
+    "yamlContent": "table: users\ndescription: Application users\ndimensions:\n  - name: id\n    sql: id\n    type: string"
   }'
 
 # Delete an entity
@@ -220,9 +219,9 @@ Configure cache behavior in `atlas.config.ts`:
 ```typescript
 export default defineConfig({
   cache: {
-    enabled: true,   // Default: true
-    ttl: 300,        // Seconds (default: 300 = 5 minutes)
-    maxSize: 1000,   // Max entries (default: 1000)
+    enabled: true,      // Default: true
+    ttl: 300_000,       // Milliseconds (default: 300000 = 5 minutes)
+    maxSize: 1000,      // Max entries (default: 1000)
   },
 });
 ```
@@ -360,9 +359,9 @@ maxTotalConnections: 200,  // Increase total cap
 
 LRU eviction automatically frees pools for inactive orgs, but under sustained load from many concurrent orgs, you may need to increase the cap or reduce per-org limits.
 
-### Org members can't see each other's conversations
+### Conversations scoped to the active org
 
-**This is expected behavior.** Conversations are scoped to the org via the `org_id` column. Users only see conversations created within their active organization. Switching orgs shows a different conversation history.
+**This is expected behavior.** Conversations are scoped to the org via the `org_id` column. All members of an org share the same conversation history. Switching orgs shows a different set of conversations.
 
 ### Cache not isolated between orgs
 

@@ -68,11 +68,15 @@ Multi-tenant foundation via Better Auth organization plugin with org-scoped sema
 
 Post-sprint quality pass on 0.7.0 code. Resolved lint warnings (unused exports, type params, variables), moved chat error stack traces to debug-level logging, filled docs gaps for `atlas index` CLI, streaming Python, and cache admin UI. Code review of new modules surfaced two refactoring issues tracked for 0.7.2.
 
+### 0.7.2 — Type Safety & Code Smells
+
+Systematic code quality pass across all packages. Eliminated non-null assertion operators, replaced explicit `any` types with proper typing, removed dead exports and unused code (net -1150 lines), and broke up complex functions over 50 lines into well-named helpers. Extracted shared Python wrapper code and fixed input mutation in the CLI learn module.
+
 ---
 
 ## 0.7.x — Refinement Arc
 
-Systematic quality review of everything shipped in 0.7.0 — type safety, code smells, error handling, test hardening, and docs completeness. Same pattern as the 0.5.x polish releases.
+Systematic quality review of everything shipped in 0.7.0 — error handling, test hardening, and docs completeness. Same pattern as the 0.5.x polish releases.
 
 ---
 

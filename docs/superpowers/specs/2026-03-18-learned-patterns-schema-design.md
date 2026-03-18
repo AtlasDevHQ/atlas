@@ -21,6 +21,8 @@ Learned patterns are org-specific domain knowledge. A cybersecurity org's query 
 - **Single-tenant**: Store `org_id` as NULL. Filter by `org_id IS NULL`.
 - **No global admin view** — admins must be in an org's context to review patterns. Cross-org visibility is a 0.9.0 platform admin concern.
 
+**Note on `org_id` nullability:** The `semantic_entities` table uses `org_id TEXT NOT NULL` because it was designed for multi-tenant-only org-scoped semantic layers. `learned_patterns` uses nullable `org_id` to support single-tenant deployments where no organization context exists — matching the pattern used by `conversations`, `audit_log`, `connections`, and other tenant-scoped tables that predate the org plugin.
+
 ## 1. DB Schema
 
 New table added to `migrateInternalDB()` in `packages/api/src/lib/db/internal.ts`:
@@ -101,9 +103,13 @@ Convention: DB columns are `snake_case`, wire types are `camelCase` (matches `Co
 
 File: `packages/api/src/api/routes/admin-learned-patterns.ts`
 
-All endpoints use `adminAuthPreamble()` + `hasInternalDB()` guard + `withRequestContext()`. Org-scoping: grab `activeOrganizationId` from auth result, build WHERE clause with `org_id = $N` or `org_id IS NULL`.
+Each endpoint copies `admin.ts`'s `adminAuthPreamble()` pattern (not `admin-orgs.ts` — `admin.ts` has the more complete version with `session_expired` detection and `forbidden_role` error code). Also uses `hasInternalDB()` guard + `withRequestContext()`.
+
+Org-scoping: grab `activeOrganizationId` from auth result, build WHERE clause with `org_id = $N` or `org_id IS NULL`.
 
 A `toLearnedPattern(row)` helper converts snake_case DB rows to camelCase wire format.
+
+**No create endpoint.** Pattern creation is out-of-scope for this PR — it will be added by #587 (agent proposals) and the `atlas learn` CLI. This PR provides the schema and the admin review/management API only.
 
 ### Endpoints
 
@@ -121,7 +127,7 @@ Returns the pattern if found and belongs to current org. 404 otherwise.
 
 #### `PATCH /:id` — Update pattern
 
-Body fields (all optional): `description`, `status`.
+Accepted body fields (all optional): `description`, `status`. All other fields are ignored — `pattern_sql`, `source_entity`, `source_queries`, `confidence`, `repetition_count`, and `proposed_by` are immutable via the admin API (they are set at creation time by the proposer).
 
 - `status` must be `pending`, `approved`, or `rejected`
 - On status change: sets `reviewed_by` to current user ID, `reviewed_at` to now
@@ -134,7 +140,7 @@ Hard delete. 404 if not found or wrong org.
 
 #### `POST /bulk` — Bulk status change
 
-Body: `{ ids: string[], status: 'approved' | 'rejected' }`
+Body: `{ ids: string[], status: 'approved' | 'rejected' }`. Max 100 IDs per request (returns 400 if exceeded).
 
 Processes each ID individually. Skips IDs not found or belonging to a different org. Sets `reviewed_by`/`reviewed_at` on each updated row.
 
@@ -168,7 +174,7 @@ learn?: { confidenceThreshold: number };
 
 ### Env var: `ATLAS_LEARN_CONFIDENCE_THRESHOLD`
 
-Default 0.7, range 0.0-1.0. Parsed in `resolveFromEnv()` with `parseFloat()` + `Number.isFinite()` validation.
+Default 0.7, range 0.0-1.0. Parsed in `configFromEnv()` with `parseFloat()` + `Number.isFinite()` validation, following the same IIFE pattern used by `cache` and `session` env var blocks.
 
 Config file: `learn.confidenceThreshold` in `atlas.config.ts`.
 

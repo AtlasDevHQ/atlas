@@ -60,8 +60,10 @@ adminSuggestions.get("/", async (c) => {
 
     const filterParams = [...params];
     params.push(limit, offset);
+    const limitIdx = idx;
+    const offsetIdx = idx + 1;
     const rows = await internalQuery<QuerySuggestionRow>(
-      `SELECT * FROM query_suggestions ${where} ORDER BY score DESC LIMIT $${idx++} OFFSET $${idx++}`,
+      `SELECT * FROM query_suggestions ${where} ORDER BY score DESC LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
       params
     );
 

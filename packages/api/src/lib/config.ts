@@ -345,6 +345,15 @@ const AtlasConfigSchema = z.object({
     /** Maximum number of cached entries. Default: 1000. */
     maxSize: z.number().int().positive().default(1000),
   }).optional(),
+
+  /**
+   * Dynamic learning configuration. Controls how learned query patterns
+   * are promoted and injected into agent context.
+   */
+  learn: z.object({
+    /** Minimum confidence score for a pattern to be eligible for auto-promotion. Default: 0.7. */
+    confidenceThreshold: z.number().min(0).max(1).default(0.7),
+  }).optional(),
 });
 
 /** The output type after Zod parsing (defaults applied, all fields present). */
@@ -392,6 +401,8 @@ export interface ResolvedConfig {
   pool?: { perOrg?: { maxConnections: number; idleTimeoutMs: number; maxOrgs: number; warmupProbes: number; drainThreshold: number } };
   /** Query result cache configuration. */
   cache?: { enabled: boolean; ttl: number; maxSize: number };
+  /** Dynamic learning configuration. */
+  learn?: { confidenceThreshold: number };
   /** Whether the config was loaded from a file or synthesized from env vars. */
   source: "file" | "env";
 }
@@ -560,6 +571,15 @@ export function configFromEnv(): ResolvedConfig {
           enabled,
           ttl: Number.isFinite(ttl) && ttl > 0 ? ttl : 300_000,
           maxSize: Number.isFinite(maxSize) && maxSize > 0 ? maxSize : 1000,
+        },
+      };
+    })()),
+    // Learn config from env vars
+    ...((() => {
+      const threshold = parseFloat(process.env.ATLAS_LEARN_CONFIDENCE_THRESHOLD ?? "");
+      return {
+        learn: {
+          confidenceThreshold: Number.isFinite(threshold) && threshold >= 0 && threshold <= 1 ? threshold : 0.7,
         },
       };
     })()),
@@ -912,6 +932,7 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
     ...(config.semanticIndex ? { semanticIndex: config.semanticIndex } : {}),
     ...(config.pool ? { pool: config.pool } : {}),
     ...(config.cache ? { cache: config.cache } : {}),
+    ...(config.learn ? { learn: config.learn } : {}),
     source: "file",
   };
 }

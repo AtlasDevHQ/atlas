@@ -379,6 +379,7 @@ bun run atlas -- learn [options]
 | `--limit <n>` | Max audit log entries to analyze (default: 1000) |
 | `--since <date>` | Only analyze queries after this date (ISO 8601, e.g. `2026-03-01`) |
 | `--source <name>` | Read from/write to `semantic/{name}/` subdirectory |
+| `--suggestions` | Generate query suggestions from the audit log (stored in `query_suggestions` table) |
 
 **Requires** `DATABASE_URL` to be set (the audit log lives in the internal database).
 
@@ -396,6 +397,9 @@ atlas learn --apply
 
 # Only analyze recent queries
 atlas learn --since 2026-03-01 --limit 500
+
+# Generate query suggestions from audit log
+atlas learn --suggestions
 ```
 
 ## benchmark

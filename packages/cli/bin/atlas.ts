@@ -4019,6 +4019,7 @@ async function handleIndex(args: string[]): Promise<void> {
 
 async function handleLearn(args: string[]): Promise<void> {
   const applyMode = args.includes("--apply");
+  const runSuggestions = args.includes("--suggestions");
   const limitArg = getFlag(args, "--limit");
   const sinceArg = getFlag(args, "--since");
   const sourceArg = requireFlagIdentifier(args, "--source", "source name");
@@ -4125,6 +4126,14 @@ async function handleLearn(args: string[]): Promise<void> {
       } else {
         console.log(pc.dim("\nDry run — no files modified. Use --apply to write changes."));
       }
+    }
+
+    if (runSuggestions) {
+      console.log("\n📊 Generating query suggestions from audit log...");
+      const { generateSuggestions } = await import("@atlas/api/lib/learn/suggestions");
+      const result = await generateSuggestions(null); // CLI runs in single-org mode
+      console.log(`  Created: ${pc.bold(String(result.created))} suggestions`);
+      console.log(`  Updated: ${pc.bold(String(result.updated))} suggestions`);
     }
   } catch (err) {
     console.error(pc.red("Failed to analyze audit log."));

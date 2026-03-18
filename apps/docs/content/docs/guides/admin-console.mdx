@@ -520,6 +520,8 @@ All admin endpoints are at `/api/v1/admin/` and require the `admin` role. See th
 | `PATCH` | `/prompts/:collectionId/items/:itemId` | Update item |
 | `DELETE` | `/prompts/:collectionId/items/:itemId` | Delete item |
 | `PUT` | `/prompts/:id/reorder` | Reorder items (body: `{ itemIds }`) |
+| `GET` | `/suggestions` | List query suggestions (supports `table`, `min_frequency`, `limit`, `offset` filters) |
+| `DELETE` | `/suggestions/:id` | Delete a query suggestion |
 
 ---
 

@@ -540,7 +540,7 @@ export async function migrateInternalDB(): Promise<void> {
   // Seed built-in prompt collections
   await seedPromptLibrary(pool);
 
-  log.info("Internal DB migration complete (audit_log, conversations, messages, slack, action_log, scheduled_tasks, connections, token_usage, invitations, plugin_settings, settings, org scoping, semantic_entities, learned_patterns, prompt_collections, prompt_items)");
+  
 }
 
 /** Seed built-in prompt collections. Idempotent — checks each collection by name. */
@@ -636,6 +636,37 @@ async function seedPromptLibrary(pool: InternalPool): Promise<void> {
       );
     }
   }
+
+  // Query suggestions (0.8.0)
+await pool.query(`
+    CREATE TABLE IF NOT EXISTS query_suggestions (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      org_id TEXT,
+      description TEXT NOT NULL,
+      pattern_sql TEXT NOT NULL,
+      normalized_hash TEXT NOT NULL,
+      tables_involved JSONB NOT NULL DEFAULT '[]',
+      primary_table TEXT,
+      frequency INTEGER NOT NULL DEFAULT 1,
+      clicked_count INTEGER NOT NULL DEFAULT 0,
+      score REAL NOT NULL DEFAULT 0,
+      last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+  // UNIQUE NULLS NOT DISTINCT treats NULL = NULL, so (NULL, hash) deduplicates correctly.
+  // Requires PostgreSQL 15+. Uses DO NOTHING on duplicate constraint to be idempotent.
+  await pool.query(`DO $$ BEGIN
+    ALTER TABLE query_suggestions ADD CONSTRAINT uq_query_suggestions_org_hash UNIQUE NULLS NOT DISTINCT (org_id, normalized_hash);
+  EXCEPTION WHEN duplicate_table THEN NULL; WHEN duplicate_object THEN NULL; END $$;`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_query_suggestions_org_table ON query_suggestions(org_id, primary_table);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_query_suggestions_org_score ON query_suggestions(org_id, score DESC);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_query_suggestions_tables ON query_suggestions USING GIN(tables_involved);`);
+  await pool.query(`ALTER TABLE query_suggestions ADD CONSTRAINT uq_query_suggestions_org_hash UNIQUE NULLS NOT DISTINCT (org_id, normalized_hash);`).catch(() => { /* constraint already exists */ });
+
+  log.info("Internal DB migration complete (audit_log, conversations, messages, slack, action_log, scheduled_tasks, connections, token_usage, invitations, plugin_settings, settings, org scoping, semantic_entities, learned_patterns, prompt_collections, prompt_items, query_suggestions)");
+
 }
 
 /**
@@ -794,6 +825,24 @@ export interface ApprovedPatternRow {
   [key: string]: unknown;
 }
 
+/** Row shape for query_suggestions table. */
+export interface QuerySuggestionRow {
+  id: string;
+  org_id: string | null;
+  description: string;
+  pattern_sql: string;
+  normalized_hash: string;
+  tables_involved: string; // JSONB string, parse to string[]
+  primary_table: string | null;
+  frequency: number;
+  clicked_count: number;
+  score: number;
+  last_seen_at: string;
+  created_at: string;
+  updated_at: string;
+  [key: string]: unknown;
+}
+
 /**
  * Fetch approved learned patterns, scoped to an org (or global when orgId is null).
  * Ordered by confidence DESC, capped at 100 rows.
@@ -815,4 +864,149 @@ export async function getApprovedPatterns(orgId: string | null): Promise<Approve
          LIMIT 100`,
     orgId ? [orgId] : [],
   );
+}
+
+export async function upsertSuggestion(suggestion: {
+  orgId: string | null;
+  description: string;
+  patternSql: string;
+  normalizedHash: string;
+  tablesInvolved: string[];
+  primaryTable: string | null;
+  frequency: number;
+  score: number;
+  lastSeenAt: Date;
+}): Promise<"created" | "updated" | "skipped"> {
+  if (!hasInternalDB()) return "skipped";
+  try {
+    const rows = await internalQuery<{ id: string; created: boolean }>(
+      `INSERT INTO query_suggestions (org_id, description, pattern_sql, normalized_hash, tables_involved, primary_table, frequency, score, last_seen_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       ON CONFLICT ON CONSTRAINT uq_query_suggestions_org_hash DO UPDATE SET
+         frequency = EXCLUDED.frequency,
+         score = EXCLUDED.score,
+         last_seen_at = EXCLUDED.last_seen_at,
+         updated_at = NOW()
+       RETURNING id, (xmax = 0) AS created`,
+      [
+        suggestion.orgId,
+        suggestion.description,
+        suggestion.patternSql,
+        suggestion.normalizedHash,
+        JSON.stringify(suggestion.tablesInvolved),
+        suggestion.primaryTable,
+        suggestion.frequency,
+        suggestion.score,
+        suggestion.lastSeenAt.toISOString(),
+      ]
+    );
+    return rows[0]?.created ? "created" : "updated";
+  } catch (err) {
+    log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to upsert suggestion");
+    return "skipped";
+  }
+}
+
+export async function getSuggestionsByTables(
+  orgId: string | null,
+  tables: string[],
+  limit: number = 10
+): Promise<QuerySuggestionRow[]> {
+  if (!hasInternalDB()) return [];
+  try {
+    const orgClause = orgId != null ? "org_id = $1" : "org_id IS NULL";
+    const params: unknown[] = orgId != null ? [orgId] : [];
+    const nextIdx = params.length + 1;
+
+    let tableClause: string;
+    if (tables.length === 1) {
+      tableClause = `primary_table = $${nextIdx}`;
+      params.push(tables[0]);
+    } else {
+      tableClause = `tables_involved ?| $${nextIdx}::text[]`;
+      params.push(tables);
+    }
+
+    params.push(limit);
+    const limitIdx = params.length;
+
+    return await internalQuery<QuerySuggestionRow>(
+      `SELECT * FROM query_suggestions WHERE ${orgClause} AND ${tableClause} ORDER BY score DESC LIMIT $${limitIdx}`,
+      params
+    );
+  } catch (err) {
+    log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to get suggestions by tables");
+    return [];
+  }
+}
+
+export async function getPopularSuggestions(
+  orgId: string | null,
+  limit: number = 10
+): Promise<QuerySuggestionRow[]> {
+  if (!hasInternalDB()) return [];
+  try {
+    const orgClause = orgId != null ? "org_id = $1" : "org_id IS NULL";
+    const params: unknown[] = orgId != null ? [orgId, limit] : [limit];
+    const limitIdx = params.length;
+
+    return await internalQuery<QuerySuggestionRow>(
+      `SELECT * FROM query_suggestions WHERE ${orgClause} ORDER BY score DESC LIMIT $${limitIdx}`,
+      params
+    );
+  } catch (err) {
+    log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to get popular suggestions");
+    return [];
+  }
+}
+
+export function incrementSuggestionClick(
+  id: string,
+  orgId: string | null
+): void {
+  if (!hasInternalDB()) return;
+  const orgClause = orgId != null ? "org_id = $1" : "org_id IS NULL";
+  const params: unknown[] = orgId != null ? [orgId, id] : [id];
+  const idIdx = params.length;
+
+  internalExecute(
+    `UPDATE query_suggestions SET clicked_count = clicked_count + 1 WHERE ${orgClause} AND id = $${idIdx}`,
+    params
+  );
+}
+
+export async function deleteSuggestion(
+  id: string,
+  orgId: string | null
+): Promise<boolean> {
+  if (!hasInternalDB()) return false;
+  const orgClause = orgId != null ? "org_id = $1" : "org_id IS NULL";
+  const params: unknown[] = orgId != null ? [orgId, id] : [id];
+  const idIdx = params.length;
+
+  const rows = await internalQuery<{ id: string }>(
+    `DELETE FROM query_suggestions WHERE ${orgClause} AND id = $${idIdx} RETURNING id`,
+    params
+  );
+  return rows.length > 0;
+}
+
+export async function getAuditLogQueries(
+  orgId: string | null,
+  limit: number = 5000
+): Promise<Array<{ sql: string; tables_accessed: string | null; timestamp: string }>> {
+  if (!hasInternalDB()) return [];
+  try {
+    const orgClause = orgId != null ? "org_id = $1" : "org_id IS NULL";
+    const params: unknown[] = orgId != null ? [orgId, limit] : [limit];
+    const limitIdx = params.length;
+
+    return await internalQuery<{ sql: string; tables_accessed: string | null; timestamp: string }>(
+      `SELECT sql, tables_accessed, timestamp FROM audit_log WHERE ${orgClause} AND success = true AND sql IS NOT NULL ORDER BY timestamp DESC LIMIT $${limitIdx}`,
+      params
+    );
+  } catch (err) {
+    log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to get audit log queries");
+    return [];
+  }
 }

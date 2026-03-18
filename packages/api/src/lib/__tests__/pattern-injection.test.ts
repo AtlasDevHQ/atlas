@@ -38,6 +38,12 @@ mock.module("@atlas/api/lib/db/internal", () => ({
     if (mockGetApprovedPatternsError) throw mockGetApprovedPatternsError;
     return mockApprovedPatterns;
   },
+  upsertSuggestion: mock(() => Promise.resolve("created")),
+  getSuggestionsByTables: mock(() => Promise.resolve([])),
+  getPopularSuggestions: mock(() => Promise.resolve([])),
+  incrementSuggestionClick: mock(),
+  deleteSuggestion: mock(() => Promise.resolve(false)),
+  getAuditLogQueries: mock(() => Promise.resolve([])),
 }));
 
 mock.module("@atlas/api/lib/config", () => ({

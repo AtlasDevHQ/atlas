@@ -125,6 +125,12 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   insertLearnedPattern: () => {},
   incrementPatternCount: () => {},
   getApprovedPatterns: mock(async () => []),
+  upsertSuggestion: mock(async () => "created"),
+  getSuggestionsByTables: mock(async () => []),
+  getPopularSuggestions: mock(async () => []),
+  incrementSuggestionClick: mock(),
+  deleteSuggestion: mock(async () => false),
+  getAuditLogQueries: mock(async () => []),
 }));
 
 mock.module("@atlas/api/lib/learn/pattern-cache", () => ({

@@ -25,6 +25,12 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: mockInternalQuery,
   getInternalDB: mockGetInternalDB,
   getApprovedPatterns: async () => [],
+  upsertSuggestion: mock(() => Promise.resolve("created")),
+  getSuggestionsByTables: mock(() => Promise.resolve([])),
+  getPopularSuggestions: mock(() => Promise.resolve([])),
+  incrementSuggestionClick: mock(),
+  deleteSuggestion: mock(() => Promise.resolve(false)),
+  getAuditLogQueries: mock(() => Promise.resolve([])),
 }));
 
 mock.module("@atlas/api/lib/logger", () => ({

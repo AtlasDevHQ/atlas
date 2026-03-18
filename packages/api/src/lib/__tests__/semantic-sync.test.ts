@@ -45,6 +45,12 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: mockHasInternalDB,
   internalQuery: mockInternalQuery,
   getApprovedPatterns: async () => [],
+  upsertSuggestion: mock(() => Promise.resolve("created")),
+  getSuggestionsByTables: mock(() => Promise.resolve([])),
+  getPopularSuggestions: mock(() => Promise.resolve([])),
+  incrementSuggestionClick: mock(),
+  deleteSuggestion: mock(() => Promise.resolve(false)),
+  getAuditLogQueries: mock(() => Promise.resolve([])),
 }));
 
 const mockInvalidateOrgWhitelist = mock(() => {});

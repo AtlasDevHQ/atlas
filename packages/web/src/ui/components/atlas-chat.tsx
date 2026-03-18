@@ -16,6 +16,8 @@ import { ToolPart } from "./chat/tool-part";
 import { Markdown } from "./chat/markdown";
 import { STARTER_PROMPTS } from "./chat/starter-prompts";
 import { FollowUpChips } from "./chat/follow-up-chips";
+import { SuggestionChips } from "./chat/suggestion-chips";
+import type { QuerySuggestion } from "@/ui/lib/types";
 import { ShareDialog } from "./chat/share-dialog";
 import { ConversationSidebar } from "./conversations/conversation-sidebar";
 import { ChangePasswordDialog } from "./admin/change-password-dialog";
@@ -139,6 +141,9 @@ export function AtlasChat() {
   const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
   const [schemaExplorerOpen, setSchemaExplorerOpen] = useState(false);
   const [promptLibraryOpen, setPromptLibraryOpen] = useState(false);
+  const [popularSuggestions, setPopularSuggestions] = useState<QuerySuggestion[]>([]);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+  const [relatedSuggestions, setRelatedSuggestions] = useState<QuerySuggestion[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const managedSession = authClient.useSession();
@@ -306,6 +311,72 @@ export function AtlasChat() {
 
   const isLoading = status === "streaming" || status === "submitted";
 
+  // Fetch popular suggestions for the empty state
+  useEffect(() => {
+    if (messages.length > 0) return;
+    let cancelled = false;
+    setSuggestionsLoading(true);
+    fetch(`${apiUrl}/api/v1/suggestions/popular?limit=6`, {
+      credentials: isCrossOrigin ? "include" : "same-origin",
+      headers: getHeaders(),
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled && data?.suggestions) {
+          setPopularSuggestions(data.suggestions);
+        }
+      })
+      .catch(() => {
+        // intentionally ignored: suggestions are non-critical
+      })
+      .finally(() => {
+        if (!cancelled) setSuggestionsLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [messages.length, apiUrl, isCrossOrigin, getHeaders]);
+
+  // Fetch related suggestions after a completed query with SQL results
+  useEffect(() => {
+    if (messages.length === 0 || isLoading) return;
+    const lastMsg = messages[messages.length - 1];
+    if (lastMsg.role !== "assistant") return;
+
+    // Extract tables from executeSQL tool invocations
+    const tables: string[] = [];
+    for (const part of lastMsg.parts ?? []) {
+      if (part.type === "tool-invocation" && part.toolName === "executeSQL" && part.state === "result") {
+        const result = part.result as Record<string, unknown> | undefined;
+        if (result && Array.isArray(result.tablesAccessed)) {
+          tables.push(...(result.tablesAccessed as string[]));
+        }
+      }
+    }
+
+    if (tables.length === 0) {
+      setRelatedSuggestions([]);
+      return;
+    }
+
+    const uniqueTables = [...new Set(tables)];
+    const params = uniqueTables.map((t) => `table=${encodeURIComponent(t)}`).join("&");
+
+    let cancelled = false;
+    fetch(`${apiUrl}/api/v1/suggestions?${params}&limit=3`, {
+      credentials: isCrossOrigin ? "include" : "same-origin",
+      headers: getHeaders(),
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled && data?.suggestions) {
+          setRelatedSuggestions(data.suggestions);
+        }
+      })
+      .catch(() => {
+        // intentionally ignored: suggestions are non-critical
+      });
+    return () => { cancelled = true; };
+  }, [messages.length, isLoading, apiUrl, isCrossOrigin, getHeaders]);
+
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -323,6 +394,17 @@ export function AtlasChat() {
       setHealthWarning("Failed to send message. Please try again.");
       setTimeout(() => setHealthWarning(""), 5000);
     });
+  }
+
+  function handleSuggestionSelect(text: string, id: string) {
+    fetch(`${apiUrl}/api/v1/suggestions/${id}/click`, {
+      method: "POST",
+      credentials: isCrossOrigin ? "include" : "same-origin",
+      headers: getHeaders(),
+    }).catch(() => {
+      // intentionally ignored: click tracking is non-critical
+    });
+    handleSend(text);
   }
 
   async function handleSelectConversation(id: string) {
@@ -487,6 +569,12 @@ export function AtlasChat() {
                           Ask a question about your data to get started
                         </p>
                       </div>
+                      <SuggestionChips
+                        suggestions={popularSuggestions}
+                        onSelect={handleSuggestionSelect}
+                        loading={suggestionsLoading}
+                        label="Popular queries"
+                      />
                       <div className="grid w-full max-w-lg grid-cols-1 gap-2 sm:grid-cols-2">
                         {STARTER_PROMPTS.map((prompt) => (
                           <Button
@@ -583,6 +671,13 @@ export function AtlasChat() {
                               suggestions={suggestions}
                               onSelect={handleSend}
                             />
+                            {relatedSuggestions.length > 0 && (
+                              <SuggestionChips
+                                suggestions={relatedSuggestions}
+                                onSelect={handleSuggestionSelect}
+                                label="Related queries"
+                              />
+                            )}
                             {conversationId && convos.available && (
                               <div className="flex items-center gap-1">
                                 <SaveButton

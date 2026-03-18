@@ -219,6 +219,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   findPatternBySQL: async () => null,
   insertLearnedPattern: () => {},
   incrementPatternCount: () => {},
+  getApprovedPatterns: mock(async () => []),
 }));
 
 // Org-scoped semantic entities mock

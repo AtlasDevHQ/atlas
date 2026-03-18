@@ -44,6 +44,7 @@ mock.module("@atlas/api/lib/db/semantic-entities", () => ({
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: mockHasInternalDB,
   internalQuery: mockInternalQuery,
+  getApprovedPatterns: async () => [],
 }));
 
 const mockInvalidateOrgWhitelist = mock(() => {});

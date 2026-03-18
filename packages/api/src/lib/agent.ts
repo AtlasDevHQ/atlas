@@ -26,6 +26,7 @@ import { getConfig } from "./config";
 import { createLogger, getRequestContext } from "./logger";
 import { getSetting } from "./settings";
 import { hasInternalDB, internalExecute } from "./db/internal";
+import { buildLearnedPatternsSection } from "./learn/pattern-cache";
 import { dispatchMutableHook } from "./plugins/hooks";
 import { plugins } from "./plugins/registry";
 import {
@@ -200,7 +201,7 @@ const PYTHON_GUIDANCE = `
 
 **Chart guidance:** prefer \`_atlas_chart\` (interactive Recharts) for bar/line/pie charts. Use \`chart_path()\` only for advanced matplotlib visualizations that Recharts cannot render.`;
 
-function buildSystemPrompt(registry: ToolRegistry, orgSemanticIndex?: string): string {
+function buildSystemPrompt(registry: ToolRegistry, orgSemanticIndex?: string, learnedPatternsSection?: string): string {
   let base = SYSTEM_PROMPT_PREFIX + "\n\n" + registry.describe() + "\n\n" + SYSTEM_PROMPT_SUFFIX;
 
   // Add Python guidance only when the tool is available
@@ -216,6 +217,11 @@ function buildSystemPrompt(registry: ToolRegistry, orgSemanticIndex?: string): s
     if (semanticIndex) {
       base += "\n\n" + semanticIndex;
     }
+  }
+
+  // Append learned patterns (if any)
+  if (learnedPatternsSection) {
+    base += "\n\n" + learnedPatternsSection;
   }
 
   // Append plugin context fragments (if any)
@@ -274,8 +280,9 @@ export function buildSystemParam(
   registry: ToolRegistry = defaultRegistry,
   warnings?: string[],
   orgSemanticIndex?: string,
+  learnedPatternsSection?: string,
 ): string | SystemModelMessage {
-  let content = buildSystemPrompt(registry, orgSemanticIndex);
+  let content = buildSystemPrompt(registry, orgSemanticIndex, learnedPatternsSection);
 
   if (warnings && warnings.length > 0) {
     content += "\n\n## Warnings\n\n" + warnings.map((w) => `- ${w}`).join("\n");
@@ -499,6 +506,24 @@ export async function runAgent({
     }
   }
 
+  // Load relevant learned patterns for the current question.
+  let learnedPatternsSection: string | undefined;
+  if (hasInternalDB()) {
+    try {
+      const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
+      const question = lastUserMsg?.parts
+        ?.filter((p): p is { type: "text"; text: string } => p.type === "text")
+        .map((p) => p.text)
+        .join(" ") ?? "";
+      if (question) {
+        const section = await buildLearnedPatternsSection(orgId ?? null, question);
+        if (section) learnedPatternsSection = section;
+      }
+    } catch (err) {
+      log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to load learned patterns — continuing without");
+    }
+  }
+
   const span = tracer.startSpan("atlas.agent", {
     attributes: {
       "atlas.provider": providerType,
@@ -527,7 +552,7 @@ export async function runAgent({
   try {
     result = otelContext.with(agentCtx, () => streamText({
       model,
-      system: buildSystemParam(providerType, toolRegistry, warnings, orgSemanticIndex),
+      system: buildSystemParam(providerType, toolRegistry, warnings, orgSemanticIndex, learnedPatternsSection),
       messages: modelMessages,
       tools,
       temperature: 0.2,

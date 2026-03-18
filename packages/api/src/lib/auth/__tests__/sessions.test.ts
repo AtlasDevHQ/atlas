@@ -96,6 +96,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getEncryptionKey: () => null,
   isPlaintextUrl: () => true,
   _resetEncryptionKeyCache: mock(() => {}),
+  getApprovedPatterns: mock(async () => []),
 }));
 
 mock.module("@atlas/api/lib/plugins/registry", () => ({

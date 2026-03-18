@@ -106,6 +106,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getEncryptionKey: () => null,
   isPlaintextUrl: (value: string) => /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value),
   _resetEncryptionKeyCache: mock(() => {}),
+  getApprovedPatterns: mock(async () => []),
 }));
 
 // Settings mock — we need to intercept the actual settings functions

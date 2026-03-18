@@ -111,6 +111,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   findPatternBySQL: async () => null,
   insertLearnedPattern: () => {},
   incrementPatternCount: () => {},
+  getApprovedPatterns: mock(async () => []),
 }));
 
 mock.module("@atlas/api/lib/plugins/registry", () => ({

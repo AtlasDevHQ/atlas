@@ -10,6 +10,7 @@ import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { LEARNED_PATTERN_STATUSES, type LearnedPattern } from "@useatlas/types";
 import { adminAuthPreamble } from "./admin-auth";
+import { invalidatePatternCache } from "@atlas/api/lib/learn/pattern-cache";
 
 const log = createLogger("admin-learned-patterns");
 
@@ -324,6 +325,12 @@ adminLearnedPatterns.patch("/:id", async (c) => {
       if (updated.length === 0) {
         return c.json({ error: "not_found", message: "Pattern was deleted before update completed." }, 404);
       }
+
+      // Invalidate pattern cache when status changes affect injection
+      if (status !== undefined) {
+        invalidatePatternCache(orgId ?? null);
+      }
+
       return c.json(toLearnedPattern(updated[0]));
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to update learned pattern");
@@ -461,6 +468,11 @@ adminLearnedPatterns.post("/bulk", async (c) => {
           );
           errors.push({ id, error: itemErr instanceof Error ? itemErr.message : "Update failed" });
         }
+      }
+
+      // Invalidate pattern cache if any patterns were updated
+      if (updated.length > 0) {
+        invalidatePatternCache(orgId ?? null);
       }
 
       return c.json({ updated, notFound, ...(errors.length > 0 ? { errors } : {}) });

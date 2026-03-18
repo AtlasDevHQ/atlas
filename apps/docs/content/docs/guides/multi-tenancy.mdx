@@ -35,11 +35,14 @@ Without organizations enabled, Atlas operates in single-tenant mode — all user
 
 Organizations are automatically available when managed auth is configured. The Better Auth `organization` plugin is included in Atlas's auth server with a three-tier role hierarchy:
 
-| Org Role | Permissions |
-|----------|-------------|
-| **owner** | Full control — update/delete the org, manage members, connections, semantic layer, settings |
-| **admin** | Manage members, connections, semantic layer, and settings (cannot delete the org) |
-| **member** | Read connections and semantic layer, create and read conversations |
+| Resource | member | admin | owner |
+|----------|--------|-------|-------|
+| **organization** | — | — | update, delete |
+| **member** | — | create, read, update, delete | create, read, update, delete |
+| **connection** | read | create, read, update, delete | create, read, update, delete |
+| **conversation** | create, read | create, read, delete | create, read, delete |
+| **semantic** | read | read, update | read, update |
+| **settings** | read | read, update | read, update |
 
 ### Create the first organization
 
@@ -161,7 +164,9 @@ export default defineConfig({
       drainThreshold: 5,    // Consecutive failures before auto-drain (default: 5)
     },
   },
-  maxTotalConnections: 100, // Hard cap across all pools (default: 100)
+
+  // Top-level — hard cap across all pools (base + org-scoped)
+  maxTotalConnections: 100, // Default: 100
 });
 ```
 
@@ -314,6 +319,12 @@ You can also use the `ATLAS_ORG_ID` environment variable instead of the flag:
 
 ```bash
 ATLAS_ORG_ID=org-abc bun run atlas -- init
+```
+
+To write entities to disk without importing to the DB (useful for reviewing before committing), pass `--no-import`:
+
+```bash
+bun run atlas -- init --org org-abc --no-import
 ```
 
 Without `--org`, `atlas init` writes to the top-level `semantic/entities/` directory (single-tenant mode).

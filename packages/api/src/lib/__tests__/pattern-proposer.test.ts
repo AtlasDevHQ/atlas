@@ -8,8 +8,9 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { _resetPool, type InternalPool } from "../db/internal";
 import { withRequestContext } from "../logger";
 import { createAtlasUser } from "../auth/types";
-import { _resetYamlPatternCache } from "../learn/pattern-analyzer";
-import { _analyzeAndPropose, type PatternProposalInput } from "../learn/pattern-proposer";
+import { _resetYamlPatternCache, _setYamlPatternCache, normalizeSQL } from "../learn/pattern-analyzer";
+import { _analyzeAndPropose, proposePatternIfNovel, type PatternProposalInput } from "../learn/pattern-proposer";
+import { incrementPatternCount } from "../db/internal";
 
 // ---------------------------------------------------------------------------
 // Mock pool
@@ -229,5 +230,66 @@ describe("pattern-proposer", () => {
     const parsed = JSON.parse(jsonbEntry);
     expect(Array.isArray(parsed)).toBe(true);
     expect(parsed[0]).toMatch(/^[0-9a-f]+$/);
+  });
+
+  // ── proposePatternIfNovel wrapper ──────────────────────────────────
+
+  test("proposePatternIfNovel skips when no internal DB", () => {
+    delete process.env.DATABASE_URL;
+    _resetPool(null);
+
+    // Should return immediately without touching the DB
+    proposePatternIfNovel(defaultInput);
+    expect(queryCalls.length).toBe(0);
+  });
+
+  test("proposePatternIfNovel swallows errors without throwing", async () => {
+    queryThrow = new Error("DB connection exploded");
+
+    // This should NOT throw — the .catch() wrapper absorbs the error
+    proposePatternIfNovel(defaultInput);
+
+    // Give the async fire-and-forget a tick to settle
+    await new Promise((r) => setTimeout(r, 50));
+
+    // No unhandled rejection — if we got here, the error was swallowed
+    expect(true).toBe(true);
+  });
+
+  // ── YAML pattern match short-circuit ───────────────────────────────
+
+  test("skips DB check when query matches a YAML query_pattern", async () => {
+    // Pre-populate the YAML cache with a known normalized pattern
+    const knownPattern = normalizeSQL(
+      "SELECT plan, SUM(monthly_value) AS total_mrr, COUNT(*) AS account_count FROM accounts WHERE status = 'Active' GROUP BY plan ORDER BY total_mrr DESC",
+    );
+    _setYamlPatternCache(new Set([knownPattern]));
+
+    // Submit a SQL that normalizes to the same pattern (different literal value)
+    const input: PatternProposalInput = {
+      sql: "SELECT plan, SUM(monthly_value) AS total_mrr, COUNT(*) AS account_count FROM accounts WHERE status = 'Premium' GROUP BY plan ORDER BY total_mrr DESC",
+      dialect: "PostgresQL",
+      connectionId: "default",
+    };
+
+    await _analyzeAndPropose(input);
+
+    // Should NOT hit the DB at all — short-circuited by YAML match
+    expect(queryCalls.length).toBe(0);
+  });
+
+  // ── incrementPatternCount without fingerprint ──────────────────────
+
+  test("incrementPatternCount without fingerprint uses simple UPDATE", () => {
+    enableInternalDB();
+
+    incrementPatternCount("pat-abc");
+
+    const updateCall = queryCalls.find((c) => c.sql.includes("UPDATE learned_patterns SET"));
+    expect(updateCall).toBeDefined();
+    // Simple update: only id param, no JSONB append
+    expect(updateCall!.params?.length).toBe(1);
+    expect(updateCall!.params?.[0]).toBe("pat-abc");
+    expect(updateCall!.sql).not.toContain("source_queries");
   });
 });

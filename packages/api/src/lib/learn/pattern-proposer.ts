@@ -26,9 +26,9 @@ export function proposePatternIfNovel(input: PatternProposalInput): void {
   if (!hasInternalDB()) return;
 
   void _analyzeAndPropose(input).catch((err) => {
-    log.debug(
+    log.warn(
       { err: err instanceof Error ? err.message : String(err), sql: input.sql.slice(0, 200) },
-      "Pattern proposal analysis failed — ignored",
+      "Pattern proposal analysis failed — learned patterns may not be recording",
     );
   });
 }

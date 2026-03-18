@@ -77,7 +77,11 @@ export function extractPatternInfo(sql: string, dialect: string = "PostgresQL"):
           })
           .filter(Boolean),
       )];
-    } catch {
+    } catch (tableListErr) {
+      log.debug(
+        { err: tableListErr instanceof Error ? tableListErr.message : String(tableListErr) },
+        "tableList extraction failed — falling back to empty tables",
+      );
       tables = [];
     }
 
@@ -140,7 +144,7 @@ export function loadYamlQueryPatterns(semanticRoot?: string): Set<string> {
         }
       }
     } catch (err) {
-      log.debug(
+      log.warn(
         { err: err instanceof Error ? err.message : String(err) },
         "Failed to scan semantic root for pattern loading",
       );
@@ -157,7 +161,7 @@ function loadPatternsFromDir(dir: string, out: Set<string>): void {
   try {
     files = fs.readdirSync(dir).filter((f) => f.endsWith(".yml"));
   } catch (err) {
-    log.debug(
+    log.warn(
       { dir, err: err instanceof Error ? err.message : String(err) },
       "Failed to read entities directory for pattern loading",
     );
@@ -179,7 +183,7 @@ function loadPatternsFromDir(dir: string, out: Set<string>): void {
         }
       }
     } catch (err) {
-      log.debug(
+      log.warn(
         { file, dir, err: err instanceof Error ? err.message : String(err) },
         "Skipping entity file during pattern loading",
       );
@@ -191,11 +195,16 @@ function loadPatternsFromDir(dir: string, out: Set<string>): void {
 
 let _yamlPatternCache: Set<string> | null = null;
 
-/** Get cached YAML patterns. Lazily loaded on first access. */
+/** Get cached YAML patterns. Lazily loaded on first access.
+ * Empty results are not cached so subsequent calls retry the load. */
 export function getYamlPatterns(semanticRoot?: string): Set<string> {
   if (semanticRoot) return loadYamlQueryPatterns(semanticRoot);
   if (!_yamlPatternCache) {
-    _yamlPatternCache = loadYamlQueryPatterns();
+    const loaded = loadYamlQueryPatterns();
+    if (loaded.size > 0) {
+      _yamlPatternCache = loaded;
+    }
+    return loaded;
   }
   return _yamlPatternCache;
 }
@@ -203,4 +212,9 @@ export function getYamlPatterns(semanticRoot?: string): Set<string> {
 /** Clear the YAML pattern cache. For testing. */
 export function _resetYamlPatternCache(): void {
   _yamlPatternCache = null;
+}
+
+/** Pre-populate the YAML pattern cache. For testing. */
+export function _setYamlPatternCache(patterns: Set<string>): void {
+  _yamlPatternCache = patterns;
 }

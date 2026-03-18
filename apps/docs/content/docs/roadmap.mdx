@@ -64,11 +64,21 @@ Production-readiness hardening across infrastructure, governance, and integratio
 
 Multi-tenant foundation via Better Auth organization plugin with org-scoped semantic layers, connections, caching, and explore tool. Tenant-scoped connection pooling with health-based drain and per-org metrics. Query result caching with configurable TTL and admin flush UI. Pre-computed semantic index for faster agent context loading with `atlas index` CLI. Streaming Python execution output with progressive stdout and inline chart renders. `atlas learn` CLI for offline semantic layer improvements — analyzes audit logs and proposes YAML amendments for query patterns, join discoveries, and glossary terms.
 
+### 0.7.1 — Immediate Cleanup
+
+Post-sprint quality pass on 0.7.0 code. Resolved lint warnings (unused exports, type params, variables), moved chat error stack traces to debug-level logging, filled docs gaps for `atlas index` CLI, streaming Python, and cache admin UI. Code review of new modules surfaced two refactoring issues tracked for 0.7.2.
+
+---
+
+## 0.7.x — Refinement Arc
+
+Systematic quality review of everything shipped in 0.7.0 — type safety, code smells, error handling, test hardening, and docs completeness. Same pattern as the 0.5.x polish releases.
+
 ---
 
 ## 0.8.0 — Intelligence & Learning
 
-The current milestone. An agent that gets smarter over time.
+The next feature milestone. An agent that gets smarter over time.
 
 - **Knowledge** — Curated prompt library per industry, query suggestion engine from usage history
 - **Advanced** — Self-hosted model benchmarks, notebook-style interface, multi-agent collaboration

@@ -47,7 +47,7 @@ export interface TeamsPluginConfig {
   appId: string;
   /** Microsoft App Password from Azure Bot registration. */
   appPassword: string;
-  /** Optional: restrict to a specific Azure AD tenant. */
+  /** Optional: restrict to a specific Microsoft Entra ID tenant. */
   tenantId?: string;
 
   // --- Runtime callbacks (injected by host, not end users) ---

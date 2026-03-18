@@ -31,7 +31,7 @@ export default defineConfig({
 |-------|------|---------|-------------|
 | `appId` | `string` | — | Microsoft App ID from Azure Bot registration |
 | `appPassword` | `string` | — | Microsoft App Password from Azure Bot registration |
-| `tenantId` | `string?` | — | Optional: restrict to a specific Azure AD tenant |
+| `tenantId` | `string?` | — | Optional: restrict to a specific Microsoft Entra ID tenant |
 | `executeQuery` | `function` | — | Callback to run the Atlas agent on a question |
 | `checkRateLimit` | `function?` | — | Optional rate limiting callback |
 | `scrubError` | `function?` | — | Optional error scrubbing callback |

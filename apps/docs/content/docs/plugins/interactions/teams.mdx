@@ -12,7 +12,7 @@ This plugin uses the `routes()` interface to mount Hono routes directly into the
 ## Installation
 
 ```bash
-bun add @useatlas/teams jose
+bun add @useatlas/teams
 ```
 
 ### Prerequisites
@@ -27,7 +27,7 @@ bun add @useatlas/teams jose
 
 1. Go to the [Azure Portal](https://portal.azure.com)
 2. Search for **Azure Bot** and create a new resource
-3. Choose **Multi Tenant** for the bot type (or **Single Tenant** if restricting to one Azure AD tenant)
+3. Choose **Multi Tenant** for the bot type (or **Single Tenant** if restricting to one Microsoft Entra ID tenant)
 4. Note the **Microsoft App ID** — this is your `appId`
 
 ### 2. Create an App Password
@@ -95,8 +95,8 @@ export default defineConfig({
 | Option | Type | Required | Description |
 |--------|------|----------|-------------|
 | `appId` | `string` | Yes | Microsoft App ID from your Azure Bot registration. |
-| `appPassword` | `string` | Yes | Microsoft App Password (client secret) from Azure AD. |
-| `tenantId` | `string` | No | Restrict the bot to a specific Azure AD tenant. Tokens from other tenants are rejected. |
+| `appPassword` | `string` | Yes | Microsoft App Password (client secret) from Microsoft Entra ID. |
+| `tenantId` | `string` | No | Restrict the bot to a specific Microsoft Entra ID tenant. Tokens from other tenants are rejected. |
 | `executeQuery` | `function` | Yes | Callback that runs the Atlas agent on a question and returns structured results. |
 | `checkRateLimit` | `function` | No | Optional rate limiting callback. |
 | `scrubError` | `function` | No | Optional error scrubbing callback to strip sensitive information from error messages. |
@@ -113,7 +113,7 @@ The plugin mounts the following Hono route under the plugin's base path:
 
 1. A user @mentions the bot or sends a direct message in Teams
 2. Teams sends a Bot Framework activity to the `/messages` endpoint
-3. The plugin verifies the JWT in the Authorization header against Azure AD's public keys
+3. The plugin verifies the JWT in the Authorization header against Microsoft Entra ID's public keys
 4. The bot's @mention is stripped from the message text to extract the query
 5. The `executeQuery` callback runs the Atlas agent
 6. Results are formatted as an Adaptive Card with answer, SQL, and data table
@@ -129,7 +129,7 @@ The `executeQuery` callback is the bridge between the Teams plugin and the Atlas
 |----------|-------------|
 | `TEAMS_APP_ID` | Microsoft App ID |
 | `TEAMS_APP_PASSWORD` | Microsoft App Password |
-| `TEAMS_TENANT_ID` | Optional Azure AD tenant ID |
+| `TEAMS_TENANT_ID` | Optional Microsoft Entra ID tenant ID |
 
 ## Troubleshooting
 
@@ -139,7 +139,7 @@ Verify the messaging endpoint URL in your Azure Bot Configuration matches your A
 
 ### Authorization failures
 
-Ensure `TEAMS_APP_ID` and `TEAMS_APP_PASSWORD` match the Azure Bot registration credentials. If using tenant restriction, verify the tenant ID matches the Azure AD tenant where Teams is configured.
+Ensure `TEAMS_APP_ID` and `TEAMS_APP_PASSWORD` match the Azure Bot registration credentials. If using tenant restriction, verify the tenant ID matches the Microsoft Entra ID tenant where Teams is configured.
 
 ### Adaptive Cards not rendering
 

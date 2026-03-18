@@ -42,6 +42,7 @@ export type {
   PromptCollection,
   PromptItem,
   PromptIndustry,
+  QuerySuggestion,
 } from "@useatlas/types";
 export { SHARE_EXPIRY_OPTIONS, PROMPT_INDUSTRIES } from "@useatlas/types";
 export { parseChatError } from "@useatlas/types/errors";

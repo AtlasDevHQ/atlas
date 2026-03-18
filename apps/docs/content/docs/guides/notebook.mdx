@@ -1,0 +1,90 @@
+---
+title: Notebook View
+description: Cell-based interface for exploratory data analysis with inline SQL results, Python output, and charts.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The notebook view provides a cell-based interface for exploratory data analysis. Each agent step becomes an individual cell — SQL query results, Python execution output, and explore commands all display as discrete, manageable units you can review, edit, and re-run.
+
+---
+
+## Accessing the Notebook
+
+There are two ways to open the notebook view:
+
+- **Direct URL** — Navigate to `/notebook` to start a fresh notebook session
+- **From the sidebar** — Click the notebook icon on any existing conversation to switch from chat view to notebook view
+
+The notebook displays the same conversation content as the chat view, reorganized into cells.
+
+---
+
+## Cell Types
+
+Each cell corresponds to an agent tool call or response:
+
+| Cell type | Contents |
+|-----------|----------|
+| **Query result** | SQL query, tabular results, and any generated charts |
+| **Python execution** | Python code, stdout/stderr, and rendered charts (matplotlib or Recharts) |
+| **Explore output** | Semantic layer file contents returned by the explore tool |
+
+Cells display their output inline — you can see the SQL that was run, the rows returned, and any visualizations without switching views.
+
+---
+
+## Cell Operations
+
+Each cell supports the following actions:
+
+- **Run** — Execute the cell (or re-execute after editing)
+- **Edit** — Modify the question or prompt that produced the cell
+- **Copy** — Copy cell contents to the clipboard
+- **Delete** — Remove the cell from the notebook
+- **Collapse / Expand** — Toggle cell visibility to focus on specific results
+
+---
+
+## Re-running Cells
+
+You can edit a cell's question and click **Run** to re-execute from that point. When you re-run a cell:
+
+1. The edited question is sent to the agent
+2. The agent re-executes from that cell onward
+3. All subsequent cells are cleared — they will be replaced by new results
+
+This lets you iterate on analysis without starting over from scratch.
+
+---
+
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| `ArrowUp` / `ArrowDown` | Navigate between cells |
+| `Enter` | Edit the selected cell |
+| `Escape` | Cancel edit |
+| `Shift + Enter` | Submit edit (re-run from this cell) |
+| `Ctrl + Shift + Backspace` | Delete the selected cell |
+
+---
+
+## Persistence
+
+Cell state is saved to your browser's `localStorage`. Your notebook content survives page reloads and browser restarts — you can close the tab and return to the same state.
+
+<Callout type="warn">
+Clearing your browser data or switching browsers will remove saved notebook state. There is no server-side persistence for notebook cells.
+</Callout>
+
+---
+
+## Current Limitations
+
+The notebook view is in its first phase. The following features are not yet available:
+
+- **No forking or branching** — You cannot create alternate analysis paths from a single cell
+- **No drag-and-drop reorder** — Cells maintain their execution order
+- **No export** — There is no option to export a notebook as PDF, HTML, or `.ipynb`
+- **No text cell insertion** — You cannot add freeform markdown or annotation cells between results

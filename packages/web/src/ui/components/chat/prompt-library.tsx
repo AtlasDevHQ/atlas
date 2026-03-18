@@ -59,7 +59,9 @@ export function PromptLibrary({
           credentials: getCredentials(),
         });
         if (!res.ok) {
-          if (!cancelled) setError("Failed to load prompt library");
+          let msg = "Failed to load prompt library";
+          try { msg = ((await res.json()) as Record<string, unknown>).message as string ?? msg; } catch { /* intentionally ignored: response may not be JSON */ }
+          if (!cancelled) setError(msg);
           return;
         }
         const data = await res.json();
@@ -73,11 +75,14 @@ export function PromptLibrary({
                 headers: getHeaders(),
                 credentials: getCredentials(),
               });
-              if (!itemRes.ok) return { ...col, items: [] as PromptItem[] };
+              if (!itemRes.ok) {
+                console.debug(`Failed to fetch items for collection ${col.id}: HTTP ${itemRes.status}`);
+                return { ...col, items: [] as PromptItem[] };
+              }
               const itemData = await itemRes.json();
               return { ...col, items: (itemData.items ?? []) as PromptItem[] };
-            } catch {
-              console.debug(`Failed to fetch items for collection ${col.id}`);
+            } catch (err) {
+              console.debug(`Failed to fetch items for collection ${col.id}:`, err instanceof Error ? err.message : String(err));
               return { ...col, items: [] as PromptItem[] };
             }
           }),

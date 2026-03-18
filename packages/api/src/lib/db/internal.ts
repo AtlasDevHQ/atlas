@@ -620,7 +620,10 @@ async function seedPromptLibrary(pool: InternalPool): Promise<void> {
        VALUES ($1, $2, $3, true, $4) RETURNING id`,
       [collection.name, collection.industry, collection.description, ci],
     );
-    if (!result.rows[0]) continue; // guard for mock/test environments
+    if (!result.rows[0]) {
+      log.warn({ collection: collection.name }, "INSERT INTO prompt_collections returned no rows — skipping item seeding");
+      continue;
+    }
     const collectionId = (result.rows[0] as Record<string, unknown>).id as string;
 
     // Insert items

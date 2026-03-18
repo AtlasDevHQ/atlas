@@ -8,7 +8,7 @@
 
 import { Hono } from "hono";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
-import { hasInternalDB, internalQuery, getInternalDB } from "@atlas/api/lib/db/internal";
+import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import type { PromptCollection, PromptItem } from "@useatlas/types";
 import { adminAuthPreamble } from "./admin-auth";
 
@@ -672,24 +672,14 @@ adminPrompts.put("/:id/reorder", async (c) => {
         }
       }
 
-      // Execute reorder in a transaction
-      const pool = getInternalDB();
-      try {
-        await pool.query("BEGIN");
-        for (let i = 0; i < itemIds.length; i++) {
-          await pool.query(
-            `UPDATE prompt_items SET sort_order = $1, updated_at = now() WHERE id = $2`,
-            [i, itemIds[i]],
-          );
-        }
-        await pool.query("COMMIT");
-      } catch (txErr) {
-        try {
-          await pool.query("ROLLBACK");
-        } catch (rollbackErr) {
-          log.error({ err: rollbackErr instanceof Error ? rollbackErr : new Error(String(rollbackErr)), requestId }, "Failed to rollback reorder transaction");
-        }
-        throw txErr;
+      // Execute updates sequentially — each UPDATE is individually atomic.
+      // No transaction needed: validation above ensures all itemIds are valid,
+      // and partial reorder is recoverable (admin can retry).
+      for (let i = 0; i < itemIds.length; i++) {
+        await internalQuery(
+          `UPDATE prompt_items SET sort_order = $1, updated_at = now() WHERE id = $2`,
+          [i, itemIds[i]],
+        );
       }
 
       return c.json({ reordered: true });

@@ -203,15 +203,18 @@ export default function PromptsPage() {
               const res = await fetch(`${apiUrl}/api/v1/prompts/${c.id}`, {
                 credentials,
               });
-              if (!res.ok) return { id: c.id, count: 0 };
+              if (!res.ok) {
+                console.debug(`Failed to fetch item count for collection ${c.id}: HTTP ${res.status}`);
+                return { id: c.id, count: 0 };
+              }
               const data = await res.json();
               return {
                 id: c.id,
                 count: (data.items as PromptItem[] | undefined)?.length ?? 0,
               };
-            } catch {
+            } catch (err) {
               // Non-critical — just show 0
-              console.debug(`Failed to fetch item count for collection ${c.id}`);
+              console.debug(`Failed to fetch item count for collection ${c.id}:`, err instanceof Error ? err.message : String(err));
               return { id: c.id, count: 0 };
             }
           }),
@@ -223,8 +226,8 @@ export default function PromptsPage() {
           }
           setItemCounts(map);
         }
-      } catch {
-        console.debug("Failed to fetch item counts");
+      } catch (err) {
+        console.debug("Failed to fetch item counts:", err instanceof Error ? err.message : String(err));
       }
     }
 
@@ -251,9 +254,8 @@ export default function PromptsPage() {
           { credentials },
         );
         if (!res.ok) {
-          console.debug(
-            `Failed to fetch items for collection ${detailCollection!.id}: HTTP ${res.status}`,
-          );
+          console.debug(`Failed to fetch items for collection: HTTP ${res.status}`);
+          if (!cancelled) setDetailItems([]);
           return;
         }
         const data = await res.json();

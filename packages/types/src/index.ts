@@ -8,3 +8,4 @@ export * from "./semantic";
 export * from "./share";
 export * from "./organization";
 export * from "./learned-pattern";
+export * from "./prompt";

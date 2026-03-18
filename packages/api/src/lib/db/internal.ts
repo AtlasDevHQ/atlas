@@ -506,7 +506,136 @@ export async function migrateInternalDB(): Promise<void> {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_learned_patterns_org_status ON learned_patterns(org_id, status);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_learned_patterns_org_entity ON learned_patterns(org_id, source_entity);`);
 
-  log.info("Internal DB migration complete (audit_log, conversations, messages, slack, action_log, scheduled_tasks, connections, token_usage, invitations, plugin_settings, settings, org scoping, semantic_entities, learned_patterns)");
+  // Prompt library (0.8.0)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS prompt_collections (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      org_id TEXT,
+      name TEXT NOT NULL,
+      industry TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      is_builtin BOOLEAN NOT NULL DEFAULT false,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_prompt_collections_org ON prompt_collections(org_id);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_prompt_collections_builtin ON prompt_collections(is_builtin) WHERE is_builtin = true;`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS prompt_items (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      collection_id UUID NOT NULL REFERENCES prompt_collections(id) ON DELETE CASCADE,
+      question TEXT NOT NULL,
+      description TEXT,
+      category TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_prompt_items_collection ON prompt_items(collection_id);`);
+
+  // Seed built-in prompt collections
+  await seedPromptLibrary(pool);
+
+  log.info("Internal DB migration complete (audit_log, conversations, messages, slack, action_log, scheduled_tasks, connections, token_usage, invitations, plugin_settings, settings, org scoping, semantic_entities, learned_patterns, prompt_collections, prompt_items)");
+}
+
+/** Seed built-in prompt collections. Idempotent — checks each collection by name. */
+async function seedPromptLibrary(pool: InternalPool): Promise<void> {
+  const collections = [
+    {
+      name: "SaaS Metrics",
+      industry: "saas",
+      description: "Key metrics for SaaS businesses including revenue, churn, and growth indicators.",
+      items: [
+        { question: "What is our current MRR and how has it trended over the last 12 months?", description: "Monthly recurring revenue trend", category: "Revenue" },
+        { question: "What is our monthly churn rate by plan type?", description: "Customer churn segmented by subscription tier", category: "Churn" },
+        { question: "What is the average customer lifetime value (LTV) by acquisition channel?", description: "LTV breakdown by how customers were acquired", category: "Revenue" },
+        { question: "What is our customer acquisition cost (CAC) by channel?", description: "Cost to acquire customers across marketing channels", category: "Growth" },
+        { question: "What is the LTV to CAC ratio by plan type?", description: "Unit economics health check", category: "Revenue" },
+        { question: "What is our net revenue retention rate?", description: "Expansion revenue minus churn and contraction", category: "Retention" },
+        { question: "What is the average revenue per user (ARPU) trend?", description: "Revenue per user over time", category: "Revenue" },
+        { question: "How many trials converted to paid subscriptions this month?", description: "Trial-to-paid conversion rate", category: "Growth" },
+        { question: "What is the expansion revenue from upsells and cross-sells?", description: "Revenue growth from existing customers", category: "Revenue" },
+        { question: "What are the top reasons for customer cancellation?", description: "Churn reason analysis", category: "Churn" },
+        { question: "What is our monthly active user (MAU) trend?", description: "Product engagement over time", category: "Engagement" },
+        { question: "What is the average time to first value for new customers?", description: "Onboarding speed metric", category: "Engagement" },
+      ],
+    },
+    {
+      name: "E-commerce KPIs",
+      industry: "ecommerce",
+      description: "Essential KPIs for e-commerce businesses covering sales, conversion, and inventory.",
+      items: [
+        { question: "What is our gross merchandise volume (GMV) this month vs last month?", description: "Total sales volume comparison", category: "Sales" },
+        { question: "What is our average order value (AOV) by product category?", description: "AOV segmented by category", category: "Sales" },
+        { question: "What is our cart abandonment rate and at which step do most users drop off?", description: "Checkout funnel analysis", category: "Conversion" },
+        { question: "What are the top 10 products by revenue this quarter?", description: "Best-selling products ranked by revenue", category: "Products" },
+        { question: "What is our conversion rate from visit to purchase by traffic source?", description: "Conversion funnel by acquisition channel", category: "Conversion" },
+        { question: "What is the return rate by product category?", description: "Product return analysis", category: "Operations" },
+        { question: "What is the average delivery time by region?", description: "Fulfillment speed by geography", category: "Operations" },
+        { question: "What is the customer repeat purchase rate?", description: "Percentage of customers who buy again", category: "Retention" },
+        { question: "Which product categories have the highest profit margins?", description: "Margin analysis by category", category: "Profitability" },
+        { question: "What is the inventory turnover rate by product?", description: "How quickly inventory sells", category: "Inventory" },
+        { question: "What is the customer satisfaction score (CSAT) trend?", description: "Customer satisfaction over time", category: "Experience" },
+        { question: "What are the peak sales hours and days of the week?", description: "Sales timing patterns", category: "Sales" },
+      ],
+    },
+    {
+      name: "Cybersecurity Compliance",
+      industry: "cybersecurity",
+      description: "Security and compliance metrics for cybersecurity monitoring and reporting.",
+      items: [
+        { question: "How many open vulnerabilities do we have by severity level?", description: "Vulnerability count by critical/high/medium/low", category: "Vulnerabilities" },
+        { question: "What is our average time to patch critical vulnerabilities?", description: "Mean time to remediate critical findings", category: "Vulnerabilities" },
+        { question: "What is the compliance score across our security frameworks?", description: "Overall compliance posture", category: "Compliance" },
+        { question: "How many security incidents occurred this month by type?", description: "Incident count segmented by category", category: "Incidents" },
+        { question: "What is our mean time to detect (MTTD) and mean time to respond (MTTR)?", description: "Incident response speed metrics", category: "Incidents" },
+        { question: "What percentage of endpoints have up-to-date security agents?", description: "Endpoint protection coverage", category: "Assets" },
+        { question: "What is the phishing simulation click rate trend?", description: "Security awareness training effectiveness", category: "Training" },
+        { question: "How many failed login attempts occurred by user and region?", description: "Brute force and credential stuffing detection", category: "Access" },
+        { question: "What is the status of our third-party vendor risk assessments?", description: "Vendor security review completion", category: "Compliance" },
+        { question: "What percentage of systems are compliant with our patching policy?", description: "Patch compliance rate", category: "Vulnerabilities" },
+        { question: "What are the top firewall-blocked threats this week?", description: "Network threat intelligence summary", category: "Network" },
+        { question: "What is the data classification breakdown across our storage systems?", description: "Sensitive data inventory", category: "Data" },
+      ],
+    },
+  ];
+
+  for (let ci = 0; ci < collections.length; ci++) {
+    const collection = collections[ci];
+    // Check if this collection already exists
+    const existing = await pool.query(
+      `SELECT id FROM prompt_collections WHERE name = $1 AND is_builtin = true`,
+      [collection.name],
+    );
+    if (existing.rows.length > 0) continue;
+
+    // Insert collection
+    const result = await pool.query(
+      `INSERT INTO prompt_collections (name, industry, description, is_builtin, sort_order)
+       VALUES ($1, $2, $3, true, $4) RETURNING id`,
+      [collection.name, collection.industry, collection.description, ci],
+    );
+    if (!result.rows[0]) {
+      log.warn({ collection: collection.name }, "INSERT INTO prompt_collections returned no rows — skipping item seeding");
+      continue;
+    }
+    const collectionId = (result.rows[0] as Record<string, unknown>).id as string;
+
+    // Insert items
+    for (let i = 0; i < collection.items.length; i++) {
+      const item = collection.items[i];
+      await pool.query(
+        `INSERT INTO prompt_items (collection_id, question, description, category, sort_order)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [collectionId, item.question, item.description, item.category, i],
+      );
+    }
+  }
 }
 
 /**

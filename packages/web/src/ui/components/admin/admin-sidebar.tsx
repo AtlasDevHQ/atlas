@@ -17,6 +17,7 @@ import {
   Coins,
   HardDrive,
   Brain,
+  BookOpen,
   Settings,
   ArrowLeft,
 } from "lucide-react";
@@ -48,6 +49,7 @@ const navItems = [
   { href: "/admin/token-usage", label: "Token Usage", icon: Coins },
   { href: "/admin/cache", label: "Cache", icon: HardDrive },
   { href: "/admin/learned-patterns", label: "Learned Patterns", icon: Brain },
+  { href: "/admin/prompts", label: "Prompt Library", icon: BookOpen },
   { href: "/admin/actions", label: "Actions", icon: Zap },
   { href: "/admin/settings", label: "Settings", icon: Settings },
 ];

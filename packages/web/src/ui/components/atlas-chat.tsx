@@ -19,8 +19,9 @@ import { FollowUpChips } from "./chat/follow-up-chips";
 import { ShareDialog } from "./chat/share-dialog";
 import { ConversationSidebar } from "./conversations/conversation-sidebar";
 import { ChangePasswordDialog } from "./admin/change-password-dialog";
-import { Sun, Moon, Monitor, Star, TableProperties } from "lucide-react";
+import { Sun, Moon, Monitor, Star, TableProperties, BookOpen } from "lucide-react";
 import { SchemaExplorer } from "./schema-explorer/schema-explorer";
+import { PromptLibrary } from "./chat/prompt-library";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -137,6 +138,7 @@ export function AtlasChat() {
   const [loadingConversation, setLoadingConversation] = useState(false);
   const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
   const [schemaExplorerOpen, setSchemaExplorerOpen] = useState(false);
+  const [promptLibraryOpen, setPromptLibraryOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const managedSession = authClient.useSession();
@@ -411,6 +413,15 @@ export function AtlasChat() {
                     variant="ghost"
                     size="icon"
                     className="size-11 sm:size-8 text-zinc-500 dark:text-zinc-400"
+                    onClick={() => setPromptLibraryOpen(true)}
+                    aria-label="Open prompt library"
+                  >
+                    <BookOpen className="size-4" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-11 sm:size-8 text-zinc-500 dark:text-zinc-400"
                     onClick={() => setSchemaExplorerOpen(true)}
                     aria-label="Open schema explorer"
                   >
@@ -488,6 +499,14 @@ export function AtlasChat() {
                           </Button>
                         ))}
                       </div>
+                      <Button
+                        variant="link"
+                        onClick={() => setPromptLibraryOpen(true)}
+                        className="text-xs text-zinc-400 dark:text-zinc-500"
+                      >
+                        <BookOpen className="mr-1.5 size-3.5" />
+                        Browse prompt library
+                      </Button>
                     </div>
                   )}
 
@@ -643,6 +662,13 @@ export function AtlasChat() {
         open={schemaExplorerOpen}
         onOpenChange={setSchemaExplorerOpen}
         onInsertQuery={(text) => setInput(text)}
+        getHeaders={getHeaders}
+        getCredentials={getCredentials}
+      />
+      <PromptLibrary
+        open={promptLibraryOpen}
+        onOpenChange={setPromptLibraryOpen}
+        onSendPrompt={handleSend}
         getHeaders={getHeaders}
         getCredentials={getCredentials}
       />

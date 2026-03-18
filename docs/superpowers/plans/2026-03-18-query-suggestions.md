@@ -478,7 +478,9 @@ Expected: FAIL — `_groupAuditRows` not found
 // packages/api/src/lib/learn/suggestions.ts
 import { normalizeSQL, fingerprintSQL, extractPatternInfo, getYamlPatterns } from "@atlas/api/lib/learn/pattern-analyzer";
 import { getAuditLogQueries, upsertSuggestion } from "@atlas/api/lib/db/internal";
-import { log } from "@atlas/api/lib/log";
+import { createLogger } from "@atlas/api/lib/logger";
+
+const log = createLogger("suggestions");
 
 const MIN_PATTERN_COUNT = 2;
 
@@ -1000,7 +1002,7 @@ adminSuggestions.get("/", async (c) => {
   const requestId = crypto.randomUUID();
   const preamble = await adminAuthPreamble(c.req.raw, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status });
+    return c.json(preamble.error, { status: preamble.status, headers: (preamble as { headers?: Record<string, string> }).headers });
   }
   const { authResult } = preamble;
 
@@ -1067,7 +1069,7 @@ adminSuggestions.delete("/:id", async (c) => {
   const requestId = crypto.randomUUID();
   const preamble = await adminAuthPreamble(c.req.raw, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status });
+    return c.json(preamble.error, { status: preamble.status, headers: (preamble as { headers?: Record<string, string> }).headers });
   }
   const { authResult } = preamble;
 

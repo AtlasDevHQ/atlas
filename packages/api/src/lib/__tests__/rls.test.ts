@@ -853,6 +853,7 @@ describe("injectRLSConditions", () => {
     const p = new Parser();
     const ast = p.astify(result, { database: "PostgresQL" });
     const stmt = (Array.isArray(ast) ? ast[0] : ast) as Select;
+    // Test-specific: the known query shape guarantees nested binary_expr with operator/right
     const where = stmt.where as Select["where"] & { operator: string; right: { operator: string } };
     // Top-level WHERE operator must be AND (existing WHERE AND rls_group)
     expect(where.operator).toBe("AND");

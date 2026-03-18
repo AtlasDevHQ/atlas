@@ -14,7 +14,7 @@
  * - Injection runs after plugin beforeQuery hooks — plugins cannot strip RLS
  */
 
-import { Parser } from "node-sql-parser";
+import { Parser, type Select } from "node-sql-parser";
 import type { RLSConfig } from "@atlas/api/lib/config";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import type { DBType } from "@atlas/api/lib/db/connection";
@@ -214,8 +214,7 @@ function extractTableAliasMap(
 }
 
 /** Collect CTE names from the WITH clause. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- node-sql-parser AST nodes are manipulated as plain objects; Select type doesn't cover all runtime properties
-function collectCTENames(ast: any): Set<string> {
+function collectCTENames(ast: Select): Set<string> {
   const names = new Set<string>();
   if (Array.isArray(ast.with)) {
     for (const cte of ast.with) {
@@ -271,7 +270,7 @@ function buildCondition(tableRef: string, filter: RLSFilter) {
  * using the `combineWith` operator (AND or OR).
  */
 function injectIntoSelectAST(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- node-sql-parser AST is mutated in place; Select type doesn't cover .parentheses, derived-table .expr, or constructed condition nodes
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- AST is mutated in place with hand-constructed condition nodes that don't conform to Binary type, and direct property assignment bypasses type narrowing
   ast: any,
   groups: RLSFilterGroup[],
   combineWith: "and" | "or",
@@ -371,7 +370,7 @@ function injectIntoSelectAST(
  * Injects RLS conditions into any nested SELECT statements.
  */
 function walkWhereForSubqueries(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- recursive AST walk traverses arbitrary node shapes (binary_expr, expr_list, subqueries) not fully captured by node-sql-parser types
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- recursive duck-typed traversal of AST nodes; a union type would require discriminant checks at each step that would obscure the traversal logic
   node: any,
   groups: RLSFilterGroup[],
   combineWith: "and" | "or",

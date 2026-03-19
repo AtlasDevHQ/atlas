@@ -310,6 +310,9 @@ describe("isChatErrorCode", () => {
     expect(isChatErrorCode("internal_error")).toBe(true);
     expect(isChatErrorCode("provider_timeout")).toBe(true);
     expect(isChatErrorCode("auth_error")).toBe(true);
+    expect(isChatErrorCode("session_expired")).toBe(true);
+    expect(isChatErrorCode("forbidden_role")).toBe(true);
+    expect(isChatErrorCode("org_not_found")).toBe(true);
   });
 
   test("rejects invalid codes", () => {
@@ -334,6 +337,7 @@ describe("isRetryableError", () => {
 
   const nonRetryableCodes: ChatErrorCode[] = [
     "auth_error",
+    "session_expired",
     "configuration_error",
     "no_datasource",
     "invalid_request",
@@ -342,6 +346,8 @@ describe("isRetryableError", () => {
     "validation_error",
     "not_found",
     "forbidden",
+    "forbidden_role",
+    "org_not_found",
   ];
 
   test("marks transient codes as retryable", () => {
@@ -380,7 +386,7 @@ describe("parseChatError retryable", () => {
   });
 
   test("retryable is false for all permanent error codes", () => {
-    for (const code of ["auth_error", "configuration_error", "no_datasource", "invalid_request", "provider_model_not_found", "provider_auth_error", "validation_error", "not_found", "forbidden"] as const) {
+    for (const code of ["auth_error", "session_expired", "configuration_error", "no_datasource", "invalid_request", "provider_model_not_found", "provider_auth_error", "validation_error", "not_found", "forbidden", "forbidden_role", "org_not_found"] as const) {
       const err = new Error(JSON.stringify({ error: code, message: "fail" }));
       const info = parseChatError(err, authMode);
       expect(info.retryable).toBe(false);

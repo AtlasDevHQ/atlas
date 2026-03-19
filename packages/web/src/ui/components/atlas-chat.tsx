@@ -100,8 +100,8 @@ function SaveButton({
     setPending(true);
     try {
       await onStar(conversationId, !isStarred);
-    } catch (err) {
-      console.warn("Failed to update star:", err);
+    } catch (err: unknown) {
+      console.warn("Failed to update star:", err instanceof Error ? err.message : String(err));
     } finally {
       setPending(false);
     }
@@ -196,11 +196,14 @@ export function AtlasChat() {
         const res = await fetch(`${apiUrl}/api/v1/admin/me/password-status`, {
           credentials: isCrossOrigin ? "include" : "same-origin",
         });
-        if (!res.ok) return;
+        if (!res.ok) {
+          console.warn("Password status check failed:", res.status, res.statusText);
+          return;
+        }
         const data = await res.json();
         if (data.passwordChangeRequired) setPasswordChangeRequired(true);
-      } catch (err) {
-        console.warn("Failed to check password status:", err);
+      } catch (err: unknown) {
+        console.warn("Failed to check password status:", err instanceof Error ? err.message : String(err));
       }
     }
     checkPasswordStatus();
@@ -273,6 +276,7 @@ export function AtlasChat() {
         const name = getToolName(part as Parameters<typeof getToolName>[0]);
         if (name !== "executeSQL") continue;
       } catch {
+        // intentionally ignored: getToolName throws if the part lacks a recognized toolName property
         continue;
       }
       if ("result" in part && part.result != null) {
@@ -319,8 +323,8 @@ export function AtlasChat() {
     if (!text.trim()) return;
     const saved = text;
     setInput("");
-    sendMessage({ text: saved }).catch((err) => {
-      console.error("Failed to send message:", err);
+    sendMessage({ text: saved }).catch((err: unknown) => {
+      console.error("Failed to send message:", err instanceof Error ? err.message : String(err));
       setInput(saved);
       setTransientWarning("Failed to send message. Please try again.");
       setTimeout(() => setTransientWarning(""), 5000);
@@ -352,8 +356,8 @@ export function AtlasChat() {
         setTransientWarning("Could not load conversation. It may have been deleted.");
         setTimeout(() => setTransientWarning(""), 5000);
       }
-    } catch (err) {
-      console.warn("Failed to load conversation:", err);
+    } catch (err: unknown) {
+      console.warn("Failed to load conversation:", err instanceof Error ? err.message : String(err));
       setTransientWarning("Failed to load conversation. Please try again.");
       setTimeout(() => setTransientWarning(""), 5000);
     } finally {
@@ -451,7 +455,7 @@ export function AtlasChat() {
                         size="sm"
                         onClick={() => {
                           authClient.signOut().catch((err: unknown) => {
-                            console.error("Sign out failed:", err);
+                            console.error("Sign out failed:", err instanceof Error ? err.message : String(err));
                             setTransientWarning("Sign out failed. Please try again.");
                             setTimeout(() => setTransientWarning(""), 5000);
                           });
@@ -592,7 +596,7 @@ export function AtlasChat() {
                         {isLastAssistant && !hasVisibleParts && !isLoading && error && (
                           <div className="max-w-[90%]">
                             <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-950/30 dark:text-red-400">
-                              Something went wrong generating a response. Try sending your message again.
+                              The response stream was interrupted before producing content. Try sending your message again.
                             </div>
                           </div>
                         )}

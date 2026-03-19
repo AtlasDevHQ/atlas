@@ -306,7 +306,9 @@ describe("loadNotebookState validation", () => {
       cells: [],
       version: 2,
     });
-    expect(loadNotebookState("c1", storageWith(v2))).not.toBeNull();
+    const loaded = loadNotebookState("c1", storageWith(v2));
+    expect(loaded).not.toBeNull();
+    expect(loaded!.version).toBe(2);
   });
 
   test("returns null when version is unsupported", () => {

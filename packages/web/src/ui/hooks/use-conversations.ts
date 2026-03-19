@@ -16,15 +16,16 @@ export interface UseConversationsReturn {
   total: number;
   loading: boolean;
   available: boolean;
+  fetchError: string | null;
   selectedId: string | null;
   setSelectedId: (id: string | null) => void;
   fetchList: () => Promise<void>;
-  loadConversation: (id: string) => Promise<UIMessage[] | null>;
-  deleteConversation: (id: string) => Promise<boolean>;
-  starConversation: (id: string, starred: boolean) => Promise<boolean>;
-  shareConversation: (id: string, opts?: { expiresIn?: ShareExpiryKey; shareMode?: ShareMode }) => Promise<{ token: string; url: string } | null>;
-  unshareConversation: (id: string) => Promise<boolean>;
-  getShareStatus: (id: string) => Promise<ShareStatus | null>;
+  loadConversation: (id: string) => Promise<UIMessage[]>;
+  deleteConversation: (id: string) => Promise<void>;
+  starConversation: (id: string, starred: boolean) => Promise<void>;
+  shareConversation: (id: string, opts?: { expiresIn?: ShareExpiryKey; shareMode?: ShareMode }) => Promise<{ token: string; url: string }>;
+  unshareConversation: (id: string) => Promise<void>;
+  getShareStatus: (id: string) => Promise<ShareStatus>;
   refresh: () => Promise<void>;
 }
 
@@ -51,12 +52,14 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [available, setAvailable] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const fetchedRef = useRef(false);
 
   const fetchList = useCallback(async () => {
     if (!opts.enabled || !available) return;
     setLoading(true);
+    setFetchError(null);
     try {
       const res = await fetch(`${opts.apiUrl}/api/v1/conversations?limit=50`, {
         headers: opts.getHeaders(),
@@ -76,6 +79,7 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
           return;
         }
         console.warn(`fetchList: HTTP ${res.status}`, errorBody);
+        setFetchError("Failed to load conversations. Please reload the page to try again.");
         return;
       }
 
@@ -85,14 +89,13 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
       fetchedRef.current = true;
     } catch (err: unknown) {
       console.warn("fetchList error:", err instanceof Error ? err.message : String(err));
-      // Network error on first attempt — permanently disable conversations for this session. A page reload resets this.
-      if (!fetchedRef.current) setAvailable(false);
+      setFetchError("Failed to load conversations. Please reload the page to try again.");
     } finally {
       setLoading(false);
     }
   }, [opts.apiUrl, opts.enabled, opts.getHeaders, opts.getCredentials, available]);
 
-  const loadConversation = useCallback(async (id: string): Promise<UIMessage[] | null> => {
+  const loadConversation = useCallback(async (id: string): Promise<UIMessage[]> => {
     try {
       const res = await fetch(`${opts.apiUrl}/api/v1/conversations/${id}`, {
         headers: opts.getHeaders(),
@@ -101,18 +104,18 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
 
       if (!res.ok) {
         console.warn(`loadConversation: HTTP ${res.status} for ${id}`);
-        return null;
+        throw new Error(`Failed to load conversation (HTTP ${res.status})`);
       }
 
       const data: ConversationWithMessages = await res.json();
       return transformMessages(data.messages);
     } catch (err: unknown) {
       console.warn("loadConversation error:", err instanceof Error ? err.message : String(err));
-      return null;
+      throw err;
     }
   }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);
 
-  const deleteConversation = useCallback(async (id: string): Promise<boolean> => {
+  const deleteConversation = useCallback(async (id: string): Promise<void> => {
     try {
       const res = await fetch(`${opts.apiUrl}/api/v1/conversations/${id}`, {
         method: "DELETE",
@@ -122,22 +125,20 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
 
       if (!res.ok) {
         console.warn(`deleteConversation: HTTP ${res.status} for ${id}`);
-        return false;
+        throw new Error(`Failed to delete conversation (HTTP ${res.status})`);
       }
 
       setConversations((prev) => prev.filter((c) => c.id !== id));
       setTotal((prev) => Math.max(0, prev - 1));
 
       if (selectedId === id) setSelectedId(null);
-
-      return true;
     } catch (err: unknown) {
       console.warn("deleteConversation error:", err instanceof Error ? err.message : String(err));
-      return false;
+      throw err;
     }
   }, [opts.apiUrl, opts.getHeaders, opts.getCredentials, selectedId]);
 
-  const starConversation = useCallback(async (id: string, starred: boolean): Promise<boolean> => {
+  const starConversation = useCallback(async (id: string, starred: boolean): Promise<void> => {
     // Optimistic update
     setConversations((prev) =>
       prev.map((c) => (c.id === id ? { ...c, starred } : c)),
@@ -156,21 +157,21 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
         setConversations((prev) =>
           prev.map((c) => (c.id === id ? { ...c, starred: !starred } : c)),
         );
-        return false;
+        throw new Error(`Failed to update star (HTTP ${res.status})`);
       }
-
-      return true;
     } catch (err: unknown) {
       console.warn("starConversation error:", err instanceof Error ? err.message : String(err));
-      // Rollback
-      setConversations((prev) =>
-        prev.map((c) => (c.id === id ? { ...c, starred: !starred } : c)),
-      );
-      return false;
+      // Rollback on network error (HTTP errors already rolled back above)
+      if (!(err instanceof Error && err.message.startsWith("Failed to update star"))) {
+        setConversations((prev) =>
+          prev.map((c) => (c.id === id ? { ...c, starred: !starred } : c)),
+        );
+      }
+      throw err;
     }
   }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);
 
-  const shareConversation = useCallback(async (id: string, shareOpts?: { expiresIn?: ShareExpiryKey; shareMode?: ShareMode }): Promise<{ token: string; url: string } | null> => {
+  const shareConversation = useCallback(async (id: string, shareOpts?: { expiresIn?: ShareExpiryKey; shareMode?: ShareMode }): Promise<{ token: string; url: string }> => {
     try {
       const res = await fetch(`${opts.apiUrl}/api/v1/conversations/${id}/share`, {
         method: "POST",
@@ -180,12 +181,12 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
       });
       if (!res.ok) {
         console.warn(`shareConversation: HTTP ${res.status} for ${id}`);
-        return null;
+        throw new Error(`Failed to share conversation (HTTP ${res.status})`);
       }
       const data = await res.json();
       if (!data?.token || typeof data.token !== "string") {
         console.warn(`shareConversation: missing token in response for ${id}`);
-        return null;
+        throw new Error("Share response missing token");
       }
       return {
         token: data.token,
@@ -193,11 +194,11 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
       };
     } catch (err: unknown) {
       console.warn("shareConversation error:", err instanceof Error ? err.message : String(err));
-      return null;
+      throw err;
     }
   }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);
 
-  const unshareConversation = useCallback(async (id: string): Promise<boolean> => {
+  const unshareConversation = useCallback(async (id: string): Promise<void> => {
     try {
       const res = await fetch(`${opts.apiUrl}/api/v1/conversations/${id}/share`, {
         method: "DELETE",
@@ -206,16 +207,15 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
       });
       if (!res.ok) {
         console.warn(`unshareConversation: HTTP ${res.status} for ${id}`);
-        return false;
+        throw new Error(`Failed to unshare conversation (HTTP ${res.status})`);
       }
-      return true;
     } catch (err: unknown) {
       console.warn("unshareConversation error:", err instanceof Error ? err.message : String(err));
-      return false;
+      throw err;
     }
   }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);
 
-  const getShareStatus = useCallback(async (id: string): Promise<ShareStatus | null> => {
+  const getShareStatus = useCallback(async (id: string): Promise<ShareStatus> => {
     try {
       const res = await fetch(`${opts.apiUrl}/api/v1/conversations/${id}/share`, {
         headers: opts.getHeaders(),
@@ -223,13 +223,13 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
       });
       if (!res.ok) {
         console.warn(`getShareStatus: HTTP ${res.status} for ${id}`);
-        return null;
+        throw new Error(`Failed to get share status (HTTP ${res.status})`);
       }
       const data: ShareStatus = await res.json();
       return data;
     } catch (err: unknown) {
       console.warn("getShareStatus error:", err instanceof Error ? err.message : String(err));
-      return null;
+      throw err;
     }
   }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);
 
@@ -242,6 +242,7 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
     total,
     loading,
     available,
+    fetchError,
     selectedId,
     setSelectedId,
     fetchList,

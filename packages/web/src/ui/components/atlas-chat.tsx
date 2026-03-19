@@ -91,7 +91,7 @@ function SaveButton({
 }: {
   conversationId: string;
   conversations: { id: string; starred: boolean }[];
-  onStar: (id: string, starred: boolean) => Promise<boolean>;
+  onStar: (id: string, starred: boolean) => Promise<void>;
 }) {
   const isStarred = conversations.find((c) => c.id === conversationId)?.starred ?? false;
   const [pending, setPending] = useState(false);
@@ -347,15 +347,10 @@ export function AtlasChat() {
     setLoadingConversation(true);
     try {
       const uiMessages = await convos.loadConversation(id);
-      if (uiMessages) {
-        setMessages(uiMessages);
-        setConversationId(id);
-        convos.setSelectedId(id);
-        setMobileMenuOpen(false);
-      } else {
-        setTransientWarning("Could not load conversation. It may have been deleted.");
-        setTimeout(() => setTransientWarning(""), 5000);
-      }
+      setMessages(uiMessages);
+      setConversationId(id);
+      convos.setSelectedId(id);
+      setMobileMenuOpen(false);
     } catch (err: unknown) {
       console.warn("Failed to load conversation:", err instanceof Error ? err.message : String(err));
       setTransientWarning("Failed to load conversation. Please try again.");

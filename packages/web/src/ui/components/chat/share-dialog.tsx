@@ -34,9 +34,9 @@ const EXPIRY_LABELS: Record<ShareExpiryKey, string> = {
 
 interface ShareDialogProps {
   conversationId: string;
-  onShare: (id: string, opts?: { expiresIn?: ShareExpiryKey; shareMode?: ShareMode }) => Promise<{ token: string; url: string } | null>;
-  onUnshare: (id: string) => Promise<boolean>;
-  onGetShareStatus: (id: string) => Promise<ShareStatus | null>;
+  onShare: (id: string, opts?: { expiresIn?: ShareExpiryKey; shareMode?: ShareMode }) => Promise<{ token: string; url: string }>;
+  onUnshare: (id: string) => Promise<void>;
+  onGetShareStatus: (id: string) => Promise<ShareStatus>;
 }
 
 export function ShareDialog({ conversationId, onShare, onUnshare, onGetShareStatus }: ShareDialogProps) {
@@ -80,7 +80,7 @@ export function ShareDialog({ conversationId, onShare, onUnshare, onGetShareStat
       try {
         const status = await onGetShareStatus(conversationId);
         if (cancelled) return;
-        if (status?.shared) {
+        if (status.shared) {
           setShared(true);
           setShareUrl(status.url);
           setCurrentShareMode(status.shareMode);
@@ -90,9 +90,9 @@ export function ShareDialog({ conversationId, onShare, onUnshare, onGetShareStat
           setShareUrl(null);
           setExpiresAt(null);
         }
-      } catch (err) {
+      } catch (err: unknown) {
         if (!cancelled) {
-          console.warn("getShareStatus: fetch failed", err);
+          console.warn("getShareStatus: fetch failed", err instanceof Error ? err.message : String(err));
           setError("Could not check existing share status. You can still create a new share link.");
         }
       } finally {
@@ -115,16 +115,12 @@ export function ShareDialog({ conversationId, onShare, onUnshare, onGetShareStat
     setError(null);
     try {
       const result = await onShare(conversationId, { expiresIn, shareMode });
-      if (result) {
-        setShareUrl(result.url);
-        setShared(true);
-        setCurrentShareMode(shareMode);
-        setExpiresAt(computeDisplayExpiry(expiresIn));
-      } else {
-        setError("Failed to create share link. Please try again.");
-      }
-    } catch (err) {
-      console.warn("handleShare error:", err);
+      setShareUrl(result.url);
+      setShared(true);
+      setCurrentShareMode(shareMode);
+      setExpiresAt(computeDisplayExpiry(expiresIn));
+    } catch (err: unknown) {
+      console.warn("handleShare error:", err instanceof Error ? err.message : String(err));
       setError("Failed to create share link. Please try again.");
     } finally {
       setLoading(false);
@@ -135,16 +131,12 @@ export function ShareDialog({ conversationId, onShare, onUnshare, onGetShareStat
     setLoading(true);
     setError(null);
     try {
-      const ok = await onUnshare(conversationId);
-      if (ok) {
-        setShareUrl(null);
-        setShared(false);
-        setExpiresAt(null);
-      } else {
-        setError("Failed to remove share link. Please try again.");
-      }
-    } catch (err) {
-      console.warn("handleUnshare error:", err);
+      await onUnshare(conversationId);
+      setShareUrl(null);
+      setShared(false);
+      setExpiresAt(null);
+    } catch (err: unknown) {
+      console.warn("handleUnshare error:", err instanceof Error ? err.message : String(err));
       setError("Failed to remove share link. Please try again.");
     } finally {
       setLoading(false);
@@ -156,16 +148,12 @@ export function ShareDialog({ conversationId, onShare, onUnshare, onGetShareStat
     setError(null);
     try {
       const result = await onShare(conversationId, { expiresIn, shareMode });
-      if (result) {
-        setShareUrl(result.url);
-        setShared(true);
-        setCurrentShareMode(shareMode);
-        setExpiresAt(computeDisplayExpiry(expiresIn));
-      } else {
-        setError("Failed to regenerate share link. Please try again.");
-      }
-    } catch (err) {
-      console.warn("handleRegenerate error:", err);
+      setShareUrl(result.url);
+      setShared(true);
+      setCurrentShareMode(shareMode);
+      setExpiresAt(computeDisplayExpiry(expiresIn));
+    } catch (err: unknown) {
+      console.warn("handleRegenerate error:", err instanceof Error ? err.message : String(err));
       setError("Failed to regenerate share link. Please try again.");
     } finally {
       setLoading(false);

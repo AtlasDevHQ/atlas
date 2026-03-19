@@ -356,6 +356,7 @@ export function useNotebook({ chat, conversationId }: UseNotebookOptions): UseNo
           "Failed to copy to clipboard:",
           err instanceof Error ? err.message : String(err),
         );
+        showWarning("Failed to copy to clipboard. Your browser may require HTTPS or a user gesture.");
       }
     },
     [cells],

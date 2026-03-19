@@ -87,11 +87,7 @@ function NotebookContent() {
       try {
         const uiMessages = await convos.loadConversation(conversationId!);
         if (cancelled) return;
-        if (uiMessages) {
-          setMessages(uiMessages);
-        } else {
-          setError("Could not load conversation. The server may be unavailable, or the conversation may no longer exist.");
-        }
+        setMessages(uiMessages);
       } catch (err: unknown) {
         if (!cancelled) {
           console.warn(
@@ -135,14 +131,10 @@ function NotebookContent() {
     setLoadingConversation(true);
     try {
       const uiMessages = await convos.loadConversation(id);
-      if (uiMessages) {
-        setMessages(uiMessages);
-        setParams({ id, cell: "" });
-        convos.setSelectedId(id);
-        setMobileMenuOpen(false);
-      } else {
-        setError("Could not load conversation. It may have been deleted.");
-      }
+      setMessages(uiMessages);
+      setParams({ id, cell: "" });
+      convos.setSelectedId(id);
+      setMobileMenuOpen(false);
     } catch (err: unknown) {
       console.warn(
         "Failed to load conversation:",

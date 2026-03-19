@@ -10,3 +10,4 @@ export * from "./organization";
 export * from "./learned-pattern";
 export * from "./prompt";
 export * from "./query-suggestion";
+export * from "./sso";

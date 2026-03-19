@@ -2995,6 +2995,167 @@ function buildSpec(): Record<string, unknown> {
       },
 
       // -----------------------------------------------------------------
+      // SSO — enterprise SAML/OIDC identity provider management
+      // -----------------------------------------------------------------
+      "/api/v1/admin/sso/providers": {
+        get: {
+          operationId: "listSSOProviders",
+          summary: "List SSO providers",
+          description:
+            "Returns all SSO identity providers registered for the active organization. Requires enterprise license.",
+          tags: ["Admin — SSO"],
+          security: [{ bearerAuth: [] }],
+          responses: {
+            "200": {
+              description: "List of SSO providers",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      providers: {
+                        type: "array",
+                        items: { $ref: "#/components/schemas/SSOProvider" },
+                      },
+                      total: { type: "integer" },
+                    },
+                  },
+                },
+              },
+            },
+            ...authErrors,
+            "403": errorResponse("Enterprise license required or insufficient role"),
+          },
+        },
+        post: {
+          operationId: "createSSOProvider",
+          summary: "Register an SSO provider",
+          description:
+            "Register a new SAML or OIDC identity provider for the active organization. Domain must be globally unique. Requires enterprise license.",
+          tags: ["Admin — SSO"],
+          security: [{ bearerAuth: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/CreateSSOProviderRequest" },
+              },
+            },
+          },
+          responses: {
+            "201": {
+              description: "SSO provider created",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      provider: { $ref: "#/components/schemas/SSOProvider" },
+                    },
+                  },
+                },
+              },
+            },
+            "400": errorResponse("Invalid request body or config"),
+            ...authErrors,
+            "403": errorResponse("Enterprise license required"),
+            "409": errorResponse("Domain already registered"),
+          },
+        },
+      },
+      "/api/v1/admin/sso/providers/{id}": {
+        get: {
+          operationId: "getSSOProvider",
+          summary: "Get an SSO provider",
+          description: "Get details of a single SSO provider by ID. Requires enterprise license.",
+          tags: ["Admin — SSO"],
+          security: [{ bearerAuth: [] }],
+          parameters: [uuidPathParam("id", "SSO provider ID")],
+          responses: {
+            "200": {
+              description: "SSO provider details",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      provider: { $ref: "#/components/schemas/SSOProvider" },
+                    },
+                  },
+                },
+              },
+            },
+            ...authErrors,
+            "403": errorResponse("Enterprise license required"),
+            "404": errorResponse("SSO provider not found"),
+          },
+        },
+        patch: {
+          operationId: "updateSSOProvider",
+          summary: "Update an SSO provider",
+          description:
+            "Update configuration, domain, or enabled status of an SSO provider. Requires enterprise license.",
+          tags: ["Admin — SSO"],
+          security: [{ bearerAuth: [] }],
+          parameters: [uuidPathParam("id", "SSO provider ID")],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/UpdateSSOProviderRequest" },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "SSO provider updated",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      provider: { $ref: "#/components/schemas/SSOProvider" },
+                    },
+                  },
+                },
+              },
+            },
+            "400": errorResponse("Invalid config or domain"),
+            ...authErrors,
+            "403": errorResponse("Enterprise license required"),
+            "404": errorResponse("SSO provider not found"),
+            "409": errorResponse("Domain already registered"),
+          },
+        },
+        delete: {
+          operationId: "deleteSSOProvider",
+          summary: "Delete an SSO provider",
+          description: "Remove an SSO identity provider. Requires enterprise license.",
+          tags: ["Admin — SSO"],
+          security: [{ bearerAuth: [] }],
+          parameters: [uuidPathParam("id", "SSO provider ID")],
+          responses: {
+            "200": {
+              description: "SSO provider deleted",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      message: { type: "string" },
+                    },
+                  },
+                },
+              },
+            },
+            ...authErrors,
+            "403": errorResponse("Enterprise license required"),
+            "404": errorResponse("SSO provider not found"),
+          },
+        },
+      },
+
+      // -----------------------------------------------------------------
       // Suggestions — user-facing query suggestions
       // -----------------------------------------------------------------
       "/api/v1/suggestions": {
@@ -3749,6 +3910,49 @@ function buildSpec(): Record<string, unknown> {
             "API key or JWT token. Pass via Authorization: Bearer <token>.",
         },
       },
+      schemas: {
+        SSOProvider: {
+          type: "object",
+          properties: {
+            id: { type: "string", format: "uuid" },
+            orgId: { type: "string" },
+            type: { type: "string", enum: ["saml", "oidc"] },
+            issuer: { type: "string", description: "IdP issuer identifier" },
+            domain: { type: "string", description: "Email domain for auto-provisioning" },
+            enabled: { type: "boolean" },
+            config: {
+              type: "object",
+              description: "Provider-specific configuration (SAML or OIDC)",
+            },
+            createdAt: { type: "string", format: "date-time" },
+            updatedAt: { type: "string", format: "date-time" },
+          },
+          required: ["id", "orgId", "type", "issuer", "domain", "enabled", "config", "createdAt", "updatedAt"],
+        },
+        CreateSSOProviderRequest: {
+          type: "object",
+          properties: {
+            type: { type: "string", enum: ["saml", "oidc"] },
+            issuer: { type: "string" },
+            domain: { type: "string", description: "Email domain (e.g. acme.com)" },
+            enabled: { type: "boolean", default: false },
+            config: {
+              type: "object",
+              description: "SAML: { idpEntityId, idpSsoUrl, idpCertificate }. OIDC: { clientId, clientSecret, discoveryUrl }.",
+            },
+          },
+          required: ["type", "issuer", "domain", "config"],
+        },
+        UpdateSSOProviderRequest: {
+          type: "object",
+          properties: {
+            issuer: { type: "string" },
+            domain: { type: "string" },
+            enabled: { type: "boolean" },
+            config: { type: "object", description: "Partial provider-specific config to merge" },
+          },
+        },
+      },
     },
     tags: [
       { name: "Chat", description: "Streaming chat with the Atlas agent" },
@@ -3772,6 +3976,7 @@ function buildSpec(): Record<string, unknown> {
       { name: "Admin — Prompts", description: "Admin CRUD for prompt collections and items (requires admin role)" },
       { name: "Admin — Usage", description: "Admin usage metering and billing data (requires admin role)" },
       { name: "Admin — Organizations", description: "Admin organization management (requires admin role)" },
+      { name: "Admin — SSO", description: "Enterprise SSO provider management (requires admin role + enterprise license)" },
     ],
   };
 }

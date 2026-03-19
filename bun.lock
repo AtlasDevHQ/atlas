@@ -73,6 +73,7 @@
       "version": "0.0.1",
       "dependencies": {
         "@atlas/api": "workspace:*",
+        "@useatlas/types": "workspace:*",
       },
     },
     "examples/nextjs-standalone": {

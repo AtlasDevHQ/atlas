@@ -18,6 +18,7 @@ import { bearer, admin, organization } from "better-auth/plugins";
 import { apiKey } from "@better-auth/api-key";
 import { getInternalDB, hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import { isEnterpriseEnabled } from "../../../../../ee/src/index";
 import { ac, owner as ownerRole, admin as adminRole, member as memberRole } from "@atlas/api/lib/auth/org-permissions";
 
 /**
@@ -187,6 +188,49 @@ export function getAuthInstance(): AuthInstance {
 
             } catch (err) {
               log.error({ err }, "Bootstrap admin check failed — defaulting to normal role assignment");
+            }
+          },
+          after: async (user) => {
+            // Domain-based SSO auto-provisioning: if the user's email domain
+            // matches an enabled SSO provider, auto-add them to that org.
+            try {
+              if (!isEnterpriseEnabled() || !hasInternalDB() || !user.email) return;
+
+              const domain = user.email.split("@")[1]?.toLowerCase();
+              if (!domain) return;
+
+              const providers = await internalQuery<{ org_id: string }>(
+                `SELECT org_id FROM sso_providers WHERE domain = $1 AND enabled = true LIMIT 1`,
+                [domain],
+              );
+              if (providers.length === 0) return;
+
+              const orgId = providers[0].org_id;
+
+              // Check if already a member (idempotent)
+              const existing = await internalQuery<{ id: string }>(
+                `SELECT id FROM member WHERE "userId" = $1 AND "organizationId" = $2 LIMIT 1`,
+                [user.id, orgId],
+              );
+              if (existing.length > 0) return;
+
+              // Auto-add as member — awaited so failures are caught by the
+              // surrounding try/catch and logged as warnings.
+              await getInternalDB().query(
+                `INSERT INTO member (id, "organizationId", "userId", role, "createdAt")
+                 VALUES (gen_random_uuid(), $1, $2, 'member', now())`,
+                [orgId, user.id],
+              );
+
+              log.info(
+                { userId: user.id, email: user.email, domain, orgId },
+                "SSO auto-provisioning: user added to organization via domain match",
+              );
+            } catch (err) {
+              log.warn(
+                { err: err instanceof Error ? err.message : String(err), userId: user.id },
+                "SSO auto-provisioning failed — user created but not auto-joined to org",
+              );
             }
           },
         },

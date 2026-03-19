@@ -587,6 +587,27 @@ export async function migrateInternalDB(): Promise<void> {
   `);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_summaries_ws_period ON usage_summaries(workspace_id, period, period_start);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_usage_summaries_workspace ON usage_summaries(workspace_id, period_start);`);
+
+  // Enterprise SSO providers (0.9.0 — per-org SAML/OIDC identity provider registration)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS sso_providers (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      org_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      issuer TEXT NOT NULL,
+      domain TEXT NOT NULL,
+      enabled BOOLEAN NOT NULL DEFAULT false,
+      config JSONB NOT NULL DEFAULT '{}',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(`DO $$ BEGIN ALTER TABLE sso_providers ADD CONSTRAINT chk_sso_type CHECK (type IN ('saml', 'oidc')); EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_sso_providers_org ON sso_providers(org_id);`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_sso_providers_domain ON sso_providers(domain);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_sso_providers_enabled ON sso_providers(org_id, enabled) WHERE enabled = true;`);
+
+  log.info("Internal DB migration complete");
 }
 
 /** Seed built-in prompt collections. Idempotent — checks each collection by name. */
@@ -710,9 +731,6 @@ await pool.query(`
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_query_suggestions_org_score ON query_suggestions(org_id, score DESC);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_query_suggestions_tables ON query_suggestions USING GIN(tables_involved);`);
   await pool.query(`ALTER TABLE query_suggestions ADD CONSTRAINT uq_query_suggestions_org_hash UNIQUE NULLS NOT DISTINCT (org_id, normalized_hash);`).catch(() => { /* constraint already exists */ });
-
-  log.info("Internal DB migration complete (audit_log, conversations, messages, slack, action_log, scheduled_tasks, connections, token_usage, invitations, plugin_settings, settings, org scoping, semantic_entities, learned_patterns, prompt_collections, prompt_items, query_suggestions, usage_events, usage_summaries)");
-
 }
 
 /**

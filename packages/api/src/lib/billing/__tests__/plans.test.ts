@@ -2,7 +2,7 @@
  * Tests for billing plan definitions and limits.
  */
 
-import { describe, it, expect, beforeEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 
 import {
   getPlanDefinition,
@@ -72,11 +72,13 @@ describe("billing/plans", () => {
   });
 
   describe("getStripePlans", () => {
-    beforeEach(() => {
+    function cleanStripeEnv() {
       delete process.env.STRIPE_TEAM_PRICE_ID;
       delete process.env.STRIPE_TEAM_ANNUAL_PRICE_ID;
       delete process.env.STRIPE_ENTERPRISE_PRICE_ID;
-    });
+    }
+    beforeEach(cleanStripeEnv);
+    afterEach(cleanStripeEnv);
 
     it("returns empty array when no price IDs are set", () => {
       const plans = getStripePlans();

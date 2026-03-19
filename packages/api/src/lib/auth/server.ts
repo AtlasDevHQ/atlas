@@ -86,48 +86,80 @@ function buildPlugins() {
 
   // Stripe billing — only when STRIPE_SECRET_KEY is set (SaaS mode)
   if (process.env.STRIPE_SECRET_KEY) {
-    try {
-      const stripeClient = new Stripe(process.env.STRIPE_SECRET_KEY);
-
-      plugins.push(
-        stripePlugin({
-          stripeClient,
-          stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET!,
-          createCustomerOnSignUp: true,
-          subscription: {
-            enabled: true,
-            plans: getStripePlans(),
-            async onSubscriptionComplete({ subscription, plan }) {
-              const orgId = subscription.referenceId;
-              if (orgId && (plan.name === "team" || plan.name === "enterprise")) {
-                await updateWorkspacePlanTier(orgId, plan.name as PlanTier);
-                log.info({ orgId, plan: plan.name }, "Subscription activated — plan tier synced");
-              }
-            },
-            async onSubscriptionCancel({ subscription }) {
-              const orgId = subscription.referenceId;
-              if (orgId) {
-                await updateWorkspacePlanTier(orgId, "free");
-                log.info({ orgId }, "Subscription canceled — downgraded to free tier");
-              }
-            },
-            async onSubscriptionDeleted({ subscription }) {
-              const orgId = subscription.referenceId;
-              if (orgId) {
-                await updateWorkspacePlanTier(orgId, "free");
-                log.info({ orgId }, "Subscription deleted — downgraded to free tier");
-              }
-            },
-          },
-        }),
-      );
-
-      log.info("Stripe billing plugin enabled");
-    } catch (err) {
+    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+    if (!webhookSecret) {
       log.error(
-        { err: err instanceof Error ? err.message : String(err) },
-        "Failed to initialize Stripe billing plugin — billing features will be unavailable",
+        "STRIPE_SECRET_KEY is set but STRIPE_WEBHOOK_SECRET is missing — "
+        + "Stripe plugin will NOT be enabled. Set STRIPE_WEBHOOK_SECRET to enable billing.",
       );
+    } else {
+      try {
+        const stripeClient = new Stripe(process.env.STRIPE_SECRET_KEY);
+
+        plugins.push(
+          stripePlugin({
+            stripeClient,
+            stripeWebhookSecret: webhookSecret,
+            createCustomerOnSignUp: true,
+            subscription: {
+              enabled: true,
+              plans: getStripePlans(),
+              async onSubscriptionComplete({ subscription, plan }) {
+                const orgId = subscription.referenceId;
+                if (orgId && (plan.name === "team" || plan.name === "enterprise")) {
+                  try {
+                    await updateWorkspacePlanTier(orgId, plan.name as PlanTier);
+                    log.info({ orgId, plan: plan.name }, "Subscription activated — plan tier synced");
+                  } catch (err) {
+                    log.error(
+                      { err: err instanceof Error ? err.message : String(err), orgId, plan: plan.name },
+                      "Failed to sync plan tier on subscription activation — Stripe will retry webhook",
+                    );
+                    throw err;
+                  }
+                }
+              },
+              async onSubscriptionCancel({ subscription }) {
+                const orgId = subscription.referenceId;
+                if (orgId) {
+                  try {
+                    await updateWorkspacePlanTier(orgId, "free");
+                    log.info({ orgId }, "Subscription canceled — downgraded to free tier");
+                  } catch (err) {
+                    log.error(
+                      { err: err instanceof Error ? err.message : String(err), orgId },
+                      "Failed to downgrade plan on subscription cancel — Stripe will retry webhook",
+                    );
+                    throw err;
+                  }
+                }
+              },
+              async onSubscriptionDeleted({ subscription }) {
+                const orgId = subscription.referenceId;
+                if (orgId) {
+                  try {
+                    await updateWorkspacePlanTier(orgId, "free");
+                    log.info({ orgId }, "Subscription deleted — downgraded to free tier");
+                  } catch (err) {
+                    log.error(
+                      { err: err instanceof Error ? err.message : String(err), orgId },
+                      "Failed to downgrade plan on subscription delete — Stripe will retry webhook",
+                    );
+                    throw err;
+                  }
+                }
+              },
+            },
+          }),
+        );
+
+        log.info("Stripe billing plugin enabled");
+      } catch (err) {
+        log.error(
+          { err: err instanceof Error ? err.message : String(err) },
+          "Failed to initialize Stripe billing plugin — billing features will be unavailable",
+        );
+      }
     }
   }
 

@@ -39,6 +39,9 @@ export interface PlanDefinition {
 
 const UNLIMITED = -1;
 
+/** Trial duration in days. Single source of truth — used in plan definitions, Stripe config, and enforcement. */
+export const TRIAL_DAYS = 14;
+
 const PLANS: Record<PlanTier, PlanDefinition> = {
   free: {
     name: "free",
@@ -53,7 +56,7 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
   trial: {
     name: "trial",
     displayName: "Trial",
-    trialDays: 14,
+    trialDays: TRIAL_DAYS,
     limits: {
       queriesPerMonth: 10_000,
       tokensPerMonth: 5_000_000,
@@ -87,11 +90,11 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
 // Accessors
 // ---------------------------------------------------------------------------
 
-export function getPlanDefinition(tier: PlanTier): PlanDefinition {
+export function getPlanDefinition(tier: PlanTier): Readonly<PlanDefinition> {
   return PLANS[tier];
 }
 
-export function getPlanLimits(tier: PlanTier): PlanLimits {
+export function getPlanLimits(tier: PlanTier): Readonly<PlanLimits> {
   return PLANS[tier].limits;
 }
 
@@ -130,7 +133,7 @@ export function getStripePlans(): Array<{
         members: PLANS.team.limits.maxMembers,
         connections: PLANS.team.limits.maxConnections,
       },
-      freeTrial: { days: 14 },
+      freeTrial: { days: TRIAL_DAYS },
     });
   }
 

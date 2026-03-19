@@ -20,7 +20,7 @@ import {
   type WorkspaceRow,
 } from "@atlas/api/lib/db/internal";
 import { getCurrentPeriodUsage } from "@atlas/api/lib/metering";
-import { getPlanLimits, isUnlimited } from "./plans";
+import { getPlanLimits, isUnlimited, TRIAL_DAYS } from "./plans";
 
 const log = createLogger("billing:enforcement");
 
@@ -28,12 +28,14 @@ const log = createLogger("billing:enforcement");
 // Types
 // ---------------------------------------------------------------------------
 
-export interface PlanCheckResult {
-  allowed: boolean;
-  errorCode?: string;
-  errorMessage?: string;
-  httpStatus?: 403 | 429 | 503;
-}
+export type PlanCheckResult =
+  | { allowed: true }
+  | {
+      allowed: false;
+      errorCode: "trial_expired" | "query_limit_exceeded" | "token_limit_exceeded" | "billing_check_failed";
+      errorMessage: string;
+      httpStatus: 403 | 429 | 503;
+    };
 
 // ---------------------------------------------------------------------------
 // Main enforcement check
@@ -120,10 +122,11 @@ export async function checkPlanLimits(
         };
       }
     } catch (err) {
-      // If we can't read usage, allow the request — metering is best-effort
-      log.warn(
+      // If we can't read usage, allow the request — metering is best-effort.
+      // Logged at error level so persistent metering failures trigger alerts.
+      log.error(
         { err: err instanceof Error ? err.message : String(err), orgId },
-        "Failed to read usage for plan enforcement — allowing request",
+        "Failed to read usage for plan enforcement — allowing request (metering unavailable)",
       );
     }
   }
@@ -137,10 +140,10 @@ export async function checkPlanLimits(
 
 function isTrialExpired(workspace: WorkspaceRow): boolean {
   if (!workspace.trial_ends_at) {
-    // No trial_ends_at set — check if the workspace was created more than 14 days ago
+    // No trial_ends_at set — check if the workspace was created more than TRIAL_DAYS ago
     const createdAt = new Date(workspace.createdAt);
-    const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
-    return createdAt < fourteenDaysAgo;
+    const trialCutoff = new Date(Date.now() - TRIAL_DAYS * 24 * 60 * 60 * 1000);
+    return createdAt < trialCutoff;
   }
 
   return new Date(workspace.trial_ends_at) < new Date();

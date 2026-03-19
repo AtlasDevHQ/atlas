@@ -60,7 +60,13 @@ mock.module("@atlas/api/lib/logger", () => ({
 
 // --- Import under test ---
 
-import { checkPlanLimits } from "@atlas/api/lib/billing/enforcement";
+import { checkPlanLimits, type PlanCheckResult } from "@atlas/api/lib/billing/enforcement";
+
+/** Narrow a denied result for type-safe assertion access. */
+function expectDenied(result: PlanCheckResult): Extract<PlanCheckResult, { allowed: false }> {
+  expect(result.allowed).toBe(false);
+  return result as Extract<PlanCheckResult, { allowed: false }>;
+}
 
 describe("billing/enforcement", () => {
   beforeEach(() => {
@@ -121,18 +127,24 @@ describe("billing/enforcement", () => {
   it("blocks expired trial", async () => {
     const pastDate = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString();
     mockWorkspace = { id: "org-1", name: "Test", slug: "test", workspace_status: "active", plan_tier: "trial", byot: false, stripe_customer_id: null, trial_ends_at: pastDate, suspended_at: null, deleted_at: null, createdAt: "2026-01-01T00:00:00Z" };
+    const denied = expectDenied(await checkPlanLimits("org-1"));
+    expect(denied.errorCode).toBe("trial_expired");
+    expect(denied.httpStatus).toBe(403);
+  });
+
+  it("allows trial without trial_ends_at when created recently", async () => {
+    const recentDate = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
+    mockWorkspace = { id: "org-1", name: "Test", slug: "test", workspace_status: "active", plan_tier: "trial", byot: false, stripe_customer_id: null, trial_ends_at: null, suspended_at: null, deleted_at: null, createdAt: recentDate };
+    mockUsage = { queryCount: 100, tokenCount: 1000, activeUsers: 0, periodStart: "", periodEnd: "" };
     const result = await checkPlanLimits("org-1");
-    expect(result.allowed).toBe(false);
-    expect(result.errorCode).toBe("trial_expired");
-    expect(result.httpStatus).toBe(403);
+    expect(result.allowed).toBe(true);
   });
 
   it("blocks trial without trial_ends_at when created > 14 days ago", async () => {
     const oldDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
     mockWorkspace = { id: "org-1", name: "Test", slug: "test", workspace_status: "active", plan_tier: "trial", byot: false, stripe_customer_id: null, trial_ends_at: null, suspended_at: null, deleted_at: null, createdAt: oldDate };
-    const result = await checkPlanLimits("org-1");
-    expect(result.allowed).toBe(false);
-    expect(result.errorCode).toBe("trial_expired");
+    const denied = expectDenied(await checkPlanLimits("org-1"));
+    expect(denied.errorCode).toBe("trial_expired");
   });
 
   // ── Team tier — usage limits ──────────────────────────────────────
@@ -147,29 +159,37 @@ describe("billing/enforcement", () => {
   it("blocks team tier when query limit exceeded", async () => {
     mockWorkspace = { id: "org-1", name: "Test", slug: "test", workspace_status: "active", plan_tier: "team", byot: false, stripe_customer_id: null, trial_ends_at: null, suspended_at: null, deleted_at: null, createdAt: "2026-01-01T00:00:00Z" };
     mockUsage = { queryCount: 10_000, tokenCount: 0, activeUsers: 0, periodStart: "", periodEnd: "" };
-    const result = await checkPlanLimits("org-1");
-    expect(result.allowed).toBe(false);
-    expect(result.errorCode).toBe("query_limit_exceeded");
-    expect(result.httpStatus).toBe(429);
+    const denied = expectDenied(await checkPlanLimits("org-1"));
+    expect(denied.errorCode).toBe("query_limit_exceeded");
+    expect(denied.httpStatus).toBe(429);
   });
 
   it("blocks team tier when token limit exceeded", async () => {
     mockWorkspace = { id: "org-1", name: "Test", slug: "test", workspace_status: "active", plan_tier: "team", byot: false, stripe_customer_id: null, trial_ends_at: null, suspended_at: null, deleted_at: null, createdAt: "2026-01-01T00:00:00Z" };
     mockUsage = { queryCount: 0, tokenCount: 5_000_000, activeUsers: 0, periodStart: "", periodEnd: "" };
-    const result = await checkPlanLimits("org-1");
-    expect(result.allowed).toBe(false);
-    expect(result.errorCode).toBe("token_limit_exceeded");
-    expect(result.httpStatus).toBe(429);
+    const denied = expectDenied(await checkPlanLimits("org-1"));
+    expect(denied.errorCode).toBe("token_limit_exceeded");
+    expect(denied.httpStatus).toBe(429);
+  });
+
+  // ── Trial tier — usage limits ────────────────────────────────────
+
+  it("blocks trial tier when query limit exceeded", async () => {
+    const futureDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    mockWorkspace = { id: "org-1", name: "Test", slug: "test", workspace_status: "active", plan_tier: "trial", byot: false, stripe_customer_id: null, trial_ends_at: futureDate, suspended_at: null, deleted_at: null, createdAt: new Date().toISOString() };
+    mockUsage = { queryCount: 10_000, tokenCount: 0, activeUsers: 0, periodStart: "", periodEnd: "" };
+    const denied = expectDenied(await checkPlanLimits("org-1"));
+    expect(denied.errorCode).toBe("query_limit_exceeded");
+    expect(denied.httpStatus).toBe(429);
   });
 
   // ── Error handling ────────────────────────────────────────────────
 
   it("blocks on workspace details DB error (fail closed)", async () => {
     mockWorkspaceDetailsShouldThrow = true;
-    const result = await checkPlanLimits("org-1");
-    expect(result.allowed).toBe(false);
-    expect(result.errorCode).toBe("billing_check_failed");
-    expect(result.httpStatus).toBe(503);
+    const denied = expectDenied(await checkPlanLimits("org-1"));
+    expect(denied.errorCode).toBe("billing_check_failed");
+    expect(denied.httpStatus).toBe(503);
   });
 
   it("allows on metering read error (fail open for usage)", async () => {

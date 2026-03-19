@@ -200,6 +200,15 @@ describe("billing routes", () => {
       expect(res.status).toBe(404);
     });
 
+    it("returns 404 when workspace not found", async () => {
+      mockGetWorkspaceDetails.mockImplementation(() => Promise.resolve(null));
+      const res = await request("/api/v1/billing");
+      expect(res.status).toBe(404);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      const body = await res.json() as any;
+      expect(body.error).toBe("not_found");
+    });
+
     it("returns 400 when no active org", async () => {
       mockAuthenticateRequest.mockImplementation(() =>
         Promise.resolve({
@@ -268,6 +277,19 @@ describe("billing routes", () => {
         body: JSON.stringify({}),
       });
       expect(res.status).toBe(400);
+    });
+
+    it("returns 404 when workspace not found", async () => {
+      mockUpdateWorkspaceByot.mockImplementation(() => Promise.resolve(false));
+      const res = await request("/api/v1/billing/byot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: true }),
+      });
+      expect(res.status).toBe(404);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      const body = await res.json() as any;
+      expect(body.error).toBe("not_found");
     });
 
     it("returns 403 for non-admin users", async () => {

@@ -46,7 +46,7 @@ async function billingAuthPreamble(req: Request, requestId: string) {
     return { error: { error: "auth_error", message: "Authentication system error", requestId }, status: 500 as const };
   }
   if (!authResult.authenticated) {
-    return { error: { error: "auth_error", message: authResult.error }, status: authResult.status as 401 | 403 | 500 };
+    return { error: { error: "auth_error", message: authResult.error, requestId }, status: authResult.status as 401 | 403 | 500 };
   }
 
   const ip = getClientIP(req);
@@ -115,8 +115,12 @@ billing.get("/", async (c) => {
         if (subRows.length > 0) {
           subscription = subRows[0];
         }
-      } catch {
-        // Subscription table may not exist if Stripe plugin hasn't run migrations yet
+      } catch (err) {
+        // Subscription table may not exist if Stripe plugin hasn't run migrations yet.
+        log.debug(
+          { err: err instanceof Error ? err.message : String(err), orgId },
+          "Failed to query subscription table — may not exist yet",
+        );
       }
 
       return c.json({

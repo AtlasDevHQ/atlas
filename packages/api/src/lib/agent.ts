@@ -632,23 +632,29 @@ export async function runAgent({
             log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to persist token usage");
           }
 
-          // Log usage metering events for billing/overage tracking
-          const totalTokens = (totalUsage.inputTokens ?? 0) + (totalUsage.outputTokens ?? 0);
-          logUsageEvent({
-            workspaceId: orgId ?? null,
-            userId,
-            eventType: "query",
-            quantity: 1,
-            metadata: { conversationId, model: resolvedModelId, steps: steps.length },
-          });
-          if (totalTokens > 0) {
+          // Log usage metering events for billing/overage tracking.
+          // Wrapped in its own try/catch to ensure a metering failure
+          // never disrupts the onFinish callback or stream finalization.
+          try {
+            const totalTokens = (totalUsage.inputTokens ?? 0) + (totalUsage.outputTokens ?? 0);
             logUsageEvent({
               workspaceId: orgId ?? null,
-              userId,
-              eventType: "token",
-              quantity: totalTokens,
-              metadata: { input: totalUsage.inputTokens ?? 0, output: totalUsage.outputTokens ?? 0 },
+              userId: userId ?? null,
+              eventType: "query",
+              quantity: 1,
+              metadata: { conversationId, model: resolvedModelId, steps: steps.length },
             });
+            if (totalTokens > 0) {
+              logUsageEvent({
+                workspaceId: orgId ?? null,
+                userId: userId ?? null,
+                eventType: "token",
+                quantity: totalTokens,
+                metadata: { input: totalUsage.inputTokens ?? 0, output: totalUsage.outputTokens ?? 0 },
+              });
+            }
+          } catch (err) {
+            log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to log usage metering events");
           }
         }
       },

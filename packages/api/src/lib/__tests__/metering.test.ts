@@ -152,6 +152,18 @@ describe("metering", () => {
       expect(result.queryCount).toBe(0);
       expect(queryCalls).toHaveLength(0);
     });
+
+    it("returns zeros when query returns empty result set", async () => {
+      queryResults = [[]]; // empty array — rows[0] is undefined
+
+      const result = await getCurrentPeriodUsage("org-1");
+
+      expect(result.queryCount).toBe(0);
+      expect(result.tokenCount).toBe(0);
+      expect(result.activeUsers).toBe(0);
+      expect(result.periodStart).toBeTruthy();
+      expect(result.periodEnd).toBeTruthy();
+    });
   });
 
   describe("getUsageHistory", () => {
@@ -184,6 +196,16 @@ describe("metering", () => {
       mockHasInternalDB = false;
       const result = await getUsageHistory("org-1", "monthly");
       expect(result).toEqual([]);
+    });
+
+    it("passes custom limit as last SQL parameter", async () => {
+      queryResults = [[]];
+
+      await getUsageHistory("org-1", "daily", undefined, undefined, 10);
+
+      const call = queryCalls[0];
+      const params = call.params as unknown[];
+      expect(params[params.length - 1]).toBe(10);
     });
   });
 

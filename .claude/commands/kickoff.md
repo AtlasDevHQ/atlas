@@ -98,7 +98,25 @@ After all issues are created, update `.claude/research/ROADMAP.md`:
 - Add issue numbers to each line item: `- [ ] Action approval UI (#N)`
 - If any items were split into multiple issues, update the line items to reflect the split
 
-**Step 6: Suggest first picks**
+**Step 6: Create the docs refinement milestone**
+
+Every major milestone (0.X.0) gets a companion docs refinement milestone (0.X.1) created at the same time. This ensures documentation coverage is tracked as a first-class deliverable, not an afterthought.
+
+```bash
+# Create the docs refinement milestone alongside the main one
+gh api repos/AtlasDevHQ/atlas/milestones -X POST \
+  -f title="0.X.1 — Docs & Polish" \
+  -f state=open \
+  -f description="Documentation, reference pages, and guide coverage for 0.X.0 features. Run /docs-audit after the main milestone ships to populate."
+```
+
+The docs milestone stays empty until the main milestone ships features. Then `/docs-audit` identifies gaps, and issues are filed into the 0.X.1 milestone. This pattern is established: 0.5.1 (Agent-Friendly Docs), 0.7.5 (Docs Completeness), 0.8.1 (included docs work).
+
+**Don't pre-populate the docs milestone with issues** — wait until features ship, then audit. Pre-creating docs issues for unbuilt features creates churn.
+
+---
+
+**Step 7: Suggest first picks**
 
 After creating all issues, recommend 2-3 issues to start with (same format as `/next`):
 - Prefer P0 items with no dependencies

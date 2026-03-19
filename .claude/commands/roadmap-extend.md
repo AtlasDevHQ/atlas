@@ -84,6 +84,7 @@ Propose 2-4 new milestones beyond what's currently in ROADMAP.md. For each:
 - Mark items that could be community contributions with `(good first issue)`
 - Include a mix of user-facing features and infrastructure/DX work
 - Items from the existing Ideas/Backlog section should be incorporated where they fit
+- **Every 0.X.0 milestone gets a companion 0.X.1 — Docs & Polish milestone.** Don't pre-populate it — it gets filled after features ship via `/docs-audit`. This pattern ensures docs coverage is tracked as a first-class deliverable (established: 0.5.1, 0.7.5, 0.8.1)
 
 **Also propose updates to existing milestones if:**
 - Items should be re-prioritized based on codebase analysis

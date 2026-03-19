@@ -1,0 +1,136 @@
+---
+title: Usage Metering
+description: Track queries, tokens, and active users per workspace with admin usage endpoints.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas tracks usage events — queries executed, tokens consumed, and user logins — per workspace. Admins can view current-period summaries, historical trends, and per-user breakdowns through the admin API. Usage data powers billing integrations and capacity planning.
+
+<Callout title="Prerequisites">
+- Internal database configured (`DATABASE_URL`)
+- Admin role required for usage endpoints
+- Usage is recorded automatically — no configuration needed
+</Callout>
+
+---
+
+## What's Tracked
+
+Atlas records three types of usage events:
+
+| Event Type | What It Counts | When It's Recorded |
+|------------|----------------|-------------------|
+| `query` | SQL queries executed | After each `executeSQL` tool call |
+| `token` | LLM tokens consumed | After each agent step |
+| `login` | User sign-ins | (Reserved — not yet emitted) |
+
+Each event includes:
+- **Workspace ID** — scoped to the user's active organization
+- **User ID** — who triggered the event
+- **Quantity** — how many (1 for queries, token count for tokens)
+- **Metadata** — optional context (e.g., model name, query duration)
+
+---
+
+## Admin API Endpoints
+
+Usage endpoints are mounted at `/api/v1/admin/usage`. All require the `admin` role and are scoped to the admin's organization.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/` | Current period summary (real-time) |
+| `GET` | `/history` | Historical summaries (daily or monthly) |
+| `GET` | `/breakdown` | Per-user usage breakdown |
+
+### Current Period Summary
+
+Returns real-time counts from raw usage events for the current billing period.
+
+```bash
+curl https://your-atlas.example.com/api/v1/admin/usage \
+  -H "Authorization: Bearer <admin-token>"
+```
+
+Response:
+
+```json
+{
+  "workspaceId": "org_abc123",
+  "queryCount": 1842,
+  "tokenCount": 245000,
+  "activeUsers": 12,
+  "periodStart": "2026-03-01T00:00:00.000Z",
+  "periodEnd": "2026-04-01T00:00:00.000Z"
+}
+```
+
+### Historical Summaries
+
+Returns aggregated summaries over a date range, grouped by day or month. Triggers aggregation on read — summaries are computed from raw events and cached in the `usage_summaries` table.
+
+```bash
+curl "https://your-atlas.example.com/api/v1/admin/usage/history?period=daily&startDate=2026-03-01&endDate=2026-03-19&limit=30" \
+  -H "Authorization: Bearer <admin-token>"
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `period` | `daily` \| `monthly` | `monthly` | Aggregation granularity |
+| `startDate` | ISO 8601 | — | Start of date range |
+| `endDate` | ISO 8601 | — | End of date range |
+| `limit` | number | `90` | Max summaries to return |
+
+### Per-User Breakdown
+
+Shows usage by individual user within a date range.
+
+```bash
+curl "https://your-atlas.example.com/api/v1/admin/usage/breakdown?startDate=2026-03-01&endDate=2026-03-19" \
+  -H "Authorization: Bearer <admin-token>"
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `startDate` | ISO 8601 | — | Start of date range |
+| `endDate` | ISO 8601 | — | End of date range |
+| `limit` | number | `100` | Max users to return (max 500) |
+
+Response:
+
+```json
+{
+  "workspaceId": "org_abc123",
+  "users": [
+    { "user_id": "user_1", "query_count": 450, "token_count": 62000, "login_count": 0 },
+    { "user_id": "user_2", "query_count": 312, "token_count": 48000, "login_count": 0 }
+  ]
+}
+```
+
+---
+
+## How It Works
+
+### Event Logging
+
+Usage events are logged via `logUsageEvent()` — a fire-and-forget function that writes to the internal database asynchronously. If the internal DB is not configured, usage logging is silently skipped.
+
+A circuit breaker protects against database failures: after 5 consecutive write errors, the circuit trips and events are dropped until the database recovers. This prevents usage logging from impacting query latency.
+
+### Aggregation
+
+Historical summaries are computed on-demand when the `/history` endpoint is called. The aggregation:
+
+1. Groups raw events by workspace, period, and event type
+2. Upserts results into the `usage_summaries` table
+3. Uses `ON CONFLICT ... DO UPDATE` for concurrent safety
+4. Returns the aggregated rows for the requested date range
+
+---
+
+## See Also
+
+- [Admin Console](/guides/admin-console) — Token usage UI and workspace management
+- [Environment Variables](/reference/environment-variables) — Full variable reference
+- [Observability](/guides/observability) — Logging and monitoring setup

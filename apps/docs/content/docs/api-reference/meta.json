@@ -22,6 +22,8 @@
     "admin-—-suggestions",
     "admin-—-prompts",
     "admin-—-usage",
-    "admin-—-organizations"
+    "admin-—-organizations",
+    "admin-—-sso",
+    "onboarding"
   ]
 }

@@ -33,7 +33,60 @@ import { AtlasChat, AtlasUIProvider } from "@useatlas/react";
 import { AtlasProvider, useAtlasChat, useAtlasAuth } from "@useatlas/react/hooks";
 ```
 
-The main entry point (`@useatlas/react`) exports `AtlasUIProvider` for use with the pre-built `AtlasChat` component. The hooks entry point (`@useatlas/react/hooks`) exports `AtlasProvider`, a lightweight provider for headless hooks. This page documents the headless hooks — all examples use `@useatlas/react/hooks`.
+The main entry point (`@useatlas/react`) exports `AtlasUIProvider` for use with the pre-built `AtlasChat` component. The hooks entry point (`@useatlas/react/hooks`) exports `AtlasProvider`, a lightweight provider for headless hooks.
+
+---
+
+## AtlasChat
+
+A pre-built, full-featured chat component. Drop it into your app for a ready-made Atlas experience with markdown rendering, code highlighting, charts, conversation history, and schema exploration.
+
+```tsx
+import { AtlasChat, AtlasUIProvider } from "@useatlas/react";
+
+function App() {
+  return (
+    <AtlasUIProvider>
+      <AtlasChat
+        apiUrl="https://your-atlas-api.example.com"
+        apiKey="sk-..."
+        theme="system"
+        sidebar
+        schemaExplorer
+      />
+    </AtlasUIProvider>
+  );
+}
+```
+
+### AtlasChat Props
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `apiUrl` | `string` | — | **Required.** Atlas API server URL. Use `""` for same-origin deployments. |
+| `apiKey` | `string` | — | API key for `simple-key` auth mode. Sent as Bearer token. Also loaded from `sessionStorage` (`atlas-api-key`) on mount. |
+| `theme` | `"light" \| "dark" \| "system"` | `"system"` | Color theme. Applied on mount via CSS variables and persisted to localStorage. |
+| `sidebar` | `boolean` | `false` | Show the conversation history sidebar. Lazy-loads conversations after auth resolves. |
+| `schemaExplorer` | `boolean` | `false` | Show the schema explorer button and modal for browsing tables and columns. |
+| `authClient` | `AtlasAuthClient` | — | Custom auth client for `managed` auth mode. Provides session management (login, signup, logout, `useSession`). |
+| `toolRenderers` | `ToolRenderers` | — | Custom renderers for tool results. Map tool names to React components (see [Tool Result Types](#tool-result-types) below). |
+| `chatEndpoint` | `string` | `"/api/chat"` | Custom chat API endpoint path. Combined with `apiUrl` for the full URL. |
+| `conversationsEndpoint` | `string` | `"/api/v1/conversations"` | Custom conversations API endpoint path. Used for listing and loading conversations. |
+
+### Auth Mode Detection
+
+`AtlasChat` auto-detects the server's auth mode by calling `/api/health` on mount:
+
+| Auth Mode | Behavior |
+|-----------|----------|
+| `managed` | Uses `authClient` for session-based auth. Shows password change dialog if required. |
+| `simple-key` | Sends `apiKey` as Bearer token. Falls back to `sessionStorage`. |
+| `none` | No auth headers sent. |
+| Health check failure | Defaults to `none`. Shows a persistent warning banner. |
+
+### Brand Color
+
+If the health endpoint returns a `brandColor` value (OKLCH format), it's applied as the `--atlas-brand` CSS custom property. See [Custom Styling](#custom-styling) for override options.
 
 ---
 

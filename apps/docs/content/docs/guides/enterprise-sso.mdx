@@ -1,0 +1,159 @@
+---
+title: Enterprise SSO
+description: Configure SAML or OIDC single sign-on with domain-based auto-provisioning.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas supports enterprise SSO via SAML 2.0 and OpenID Connect (OIDC). Admins register identity providers through the admin API, map email domains to providers, and users are auto-provisioned on first login. SSO is part of the Atlas Enterprise (`/ee`) module.
+
+<Callout title="Prerequisites">
+- [Managed auth](/deployment/authentication#managed-auth) enabled
+- Internal database configured (`DATABASE_URL`)
+- Enterprise license (the `/ee` module must be available)
+- Admin role required for all SSO management endpoints
+</Callout>
+
+---
+
+## How It Works
+
+1. An admin registers an SSO provider (SAML or OIDC) via the admin API
+2. The provider is linked to an email domain (e.g., `acme.com`)
+3. When a user with that email domain signs in, Atlas routes them to the configured IdP
+4. On successful IdP authentication, the user is auto-provisioned into the workspace
+
+Each organization can have multiple SSO providers, each mapped to a different email domain. Domain uniqueness is enforced globally — no two providers across any organization can claim the same domain.
+
+---
+
+## SAML Configuration
+
+SAML providers require three pieces of information from your identity provider:
+
+| Field | Description |
+|-------|-------------|
+| `idpEntityId` | The IdP's entity identifier (issuer URI) |
+| `idpSsoUrl` | The IdP's single sign-on URL (HTTP-Redirect or HTTP-POST binding) |
+| `idpCertificate` | The IdP's signing certificate in PEM format |
+
+Optional fields for service provider (SP) configuration:
+
+| Field | Description |
+|-------|-------------|
+| `spEntityId` | Custom SP entity ID (defaults to Atlas-generated value) |
+| `spAcsUrl` | Custom Assertion Consumer Service URL |
+
+### Register a SAML Provider
+
+```bash
+curl -X POST https://your-atlas.example.com/api/v1/admin/sso/providers \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <admin-token>" \
+  -d '{
+    "type": "saml",
+    "issuer": "https://idp.acme.com",
+    "domain": "acme.com",
+    "enabled": true,
+    "config": {
+      "idpEntityId": "https://idp.acme.com/entity",
+      "idpSsoUrl": "https://idp.acme.com/sso",
+      "idpCertificate": "-----BEGIN CERTIFICATE-----\nMIIC...\n-----END CERTIFICATE-----"
+    }
+  }'
+```
+
+---
+
+## OIDC Configuration
+
+OIDC providers require:
+
+| Field | Description |
+|-------|-------------|
+| `clientId` | OAuth client ID from your IdP |
+| `clientSecret` | OAuth client secret (encrypted at rest) |
+| `discoveryUrl` | The IdP's `.well-known/openid-configuration` URL |
+
+### Register an OIDC Provider
+
+```bash
+curl -X POST https://your-atlas.example.com/api/v1/admin/sso/providers \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <admin-token>" \
+  -d '{
+    "type": "oidc",
+    "issuer": "https://accounts.google.com",
+    "domain": "acme.com",
+    "enabled": true,
+    "config": {
+      "clientId": "your-client-id",
+      "clientSecret": "your-client-secret",
+      "discoveryUrl": "https://accounts.google.com/.well-known/openid-configuration"
+    }
+  }'
+```
+
+<Callout type="info">
+Client secrets are encrypted at rest using `BETTER_AUTH_SECRET` or `ATLAS_ENCRYPTION_KEY`. They are never returned in API responses — the provider detail endpoint redacts secret fields. The `enabled` field defaults to `false` if omitted — providers must be explicitly enabled.
+</Callout>
+
+---
+
+## Admin API Endpoints
+
+All SSO endpoints require the `admin` role and an active enterprise license. They are mounted at `/api/v1/admin/sso`.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/providers` | List SSO provider summaries (config omitted) |
+| `GET` | `/providers/:id` | Get a single provider (secrets redacted) |
+| `POST` | `/providers` | Register a new SSO provider |
+| `PATCH` | `/providers/:id` | Update a provider (partial config merge) |
+| `DELETE` | `/providers/:id` | Delete a provider |
+
+### Error Responses
+
+| Status | Code | When |
+|--------|------|------|
+| 400 | `validation` | Invalid config fields, malformed domain |
+| 403 | `enterprise_required` | Enterprise license not active |
+| 404 | `not_found` | Provider ID doesn't exist |
+| 409 | `conflict` | Domain already claimed by another SSO provider |
+
+---
+
+## Domain Auto-Provisioning
+
+When a user signs in with an email matching a configured SSO domain:
+
+1. Atlas calls `findProviderByDomain()` to locate the matching, enabled SSO provider
+2. The user is redirected to the IdP for authentication
+3. On successful authentication, Atlas creates or updates the user account
+4. The user is added to the organization that owns the SSO provider
+
+Domain format requirements:
+- Lowercase letters, numbers, hyphens, and dots
+- Must be a valid DNS domain (e.g., `acme.com`, `engineering.acme.com`)
+- Validated against the pattern: `^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$`
+
+---
+
+## SAML vs OIDC
+
+| Feature | SAML 2.0 | OIDC |
+|---------|----------|------|
+| **Protocol** | XML-based, HTTP-POST binding | OAuth 2.0 / JWT |
+| **Setup complexity** | Higher (certificates, entity IDs) | Lower (client ID/secret + discovery URL) |
+| **Common IdPs** | Okta, OneLogin, ADFS | Google Workspace, Azure AD, Auth0 |
+| **Secret storage** | Certificate (public) | Client secret (encrypted at rest) |
+
+Choose SAML when your IdP mandates it or for compliance requirements. Choose OIDC for simpler setup with modern identity providers.
+
+---
+
+## See Also
+
+- [Authentication](/deployment/authentication) — Auth mode setup and configuration
+- [Admin Console](/guides/admin-console) — Manage users and sessions
+- [Environment Variables](/reference/environment-variables) — Full variable reference

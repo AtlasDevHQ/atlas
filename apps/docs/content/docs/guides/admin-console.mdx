@@ -446,6 +446,63 @@ Full user management with stats and controls:
 
 ---
 
+## Workspace Management
+
+**Route:** `/admin/organizations`
+
+<Callout type="info">
+Requires managed auth with an internal database (`DATABASE_URL`). Platform-wide view — admins see all organizations, not just their own.
+</Callout>
+
+Manage workspaces (organizations) across the platform:
+
+- **Organization list** — Name, slug, status badge (active/suspended/deleted), plan tier, member count, creation date
+- **Detail view** — Members with roles, pending invitations, creation date, and metadata
+- **Stats** — Member count, conversation count, query count per organization
+
+### Workspace Status
+
+| Status | Description |
+|--------|-------------|
+| **Active** | Normal operation — queries and agent interactions are allowed |
+| **Suspended** | All queries blocked. Connection pools drained. Can be reactivated |
+| **Deleted** | Soft-deleted with cascading cleanup. Pools drained, caches flushed, data marked for removal |
+
+### Actions
+
+- **Suspend** — Block all queries for a workspace. Drains the org's connection pools immediately. Use this for billing holds, abuse prevention, or maintenance windows
+- **Activate** — Reactivate a suspended workspace. Queries resume immediately
+- **Delete** — Soft-delete with cascading cleanup: drain pools, flush caches, cascade database cleanup, mark as deleted. This is not reversible from the UI
+- **Change plan** — Set a workspace's plan tier: `free`, `team`, or `enterprise`
+
+### Health Status
+
+The organization status endpoint (`GET /admin/organizations/:id/status`) returns workspace health metrics:
+
+- **Members** — Total member count
+- **Conversations** — Total conversations
+- **Queries last 24h** — Recent query volume
+- **Connections** — Registered datasource count
+- **Scheduled tasks** — Active task count
+- **Pool metrics** — Connection pool stats (if org-scoped pooling is enabled)
+
+### Admin API
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/organizations` | List all organizations |
+| `GET` | `/organizations/:id` | Get org details with members and invitations |
+| `GET` | `/organizations/:id/stats` | Org stats (members, conversations, queries) |
+| `GET` | `/organizations/:id/status` | Workspace health summary |
+| `PATCH` | `/organizations/:id/suspend` | Suspend workspace |
+| `PATCH` | `/organizations/:id/activate` | Reactivate workspace |
+| `DELETE` | `/organizations/:id` | Soft-delete workspace |
+| `PATCH` | `/organizations/:id/plan` | Update plan tier |
+
+See [Usage Metering](/guides/usage-metering) for per-workspace usage tracking.
+
+---
+
 ## API Endpoints
 
 All admin endpoints are at `/api/v1/admin/` and require the `admin` role. See the [SDK](/reference/sdk) for typed client methods.
@@ -522,6 +579,22 @@ All admin endpoints are at `/api/v1/admin/` and require the `admin` role. See th
 | `PUT` | `/prompts/:id/reorder` | Reorder items (body: `{ itemIds }`) |
 | `GET` | `/suggestions` | List query suggestions (supports `table`, `min_frequency`, `limit`, `offset` filters) |
 | `DELETE` | `/suggestions/:id` | Delete a query suggestion |
+| `GET` | `/organizations` | List all organizations |
+| `GET` | `/organizations/:id` | Get org details with members |
+| `GET` | `/organizations/:id/stats` | Org stats |
+| `GET` | `/organizations/:id/status` | Workspace health summary |
+| `PATCH` | `/organizations/:id/suspend` | Suspend workspace |
+| `PATCH` | `/organizations/:id/activate` | Reactivate workspace |
+| `DELETE` | `/organizations/:id` | Soft-delete workspace |
+| `PATCH` | `/organizations/:id/plan` | Update plan tier |
+| `GET` | `/usage` | Current period usage summary |
+| `GET` | `/usage/history` | Historical usage summaries |
+| `GET` | `/usage/breakdown` | Per-user usage breakdown |
+| `GET` | `/sso/providers` | List SSO providers |
+| `GET` | `/sso/providers/:id` | Get SSO provider detail |
+| `POST` | `/sso/providers` | Create SSO provider |
+| `PATCH` | `/sso/providers/:id` | Update SSO provider |
+| `DELETE` | `/sso/providers/:id` | Delete SSO provider |
 
 ---
 

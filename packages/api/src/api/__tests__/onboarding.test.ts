@@ -63,12 +63,18 @@ mock.module("@atlas/api/lib/db/connection", () =>
   }),
 );
 
+const mockHasInternalDB: Mock<() => boolean> = mock(() => true);
+const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<Record<string, unknown>[]>> = mock(
+  async () => [{ id: "default" }],
+);
+const mockEncryptUrl: Mock<(url: string) => string> = mock((url: string) => `encrypted:${url}`);
+
 mock.module("@atlas/api/lib/db/internal", () => ({
-  hasInternalDB: () => true,
+  hasInternalDB: mockHasInternalDB,
   getInternalDB: () => ({ query: async () => ({ rows: [] }) }),
-  internalQuery: async () => [],
+  internalQuery: mockInternalQuery,
   internalExecute: () => {},
-  encryptUrl: (url: string) => `encrypted:${url}`,
+  encryptUrl: mockEncryptUrl,
   decryptUrl: (url: string) => url,
   migrateInternalDB: async () => {},
   loadSavedConnections: async () => 0,
@@ -295,6 +301,19 @@ describe("POST /api/v1/onboarding/complete", () => {
     expect(data.error).toBe("no_organization");
   });
 
+  it("rejects when no internal DB", async () => {
+    mockHasInternalDB.mockImplementation(() => false);
+    const res = await request("/api/v1/onboarding/complete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: "postgresql://localhost/test" }),
+    });
+    expect(res.status).toBe(404);
+    const data = await json(res);
+    expect(data.error).toBe("not_available");
+    mockHasInternalDB.mockImplementation(() => true);
+  });
+
   it("completes onboarding with valid connection", async () => {
     const res = await request("/api/v1/onboarding/complete", {
       method: "POST",
@@ -317,6 +336,59 @@ describe("POST /api/v1/onboarding/complete", () => {
     const data = await json(res);
     expect(data.connectionId).toBe("warehouse");
     expect(data.dbType).toBe("mysql");
+  });
+
+  it("returns 500 with requestId when encryption fails", async () => {
+    mockEncryptUrl.mockImplementation(() => { throw new Error("bad key"); });
+    const res = await request("/api/v1/onboarding/complete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: "postgresql://user:pass@localhost:5432/mydb" }),
+    });
+    expect(res.status).toBe(500);
+    const data = await json(res);
+    expect(data.error).toBe("encryption_failed");
+    expect(data.requestId).toBeDefined();
+    mockEncryptUrl.mockImplementation((url: string) => `encrypted:${url}`);
+  });
+
+  it("returns 500 with requestId when DB write fails", async () => {
+    mockInternalQuery.mockImplementation(async () => { throw new Error("connection reset"); });
+    const res = await request("/api/v1/onboarding/complete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: "postgresql://user:pass@localhost:5432/mydb" }),
+    });
+    expect(res.status).toBe(500);
+    const data = await json(res);
+    expect(data.error).toBe("internal_error");
+    expect(data.requestId).toBeDefined();
+    mockInternalQuery.mockImplementation(async () => [{ id: "default" }]);
+  });
+
+  it("returns 409 when connection ID belongs to another org", async () => {
+    mockInternalQuery.mockImplementation(async () => []);
+    const res = await request("/api/v1/onboarding/complete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: "postgresql://user:pass@localhost:5432/mydb" }),
+    });
+    expect(res.status).toBe(409);
+    const data = await json(res);
+    expect(data.error).toBe("conflict");
+    mockInternalQuery.mockImplementation(async () => [{ id: "default" }]);
+  });
+
+  it("returns error on connection health check failure", async () => {
+    mockHealthCheck.mockImplementation(() => Promise.reject(new Error("Connection refused")));
+    const res = await request("/api/v1/onboarding/complete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: "postgresql://user:pass@localhost:5432/mydb" }),
+    });
+    expect(res.status).toBe(400);
+    const data = await json(res);
+    expect(data.error).toBe("connection_failed");
   });
 });
 

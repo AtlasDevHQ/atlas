@@ -66,7 +66,14 @@ export default function ConnectPage() {
         body: JSON.stringify({ url }),
       });
 
-      const data: TestResult = await res.json();
+      let data: TestResult;
+      try {
+        data = await res.json();
+      } catch {
+        setConnectionStatus("error");
+        setError("Server returned an unexpected response. Check that the API is running.");
+        return;
+      }
       setTestResult(data);
 
       if (res.ok && data.status === "healthy") {
@@ -99,7 +106,13 @@ export default function ConnectPage() {
         body: JSON.stringify({ url }),
       });
 
-      const data = await res.json() as Record<string, unknown>;
+      let data: Record<string, unknown>;
+      try {
+        data = await res.json() as Record<string, unknown>;
+      } catch {
+        setError("Server returned an unexpected response. Check that the API is running.");
+        return;
+      }
       if (!res.ok) {
         setError((data.message as string) ?? "Failed to save connection");
         return;

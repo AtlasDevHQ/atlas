@@ -58,14 +58,18 @@ export default function WorkspacePage() {
         return;
       }
 
-      // Set the new org as active
+      // Set the new org as active — required for the next step
       if (result.data?.id) {
         try {
           await authClient.organization.setActive({
             organizationId: result.data.id,
           });
         } catch (err) {
-          console.error("Workspace created but failed to set as active:", err);
+          console.error("Failed to activate workspace:", err);
+          setError(
+            "Workspace created, but we couldn't activate it. Please reload and try again.",
+          );
+          return;
         }
       }
 

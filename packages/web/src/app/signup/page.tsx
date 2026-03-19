@@ -35,12 +35,16 @@ export default function SignupPage() {
   useEffect(() => {
     const base = getApiBase();
     fetch(`${base}/api/v1/onboarding/social-providers`)
-      .then((r) => r.json())
+      .then((r) => {
+        if (!r.ok) throw new Error(`Social providers returned ${r.status}`);
+        return r.json();
+      })
       .then((data: { providers?: string[] }) => {
         if (Array.isArray(data.providers)) setSocialProviders(data.providers);
       })
-      .catch(() => {
-        // Social providers endpoint unavailable — email/password only
+      .catch((err: unknown) => {
+        // Graceful degradation: email/password form still works
+        console.debug("Social providers unavailable:", err instanceof Error ? err.message : String(err));
       });
   }, []);
 

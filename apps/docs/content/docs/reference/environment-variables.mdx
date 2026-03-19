@@ -37,6 +37,8 @@ LLM provider and model configuration.
 | `OPENAI_COMPATIBLE_BASE_URL` | — | Base URL for OpenAI-compatible servers (vLLM, TGI, LiteLLM). **Required** when `ATLAS_PROVIDER=openai-compatible` |
 | `OPENAI_COMPATIBLE_API_KEY` | `not-needed` | API key for OpenAI-compatible servers. Most local servers don't require one |
 
+When `ATLAS_PROVIDER` is not set, the default depends on the runtime environment. On Vercel (detected via the platform-set `VERCEL` env var), the default is `gateway`. Everywhere else, the default is `anthropic`.
+
 Each provider requires its own API key:
 
 | Provider | API Key Variable |
@@ -163,7 +165,8 @@ Query safety and SQL validation settings. See [SQL Validation Pipeline](/securit
 | `ATLAS_ROW_LIMIT` | `1000` | Max rows returned per query |
 | `ATLAS_QUERY_TIMEOUT` | `30000` | Query timeout in milliseconds |
 | `ATLAS_TABLE_WHITELIST` | `true` | Only allow queries against tables defined in the semantic layer |
-| `ATLAS_SCHEMA` | `public` | PostgreSQL schema name. Used by the CLI for profiling (`init`, `diff`) and by the API at runtime to set the connection `search_path` |
+| `ATLAS_SCHEMA` | — | PostgreSQL schema name. When set to a non-`public` value, the API sets `search_path` to `"<schema>", public` on each connection. When unset, no `search_path` is set and PostgreSQL uses its server default (typically `public`). Also used by `atlas doctor` to verify the schema exists |
+| `ATLAS_ENCRYPTION_KEY` | — | Dedicated encryption key for connection URLs stored at rest. Takes precedence over `BETTER_AUTH_SECRET`. Recommended for production when managing datasource connections via the admin UI |
 | `ATLAS_POOL_WARMUP` | `2` | Number of warmup probes per connection at startup. Set to `0` to disable warmup |
 | `ATLAS_POOL_DRAIN_THRESHOLD` | `5` | Consecutive query errors before the pool is automatically drained and recreated |
 | `ATLAS_CACHE_ENABLED` | `true` | Enable query result caching. Set to `false` to disable |

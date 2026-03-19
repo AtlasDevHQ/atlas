@@ -25,6 +25,7 @@ import {
 } from "@atlas/api/lib/auth/middleware";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { checkWorkspaceStatus } from "@atlas/api/lib/workspace";
+import { checkPlanLimits } from "@atlas/api/lib/billing/enforcement";
 import {
   createConversation,
   addMessage,
@@ -141,6 +142,15 @@ query.post("/", async (c) => {
     return c.json(
       { error: wsCheck.errorCode, message: wsCheck.errorMessage, requestId },
       wsCheck.httpStatus ?? 403,
+    );
+  }
+
+  // Plan limit check — block requests when usage exceeds plan limits
+  const planCheck = await checkPlanLimits(authResult.user?.activeOrganizationId);
+  if (!planCheck.allowed) {
+    return c.json(
+      { error: planCheck.errorCode, message: planCheck.errorMessage, requestId },
+      planCheck.httpStatus ?? 403,
     );
   }
 

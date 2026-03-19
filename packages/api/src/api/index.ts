@@ -208,6 +208,22 @@ try {
   );
 }
 
+// Billing routes — lazy import, only loaded if STRIPE_SECRET_KEY is set (SaaS mode).
+if (process.env.STRIPE_SECRET_KEY) {
+  try {
+    const { billing } = await import("./routes/billing");
+    app.route("/api/v1/billing", billing);
+    log.info("Stripe billing routes enabled");
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err : new Error(String(err)) },
+      "Failed to load billing routes — billing endpoints will be unavailable",
+    );
+  }
+} else {
+  log.debug("Billing routes disabled (STRIPE_SECRET_KEY not set)");
+}
+
 // Slack routes — lazy import, only loaded if SLACK_SIGNING_SECRET is set.
 // Dynamic import avoids pulling slack dependencies into the module graph
 // when Slack is disabled, and prevents mock.module leaks in test suites.

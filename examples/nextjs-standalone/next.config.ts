@@ -8,7 +8,7 @@ const nextConfig: NextConfig = {
   outputFileTracingRoot: path.resolve(import.meta.dirname, "../.."),
   transpilePackages: ["@atlas/api", "@atlas/web"],
   // Native bindings and worker threads incompatible with Next.js bundling
-  serverExternalPackages: ["pg", "mysql2", "@clickhouse/client", "@duckdb/node-api", "snowflake-sdk", "jsforce", "just-bash", "pino", "pino-pretty"],
+  serverExternalPackages: ["pg", "mysql2", "@clickhouse/client", "@duckdb/node-api", "snowflake-sdk", "jsforce", "just-bash", "pino", "pino-pretty", "stripe"],
   // Type checking is handled by `bun run type` (tsgo); skip during Next.js build
   typescript: { ignoreBuildErrors: true },
   turbopack: {},

@@ -17,6 +17,7 @@
 
 import { createAuthClient } from "better-auth/react";
 import { apiKeyClient } from "@better-auth/api-key/client";
+import { stripeClient } from "@better-auth/stripe/client";
 import { adminClient, organizationClient } from "better-auth/client/plugins";
 import { API_URL } from "@/lib/api-url";
 import { ac, owner, admin, member } from "./org-permissions";
@@ -36,6 +37,7 @@ export const authClient = createAuthClient({
       ac,
       roles: { owner, admin, member },
     }),
+    stripeClient({ subscription: true }),
   ],
   // Cross-origin deployments (app.useatlas.dev → api.useatlas.dev) require
   // credentials: "include" so the browser stores and sends session cookies.

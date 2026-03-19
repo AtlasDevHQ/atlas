@@ -17,6 +17,7 @@ const nextConfig: NextConfig = {
     "just-bash",
     "pino",
     "pino-pretty",
+    "stripe",
   ],
   // Monorepo: trace files up to the repo root so standalone output includes all packages
   outputFileTracingRoot: path.resolve(import.meta.dirname, "../.."),

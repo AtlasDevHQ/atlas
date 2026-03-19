@@ -479,7 +479,7 @@ adminOrgs.get("/:id/status", async (c) => {
 // PATCH /:id/plan — update workspace plan tier
 // ---------------------------------------------------------------------------
 
-const VALID_PLAN_TIERS = new Set<PlanTier>(["free", "team", "enterprise"]);
+const VALID_PLAN_TIERS = new Set<PlanTier>(["free", "trial", "team", "enterprise"]);
 
 adminOrgs.patch("/:id/plan", async (c) => {
   const req = c.req.raw;

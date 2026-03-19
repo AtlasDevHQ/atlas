@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQueryStates } from "nuqs";
 import { useAtlasConfig } from "@/ui/context";
 import { Button } from "@/components/ui/button";
@@ -145,7 +145,7 @@ function StepDatasource({
   selectedConnectionId: string;
   onConnectionChange: (id: string) => void;
 }) {
-  const { data: connections, loading } = useAdminFetch<ConnectionInfo[]>(
+  const { data: connections, loading, error } = useAdminFetch<ConnectionInfo[]>(
     "/api/v1/admin/connections",
     { transform: (json) => (json as { connections?: ConnectionInfo[] }).connections ?? [] },
   );
@@ -155,6 +155,18 @@ function StepDatasource({
       <Card>
         <CardContent className="flex items-center justify-center py-12">
           <Loader2 className="size-6 animate-spin text-muted-foreground" />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (error) {
+    return (
+      <Card>
+        <CardContent className="py-8">
+          <div className="rounded-md bg-destructive/10 px-4 py-3 text-sm text-destructive">
+            Failed to load connections: {error.message}
+          </div>
         </CardContent>
       </Card>
     );
@@ -241,7 +253,8 @@ function StepTables({
   const [filterText, setFilterText] = useState("");
 
   // Fetch tables on mount
-  useState(() => {
+  useEffect(() => {
+    let cancelled = false;
     (async () => {
       try {
         const res = await fetch(`${apiUrl}/api/v1/wizard/profile`, {
@@ -250,6 +263,7 @@ function StepTables({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ connectionId }),
         });
+        if (cancelled) return;
         if (!res.ok) {
           const data = await res.json().catch(() => ({ message: `HTTP ${res.status}` }));
           setError(data.message || "Failed to list tables");
@@ -262,12 +276,13 @@ function StepTables({
           setSelectedTables((data.tables ?? []).map((t: TableEntry) => t.name));
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Network error");
+        if (!cancelled) setError(err instanceof Error ? err.message : "Network error");
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     })();
-  });
+    return () => { cancelled = true; };
+  }, []);
 
   const filtered = tables.filter((t) =>
     t.name.toLowerCase().includes(filterText.toLowerCase()),
@@ -425,8 +440,9 @@ function StepReview({
   const [editingYaml, setEditingYaml] = useState<Record<string, string>>({});
 
   // Generate entities if not already loaded
-  useState(() => {
+  useEffect(() => {
     if (entities.length > 0) return;
+    let cancelled = false;
     (async () => {
       setLoading(true);
       try {
@@ -436,6 +452,7 @@ function StepReview({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ connectionId, tables: selectedTables }),
         });
+        if (cancelled) return;
         if (!res.ok) {
           const data = await res.json().catch(() => ({ message: `HTTP ${res.status}` }));
           setError(data.message || "Failed to generate entities");
@@ -450,12 +467,13 @@ function StepReview({
         }
         setEditingYaml(yamlMap);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Network error");
+        if (!cancelled) setError(err instanceof Error ? err.message : "Network error");
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     })();
-  });
+    return () => { cancelled = true; };
+  }, []);
 
   function handleYamlChange(tableName: string, yaml: string) {
     setEditingYaml((prev) => ({ ...prev, [tableName]: yaml }));
@@ -671,10 +689,12 @@ function StepPreview({
     availableTables: string[];
   } | null>(null);
   const [loading, setLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
 
   async function handlePreview() {
     if (!question.trim()) return;
     setLoading(true);
+    setPreviewError(null);
     try {
       const res = await fetch(`${apiUrl}/api/v1/wizard/preview`, {
         method: "POST",
@@ -687,9 +707,14 @@ function StepPreview({
       });
       if (res.ok) {
         setPreview(await res.json());
+      } else {
+        const data = await res.json().catch(() => ({ message: `HTTP ${res.status}` }));
+        setPreviewError(data.message || "Preview request failed");
       }
-    } catch {
-      // Preview errors are non-critical
+    } catch (err) {
+      // intentionally ignored: preview is optional, non-blocking step
+      console.debug("Wizard preview error:", err instanceof Error ? err.message : String(err));
+      setPreviewError("Network error — check your connection and try again.");
     } finally {
       setLoading(false);
     }
@@ -730,6 +755,12 @@ function StepPreview({
             {loading ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
           </Button>
         </div>
+
+        {previewError && (
+          <div className="rounded-md bg-destructive/10 px-4 py-3 text-sm text-destructive">
+            {previewError}
+          </div>
+        )}
 
         {preview && (
           <div className="rounded-lg border p-4 space-y-2">

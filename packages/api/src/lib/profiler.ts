@@ -1151,6 +1151,7 @@ export async function profilePostgres(
 ): Promise<ProfilingResult> {
   const { Pool } = await import("pg");
   const pool = new Pool({ connectionString, max: 3 });
+  try {
   const profiles: TableProfile[] = [];
   const errors: ProfileError[] = [];
 
@@ -1427,9 +1428,10 @@ export async function profilePostgres(
     }
   }
 
-  await pool.end();
-
   return { profiles, errors };
+  } finally {
+    await pool.end();
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -353,6 +353,17 @@ wizard.post("/save", async (c) => {
       return c.json({ error: "invalid_request", message: "entities must contain objects with tableName and yaml fields." }, 400);
     }
 
+    // Path traversal protection: validate all table names before writing any files
+    const SAFE_TABLE_NAME = /^[a-zA-Z_][a-zA-Z0-9_.-]*$/;
+    for (const entity of validEntities) {
+      if (!SAFE_TABLE_NAME.test(entity.tableName) || entity.tableName.includes("..")) {
+        return c.json({
+          error: "invalid_request",
+          message: `Invalid table name: "${entity.tableName}". Only letters, digits, underscores, hyphens, and dots are allowed.`,
+        }, 400);
+      }
+    }
+
     try {
       // Write entities to disk (org-scoped)
       const sourceId = connectionId === "default" ? "default" : connectionId;
@@ -365,11 +376,12 @@ wizard.post("/save", async (c) => {
 
       const savedFiles: string[] = [];
 
-      // Write entity YAMLs
+      // Write entity YAMLs (table names already validated above)
       for (const entity of validEntities) {
-        const filePath = path.join(entitiesDir, `${entity.tableName}.yml`);
+        const safeName = path.basename(entity.tableName);
+        const filePath = path.join(entitiesDir, `${safeName}.yml`);
         fs.writeFileSync(filePath, entity.yaml, "utf-8");
-        savedFiles.push(`entities/${entity.tableName}.yml`);
+        savedFiles.push(`entities/${safeName}.yml`);
 
         // Also sync to DB if internal DB is available
         if (hasInternalDB()) {
@@ -396,13 +408,15 @@ wizard.post("/save", async (c) => {
         fs.writeFileSync(glossaryPath, glossaryYaml, "utf-8");
         savedFiles.push("glossary.yml");
 
-        // Generate metric files
+        // Generate metric files (sanitize table_name from profiles)
         for (const profile of profiles) {
+          if (!profile.table_name || !SAFE_TABLE_NAME.test(profile.table_name)) continue;
           const metricYaml = generateMetricYAML(profile, resolvedSchema);
           if (metricYaml) {
-            const filePath = path.join(metricsDir, `${profile.table_name}.yml`);
+            const safeMetricName = path.basename(profile.table_name);
+            const filePath = path.join(metricsDir, `${safeMetricName}.yml`);
             fs.writeFileSync(filePath, metricYaml, "utf-8");
-            savedFiles.push(`metrics/${profile.table_name}.yml`);
+            savedFiles.push(`metrics/${safeMetricName}.yml`);
           }
         }
       }
@@ -442,7 +456,7 @@ wizard.post("/save", async (c) => {
 
 interface ResolvedConnection {
   url: string;
-  dbType: string;
+  dbType: ReturnType<typeof detectDBType>;
   schema: string;
 }
 

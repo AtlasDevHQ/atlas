@@ -58,12 +58,16 @@ export function useKeyboardNav({
 
       switch (e.key) {
         case "ArrowUp":
-          e.preventDefault();
-          focusCell(focusedIndex.current - 1);
+          if (cellCount > 0) {
+            e.preventDefault();
+            focusCell(focusedIndex.current - 1);
+          }
           break;
         case "ArrowDown":
-          e.preventDefault();
-          focusCell(focusedIndex.current + 1);
+          if (cellCount > 0) {
+            e.preventDefault();
+            focusCell(focusedIndex.current + 1);
+          }
           break;
         case "Enter":
           if (!editing && cellCount > 0) {

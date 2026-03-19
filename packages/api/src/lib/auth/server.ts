@@ -16,10 +16,13 @@ import { bearer, admin, organization } from "better-auth/plugins";
 // @better-auth/api-key must match the better-auth core version.
 // Both are pinned to ^1.5.1 in package.json — update together.
 import { apiKey } from "@better-auth/api-key";
-import { getInternalDB, hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { stripe as stripePlugin } from "@better-auth/stripe";
+import Stripe from "stripe";
+import { getInternalDB, hasInternalDB, internalQuery, updateWorkspacePlanTier, type PlanTier } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import { isEnterpriseEnabled } from "../../../../../ee/src/index";
 import { ac, owner as ownerRole, admin as adminRole, member as memberRole } from "@atlas/api/lib/auth/org-permissions";
+import { getStripePlans } from "@atlas/api/lib/billing/plans";
 
 /**
  * Build the socialProviders config from environment variables.
@@ -55,6 +58,113 @@ function buildSocialProviders(): Record<string, { clientId: string; clientSecret
 }
 
 const log = createLogger("auth:server");
+
+/**
+ * Build the Better Auth plugins array.
+ *
+ * Stripe plugin is conditionally included when STRIPE_SECRET_KEY is set.
+ * This keeps all Stripe dependencies out of the module graph for
+ * self-hosted deployments that don't use billing.
+ */
+function buildPlugins() {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Better Auth plugin types are complex union types that vary by plugin combination
+  const plugins: any[] = [
+    bearer(),
+    apiKey(),
+    admin({ defaultRole: "member", adminRoles: ["admin"] }),
+    organization({
+      ac,
+      roles: { owner: ownerRole, admin: adminRole, member: memberRole },
+      async sendInvitationEmail(data) {
+        log.warn(
+          { email: data.email, orgName: data.organization.name, inviterId: data.inviter.user.id },
+          "Organization invitation created but email delivery is not configured — share the invite link manually",
+        );
+      },
+    }),
+  ];
+
+  // Stripe billing — only when STRIPE_SECRET_KEY is set (SaaS mode)
+  if (process.env.STRIPE_SECRET_KEY) {
+    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+    if (!webhookSecret) {
+      log.error(
+        "STRIPE_SECRET_KEY is set but STRIPE_WEBHOOK_SECRET is missing — "
+        + "Stripe plugin will NOT be enabled. Set STRIPE_WEBHOOK_SECRET to enable billing.",
+      );
+    } else {
+      try {
+        const stripeClient = new Stripe(process.env.STRIPE_SECRET_KEY);
+
+        plugins.push(
+          stripePlugin({
+            stripeClient,
+            stripeWebhookSecret: webhookSecret,
+            createCustomerOnSignUp: true,
+            subscription: {
+              enabled: true,
+              plans: getStripePlans(),
+              async onSubscriptionComplete({ subscription, plan }) {
+                const orgId = subscription.referenceId;
+                if (orgId && (plan.name === "team" || plan.name === "enterprise")) {
+                  try {
+                    await updateWorkspacePlanTier(orgId, plan.name as PlanTier);
+                    log.info({ orgId, plan: plan.name }, "Subscription activated — plan tier synced");
+                  } catch (err) {
+                    log.error(
+                      { err: err instanceof Error ? err.message : String(err), orgId, plan: plan.name },
+                      "Failed to sync plan tier on subscription activation — Stripe will retry webhook",
+                    );
+                    throw err;
+                  }
+                }
+              },
+              async onSubscriptionCancel({ subscription }) {
+                const orgId = subscription.referenceId;
+                if (orgId) {
+                  try {
+                    await updateWorkspacePlanTier(orgId, "free");
+                    log.info({ orgId }, "Subscription canceled — downgraded to free tier");
+                  } catch (err) {
+                    log.error(
+                      { err: err instanceof Error ? err.message : String(err), orgId },
+                      "Failed to downgrade plan on subscription cancel — Stripe will retry webhook",
+                    );
+                    throw err;
+                  }
+                }
+              },
+              async onSubscriptionDeleted({ subscription }) {
+                const orgId = subscription.referenceId;
+                if (orgId) {
+                  try {
+                    await updateWorkspacePlanTier(orgId, "free");
+                    log.info({ orgId }, "Subscription deleted — downgraded to free tier");
+                  } catch (err) {
+                    log.error(
+                      { err: err instanceof Error ? err.message : String(err), orgId },
+                      "Failed to downgrade plan on subscription delete — Stripe will retry webhook",
+                    );
+                    throw err;
+                  }
+                }
+              },
+            },
+          }),
+        );
+
+        log.info("Stripe billing plugin enabled");
+      } catch (err) {
+        log.error(
+          { err: err instanceof Error ? err.message : String(err) },
+          "Failed to initialize Stripe billing plugin — billing features will be unavailable",
+        );
+      }
+    }
+  }
+
+  return plugins;
+}
 
 /**
  * Intentionally typed as the base Auth type (without plugin extensions).
@@ -139,23 +249,7 @@ export function getAuthInstance(): AuthInstance {
       updateAge: 60 * 60 * 24,
       cookieCache: { enabled: true, maxAge: 5 * 60 },
     },
-    plugins: [
-      bearer(),
-      apiKey(),
-      admin({ defaultRole: "member", adminRoles: ["admin"] }),
-      organization({
-        ac,
-        roles: { owner: ownerRole, admin: adminRole, member: memberRole },
-        async sendInvitationEmail(data) {
-          // Log the invitation for now. Email delivery can be wired up via
-          // a plugin (e.g. email-digest) or env-configured SMTP later.
-          log.warn(
-            { email: data.email, orgName: data.organization.name, inviterId: data.inviter.user.id },
-            "Organization invitation created but email delivery is not configured — share the invite link manually",
-          );
-        },
-      }),
-    ],
+    plugins: buildPlugins(),
     trustedOrigins:
       process.env.BETTER_AUTH_TRUSTED_ORIGINS?.split(",")
         .map((s) => s.trim())

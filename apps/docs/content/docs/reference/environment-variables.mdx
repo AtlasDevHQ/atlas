@@ -503,6 +503,29 @@ See [Slack guide](/guides/slack) for the full setup.
 
 ---
 
+## Stripe Billing
+
+Stripe billing integration for SaaS deployments. Self-hosted deployments do not need these — the self-hosted experience has no billing or usage limits.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `STRIPE_SECRET_KEY` | — | Stripe secret key (test or live). Enables billing routes and Better Auth Stripe plugin when set |
+| `STRIPE_WEBHOOK_SECRET` | — | Stripe webhook signing secret for verifying webhook events |
+| `STRIPE_TEAM_PRICE_ID` | — | Stripe Price ID for the Team plan (monthly) |
+| `STRIPE_TEAM_ANNUAL_PRICE_ID` | — | Stripe Price ID for the Team plan (annual discount) |
+| `STRIPE_TEAM_BYOT_PRICE_ID` | — | Stripe Price ID for Team BYOT (Bring Your Own Token — lower price, customer supplies LLM keys) |
+| `STRIPE_ENTERPRISE_PRICE_ID` | — | Stripe Price ID for the Enterprise plan |
+
+When `STRIPE_SECRET_KEY` is set, billing routes are mounted at `/api/v1/billing` and the Better Auth Stripe plugin handles checkout, webhooks, and subscription lifecycle at `/api/auth/stripe/*`.
+
+For local development, use [Stripe CLI](https://docs.stripe.com/stripe-cli) to forward webhooks:
+
+```bash
+stripe listen --forward-to localhost:3001/api/auth/stripe/webhook
+```
+
+---
+
 ## Enterprise
 
 | Variable | Default | Description |

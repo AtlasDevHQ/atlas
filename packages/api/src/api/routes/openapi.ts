@@ -2669,6 +2669,148 @@ function buildSpec(): Record<string, unknown> {
       },
 
       // -----------------------------------------------------------------
+      // Billing
+      // -----------------------------------------------------------------
+      "/api/v1/billing": {
+        get: {
+          operationId: "getBillingStatus",
+          summary: "Get billing status",
+          description: "Returns the current billing status for the active workspace including plan tier, limits, usage, and subscription details. Only available when Stripe billing is enabled (STRIPE_SECRET_KEY is set).",
+          tags: ["Billing"],
+          security: [{ bearerAuth: [] }],
+          responses: {
+            "200": {
+              description: "Billing status",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      workspaceId: { type: "string" },
+                      plan: {
+                        type: "object",
+                        properties: {
+                          tier: { type: "string", enum: ["free", "trial", "team", "enterprise"] },
+                          displayName: { type: "string" },
+                          byot: { type: "boolean", description: "Whether BYOT (Bring Your Own Token) mode is enabled" },
+                          trialEndsAt: { type: "string", format: "date-time", nullable: true },
+                        },
+                      },
+                      limits: {
+                        type: "object",
+                        properties: {
+                          queriesPerMonth: { type: "integer", nullable: true, description: "null = unlimited" },
+                          tokensPerMonth: { type: "integer", nullable: true, description: "null = unlimited" },
+                          maxMembers: { type: "integer", nullable: true, description: "null = unlimited" },
+                          maxConnections: { type: "integer", nullable: true, description: "null = unlimited" },
+                        },
+                      },
+                      usage: {
+                        type: "object",
+                        properties: {
+                          queryCount: { type: "integer" },
+                          tokenCount: { type: "integer" },
+                          periodStart: { type: "string", format: "date-time" },
+                          periodEnd: { type: "string", format: "date-time" },
+                        },
+                      },
+                      subscription: {
+                        type: "object",
+                        nullable: true,
+                        properties: {
+                          stripeSubscriptionId: { type: "string" },
+                          plan: { type: "string" },
+                          status: { type: "string" },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            ...authErrors,
+          },
+        },
+      },
+      "/api/v1/billing/portal": {
+        post: {
+          operationId: "createBillingPortal",
+          summary: "Create Stripe Customer Portal session",
+          description: "Creates a Stripe Customer Portal session for the workspace's billing customer. Returns a URL to redirect the user to the portal for managing payment methods, invoices, and subscription.",
+          tags: ["Billing"],
+          security: [{ bearerAuth: [] }],
+          requestBody: {
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    returnUrl: { type: "string", description: "URL to redirect back to after the portal session." },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Portal session created",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      url: { type: "string", description: "Stripe Customer Portal URL" },
+                    },
+                  },
+                },
+              },
+            },
+            ...authErrors,
+          },
+        },
+      },
+      "/api/v1/billing/byot": {
+        post: {
+          operationId: "toggleByot",
+          summary: "Toggle BYOT mode",
+          description: "Enable or disable BYOT (Bring Your Own Token) mode for the workspace. When BYOT is enabled, the workspace uses the customer's own LLM API keys. Requires admin or owner role.",
+          tags: ["Billing"],
+          security: [{ bearerAuth: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["enabled"],
+                  properties: {
+                    enabled: { type: "boolean", description: "Whether to enable BYOT mode." },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "BYOT mode updated",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      workspaceId: { type: "string" },
+                      byot: { type: "boolean" },
+                    },
+                  },
+                },
+              },
+            },
+            ...authErrors,
+          },
+        },
+      },
+
+      // -----------------------------------------------------------------
       // Admin — Organizations
       // -----------------------------------------------------------------
       "/api/v1/admin/organizations": {
@@ -4171,6 +4313,7 @@ function buildSpec(): Record<string, unknown> {
       { name: "Admin — Suggestions", description: "Admin query suggestion management (requires admin role)" },
       { name: "Admin — Prompts", description: "Admin CRUD for prompt collections and items (requires admin role)" },
       { name: "Admin — Usage", description: "Admin usage metering and billing data (requires admin role)" },
+      { name: "Billing", description: "Stripe billing, subscription status, and plan management (requires STRIPE_SECRET_KEY)" },
       { name: "Admin — Organizations", description: "Admin organization management (requires admin role)" },
       { name: "Admin — SSO", description: "Enterprise SSO provider management (requires admin role + enterprise license)" },
       { name: "Onboarding", description: "Self-serve signup flow (requires managed auth)" },

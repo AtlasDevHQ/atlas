@@ -554,10 +554,17 @@ export async function migrateInternalDB(): Promise<void> {
     await pool.query(`ALTER TABLE organization ADD COLUMN IF NOT EXISTS workspace_status TEXT NOT NULL DEFAULT 'active';`);
     await pool.query(`DO $$ BEGIN ALTER TABLE organization ADD CONSTRAINT chk_workspace_status CHECK (workspace_status IN ('active', 'suspended', 'deleted')); EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
     await pool.query(`ALTER TABLE organization ADD COLUMN IF NOT EXISTS plan_tier TEXT NOT NULL DEFAULT 'free';`);
-    await pool.query(`DO $$ BEGIN ALTER TABLE organization ADD CONSTRAINT chk_plan_tier CHECK (plan_tier IN ('free', 'team', 'enterprise')); EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
+    // Drop and re-create plan_tier CHECK to include 'trial' (added in 0.9.0 billing)
+    await pool.query(`ALTER TABLE organization DROP CONSTRAINT IF EXISTS chk_plan_tier;`);
+    await pool.query(`DO $$ BEGIN ALTER TABLE organization ADD CONSTRAINT chk_plan_tier CHECK (plan_tier IN ('free', 'trial', 'team', 'enterprise')); EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
     await pool.query(`ALTER TABLE organization ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMPTZ;`);
     await pool.query(`ALTER TABLE organization ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_organization_workspace_status ON organization(workspace_status);`);
+
+    // Billing columns (0.9.0 — Stripe billing integration)
+    await pool.query(`ALTER TABLE organization ADD COLUMN IF NOT EXISTS byot BOOLEAN NOT NULL DEFAULT false;`);
+    await pool.query(`ALTER TABLE organization ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT;`);
+    await pool.query(`ALTER TABLE organization ADD COLUMN IF NOT EXISTS trial_ends_at TIMESTAMPTZ;`);
   }
 
   // Soft-delete support for conversations (needed by workspace cascade delete)
@@ -1099,7 +1106,7 @@ export async function getAuditLogQueries(
 // ── Workspace lifecycle helpers (0.9.0) ─────────────────────────────
 
 export type WorkspaceStatus = "active" | "suspended" | "deleted";
-export type PlanTier = "free" | "team" | "enterprise";
+export type PlanTier = "free" | "trial" | "team" | "enterprise";
 
 export interface WorkspaceRow {
   id: string;
@@ -1107,6 +1114,9 @@ export interface WorkspaceRow {
   slug: string;
   workspace_status: WorkspaceStatus;
   plan_tier: PlanTier;
+  byot: boolean;
+  stripe_customer_id: string | null;
+  trial_ends_at: string | null;
   suspended_at: string | null;
   deleted_at: string | null;
   createdAt: string;
@@ -1133,7 +1143,7 @@ export async function getWorkspaceStatus(orgId: string): Promise<WorkspaceStatus
 export async function getWorkspaceDetails(orgId: string): Promise<WorkspaceRow | null> {
   if (!hasInternalDB()) return null;
   const rows = await internalQuery<WorkspaceRow>(
-    `SELECT id, name, slug, workspace_status, plan_tier, suspended_at, deleted_at, "createdAt"
+    `SELECT id, name, slug, workspace_status, plan_tier, byot, stripe_customer_id, trial_ends_at, suspended_at, deleted_at, "createdAt"
      FROM organization WHERE id = $1`,
     [orgId],
   );
@@ -1274,4 +1284,52 @@ export async function getWorkspaceHealthSummary(orgId: string): Promise<{
     connections: connRows[0]?.count ?? 0,
     scheduledTasks: taskRows[0]?.count ?? 0,
   };
+}
+
+// ── Billing helpers (0.9.0 — Stripe billing) ────────────────────────
+
+/**
+ * Update the BYOT (Bring Your Own Token) flag for a workspace.
+ * Returns true if the org was found and updated.
+ */
+export async function updateWorkspaceByot(
+  orgId: string,
+  byot: boolean,
+): Promise<boolean> {
+  const pool = getInternalDB();
+  const result = await pool.query(
+    `UPDATE organization SET byot = $1 WHERE id = $2 RETURNING id`,
+    [byot, orgId],
+  );
+  return result.rows.length > 0;
+}
+
+/**
+ * Set the Stripe customer ID for a workspace.
+ */
+export async function setWorkspaceStripeCustomerId(
+  orgId: string,
+  stripeCustomerId: string,
+): Promise<boolean> {
+  const pool = getInternalDB();
+  const result = await pool.query(
+    `UPDATE organization SET stripe_customer_id = $1 WHERE id = $2 RETURNING id`,
+    [stripeCustomerId, orgId],
+  );
+  return result.rows.length > 0;
+}
+
+/**
+ * Set the trial end date for a workspace.
+ */
+export async function setWorkspaceTrialEndsAt(
+  orgId: string,
+  trialEndsAt: Date,
+): Promise<boolean> {
+  const pool = getInternalDB();
+  const result = await pool.query(
+    `UPDATE organization SET trial_ends_at = $1 WHERE id = $2 RETURNING id`,
+    [trialEndsAt.toISOString(), orgId],
+  );
+  return result.rows.length > 0;
 }

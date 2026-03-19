@@ -28,6 +28,17 @@ import { SSO_PROVIDER_TYPES } from "@useatlas/types";
 
 const log = createLogger("ee:sso");
 
+// ── Typed errors ────────────────────────────────────────────────────
+
+export type SSOErrorCode = "not_found" | "conflict" | "validation";
+
+export class SSOError extends Error {
+  constructor(message: string, public readonly code: SSOErrorCode) {
+    super(message);
+    this.name = "SSOError";
+  }
+}
+
 // ── Internal row shape ──────────────────────────────────────────────
 
 interface SSOProviderRow {
@@ -104,11 +115,21 @@ export function redactProvider(provider: SSOProvider): SSOProvider {
   return provider;
 }
 
+/** Summary view for list endpoints — omits full config to reduce payload. */
+export function summarizeProvider(provider: SSOProvider): Omit<SSOProvider, "config"> {
+  const { config: _config, ...rest } = provider;
+  return rest;
+}
+
 /** Encrypt sensitive fields in config before storage. */
 function prepareConfigForStorage(type: SSOProviderType, config: Record<string, unknown>): Record<string, unknown> {
   const stored = { ...config };
   if (type === "oidc" && stored.clientSecret) {
-    stored.clientSecret = encryptUrl(stored.clientSecret as string);
+    const encrypted = encryptUrl(stored.clientSecret as string);
+    if (encrypted === stored.clientSecret) {
+      log.warn("OIDC clientSecret stored without encryption — set ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET");
+    }
+    stored.clientSecret = encrypted;
   }
   return stored;
 }
@@ -212,18 +233,18 @@ export async function createSSOProvider(
 
   // Validate type
   if (!isValidSSOProviderType(input.type)) {
-    throw new Error(`Invalid SSO provider type: ${input.type}. Must be one of: ${SSO_PROVIDER_TYPES.join(", ")}`);
+    throw new SSOError(`Invalid SSO provider type: ${input.type}. Must be one of: ${SSO_PROVIDER_TYPES.join(", ")}`, "validation");
   }
 
   // Validate domain
   const domain = normalizeDomain(input.domain);
   if (!isValidDomain(domain)) {
-    throw new Error(`Invalid domain: ${input.domain}. Must be a valid domain name (e.g. "acme.com").`);
+    throw new SSOError(`Invalid domain: ${input.domain}. Must be a valid domain name (e.g. "acme.com").`, "validation");
   }
 
   // Validate config
   const configError = validateProviderConfig(input.type, input.config);
-  if (configError) throw new Error(configError);
+  if (configError) throw new SSOError(configError, "validation");
 
   // Check domain uniqueness
   const existing = await internalQuery<{ id: string; org_id: string }>(
@@ -231,7 +252,7 @@ export async function createSSOProvider(
     [domain],
   );
   if (existing.length > 0) {
-    throw new Error(`Domain "${domain}" is already registered by another SSO provider.`);
+    throw new SSOError(`Domain "${domain}" is already registered by another SSO provider.`, "conflict");
   }
 
   const storedConfig = prepareConfigForStorage(input.type, input.config as unknown as Record<string, unknown>);
@@ -264,7 +285,7 @@ export async function updateSSOProvider(
 
   // Fetch existing
   const existing = await getSSOProvider(orgId, providerId);
-  if (!existing) throw new Error("SSO provider not found.");
+  if (!existing) throw new SSOError("SSO provider not found.", "not_found");
 
   // Build update fields
   const sets: string[] = [];
@@ -279,7 +300,7 @@ export async function updateSSOProvider(
   if (input.domain !== undefined) {
     const domain = normalizeDomain(input.domain);
     if (!isValidDomain(domain)) {
-      throw new Error(`Invalid domain: ${input.domain}. Must be a valid domain name.`);
+      throw new SSOError(`Invalid domain: ${input.domain}. Must be a valid domain name.`, "validation");
     }
     // Check uniqueness (exclude current provider)
     const clash = await internalQuery<{ id: string }>(
@@ -287,7 +308,7 @@ export async function updateSSOProvider(
       [domain, providerId],
     );
     if (clash.length > 0) {
-      throw new Error(`Domain "${domain}" is already registered by another SSO provider.`);
+      throw new SSOError(`Domain "${domain}" is already registered by another SSO provider.`, "conflict");
     }
     sets.push(`domain = $${paramIdx++}`);
     params.push(domain);
@@ -303,7 +324,7 @@ export async function updateSSOProvider(
     const merged = { ...(existing.config as unknown as Record<string, unknown>), ...input.config };
     // Re-validate full config
     const configError = validateProviderConfig(existing.type, merged);
-    if (configError) throw new Error(configError);
+    if (configError) throw new SSOError(configError, "validation");
 
     const storedConfig = prepareConfigForStorage(existing.type, merged);
     sets.push(`config = $${paramIdx++}`);
@@ -324,7 +345,7 @@ export async function updateSSOProvider(
     params,
   );
 
-  if (!rows[0]) throw new Error("SSO provider not found or update failed.");
+  if (!rows[0]) throw new SSOError("SSO provider not found or update failed.", "not_found");
 
   log.info({ orgId, providerId }, "SSO provider updated");
   return rowToProvider(rows[0]);

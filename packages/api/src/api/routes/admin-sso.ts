@@ -16,6 +16,8 @@ import {
   updateSSOProvider,
   deleteSSOProvider,
   redactProvider,
+  summarizeProvider,
+  SSOError,
 } from "../../../../../ee/src/auth/sso";
 import type {
   CreateSSOProviderRequest,
@@ -28,6 +30,20 @@ const MAX_ID_LENGTH = 128;
 
 function isValidId(id: string | undefined): id is string {
   return !!id && id.length > 0 && id.length <= MAX_ID_LENGTH;
+}
+
+const SSO_ERROR_STATUS = { not_found: 404, conflict: 409, validation: 400 } as const;
+
+/** Map SSO errors to HTTP responses. Returns null if not an SSO/enterprise error. */
+function ssoErrorResponse(err: unknown): { body: Record<string, unknown>; status: 400 | 403 | 404 | 409 } | null {
+  const message = err instanceof Error ? err.message : String(err);
+  if (message.includes("Enterprise features")) {
+    return { body: { error: "enterprise_required", message }, status: 403 };
+  }
+  if (err instanceof SSOError) {
+    return { body: { error: err.code, message: err.message }, status: SSO_ERROR_STATUS[err.code] };
+  }
+  return null;
 }
 
 const adminSso = new Hono();
@@ -58,13 +74,10 @@ adminSso.get("/providers", async (c) => {
 
     try {
       const providers = await listSSOProviders(orgId);
-      return c.json({ providers: providers.map(redactProvider), total: providers.length });
+      return c.json({ providers: providers.map(summarizeProvider), total: providers.length });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      // Enterprise gating errors get a 403
-      if (message.includes("Enterprise features")) {
-        return c.json({ error: "enterprise_required", message }, 403);
-      }
+      const mapped = ssoErrorResponse(err);
+      if (mapped) return c.json(mapped.body, mapped.status);
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to list SSO providers");
       return c.json({ error: "internal_error", message: "Failed to list SSO providers.", requestId }, 500);
     }
@@ -107,10 +120,8 @@ adminSso.get("/providers/:id", async (c) => {
       }
       return c.json({ provider: redactProvider(provider) });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (message.includes("Enterprise features")) {
-        return c.json({ error: "enterprise_required", message }, 403);
-      }
+      const mapped = ssoErrorResponse(err);
+      if (mapped) return c.json(mapped.body, mapped.status);
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get SSO provider");
       return c.json({ error: "internal_error", message: "Failed to get SSO provider.", requestId }, 500);
     }
@@ -157,16 +168,8 @@ adminSso.post("/providers", async (c) => {
       const provider = await createSSOProvider(orgId, body);
       return c.json({ provider: redactProvider(provider) }, 201);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (message.includes("Enterprise features")) {
-        return c.json({ error: "enterprise_required", message }, 403);
-      }
-      if (message.includes("already registered")) {
-        return c.json({ error: "conflict", message }, 409);
-      }
-      if (message.includes("Invalid") || message.includes("config requires")) {
-        return c.json({ error: "bad_request", message }, 400);
-      }
+      const mapped = ssoErrorResponse(err);
+      if (mapped) return c.json(mapped.body, mapped.status);
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to create SSO provider");
       return c.json({ error: "internal_error", message: "Failed to create SSO provider.", requestId }, 500);
     }
@@ -213,19 +216,8 @@ adminSso.patch("/providers/:id", async (c) => {
       const provider = await updateSSOProvider(orgId, providerId, body);
       return c.json({ provider: redactProvider(provider) });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (message.includes("Enterprise features")) {
-        return c.json({ error: "enterprise_required", message }, 403);
-      }
-      if (message.includes("not found")) {
-        return c.json({ error: "not_found", message: "SSO provider not found." }, 404);
-      }
-      if (message.includes("already registered")) {
-        return c.json({ error: "conflict", message }, 409);
-      }
-      if (message.includes("Invalid domain") || message.includes("config requires")) {
-        return c.json({ error: "bad_request", message }, 400);
-      }
+      const mapped = ssoErrorResponse(err);
+      if (mapped) return c.json(mapped.body, mapped.status);
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, providerId }, "Failed to update SSO provider");
       return c.json({ error: "internal_error", message: "Failed to update SSO provider.", requestId }, 500);
     }
@@ -268,10 +260,8 @@ adminSso.delete("/providers/:id", async (c) => {
       }
       return c.json({ message: "SSO provider deleted." });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (message.includes("Enterprise features")) {
-        return c.json({ error: "enterprise_required", message }, 403);
-      }
+      const mapped = ssoErrorResponse(err);
+      if (mapped) return c.json(mapped.body, mapped.status);
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, providerId }, "Failed to delete SSO provider");
       return c.json({ error: "internal_error", message: "Failed to delete SSO provider.", requestId }, 500);
     }

@@ -606,6 +606,8 @@ export async function migrateInternalDB(): Promise<void> {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_sso_providers_org ON sso_providers(org_id);`);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_sso_providers_domain ON sso_providers(domain);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_sso_providers_enabled ON sso_providers(org_id, enabled) WHERE enabled = true;`);
+
+  log.info("Internal DB migration complete");
 }
 
 /** Seed built-in prompt collections. Idempotent — checks each collection by name. */
@@ -729,9 +731,6 @@ await pool.query(`
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_query_suggestions_org_score ON query_suggestions(org_id, score DESC);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_query_suggestions_tables ON query_suggestions USING GIN(tables_involved);`);
   await pool.query(`ALTER TABLE query_suggestions ADD CONSTRAINT uq_query_suggestions_org_hash UNIQUE NULLS NOT DISTINCT (org_id, normalized_hash);`).catch(() => { /* constraint already exists */ });
-
-  // Note: migration log moved to end of migrateInternalDB (after all DDL including SSO)
-
 }
 
 /**

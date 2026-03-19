@@ -9,6 +9,8 @@ export interface UseConversationsOptions {
   enabled: boolean;
   getHeaders: () => Record<string, string>;
   getCredentials: () => RequestCredentials;
+  /** Custom conversations API endpoint path. Defaults to "/api/v1/conversations". */
+  conversationsEndpoint?: string;
 }
 
 export interface UseConversationsReturn {
@@ -52,13 +54,14 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const fetchedRef = useRef(false);
+  const baseEndpoint = opts.conversationsEndpoint ?? "/api/v1/conversations";
 
   const fetchList = useCallback(async () => {
     if (!opts.enabled || !available) return;
     setLoading(true);
     setFetchError(null);
     try {
-      const res = await fetch(`${opts.apiUrl}/api/v1/conversations?limit=50`, {
+      const res = await fetch(`${opts.apiUrl}${baseEndpoint}?limit=50`, {
         headers: opts.getHeaders(),
         credentials: opts.getCredentials(),
       });
@@ -93,7 +96,7 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
   }, [opts.apiUrl, opts.enabled, opts.getHeaders, opts.getCredentials, available]);
 
   const loadConversation = useCallback(async (id: string): Promise<UIMessage[]> => {
-    const res = await fetch(`${opts.apiUrl}/api/v1/conversations/${id}`, {
+    const res = await fetch(`${opts.apiUrl}${baseEndpoint}/${id}`, {
       headers: opts.getHeaders(),
       credentials: opts.getCredentials(),
     });
@@ -108,7 +111,7 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
   }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);
 
   const deleteConversation = useCallback(async (id: string): Promise<void> => {
-    const res = await fetch(`${opts.apiUrl}/api/v1/conversations/${id}`, {
+    const res = await fetch(`${opts.apiUrl}${baseEndpoint}/${id}`, {
       method: "DELETE",
       headers: opts.getHeaders(),
       credentials: opts.getCredentials(),
@@ -132,7 +135,7 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
     );
     let rolledBack = false;
     try {
-      const res = await fetch(`${opts.apiUrl}/api/v1/conversations/${id}/star`, {
+      const res = await fetch(`${opts.apiUrl}${baseEndpoint}/${id}/star`, {
         method: "PATCH",
         headers: { ...opts.getHeaders(), "Content-Type": "application/json" },
         credentials: opts.getCredentials(),

@@ -607,6 +607,20 @@ export async function migrateInternalDB(): Promise<void> {
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_sso_providers_domain ON sso_providers(domain);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_sso_providers_enabled ON sso_providers(org_id, enabled) WHERE enabled = true;`);
 
+  // Demo leads — email-gated demo mode lead capture
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS demo_leads (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      email TEXT NOT NULL UNIQUE,
+      ip_address TEXT,
+      user_agent TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_active_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      session_count INTEGER NOT NULL DEFAULT 1
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_demo_leads_created ON demo_leads(created_at);`);
+
   log.info("Internal DB migration complete");
 }
 

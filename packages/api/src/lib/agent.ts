@@ -475,11 +475,14 @@ export async function runAgent({
   tools: toolRegistry = defaultRegistry,
   conversationId,
   warnings,
+  maxSteps: maxStepsOverride,
 }: {
   messages: UIMessage[];
   tools?: ToolRegistry;
   conversationId?: string;
   warnings?: string[];
+  /** Override the default agent step limit (e.g. for demo mode). */
+  maxSteps?: number;
 }) {
   const model = getModel();
   const providerType = getProviderType();
@@ -555,7 +558,7 @@ export async function runAgent({
       tools,
       temperature: 0.2,
       maxOutputTokens: 4096,
-      stopWhen: stepCountIs(getAgentMaxSteps()),
+      stopWhen: stepCountIs(maxStepsOverride ?? getAgentMaxSteps()),
       // totalMs: 180s for self-hosted (full agent loop budget).
       // On Vercel, maxDuration caps the serverless function at 300s (Pro plan).
       timeout: { totalMs: 180_000, stepMs: 30_000, chunkMs: 5_000 },

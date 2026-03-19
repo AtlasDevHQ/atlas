@@ -169,6 +169,26 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   incrementSuggestionClick: mock(),
   deleteSuggestion: mock(() => Promise.resolve(false)),
   getAuditLogQueries: mock(() => Promise.resolve([])),
+  getWorkspaceStatus: mock(async () => "active"),
+  getWorkspaceDetails: mock(async () => null),
+  updateWorkspaceStatus: mock(async () => true),
+  updateWorkspacePlanTier: mock(async () => true),
+  cascadeWorkspaceDelete: mock(async () => ({ conversations: 0, semanticEntities: 0, learnedPatterns: 0, suggestions: 0, scheduledTasks: 0 })),
+  getWorkspaceHealthSummary: mock(async () => null),
+}));
+
+mock.module("@atlas/api/lib/cache", () => ({
+  getCache: mock(() => ({ get: () => null, set: () => {}, delete: () => false, flush: () => {}, stats: () => ({}) })),
+  cacheEnabled: mock(() => true),
+  setCacheBackend: mock(() => {}),
+  flushCache: mock(() => {}),
+  getDefaultTtl: mock(() => 300000),
+  _resetCache: mock(() => {}),
+  buildCacheKey: mock(() => "mock-key"),
+}));
+
+mock.module("@atlas/api/lib/workspace", () => ({
+  checkWorkspaceStatus: mock(async () => ({ allowed: true })),
 }));
 
 mock.module("@atlas/api/lib/learn/pattern-cache", () => ({

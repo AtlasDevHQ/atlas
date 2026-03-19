@@ -542,6 +542,19 @@ export async function migrateInternalDB(): Promise<void> {
 
   // Notebook state persistence (0.8.1 Phase 2 — fork/reorder/server persistence)
   await pool.query(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS notebook_state JSONB;`);
+
+  // Workspace lifecycle (0.9.0 — SaaS infrastructure)
+  // Extends the Better Auth `organization` table with workspace management columns.
+  await pool.query(`ALTER TABLE organization ADD COLUMN IF NOT EXISTS workspace_status TEXT NOT NULL DEFAULT 'active';`);
+  await pool.query(`DO $$ BEGIN ALTER TABLE organization ADD CONSTRAINT chk_workspace_status CHECK (workspace_status IN ('active', 'suspended', 'deleted')); EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
+  await pool.query(`ALTER TABLE organization ADD COLUMN IF NOT EXISTS plan_tier TEXT NOT NULL DEFAULT 'free';`);
+  await pool.query(`DO $$ BEGIN ALTER TABLE organization ADD CONSTRAINT chk_plan_tier CHECK (plan_tier IN ('free', 'team', 'enterprise')); EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
+  await pool.query(`ALTER TABLE organization ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMPTZ;`);
+  await pool.query(`ALTER TABLE organization ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_organization_workspace_status ON organization(workspace_status);`);
+
+  // Soft-delete support for conversations (needed by workspace cascade delete)
+  await pool.query(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;`);
 }
 
 /** Seed built-in prompt collections. Idempotent — checks each collection by name. */
@@ -1010,4 +1023,184 @@ export async function getAuditLogQueries(
     log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to get audit log queries");
     return [];
   }
+}
+
+// ── Workspace lifecycle helpers (0.9.0) ─────────────────────────────
+
+export type WorkspaceStatus = "active" | "suspended" | "deleted";
+export type PlanTier = "free" | "team" | "enterprise";
+
+export interface WorkspaceRow {
+  id: string;
+  name: string;
+  slug: string;
+  workspace_status: WorkspaceStatus;
+  plan_tier: PlanTier;
+  suspended_at: string | null;
+  deleted_at: string | null;
+  createdAt: string;
+  [key: string]: unknown;
+}
+
+/**
+ * Get the workspace status for an organization.
+ * Returns null if the org doesn't exist or internal DB is unavailable.
+ * Throws on database errors — callers must handle failures explicitly.
+ */
+export async function getWorkspaceStatus(orgId: string): Promise<WorkspaceStatus | null> {
+  if (!hasInternalDB()) return null;
+  const rows = await internalQuery<{ workspace_status: WorkspaceStatus }>(
+    `SELECT workspace_status FROM organization WHERE id = $1`,
+    [orgId],
+  );
+  return rows[0]?.workspace_status ?? null;
+}
+
+/**
+ * Get full workspace details for an organization.
+ */
+export async function getWorkspaceDetails(orgId: string): Promise<WorkspaceRow | null> {
+  if (!hasInternalDB()) return null;
+  const rows = await internalQuery<WorkspaceRow>(
+    `SELECT id, name, slug, workspace_status, plan_tier, suspended_at, deleted_at, "createdAt"
+     FROM organization WHERE id = $1`,
+    [orgId],
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * Update workspace status. Returns true if the org was found and updated,
+ * false if no row matched the given orgId.
+ */
+export async function updateWorkspaceStatus(
+  orgId: string,
+  status: WorkspaceStatus,
+): Promise<boolean> {
+  const pool = getInternalDB();
+  const timestampCol = status === "suspended" ? "suspended_at" : status === "deleted" ? "deleted_at" : null;
+
+  let sql: string;
+  if (timestampCol) {
+    sql = `UPDATE organization SET workspace_status = $1, ${timestampCol} = now() WHERE id = $2 RETURNING id`;
+  } else {
+    // Activating: clear both timestamps
+    sql = `UPDATE organization SET workspace_status = $1, suspended_at = NULL, deleted_at = NULL WHERE id = $2 RETURNING id`;
+  }
+
+  const result = await pool.query(sql, [status, orgId]);
+  return result.rows.length > 0;
+}
+
+/**
+ * Update workspace plan tier. Returns true if the org was found and updated,
+ * false if no row matched the given orgId.
+ */
+export async function updateWorkspacePlanTier(
+  orgId: string,
+  planTier: PlanTier,
+): Promise<boolean> {
+  const pool = getInternalDB();
+  const result = await pool.query(
+    `UPDATE organization SET plan_tier = $1 WHERE id = $2 RETURNING id`,
+    [planTier, orgId],
+  );
+  return result.rows.length > 0;
+}
+
+/**
+ * Cascading soft-delete cleanup for a workspace:
+ * - Soft-deletes conversations (sets deleted_at)
+ * - Hard-deletes org-scoped semantic entities, learned patterns, and query suggestions
+ * - Disables scheduled tasks
+ */
+export async function cascadeWorkspaceDelete(orgId: string): Promise<{
+  conversations: number;
+  semanticEntities: number;
+  learnedPatterns: number;
+  suggestions: number;
+  scheduledTasks: number;
+}> {
+  const pool = getInternalDB();
+
+  const [convResult, seResult, lpResult, qsResult, stResult] = await Promise.all([
+    pool.query(
+      `UPDATE conversations SET deleted_at = now(), updated_at = now() WHERE org_id = $1 AND deleted_at IS NULL RETURNING id`,
+      [orgId],
+    ),
+    pool.query(
+      `DELETE FROM semantic_entities WHERE org_id = $1 RETURNING id`,
+      [orgId],
+    ),
+    pool.query(
+      `DELETE FROM learned_patterns WHERE org_id = $1 RETURNING id`,
+      [orgId],
+    ),
+    pool.query(
+      `DELETE FROM query_suggestions WHERE org_id = $1 RETURNING id`,
+      [orgId],
+    ),
+    pool.query(
+      `UPDATE scheduled_tasks SET enabled = false, updated_at = now() WHERE org_id = $1 RETURNING id`,
+      [orgId],
+    ),
+  ]);
+
+  return {
+    conversations: convResult.rows.length,
+    semanticEntities: seResult.rows.length,
+    learnedPatterns: lpResult.rows.length,
+    suggestions: qsResult.rows.length,
+    scheduledTasks: stResult.rows.length,
+  };
+}
+
+/**
+ * Get a workspace health summary: member count, conversation count,
+ * query count (last 24h), connection count, and scheduled task count.
+ */
+export async function getWorkspaceHealthSummary(orgId: string): Promise<{
+  workspace: WorkspaceRow;
+  members: number;
+  conversations: number;
+  queriesLast24h: number;
+  connections: number;
+  scheduledTasks: number;
+} | null> {
+  if (!hasInternalDB()) return null;
+
+  const workspace = await getWorkspaceDetails(orgId);
+  if (!workspace) return null;
+
+  const [memberRows, convRows, queryRows, connRows, taskRows] = await Promise.all([
+    internalQuery<{ count: number }>(
+      `SELECT COUNT(*)::int as count FROM member WHERE "organizationId" = $1`,
+      [orgId],
+    ),
+    internalQuery<{ count: number }>(
+      `SELECT COUNT(*)::int as count FROM conversations WHERE org_id = $1`,
+      [orgId],
+    ),
+    internalQuery<{ count: number }>(
+      `SELECT COUNT(*)::int as count FROM audit_log WHERE org_id = $1 AND timestamp > now() - interval '24 hours'`,
+      [orgId],
+    ),
+    internalQuery<{ count: number }>(
+      `SELECT COUNT(*)::int as count FROM connections WHERE org_id = $1`,
+      [orgId],
+    ),
+    internalQuery<{ count: number }>(
+      `SELECT COUNT(*)::int as count FROM scheduled_tasks WHERE org_id = $1 AND enabled = true`,
+      [orgId],
+    ),
+  ]);
+
+  return {
+    workspace,
+    members: memberRows[0]?.count ?? 0,
+    conversations: convRows[0]?.count ?? 0,
+    queriesLast24h: queryRows[0]?.count ?? 0,
+    connections: connRows[0]?.count ?? 0,
+    scheduledTasks: taskRows[0]?.count ?? 0,
+  };
 }

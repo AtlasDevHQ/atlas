@@ -24,6 +24,7 @@ import {
   getClientIP,
 } from "@atlas/api/lib/auth/middleware";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
+import { checkWorkspaceStatus } from "@atlas/api/lib/workspace";
 import {
   createConversation,
   addMessage,
@@ -131,6 +132,15 @@ query.post("/", async (c) => {
         retryAfterSeconds,
       },
       { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } },
+    );
+  }
+
+  // Workspace status check — block suspended/deleted workspaces
+  const wsCheck = await checkWorkspaceStatus(authResult.user?.activeOrganizationId);
+  if (!wsCheck.allowed) {
+    return c.json(
+      { error: wsCheck.errorCode, message: wsCheck.errorMessage, requestId },
+      wsCheck.httpStatus ?? 403,
     );
   }
 

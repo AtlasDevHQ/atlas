@@ -1,0 +1,36 @@
+Atlas Enterprise License
+
+Copyright (c) 2026 Atlas Contributors
+
+This software and associated documentation files (the "Software") are made
+available for viewing purposes only under the following terms:
+
+1. GRANT OF LICENSE. Subject to the terms of this license and payment of
+   applicable fees, you are granted a non-exclusive, non-transferable license
+   to use the Software in production environments. A valid license key,
+   obtained from Atlas (https://useatlas.dev), is required.
+
+2. RESTRICTIONS. You may not:
+   (a) redistribute, sublicense, or transfer the Software to any third party;
+   (b) modify the Software for the purpose of circumventing license
+       verification or feature gating;
+   (c) use the Software in a competing product or service;
+   (d) remove or alter any license notices or proprietary markings.
+
+3. SOURCE AVAILABILITY. The source code is provided for transparency,
+   security auditing, and to enable self-hosted deployments by licensed
+   customers. Source availability does not imply open-source licensing.
+
+4. NO WARRANTY. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+   KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+
+5. LIMITATION OF LIABILITY. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+   HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+   ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+   CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+6. TERMINATION. This license terminates automatically if you violate any of
+   its terms or if your license key expires without renewal.
+
+For licensing inquiries, contact: enterprise@useatlas.dev

@@ -732,6 +732,38 @@ The index automatically switches between **full mode** (< 20 entities, shows all
 
 ---
 
+## Enterprise
+
+Gate enterprise-only features behind a license key. When disabled (default), the AGPL core is completely unaffected.
+
+```typescript
+export default defineConfig({
+  enterprise: {
+    enabled: true,
+    licenseKey: process.env.ATLAS_ENTERPRISE_LICENSE_KEY,
+  },
+});
+```
+
+### Enterprise fields
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `enabled` | `boolean` | No | `false` | Whether enterprise features are active |
+| `licenseKey` | `string` | No | — | License key for enterprise features |
+
+**Env var equivalents:**
+```bash
+ATLAS_ENTERPRISE_ENABLED=true
+ATLAS_ENTERPRISE_LICENSE_KEY=your-key-here
+```
+
+<Callout type="info">
+Enterprise features include SSO (SAML/OIDC), SCIM provisioning, PII detection, custom roles, and advanced audit capabilities. The AGPL-licensed core is fully functional without enterprise features enabled.
+</Callout>
+
+---
+
 ## Full Example
 
 ```typescript
@@ -818,6 +850,12 @@ export default defineConfig({
   learn: {
     confidenceThreshold: 0.7,
   },
+
+  // Enterprise features (commercial license, /ee directory)
+  enterprise: {
+    enabled: true,
+    licenseKey: process.env.ATLAS_ENTERPRISE_LICENSE_KEY,
+  },
 });
 ```
 
@@ -843,6 +881,7 @@ export default defineConfig({
 | `pool` | `object` | — | Per-org connection pool isolation ([details](#per-org-pool-isolation)) |
 | `semanticIndex` | `object` | — | Semantic index configuration ([details](#semantic-index)) |
 | `learn` | `object` | — | Dynamic learning configuration ([details](#dynamic-learning)) |
+| `enterprise` | `object` | `{ enabled: false }` | Enterprise feature gating ([details](#enterprise)) |
 
 ---
 

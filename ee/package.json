@@ -1,0 +1,16 @@
+{
+  "name": "@atlas/ee",
+  "version": "0.0.1",
+  "private": true,
+  "license": "SEE LICENSE IN LICENSE",
+  "description": "Enterprise features for Atlas (commercial license)",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "test": "bun test --preload ./src/test-setup.ts"
+  },
+  "dependencies": {
+    "@atlas/api": "workspace:*"
+  }
+}

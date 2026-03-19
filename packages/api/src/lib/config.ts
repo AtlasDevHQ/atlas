@@ -354,6 +354,18 @@ const AtlasConfigSchema = z.object({
     /** Minimum confidence score for a pattern to be eligible for auto-promotion. Default: 0.7. */
     confidenceThreshold: z.number().min(0).max(1).default(0.7),
   }).optional(),
+
+  /**
+   * Enterprise feature gating. When enabled (with a valid license key),
+   * enterprise-only features in `/ee` are unlocked at runtime.
+   * AGPL core is completely unaffected when this is absent or disabled.
+   */
+  enterprise: z.object({
+    /** Whether enterprise features are enabled. Default: false. */
+    enabled: z.boolean().default(false),
+    /** License key for enterprise features. */
+    licenseKey: z.string().optional(),
+  }).optional(),
 });
 
 /** The output type after Zod parsing (defaults applied, all fields present). */
@@ -403,6 +415,8 @@ export interface ResolvedConfig {
   cache?: { enabled: boolean; ttl: number; maxSize: number };
   /** Dynamic learning configuration. */
   learn?: { confidenceThreshold: number };
+  /** Enterprise feature gating. */
+  enterprise?: { enabled: boolean; licenseKey?: string };
   /** Whether the config was loaded from a file or synthesized from env vars. */
   source: "file" | "env";
 }
@@ -583,6 +597,17 @@ export function configFromEnv(): ResolvedConfig {
         },
       };
     })()),
+    // Enterprise config from env vars
+    ...(process.env.ATLAS_ENTERPRISE_ENABLED === "true"
+      ? {
+          enterprise: {
+            enabled: true,
+            ...(process.env.ATLAS_ENTERPRISE_LICENSE_KEY
+              ? { licenseKey: process.env.ATLAS_ENTERPRISE_LICENSE_KEY }
+              : {}),
+          },
+        }
+      : {}),
     source: "env",
   };
 }
@@ -933,6 +958,7 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
     ...(config.pool ? { pool: config.pool } : {}),
     ...(config.cache ? { cache: config.cache } : {}),
     ...(config.learn ? { learn: config.learn } : {}),
+    ...(config.enterprise?.enabled ? { enterprise: config.enterprise } : {}),
     source: "file",
   };
 }

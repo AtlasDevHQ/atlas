@@ -68,6 +68,13 @@
         "picocolors": "^1.1.0",
       },
     },
+    "ee": {
+      "name": "@atlas/ee",
+      "version": "0.0.1",
+      "dependencies": {
+        "@atlas/api": "workspace:*",
+      },
+    },
     "examples/nextjs-standalone": {
       "name": "@atlas/nextjs-standalone",
       "version": "0.1.0",
@@ -643,6 +650,8 @@
     "@atlas/cli": ["@atlas/cli@workspace:packages/cli"],
 
     "@atlas/docs": ["@atlas/docs@workspace:apps/docs"],
+
+    "@atlas/ee": ["@atlas/ee@workspace:ee"],
 
     "@atlas/mcp": ["@atlas/mcp@workspace:packages/mcp"],
 

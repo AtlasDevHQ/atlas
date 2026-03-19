@@ -1,12 +1,15 @@
 /**
  * Usage metering helpers.
  *
- * Provides fire-and-forget event logging and aggregate rollup for
- * per-workspace usage tracking. Events are recorded to usage_events;
- * summaries are materialized into usage_summaries on demand.
+ * Provides event logging and aggregate rollup for per-workspace usage
+ * tracking. Events are recorded to usage_events; summaries are
+ * materialized into usage_summaries on demand.
  *
- * All write helpers are fire-and-forget (via internalExecute) — metering
- * failures never propagate to the caller.
+ * Two write strategies:
+ * - `logUsageEvent` is fire-and-forget via `internalExecute` — async
+ *   errors are handled by internalExecute's circuit-breaker `.catch`.
+ * - `aggregateUsageSummary` awaits the query but swallows errors.
+ * In both cases, metering failures never propagate to the caller.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -22,6 +25,9 @@ const log = createLogger("metering");
 // Event types
 // ---------------------------------------------------------------------------
 
+// NOTE: "login" events are not yet emitted — active_users will be 0
+// until auth hooks emit login events. Query and token events are
+// emitted from the agent loop's onFinish callback.
 export type UsageEventType = "query" | "token" | "login";
 
 export interface UsageEvent {
@@ -37,30 +43,27 @@ export interface UsageEvent {
 // ---------------------------------------------------------------------------
 
 /**
- * Log a usage event. Fire-and-forget — errors are logged, never thrown.
- * No-op if internal DB is not configured.
+ * Log a usage event. Fire-and-forget — async errors are handled by
+ * internalExecute's circuit-breaker. No-op if internal DB is not configured.
  */
 export function logUsageEvent(event: UsageEvent): void {
   if (!hasInternalDB()) return;
 
-  try {
-    internalExecute(
-      `INSERT INTO usage_events (workspace_id, user_id, event_type, quantity, metadata)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [
-        event.workspaceId ?? null,
-        event.userId ?? null,
-        event.eventType,
-        event.quantity,
-        event.metadata ? JSON.stringify(event.metadata) : null,
-      ],
-    );
-  } catch (err) {
-    log.warn(
-      { err: err instanceof Error ? err.message : String(err), eventType: event.eventType },
-      "Failed to log usage event",
-    );
-  }
+  // Error handling is delegated to internalExecute's .catch handler,
+  // which logs failures with SQL context and trips the circuit breaker
+  // after 5 consecutive failures. No try/catch needed here — hasInternalDB()
+  // guards against the only synchronous throw path (DATABASE_URL unset).
+  internalExecute(
+    `INSERT INTO usage_events (workspace_id, user_id, event_type, quantity, metadata)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [
+      event.workspaceId ?? null,
+      event.userId ?? null,
+      event.eventType,
+      event.quantity,
+      event.metadata ? JSON.stringify(event.metadata) : null,
+    ],
+  );
 }
 
 // ---------------------------------------------------------------------------

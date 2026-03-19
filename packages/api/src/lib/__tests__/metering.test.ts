@@ -16,6 +16,7 @@ import {
 // --- Internal DB mock ---
 
 let mockHasInternalDB = true;
+let mockQueryShouldThrow = false;
 let queryCalls: Array<{ sql: string; params?: unknown[] }> = [];
 let queryResults: unknown[] = [];
 
@@ -35,6 +36,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
     queryCalls.push({ sql, params });
   },
   internalQuery: async (sql: string, params?: unknown[]) => {
+    if (mockQueryShouldThrow) throw new Error("connection refused");
     queryCalls.push({ sql, params });
     const result = queryResults.shift();
     return result ?? [];
@@ -70,6 +72,7 @@ describe("metering", () => {
     queryCalls = [];
     queryResults = [];
     mockHasInternalDB = true;
+    mockQueryShouldThrow = false;
   });
 
   describe("logUsageEvent", () => {
@@ -234,6 +237,13 @@ describe("metering", () => {
       mockHasInternalDB = false;
       await aggregateUsageSummary("org-1", "daily", new Date());
       expect(queryCalls).toHaveLength(0);
+    });
+
+    it("swallows errors without rethrowing", async () => {
+      mockQueryShouldThrow = true;
+
+      // Should not throw despite the error
+      await expect(aggregateUsageSummary("org-1", "daily", new Date())).resolves.toBeUndefined();
     });
   });
 });

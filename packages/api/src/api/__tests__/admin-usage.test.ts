@@ -283,6 +283,15 @@ describe("Admin Usage API", () => {
       const res = await app.fetch(adminRequest("GET", "/api/v1/admin/usage"));
       expect(res.status).toBe(403);
     });
+
+    it("returns 500 with requestId on internal error", async () => {
+      mockGetCurrentPeriodUsage.mockImplementation(() => Promise.reject(new Error("db down")));
+      const res = await app.fetch(adminRequest("GET", "/api/v1/admin/usage"));
+      expect(res.status).toBe(500);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.error).toBe("internal_error");
+      expect(body.requestId).toBeTruthy();
+    });
   });
 
   // --- GET /api/v1/admin/usage/history ---
@@ -308,6 +317,15 @@ describe("Admin Usage API", () => {
       await app.fetch(adminRequest("GET", "/api/v1/admin/usage/history"));
       expect(mockAggregateUsageSummary).toHaveBeenCalled();
     });
+
+    it("returns 500 with requestId on internal error", async () => {
+      mockGetUsageHistory.mockImplementation(() => Promise.reject(new Error("db down")));
+      const res = await app.fetch(adminRequest("GET", "/api/v1/admin/usage/history"));
+      expect(res.status).toBe(500);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.error).toBe("internal_error");
+      expect(body.requestId).toBeTruthy();
+    });
   });
 
   // --- GET /api/v1/admin/usage/breakdown ---
@@ -327,6 +345,15 @@ describe("Admin Usage API", () => {
     it("passes date filters to the breakdown query", async () => {
       await app.fetch(adminRequest("GET", "/api/v1/admin/usage/breakdown?startDate=2026-01-01&endDate=2026-03-01"));
       expect(mockGetUsageBreakdown).toHaveBeenCalledWith("org-1", "2026-01-01", "2026-03-01", 100);
+    });
+
+    it("returns 500 with requestId on internal error", async () => {
+      mockGetUsageBreakdown.mockImplementation(() => Promise.reject(new Error("db down")));
+      const res = await app.fetch(adminRequest("GET", "/api/v1/admin/usage/breakdown"));
+      expect(res.status).toBe(500);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.error).toBe("internal_error");
+      expect(body.requestId).toBeTruthy();
     });
   });
 });

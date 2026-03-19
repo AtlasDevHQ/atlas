@@ -65,7 +65,7 @@ mock.module("@atlas/api/lib/db/connection", () =>
 
 const mockFlushCache: Mock<() => void> = mock(() => {});
 
-mock.module("@atlas/api/lib/cache", () => ({
+mock.module("@atlas/api/lib/cache/index", () => ({
   getCache: mock(() => ({ get: () => null, set: () => {}, delete: () => false, flush: () => {}, stats: () => ({}) })),
   cacheEnabled: mock(() => true),
   setCacheBackend: mock(() => {}),

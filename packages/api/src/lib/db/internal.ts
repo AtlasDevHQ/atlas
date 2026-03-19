@@ -552,6 +552,9 @@ export async function migrateInternalDB(): Promise<void> {
   await pool.query(`ALTER TABLE organization ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMPTZ;`);
   await pool.query(`ALTER TABLE organization ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_organization_workspace_status ON organization(workspace_status);`);
+
+  // Soft-delete support for conversations (needed by workspace cascade delete)
+  await pool.query(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;`);
 }
 
 /** Seed built-in prompt collections. Idempotent — checks each collection by name. */
@@ -1042,19 +1045,15 @@ export interface WorkspaceRow {
 /**
  * Get the workspace status for an organization.
  * Returns null if the org doesn't exist or internal DB is unavailable.
+ * Throws on database errors — callers must handle failures explicitly.
  */
 export async function getWorkspaceStatus(orgId: string): Promise<WorkspaceStatus | null> {
   if (!hasInternalDB()) return null;
-  try {
-    const rows = await internalQuery<{ workspace_status: WorkspaceStatus }>(
-      `SELECT workspace_status FROM organization WHERE id = $1`,
-      [orgId],
-    );
-    return rows[0]?.workspace_status ?? null;
-  } catch (err) {
-    log.warn({ err: err instanceof Error ? err.message : String(err), orgId }, "Failed to get workspace status");
-    return null;
-  }
+  const rows = await internalQuery<{ workspace_status: WorkspaceStatus }>(
+    `SELECT workspace_status FROM organization WHERE id = $1`,
+    [orgId],
+  );
+  return rows[0]?.workspace_status ?? null;
 }
 
 /**
@@ -1071,7 +1070,8 @@ export async function getWorkspaceDetails(orgId: string): Promise<WorkspaceRow |
 }
 
 /**
- * Update workspace status. Returns true if the org was found and updated.
+ * Update workspace status. Returns true if the org was found and updated,
+ * false if no row matched the given orgId.
  */
 export async function updateWorkspaceStatus(
   orgId: string,
@@ -1082,37 +1082,37 @@ export async function updateWorkspaceStatus(
 
   let sql: string;
   if (timestampCol) {
-    sql = `UPDATE organization SET workspace_status = $1, ${timestampCol} = now() WHERE id = $2`;
+    sql = `UPDATE organization SET workspace_status = $1, ${timestampCol} = now() WHERE id = $2 RETURNING id`;
   } else {
     // Activating: clear both timestamps
-    sql = `UPDATE organization SET workspace_status = $1, suspended_at = NULL, deleted_at = NULL WHERE id = $2`;
+    sql = `UPDATE organization SET workspace_status = $1, suspended_at = NULL, deleted_at = NULL WHERE id = $2 RETURNING id`;
   }
 
   const result = await pool.query(sql, [status, orgId]);
-  // pg returns rowCount on the result; check via the rows array length with a RETURNING clause
-  // Since pool.query returns { rows }, use a RETURNING query instead
-  return result.rows !== undefined; // pool.query succeeded
+  return result.rows.length > 0;
 }
 
 /**
- * Update workspace plan tier. Returns true if the org was found and updated.
+ * Update workspace plan tier. Returns true if the org was found and updated,
+ * false if no row matched the given orgId.
  */
 export async function updateWorkspacePlanTier(
   orgId: string,
   planTier: PlanTier,
 ): Promise<boolean> {
   const pool = getInternalDB();
-  await pool.query(
-    `UPDATE organization SET plan_tier = $1 WHERE id = $2`,
+  const result = await pool.query(
+    `UPDATE organization SET plan_tier = $1 WHERE id = $2 RETURNING id`,
     [planTier, orgId],
   );
-  return true;
+  return result.rows.length > 0;
 }
 
 /**
- * Cascading soft-delete: marks conversations as deleted and removes
- * org-scoped semantic entities, learned patterns, query suggestions,
- * and scheduled tasks for a workspace.
+ * Cascading soft-delete cleanup for a workspace:
+ * - Soft-deletes conversations (sets deleted_at)
+ * - Hard-deletes org-scoped semantic entities, learned patterns, and query suggestions
+ * - Disables scheduled tasks
  */
 export async function cascadeWorkspaceDelete(orgId: string): Promise<{
   conversations: number;
@@ -1125,7 +1125,7 @@ export async function cascadeWorkspaceDelete(orgId: string): Promise<{
 
   const [convResult, seResult, lpResult, qsResult, stResult] = await Promise.all([
     pool.query(
-      `UPDATE conversations SET updated_at = now() WHERE org_id = $1 RETURNING id`,
+      `UPDATE conversations SET deleted_at = now(), updated_at = now() WHERE org_id = $1 AND deleted_at IS NULL RETURNING id`,
       [orgId],
     ),
     pool.query(
@@ -1157,7 +1157,7 @@ export async function cascadeWorkspaceDelete(orgId: string): Promise<{
 
 /**
  * Get a workspace health summary: member count, conversation count,
- * query count (last 24h), connection count, active status.
+ * query count (last 24h), connection count, and scheduled task count.
  */
 export async function getWorkspaceHealthSummary(orgId: string): Promise<{
   workspace: WorkspaceRow;

@@ -6,10 +6,14 @@ import { describe, it, expect, mock, beforeEach } from "bun:test";
 
 let mockHasInternalDB = true;
 let mockWorkspaceStatus: string | null = "active";
+let mockGetWorkspaceStatusShouldThrow = false;
 
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
-  getWorkspaceStatus: async () => mockWorkspaceStatus,
+  getWorkspaceStatus: async () => {
+    if (mockGetWorkspaceStatusShouldThrow) throw new Error("connection refused");
+    return mockWorkspaceStatus;
+  },
   internalQuery: async () => [],
   internalExecute: () => {},
   getInternalDB: () => ({}),
@@ -55,6 +59,7 @@ describe("checkWorkspaceStatus", () => {
   beforeEach(() => {
     mockHasInternalDB = true;
     mockWorkspaceStatus = "active";
+    mockGetWorkspaceStatusShouldThrow = false;
   });
 
   it("allows when no orgId", async () => {
@@ -95,5 +100,13 @@ describe("checkWorkspaceStatus", () => {
     mockWorkspaceStatus = null;
     const result = await checkWorkspaceStatus("org-1");
     expect(result.allowed).toBe(true);
+  });
+
+  it("blocks on DB error (fail-closed)", async () => {
+    mockGetWorkspaceStatusShouldThrow = true;
+    const result = await checkWorkspaceStatus("org-1");
+    expect(result.allowed).toBe(false);
+    expect(result.httpStatus).toBe(403);
+    expect(result.errorCode).toBe("workspace_check_failed");
   });
 });

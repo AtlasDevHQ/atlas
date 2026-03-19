@@ -8,6 +8,8 @@
  * - Suspended workspaces: 403 with clear reactivation message
  * - Deleted workspaces: 404 (workspace no longer exists)
  * - Active or no org: pass through
+ * - Pre-migration orgs (no workspace_status column): pass through
+ * - DB errors: fail closed (block request with 503)
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -30,15 +32,30 @@ export interface WorkspaceCheckResult {
  * - No internal DB is configured (self-hosted, no org management)
  * - No orgId provided (user not in an org)
  * - Workspace status is "active"
+ * - Org has no workspace_status yet (pre-migration)
  *
- * Returns `{ allowed: false, ... }` when suspended or deleted.
+ * Returns `{ allowed: false, ... }` when suspended, deleted, or on DB error.
  */
 export async function checkWorkspaceStatus(orgId: string | undefined): Promise<WorkspaceCheckResult> {
   if (!orgId || !hasInternalDB()) {
     return { allowed: true };
   }
 
-  const status = await getWorkspaceStatus(orgId);
+  let status: WorkspaceStatus | null;
+  try {
+    status = await getWorkspaceStatus(orgId);
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err), orgId },
+      "Failed to check workspace status — blocking request as a precaution",
+    );
+    return {
+      allowed: false,
+      errorCode: "workspace_check_failed",
+      errorMessage: "Unable to verify workspace status. Please try again.",
+      httpStatus: 403,
+    };
+  }
 
   // Org exists but has no workspace_status column yet (pre-migration) — allow
   if (!status) {
@@ -68,8 +85,5 @@ export async function checkWorkspaceStatus(orgId: string | undefined): Promise<W
         errorMessage: "This workspace has been deleted.",
         httpStatus: 404,
       };
-
-    default:
-      return { allowed: true };
   }
 }

@@ -373,17 +373,19 @@ adminOrgs.delete("/:id", async (c) => {
         return c.json({ error: "conflict", message: "Workspace is already deleted." }, 409);
       }
 
-      // 1. Drain connection pools
+      // 1. Drain connection pools (best-effort — don't block delete on pool errors)
       let poolsDrained = 0;
       if (connections.isOrgPoolingEnabled()) {
-        const drainResult = await connections.drainOrg(orgId);
-        poolsDrained = drainResult.drained;
+        try {
+          const drainResult = await connections.drainOrg(orgId);
+          poolsDrained = drainResult.drained;
+        } catch (drainErr) {
+          log.warn({ orgId, err: drainErr instanceof Error ? drainErr.message : String(drainErr) }, "Failed to drain org pools during delete — continuing with cascade");
+        }
       }
 
-      // 2. Flush cache entries for this org (full flush — cache keys
-      //    include orgId so only this org's entries are stale, but the
-      //    LRU backend doesn't support prefix deletion; full flush is
-      //    acceptable since deletes are rare admin operations)
+      // 2. Flush entire cache (LRU backend doesn't support prefix deletion;
+      //    full flush is acceptable since workspace deletes are rare admin operations)
       flushCache();
 
       // 3. Cascade database cleanup
@@ -502,7 +504,8 @@ adminOrgs.patch("/:id/plan", async (c) => {
     let body: { planTier?: string };
     try {
       body = await c.req.json();
-    } catch {
+    } catch (err) {
+      log.debug({ err: err instanceof Error ? err.message : String(err) }, "Invalid JSON in plan tier update");
       return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
     }
 

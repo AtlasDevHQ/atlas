@@ -249,7 +249,7 @@ describe("buildCellsFromMessages edge cases", () => {
   test("cell IDs are prefixed with 'cell-'", () => {
     const messages: UIMessage[] = [makeMessage("u1", "user")];
     const cells = buildCellsFromMessages(messages);
-    expect(cells[0].id).toBe("cell-u1");
+    expect(cells[0].id).toBe("cell-1");
   });
 
   test("only user messages generate cells (assistant-only array)", () => {
@@ -297,11 +297,11 @@ describe("loadNotebookState validation", () => {
     } as unknown as Storage;
   }
 
-  test("returns null when version is not 1", () => {
+  test("returns null when version is unsupported", () => {
     const badVersion = JSON.stringify({
       conversationId: "c1",
       cells: [],
-      version: 2,
+      version: 99,
     });
     expect(loadNotebookState("c1", storageWith(badVersion))).toBeNull();
   });

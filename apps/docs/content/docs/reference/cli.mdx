@@ -33,6 +33,8 @@ bun run atlas -- init [options]
 | `--no-enrich` | Explicitly skip LLM enrichment |
 | `--force` | Continue even if more than 20% of tables fail to profile |
 | `--demo [simple\|cybersec\|ecommerce]` | Load a demo dataset then profile (default: `simple`) |
+| `--org <orgId>` | Write to `semantic/.orgs/{orgId}/` and auto-import to DB (org-scoped mode). Requires managed auth (`DATABASE_URL` + `BETTER_AUTH_SECRET`) |
+| `--no-import` | Skip auto-import to DB in org-scoped mode (write disk only). Only meaningful with `--org` |
 
 **Examples:**
 
@@ -60,6 +62,12 @@ bun run atlas -- init --csv sales.csv,products.csv
 
 # Per-source layout (writes to semantic/warehouse/)
 bun run atlas -- init --source warehouse
+
+# Org-scoped: writes to semantic/.orgs/org-123/ and imports to DB
+bun run atlas -- init --org org-123
+
+# Org-scoped, disk only (skip DB import)
+bun run atlas -- init --org org-123 --no-import
 ```
 
 `--demo` without an argument loads the simple dataset (3 tables, ~330 rows). `--demo cybersec` loads the cybersec dataset (62 tables, ~500K rows). `--demo ecommerce` loads the e-commerce dataset (52 tables, ~480K rows).
@@ -379,7 +387,7 @@ bun run atlas -- learn [options]
 | `--limit <n>` | Max audit log entries to analyze (default: 1000) |
 | `--since <date>` | Only analyze queries after this date (ISO 8601, e.g. `2026-03-01`) |
 | `--source <name>` | Read from/write to `semantic/{name}/` subdirectory |
-| `--suggestions` | Generate query suggestions from the audit log (stored in `query_suggestions` table) |
+| `--suggestions` | Generate query suggestions from the audit log (stored in the `query_suggestions` table). Can be combined with `--apply` and other flags |
 
 **Requires** `DATABASE_URL` to be set (the audit log lives in the internal database).
 

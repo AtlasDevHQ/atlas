@@ -465,8 +465,8 @@ export function AtlasChat() {
               </div>
             </header>
 
-            {(healthWarning || transientWarning) && (
-              <p className="mb-2 text-xs text-zinc-400 dark:text-zinc-500">{healthWarning || transientWarning}</p>
+            {(healthWarning || transientWarning || convos.fetchError) && (
+              <p className="mb-2 text-xs text-zinc-400 dark:text-zinc-500">{healthWarning || transientWarning || convos.fetchError}</p>
             )}
 
             {isManaged && !isSignedIn ? (

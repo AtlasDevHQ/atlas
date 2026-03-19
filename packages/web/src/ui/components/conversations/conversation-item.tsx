@@ -55,8 +55,9 @@ export function ConversationItem({
             try {
               await onDelete();
               setConfirmDelete(false);
-            } catch {
-              setError("Failed to delete");
+            } catch (err: unknown) {
+              console.warn("Failed to delete conversation:", err instanceof Error ? err.message : String(err));
+              setError("Failed to delete conversation. Please try again.");
               setTimeout(() => setError(null), 3000);
             } finally {
               setDeleting(false);
@@ -106,8 +107,9 @@ export function ConversationItem({
             setStarPending(true);
             try {
               await onStar(!conversation.starred);
-            } catch {
-              setError("Failed to update");
+            } catch (err: unknown) {
+              console.warn("Failed to update star:", err instanceof Error ? err.message : String(err));
+              setError("Failed to update. Please try again.");
               setTimeout(() => setError(null), 3000);
             } finally {
               setStarPending(false);

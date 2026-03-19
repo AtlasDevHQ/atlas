@@ -185,9 +185,9 @@ function NotebookContent() {
         />
       )}
       <main id="main" className="flex-1 flex flex-col">
-        {error && (
+        {(error || convos.fetchError) && (
           <div className="mx-4 mt-4 flex items-center justify-between rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
-            <p>{error}</p>
+            <p>{error || convos.fetchError}</p>
             <Button variant="ghost" size="sm" onClick={() => setError(null)} className="shrink-0 text-red-600 dark:text-red-400">
               Dismiss
             </Button>

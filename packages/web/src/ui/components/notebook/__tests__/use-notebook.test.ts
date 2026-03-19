@@ -594,7 +594,7 @@ describe("useNotebook hook", () => {
 
       expect(result.current.cells[0].status).toBe("running");
 
-      // Response arrives, status becomes ready
+      // Response message arrives and chat status returns to ready
       const updatedMessages = [makeMessage("u1", "user"), makeMessage("a1", "assistant")];
       const updatedChat = createMockChat({ messages: updatedMessages, status: "ready" });
       rerender({ chat: updatedChat, conversationId: "test" });
@@ -709,7 +709,7 @@ describe("useNotebook hook", () => {
         result.current.rerunCell("cell-2", "Updated question");
       });
 
-      // Simulate the truncation taking effect (rerender with truncated messages)
+      // Simulate truncated messages + ready status (triggers pendingRerun effect)
       const truncatedMessages = [messages[0], messages[1]];
       const updatedChat = createMockChat({
         messages: truncatedMessages,
@@ -745,7 +745,7 @@ describe("useNotebook hook", () => {
         result.current.rerunCell("cell-2", "retry");
       });
 
-      // After truncation, only cell-1 exists — collapsed state preserved
+      // After truncation cell-1 survives reconciliation via preRerunCells fallback
       const truncatedMessages = [messages[0], messages[1]];
       const updatedChat = createMockChat({
         messages: truncatedMessages,
@@ -797,6 +797,34 @@ describe("useNotebook hook", () => {
       });
 
       expect(chat.setMessages).toHaveBeenCalledWith([messages[0], messages[1]]);
+      expect(result.current.cells).toHaveLength(1);
+      expect(result.current.cells[0].id).toBe("cell-1");
+    });
+
+    test("deleting middle cell keeps earlier cells and removes later ones", () => {
+      const messages = [
+        makeMessage("u1", "user"),
+        makeMessage("a1", "assistant"),
+        makeMessage("u2", "user"),
+        makeMessage("a2", "assistant"),
+        makeMessage("u3", "user"),
+        makeMessage("a3", "assistant"),
+      ];
+      const chat = createMockChat({ messages });
+      const { result } = renderHook(
+        (props: UseNotebookOptions) => useNotebook(props),
+        { initialProps: { chat, conversationId: "test" } },
+      );
+
+      expect(result.current.cells).toHaveLength(3);
+
+      act(() => {
+        result.current.deleteCell("cell-2");
+      });
+
+      expect(chat.setMessages).toHaveBeenCalledWith([messages[0], messages[1]]);
+      expect(result.current.cells).toHaveLength(1);
+      expect(result.current.cells[0].id).toBe("cell-1");
     });
 
     test("deleting first cell removes all cells", () => {
@@ -817,6 +845,7 @@ describe("useNotebook hook", () => {
       });
 
       expect(chat.setMessages).toHaveBeenCalledWith([]);
+      expect(result.current.cells).toHaveLength(0);
     });
 
     test("warns when cell not found", () => {
@@ -1117,6 +1146,85 @@ describe("useNotebook hook", () => {
 
       act(() => { result.current.setInput(""); });
       expect(result.current.input).toBe("");
+    });
+  });
+
+  // ---- localStorage integration ----
+
+  describe("localStorage integration", () => {
+    test("restores saved cell state from localStorage on mount", () => {
+      const convId = "persist-init";
+      const saved: NotebookState = {
+        conversationId: convId,
+        version: 2,
+        cells: [
+          { id: "cell-1", messageId: "u1", number: 1, collapsed: true, editing: true, status: "idle" },
+        ],
+      };
+      window.localStorage.setItem(`atlas:notebook:${convId}`, JSON.stringify(saved));
+
+      const messages = [makeMessage("u1", "user"), makeMessage("a1", "assistant")];
+      const chat = createMockChat({ messages });
+      const { result } = renderHook(
+        (props: UseNotebookOptions) => useNotebook(props),
+        { initialProps: { chat, conversationId: convId } },
+      );
+
+      // Collapsed/editing should come from saved state, not defaults
+      expect(result.current.cells[0].collapsed).toBe(true);
+      expect(result.current.cells[0].editing).toBe(true);
+    });
+
+    test("persists cell state to localStorage when it changes", () => {
+      const convId = "persist-write";
+      const messages = [makeMessage("u1", "user"), makeMessage("a1", "assistant")];
+      const chat = createMockChat({ messages });
+      const { result } = renderHook(
+        (props: UseNotebookOptions) => useNotebook(props),
+        { initialProps: { chat, conversationId: convId } },
+      );
+
+      act(() => {
+        result.current.toggleCollapse("cell-1");
+      });
+
+      const raw = window.localStorage.getItem(`atlas:notebook:${convId}`);
+      expect(raw).not.toBeNull();
+      const stored = JSON.parse(raw!) as NotebookState;
+      expect(stored.cells[0].collapsed).toBe(true);
+      expect(stored.version).toBe(2);
+    });
+
+    test("migrates localStorage key from temp to real conversationId", () => {
+      const tempId = "temp:abc123";
+      const realId = "real-uuid-456";
+      const saved: NotebookState = {
+        conversationId: tempId,
+        version: 2,
+        cells: [
+          { id: "cell-1", messageId: "u1", number: 1, collapsed: true, editing: false, status: "idle" },
+        ],
+      };
+      window.localStorage.setItem(`atlas:notebook:${tempId}`, JSON.stringify(saved));
+
+      const messages = [makeMessage("u1", "user"), makeMessage("a1", "assistant")];
+      const chat = createMockChat({ messages });
+      const { result, rerender } = renderHook(
+        (props: UseNotebookOptions) => useNotebook(props),
+        { initialProps: { chat, conversationId: tempId } },
+      );
+
+      expect(result.current.cells[0].collapsed).toBe(true);
+
+      // Simulate conversation getting a real ID
+      rerender({ chat, conversationId: realId });
+
+      // Old key removed, new key exists
+      expect(window.localStorage.getItem(`atlas:notebook:${tempId}`)).toBeNull();
+      const migrated = window.localStorage.getItem(`atlas:notebook:${realId}`);
+      expect(migrated).not.toBeNull();
+      const parsed = JSON.parse(migrated!) as NotebookState;
+      expect(parsed.conversationId).toBe(realId);
     });
   });
 });

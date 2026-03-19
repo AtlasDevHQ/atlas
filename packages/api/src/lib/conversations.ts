@@ -23,8 +23,8 @@ const log = createLogger("conversations");
 // Types
 // ---------------------------------------------------------------------------
 
-import type { MessageRole, Surface, Conversation, Message, ConversationWithMessages } from "@atlas/api/lib/conversation-types";
-export type { MessageRole, Surface, Conversation, Message, ConversationWithMessages };
+import type { MessageRole, Surface, Conversation, Message, ConversationWithMessages, NotebookStateWire } from "@atlas/api/lib/conversation-types";
+export type { MessageRole, Surface, Conversation, Message, ConversationWithMessages, NotebookStateWire };
 
 import type { ShareMode, ShareExpiryKey } from "@useatlas/types/share";
 import { SHARE_EXPIRY_OPTIONS } from "@useatlas/types/share";
@@ -267,7 +267,7 @@ export async function starConversation(
 /** Update notebook state on a conversation. Auth-scoped when userId is provided. */
 export async function updateNotebookState(
   id: string,
-  notebookState: unknown,
+  notebookState: NotebookStateWire,
   userId?: string | null,
 ): Promise<CrudResult> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
@@ -298,6 +298,7 @@ export async function forkConversation(opts: {
   orgId?: string | null;
 }): Promise<CrudDataResult<{ id: string; messageCount: number }>> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+  let newId: string | null = null;
   try {
     // Verify source exists and user owns it
     const sourceRows = opts.userId
@@ -314,33 +315,28 @@ export async function forkConversation(opts: {
     const source = sourceRows[0];
     const sourceTitle = (source.title as string) ?? "Notebook";
 
-    // Get all messages up to and including the fork point (and its assistant response)
+    // Get the fork point message timestamp
     const forkMsg = await internalQuery<Record<string, unknown>>(
       `SELECT created_at FROM messages WHERE id = $1 AND conversation_id = $2`,
       [opts.forkPointMessageId, opts.sourceId],
     );
     if (forkMsg.length === 0) return { ok: false, reason: "not_found" };
 
-    // Get the fork point message and the next message after it (assistant response)
-    const allMsgs = await internalQuery<Record<string, unknown>>(
-      `SELECT id, role, content, created_at FROM messages
-       WHERE conversation_id = $1 AND created_at <= $2
-       ORDER BY created_at ASC`,
-      [opts.sourceId, String(forkMsg[0].created_at)],
-    );
+    const forkTimestamp = String(forkMsg[0].created_at);
 
-    // Also include the assistant response right after the fork point
+    // Check if the next message after the fork point is an assistant response
     const nextMsg = await internalQuery<Record<string, unknown>>(
-      `SELECT id, role, content, created_at FROM messages
+      `SELECT role, created_at FROM messages
        WHERE conversation_id = $1 AND created_at > $2
        ORDER BY created_at ASC LIMIT 1`,
-      [opts.sourceId, String(forkMsg[0].created_at)],
+      [opts.sourceId, forkTimestamp],
     );
 
-    const messagesToCopy = [...allMsgs];
-    if (nextMsg.length > 0 && (nextMsg[0].role as string) === "assistant") {
-      messagesToCopy.push(nextMsg[0]);
-    }
+    // Include the assistant response if it follows the fork point
+    const includeNext = nextMsg.length > 0 && (nextMsg[0].role as string) === "assistant";
+    const cutoffTimestamp = includeNext
+      ? String(nextMsg[0].created_at)
+      : forkTimestamp;
 
     // Create new conversation
     const orgId = opts.orgId ?? (source.org_id as string) ?? null;
@@ -357,20 +353,29 @@ export async function forkConversation(opts: {
     );
 
     if (newConv.length === 0) return { ok: false, reason: "error" };
-    const newId = newConv[0].id;
+    newId = newConv[0].id;
 
-    // Copy messages into the new conversation
-    for (const msg of messagesToCopy) {
-      await internalQuery(
-        `INSERT INTO messages (conversation_id, role, content, created_at)
-         VALUES ($1, $2, $3, $4)`,
-        [newId, msg.role, JSON.stringify(msg.content), String(msg.created_at)],
-      );
-    }
+    // Bulk-copy messages into the new conversation in a single INSERT ... SELECT
+    const copyResult = await internalQuery<{ id: string }>(
+      `INSERT INTO messages (conversation_id, role, content, created_at)
+       SELECT $1, role, content, created_at FROM messages
+       WHERE conversation_id = $2 AND created_at <= $3
+       ORDER BY created_at ASC
+       RETURNING id`,
+      [newId, opts.sourceId, cutoffTimestamp],
+    );
 
-    return { ok: true, data: { id: newId, messageCount: messagesToCopy.length } };
+    return { ok: true, data: { id: newId, messageCount: copyResult.length } };
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "forkConversation failed");
+    log.error({ err: err instanceof Error ? err.message : String(err), sourceId: opts.sourceId }, "forkConversation failed");
+    // Clean up partially-created conversation to avoid orphans
+    if (newId) {
+      try {
+        await internalQuery(`DELETE FROM conversations WHERE id = $1`, [newId]);
+      } catch (cleanupErr) {
+        log.error({ err: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr) }, "Failed to clean up partial fork");
+      }
+    }
     return { ok: false, reason: "error" };
   }
 }

@@ -263,7 +263,10 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
     }
 
     const data = await res.json();
-    return { id: data.id as string, branches: (data.branches ?? []) as ForkBranchWire[] };
+    if (!data.id || typeof data.id !== "string") {
+      throw new Error("Fork response missing conversation ID");
+    }
+    return { id: data.id, branches: (data.branches ?? []) as ForkBranchWire[] };
   }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);
 
   const refresh = useCallback(async () => {

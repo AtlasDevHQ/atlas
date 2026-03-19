@@ -181,6 +181,7 @@ export interface UseNotebookReturn {
   copyCell: (cellId: string) => Promise<void>;
   reorderCells: (orderedIds: string[]) => void;
   forkCell: (cellId: string) => Promise<void>;
+  switchBranch: (conversationId: string) => void;
   forkInfo: ForkInfo | null;
   input: string;
   setInput: (value: string) => void;
@@ -493,6 +494,13 @@ export function useNotebook({
     [cells, conversationId, forkConversationFn, onNavigateToBranch],
   );
 
+  const switchBranch = useCallback(
+    (targetConversationId: string) => {
+      onNavigateToBranch?.(targetConversationId);
+    },
+    [onNavigateToBranch],
+  );
+
   return {
     cells,
     status: chat.status,
@@ -507,6 +515,7 @@ export function useNotebook({
     copyCell,
     reorderCells,
     forkCell,
+    switchBranch,
     forkInfo: forkInfoProp ?? null,
     input,
     setInput,

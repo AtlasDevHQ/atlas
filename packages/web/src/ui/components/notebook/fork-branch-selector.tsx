@@ -18,9 +18,12 @@ interface ForkBranchSelectorProps {
 export function ForkBranchSelector({ forkInfo, onSwitchBranch }: ForkBranchSelectorProps) {
   const isRoot = forkInfo.currentId === forkInfo.rootId;
   const totalBranches = forkInfo.branches.length + 1; // +1 for the root
-  const currentIndex = isRoot
-    ? 1
-    : forkInfo.branches.findIndex((b) => b.conversationId === forkInfo.currentId) + 2;
+  const branchIdx = forkInfo.branches.findIndex((b) => b.conversationId === forkInfo.currentId);
+  const currentLabel = isRoot
+    ? "Main"
+    : branchIdx >= 0
+      ? (forkInfo.branches[branchIdx].label || `Branch ${branchIdx + 1}`)
+      : "Branch";
 
   return (
     <div className="flex items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-900">
@@ -32,7 +35,7 @@ export function ForkBranchSelector({ forkInfo, onSwitchBranch }: ForkBranchSelec
             size="sm"
             className="h-auto gap-1 px-2 py-1 text-sm font-medium"
           >
-            {isRoot ? "Main" : `Branch ${currentIndex - 1}`}
+            {currentLabel}
             <span className="text-zinc-400">({totalBranches} total)</span>
             <ChevronDown className="size-3.5" />
           </Button>

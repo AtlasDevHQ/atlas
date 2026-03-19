@@ -89,10 +89,7 @@ export function NotebookShell({ notebook, focusCellId }: NotebookShellProps) {
           {notebook.forkInfo && notebook.forkInfo.branches.length > 0 && (
             <ForkBranchSelector
               forkInfo={notebook.forkInfo}
-              onSwitchBranch={(_branchId) => {
-                // Navigation is handled by the page via onNavigateToBranch on the notebook hook.
-                // The ForkBranchSelector dropdown items trigger navigation directly.
-              }}
+              onSwitchBranch={notebook.switchBranch}
             />
           )}
 

@@ -367,7 +367,7 @@ conversations.post("/:id/fork", async (c) => {
       return c.json(fail.body, fail.status);
     }
 
-    // Update source conversation's notebook_state to record the branch
+    // Update notebook_state on source and new conversation
     const label = parsed.data.label ?? `Fork from cell`;
     const branch = {
       conversationId: result.data.id,
@@ -376,31 +376,46 @@ conversations.post("/:id/fork", async (c) => {
       createdAt: new Date().toISOString(),
     };
 
-    // Read current notebook_state from source
+    // Read current notebook_state from source to preserve existing data
     const sourceConv = await getConversation(id, authResult.user?.id);
-    const existingState = sourceConv.ok
-      ? ((sourceConv.data.notebookState as Record<string, unknown> | null) ?? {})
-      : {};
-    const existingBranches = Array.isArray((existingState as Record<string, unknown>).branches)
-      ? ((existingState as Record<string, unknown>).branches as unknown[])
-      : [];
+    if (!sourceConv.ok) {
+      log.error({ requestId, conversationId: id, reason: sourceConv.reason }, "Failed to read source conversation for branch metadata");
+      return c.json({
+        id: result.data.id,
+        messageCount: result.data.messageCount,
+        branches: [branch],
+        warning: "Fork created but branch metadata could not be saved to source conversation.",
+      });
+    }
 
-    const updatedState = {
-      ...existingState,
-      version: ((existingState as Record<string, unknown>).version as number) || 3,
+    const existing = sourceConv.data.notebookState ?? { version: 3 };
+    const existingBranches = existing.branches ?? [];
+
+    const updatedSourceState = {
+      ...existing,
+      version: existing.version || 3,
       branches: [...existingBranches, branch],
     };
 
-    await updateNotebookState(id, updatedState, authResult.user?.id);
-
-    // Set fork metadata on the new conversation
-    const sourceRoot = (existingState as Record<string, unknown>).forkRootId as string | undefined;
-    const forkState = {
+    const sourceRoot = existing.forkRootId;
+    const forkChildState = {
       version: 3,
       forkRootId: sourceRoot ?? id,
       forkPointCellId: parsed.data.forkPointMessageId,
     };
-    await updateNotebookState(result.data.id, forkState, authResult.user?.id);
+
+    // Write both notebook_state updates in parallel
+    const [sourceResult, forkResult] = await Promise.all([
+      updateNotebookState(id, updatedSourceState, authResult.user?.id),
+      updateNotebookState(result.data.id, forkChildState, authResult.user?.id),
+    ]);
+
+    if (!sourceResult.ok) {
+      log.error({ requestId, conversationId: id, reason: sourceResult.reason }, "Failed to update source notebook_state after fork");
+    }
+    if (!forkResult.ok) {
+      log.error({ requestId, conversationId: result.data.id, reason: forkResult.reason }, "Failed to set fork metadata on new conversation");
+    }
 
     return c.json({
       id: result.data.id,

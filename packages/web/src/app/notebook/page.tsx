@@ -7,7 +7,7 @@ import { notebookSearchParams } from "./search-params";
 import { useNotebook } from "@/ui/components/notebook/use-notebook";
 import { NotebookShell } from "@/ui/components/notebook/notebook-shell";
 import { ConversationSidebar } from "@/ui/components/conversations/conversation-sidebar";
-import { useConversations } from "@/ui/hooks/use-conversations";
+import { useConversations, transformMessages } from "@/ui/hooks/use-conversations";
 import { API_URL, IS_CROSS_ORIGIN } from "@/lib/api-url";
 import { useAtlasTransport } from "@/ui/hooks/use-atlas-transport";
 import { Button } from "@/components/ui/button";
@@ -153,15 +153,11 @@ function NotebookContent() {
         const convData = await convos.getConversationData(conversationId!);
         if (cancelled) return;
 
-        // Set notebook state from server
+        // Extract notebook state and messages from a single fetch
         const state = convData.notebookState as NotebookStateWire | null ?? null;
         setServerNotebookState(state);
         setForkInfo(buildForkInfo(conversationId!, state));
-
-        // Transform messages for useChat
-        const uiMessages = await convos.loadConversation(conversationId!);
-        if (cancelled) return;
-        setMessages(uiMessages);
+        setMessages(transformMessages(convData.messages));
       } catch (err: unknown) {
         if (!cancelled) {
           console.warn(
@@ -236,9 +232,7 @@ function NotebookContent() {
       const state = convData.notebookState as NotebookStateWire | null ?? null;
       setServerNotebookState(state);
       setForkInfo(buildForkInfo(id, state));
-
-      const uiMessages = await convos.loadConversation(id);
-      setMessages(uiMessages);
+      setMessages(transformMessages(convData.messages));
       setParams({ id, cell: "" });
       convos.setSelectedId(id);
       setMobileMenuOpen(false);

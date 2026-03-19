@@ -1608,6 +1608,1419 @@ function buildSpec(): Record<string, unknown> {
           },
         },
       },
+
+      // -----------------------------------------------------------------
+      // Admin — Learned Patterns (CRUD)
+      // -----------------------------------------------------------------
+      "/api/v1/admin/learned-patterns": {
+        get: {
+          operationId: "adminListLearnedPatterns",
+          summary: "List learned patterns",
+          description:
+            "Returns a paginated list of learned query patterns with optional filters. Requires admin role and internal database.",
+          tags: ["Admin — Learned Patterns"],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            ...paginationParams({ limit: 50, maxLimit: 200 }),
+            {
+              name: "status",
+              in: "query",
+              description: "Filter by pattern status.",
+              required: false,
+              schema: { type: "string", enum: ["pending", "approved", "rejected"] },
+            },
+            {
+              name: "source_entity",
+              in: "query",
+              description: "Filter by source entity name.",
+              required: false,
+              schema: { type: "string" },
+            },
+            {
+              name: "min_confidence",
+              in: "query",
+              description: "Minimum confidence score (0.0–1.0).",
+              required: false,
+              schema: { type: "number", minimum: 0, maximum: 1 },
+            },
+            {
+              name: "max_confidence",
+              in: "query",
+              description: "Maximum confidence score (0.0–1.0).",
+              required: false,
+              schema: { type: "number", minimum: 0, maximum: 1 },
+            },
+          ],
+          responses: {
+            "200": {
+              description: "Paginated list of learned patterns",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      patterns: { type: "array", items: { type: "object" } },
+                      total: { type: "integer" },
+                      limit: { type: "integer" },
+                      offset: { type: "integer" },
+                    },
+                  },
+                },
+              },
+            },
+            "400": errorResponse("Invalid filter parameters"),
+            ...authErrors,
+            "404": errorResponse("No internal database configured"),
+          },
+        },
+      },
+
+      "/api/v1/admin/learned-patterns/bulk": {
+        post: {
+          operationId: "adminBulkUpdateLearnedPatterns",
+          summary: "Bulk update pattern status",
+          description:
+            "Updates the status of multiple learned patterns at once. Maximum 100 IDs per request. Requires admin role.",
+          tags: ["Admin — Learned Patterns"],
+          security: [{ bearerAuth: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["ids", "status"],
+                  properties: {
+                    ids: { type: "array", items: { type: "string" }, maxItems: 100 },
+                    status: { type: "string", enum: ["approved", "rejected"] },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Bulk operation results",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      updated: { type: "array", items: { type: "string" } },
+                      notFound: { type: "array", items: { type: "string" } },
+                      errors: {
+                        type: "array",
+                        items: {
+                          type: "object",
+                          properties: {
+                            id: { type: "string" },
+                            error: { type: "string" },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            "400": errorResponse("Invalid request body"),
+            ...authErrors,
+            "404": errorResponse("No internal database configured"),
+          },
+        },
+      },
+
+      "/api/v1/admin/learned-patterns/{id}": {
+        get: {
+          operationId: "adminGetLearnedPattern",
+          summary: "Get a learned pattern",
+          description: "Returns a single learned pattern by ID. Requires admin role.",
+          tags: ["Admin — Learned Patterns"],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: "id", in: "path", required: true, schema: { type: "string" }, description: "Pattern ID." },
+          ],
+          responses: {
+            "200": {
+              description: "Learned pattern details",
+              content: { "application/json": { schema: { type: "object" } } },
+            },
+            ...authErrors,
+            "404": errorResponse("Pattern not found or no internal database"),
+          },
+        },
+        patch: {
+          operationId: "adminUpdateLearnedPattern",
+          summary: "Update a learned pattern",
+          description:
+            "Updates the description or status of a learned pattern. When status changes, reviewed_by and reviewed_at are set. Requires admin role.",
+          tags: ["Admin — Learned Patterns"],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: "id", in: "path", required: true, schema: { type: "string" }, description: "Pattern ID." },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    description: { type: "string" },
+                    status: { type: "string", enum: ["pending", "approved", "rejected"] },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Updated learned pattern",
+              content: { "application/json": { schema: { type: "object" } } },
+            },
+            "400": errorResponse("No recognized fields to update or invalid status"),
+            ...authErrors,
+            "404": errorResponse("Pattern not found or no internal database"),
+          },
+        },
+        delete: {
+          operationId: "adminDeleteLearnedPattern",
+          summary: "Delete a learned pattern",
+          description: "Hard-deletes a learned pattern and invalidates the pattern cache. Requires admin role.",
+          tags: ["Admin — Learned Patterns"],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: "id", in: "path", required: true, schema: { type: "string" }, description: "Pattern ID." },
+          ],
+          responses: {
+            "200": {
+              description: "Pattern deleted",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: { deleted: { type: "boolean" } },
+                  },
+                },
+              },
+            },
+            ...authErrors,
+            "404": errorResponse("Pattern not found or no internal database"),
+          },
+        },
+      },
+
+      // -----------------------------------------------------------------
+      // Admin — Suggestions
+      // -----------------------------------------------------------------
+      "/api/v1/admin/suggestions": {
+        get: {
+          operationId: "adminListSuggestions",
+          summary: "List query suggestions",
+          description:
+            "Returns a paginated list of query suggestions with optional filters for table and minimum frequency. Requires admin role.",
+          tags: ["Admin — Suggestions"],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            ...paginationParams({ limit: 50, maxLimit: 200 }),
+            {
+              name: "table",
+              in: "query",
+              description: "Filter by primary table.",
+              required: false,
+              schema: { type: "string" },
+            },
+            {
+              name: "min_frequency",
+              in: "query",
+              description: "Minimum query frequency threshold.",
+              required: false,
+              schema: { type: "integer", minimum: 0 },
+            },
+          ],
+          responses: {
+            "200": {
+              description: "Paginated list of suggestions",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      suggestions: { type: "array", items: { type: "object" } },
+                      total: { type: "integer" },
+                      limit: { type: "integer" },
+                      offset: { type: "integer" },
+                    },
+                  },
+                },
+              },
+            },
+            ...authErrors,
+            "404": errorResponse("Internal database not configured"),
+          },
+        },
+      },
+
+      "/api/v1/admin/suggestions/{id}": {
+        delete: {
+          operationId: "adminDeleteSuggestion",
+          summary: "Delete a query suggestion",
+          description: "Permanently deletes a query suggestion. Requires admin role.",
+          tags: ["Admin — Suggestions"],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: "id", in: "path", required: true, schema: { type: "string" }, description: "Suggestion ID." },
+          ],
+          responses: {
+            "204": { description: "Suggestion deleted" },
+            ...authErrors,
+            "404": errorResponse("Suggestion not found"),
+          },
+        },
+      },
+
+      // -----------------------------------------------------------------
+      // Admin — Prompts (CRUD for collections and items)
+      // -----------------------------------------------------------------
+      "/api/v1/admin/prompts": {
+        get: {
+          operationId: "adminListPromptCollections",
+          summary: "List prompt collections (admin)",
+          description:
+            "Returns all prompt collections including built-in and org-specific ones. Requires admin role.",
+          tags: ["Admin — Prompts"],
+          security: [{ bearerAuth: [] }],
+          responses: {
+            "200": {
+              description: "List of prompt collections",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      collections: { type: "array", items: { type: "object" } },
+                      total: { type: "integer" },
+                    },
+                  },
+                },
+              },
+            },
+            ...authErrors,
+            "404": errorResponse("No internal database configured"),
+          },
+        },
+        post: {
+          operationId: "adminCreatePromptCollection",
+          summary: "Create a prompt collection",
+          description: "Creates a new org-specific prompt collection. Requires admin role.",
+          tags: ["Admin — Prompts"],
+          security: [{ bearerAuth: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["name", "industry"],
+                  properties: {
+                    name: { type: "string" },
+                    industry: { type: "string" },
+                    description: { type: "string" },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "201": {
+              description: "Prompt collection created",
+              content: { "application/json": { schema: { type: "object" } } },
+            },
+            "400": errorResponse("Missing or invalid required fields"),
+            ...authErrors,
+            "404": errorResponse("No internal database configured"),
+          },
+        },
+      },
+
+      "/api/v1/admin/prompts/{id}": {
+        patch: {
+          operationId: "adminUpdatePromptCollection",
+          summary: "Update a prompt collection",
+          description: "Updates a prompt collection's name, industry, or description. Built-in collections cannot be modified. Requires admin role.",
+          tags: ["Admin — Prompts"],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: "id", in: "path", required: true, schema: { type: "string" }, description: "Collection ID." },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    name: { type: "string" },
+                    industry: { type: "string" },
+                    description: { type: "string" },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Updated prompt collection",
+              content: { "application/json": { schema: { type: "object" } } },
+            },
+            "400": errorResponse("No recognized fields to update"),
+            ...authErrors,
+            "403": errorResponse("Built-in collections cannot be modified"),
+            "404": errorResponse("Collection not found or no internal database"),
+          },
+        },
+        delete: {
+          operationId: "adminDeletePromptCollection",
+          summary: "Delete a prompt collection",
+          description: "Deletes a prompt collection and cascades to its items. Built-in collections cannot be deleted. Requires admin role.",
+          tags: ["Admin — Prompts"],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: "id", in: "path", required: true, schema: { type: "string" }, description: "Collection ID." },
+          ],
+          responses: {
+            "200": {
+              description: "Collection deleted",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: { deleted: { type: "boolean" } },
+                  },
+                },
+              },
+            },
+            ...authErrors,
+            "403": errorResponse("Built-in collections cannot be modified"),
+            "404": errorResponse("Collection not found or no internal database"),
+          },
+        },
+      },
+
+      "/api/v1/admin/prompts/{id}/items": {
+        post: {
+          operationId: "adminCreatePromptItem",
+          summary: "Add an item to a prompt collection",
+          description: "Creates a new prompt item in the specified collection. Built-in collections are read-only. Requires admin role.",
+          tags: ["Admin — Prompts"],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: "id", in: "path", required: true, schema: { type: "string" }, description: "Collection ID." },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["question"],
+                  properties: {
+                    question: { type: "string" },
+                    description: { type: "string", nullable: true },
+                    category: { type: "string", nullable: true },
+                    sort_order: { type: "integer" },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "201": {
+              description: "Prompt item created",
+              content: { "application/json": { schema: { type: "object" } } },
+            },
+            "400": errorResponse("Missing or invalid required fields"),
+            ...authErrors,
+            "403": errorResponse("Built-in collections cannot be modified"),
+            "404": errorResponse("Collection not found or no internal database"),
+          },
+        },
+      },
+
+      "/api/v1/admin/prompts/{collectionId}/items/{itemId}": {
+        patch: {
+          operationId: "adminUpdatePromptItem",
+          summary: "Update a prompt item",
+          description: "Updates a prompt item's question, description, or category. Built-in collections are read-only. Requires admin role.",
+          tags: ["Admin — Prompts"],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: "collectionId", in: "path", required: true, schema: { type: "string" }, description: "Collection ID." },
+            { name: "itemId", in: "path", required: true, schema: { type: "string" }, description: "Item ID." },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    question: { type: "string" },
+                    description: { type: "string" },
+                    category: { type: "string" },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Updated prompt item",
+              content: { "application/json": { schema: { type: "object" } } },
+            },
+            "400": errorResponse("No recognized fields to update"),
+            ...authErrors,
+            "403": errorResponse("Built-in collections cannot be modified"),
+            "404": errorResponse("Item or collection not found"),
+          },
+        },
+        delete: {
+          operationId: "adminDeletePromptItem",
+          summary: "Delete a prompt item",
+          description: "Deletes a prompt item from a collection. Built-in collections are read-only. Requires admin role.",
+          tags: ["Admin — Prompts"],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: "collectionId", in: "path", required: true, schema: { type: "string" }, description: "Collection ID." },
+            { name: "itemId", in: "path", required: true, schema: { type: "string" }, description: "Item ID." },
+          ],
+          responses: {
+            "200": {
+              description: "Item deleted",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: { deleted: { type: "boolean" } },
+                  },
+                },
+              },
+            },
+            ...authErrors,
+            "403": errorResponse("Built-in collections cannot be modified"),
+            "404": errorResponse("Item or collection not found"),
+          },
+        },
+      },
+
+      "/api/v1/admin/prompts/{id}/reorder": {
+        put: {
+          operationId: "adminReorderPromptItems",
+          summary: "Reorder prompt items",
+          description:
+            "Reorders items within a prompt collection. All item IDs must be provided in the desired order. Built-in collections are read-only. Requires admin role.",
+          tags: ["Admin — Prompts"],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: "id", in: "path", required: true, schema: { type: "string" }, description: "Collection ID." },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["itemIds"],
+                  properties: {
+                    itemIds: {
+                      type: "array",
+                      items: { type: "string" },
+                      description: "All item IDs in the desired order.",
+                    },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Items reordered",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: { reordered: { type: "boolean" } },
+                  },
+                },
+              },
+            },
+            "400": errorResponse("Invalid item IDs or count mismatch"),
+            ...authErrors,
+            "403": errorResponse("Built-in collections cannot be modified"),
+            "404": errorResponse("Collection not found or no internal database"),
+          },
+        },
+      },
+
+      // -----------------------------------------------------------------
+      // Admin — Organizations
+      // -----------------------------------------------------------------
+      "/api/v1/admin/organizations": {
+        get: {
+          operationId: "adminListOrganizations",
+          summary: "List organizations",
+          description:
+            "Returns all organizations with member counts. Platform admin view. Requires admin role.",
+          tags: ["Admin — Organizations"],
+          security: [{ bearerAuth: [] }],
+          responses: {
+            "200": {
+              description: "List of organizations",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      organizations: {
+                        type: "array",
+                        items: {
+                          type: "object",
+                          properties: {
+                            id: { type: "string" },
+                            name: { type: "string" },
+                            slug: { type: "string" },
+                            logo: { type: "string", nullable: true },
+                            metadata: { type: "object", nullable: true },
+                            createdAt: { type: "string", format: "date-time" },
+                            memberCount: { type: "integer" },
+                          },
+                        },
+                      },
+                      total: { type: "integer" },
+                    },
+                  },
+                },
+              },
+            },
+            ...authErrors,
+            "404": errorResponse("No internal database configured"),
+          },
+        },
+      },
+
+      "/api/v1/admin/organizations/{id}": {
+        get: {
+          operationId: "adminGetOrganization",
+          summary: "Get organization details",
+          description:
+            "Returns organization details with members and pending invitations. Requires admin role.",
+          tags: ["Admin — Organizations"],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: "id", in: "path", required: true, schema: { type: "string" }, description: "Organization ID." },
+          ],
+          responses: {
+            "200": {
+              description: "Organization with members and invitations",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      organization: { type: "object" },
+                      members: { type: "array", items: { type: "object" } },
+                      invitations: { type: "array", items: { type: "object" } },
+                    },
+                  },
+                },
+              },
+            },
+            "400": errorResponse("Invalid organization ID"),
+            ...authErrors,
+            "404": errorResponse("Organization not found or no internal database"),
+          },
+        },
+      },
+
+      "/api/v1/admin/organizations/{id}/stats": {
+        get: {
+          operationId: "adminGetOrganizationStats",
+          summary: "Organization statistics",
+          description:
+            "Returns aggregate statistics for an organization: member count, conversation count, and query count. Requires admin role.",
+          tags: ["Admin — Organizations"],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: "id", in: "path", required: true, schema: { type: "string" }, description: "Organization ID." },
+          ],
+          responses: {
+            "200": {
+              description: "Organization statistics",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      members: { type: "integer" },
+                      conversations: { type: "integer" },
+                      queries: { type: "integer" },
+                    },
+                  },
+                },
+              },
+            },
+            "400": errorResponse("Invalid organization ID"),
+            ...authErrors,
+            "404": errorResponse("No internal database configured"),
+          },
+        },
+      },
+
+      // -----------------------------------------------------------------
+      // Suggestions — user-facing query suggestions
+      // -----------------------------------------------------------------
+      "/api/v1/suggestions": {
+        get: {
+          operationId: "listSuggestions",
+          summary: "Get contextual suggestions",
+          description:
+            "Returns query suggestions for one or more tables, ordered by score. Requires at least one 'table' query parameter.",
+          tags: ["Suggestions"],
+          security: [{ bearerAuth: [] }, {}],
+          parameters: [
+            {
+              name: "table",
+              in: "query",
+              description: "Table name to get suggestions for. Can be repeated for multiple tables.",
+              required: true,
+              schema: { type: "string" },
+            },
+            {
+              name: "limit",
+              in: "query",
+              description: "Maximum number of suggestions to return (1-50, default 10).",
+              required: false,
+              schema: { type: "integer", minimum: 1, maximum: 50, default: 10 },
+            },
+          ],
+          responses: {
+            "200": {
+              description: "List of suggestions",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      suggestions: { type: "array", items: { type: "object" } },
+                      total: { type: "integer" },
+                    },
+                  },
+                },
+              },
+            },
+            "400": {
+              description: "Missing table parameter",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: { error: { type: "string" } },
+                  },
+                },
+              },
+            },
+            "401": {
+              description: "Authentication required",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: { error: { type: "string" } },
+                  },
+                },
+              },
+            },
+            "429": {
+              description: "Rate limit exceeded",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: { error: { type: "string" } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+
+      "/api/v1/suggestions/popular": {
+        get: {
+          operationId: "listPopularSuggestions",
+          summary: "Get popular suggestions",
+          description:
+            "Returns the top query suggestions across all tables, ordered by score.",
+          tags: ["Suggestions"],
+          security: [{ bearerAuth: [] }, {}],
+          parameters: [
+            {
+              name: "limit",
+              in: "query",
+              description: "Maximum number of suggestions to return (1-50, default 10).",
+              required: false,
+              schema: { type: "integer", minimum: 1, maximum: 50, default: 10 },
+            },
+          ],
+          responses: {
+            "200": {
+              description: "List of popular suggestions",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      suggestions: { type: "array", items: { type: "object" } },
+                      total: { type: "integer" },
+                    },
+                  },
+                },
+              },
+            },
+            "401": {
+              description: "Authentication required",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: { error: { type: "string" } },
+                  },
+                },
+              },
+            },
+            "429": {
+              description: "Rate limit exceeded",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: { error: { type: "string" } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+
+      "/api/v1/suggestions/{id}/click": {
+        post: {
+          operationId: "trackSuggestionClick",
+          summary: "Track suggestion click",
+          description:
+            "Tracks user engagement with a suggestion. Fire-and-forget — always returns 204 on success.",
+          tags: ["Suggestions"],
+          security: [{ bearerAuth: [] }, {}],
+          parameters: [
+            { name: "id", in: "path", required: true, schema: { type: "string" }, description: "Suggestion ID." },
+          ],
+          responses: {
+            "204": { description: "Click tracked (fire-and-forget)" },
+            "401": {
+              description: "Authentication required",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: { error: { type: "string" } },
+                  },
+                },
+              },
+            },
+            "429": { description: "Rate limit exceeded (empty body)" },
+          },
+        },
+      },
+
+      // -----------------------------------------------------------------
+      // Prompts — user-facing prompt library
+      // -----------------------------------------------------------------
+      "/api/v1/prompts": {
+        get: {
+          operationId: "listPromptCollections",
+          summary: "List prompt collections",
+          description:
+            "Returns prompt collections available to the current user: built-in collections plus any belonging to the user's organization.",
+          tags: ["Prompts"],
+          security: [{ bearerAuth: [] }, {}],
+          responses: {
+            "200": {
+              description: "List of prompt collections",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      collections: { type: "array", items: { type: "object" } },
+                    },
+                  },
+                },
+              },
+            },
+            ...authErrors,
+          },
+        },
+      },
+
+      "/api/v1/prompts/{id}": {
+        get: {
+          operationId: "getPromptCollection",
+          summary: "Get prompt collection with items",
+          description:
+            "Returns a single prompt collection with all its items, ordered by sort_order.",
+          tags: ["Prompts"],
+          security: [{ bearerAuth: [] }, {}],
+          parameters: [
+            { name: "id", in: "path", required: true, schema: { type: "string" }, description: "Collection ID." },
+          ],
+          responses: {
+            "200": {
+              description: "Collection with items",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      collection: { type: "object" },
+                      items: { type: "array", items: { type: "object" } },
+                    },
+                  },
+                },
+              },
+            },
+            ...authErrors,
+            "404": errorResponse("Prompt collection not found"),
+          },
+        },
+      },
+
+      // -----------------------------------------------------------------
+      // Sessions — user self-service session management
+      // -----------------------------------------------------------------
+      "/api/v1/sessions": {
+        get: {
+          operationId: "listSessions",
+          summary: "List current user's sessions",
+          description:
+            "Returns all sessions for the authenticated user. Requires managed auth mode and an internal database.",
+          tags: ["Sessions"],
+          security: [{ bearerAuth: [] }],
+          responses: {
+            "200": {
+              description: "List of user sessions",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      sessions: {
+                        type: "array",
+                        items: {
+                          type: "object",
+                          properties: {
+                            id: { type: "string" },
+                            createdAt: { type: "string", format: "date-time" },
+                            updatedAt: { type: "string", format: "date-time" },
+                            expiresAt: { type: "string", format: "date-time" },
+                            ipAddress: { type: "string", nullable: true },
+                            userAgent: { type: "string", nullable: true },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            ...authErrors,
+            "404": errorResponse("Session management requires managed auth mode"),
+          },
+        },
+      },
+
+      "/api/v1/sessions/{id}": {
+        delete: {
+          operationId: "revokeSession",
+          summary: "Revoke a session",
+          description:
+            "Revokes one of the current user's sessions. Cannot revoke another user's session.",
+          tags: ["Sessions"],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: "id", in: "path", required: true, schema: { type: "string" }, description: "Session ID." },
+          ],
+          responses: {
+            "200": {
+              description: "Session revoked",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: { success: { type: "boolean" } },
+                  },
+                },
+              },
+            },
+            ...authErrors,
+            "403": errorResponse("Cannot revoke another user's session"),
+            "404": errorResponse("Session not found or not in managed auth mode"),
+          },
+        },
+      },
+
+      // -----------------------------------------------------------------
+      // Semantic — public read-only semantic layer API
+      // -----------------------------------------------------------------
+      "/api/v1/semantic/entities": {
+        get: {
+          operationId: "listEntities",
+          summary: "List semantic entities",
+          description:
+            "Returns a summary of all entity definitions from the semantic layer YAML files. Each entity includes table name, description, column count, join count, and type.",
+          tags: ["Semantic"],
+          security: [{ bearerAuth: [] }, {}],
+          responses: {
+            "200": {
+              description: "List of entity summaries",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      entities: {
+                        type: "array",
+                        items: {
+                          type: "object",
+                          properties: {
+                            table: { type: "string" },
+                            description: { type: "string" },
+                            columnCount: { type: "integer" },
+                            joinCount: { type: "integer" },
+                            type: { type: "string" },
+                          },
+                        },
+                      },
+                      warnings: {
+                        type: "array",
+                        items: { type: "string" },
+                        description: "Parse warnings (only present if any).",
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            ...authErrors,
+          },
+        },
+      },
+
+      "/api/v1/semantic/entities/{name}": {
+        get: {
+          operationId: "getEntity",
+          summary: "Get entity details",
+          description:
+            "Returns the full parsed YAML content for a single semantic entity, including all dimensions, measures, joins, and query patterns.",
+          tags: ["Semantic"],
+          security: [{ bearerAuth: [] }, {}],
+          parameters: [
+            { name: "name", in: "path", required: true, schema: { type: "string" }, description: "Entity name (e.g. 'orders')." },
+          ],
+          responses: {
+            "200": {
+              description: "Full entity content",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      entity: { type: "object" },
+                    },
+                  },
+                },
+              },
+            },
+            "400": errorResponse("Invalid entity name"),
+            ...authErrors,
+            "403": errorResponse("Access denied (path traversal attempt)"),
+            "404": errorResponse("Entity not found"),
+          },
+        },
+      },
+
+      // -----------------------------------------------------------------
+      // Tables — public table discovery API
+      // -----------------------------------------------------------------
+      "/api/v1/tables": {
+        get: {
+          operationId: "listTables",
+          summary: "List queryable tables",
+          description:
+            "Returns a simplified view of semantic layer entities with column details, enabling SDK consumers to discover queryable tables.",
+          tags: ["Tables"],
+          security: [{ bearerAuth: [] }, {}],
+          responses: {
+            "200": {
+              description: "List of tables with columns",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      tables: { type: "array", items: { type: "object" } },
+                      warnings: {
+                        type: "array",
+                        items: { type: "string" },
+                        description: "Parse warnings (only present if any).",
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            ...authErrors,
+          },
+        },
+      },
+
+      // -----------------------------------------------------------------
+      // Validate SQL — dry-run SQL validation
+      // -----------------------------------------------------------------
+      "/api/v1/validate-sql": {
+        post: {
+          operationId: "validateSQL",
+          summary: "Validate SQL without executing",
+          description:
+            "Runs the full 5-layer SQL validation pipeline (empty check, connection check, regex guard, AST parse, table whitelist) and returns structured results. Does NOT execute the query.",
+          tags: ["Validate SQL"],
+          security: [{ bearerAuth: [] }, {}],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["sql"],
+                  properties: {
+                    sql: { type: "string", minLength: 1, description: "SQL query to validate." },
+                    connectionId: { type: "string", description: "Optional connection ID to validate against." },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Validation result",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      valid: { type: "boolean" },
+                      errors: {
+                        type: "array",
+                        items: {
+                          type: "object",
+                          properties: {
+                            layer: { type: "string", enum: ["empty_check", "connection", "regex_guard", "ast_parse", "table_whitelist"] },
+                            message: { type: "string" },
+                          },
+                        },
+                      },
+                      tables: {
+                        type: "array",
+                        items: { type: "string" },
+                        description: "Referenced tables (only populated when valid is true).",
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            "400": errorResponse("Invalid JSON body"),
+            "422": errorResponse(
+              "Validation error (invalid request body)",
+              ValidationErrorSchema,
+            ),
+            ...authErrors,
+          },
+        },
+      },
+
+      // -----------------------------------------------------------------
+      // Conversation sharing endpoints
+      // -----------------------------------------------------------------
+      "/api/v1/conversations/{id}/share": {
+        get: {
+          operationId: "getShareStatus",
+          summary: "Get conversation share status",
+          description:
+            "Returns whether a conversation is currently shared and its share link details.",
+          tags: ["Conversations"],
+          security: [{ bearerAuth: [] }, {}],
+          parameters: [
+            uuidPathParam("id", "Conversation UUID."),
+          ],
+          responses: {
+            "200": {
+              description: "Share status",
+              content: {
+                "application/json": {
+                  schema: {
+                    oneOf: [
+                      {
+                        type: "object",
+                        properties: { shared: { type: "boolean", enum: [false] } },
+                      },
+                      {
+                        type: "object",
+                        properties: {
+                          shared: { type: "boolean", enum: [true] },
+                          token: { type: "string" },
+                          url: { type: "string", format: "uri" },
+                          expiresAt: { type: "string", format: "date-time", nullable: true },
+                          shareMode: { type: "string", enum: ["public", "org"] },
+                        },
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+            "400": errorResponse("Invalid conversation ID format"),
+            ...authErrors,
+            "404": errorResponse("Conversation not found or not available"),
+          },
+        },
+        post: {
+          operationId: "shareConversation",
+          summary: "Generate share link",
+          description:
+            "Creates a shareable link for a conversation. Optionally specify expiry duration and share mode (public or org-only).",
+          tags: ["Conversations"],
+          security: [{ bearerAuth: [] }, {}],
+          parameters: [
+            uuidPathParam("id", "Conversation UUID."),
+          ],
+          requestBody: {
+            required: false,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    expiresIn: { type: "string", enum: ["1h", "24h", "7d", "30d", "never"], description: "Share link expiry duration." },
+                    shareMode: { type: "string", enum: ["public", "org"], description: "Share visibility mode." },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Share link created",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      token: { type: "string" },
+                      url: { type: "string", format: "uri" },
+                      expiresAt: { type: "string", format: "date-time", nullable: true },
+                      shareMode: { type: "string", enum: ["public", "org"] },
+                    },
+                  },
+                },
+              },
+            },
+            "400": errorResponse("Invalid conversation ID or share options"),
+            ...authErrors,
+            "404": errorResponse("Conversation not found or not available"),
+          },
+        },
+        delete: {
+          operationId: "unshareConversation",
+          summary: "Revoke share link",
+          description: "Revokes the share link for a conversation, making it private again.",
+          tags: ["Conversations"],
+          security: [{ bearerAuth: [] }, {}],
+          parameters: [
+            uuidPathParam("id", "Conversation UUID."),
+          ],
+          responses: {
+            "204": { description: "Share link revoked" },
+            "400": errorResponse("Invalid conversation ID format"),
+            ...authErrors,
+            "404": errorResponse("Conversation not found or not available"),
+          },
+        },
+      },
+
+      // -----------------------------------------------------------------
+      // Public shared conversation (no auth required)
+      // -----------------------------------------------------------------
+      "/api/public/conversations/{token}": {
+        get: {
+          operationId: "getSharedConversation",
+          summary: "View a shared conversation",
+          description:
+            "Returns the content of a shared conversation. No authentication required for public shares. Org-scoped shares require authentication. Rate limited per IP.",
+          tags: ["Conversations"],
+          security: [],
+          parameters: [
+            { name: "token", in: "path", required: true, schema: { type: "string", pattern: "^[A-Za-z0-9_-]{20,64}$" }, description: "Share token." },
+          ],
+          responses: {
+            "200": {
+              description: "Shared conversation content",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      title: { type: "string", nullable: true },
+                      surface: { type: "string" },
+                      createdAt: { type: "string", format: "date-time" },
+                      shareMode: { type: "string", enum: ["public", "org"] },
+                      messages: {
+                        type: "array",
+                        items: {
+                          type: "object",
+                          properties: {
+                            role: { type: "string" },
+                            content: {},
+                            createdAt: { type: "string", format: "date-time" },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            "403": errorResponse("Org-scoped share requires authentication"),
+            "404": errorResponse("Conversation not found"),
+            "410": errorResponse("Share link has expired"),
+            "429": errorResponse("Rate limit exceeded"),
+          },
+        },
+      },
+
+      // -----------------------------------------------------------------
+      // Widget — embeddable chat widget
+      // -----------------------------------------------------------------
+      "/widget": {
+        get: {
+          operationId: "widgetHost",
+          summary: "Widget HTML host page",
+          description:
+            "Serves a self-contained HTML page for iframe embedding. Renders the AtlasChat component with configurable theme, API URL, position, branding, and initial query.",
+          tags: ["Widget"],
+          security: [],
+          parameters: [
+            { name: "theme", in: "query", required: false, schema: { type: "string", enum: ["light", "dark", "system"], default: "system" }, description: "Color theme." },
+            { name: "apiUrl", in: "query", required: false, schema: { type: "string" }, description: "Atlas API base URL (http/https only)." },
+            { name: "position", in: "query", required: false, schema: { type: "string", enum: ["bottomRight", "bottomLeft", "inline"], default: "inline" }, description: "Widget position." },
+            { name: "logo", in: "query", required: false, schema: { type: "string" }, description: "HTTPS URL to a custom logo image." },
+            { name: "accent", in: "query", required: false, schema: { type: "string" }, description: "Hex color without # (e.g. '4f46e5')." },
+            { name: "welcome", in: "query", required: false, schema: { type: "string" }, description: "Welcome message (max 500 chars)." },
+            { name: "initialQuery", in: "query", required: false, schema: { type: "string" }, description: "Auto-send query on first open (max 500 chars)." },
+          ],
+          responses: {
+            "200": {
+              description: "Widget HTML page",
+              content: { "text/html": { schema: { type: "string" } } },
+            },
+            "503": {
+              description: "Widget bundle not built",
+              content: { "text/html": { schema: { type: "string" } } },
+            },
+          },
+        },
+      },
+
+      "/widget/atlas-widget.js": {
+        get: {
+          operationId: "widgetJS",
+          summary: "Widget JavaScript bundle",
+          description: "Self-contained ESM bundle (React + AtlasChat). Cached for 24 hours.",
+          tags: ["Widget"],
+          security: [],
+          responses: {
+            "200": {
+              description: "Widget JS bundle",
+              content: { "application/javascript": { schema: { type: "string" } } },
+            },
+            "404": { description: "Widget JS not built", content: { "text/plain": { schema: { type: "string" } } } },
+          },
+        },
+      },
+
+      "/widget/atlas-widget.css": {
+        get: {
+          operationId: "widgetCSS",
+          summary: "Widget CSS stylesheet",
+          description: "Pre-compiled Tailwind CSS for widget components. Cached for 24 hours.",
+          tags: ["Widget"],
+          security: [],
+          responses: {
+            "200": {
+              description: "Widget CSS",
+              content: { "text/css": { schema: { type: "string" } } },
+            },
+            "404": { description: "Widget CSS not built", content: { "text/plain": { schema: { type: "string" } } } },
+          },
+        },
+      },
+
+      // -----------------------------------------------------------------
+      // Widget loader — script tag for embedding
+      // -----------------------------------------------------------------
+      "/widget.js": {
+        get: {
+          operationId: "widgetLoader",
+          summary: "Widget script tag loader",
+          description:
+            "Returns a self-contained IIFE script that injects a floating chat bubble and iframe overlay into any host page. " +
+            "Reads data-* attributes from its own <script> tag for configuration. Exposes window.Atlas programmatic API.",
+          tags: ["Widget"],
+          security: [],
+          responses: {
+            "200": {
+              description: "Widget loader script (IIFE)",
+              content: { "application/javascript": { schema: { type: "string" } } },
+            },
+          },
+        },
+      },
+
+      "/widget.d.ts": {
+        get: {
+          operationId: "widgetTypeDeclarations",
+          summary: "Widget TypeScript declarations",
+          description:
+            "Returns ambient TypeScript declarations for window.Atlas. Fallback for embedders who load only the script tag without installing @useatlas/react.",
+          tags: ["Widget"],
+          security: [],
+          responses: {
+            "200": {
+              description: "TypeScript ambient declarations",
+              content: { "text/plain": { schema: { type: "string" } } },
+            },
+          },
+        },
+      },
     },
     components: {
       securitySchemes: {
@@ -1622,13 +3035,24 @@ function buildSpec(): Record<string, unknown> {
     tags: [
       { name: "Chat", description: "Streaming chat with the Atlas agent" },
       { name: "Query", description: "Synchronous JSON query endpoint" },
-      { name: "Conversations", description: "Conversation history CRUD operations" },
+      { name: "Conversations", description: "Conversation history CRUD and sharing" },
+      { name: "Suggestions", description: "User-facing query suggestions" },
+      { name: "Prompts", description: "Prompt library collections and items" },
+      { name: "Sessions", description: "User self-service session management (requires managed auth)" },
+      { name: "Semantic", description: "Public read-only semantic layer API" },
+      { name: "Tables", description: "Table discovery for SDK consumers" },
+      { name: "Validate SQL", description: "Dry-run SQL validation (no execution)" },
       { name: "Health", description: "Service health checks" },
       { name: "Actions", description: "Approval-gated write operations (requires ATLAS_ACTIONS_ENABLED=true)" },
       { name: "Scheduled Tasks", description: "Recurring query tasks with cron scheduling (requires ATLAS_SCHEDULER_ENABLED=true)" },
       { name: "Auth", description: "Authentication routes (managed auth via Better Auth)" },
       { name: "Slack", description: "Slack integration (requires SLACK_SIGNING_SECRET)" },
+      { name: "Widget", description: "Embeddable chat widget (host page, loader script, assets)" },
       { name: "Admin", description: "Admin console API (requires admin role)" },
+      { name: "Admin — Learned Patterns", description: "Admin CRUD for learned query patterns (requires admin role)" },
+      { name: "Admin — Suggestions", description: "Admin query suggestion management (requires admin role)" },
+      { name: "Admin — Prompts", description: "Admin CRUD for prompt collections and items (requires admin role)" },
+      { name: "Admin — Organizations", description: "Admin organization management (requires admin role)" },
     ],
   };
 }

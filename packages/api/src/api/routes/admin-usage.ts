@@ -20,6 +20,11 @@ const log = createLogger("admin-usage");
 
 const adminUsage = new Hono();
 
+/** Returns true if the string is a valid date (parseable by Date). */
+function isValidDateParam(value: string): boolean {
+  return !isNaN(Date.parse(value));
+}
+
 // ---------------------------------------------------------------------------
 // GET / — current period usage summary for the active workspace
 // ---------------------------------------------------------------------------
@@ -83,6 +88,13 @@ adminUsage.get("/history", async (c) => {
     const endDate = c.req.query("endDate");
     const limit = Math.min(Math.max(parseInt(c.req.query("limit") ?? "90", 10) || 90, 1), 365);
 
+    if (startDate && !isValidDateParam(startDate)) {
+      return c.json({ error: "invalid_param", message: "startDate must be a valid ISO date string." }, 400);
+    }
+    if (endDate && !isValidDateParam(endDate)) {
+      return c.json({ error: "invalid_param", message: "endDate must be a valid ISO date string." }, 400);
+    }
+
     try {
       // Trigger aggregation for the current period before returning history
       const now = new Date();
@@ -127,6 +139,13 @@ adminUsage.get("/breakdown", async (c) => {
     const startDate = c.req.query("startDate");
     const endDate = c.req.query("endDate");
     const limit = Math.min(Math.max(parseInt(c.req.query("limit") ?? "100", 10) || 100, 1), 500);
+
+    if (startDate && !isValidDateParam(startDate)) {
+      return c.json({ error: "invalid_param", message: "startDate must be a valid ISO date string." }, 400);
+    }
+    if (endDate && !isValidDateParam(endDate)) {
+      return c.json({ error: "invalid_param", message: "endDate must be a valid ISO date string." }, 400);
+    }
 
     try {
       const users = await getUsageBreakdown(orgId, startDate ?? undefined, endDate ?? undefined, limit);

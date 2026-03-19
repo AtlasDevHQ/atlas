@@ -235,10 +235,10 @@ describe("Admin Usage API", () => {
         user: { id: "admin-1", mode: "simple-key", label: "Admin", role: "admin", activeOrganizationId: "org-1" },
       }),
     );
-    mockGetCurrentPeriodUsage.mockClear();
-    mockGetUsageHistory.mockClear();
-    mockGetUsageBreakdown.mockClear();
-    mockAggregateUsageSummary.mockClear();
+    mockGetCurrentPeriodUsage.mockImplementation(() => Promise.resolve({ ...mockCurrentUsage }));
+    mockGetUsageHistory.mockImplementation(() => Promise.resolve([...mockHistorySummaries]));
+    mockGetUsageBreakdown.mockImplementation(() => Promise.resolve([...mockBreakdownUsers]));
+    mockAggregateUsageSummary.mockImplementation(() => Promise.resolve());
   });
 
   // --- GET /api/v1/admin/usage ---
@@ -326,6 +326,35 @@ describe("Admin Usage API", () => {
       expect(body.error).toBe("internal_error");
       expect(body.requestId).toBeTruthy();
     });
+
+    it("returns daily period when requested", async () => {
+      const res = await app.fetch(adminRequest("GET", "/api/v1/admin/usage/history?period=daily"));
+      expect(res.status).toBe(200);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.period).toBe("daily");
+    });
+
+    it("returns 400 for invalid startDate", async () => {
+      const res = await app.fetch(adminRequest("GET", "/api/v1/admin/usage/history?startDate=not-a-date"));
+      expect(res.status).toBe(400);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.error).toBe("invalid_param");
+    });
+
+    it("returns 400 for invalid endDate", async () => {
+      const res = await app.fetch(adminRequest("GET", "/api/v1/admin/usage/history?endDate=garbage"));
+      expect(res.status).toBe(400);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.error).toBe("invalid_param");
+    });
+
+    it("clamps limit to valid range", async () => {
+      await app.fetch(adminRequest("GET", "/api/v1/admin/usage/history?limit=999"));
+      expect(mockGetUsageHistory).toHaveBeenCalled();
+      // limit=999 should be clamped to 365 — getUsageHistory(orgId, period, startDate, endDate, limit)
+      const lastCall = mockGetUsageHistory.mock.lastCall as unknown[];
+      expect(lastCall[4]).toBe(365);
+    });
   });
 
   // --- GET /api/v1/admin/usage/breakdown ---
@@ -354,6 +383,21 @@ describe("Admin Usage API", () => {
       const body = await res.json() as Record<string, unknown>;
       expect(body.error).toBe("internal_error");
       expect(body.requestId).toBeTruthy();
+    });
+
+    it("returns 400 for invalid startDate", async () => {
+      const res = await app.fetch(adminRequest("GET", "/api/v1/admin/usage/breakdown?startDate=not-a-date"));
+      expect(res.status).toBe(400);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.error).toBe("invalid_param");
+    });
+
+    it("clamps limit to valid range", async () => {
+      await app.fetch(adminRequest("GET", "/api/v1/admin/usage/breakdown?limit=999"));
+      expect(mockGetUsageBreakdown).toHaveBeenCalled();
+      // limit=999 should be clamped to 500 — getUsageBreakdown(orgId, startDate, endDate, limit)
+      const lastCall = mockGetUsageBreakdown.mock.lastCall as unknown[];
+      expect(lastCall[3]).toBe(500);
     });
   });
 });

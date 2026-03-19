@@ -393,7 +393,7 @@ describe("saveNotebookState error handling", () => {
 
     // In a real SSR environment, window is undefined and the function exits early.
     // In the test environment (happy-dom), window exists so it falls back to
-    // window.localStorage. We verify no error is thrown either way.
+    // localStorage. We verify no error is thrown either way.
     saveNotebookState(state, undefined as unknown as Storage);
     expect(warnSpy).not.toHaveBeenCalled();
     warnSpy.mockRestore();
@@ -1163,7 +1163,7 @@ describe("useNotebook hook", () => {
           { id: "cell-1", messageId: "u1", number: 1, collapsed: true, editing: true, status: "idle" },
         ],
       };
-      window.localStorage.setItem(`atlas:notebook:${convId}`, JSON.stringify(saved));
+      localStorage.setItem(`atlas:notebook:${convId}`, JSON.stringify(saved));
 
       const messages = [makeMessage("u1", "user"), makeMessage("a1", "assistant")];
       const chat = createMockChat({ messages });
@@ -1190,7 +1190,7 @@ describe("useNotebook hook", () => {
         result.current.toggleCollapse("cell-1");
       });
 
-      const raw = window.localStorage.getItem(`atlas:notebook:${convId}`);
+      const raw = localStorage.getItem(`atlas:notebook:${convId}`);
       expect(raw).not.toBeNull();
       const stored = JSON.parse(raw!) as NotebookState;
       expect(stored.cells[0].collapsed).toBe(true);
@@ -1207,7 +1207,7 @@ describe("useNotebook hook", () => {
           { id: "cell-1", messageId: "u1", number: 1, collapsed: true, editing: false, status: "idle" },
         ],
       };
-      window.localStorage.setItem(`atlas:notebook:${tempId}`, JSON.stringify(saved));
+      localStorage.setItem(`atlas:notebook:${tempId}`, JSON.stringify(saved));
 
       const messages = [makeMessage("u1", "user"), makeMessage("a1", "assistant")];
       const chat = createMockChat({ messages });
@@ -1222,8 +1222,8 @@ describe("useNotebook hook", () => {
       rerender({ chat, conversationId: realId });
 
       // Old key removed, new key exists
-      expect(window.localStorage.getItem(`atlas:notebook:${tempId}`)).toBeNull();
-      const migrated = window.localStorage.getItem(`atlas:notebook:${realId}`);
+      expect(localStorage.getItem(`atlas:notebook:${tempId}`)).toBeNull();
+      const migrated = localStorage.getItem(`atlas:notebook:${realId}`);
       expect(migrated).not.toBeNull();
       const parsed = JSON.parse(migrated!) as NotebookState;
       expect(parsed.conversationId).toBe(realId);

@@ -79,7 +79,7 @@ async function runFile(file: string): Promise<Result> {
 
   let proc: ReturnType<typeof Bun.spawn>;
   try {
-    proc = Bun.spawn(["bun", "test", file], {
+    proc = Bun.spawn(["bun", "test", "--preload", "./src/test-setup.ts", file], {
       cwd: ROOT,
       stdout: "pipe",
       stderr: "pipe",

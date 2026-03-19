@@ -83,7 +83,7 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
       setConversations(data.conversations ?? []);
       setTotal(data.total ?? 0);
       fetchedRef.current = true;
-    } catch (err) {
+    } catch (err: unknown) {
       console.warn("fetchList error:", err instanceof Error ? err.message : String(err));
       // Network error on first attempt — permanently disable conversations for this session. A page reload resets this.
       if (!fetchedRef.current) setAvailable(false);
@@ -106,7 +106,7 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
 
       const data: ConversationWithMessages = await res.json();
       return transformMessages(data.messages);
-    } catch (err) {
+    } catch (err: unknown) {
       console.warn("loadConversation error:", err instanceof Error ? err.message : String(err));
       return null;
     }
@@ -131,7 +131,7 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
       if (selectedId === id) setSelectedId(null);
 
       return true;
-    } catch (err) {
+    } catch (err: unknown) {
       console.warn("deleteConversation error:", err instanceof Error ? err.message : String(err));
       return false;
     }
@@ -160,7 +160,7 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
       }
 
       return true;
-    } catch (err) {
+    } catch (err: unknown) {
       console.warn("starConversation error:", err instanceof Error ? err.message : String(err));
       // Rollback
       setConversations((prev) =>
@@ -191,7 +191,7 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
         token: data.token,
         url: data.url ?? `${window.location.origin}/shared/${data.token}`,
       };
-    } catch (err) {
+    } catch (err: unknown) {
       console.warn("shareConversation error:", err instanceof Error ? err.message : String(err));
       return null;
     }
@@ -209,7 +209,7 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
         return false;
       }
       return true;
-    } catch (err) {
+    } catch (err: unknown) {
       console.warn("unshareConversation error:", err instanceof Error ? err.message : String(err));
       return false;
     }
@@ -227,7 +227,7 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
       }
       const data: ShareStatus = await res.json();
       return data;
-    } catch (err) {
+    } catch (err: unknown) {
       console.warn("getShareStatus error:", err instanceof Error ? err.message : String(err));
       return null;
     }

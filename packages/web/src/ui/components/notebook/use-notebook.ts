@@ -158,6 +158,8 @@ export interface UseNotebookReturn {
   cells: ResolvedCell[];
   status: "ready" | "streaming" | "submitted" | "error";
   error: Error | null;
+  warning: string | null;
+  clearWarning: () => void;
   appendCell: (question: string) => void;
   rerunCell: (cellId: string, newQuestion: string) => void;
   deleteCell: (cellId: string) => void;
@@ -170,6 +172,20 @@ export interface UseNotebookReturn {
 
 export function useNotebook({ chat, conversationId }: UseNotebookOptions): UseNotebookReturn {
   const [input, setInput] = useState("");
+  const [warning, setWarning] = useState<string | null>(null);
+  const warningTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showWarning = useCallback((msg: string) => {
+    if (warningTimer.current) clearTimeout(warningTimer.current);
+    setWarning(msg);
+    warningTimer.current = setTimeout(() => setWarning(null), 5000);
+  }, []);
+
+  const clearWarning = useCallback(() => {
+    if (warningTimer.current) clearTimeout(warningTimer.current);
+    setWarning(null);
+  }, []);
+
   const [cellState, setCellState] = useState<NotebookCell[]>(() => {
     if (typeof window === "undefined") return [];
     const saved = loadNotebookState(conversationId);
@@ -220,6 +236,7 @@ export function useNotebook({ chat, conversationId }: UseNotebookOptions): UseNo
           "Failed to re-run cell:",
           err instanceof Error ? err.message : String(err),
         );
+        showWarning("Failed to re-run cell. Please try again.");
       });
     }
   }, [chat.messages, chat.status, chat]);
@@ -251,6 +268,7 @@ export function useNotebook({ chat, conversationId }: UseNotebookOptions): UseNo
           "Failed to send message:",
           err instanceof Error ? err.message : String(err),
         );
+        showWarning("Failed to send message. Please try again.");
       });
     },
     [chat],
@@ -315,6 +333,8 @@ export function useNotebook({ chat, conversationId }: UseNotebookOptions): UseNo
     cells,
     status: chat.status,
     error: chat.error,
+    warning,
+    clearWarning,
     appendCell,
     rerunCell,
     deleteCell,

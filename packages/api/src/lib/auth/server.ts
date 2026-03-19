@@ -20,6 +20,39 @@ import { getInternalDB, hasInternalDB, internalQuery } from "@atlas/api/lib/db/i
 import { createLogger } from "@atlas/api/lib/logger";
 import { ac, owner as ownerRole, admin as adminRole, member as memberRole } from "@atlas/api/lib/auth/org-permissions";
 
+/**
+ * Build the socialProviders config from environment variables.
+ * Only providers with both CLIENT_ID and CLIENT_SECRET set are enabled.
+ * Returns undefined if no providers are configured.
+ */
+function buildSocialProviders(): Record<string, { clientId: string; clientSecret: string; tenantId?: string }> | undefined {
+  const providers: Record<string, { clientId: string; clientSecret: string; tenantId?: string }> = {};
+
+  if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
+    providers.google = {
+      clientId: process.env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    };
+  }
+
+  if (process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET) {
+    providers.github = {
+      clientId: process.env.GITHUB_CLIENT_ID,
+      clientSecret: process.env.GITHUB_CLIENT_SECRET,
+    };
+  }
+
+  if (process.env.MICROSOFT_CLIENT_ID && process.env.MICROSOFT_CLIENT_SECRET) {
+    providers.microsoft = {
+      clientId: process.env.MICROSOFT_CLIENT_ID,
+      clientSecret: process.env.MICROSOFT_CLIENT_SECRET,
+      tenantId: process.env.MICROSOFT_TENANT_ID || "common",
+    };
+  }
+
+  return Object.keys(providers).length > 0 ? providers : undefined;
+}
+
 const log = createLogger("auth:server");
 
 /**
@@ -83,6 +116,11 @@ export function getAuthInstance(): AuthInstance {
         ? `https://${process.env.VERCEL_URL}`
         : undefined);
 
+  const socialProviders = buildSocialProviders();
+  if (socialProviders) {
+    log.info({ providers: Object.keys(socialProviders) }, "Social login providers configured");
+  }
+
   const instance = betterAuth({
     // getInternalDB() returns a pg.Pool typed as InternalPool.
     // Cast needed because Better Auth expects its own pool/adapter type.
@@ -94,6 +132,7 @@ export function getAuthInstance(): AuthInstance {
       requireEmailVerification: false,
       autoSignIn: true,
     },
+    socialProviders,
     session: {
       expiresIn: 60 * 60 * 24 * 7,
       updateAge: 60 * 60 * 24,

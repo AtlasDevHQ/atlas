@@ -115,6 +115,17 @@ app.route("/widget", widget);
 app.route("/widget.js", widgetLoader);
 app.route("/widget.d.ts", widgetTypesLoader);
 
+// Onboarding routes — self-serve signup flow (test-connection, complete setup).
+try {
+  const { onboarding } = await import("./routes/onboarding");
+  app.route("/api/v1/onboarding", onboarding);
+} catch (err) {
+  log.error(
+    { err: err instanceof Error ? err : new Error(String(err)) },
+    "Failed to load onboarding routes",
+  );
+}
+
 // Suggestions routes — user-facing query suggestions.
 try {
   const { suggestions } = await import("./routes/suggestions");

@@ -238,6 +238,28 @@ ATLAS_ADMIN_EMAIL=admin@example.com
 DATABASE_URL=postgresql://user:pass@host:5432/atlas
 ```
 
+### Social Login (OAuth)
+
+Optional. Only applies to managed auth. Uncomment a provider block to enable social sign-in alongside email/password. Providers are auto-detected — only those with both `CLIENT_ID` and `CLIENT_SECRET` set are enabled.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GOOGLE_CLIENT_ID` | — | Google OAuth 2.0 client ID |
+| `GOOGLE_CLIENT_SECRET` | — | Google OAuth 2.0 client secret |
+| `GITHUB_CLIENT_ID` | — | GitHub OAuth app client ID |
+| `GITHUB_CLIENT_SECRET` | — | GitHub OAuth app client secret |
+| `MICROSOFT_CLIENT_ID` | — | Microsoft Entra ID (Azure AD) application client ID |
+| `MICROSOFT_CLIENT_SECRET` | — | Microsoft Entra ID client secret |
+| `MICROSOFT_TENANT_ID` | `common` | Tenant restriction: `common`, `organizations`, `consumers`, or a specific tenant UUID |
+
+```bash
+# Enable Google + GitHub social login
+GOOGLE_CLIENT_ID=123456789.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=GOCSPX-...
+GITHUB_CLIENT_ID=Iv1.abc123
+GITHUB_CLIENT_SECRET=ghs_...
+```
+
 ### BYOT (Bring Your Own Token)
 
 | Variable | Default | Description |

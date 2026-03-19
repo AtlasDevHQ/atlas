@@ -35,8 +35,8 @@ export function ConversationItem({
   conversation: Conversation;
   isActive: boolean;
   onSelect: () => void;
-  onDelete: () => Promise<boolean>;
-  onStar: (starred: boolean) => Promise<boolean>;
+  onDelete: () => Promise<void>;
+  onStar: (starred: boolean) => Promise<void>;
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -51,10 +51,8 @@ export function ConversationItem({
           onConfirm={async () => {
             setDeleting(true);
             try {
-              const success = await onDelete();
-              if (success) {
-                setConfirmDelete(false);
-              }
+              await onDelete();
+              setConfirmDelete(false);
             } catch {
               setError("Failed to delete");
               setTimeout(() => setError(null), 3000);

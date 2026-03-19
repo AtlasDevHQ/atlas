@@ -30,6 +30,7 @@ export default function SignupPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [socialLoading, setSocialLoading] = useState<string | null>(null);
   const [socialProviders, setSocialProviders] = useState<string[]>([]);
 
   useEffect(() => {
@@ -79,6 +80,7 @@ export default function SignupPage() {
 
   async function handleSocialLogin(provider: string) {
     setError(null);
+    setSocialLoading(provider);
     try {
       await authClient.signIn.social({
         provider: provider as "google" | "github" | "microsoft",
@@ -86,6 +88,7 @@ export default function SignupPage() {
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Social login failed");
+      setSocialLoading(null);
     }
   }
 
@@ -108,30 +111,33 @@ export default function SignupPage() {
                 <Button
                   variant="outline"
                   className="w-full"
+                  disabled={socialLoading !== null}
                   onClick={() => handleSocialLogin("google")}
                 >
                   <GoogleIcon />
-                  Continue with Google
+                  {socialLoading === "google" ? "Redirecting..." : "Continue with Google"}
                 </Button>
               )}
               {socialProviders.includes("github") && (
                 <Button
                   variant="outline"
                   className="w-full"
+                  disabled={socialLoading !== null}
                   onClick={() => handleSocialLogin("github")}
                 >
                   <GitHubIcon />
-                  Continue with GitHub
+                  {socialLoading === "github" ? "Redirecting..." : "Continue with GitHub"}
                 </Button>
               )}
               {socialProviders.includes("microsoft") && (
                 <Button
                   variant="outline"
                   className="w-full"
+                  disabled={socialLoading !== null}
                   onClick={() => handleSocialLogin("microsoft")}
                 >
                   <MicrosoftIcon />
-                  Continue with Microsoft
+                  {socialLoading === "microsoft" ? "Redirecting..." : "Continue with Microsoft"}
                 </Button>
               )}
             </div>

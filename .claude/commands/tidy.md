@@ -36,9 +36,13 @@ Run these in parallel:
    ```
    (Replace YYYY-MM-DD with 2 days ago)
 
-6. CI status (last 5 runs on main):
+6. CI + deployment status:
    ```
+   # GitHub Actions (CI + Sync Starters)
    gh run list -R AtlasDevHQ/atlas --branch main --limit 5 --json status,conclusion,name,createdAt,databaseId
+
+   # Railway deployments (api, web, docs, www, sidecar — uses commit statuses, not check-runs)
+   gh api repos/AtlasDevHQ/atlas/commits/main/statuses --jq '[.[] | {context, state, description}] | unique_by(.context) | .[] | "\(.context)\t\(.state)\t\(.description)"'
    ```
    If any CI runs are failing, get the failure details:
    ```
@@ -84,10 +88,13 @@ The public roadmap is a prose summary (no checkboxes). Keep it in sync with the 
   - 0.8.0 — Intelligence & Learning
 - Parent issues with shipped sub-issues -> add status comment listing what shipped and what remains
 
-### 2d. CI health
+### 2d. CI + deployment health
 - If CI is failing on main, this is **urgent** — diagnose the failure and fix it before other tidy work
+- If any Railway deployment is failing (api, web, docs), this is equally urgent — main is broken in production
 - Check if failures are from recently merged PRs (regressions) or pre-existing
-- Common causes: type errors in new code, missing test mocks, dependency drift
+- Common CI causes: type errors in new code, missing test mocks, dependency drift
+- Common Railway causes: missing env var, new dependency not in `serverExternalPackages`, DB migration error, health check timeout
+- Railway logs are NOT accessible via `gh` — check the Railway dashboard or ask the user for logs
 
 ### 2e. Untracked work
 - Merged PRs or commits that don't reference any issue -> assess whether a new issue should be created or if it's too minor (bug fixes, typos = skip)

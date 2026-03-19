@@ -35,7 +35,45 @@ SKIP_SYNCPACK=1 bash scripts/check-template-drift.sh  # Template drift
 
 Report: `CI gates: lint, type, test, syncpack, drift — all pass.`
 
+---
+
+**After local gates pass, check remote CI and deployments:**
+
+```bash
+# GitHub Actions CI + Sync Starters (last 5 runs on main)
+gh run list -R AtlasDevHQ/atlas --branch main --limit 5 --json status,conclusion,name,createdAt,databaseId
+
+# Railway deployment status (all 5 services — uses commit statuses, not check-runs)
+gh api repos/AtlasDevHQ/atlas/commits/main/statuses --jq '[.[] | {context, state, description}] | unique_by(.context) | .[] | "\(.context)\t\(.state)\t\(.description)"'
+```
+
+| Check | What to look for |
+|-------|------------------|
+| `CI` (GitHub Actions) | Must be `success` |
+| `Sync Starters` (GitHub Actions) | Must be `success` |
+| `satisfied-creation - api` | Must be `Success`. If `Deployment failed`, check Railway dashboard for build/startup errors |
+| `satisfied-creation - web` | Must be `Success` |
+| `satisfied-creation - docs` | Must be `Success` |
+| `satisfied-creation - www` | `No deployment needed` is fine (only deploys on `apps/www/` changes) |
+| `satisfied-creation - sidecar` | `No deployment needed` is fine (only deploys on sandbox changes) |
+
+**If a Railway deployment fails:**
+1. Check which service failed (api, web, docs)
+2. Common causes:
+   - **Build failure**: new dependency not in `serverExternalPackages`, TypeScript error in production build
+   - **Startup crash**: missing env var on Railway, DB migration error, new table requires `DATABASE_URL`
+   - **Health check timeout**: new middleware blocking startup, new route panicking
+3. Railway logs are NOT accessible via `gh` — check the Railway dashboard or ask the user to check
+4. If the failure is from code you just shipped, fix it. If pre-existing, file an issue
+
+**If all checks pass:**
+
+Report: `CI gates: lint, type, test, syncpack, drift — all pass. Remote: CI, Sync Starters, Railway (api/web/docs) — all green.`
+
+---
+
 **Rules:**
 - Never skip a gate or mark it as "probably fine"
 - If a gate fails on code you didn't write (pre-existing), still fix it — CI won't distinguish
 - If a test is flaky (passes on retry), note it but don't ignore it
+- Railway deployments are as important as CI — a green CI with a failed deploy means main is broken in production

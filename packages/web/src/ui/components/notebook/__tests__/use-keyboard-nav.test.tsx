@@ -196,7 +196,7 @@ describe("useKeyboardNav", () => {
     test("Escape from INPUT element calls onExitEdit", () => {
       renderNav({ editing: true });
 
-      // Create and append an input to simulate typing in a cell's textarea
+      // Create and append an input to simulate focus inside a cell's input field
       const input = document.createElement("input");
       document.body.appendChild(input);
       input.focus();

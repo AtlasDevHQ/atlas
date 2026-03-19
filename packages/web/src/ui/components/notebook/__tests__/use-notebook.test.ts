@@ -131,7 +131,8 @@ describe("localStorage persistence", () => {
     expect(loaded).toBeNull();
   });
 
-  test("loadNotebookState returns null for corrupt JSON", () => {
+  test("loadNotebookState returns null and warns for corrupt JSON", () => {
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
     const mockStorage = {
       getItem: () => "not valid json{{{",
       setItem: () => {},
@@ -140,6 +141,8 @@ describe("localStorage persistence", () => {
 
     const loaded = loadNotebookState("corrupt", mockStorage);
     expect(loaded).toBeNull();
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 });
 
@@ -191,7 +194,8 @@ describe("migrateNotebookStateKey", () => {
     expect(loadNotebookState("real-uuid", mockStorage)).toBeNull();
   });
 
-  test("handles corrupt JSON gracefully", () => {
+  test("handles corrupt JSON gracefully and warns", () => {
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
     const store: Record<string, string> = { "atlas:notebook:temp:bad": "not{json" };
     const mockStorage = {
       getItem: (key: string) => store[key] ?? null,
@@ -201,6 +205,8 @@ describe("migrateNotebookStateKey", () => {
 
     // Should not throw
     migrateNotebookStateKey("temp:bad", "real-uuid", mockStorage);
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 });
 
@@ -353,17 +359,20 @@ describe("saveNotebookState error handling", () => {
     warnSpy.mockRestore();
   });
 
-  test("does nothing when storage is undefined (SSR)", () => {
+  test("does not throw when no storage is available", () => {
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
     const state: NotebookState = {
       conversationId: "c1",
       cells: [],
       version: 1,
     };
 
-    // Pass a storage that evaluates to undefined
-    // The function falls back to window.localStorage, but we test the explicit path
-    // by passing undefined-like scenarios. The real SSR test is that it doesn't throw.
+    // In a real SSR environment, window is undefined and the function exits early.
+    // In the test environment (happy-dom), window exists so it falls back to
+    // window.localStorage. We verify no error is thrown either way.
     saveNotebookState(state, undefined as unknown as Storage);
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 });
 

@@ -26,6 +26,7 @@ import { getConfig } from "./config";
 import { createLogger, getRequestContext } from "./logger";
 import { getSetting } from "./settings";
 import { hasInternalDB, internalExecute } from "./db/internal";
+import { logUsageEvent } from "./metering";
 import { buildLearnedPatternsSection } from "./learn/pattern-cache";
 import { dispatchMutableHook } from "./plugins/hooks";
 import { plugins } from "./plugins/registry";
@@ -615,8 +616,8 @@ export async function runAgent({
         if (hasInternalDB() && totalUsage) {
           try {
             internalExecute(
-              `INSERT INTO token_usage (user_id, conversation_id, prompt_tokens, completion_tokens, model, provider)
-               VALUES ($1, $2, $3, $4, $5, $6)`,
+              `INSERT INTO token_usage (user_id, conversation_id, prompt_tokens, completion_tokens, model, provider, org_id)
+               VALUES ($1, $2, $3, $4, $5, $6, $7)`,
               [
                 userId,
                 conversationId ?? null,
@@ -624,10 +625,30 @@ export async function runAgent({
                 totalUsage.outputTokens ?? 0,
                 resolvedModelId,
                 providerType,
+                orgId ?? null,
               ],
             );
           } catch (err) {
             log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to persist token usage");
+          }
+
+          // Log usage metering events for billing/overage tracking
+          const totalTokens = (totalUsage.inputTokens ?? 0) + (totalUsage.outputTokens ?? 0);
+          logUsageEvent({
+            workspaceId: orgId ?? null,
+            userId,
+            eventType: "query",
+            quantity: 1,
+            metadata: { conversationId, model: resolvedModelId, steps: steps.length },
+          });
+          if (totalTokens > 0) {
+            logUsageEvent({
+              workspaceId: orgId ?? null,
+              userId,
+              eventType: "token",
+              quantity: totalTokens,
+              metadata: { input: totalUsage.inputTokens ?? 0, output: totalUsage.outputTokens ?? 0 },
+            });
           }
         }
       },

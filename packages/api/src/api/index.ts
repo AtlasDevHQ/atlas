@@ -139,6 +139,22 @@ try {
   );
 }
 
+// Demo mode routes — email-gated public demo with lead capture.
+if (process.env.ATLAS_DEMO_ENABLED === "true") {
+  try {
+    const { demo } = await import("./routes/demo");
+    app.route("/api/v1/demo", demo);
+    log.info("Demo mode enabled");
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err : new Error(String(err)) },
+      "Failed to load demo routes",
+    );
+  }
+} else {
+  log.debug("Demo mode disabled (ATLAS_DEMO_ENABLED not set)");
+}
+
 // Action routes — lazy import, only loaded if ATLAS_ACTIONS_ENABLED is set.
 if (process.env.ATLAS_ACTIONS_ENABLED === "true") {
   const { actions } = await import("./routes/actions");

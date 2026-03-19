@@ -49,6 +49,10 @@ export interface AtlasChatProps {
   authClient?: AtlasAuthClient;
   /** Custom renderers for tool results. Keys are tool names (e.g. "executeSQL", "explore", "executePython"). */
   toolRenderers?: ToolRenderers;
+  /** Custom chat API endpoint path. Defaults to "/api/chat". */
+  chatEndpoint?: string;
+  /** Custom conversations API endpoint path. Defaults to "/api/v1/conversations". */
+  conversationsEndpoint?: string;
 }
 
 /** No-op auth client for non-managed auth modes. */
@@ -164,6 +168,8 @@ export function AtlasChat(props: AtlasChatProps) {
     schemaExplorer: schemaExplorerEnabled = false,
     authClient = noopAuthClient,
     toolRenderers,
+    chatEndpoint = "/api/chat",
+    conversationsEndpoint = "/api/v1/conversations",
   } = props;
 
   // Apply theme from props on mount and when it changes
@@ -178,6 +184,8 @@ export function AtlasChat(props: AtlasChatProps) {
         sidebar={sidebar}
         schemaExplorerEnabled={schemaExplorerEnabled}
         toolRenderers={toolRenderers}
+        chatEndpoint={chatEndpoint}
+        conversationsEndpoint={conversationsEndpoint}
       />
     </AtlasUIProvider>
   );
@@ -188,11 +196,15 @@ function AtlasChatInner({
   sidebar,
   schemaExplorerEnabled,
   toolRenderers,
+  chatEndpoint,
+  conversationsEndpoint,
 }: {
   propApiKey?: string;
   sidebar: boolean;
   schemaExplorerEnabled: boolean;
   toolRenderers?: ToolRenderers;
+  chatEndpoint: string;
+  conversationsEndpoint: string;
 }) {
   const { apiUrl, isCrossOrigin, authClient } = useAtlasConfig();
   const dark = useDarkMode();
@@ -233,6 +245,7 @@ function AtlasChatInner({
     enabled: sidebar,
     getHeaders,
     getCredentials,
+    conversationsEndpoint,
   });
 
   const refreshConvosRef = useRef(convos.refresh);
@@ -336,7 +349,7 @@ function AtlasChatInner({
       headers["Authorization"] = `Bearer ${apiKey}`;
     }
     return new DefaultChatTransport({
-      api: `${apiUrl}/api/chat`,
+      api: `${apiUrl}${chatEndpoint}`,
       headers,
       credentials: isCrossOrigin ? "include" : undefined,
       body: () => (conversationIdRef.current ? { conversationId: conversationIdRef.current } : {}),
@@ -354,7 +367,7 @@ function AtlasChatInner({
         return response;
       }) as typeof fetch,
     });
-  }, [apiKey, apiUrl, isCrossOrigin]);
+  }, [apiKey, apiUrl, isCrossOrigin, chatEndpoint]);
 
   const { messages, setMessages, sendMessage, status, error } = useChat({ transport });
 

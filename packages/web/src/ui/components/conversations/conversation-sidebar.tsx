@@ -27,8 +27,8 @@ export function ConversationSidebar({
   selectedId: string | null;
   loading: boolean;
   onSelect: (id: string) => void;
-  onDelete: (id: string) => Promise<boolean>;
-  onStar: (id: string, starred: boolean) => Promise<boolean>;
+  onDelete: (id: string) => Promise<void>;
+  onStar: (id: string, starred: boolean) => Promise<void>;
   onNewChat: () => void;
   mobileOpen: boolean;
   onMobileClose: () => void;

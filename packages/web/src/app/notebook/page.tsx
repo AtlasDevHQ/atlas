@@ -87,11 +87,7 @@ function NotebookContent() {
       try {
         const uiMessages = await convos.loadConversation(conversationId!);
         if (cancelled) return;
-        if (uiMessages) {
-          setMessages(uiMessages);
-        } else {
-          setError("Could not load conversation. The server may be unavailable, or the conversation may no longer exist.");
-        }
+        setMessages(uiMessages);
       } catch (err: unknown) {
         if (!cancelled) {
           console.warn(
@@ -135,14 +131,10 @@ function NotebookContent() {
     setLoadingConversation(true);
     try {
       const uiMessages = await convos.loadConversation(id);
-      if (uiMessages) {
-        setMessages(uiMessages);
-        setParams({ id, cell: "" });
-        convos.setSelectedId(id);
-        setMobileMenuOpen(false);
-      } else {
-        setError("Could not load conversation. It may have been deleted.");
-      }
+      setMessages(uiMessages);
+      setParams({ id, cell: "" });
+      convos.setSelectedId(id);
+      setMobileMenuOpen(false);
     } catch (err: unknown) {
       console.warn(
         "Failed to load conversation:",
@@ -193,9 +185,9 @@ function NotebookContent() {
         />
       )}
       <main id="main" className="flex-1 flex flex-col">
-        {error && (
+        {(error || convos.fetchError) && (
           <div className="mx-4 mt-4 flex items-center justify-between rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
-            <p>{error}</p>
+            <p>{error || convos.fetchError}</p>
             <Button variant="ghost" size="sm" onClick={() => setError(null)} className="shrink-0 text-red-600 dark:text-red-400">
               Dismiss
             </Button>

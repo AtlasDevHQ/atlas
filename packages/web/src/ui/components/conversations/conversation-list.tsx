@@ -16,8 +16,8 @@ export function ConversationList({
   conversations: Conversation[];
   selectedId: string | null;
   onSelect: (id: string) => void;
-  onDelete: (id: string) => Promise<boolean>;
-  onStar: (id: string, starred: boolean) => Promise<boolean>;
+  onDelete: (id: string) => Promise<void>;
+  onStar: (id: string, starred: boolean) => Promise<void>;
   showSections?: boolean;
   emptyMessage?: string;
 }) {

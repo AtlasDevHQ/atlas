@@ -19,8 +19,8 @@ export interface UseAtlasConversationsReturn {
   setSelectedId: (id: string | null) => void;
   refresh: () => Promise<void>;
   loadConversation: (id: string) => Promise<UIMessage[] | null>;
-  deleteConversation: (id: string) => Promise<boolean>;
-  starConversation: (id: string, starred: boolean) => Promise<boolean>;
+  deleteConversation: (id: string) => Promise<void>;
+  starConversation: (id: string, starred: boolean) => Promise<void>;
 }
 
 /**

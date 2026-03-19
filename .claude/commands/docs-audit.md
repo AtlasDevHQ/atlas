@@ -118,31 +118,58 @@ grep -P '^#{2,3}.*`atlas' apps/docs/content/docs/reference/cli.mdx
 
 ---
 
-## Part D: API Endpoints (MEDIUM-HIGH RISK)
+## Part D: API Endpoints / OpenAPI Spec (MEDIUM-HIGH RISK)
 
-**Docs:** `apps/docs/content/docs/api-reference/` (24 pages, auto-generated from OpenAPI)
-**Source of truth:** `packages/api/src/api/routes/*.ts` and `apps/docs/openapi.json`
+**Docs:** `apps/docs/content/docs/api-reference/` (auto-generated from OpenAPI)
+**Source of truth:** `packages/api/src/api/routes/openapi.ts` (programmatic spec built from Zod schemas)
+
+### CRITICAL: OpenAPI Codegen Pipeline
+
+The API reference docs are generated, NOT hand-maintained. The pipeline is:
+
+```
+packages/api/src/api/routes/openapi.ts    ← SOURCE OF TRUTH (Zod → JSON Schema)
+    ↓  bun packages/api/scripts/extract-openapi.ts
+apps/docs/openapi.json                    ← GENERATED ARTIFACT (never edit directly!)
+    ↓  cd apps/docs && bun ./scripts/generate-openapi.ts
+apps/docs/content/docs/api-reference/     ← GENERATED MDX pages
+```
+
+**NEVER edit `apps/docs/openapi.json` directly** — it will be overwritten on next extraction.
+To add/fix endpoints: edit `openapi.ts`, then run the extraction + generation scripts.
 
 ### Steps
 
 1. Extract all route paths from `packages/api/src/api/index.ts` (the route mounting file)
-2. Extract all endpoints from `apps/docs/openapi.json`
-3. Cross-reference route files against OpenAPI spec:
+2. Extract all endpoints defined in `packages/api/src/api/routes/openapi.ts` (the `buildSpec()` function)
+3. Cross-reference — every mounted route should have a corresponding entry in `openapi.ts`:
 
 | Check | How |
 |-------|-----|
-| **Missing endpoints** | Route in code but not in OpenAPI spec → HIGH |
-| **Stale endpoints** | Endpoint in OpenAPI but removed from code → HIGH |
+| **Missing from openapi.ts** | Route in code but not in programmatic spec → HIGH |
+| **Stale in openapi.ts** | Endpoint in spec but removed from code → HIGH |
 | **Wrong methods** | GET vs POST mismatch → HIGH |
-| **Missing new routes** | Recently added routes (check git log) not in spec |
+| **Schema drift** | Response shapes in openapi.ts don't match actual c.json() returns → HIGH |
+| **openapi.json stale** | Run `bun packages/api/scripts/extract-openapi.ts` and check if output differs from committed file → MEDIUM |
+
+### Fixing missing endpoints
+
+1. Read the route handler in `packages/api/src/api/routes/<handler>.ts`
+2. Add the endpoint definition to `openapi.ts`'s `buildSpec()` function, using Zod schemas where available (import and use `toJsonSchema()`)
+3. Run `bun packages/api/scripts/extract-openapi.ts` to regenerate `apps/docs/openapi.json`
+4. Run `cd apps/docs && bun ./scripts/generate-openapi.ts` to regenerate MDX pages
+5. Commit all generated files alongside the source change
 
 ### Grep patterns
 ```bash
 # Code: all mounted routes
 grep -P '\.route\(|\.get\(|\.post\(|\.patch\(|\.delete\(|\.put\(' packages/api/src/api/index.ts packages/api/src/api/routes/*.ts | grep -oP '["'"'"']/[^"'"'"']+' | sort -u
 
-# OpenAPI: all paths
-grep -oP '"(/api/[^"]+)"' apps/docs/openapi.json | sort -u
+# openapi.ts: all paths in spec
+grep -oP '"/api/[^"]+"|"/widget[^"]*"' packages/api/src/api/routes/openapi.ts | sort -u
+
+# Check if openapi.json is stale (should produce no diff if in sync)
+bun packages/api/scripts/extract-openapi.ts && git diff apps/docs/openapi.json
 ```
 
 ---

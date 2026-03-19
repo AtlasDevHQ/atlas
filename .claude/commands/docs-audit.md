@@ -19,7 +19,7 @@ Run 4 agents in parallel, one per audit domain. Each agent reads docs pages and 
 
 ### Steps
 
-1. Extract all `ATLAS_*`, `DATABASE_*`, `BETTER_AUTH_*`, `SLACK_*` env vars from `configFromEnv()` in `packages/api/src/lib/config.ts` — this is the authoritative list of what the code actually reads
+1. Extract ALL `process.env.*` reads from `packages/api/src/lib/config.ts` (the `configFromEnv()` function) AND from across `packages/api/src/` — this is the authoritative list of what the code actually reads. Include ALL prefixes (ATLAS_*, DATABASE_*, BETTER_AUTH_*, SLACK_*, GOOGLE_*, GITHUB_*, MICROSOFT_*, OPENAI_*, OLLAMA_*, OTEL_*, PORT, NODE_ENV, VERCEL, etc.)
 2. Extract all env vars from `.env.example`
 3. Extract all env vars mentioned in `apps/docs/content/docs/reference/environment-variables.mdx`
 4. Cross-reference:
@@ -34,17 +34,17 @@ Run 4 agents in parallel, one per audit domain. Each agent reads docs pages and 
 
 ### Grep patterns
 ```bash
-# Code: all env vars read
-grep -oP 'process\.env\.(?:ATLAS_|DATABASE_|BETTER_AUTH_|SLACK_)\w+' packages/api/src/lib/config.ts | sort -u
+# Code: ALL env vars read across the entire API package (not just config.ts)
+grep -rP 'process\.env\.\w+' packages/api/src/ --include='*.ts' -h | grep -oP 'process\.env\.\w+' | sort -u
 
-# Code: env vars read outside config.ts (may be missed)
-grep -rP 'process\.env\.(?:ATLAS_|DATABASE_|BETTER_AUTH_|SLACK_)\w+' packages/api/src/ --include='*.ts' -h | grep -oP 'process\.env\.\w+' | sort -u
+# Also check ee/ for enterprise env vars
+grep -rP 'process\.env\.\w+' ee/src/ --include='*.ts' -h 2>/dev/null | grep -oP 'process\.env\.\w+' | sort -u
 
 # Docs: all vars mentioned
-grep -oP '(?:ATLAS_|DATABASE_|BETTER_AUTH_|SLACK_)\w+' apps/docs/content/docs/reference/environment-variables.mdx | sort -u
+grep -oP '[A-Z][A-Z_]+[A-Z]' apps/docs/content/docs/reference/environment-variables.mdx | sort -u
 
-# .env.example: all vars
-grep -oP '^(?:ATLAS_|DATABASE_|BETTER_AUTH_|SLACK_)\w+' .env.example | sort -u
+# .env.example: all vars (uncommented and commented)
+grep -oP '^#?\s*[A-Z][A-Z_]+[A-Z]' .env.example | sed 's/^#\s*//' | sort -u
 ```
 
 ---
@@ -104,17 +104,8 @@ grep -P '^#{2,3}.*`atlas' apps/docs/content/docs/reference/cli.mdx
 | **Missing nested options** | Sub-objects (rls, cache, pool, python, sandbox, session, learn) fully documented? |
 | **defineConfig() example** | Does the main example in docs validate against current schema? |
 
-### Key schema sections to check
-- `datasources` — DatasourceConfig shape
-- `rls` — RLSConfigSchema (multi-column, array claims, OR-logic)
-- `cache` — CacheConfigSchema (enabled, ttl, maxSize)
-- `pool` — PoolConfigSchema (perOrg, warmup, drainThreshold)
-- `sandbox` — SandboxConfigSchema (priority array)
-- `python` — PythonConfigSchema (blockedModules, allowModules)
-- `session` — SessionConfigSchema (idleTimeout, absoluteTimeout)
-- `learn` — LearnConfigSchema (confidenceThreshold)
-- `actions` — ActionConfigSchema
-- `scheduler` — SchedulerConfigSchema
+### How to find schema sections
+Don't use a hardcoded list. Read the `AtlasConfigSchema` from `packages/api/src/lib/config.ts` and extract ALL top-level keys dynamically. As of this writing these include datasources, rls, cache, pool, sandbox, python, session, learn, actions, scheduler, enterprise — but new sections may have been added. The schema is the source of truth.
 
 ---
 
@@ -176,7 +167,7 @@ bun packages/api/scripts/extract-openapi.ts && git diff apps/docs/openapi.json
 
 ## Part E: Plugin Documentation (MEDIUM RISK)
 
-**Docs:** `apps/docs/content/docs/plugins/` (17+ pages)
+**Docs:** `apps/docs/content/docs/plugins/`
 **Source of truth:** `plugins/*/package.json`, `plugins/*/src/index.ts`
 
 ### Steps
@@ -295,11 +286,55 @@ grep -oP '\]\(/docs/[^)]+\)' apps/docs/content/docs/**/*.mdx | sort -u
 **Docs:** `apps/docs/content/docs/guides/notebook.mdx`
 **Source:** `packages/web/src/ui/components/notebook/`
 
-The notebook is actively changing (0.8.1 milestone). Check that the docs page reflects:
-- Current keyboard shortcuts (recently standardized in PR #620)
-- Current cell operations
-- Current limitations (Phase 2/3 not yet shipped)
-- Persistence model (still localStorage, not yet server-side)
+Check that the docs page reflects the CURRENT state of the notebook by reading the source files. Don't assume what's shipped — verify against code:
+- Current keyboard shortcuts (read `use-keyboard-nav.ts`)
+- Current cell operations (read `use-notebook.ts` — includes text cells, fork, reorder, export)
+- Persistence model (read `use-notebook.ts` — server-side with localStorage cache)
+- Export capabilities (read `notebook-export.ts` — Markdown + HTML)
+
+---
+
+## Part J: Undocumented Features Discovery (HIGH RISK)
+
+This is the most important check — finding features that exist in code but have NO documentation at all.
+
+### J1. New routes without docs
+
+Discover all route files and check each has corresponding docs coverage:
+```bash
+# All route files in the API
+ls packages/api/src/api/routes/*.ts
+
+# All pages in the web app (feature surfaces)
+find packages/web/src/app -name "page.tsx" -not -path "*/node_modules/*"
+```
+
+For each route file, search docs for mentions of the feature. New route files (onboarding, demo, admin-sso, admin-usage, etc.) often ship without guide pages.
+
+### J2. New internal DB tables without docs
+
+```bash
+# All CREATE TABLE statements in internal.ts — these represent features
+grep -oP "CREATE TABLE IF NOT EXISTS (\w+)" packages/api/src/lib/db/internal.ts
+```
+
+Each table represents a user-facing feature. Check if there's a corresponding docs page or section explaining the feature (usage_events → usage metering docs, sso_providers → SSO guide, demo_leads → demo mode docs, etc.)
+
+### J3. New packages/directories without docs
+
+```bash
+# Top-level directories that may need docs
+ls -d ee/ packages/*/
+
+# New app pages (signup, demo, etc.)
+find packages/web/src/app -maxdepth 1 -type d
+```
+
+Check if new top-level features (ee/, signup flow, demo mode) have corresponding docs pages.
+
+### J4. Recently shipped features from ROADMAP
+
+Read `.claude/research/ROADMAP.md` and find all `[x]` items in the current milestone. For each shipped feature, verify there's a corresponding docs page or section. This catches features that were built but never documented.
 
 ---
 
@@ -339,7 +374,7 @@ Run 4 agents in parallel:
 1. **Env + Config agent** — Parts A + C (both reference `config.ts`)
 2. **CLI + API agent** — Parts B + D (route and command verification)
 3. **Plugin + SDK agent** — Parts E + F + G (package exports and error codes)
-4. **Guides + Cross-cutting agent** — Parts H + I (spot-checks and link verification)
+4. **Guides + Cross-cutting + Discovery agent** — Parts H + I + J (spot-checks, link verification, and undocumented feature discovery)
 
 Each agent should:
 - Read the docs page(s)
@@ -347,7 +382,7 @@ Each agent should:
 - Perform the cross-reference checks
 - Report findings with severity
 
-After agents complete, compile into the output format above. Fix trivial issues (< 5 lines) directly. File GH issues for larger gaps using:
+After agents complete, compile into the output format above. Fix trivial issues (< 5 lines) directly. File GH issues for larger gaps using the CURRENT open milestone (check with `gh api repos/AtlasDevHQ/atlas/milestones?state=open --jq '.[0].title'`):
 ```bash
-gh issue create -R AtlasDevHQ/atlas --title "docs: <description>" --body "<details>" --label "docs,area: docs" --milestone "0.8.1 — Notebook Refinement"
+gh issue create -R AtlasDevHQ/atlas --title "docs: <description>" --body "<details>" --label "docs,area: docs" --milestone "<current milestone>"
 ```

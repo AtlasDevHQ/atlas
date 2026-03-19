@@ -22,7 +22,9 @@ The notebook displays the same conversation content as the chat view, reorganize
 
 ## Cell Types
 
-Each cell corresponds to an agent tool call or response:
+### Query Cells
+
+Each query cell corresponds to an agent tool call or response:
 
 | Cell type | Contents |
 |-----------|----------|
@@ -32,11 +34,24 @@ Each cell corresponds to an agent tool call or response:
 
 Cells display their output inline — you can see the SQL that was run, the rows returned, and any visualizations without switching views.
 
+### Text Cells
+
+Text cells are freeform markdown annotations that you can insert between query cells. Use them to document your analysis, add headings, or write narrative context around your data exploration.
+
+Text cells support full markdown syntax — headings, lists, bold/italic, code blocks, and links. They render as formatted markdown in preview mode.
+
+To add a text cell:
+
+- Click the **Text Cell** button in the toolbar above the cells
+- Use the keyboard shortcut `Ctrl+Shift+T` to insert after the currently focused cell
+
+Text cells start in edit mode. Press **Escape** or click the checkmark button to switch to preview mode. Double-click a text cell in preview mode to edit it again.
+
 ---
 
 ## Cell Operations
 
-Each cell supports the following actions:
+Each query cell supports the following actions:
 
 - **Run** — Execute the cell (or re-execute after editing)
 - **Edit** — Modify the question or prompt that produced the cell
@@ -44,6 +59,8 @@ Each cell supports the following actions:
 - **Fork** — Create a new analysis branch from this cell (see [Forking](#forking) below)
 - **Delete** — Remove the cell from the notebook
 - **Collapse / Expand** — Toggle cell visibility to focus on specific results
+
+Text cells support **Edit**, **Delete**, and **Drag to reorder**.
 
 ---
 
@@ -53,15 +70,15 @@ You can edit a cell's question and click **Run** to re-execute from that point. 
 
 1. The edited question is sent to the agent
 2. The agent re-executes from that cell onward
-3. All subsequent cells are cleared — they will be replaced by new results
+3. All subsequent query cells are cleared — they will be replaced by new results
 
-This lets you iterate on analysis without starting over from scratch.
+Text cells are not affected by re-running — they are independent annotations.
 
 ---
 
 ## Reordering Cells
 
-Drag cells to rearrange them in any order using the grip handle on the left side of each cell. The display order is independent of execution order — reordering cells does not change the underlying conversation history.
+Drag cells to rearrange them in any order using the grip handle on the left side of each cell. Both query cells and text cells can be reordered freely. The display order is independent of execution order — reordering cells does not change the underlying conversation history.
 
 Cell numbers update to reflect the new display position. Keyboard navigation follows display order after reordering.
 
@@ -69,9 +86,9 @@ Cell numbers update to reflect the new display position. Keyboard navigation fol
 
 ## Forking
 
-Fork from any cell to explore an alternative analysis direction without losing your existing work.
+Fork from any query cell to explore an alternative analysis direction without losing your existing work.
 
-1. Click the **fork** button (branch icon) on any cell
+1. Click the **fork** button (branch icon) on any query cell
 2. A new conversation is created with the history up to that cell
 3. You're navigated to the new branch where you can continue independently
 4. The original notebook is preserved unchanged
@@ -84,34 +101,43 @@ Forking requires server-side persistence (an internal database). Without `DATABA
 
 ---
 
+## Exporting
+
+Export your notebook as a Markdown or HTML file using the **Export** dropdown in the toolbar.
+
+### Markdown Export
+
+Generates a `.md` file with:
+
+- Text cells rendered as-is (they're already markdown)
+- Query cells as headings with their cell number, followed by response text, SQL in fenced code blocks, and result tables as markdown tables
+
+### HTML Export
+
+Generates a self-contained `.html` file with inline CSS styling. The file can be opened in any browser and shared without dependencies. Query results are rendered as styled HTML tables, and code blocks are formatted with monospace styling.
+
+---
+
 ## Keyboard Shortcuts
 
 | Shortcut | Action |
 |----------|--------|
 | `ArrowUp` / `ArrowDown` | Navigate between cells |
 | `Enter` (cell focused) | Edit the selected cell |
-| `Escape` | Cancel edit |
+| `Escape` | Cancel edit / switch text cell to preview |
 | `Enter` (in editor) | Submit edit (re-run from this cell) |
 | `Shift + Enter` | Insert newline in editor |
 | `Ctrl + Shift + Backspace` | Delete the selected cell |
+| `Ctrl + Shift + T` | Insert a text cell after the selected cell |
 
 ---
 
 ## Persistence
 
-Cell state is persisted server-side when an internal database is configured (`DATABASE_URL`). Your notebook state — including cell order, collapsed states, and fork metadata — survives page reloads, browser restarts, and device switches.
+Cell state is persisted server-side when an internal database is configured (`DATABASE_URL`). Your notebook state — including cell order, collapsed states, text cell content, and fork metadata — survives page reloads, browser restarts, and device switches.
 
 Browser `localStorage` is used as a write-through cache for fast loads and offline resilience. Server state takes priority when both are available.
 
 <Callout type="warn">
 Without an internal database, notebook state falls back to `localStorage` only. Clearing browser data or switching browsers will remove saved state in this mode.
 </Callout>
-
----
-
-## Current Limitations
-
-The following features are not yet available:
-
-- **No export** — There is no option to export a notebook as PDF, HTML, or `.ipynb`
-- **No text cell insertion** — You cannot add freeform markdown or annotation cells between results

@@ -410,17 +410,21 @@ conversations.post("/:id/fork", async (c) => {
       updateNotebookState(result.data.id, forkChildState, authResult.user?.id),
     ]);
 
+    let metadataWarning: string | undefined;
     if (!sourceResult.ok) {
       log.error({ requestId, conversationId: id, reason: sourceResult.reason }, "Failed to update source notebook_state after fork");
+      metadataWarning = "Fork created but branch metadata could not be fully saved.";
     }
     if (!forkResult.ok) {
       log.error({ requestId, conversationId: result.data.id, reason: forkResult.reason }, "Failed to set fork metadata on new conversation");
+      metadataWarning = "Fork created but branch metadata could not be fully saved.";
     }
 
     return c.json({
       id: result.data.id,
       messageCount: result.data.messageCount,
       branches: [...existingBranches, branch],
+      ...(metadataWarning ? { warning: metadataWarning } : {}),
     });
   });
 });

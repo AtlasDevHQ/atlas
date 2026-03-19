@@ -365,6 +365,10 @@ export async function forkConversation(opts: {
       [newId, opts.sourceId, cutoffTimestamp],
     );
 
+    if (copyResult.length === 0) {
+      log.warn({ sourceId: opts.sourceId, forkPointMessageId: opts.forkPointMessageId, newId }, "Fork copied zero messages — fork point may reference a missing or mismatched message");
+    }
+
     return { ok: true, data: { id: newId, messageCount: copyResult.length } };
   } catch (err) {
     log.error({ err: err instanceof Error ? err.message : String(err), sourceId: opts.sourceId }, "forkConversation failed");

@@ -23,7 +23,7 @@ export interface UseConversationsReturn {
   loadConversation: (id: string) => Promise<UIMessage[]>;
   getConversationData: (id: string) => Promise<ConversationWithMessages>;
   saveNotebookState: (id: string, state: NotebookStateWire) => Promise<void>;
-  forkConversation: (sourceId: string, forkPointMessageId: string, label?: string) => Promise<{ id: string; branches: ForkBranchWire[] }>;
+  forkConversation: (sourceId: string, forkPointMessageId: string, label?: string) => Promise<{ id: string; branches: ForkBranchWire[]; warning?: string }>;
   deleteConversation: (id: string) => Promise<void>;
   starConversation: (id: string, starred: boolean) => Promise<void>;
   shareConversation: (id: string, opts?: { expiresIn?: ShareExpiryKey; shareMode?: ShareMode }) => Promise<{ token: string; url: string }>;
@@ -266,7 +266,11 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
     if (!data.id || typeof data.id !== "string") {
       throw new Error("Fork response missing conversation ID");
     }
-    return { id: data.id, branches: (data.branches ?? []) as ForkBranchWire[] };
+    return {
+      id: data.id,
+      branches: (data.branches ?? []) as ForkBranchWire[],
+      warning: typeof data.warning === "string" ? data.warning : undefined,
+    };
   }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);
 
   const refresh = useCallback(async () => {

@@ -160,7 +160,7 @@ export interface UseNotebookOptions {
   /** Debounced callback to persist notebook state to the server. */
   saveToServer?: (state: NotebookStateWire) => void;
   /** Fork a conversation at a specific message. */
-  forkConversation?: (sourceId: string, forkPointMessageId: string, label?: string) => Promise<{ id: string; branches: ForkBranchWire[] }>;
+  forkConversation?: (sourceId: string, forkPointMessageId: string, label?: string) => Promise<{ id: string; branches: ForkBranchWire[]; warning?: string }>;
   /** Navigate to a different branch conversation. */
   onNavigateToBranch?: (conversationId: string) => void;
   /** Fork info from server state (branches, root, etc.). */
@@ -482,6 +482,9 @@ export function useNotebook({
           cell.messageId,
           `Fork from cell ${cell.number}`,
         );
+        if (result.warning) {
+          showWarning(result.warning);
+        }
         onNavigateToBranch?.(result.id);
       } catch (err: unknown) {
         console.warn(

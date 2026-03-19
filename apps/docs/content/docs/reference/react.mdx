@@ -680,7 +680,10 @@ type ChatErrorCode =
   | "internal_error"
   | "validation_error"
   | "not_found"
-  | "forbidden";
+  | "forbidden"
+  | "session_expired"
+  | "forbidden_role"
+  | "org_not_found";
 
 // ChatErrorInfo — parsed error details (use parseChatError() to extract)
 interface ChatErrorInfo {

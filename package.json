@@ -9,7 +9,8 @@
     "apps/*",
     "examples/nextjs-standalone",
     "plugins/*",
-    "create-atlas-plugin"
+    "create-atlas-plugin",
+    "ee"
   ],
   "scripts": {
     "dev": "bash scripts/db-up.sh && bun run --hot packages/api/src/api/server.ts & API_PID=$!; trap 'kill $API_PID 2>/dev/null' EXIT; bun run --filter '@atlas/web' dev",
@@ -22,7 +23,7 @@
     "build:www": "bun run --filter '@atlas/www' build",
     "build:docs": "bun run --filter '@atlas/docs' build",
     "start": "sh scripts/start.sh",
-    "lint": "eslint packages/",
+    "lint": "eslint packages/ ee/",
     "type": "bun run --filter '@useatlas/types' build && bun run --filter '@useatlas/plugin-sdk' build && bun run --filter '@useatlas/sdk' build && tsgo --noEmit",
     "atlas": "bun packages/cli/bin/atlas.ts",
     "mcp": "bun packages/mcp/bin/serve.ts",
@@ -30,7 +31,7 @@
     "db:down": "docker compose down",
     "db:reset": "docker compose down -v && bash scripts/db-up.sh",
     "db:nuke": "bash scripts/db-nuke.sh",
-    "test": "bun run --filter '@atlas/api' test && bun run --filter '@atlas/cli' test && bun run --filter '@atlas/mcp' test && bun run --filter '@atlas/web' test && bun run --filter '@useatlas/sdk' test && bun run --filter '@useatlas/plugin-sdk' test && bun run --filter '@useatlas/jira' test && bun run --filter '@useatlas/yaml-context' test && bun run --filter '@useatlas/mcp' test && bun run --filter '@useatlas/bigquery' test && bun run --filter '@useatlas/clickhouse' test && bun run --filter '@useatlas/mysql' test && bun run --filter '@useatlas/duckdb' test && bun run --filter '@useatlas/snowflake' test && bun run --filter '@useatlas/salesforce' test && bun run --filter '@useatlas/email' test && bun run --filter '@useatlas/slack' test && bun run --filter '@useatlas/nsjail' test && bun run --filter '@useatlas/sidecar' test && bun run --filter '@useatlas/vercel-sandbox' test && bun run --filter '@useatlas/daytona' test && bun run --filter '@useatlas/e2b' test && bun run --filter '@useatlas/react' test && bun run --filter '@useatlas/teams' test",
+    "test": "bun run --filter '@atlas/api' test && bun run --filter '@atlas/cli' test && bun run --filter '@atlas/mcp' test && bun run --filter '@atlas/web' test && bun run --filter '@atlas/ee' test && bun run --filter '@useatlas/sdk' test && bun run --filter '@useatlas/plugin-sdk' test && bun run --filter '@useatlas/jira' test && bun run --filter '@useatlas/yaml-context' test && bun run --filter '@useatlas/mcp' test && bun run --filter '@useatlas/bigquery' test && bun run --filter '@useatlas/clickhouse' test && bun run --filter '@useatlas/mysql' test && bun run --filter '@useatlas/duckdb' test && bun run --filter '@useatlas/snowflake' test && bun run --filter '@useatlas/salesforce' test && bun run --filter '@useatlas/email' test && bun run --filter '@useatlas/slack' test && bun run --filter '@useatlas/nsjail' test && bun run --filter '@useatlas/sidecar' test && bun run --filter '@useatlas/vercel-sandbox' test && bun run --filter '@useatlas/daytona' test && bun run --filter '@useatlas/e2b' test && bun run --filter '@useatlas/react' test && bun run --filter '@useatlas/teams' test",
     "test:e2e": "bash e2e/scripts/run.sh",
     "test:e2e:core": "bash e2e/scripts/run.sh --tier core",
     "test:e2e:query": "bash e2e/scripts/run.sh --tier query",

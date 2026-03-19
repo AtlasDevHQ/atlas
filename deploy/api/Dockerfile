@@ -45,6 +45,7 @@ COPY plugins/webhook/package.json plugins/webhook/package.json
 COPY plugins/teams/package.json plugins/teams/package.json
 COPY plugins/email-digest/package.json plugins/email-digest/package.json
 COPY create-atlas-plugin/package.json create-atlas-plugin/package.json
+COPY ee/package.json ee/package.json
 RUN bun ci --ignore-scripts
 
 # --- builder ---

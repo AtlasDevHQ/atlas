@@ -217,7 +217,7 @@ export default function Home() {
               ),
               title: "Text-to-SQL Agent",
               description:
-                "Multi-step reasoning with Vercel AI SDK. Explores your schema, writes validated SQL, returns charts and narrative.",
+                "Multi-step reasoning with Vercel AI SDK. Explores your schema, writes validated SQL, runs Python analysis, and returns charts and narrative.",
             },
             {
               icon: (
@@ -287,7 +287,17 @@ export default function Home() {
               ),
               title: "Admin Console",
               description:
-                "Monitor connections, manage users, browse the semantic layer, track queries, and configure settings.",
+                "Monitor connections, manage users, review learned patterns, track query analytics, configure scheduled tasks, and browse the semantic layer.",
+            },
+            {
+              icon: (
+                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+                </svg>
+              ),
+              title: "Notebook Analysis",
+              description:
+                "Cell-based exploratory analysis. Fork from any step, reorder cells, annotate with markdown, and export to Markdown or HTML.",
             },
           ].map((feature) => (
             <FeatureCard key={feature.title} {...feature} />
@@ -325,7 +335,7 @@ export default function App() {
           </CodeBlock>
         </div>
         <div className="mt-6">
-          <ChecklistGrid items={["Programmatic API", "Event callbacks", "Theme support", "Auth tokens"]} />
+          <ChecklistGrid items={["Programmatic API", "Event callbacks", "Theme support", "Auth tokens", "Conversation sharing", "CSV & Excel export"]} />
         </div>
       </section>
 
@@ -356,7 +366,7 @@ export default function App() {
               step: "03",
               title: "Ask questions",
               description:
-                "Natural language in, validated SQL out. The agent reads your semantic layer before writing any query.",
+                "Natural language in, validated SQL out. The agent reads your semantic layer, writes queries, and builds notebook-style analyses you can fork and export.",
               code: '"What were our top 10 accounts last quarter?"',
             },
           ].map((step) => (
@@ -510,6 +520,16 @@ export default function App() {
               description:
                 "Generic inbound webhooks for Zapier, Make, n8n, and custom automation platforms.",
             },
+            {
+              icon: (
+                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75" />
+                </svg>
+              ),
+              title: "Email Digest",
+              description:
+                "Scheduled email reports with query results, charts, and conversation summaries delivered to any inbox.",
+            },
           ].map((item) => (
             <FeatureCard key={item.title} {...item} />
           ))}
@@ -566,6 +586,8 @@ export default function App() {
             "Session management",
             "Encrypted credentials",
             "Audit logging",
+            "Rate limiting",
+            "Secret redaction",
             "Data classification",
             "Multi-tenant isolation",
           ]}

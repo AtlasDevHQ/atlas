@@ -50,6 +50,16 @@ describe("buildCellsFromMessages", () => {
     expect(cells).toHaveLength(0);
   });
 
+  test("generates stable position-based cell IDs", () => {
+    const messages: UIMessage[] = [
+      makeMessage("u1", "user"),
+      makeMessage("a1", "assistant"),
+      makeMessage("u2", "user"),
+    ];
+    const cells = buildCellsFromMessages(messages);
+    expect(cells.map((c) => c.id)).toEqual(["cell-1", "cell-2"]);
+  });
+
   test("skips non-user/assistant messages", () => {
     const messages = [
       makeMessage("s1", "user"),

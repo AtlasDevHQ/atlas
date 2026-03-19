@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 
@@ -15,12 +15,12 @@ export function NotebookCellInput({ question, editing, onSubmit, onCancel }: Cel
   const [draft, setDraft] = useState(question);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const autoExpand = useCallback(() => {
+  function autoExpand() {
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${el.scrollHeight}px`;
-  }, []);
+  }
 
   useEffect(() => {
     if (editing) {
@@ -30,7 +30,7 @@ export function NotebookCellInput({ question, editing, onSubmit, onCancel }: Cel
         autoExpand();
       });
     }
-  }, [editing, question, autoExpand]);
+  }, [editing, question]);
 
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Enter" && !e.shiftKey) {

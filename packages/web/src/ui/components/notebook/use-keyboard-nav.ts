@@ -18,6 +18,8 @@ export interface UseKeyboardNavOptions {
  *   Ctrl+Shift+Backspace — delete focused cell (shows confirmation dialog)
  *
  * When inside an INPUT/TEXTAREA, only Escape is handled (exits edit mode).
+ * In-editor key handling (Enter to submit, Shift+Enter for newline) is
+ * managed by NotebookCellInput, not this hook.
  */
 export function useKeyboardNav({
   cellCount,

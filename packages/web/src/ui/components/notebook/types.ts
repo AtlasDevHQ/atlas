@@ -14,7 +14,7 @@ export interface NotebookCell {
 export interface NotebookState {
   conversationId: string;
   cells: NotebookCell[];
-  version: 1;
+  version: 1 | 2;
 }
 
 /** A cell with its resolved user + assistant messages attached. */

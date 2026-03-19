@@ -15,7 +15,7 @@ function makeMessage(id: string, role: "user" | "assistant", text: string): UIMe
 function makeResolvedCell(overrides: Partial<ResolvedCell> = {}): ResolvedCell {
   const userMsg = makeMessage("u1", "user", "test question");
   return {
-    id: "cell-u1",
+    id: "cell-1",
     messageId: "u1",
     number: 1,
     collapsed: false,

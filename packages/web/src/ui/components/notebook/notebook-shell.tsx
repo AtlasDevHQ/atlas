@@ -111,11 +111,17 @@ export function NotebookShell({ notebook, focusCellId }: NotebookShellProps) {
       <DeleteCellDialog
         open={pendingDeleteIndex !== null}
         onOpenChange={(open) => { if (!open) setPendingDeleteIndex(null); }}
-        cellNumber={pendingDeleteIndex !== null ? (notebook.cells[pendingDeleteIndex]?.number ?? "") : ""}
+        cellNumber={pendingDeleteIndex !== null ? (notebook.cells[pendingDeleteIndex]?.number ?? 0) : 0}
         onConfirm={() => {
           if (pendingDeleteIndex !== null) {
             const cell = notebook.cells[pendingDeleteIndex];
-            if (cell) notebook.deleteCell(cell.id);
+            if (cell) {
+              notebook.deleteCell(cell.id);
+            } else {
+              console.warn(
+                `Delete failed: cell at index ${pendingDeleteIndex} no longer exists (cells length: ${notebook.cells.length})`,
+              );
+            }
           }
           setPendingDeleteIndex(null);
         }}

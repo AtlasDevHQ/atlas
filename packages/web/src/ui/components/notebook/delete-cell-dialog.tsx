@@ -14,7 +14,7 @@ import {
 interface DeleteCellDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  cellNumber: number | string;
+  cellNumber: number;
   onConfirm: () => void;
 }
 

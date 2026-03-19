@@ -114,7 +114,7 @@ function SaveButton({
 }: {
   conversationId: string;
   conversations: { id: string; starred: boolean }[];
-  onStar: (id: string, starred: boolean) => Promise<boolean>;
+  onStar: (id: string, starred: boolean) => Promise<void>;
 }) {
   const isStarred = conversations.find((c) => c.id === conversationId)?.starred ?? false;
   const [pending, setPending] = useState(false);
@@ -384,17 +384,12 @@ function AtlasChatInner({
     setLoadingConversation(true);
     try {
       const uiMessages = await convos.loadConversation(id);
-      if (uiMessages) {
-        setMessages(uiMessages);
-        setConversationId(id);
-        convos.setSelectedId(id);
-        setMobileMenuOpen(false);
-      } else {
-        setHealthWarning("Could not load conversation. It may have been deleted.");
-        setTimeout(() => setHealthWarning(""), 5000);
-      }
-    } catch (err) {
-      console.warn("Failed to load conversation:", err);
+      setMessages(uiMessages);
+      setConversationId(id);
+      convos.setSelectedId(id);
+      setMobileMenuOpen(false);
+    } catch (err: unknown) {
+      console.warn("Failed to load conversation:", err instanceof Error ? err.message : String(err));
       setHealthWarning("Failed to load conversation. Please try again.");
       setTimeout(() => setHealthWarning(""), 5000);
     } finally {
@@ -499,8 +494,8 @@ function AtlasChatInner({
               </div>
             </header>
 
-            {healthWarning && (
-              <p className="mb-2 text-xs text-zinc-400 dark:text-zinc-500">{healthWarning}</p>
+            {(healthWarning || convos.fetchError) && (
+              <p className="mb-2 text-xs text-zinc-400 dark:text-zinc-500">{healthWarning || convos.fetchError}</p>
             )}
 
             {isManaged && !isSignedIn ? (
@@ -643,7 +638,7 @@ function AtlasChatInner({
                 {error && (
                   <ErrorBanner
                     error={error}
-                    authMode={authMode}
+                    authMode={authMode ?? "none"}
                     onRetry={
                       messages.some((m) => m.role === "user")
                         ? () => {

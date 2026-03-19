@@ -16,12 +16,13 @@ export interface UseConversationsReturn {
   total: number;
   loading: boolean;
   available: boolean;
+  fetchError: string | null;
   selectedId: string | null;
   setSelectedId: (id: string | null) => void;
   fetchList: () => Promise<void>;
-  loadConversation: (id: string) => Promise<UIMessage[] | null>;
-  deleteConversation: (id: string) => Promise<boolean>;
-  starConversation: (id: string, starred: boolean) => Promise<boolean>;
+  loadConversation: (id: string) => Promise<UIMessage[]>;
+  deleteConversation: (id: string) => Promise<void>;
+  starConversation: (id: string, starred: boolean) => Promise<void>;
   refresh: () => Promise<void>;
 }
 
@@ -48,13 +49,14 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [available, setAvailable] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const fetchedRef = useRef(false);
-  const networkFailRef = useRef(0);
 
   const fetchList = useCallback(async () => {
     if (!opts.enabled || !available) return;
     setLoading(true);
+    setFetchError(null);
     try {
       const res = await fetch(`${opts.apiUrl}/api/v1/conversations?limit=50`, {
         headers: opts.getHeaders(),
@@ -67,12 +69,14 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
       }
 
       if (!res.ok) {
+        // intentionally ignored: response may not be JSON
         const errorBody = await res.json().catch(() => null);
         if (errorBody?.code === "not_available") {
           setAvailable(false);
           return;
         }
         console.warn(`fetchList: HTTP ${res.status}`, errorBody);
+        setFetchError("Failed to load conversations. Please reload the page to try again.");
         return;
       }
 
@@ -80,69 +84,53 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
       setConversations(data.conversations ?? []);
       setTotal(data.total ?? 0);
       fetchedRef.current = true;
-    } catch (err) {
-      console.warn("fetchList error:", err);
-      // Network error before any successful fetch — disable temporarily.
-      // A subsequent explicit fetchList() call can retry.
-      if (!fetchedRef.current) {
-        networkFailRef.current += 1;
-        if (networkFailRef.current >= 3) setAvailable(false);
-      }
+    } catch (err: unknown) {
+      console.warn("fetchList error:", err instanceof Error ? err.message : String(err));
+      setFetchError("Failed to load conversations. Please reload the page to try again.");
     } finally {
       setLoading(false);
     }
   }, [opts.apiUrl, opts.enabled, opts.getHeaders, opts.getCredentials, available]);
 
-  const loadConversation = useCallback(async (id: string): Promise<UIMessage[] | null> => {
-    try {
-      const res = await fetch(`${opts.apiUrl}/api/v1/conversations/${id}`, {
-        headers: opts.getHeaders(),
-        credentials: opts.getCredentials(),
-      });
+  const loadConversation = useCallback(async (id: string): Promise<UIMessage[]> => {
+    const res = await fetch(`${opts.apiUrl}/api/v1/conversations/${id}`, {
+      headers: opts.getHeaders(),
+      credentials: opts.getCredentials(),
+    });
 
-      if (!res.ok) {
-        console.warn(`loadConversation: HTTP ${res.status} for ${id}`);
-        return null;
-      }
-
-      const data: ConversationWithMessages = await res.json();
-      return transformMessages(data.messages);
-    } catch (err) {
-      console.warn("loadConversation error:", err);
-      return null;
+    if (!res.ok) {
+      console.warn(`loadConversation: HTTP ${res.status} for ${id}`);
+      throw new Error(`Failed to load conversation (HTTP ${res.status})`);
     }
+
+    const data: ConversationWithMessages = await res.json();
+    return transformMessages(data.messages);
   }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);
 
-  const deleteConversation = useCallback(async (id: string): Promise<boolean> => {
-    try {
-      const res = await fetch(`${opts.apiUrl}/api/v1/conversations/${id}`, {
-        method: "DELETE",
-        headers: opts.getHeaders(),
-        credentials: opts.getCredentials(),
-      });
+  const deleteConversation = useCallback(async (id: string): Promise<void> => {
+    const res = await fetch(`${opts.apiUrl}/api/v1/conversations/${id}`, {
+      method: "DELETE",
+      headers: opts.getHeaders(),
+      credentials: opts.getCredentials(),
+    });
 
-      if (!res.ok) {
-        console.warn(`deleteConversation: HTTP ${res.status} for ${id}`);
-        return false;
-      }
-
-      setConversations((prev) => prev.filter((c) => c.id !== id));
-      setTotal((prev) => Math.max(0, prev - 1));
-
-      if (selectedId === id) setSelectedId(null);
-
-      return true;
-    } catch (err) {
-      console.warn("deleteConversation error:", err);
-      return false;
+    if (!res.ok) {
+      console.warn(`deleteConversation: HTTP ${res.status} for ${id}`);
+      throw new Error(`Failed to delete conversation (HTTP ${res.status})`);
     }
+
+    setConversations((prev) => prev.filter((c) => c.id !== id));
+    setTotal((prev) => Math.max(0, prev - 1));
+
+    if (selectedId === id) setSelectedId(null);
   }, [opts.apiUrl, opts.getHeaders, opts.getCredentials, selectedId]);
 
-  const starConversation = useCallback(async (id: string, starred: boolean): Promise<boolean> => {
+  const starConversation = useCallback(async (id: string, starred: boolean): Promise<void> => {
     // Optimistic update
     setConversations((prev) =>
       prev.map((c) => (c.id === id ? { ...c, starred } : c)),
     );
+    let rolledBack = false;
     try {
       const res = await fetch(`${opts.apiUrl}/api/v1/conversations/${id}/star`, {
         method: "PATCH",
@@ -153,21 +141,19 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
 
       if (!res.ok) {
         console.warn(`starConversation: HTTP ${res.status} for ${id}`);
-        // Rollback
         setConversations((prev) =>
           prev.map((c) => (c.id === id ? { ...c, starred: !starred } : c)),
         );
-        return false;
+        rolledBack = true;
+        throw new Error(`Failed to update star (HTTP ${res.status})`);
       }
-
-      return true;
-    } catch (err) {
-      console.warn("starConversation error:", err);
-      // Rollback
-      setConversations((prev) =>
-        prev.map((c) => (c.id === id ? { ...c, starred: !starred } : c)),
-      );
-      return false;
+    } catch (err: unknown) {
+      if (!rolledBack) {
+        setConversations((prev) =>
+          prev.map((c) => (c.id === id ? { ...c, starred: !starred } : c)),
+        );
+      }
+      throw err;
     }
   }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);
 
@@ -180,6 +166,7 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
     total,
     loading,
     available,
+    fetchError,
     selectedId,
     setSelectedId,
     fetchList,

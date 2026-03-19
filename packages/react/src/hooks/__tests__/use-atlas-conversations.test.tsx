@@ -123,11 +123,9 @@ describe("useAtlasConversations", () => {
       Promise.resolve(new Response("", { status: 200 })),
     );
 
-    let deleted = false;
     await act(async () => {
-      deleted = await result.current.deleteConversation("conv-1");
+      await result.current.deleteConversation("conv-1");
     });
-    expect(deleted).toBe(true);
     expect(result.current.conversations).toHaveLength(0);
     expect(result.current.total).toBe(0);
   });
@@ -148,11 +146,11 @@ describe("useAtlasConversations", () => {
       Promise.resolve(new Response("", { status: 500 })),
     );
 
-    let starred = true;
     await act(async () => {
-      starred = await result.current.starConversation("conv-1", true);
+      await expect(
+        result.current.starConversation("conv-1", true),
+      ).rejects.toThrow("Failed to update star (HTTP 500)");
     });
-    expect(starred).toBe(false);
     // Should roll back to unstarred
     expect(result.current.conversations[0].starred).toBe(false);
   });

@@ -39,6 +39,7 @@ interface SSOProviderRow {
   config: string | Record<string, unknown>;
   created_at: string;
   updated_at: string;
+  // Index signature required by internalQuery<T extends Record<string, unknown>>
   [key: string]: unknown;
 }
 
@@ -47,28 +48,45 @@ interface SSOProviderRow {
 function rowToProvider(row: SSOProviderRow): SSOProvider {
   const rawConfig = typeof row.config === "string" ? JSON.parse(row.config) : row.config;
 
-  // Decrypt OIDC client secret if present
+  // Validate type on read — guards against DB corruption / bad migrations
+  if (!isValidSSOProviderType(row.type)) {
+    throw new Error(`SSO provider ${row.id} has invalid type "${row.type}" in database`);
+  }
+
+  // Decrypt OIDC client secret if present — redact on failure, never leak ciphertext
   const config = { ...rawConfig };
   if (row.type === "oidc" && config.clientSecret) {
     try {
       config.clientSecret = decryptUrl(config.clientSecret as string);
-    } catch {
-      // If decryption fails, leave as-is (may already be plaintext in dev)
-      log.debug("OIDC clientSecret decryption skipped — may be plaintext");
+    } catch (err) {
+      log.error(
+        { err: err instanceof Error ? err.message : String(err), providerId: row.id },
+        "Failed to decrypt OIDC clientSecret — redacting",
+      );
+      config.clientSecret = "[REDACTED]";
     }
   }
 
-  return {
+  // Validate config shape on read
+  const configError = validateProviderConfig(row.type, config);
+  if (configError) {
+    log.warn({ providerId: row.id, type: row.type }, `SSO provider has invalid config in database: ${configError}`);
+  }
+
+  const base = {
     id: row.id,
     orgId: row.org_id,
-    type: row.type as SSOProviderType,
     issuer: row.issuer,
     domain: row.domain.toLowerCase(),
     enabled: row.enabled,
-    config: config as SSOSamlConfig | SSOOidcConfig,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
+
+  if (row.type === "saml") {
+    return { ...base, type: "saml", config: config as SSOSamlConfig };
+  }
+  return { ...base, type: "oidc", config: config as SSOOidcConfig };
 }
 
 /** Encrypt sensitive fields in config before storage. */

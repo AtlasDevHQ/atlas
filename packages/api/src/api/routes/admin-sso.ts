@@ -15,9 +15,6 @@ import {
   createSSOProvider,
   updateSSOProvider,
   deleteSSOProvider,
-  isValidSSOProviderType,
-  isValidDomain,
-  validateProviderConfig,
 } from "../../../../../ee/src/auth/sso";
 import type {
   CreateSSOProviderRequest,
@@ -150,22 +147,9 @@ adminSso.post("/providers", async (c) => {
       return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
     }
 
-    // Validate required fields
+    // Structural check only — business validation is in createSSOProvider
     if (!body.type || !body.issuer || !body.domain || !body.config) {
       return c.json({ error: "bad_request", message: "Missing required fields: type, issuer, domain, config." }, 400);
-    }
-
-    if (!isValidSSOProviderType(body.type)) {
-      return c.json({ error: "bad_request", message: `Invalid type. Must be one of: saml, oidc.` }, 400);
-    }
-
-    if (!isValidDomain(body.domain)) {
-      return c.json({ error: "bad_request", message: "Invalid domain format." }, 400);
-    }
-
-    const configError = validateProviderConfig(body.type, body.config);
-    if (configError) {
-      return c.json({ error: "bad_request", message: configError }, 400);
     }
 
     try {
@@ -178,6 +162,9 @@ adminSso.post("/providers", async (c) => {
       }
       if (message.includes("already registered")) {
         return c.json({ error: "conflict", message }, 409);
+      }
+      if (message.includes("Invalid") || message.includes("config requires")) {
+        return c.json({ error: "bad_request", message }, 400);
       }
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to create SSO provider");
       return c.json({ error: "internal_error", message: "Failed to create SSO provider.", requestId }, 500);

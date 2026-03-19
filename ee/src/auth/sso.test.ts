@@ -61,6 +61,7 @@ const {
   listSSOProviders,
   getSSOProvider,
   createSSOProvider,
+  updateSSOProvider,
   deleteSSOProvider,
   findProviderByDomain,
   extractEmailDomain,
@@ -351,5 +352,127 @@ describe("findProviderByDomain", () => {
     mockRows.push([sampleSamlRow]);
     await findProviderByDomain("ACME.COM");
     expect(capturedQueries[0].params[0]).toBe("acme.com");
+  });
+
+  it("does NOT call requireEnterprise — usable in login flow without license", async () => {
+    mockEnterpriseEnabled = false;
+    mockEnterpriseLicenseKey = undefined;
+    mockRows.push([]);
+    // Should not throw even though enterprise is disabled
+    const provider = await findProviderByDomain("acme.com");
+    expect(provider).toBeNull();
+  });
+});
+
+describe("updateSSOProvider", () => {
+  beforeEach(resetMocks);
+
+  it("updates issuer only", async () => {
+    // getSSOProvider: requireEnterprise + query
+    mockRows.push([sampleSamlRow]);
+    // UPDATE RETURNING
+    mockRows.push([{ ...sampleSamlRow, issuer: "https://new-idp.acme.com" }]);
+
+    const provider = await updateSSOProvider("org-1", "prov-1", {
+      issuer: "https://new-idp.acme.com",
+    });
+    expect(provider.issuer).toBe("https://new-idp.acme.com");
+  });
+
+  it("updates domain with uniqueness check", async () => {
+    // getSSOProvider query
+    mockRows.push([sampleSamlRow]);
+    // Domain clash check
+    mockRows.push([]);
+    // UPDATE RETURNING
+    mockRows.push([{ ...sampleSamlRow, domain: "newdomain.com" }]);
+
+    const provider = await updateSSOProvider("org-1", "prov-1", {
+      domain: "newdomain.com",
+    });
+    expect(provider.domain).toBe("newdomain.com");
+  });
+
+  it("rejects domain collision on update", async () => {
+    // getSSOProvider query
+    mockRows.push([sampleSamlRow]);
+    // Domain clash check — found a collision
+    mockRows.push([{ id: "other-prov" }]);
+
+    await expect(updateSSOProvider("org-1", "prov-1", {
+      domain: "taken.com",
+    })).rejects.toThrow("already registered");
+  });
+
+  it("updates enabled flag", async () => {
+    // getSSOProvider query
+    mockRows.push([sampleSamlRow]);
+    // UPDATE RETURNING
+    mockRows.push([{ ...sampleSamlRow, enabled: false }]);
+
+    const provider = await updateSSOProvider("org-1", "prov-1", {
+      enabled: false,
+    });
+    expect(provider.enabled).toBe(false);
+  });
+
+  it("returns existing provider when no fields to update", async () => {
+    // getSSOProvider query
+    mockRows.push([sampleSamlRow]);
+
+    const provider = await updateSSOProvider("org-1", "prov-1", {});
+    expect(provider.id).toBe("prov-1");
+  });
+
+  it("throws when provider not found", async () => {
+    // getSSOProvider returns nothing
+    mockRows.push([]);
+
+    await expect(updateSSOProvider("org-1", "nonexistent", {
+      issuer: "https://new.com",
+    })).rejects.toThrow("not found");
+  });
+
+  it("throws when enterprise is disabled", async () => {
+    mockEnterpriseEnabled = false;
+    await expect(updateSSOProvider("org-1", "prov-1", {
+      issuer: "https://new.com",
+    })).rejects.toThrow("Enterprise features");
+  });
+});
+
+describe("OIDC encryption round-trip", () => {
+  beforeEach(resetMocks);
+
+  it("encrypts clientSecret on create", async () => {
+    // Domain uniqueness check
+    mockRows.push([]);
+    // INSERT RETURNING
+    mockRows.push([sampleOidcRow]);
+
+    await createSSOProvider("org-1", {
+      type: "oidc",
+      issuer: "https://accounts.google.com",
+      domain: "example.com",
+      config: {
+        clientId: "client-123",
+        clientSecret: "secret-456",
+        discoveryUrl: "https://accounts.google.com/.well-known/openid-configuration",
+      },
+    });
+
+    // The INSERT query params should contain the encrypted secret
+    const insertQuery = capturedQueries.find(q => q.sql.includes("INSERT INTO sso_providers"));
+    expect(insertQuery).toBeDefined();
+    const configParam = insertQuery!.params[5] as string;
+    expect(configParam).toContain("encrypted:secret-456");
+  });
+
+  it("decrypts clientSecret on read", async () => {
+    mockRows.push([sampleOidcRow]);
+    const providers = await listSSOProviders("org-1");
+    expect(providers).toHaveLength(1);
+    // The mock decryptUrl strips "encrypted:" prefix
+    expect((providers[0].config as { clientSecret: string }).clientSecret).toBe("secret-456");
   });
 });

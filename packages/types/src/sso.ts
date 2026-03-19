@@ -35,41 +35,47 @@ export interface SSOOidcConfig {
   discoveryUrl: string;
 }
 
-// ── Provider record ─────────────────────────────────────────────────
+// ── Provider record (discriminated union) ───────────────────────────
 
-export interface SSOProvider {
+interface SSOProviderBase {
   id: string;
   orgId: string;
-  type: SSOProviderType;
   /** IdP issuer identifier (entityId for SAML, issuer URL for OIDC). */
   issuer: string;
   /** Email domain for auto-provisioning (e.g. "acme.com"). */
   domain: string;
   enabled: boolean;
-  /** Provider-specific configuration (SAML or OIDC). */
-  config: SSOSamlConfig | SSOOidcConfig;
   createdAt: string;
   updatedAt: string;
 }
 
+export interface SSOSamlProvider extends SSOProviderBase {
+  type: "saml";
+  config: SSOSamlConfig;
+}
+
+export interface SSOOidcProvider extends SSOProviderBase {
+  type: "oidc";
+  config: SSOOidcConfig;
+}
+
+/** Discriminated union — `type` determines the shape of `config`. */
+export type SSOProvider = SSOSamlProvider | SSOOidcProvider;
+
 // ── Request / response shapes ───────────────────────────────────────
 
-export interface CreateSSOProviderRequest {
-  type: SSOProviderType;
-  issuer: string;
-  domain: string;
-  enabled?: boolean;
-  config: SSOSamlConfig | SSOOidcConfig;
-}
+export type CreateSSOProviderRequest =
+  | { type: "saml"; issuer: string; domain: string; enabled?: boolean; config: SSOSamlConfig }
+  | { type: "oidc"; issuer: string; domain: string; enabled?: boolean; config: SSOOidcConfig };
 
 export interface UpdateSSOProviderRequest {
   issuer?: string;
   domain?: string;
   enabled?: boolean;
-  config?: Partial<SSOSamlConfig> | Partial<SSOOidcConfig>;
+  config?: Record<string, unknown>;
 }
 
-/** Response shape for list endpoints. */
+/** Response shape for list endpoints. Currently total equals providers.length (no pagination yet). */
 export interface SSOProviderListResponse {
   providers: SSOProvider[];
   total: number;

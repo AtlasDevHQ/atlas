@@ -53,6 +53,9 @@ function rowToConversation(r: Record<string, unknown>): Conversation {
     starred: r.starred === true,
     createdAt: String(r.created_at),
     updatedAt: String(r.updated_at),
+    notebookState: r.notebook_state
+      ? (r.notebook_state as Conversation["notebookState"])
+      : null,
   };
 }
 
@@ -140,12 +143,12 @@ export async function getConversation(
   try {
     const convRows = userId
       ? await internalQuery<Record<string, unknown>>(
-          `SELECT id, user_id, title, surface, connection_id, starred, created_at, updated_at
+          `SELECT id, user_id, title, surface, connection_id, starred, notebook_state, created_at, updated_at
            FROM conversations WHERE id = $1 AND user_id = $2`,
           [id, userId],
         )
       : await internalQuery<Record<string, unknown>>(
-          `SELECT id, user_id, title, surface, connection_id, starred, created_at, updated_at
+          `SELECT id, user_id, title, surface, connection_id, starred, notebook_state, created_at, updated_at
            FROM conversations WHERE id = $1`,
           [id],
         );
@@ -257,6 +260,117 @@ export async function starConversation(
     return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
   } catch (err) {
     log.error({ err: err instanceof Error ? err.message : String(err) }, "starConversation failed");
+    return { ok: false, reason: "error" };
+  }
+}
+
+/** Update notebook state on a conversation. Auth-scoped when userId is provided. */
+export async function updateNotebookState(
+  id: string,
+  notebookState: unknown,
+  userId?: string | null,
+): Promise<CrudResult> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+  try {
+    const rows = userId
+      ? await internalQuery<{ id: string }>(
+          `UPDATE conversations SET notebook_state = $1, updated_at = now()
+           WHERE id = $2 AND user_id = $3 RETURNING id`,
+          [JSON.stringify(notebookState), id, userId],
+        )
+      : await internalQuery<{ id: string }>(
+          `UPDATE conversations SET notebook_state = $1, updated_at = now()
+           WHERE id = $2 RETURNING id`,
+          [JSON.stringify(notebookState), id],
+        );
+    return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err) }, "updateNotebookState failed");
+    return { ok: false, reason: "error" };
+  }
+}
+
+/** Fork a conversation at a specific message, copying messages up to that point. */
+export async function forkConversation(opts: {
+  sourceId: string;
+  forkPointMessageId: string;
+  userId?: string | null;
+  orgId?: string | null;
+}): Promise<CrudDataResult<{ id: string; messageCount: number }>> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+  try {
+    // Verify source exists and user owns it
+    const sourceRows = opts.userId
+      ? await internalQuery<Record<string, unknown>>(
+          `SELECT id, title, surface, connection_id, org_id FROM conversations WHERE id = $1 AND user_id = $2`,
+          [opts.sourceId, opts.userId],
+        )
+      : await internalQuery<Record<string, unknown>>(
+          `SELECT id, title, surface, connection_id, org_id FROM conversations WHERE id = $1`,
+          [opts.sourceId],
+        );
+    if (sourceRows.length === 0) return { ok: false, reason: "not_found" };
+
+    const source = sourceRows[0];
+    const sourceTitle = (source.title as string) ?? "Notebook";
+
+    // Get all messages up to and including the fork point (and its assistant response)
+    const forkMsg = await internalQuery<Record<string, unknown>>(
+      `SELECT created_at FROM messages WHERE id = $1 AND conversation_id = $2`,
+      [opts.forkPointMessageId, opts.sourceId],
+    );
+    if (forkMsg.length === 0) return { ok: false, reason: "not_found" };
+
+    // Get the fork point message and the next message after it (assistant response)
+    const allMsgs = await internalQuery<Record<string, unknown>>(
+      `SELECT id, role, content, created_at FROM messages
+       WHERE conversation_id = $1 AND created_at <= $2
+       ORDER BY created_at ASC`,
+      [opts.sourceId, String(forkMsg[0].created_at)],
+    );
+
+    // Also include the assistant response right after the fork point
+    const nextMsg = await internalQuery<Record<string, unknown>>(
+      `SELECT id, role, content, created_at FROM messages
+       WHERE conversation_id = $1 AND created_at > $2
+       ORDER BY created_at ASC LIMIT 1`,
+      [opts.sourceId, String(forkMsg[0].created_at)],
+    );
+
+    const messagesToCopy = [...allMsgs];
+    if (nextMsg.length > 0 && (nextMsg[0].role as string) === "assistant") {
+      messagesToCopy.push(nextMsg[0]);
+    }
+
+    // Create new conversation
+    const orgId = opts.orgId ?? (source.org_id as string) ?? null;
+    const newConv = await internalQuery<{ id: string }>(
+      `INSERT INTO conversations (user_id, title, surface, connection_id, org_id)
+       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+      [
+        opts.userId ?? null,
+        `${sourceTitle} (fork)`,
+        (source.surface as string) ?? "web",
+        (source.connection_id as string) ?? null,
+        orgId,
+      ],
+    );
+
+    if (newConv.length === 0) return { ok: false, reason: "error" };
+    const newId = newConv[0].id;
+
+    // Copy messages into the new conversation
+    for (const msg of messagesToCopy) {
+      await internalQuery(
+        `INSERT INTO messages (conversation_id, role, content, created_at)
+         VALUES ($1, $2, $3, $4)`,
+        [newId, msg.role, JSON.stringify(msg.content), String(msg.created_at)],
+      );
+    }
+
+    return { ok: true, data: { id: newId, messageCount: messagesToCopy.length } };
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err) }, "forkConversation failed");
     return { ok: false, reason: "error" };
   }
 }

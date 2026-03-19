@@ -162,6 +162,8 @@ mock.module("@atlas/api/lib/conversations", () => ({
   getShareStatus: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
   cleanupExpiredShares: mock(() => Promise.resolve(0)),
   getSharedConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
+  updateNotebookState: mock(() => Promise.resolve({ ok: true })),
+  forkConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
 }));
 
 // Mock auth/server for the password-change dynamic import

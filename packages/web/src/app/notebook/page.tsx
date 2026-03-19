@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useState, useRef, useEffect } from "react";
+import { Suspense, useState, useRef, useEffect, useCallback } from "react";
 import { useChat } from "@ai-sdk/react";
 import { useQueryStates } from "nuqs";
 import { notebookSearchParams } from "./search-params";
@@ -11,6 +11,8 @@ import { useConversations } from "@/ui/hooks/use-conversations";
 import { API_URL, IS_CROSS_ORIGIN } from "@/lib/api-url";
 import { useAtlasTransport } from "@/ui/hooks/use-atlas-transport";
 import { Button } from "@/components/ui/button";
+import type { NotebookStateWire, ForkBranchWire } from "@/ui/lib/types";
+import type { ForkInfo } from "@/ui/components/notebook/types";
 
 export default function NotebookPage() {
   return (
@@ -35,6 +37,10 @@ function NotebookContent() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [loadingConversation, setLoadingConversation] = useState(false);
   const tempIdRef = useRef(`temp:${Date.now()}`);
+
+  // Server-side notebook state
+  const [serverNotebookState, setServerNotebookState] = useState<NotebookStateWire | null>(null);
+  const [forkInfo, setForkInfo] = useState<ForkInfo | null>(null);
 
   const {
     transport,
@@ -79,12 +85,80 @@ function NotebookContent() {
   // useChat
   const { messages, setMessages, sendMessage, status, error: chatError } = useChat({ transport });
 
+  // Build fork info from notebook state
+  const buildForkInfo = useCallback((
+    convId: string,
+    state: NotebookStateWire | null | undefined,
+  ): ForkInfo | null => {
+    if (!state) return null;
+
+    // If this conversation IS the root and has branches
+    if (state.branches && state.branches.length > 0) {
+      return {
+        rootId: convId,
+        currentId: convId,
+        branches: state.branches,
+      };
+    }
+
+    // If this conversation is a fork (has forkRootId), we need to load the root's branches
+    // For now, show minimal info — the root's branches are loaded asynchronously
+    if (state.forkRootId) {
+      return {
+        rootId: state.forkRootId,
+        currentId: convId,
+        branches: [],
+      };
+    }
+
+    return null;
+  }, []);
+
+  // Load fork info from root conversation when viewing a branch
+  useEffect(() => {
+    if (!serverNotebookState?.forkRootId || !conversationId) return;
+    const rootId = serverNotebookState.forkRootId;
+    if (rootId === conversationId) return;
+
+    let cancelled = false;
+    async function loadRootBranches() {
+      try {
+        const rootConv = await convos.getConversationData(rootId);
+        if (cancelled) return;
+        const rootState = rootConv.notebookState;
+        if (rootState?.branches) {
+          setForkInfo({
+            rootId,
+            currentId: conversationId!,
+            branches: rootState.branches as ForkBranchWire[],
+          });
+        }
+      } catch (err: unknown) {
+        console.warn(
+          "Failed to load root conversation for fork info:",
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+    loadRootBranches();
+    return () => { cancelled = true; };
+  }, [serverNotebookState?.forkRootId, conversationId, convos.getConversationData]);
+
   // Load conversation when ID changes
   useEffect(() => {
     if (!conversationId) return;
     let cancelled = false;
     async function load() {
       try {
+        const convData = await convos.getConversationData(conversationId!);
+        if (cancelled) return;
+
+        // Set notebook state from server
+        const state = convData.notebookState as NotebookStateWire | null ?? null;
+        setServerNotebookState(state);
+        setForkInfo(buildForkInfo(conversationId!, state));
+
+        // Transform messages for useChat
         const uiMessages = await convos.loadConversation(conversationId!);
         if (cancelled) return;
         setMessages(uiMessages);
@@ -104,6 +178,27 @@ function NotebookContent() {
     };
   }, [conversationId]); // Only re-run when conversationId changes
 
+  // Server save callback (passed to useNotebook for debounced persistence)
+  const saveToServer = useCallback((state: NotebookStateWire) => {
+    if (!conversationId || conversationId.startsWith("temp:")) return;
+    convos.saveNotebookState(conversationId, state);
+  }, [conversationId, convos.saveNotebookState]);
+
+  // Fork navigation callback
+  const handleNavigateToBranch = useCallback((branchId: string) => {
+    setParams({ id: branchId, cell: "" });
+    convos.setSelectedId(branchId);
+    // Refresh sidebar to show new conversation
+    setTimeout(() => {
+      refreshConvosRef.current().catch((err: unknown) => {
+        console.warn(
+          "Sidebar refresh after fork failed:",
+          err instanceof Error ? err.message : String(err),
+        );
+      });
+    }, 500);
+  }, [setParams, convos]);
+
   // useNotebook
   const notebook = useNotebook({
     chat: {
@@ -114,6 +209,11 @@ function NotebookContent() {
       error: chatError ?? null,
     },
     conversationId: conversationId ?? tempIdRef.current,
+    initialServerState: serverNotebookState,
+    saveToServer,
+    forkConversation: convos.forkConversation,
+    onNavigateToBranch: handleNavigateToBranch,
+    forkInfo,
   });
 
   // New chat handler
@@ -122,6 +222,8 @@ function NotebookContent() {
     setMessages([]);
     setParams({ id: "", cell: "" });
     convos.setSelectedId(null);
+    setServerNotebookState(null);
+    setForkInfo(null);
   }
 
   // Select conversation handler
@@ -130,6 +232,11 @@ function NotebookContent() {
     setError(null);
     setLoadingConversation(true);
     try {
+      const convData = await convos.getConversationData(id);
+      const state = convData.notebookState as NotebookStateWire | null ?? null;
+      setServerNotebookState(state);
+      setForkInfo(buildForkInfo(id, state));
+
       const uiMessages = await convos.loadConversation(id);
       setMessages(uiMessages);
       setParams({ id, cell: "" });

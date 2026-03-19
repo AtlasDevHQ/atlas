@@ -12,6 +12,30 @@ export interface Conversation {
   starred: boolean;
   createdAt: string;
   updatedAt: string;
+  notebookState?: NotebookStateWire | null;
+}
+
+/** Server-persisted notebook state stored as JSONB on the conversation. */
+export interface NotebookStateWire {
+  version: number;
+  /** Custom display order of cell IDs (empty = natural message order). */
+  cellOrder?: string[];
+  /** Per-cell persisted properties (only collapsed; editing/status are transient). */
+  cellProps?: Record<string, { collapsed?: boolean }>;
+  /** Fork branches originating from this conversation (stored on root only). */
+  branches?: ForkBranchWire[];
+  /** If this conversation is a fork, the root conversation ID. */
+  forkRootId?: string;
+  /** If this conversation is a fork, the cell ID at the fork point. */
+  forkPointCellId?: string;
+}
+
+/** A fork branch — metadata for a forked conversation. */
+export interface ForkBranchWire {
+  conversationId: string;
+  forkPointCellId: string;
+  label: string;
+  createdAt: string;
 }
 
 export interface Message {

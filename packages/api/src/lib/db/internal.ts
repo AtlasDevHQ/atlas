@@ -540,7 +540,8 @@ export async function migrateInternalDB(): Promise<void> {
   // Seed built-in prompt collections
   await seedPromptLibrary(pool);
 
-  
+  // Notebook state persistence (0.8.1 Phase 2 — fork/reorder/server persistence)
+  await pool.query(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS notebook_state JSONB;`);
 }
 
 /** Seed built-in prompt collections. Idempotent — checks each collection by name. */

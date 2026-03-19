@@ -17,6 +17,7 @@ import { Database, ArrowRight, Sparkles } from "lucide-react";
 
 const DEMO_TOKEN_KEY = "atlas-demo-token";
 const DEMO_EMAIL_KEY = "atlas-demo-email";
+const DEMO_EXPIRES_KEY = "atlas-demo-expires";
 
 function getApiBase(): string {
   if (API_URL) return API_URL;
@@ -31,15 +32,22 @@ export default function DemoPage() {
   const [loading, setLoading] = useState(false);
   const [returning, setReturning] = useState(false);
 
-  // Restore token from sessionStorage on mount
+  // Restore token from sessionStorage on mount, checking expiry
   useEffect(() => {
     try {
       const stored = sessionStorage.getItem(DEMO_TOKEN_KEY);
-      if (stored) setToken(stored);
+      const expiresAt = sessionStorage.getItem(DEMO_EXPIRES_KEY);
+      if (stored && expiresAt && Number(expiresAt) > Date.now()) {
+        setToken(stored);
+      } else if (stored) {
+        // Token expired — clear stale session
+        sessionStorage.removeItem(DEMO_TOKEN_KEY);
+        sessionStorage.removeItem(DEMO_EXPIRES_KEY);
+      }
       const storedEmail = sessionStorage.getItem(DEMO_EMAIL_KEY);
       if (storedEmail) setEmail(storedEmail);
     } catch {
-      // sessionStorage may be unavailable in some contexts
+      // intentionally ignored: sessionStorage may be unavailable in some contexts
     }
   }, []);
 
@@ -77,8 +85,9 @@ export default function DemoPage() {
       try {
         sessionStorage.setItem(DEMO_TOKEN_KEY, data.token);
         sessionStorage.setItem(DEMO_EMAIL_KEY, email);
+        sessionStorage.setItem(DEMO_EXPIRES_KEY, String(data.expiresAt));
       } catch {
-        // sessionStorage unavailable — token lives in state only
+        // intentionally ignored: sessionStorage unavailable — token lives in state only
       }
     } catch (err) {
       setError(
@@ -96,6 +105,7 @@ export default function DemoPage() {
     try {
       sessionStorage.removeItem(DEMO_TOKEN_KEY);
       sessionStorage.removeItem(DEMO_EMAIL_KEY);
+      sessionStorage.removeItem(DEMO_EXPIRES_KEY);
     } catch {
       // intentionally ignored: sessionStorage may be unavailable
     }

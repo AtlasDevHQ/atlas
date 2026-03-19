@@ -93,7 +93,7 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
     } finally {
       setLoading(false);
     }
-  }, [opts.apiUrl, opts.enabled, opts.getHeaders, opts.getCredentials, available]);
+  }, [opts.apiUrl, opts.enabled, opts.getHeaders, opts.getCredentials, available, baseEndpoint]);
 
   const loadConversation = useCallback(async (id: string): Promise<UIMessage[]> => {
     const res = await fetch(`${opts.apiUrl}${baseEndpoint}/${id}`, {
@@ -108,7 +108,7 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
 
     const data: ConversationWithMessages = await res.json();
     return transformMessages(data.messages);
-  }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);
+  }, [opts.apiUrl, opts.getHeaders, opts.getCredentials, baseEndpoint]);
 
   const deleteConversation = useCallback(async (id: string): Promise<void> => {
     const res = await fetch(`${opts.apiUrl}${baseEndpoint}/${id}`, {
@@ -126,7 +126,7 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
     setTotal((prev) => Math.max(0, prev - 1));
 
     if (selectedId === id) setSelectedId(null);
-  }, [opts.apiUrl, opts.getHeaders, opts.getCredentials, selectedId]);
+  }, [opts.apiUrl, opts.getHeaders, opts.getCredentials, selectedId, baseEndpoint]);
 
   const starConversation = useCallback(async (id: string, starred: boolean): Promise<void> => {
     // Optimistic update
@@ -158,7 +158,7 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
       }
       throw err;
     }
-  }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);
+  }, [opts.apiUrl, opts.getHeaders, opts.getCredentials, baseEndpoint]);
 
   const refresh = useCallback(async () => {
     await fetchList();

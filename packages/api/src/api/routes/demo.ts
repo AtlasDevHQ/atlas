@@ -89,10 +89,22 @@ const demo = new Hono();
 demo.post("/start", async (c) => {
   const requestId = crypto.randomUUID();
 
+  // IP-based rate limit to prevent abuse (email enumeration, DB flooding)
+  const ip = getClientIP(c.req.raw);
+  const startRateCheck = checkDemoRateLimit(ip ?? "anon-start");
+  if (!startRateCheck.allowed) {
+    const retryAfterSeconds = Math.ceil((startRateCheck.retryAfterMs ?? 60000) / 1000);
+    return c.json(
+      { error: "rate_limited", message: "Too many requests. Please wait.", retryAfterSeconds, requestId },
+      { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } },
+    );
+  }
+
   let body: unknown;
   try {
     body = await c.req.json();
-  } catch {
+  } catch (err) {
+    log.debug({ err: err instanceof Error ? err.message : String(err) }, "Demo /start: invalid JSON body");
     return c.json(
       { error: "invalid_request", message: "Invalid JSON body.", requestId },
       400,
@@ -120,7 +132,6 @@ demo.post("/start", async (c) => {
   }
 
   // Capture lead (best-effort)
-  const ip = getClientIP(c.req.raw);
   const userAgent = c.req.header("user-agent") ?? null;
   const [leadResult, conversationCount] = await Promise.all([
     captureDemoLead({ email, ip, userAgent }),
@@ -397,39 +408,62 @@ demo.post("/chat", async (c) => {
 
 // GET /conversations — list demo user's conversations
 demo.get("/conversations", async (c) => {
+  const requestId = crypto.randomUUID();
   const email = extractDemoEmail(c.req.raw);
   if (!email) {
-    return c.json({ error: "auth_error", message: "Valid demo token required." }, 401);
+    return c.json({ error: "auth_error", message: "Valid demo token required.", requestId }, 401);
   }
 
   if (!hasInternalDB()) {
     return c.json({ conversations: [], total: 0 });
   }
 
-  const userId = demoUserId(email);
-  const limit = Math.min(parseInt(c.req.query("limit") ?? "50", 10) || 50, 100);
-  const offset = parseInt(c.req.query("offset") ?? "0", 10) || 0;
-
-  const result = await listConversations({ userId, limit, offset });
-  return c.json(result);
+  try {
+    const userId = demoUserId(email);
+    const limit = Math.min(parseInt(c.req.query("limit") ?? "50", 10) || 50, 100);
+    const offset = parseInt(c.req.query("offset") ?? "0", 10) || 0;
+    const result = await listConversations({ userId, limit, offset });
+    return c.json(result);
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err : new Error(String(err)), requestId },
+      "Failed to list demo conversations",
+    );
+    return c.json(
+      { error: "internal_error", message: "Failed to load conversations.", requestId },
+      500,
+    );
+  }
 });
 
 // GET /conversations/:id — get demo conversation with messages
 demo.get("/conversations/:id", async (c) => {
+  const requestId = crypto.randomUUID();
   const email = extractDemoEmail(c.req.raw);
   if (!email) {
-    return c.json({ error: "auth_error", message: "Valid demo token required." }, 401);
+    return c.json({ error: "auth_error", message: "Valid demo token required.", requestId }, 401);
   }
 
-  const userId = demoUserId(email);
-  const id = c.req.param("id");
-  const result = await getConversation(id, userId);
+  try {
+    const userId = demoUserId(email);
+    const id = c.req.param("id");
+    const result = await getConversation(id, userId);
 
-  if (!result.ok) {
-    return c.json({ error: "not_found", message: "Conversation not found." }, 404);
+    if (!result.ok) {
+      return c.json({ error: "not_found", message: "Conversation not found.", requestId }, 404);
+    }
+
+    return c.json(result.data);
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err : new Error(String(err)), requestId },
+      "Failed to get demo conversation",
+    );
+    return c.json(
+      { error: "internal_error", message: "Failed to load conversation.", requestId },
+      500,
+    );
   }
-
-  return c.json(result.data);
 });
 
 export { demo };

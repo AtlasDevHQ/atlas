@@ -115,7 +115,10 @@ export function signDemoToken(email: string): { token: string; expiresAt: number
  */
 export function verifyDemoToken(token: string): string | null {
   const key = getDemoKey();
-  if (!key) return null;
+  if (!key) {
+    log.warn("Cannot verify demo token: BETTER_AUTH_SECRET is not set");
+    return null;
+  }
 
   const parts = token.split(".");
   if (parts.length !== 2) return null;
@@ -128,6 +131,7 @@ export function verifyDemoToken(token: string): string | null {
   try {
     actualSig = base64urlDecode(signatureStr);
   } catch {
+    // intentionally ignored: malformed base64 in signature — reject token
     return null;
   }
 
@@ -140,6 +144,7 @@ export function verifyDemoToken(token: string): string | null {
     const decoded = base64urlDecode(payloadStr).toString("utf8");
     payload = JSON.parse(decoded) as DemoTokenPayload;
   } catch {
+    // intentionally ignored: malformed or unparseable payload JSON — reject token
     return null;
   }
 
@@ -272,9 +277,9 @@ export async function captureDemoLead(opts: {
     const sessionCount = (rows[0] as { session_count: number } | undefined)?.session_count ?? 1;
     return { returning: sessionCount > 1, sessionCount };
   } catch (err) {
-    log.warn(
-      { err: err instanceof Error ? err.message : String(err) },
-      "Failed to capture demo lead — continuing without persistence",
+    log.error(
+      { err: err instanceof Error ? err : new Error(String(err)) },
+      "Failed to capture demo lead — lead data lost. Check that demo_leads table exists (run migrations)",
     );
     return { returning: false, sessionCount: 1 };
   }

@@ -88,23 +88,15 @@ Final 0.7.x release closing the refinement arc. Comprehensive feature-to-docs ma
 
 Dynamic learning layer that gets smarter with every query. Agent proposes learned patterns after successful queries with deduplication and confidence scoring; approved patterns are injected into agent context with relevance filtering. Admin review/approve/reject UI with bulk operations. Curated per-industry prompt library (SaaS, e-commerce, cybersecurity) with admin CRUD and chat browser. Query suggestion engine mining the audit log for ranked suggestions with contextual display. Self-hosted model improvements with test matrix for Ollama/vLLM/TGI. Notebook-style interface for cell-based exploratory analysis with re-run, keyboard navigation, and persistent state.
 
----
+### 0.8.1 — Notebook Refinement
 
-## 0.8.1 — Notebook Refinement
-
-The current milestone. Polishing and extending the notebook UI introduced in 0.8.0. Most work is shipped — one feature remains.
-
-- **Hardening** — Error boundaries, shared transport hook, error feedback, error propagation refactor
-- **Quality** — Keyboard navigation tests, UX polish (keybinding consistency, auto-expand, dialog dedup, stable cell state), hook-level test coverage
-- **Docs** — Missing error codes added to type catalog, reference gaps filled for learn config and CLI flags, OpenAPI spec updated with 50+ missing endpoints via codegen pipeline
-- **Phase 2 (shipped)** — Fork/branch from any cell (creates independent conversation), drag-and-drop cell reorder with server-side persistence, branch selector dropdown for switching between forks
-- **Phase 3 (next)** — Export notebooks to Markdown/HTML, insert freeform text cells between query results
+Comprehensive polish of the notebook UI. Error boundaries and shared transport hook for stability. Error propagation refactored so callers can distinguish failure reasons. Keyboard navigation tests, UX polish (keybinding consistency, auto-expand, dialog dedup), and hook-level test coverage. Missing error codes added to type catalog, reference gaps filled for learn config and CLI flags, and OpenAPI spec updated with 50+ missing endpoints via codegen pipeline. Notebook Phase 2 shipped fork/branch from any cell, drag-and-drop reorder with server persistence, and a branch selector. Phase 3 added markdown text cells for narrative annotation and export to Markdown/HTML.
 
 ---
 
 ## 0.9.0 — SaaS Infrastructure
 
-Platform foundation for hosted Atlas at app.useatlas.dev.
+The next milestone. Platform foundation for hosted Atlas at app.useatlas.dev.
 
 - **Provisioning** — Self-serve signup, workspace lifecycle, guided semantic layer setup wizard
 - **Billing** — Usage metering, Stripe integration, free and paid tiers, overage handling

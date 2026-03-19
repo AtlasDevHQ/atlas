@@ -29,6 +29,7 @@ export function NotebookShell({ notebook, focusCellId }: NotebookShellProps) {
   const anyRunning = notebook.cells.some((c) => c.status === "running");
   const editingCellId = notebook.cells.find((c) => c.editing)?.id ?? null;
   const [pendingDeleteIndex, setPendingDeleteIndex] = useState<number | null>(null);
+  const [dismissedError, setDismissedError] = useState<Error | null>(null);
 
   const { setRef, focusCell } = useKeyboardNav({
     cellCount: notebook.cells.length,
@@ -66,11 +67,24 @@ export function NotebookShell({ notebook, focusCellId }: NotebookShellProps) {
     <div className="flex h-full flex-col">
       <div ref={scrollAreaRef} className="flex-1 overflow-y-auto px-4 py-6">
         <div className="mx-auto max-w-5xl space-y-4">
-          {notebook.error && (
-            <div className="mx-auto max-w-5xl rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
-              <p className="font-medium">Request failed</p>
-              <p>{notebook.error.message}</p>
-              <p className="mt-1 text-xs text-red-500 dark:text-red-400">Try re-running the last cell or refreshing the page.</p>
+          {notebook.error && notebook.error !== dismissedError && (
+            <div className="flex items-start justify-between rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
+              <div>
+                <p className="font-medium">Request failed</p>
+                <p>{notebook.error.message}</p>
+                <p className="mt-1 text-xs text-red-500 dark:text-red-400">Try re-running the last cell or refreshing the page.</p>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => setDismissedError(notebook.error)} className="shrink-0 text-red-600 dark:text-red-400">
+                Dismiss
+              </Button>
+            </div>
+          )}
+          {notebook.warning && !notebook.error && (
+            <div className="flex items-center justify-between rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+              <p>{notebook.warning}</p>
+              <Button variant="ghost" size="sm" onClick={notebook.clearWarning} className="shrink-0 text-amber-600 dark:text-amber-400">
+                Dismiss
+              </Button>
             </div>
           )}
           {notebook.cells.length === 0 ? (

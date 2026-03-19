@@ -158,6 +158,8 @@ export interface UseNotebookReturn {
   cells: ResolvedCell[];
   status: "ready" | "streaming" | "submitted" | "error";
   error: Error | null;
+  warning: string | null;
+  clearWarning: () => void;
   appendCell: (question: string) => void;
   rerunCell: (cellId: string, newQuestion: string) => void;
   deleteCell: (cellId: string) => void;
@@ -170,6 +172,27 @@ export interface UseNotebookReturn {
 
 export function useNotebook({ chat, conversationId }: UseNotebookOptions): UseNotebookReturn {
   const [input, setInput] = useState("");
+  const [warning, setWarning] = useState<string | null>(null);
+  const warningTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function showWarning(msg: string): void {
+    if (warningTimer.current) clearTimeout(warningTimer.current);
+    setWarning(msg);
+    warningTimer.current = setTimeout(() => setWarning(null), 5000);
+  }
+
+  function clearWarning(): void {
+    if (warningTimer.current) clearTimeout(warningTimer.current);
+    setWarning(null);
+  }
+
+  // Clean up warning timer on unmount
+  useEffect(() => {
+    return () => {
+      if (warningTimer.current) clearTimeout(warningTimer.current);
+    };
+  }, []);
+
   const [cellState, setCellState] = useState<NotebookCell[]>(() => {
     if (typeof window === "undefined") return [];
     const saved = loadNotebookState(conversationId);
@@ -210,7 +233,7 @@ export function useNotebook({ chat, conversationId }: UseNotebookOptions): UseNo
   // Two-phase rerun: setMessages is async (React batches state updates), so we
   // can't call sendMessage immediately after truncating — useChat would still see
   // the old messages. Instead, store the question in a ref and fire sendMessage
-  // in a subsequent effect once the truncated messages are committed and status is idle.
+  // in a subsequent effect once the truncated messages are committed and status is ready.
   useEffect(() => {
     if (pendingRerun.current && chat.status === "ready") {
       const text = pendingRerun.current;
@@ -220,6 +243,7 @@ export function useNotebook({ chat, conversationId }: UseNotebookOptions): UseNo
           "Failed to re-run cell:",
           err instanceof Error ? err.message : String(err),
         );
+        showWarning("Failed to re-run cell. Please try again.");
       });
     }
   }, [chat.messages, chat.status, chat]);
@@ -251,6 +275,7 @@ export function useNotebook({ chat, conversationId }: UseNotebookOptions): UseNo
           "Failed to send message:",
           err instanceof Error ? err.message : String(err),
         );
+        showWarning("Failed to send message. Please try again.");
       });
     },
     [chat],
@@ -315,6 +340,8 @@ export function useNotebook({ chat, conversationId }: UseNotebookOptions): UseNo
     cells,
     status: chat.status,
     error: chat.error,
+    warning,
+    clearWarning,
     appendCell,
     rerunCell,
     deleteCell,

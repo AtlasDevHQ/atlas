@@ -6,18 +6,9 @@ import { useKeyboardNav } from "./use-keyboard-nav";
 import { NotebookCell } from "./notebook-cell";
 import { NotebookEmptyState } from "./notebook-empty-state";
 import { NotebookInputBar } from "./notebook-input-bar";
+import { DeleteCellDialog } from "./delete-cell-dialog";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { Button } from "@/components/ui/button";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 
 interface NotebookShellProps {
   notebook: UseNotebookReturn;
@@ -131,36 +122,24 @@ export function NotebookShell({ notebook, focusCellId }: NotebookShellProps) {
         disabled={anyRunning}
       />
 
-      <AlertDialog
+      <DeleteCellDialog
         open={pendingDeleteIndex !== null}
         onOpenChange={(open) => { if (!open) setPendingDeleteIndex(null); }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              Delete Cell {pendingDeleteIndex !== null ? notebook.cells[pendingDeleteIndex]?.number : ""}?
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              This will remove this cell and all cells after it. This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                if (pendingDeleteIndex !== null) {
-                  const cell = notebook.cells[pendingDeleteIndex];
-                  if (cell) notebook.deleteCell(cell.id);
-                }
-                setPendingDeleteIndex(null);
-              }}
-              className="bg-red-600 text-white hover:bg-red-700"
-            >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+        cellNumber={pendingDeleteIndex !== null ? (notebook.cells[pendingDeleteIndex]?.number ?? 0) : 0}
+        onConfirm={() => {
+          if (pendingDeleteIndex !== null) {
+            const cell = notebook.cells[pendingDeleteIndex];
+            if (cell) {
+              notebook.deleteCell(cell.id);
+            } else {
+              console.warn(
+                `Delete failed: cell at index ${pendingDeleteIndex} no longer exists (cells length: ${notebook.cells.length})`,
+              );
+            }
+          }
+          setPendingDeleteIndex(null);
+        }}
+      />
     </div>
   );
 }

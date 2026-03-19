@@ -17,7 +17,7 @@ export function buildCellsFromMessages(messages: UIMessage[]): NotebookCell[] {
     if (message.role === "user") {
       cellNumber++;
       cells.push({
-        id: `cell-${message.id}`,
+        id: `cell-${cellNumber}`,
         messageId: message.id,
         number: cellNumber,
         collapsed: false,
@@ -85,7 +85,7 @@ export function loadNotebookState(
       typeof parsed === "object" &&
       parsed !== null &&
       "version" in parsed &&
-      (parsed as { version: unknown }).version === 1 &&
+      ((parsed as { version: unknown }).version === 1 || (parsed as { version: unknown }).version === 2) &&
       "cells" in parsed &&
       Array.isArray((parsed as { cells: unknown }).cells)
     ) {
@@ -200,24 +200,39 @@ export function useNotebook({ chat, conversationId }: UseNotebookOptions): UseNo
   });
 
   const pendingRerun = useRef<string | null>(null);
+  // Snapshot of cell state taken before a rerun truncates messages. Used as
+  // fallback during reconciliation so collapsed/editing state survives the
+  // intermediate truncation step where the re-run cell is temporarily absent.
+  const preRerunCells = useRef<NotebookCell[]>([]);
 
   // Reconcile cells when messages change
   useEffect(() => {
     const fresh = buildCellsFromMessages(chat.messages);
-    setCellState((prev) =>
-      fresh.map((fc) => {
-        const existing = prev.find((pc) => pc.messageId === fc.messageId);
-        return existing
-          ? { ...fc, collapsed: existing.collapsed, editing: existing.editing }
-          : fc;
-      }),
-    );
+    setCellState((prev) => {
+      let usedFallback = false;
+      const result = fresh.map((fc) => {
+        const existing = prev.find((pc) => pc.id === fc.id);
+        if (existing) {
+          return { ...fc, collapsed: existing.collapsed, editing: existing.editing };
+        }
+        const fallback = preRerunCells.current.find((pc) => pc.id === fc.id);
+        if (fallback) {
+          usedFallback = true;
+          return { ...fc, collapsed: fallback.collapsed, editing: fallback.editing };
+        }
+        return fc;
+      });
+      if (usedFallback) {
+        preRerunCells.current = [];
+      }
+      return result;
+    });
   }, [chat.messages]);
 
   // Persist to localStorage
   useEffect(() => {
     if (!conversationId) return;
-    saveNotebookState({ conversationId, cells: cellState, version: 1 });
+    saveNotebookState({ conversationId, cells: cellState, version: 2 });
   }, [cellState, conversationId]);
 
   // Migrate localStorage key when conversationId changes from temp to real
@@ -284,7 +299,11 @@ export function useNotebook({ chat, conversationId }: UseNotebookOptions): UseNo
   const rerunCell = useCallback(
     (cellId: string, newQuestion: string) => {
       const cell = cellState.find((c) => c.id === cellId);
-      if (!cell) return;
+      if (!cell) {
+        console.warn(`rerunCell: cell ${cellId} not found`);
+        return;
+      }
+      preRerunCells.current = [...cellState];
       const truncated = truncateMessagesForRerun(chat.messages, cell.messageId);
       chat.setMessages(truncated);
       pendingRerun.current = newQuestion;
@@ -295,7 +314,10 @@ export function useNotebook({ chat, conversationId }: UseNotebookOptions): UseNo
   const deleteCell = useCallback(
     (cellId: string) => {
       const cell = cellState.find((c) => c.id === cellId);
-      if (!cell) return;
+      if (!cell) {
+        console.warn(`deleteCell: cell ${cellId} not found`);
+        return;
+      }
       const truncated = truncateMessagesForRerun(chat.messages, cell.messageId);
       chat.setMessages(truncated);
       setCellState((prev) => prev.filter((c) => c.number < cell.number));
@@ -318,7 +340,10 @@ export function useNotebook({ chat, conversationId }: UseNotebookOptions): UseNo
   const copyCell = useCallback(
     async (cellId: string) => {
       const resolved = cells.find((c) => c.id === cellId);
-      if (!resolved) return;
+      if (!resolved) {
+        console.warn(`copyCell: cell ${cellId} not found`);
+        return;
+      }
       const questionText = extractTextContent(resolved.userMessage);
       const answerText = resolved.assistantMessage
         ? extractTextContent(resolved.assistantMessage)

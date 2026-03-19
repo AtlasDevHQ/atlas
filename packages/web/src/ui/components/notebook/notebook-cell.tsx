@@ -1,16 +1,6 @@
 "use client";
 
 import { forwardRef, useState } from "react";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -18,6 +8,7 @@ import type { ResolvedCell } from "./types";
 import { NotebookCellToolbar } from "./notebook-cell-toolbar";
 import { NotebookCellInput } from "./notebook-cell-input";
 import { NotebookCellOutput } from "./notebook-cell-output";
+import { DeleteCellDialog } from "./delete-cell-dialog";
 import { extractTextContent } from "./use-notebook";
 
 interface NotebookCellProps {
@@ -105,25 +96,12 @@ export const NotebookCell = forwardRef<HTMLElement, NotebookCellProps>(
           </div>
         </section>
 
-        <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Delete Cell {cell.number}?</AlertDialogTitle>
-              <AlertDialogDescription>
-                This will remove this cell and all cells after it. This action cannot be undone.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <AlertDialogAction
-                onClick={() => onDelete(cell.id)}
-                className="bg-red-600 text-white hover:bg-red-700"
-              >
-                Delete
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
+        <DeleteCellDialog
+          open={showDeleteDialog}
+          onOpenChange={setShowDeleteDialog}
+          cellNumber={cell.number}
+          onConfirm={() => onDelete(cell.id)}
+        />
       </>
     );
   },

@@ -13,6 +13,8 @@ import {
   ConversationWithMessagesSchema,
   ListConversationsResponseSchema,
   StarConversationBodySchema,
+  ForkConversationBodySchema,
+  NotebookStateBodySchema,
 } from "./conversations";
 import { HealthResponseSchema } from "./health";
 
@@ -356,6 +358,109 @@ function buildSpec(): Record<string, unknown> {
               },
             },
             "400": errorResponse("Invalid conversation ID or request body"),
+            ...authErrors,
+            "404": errorResponse("Conversation not found or not available"),
+          },
+        },
+      },
+
+      // -----------------------------------------------------------------
+      // POST /api/v1/conversations/{id}/fork
+      // -----------------------------------------------------------------
+      "/api/v1/conversations/{id}/fork": {
+        post: {
+          operationId: "forkConversation",
+          summary: "Fork a conversation at a specific message",
+          description:
+            "Creates a new conversation by forking an existing one at the specified message. " +
+            "Messages up to and including the fork point are copied to the new conversation. " +
+            "Branch metadata is saved to both the source and forked conversation's notebook state.",
+          tags: ["Conversations"],
+          security: [{ bearerAuth: [] }, {}],
+          parameters: [
+            uuidPathParam("id", "Source conversation UUID."),
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: toJsonSchema(ForkConversationBodySchema),
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Fork created successfully",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      id: { type: "string", format: "uuid", description: "New conversation UUID." },
+                      messageCount: { type: "integer", description: "Number of messages copied." },
+                      branches: {
+                        type: "array",
+                        items: {
+                          type: "object",
+                          properties: {
+                            conversationId: { type: "string", format: "uuid" },
+                            forkPointCellId: { type: "string" },
+                            label: { type: "string" },
+                            createdAt: { type: "string", format: "date-time" },
+                          },
+                        },
+                      },
+                      warning: { type: "string", description: "Present if branch metadata could not be fully saved." },
+                    },
+                  },
+                },
+              },
+            },
+            "400": errorResponse("Invalid conversation ID or request body"),
+            ...authErrors,
+            "404": errorResponse("Conversation not found or not available"),
+          },
+        },
+      },
+
+      // -----------------------------------------------------------------
+      // PATCH /api/v1/conversations/{id}/notebook-state
+      // -----------------------------------------------------------------
+      "/api/v1/conversations/{id}/notebook-state": {
+        patch: {
+          operationId: "updateNotebookState",
+          summary: "Update notebook state",
+          description:
+            "Updates the notebook state of a conversation, including cell order, cell properties, and branch metadata.",
+          tags: ["Conversations"],
+          security: [{ bearerAuth: [] }, {}],
+          parameters: [
+            uuidPathParam("id", "Conversation UUID."),
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: toJsonSchema(NotebookStateBodySchema),
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Notebook state updated",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      id: { type: "string", format: "uuid" },
+                      notebookState: { type: "object" },
+                    },
+                  },
+                },
+              },
+            },
+            "400": errorResponse("Invalid conversation ID or notebook state body"),
             ...authErrors,
             "404": errorResponse("Conversation not found or not available"),
           },
@@ -1259,6 +1364,240 @@ function buildSpec(): Record<string, unknown> {
               },
             },
             ...authErrors,
+          },
+        },
+      },
+
+      // -----------------------------------------------------------------
+      // Admin — Org-scoped semantic layer
+      // -----------------------------------------------------------------
+      "/api/v1/admin/semantic/org/entities": {
+        get: {
+          operationId: "adminListOrgEntities",
+          summary: "List org-scoped semantic entities",
+          description:
+            "Lists all semantic entities stored in the database for the active organization. " +
+            "Optionally filter by entity type. Requires admin role, an active organization, and an internal database.",
+          tags: ["Admin"],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            {
+              name: "type",
+              in: "query",
+              description: "Filter by entity type.",
+              required: false,
+              schema: { type: "string", enum: ["entity", "metric", "glossary", "catalog"] },
+            },
+          ],
+          responses: {
+            "200": {
+              description: "List of org-scoped entities",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      entities: {
+                        type: "array",
+                        items: {
+                          type: "object",
+                          properties: {
+                            name: { type: "string" },
+                            entityType: { type: "string", enum: ["entity", "metric", "glossary", "catalog"] },
+                            connectionId: { type: "string", nullable: true },
+                            updatedAt: { type: "string", format: "date-time" },
+                          },
+                        },
+                      },
+                      total: { type: "integer" },
+                    },
+                  },
+                },
+              },
+            },
+            "400": errorResponse("No active organization or invalid type filter"),
+            ...authErrors,
+            "501": errorResponse("Internal database not configured"),
+          },
+        },
+      },
+
+      "/api/v1/admin/semantic/org/entities/{name}": {
+        get: {
+          operationId: "adminGetOrgEntity",
+          summary: "Get a single org-scoped entity",
+          description:
+            "Returns the full details of an org-scoped semantic entity including its YAML content. " +
+            "Requires the 'type' query parameter. Requires admin role.",
+          tags: ["Admin"],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: "name", in: "path", required: true, schema: { type: "string" }, description: "Entity name." },
+            {
+              name: "type",
+              in: "query",
+              description: "Entity type (required).",
+              required: true,
+              schema: { type: "string", enum: ["entity", "metric", "glossary", "catalog"] },
+            },
+          ],
+          responses: {
+            "200": {
+              description: "Org entity details",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      name: { type: "string" },
+                      entityType: { type: "string", enum: ["entity", "metric", "glossary", "catalog"] },
+                      connectionId: { type: "string", nullable: true },
+                      yamlContent: { type: "string" },
+                      createdAt: { type: "string", format: "date-time" },
+                      updatedAt: { type: "string", format: "date-time" },
+                    },
+                  },
+                },
+              },
+            },
+            "400": errorResponse("No active organization or invalid type"),
+            ...authErrors,
+            "404": errorResponse("Entity not found"),
+            "501": errorResponse("Internal database not configured"),
+          },
+        },
+        put: {
+          operationId: "adminUpsertOrgEntity",
+          summary: "Create or update an org-scoped entity",
+          description:
+            "Creates or updates an org-scoped semantic entity with the provided YAML content. " +
+            "Validates YAML syntax and (for entity type) requires a 'table' field. " +
+            "Invalidates the org whitelist cache and syncs to disk. Requires admin role.",
+          tags: ["Admin"],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: "name", in: "path", required: true, schema: { type: "string" }, description: "Entity name." },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["yamlContent"],
+                  properties: {
+                    yamlContent: { type: "string", description: "YAML content for the entity." },
+                    entityType: { type: "string", enum: ["entity", "metric", "glossary", "catalog"], description: "Entity type (defaults based on validation)." },
+                    connectionId: { type: "string", description: "Optional connection ID to associate." },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Entity created or updated",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      ok: { type: "boolean" },
+                      name: { type: "string" },
+                      entityType: { type: "string" },
+                    },
+                  },
+                },
+              },
+            },
+            "400": errorResponse("Invalid YAML, missing yamlContent, or invalid entityType"),
+            ...authErrors,
+            "501": errorResponse("Internal database not configured"),
+          },
+        },
+        delete: {
+          operationId: "adminDeleteOrgEntity",
+          summary: "Delete an org-scoped entity",
+          description:
+            "Deletes an org-scoped semantic entity from the database and removes it from disk. " +
+            "Invalidates the org whitelist cache. Requires admin role.",
+          tags: ["Admin"],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: "name", in: "path", required: true, schema: { type: "string" }, description: "Entity name." },
+            {
+              name: "type",
+              in: "query",
+              description: "Entity type (required).",
+              required: true,
+              schema: { type: "string", enum: ["entity", "metric", "glossary", "catalog"] },
+            },
+          ],
+          responses: {
+            "200": {
+              description: "Entity deleted",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      ok: { type: "boolean" },
+                      name: { type: "string" },
+                      entityType: { type: "string" },
+                    },
+                  },
+                },
+              },
+            },
+            "400": errorResponse("No active organization or invalid type"),
+            ...authErrors,
+            "404": errorResponse("Entity not found"),
+            "501": errorResponse("Internal database not configured"),
+          },
+        },
+      },
+
+      "/api/v1/admin/semantic/org/import": {
+        post: {
+          operationId: "adminImportOrgEntities",
+          summary: "Bulk import org entities from disk",
+          description:
+            "Imports all semantic layer YAML files from the organization's disk directory into the database. " +
+            "Optionally specify a connectionId to associate with imported entities. Requires admin role.",
+          tags: ["Admin"],
+          security: [{ bearerAuth: [] }],
+          requestBody: {
+            required: false,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    connectionId: { type: "string", description: "Optional connection ID to associate with imported entities." },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Import results",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      imported: { type: "integer", description: "Number of entities imported." },
+                      skipped: { type: "integer", description: "Number of entities skipped." },
+                      total: { type: "integer", description: "Total entities processed." },
+                    },
+                  },
+                },
+              },
+            },
+            "400": errorResponse("No active organization or invalid JSON body"),
+            ...authErrors,
+            "501": errorResponse("Internal database not configured"),
           },
         },
       },

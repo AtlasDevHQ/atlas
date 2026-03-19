@@ -13,6 +13,7 @@ declare const navigator: { onLine?: boolean } | undefined;
 // not a chat error code. The SDK defines it separately in AtlasErrorCode.
 export const CHAT_ERROR_CODES = [
   "auth_error",
+  "session_expired",
   "rate_limited",
   "configuration_error",
   "no_datasource",
@@ -27,6 +28,8 @@ export const CHAT_ERROR_CODES = [
   "validation_error",
   "not_found",
   "forbidden",
+  "forbidden_role",
+  "org_not_found",
 ] as const;
 
 /** Union of all error codes the server can return in the `error` field. */
@@ -57,6 +60,7 @@ const RETRYABLE_MAP: Record<ChatErrorCode, boolean> = {
   internal_error: true,
   // Permanent — retrying will not help
   auth_error: false,
+  session_expired: false,
   configuration_error: false,
   no_datasource: false,
   invalid_request: false,
@@ -65,6 +69,8 @@ const RETRYABLE_MAP: Record<ChatErrorCode, boolean> = {
   validation_error: false,
   not_found: false,
   forbidden: false,
+  forbidden_role: false,
+  org_not_found: false,
 };
 
 /** Returns `true` if the given error code represents a transient, retryable failure. */
@@ -465,6 +471,15 @@ export function parseChatError(error: Error, authMode: AuthMode): ChatErrorInfo 
 
     case "forbidden":
       return { title: "Access denied.", detail: serverMessage, code: rawCode, retryable, requestId };
+
+    case "session_expired":
+      return { title: "Your session has expired.", detail: serverMessage ?? "Please sign in again.", code: rawCode, retryable, requestId };
+
+    case "forbidden_role":
+      return { title: "Admin role required.", detail: serverMessage, code: rawCode, retryable, requestId };
+
+    case "org_not_found":
+      return { title: "No active organization.", detail: serverMessage ?? "Select an organization and try again.", code: rawCode, retryable, requestId };
 
     default: {
       const _exhaustive: never = rawCode;

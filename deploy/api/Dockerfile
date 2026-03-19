@@ -96,6 +96,8 @@ COPY --from=builder --chown=atlas:atlas /app/packages/api ./packages/api
 COPY --from=builder --chown=atlas:atlas /app/node_modules ./node_modules
 COPY --from=builder --chown=atlas:atlas /app/semantic ./semantic
 COPY --from=builder --chown=atlas:atlas /app/package.json ./package.json
+# Enterprise features (loaded conditionally at runtime)
+COPY --from=builder --chown=atlas:atlas /app/ee ./ee
 # Plugins (loaded at runtime by the plugin system)
 COPY --from=builder --chown=atlas:atlas /app/plugins ./plugins
 # Demo seeding (ATLAS_SEED_DEMO=true)

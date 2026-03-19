@@ -2502,6 +2502,173 @@ function buildSpec(): Record<string, unknown> {
       },
 
       // -----------------------------------------------------------------
+      // Admin — Usage Metering
+      // -----------------------------------------------------------------
+      "/api/v1/admin/usage": {
+        get: {
+          operationId: "adminGetCurrentUsage",
+          summary: "Current period usage",
+          description: "Returns usage summary for the current billing period (month) for the active workspace. Requires admin role.",
+          tags: ["Admin — Usage"],
+          security: [{ bearerAuth: [] }],
+          responses: {
+            "200": {
+              description: "Current period usage summary",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      workspaceId: { type: "string" },
+                      queryCount: { type: "integer" },
+                      tokenCount: { type: "integer" },
+                      activeUsers: { type: "integer" },
+                      periodStart: { type: "string", format: "date-time" },
+                      periodEnd: { type: "string", format: "date-time" },
+                    },
+                  },
+                },
+              },
+            },
+            ...authErrors,
+          },
+        },
+      },
+      "/api/v1/admin/usage/history": {
+        get: {
+          operationId: "adminGetUsageHistory",
+          summary: "Historical usage summaries",
+          description: "Returns historical usage summaries (daily or monthly) for the active workspace. Requires admin role.",
+          tags: ["Admin — Usage"],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            {
+              name: "period",
+              in: "query",
+              description: "Aggregation period: 'daily' or 'monthly' (default: monthly).",
+              required: false,
+              schema: { type: "string", enum: ["daily", "monthly"], default: "monthly" },
+            },
+            {
+              name: "startDate",
+              in: "query",
+              description: "Filter summaries starting from this date (ISO 8601).",
+              required: false,
+              schema: { type: "string", format: "date-time" },
+            },
+            {
+              name: "endDate",
+              in: "query",
+              description: "Filter summaries up to this date (ISO 8601).",
+              required: false,
+              schema: { type: "string", format: "date-time" },
+            },
+            {
+              name: "limit",
+              in: "query",
+              description: "Maximum number of summaries to return (1-365, default 90).",
+              required: false,
+              schema: { type: "integer", minimum: 1, maximum: 365, default: 90 },
+            },
+          ],
+          responses: {
+            "200": {
+              description: "Historical usage summaries",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      workspaceId: { type: "string" },
+                      period: { type: "string" },
+                      summaries: {
+                        type: "array",
+                        items: {
+                          type: "object",
+                          properties: {
+                            id: { type: "string", format: "uuid" },
+                            workspace_id: { type: "string" },
+                            period: { type: "string" },
+                            period_start: { type: "string", format: "date-time" },
+                            query_count: { type: "integer" },
+                            token_count: { type: "integer" },
+                            active_users: { type: "integer" },
+                            storage_bytes: { type: "integer" },
+                            updated_at: { type: "string", format: "date-time" },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            ...authErrors,
+          },
+        },
+      },
+      "/api/v1/admin/usage/breakdown": {
+        get: {
+          operationId: "adminGetUsageBreakdown",
+          summary: "Per-user usage breakdown",
+          description: "Returns per-user usage breakdown within the active workspace. Requires admin role.",
+          tags: ["Admin — Usage"],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            {
+              name: "startDate",
+              in: "query",
+              description: "Filter events starting from this date (ISO 8601).",
+              required: false,
+              schema: { type: "string", format: "date-time" },
+            },
+            {
+              name: "endDate",
+              in: "query",
+              description: "Filter events up to this date (ISO 8601).",
+              required: false,
+              schema: { type: "string", format: "date-time" },
+            },
+            {
+              name: "limit",
+              in: "query",
+              description: "Maximum number of users to return (1-500, default 100).",
+              required: false,
+              schema: { type: "integer", minimum: 1, maximum: 500, default: 100 },
+            },
+          ],
+          responses: {
+            "200": {
+              description: "Per-user usage breakdown",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      workspaceId: { type: "string" },
+                      users: {
+                        type: "array",
+                        items: {
+                          type: "object",
+                          properties: {
+                            user_id: { type: "string" },
+                            query_count: { type: "integer" },
+                            token_count: { type: "integer" },
+                            login_count: { type: "integer" },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            ...authErrors,
+          },
+        },
+      },
+
+      // -----------------------------------------------------------------
       // Admin — Organizations
       // -----------------------------------------------------------------
       "/api/v1/admin/organizations": {
@@ -3603,6 +3770,7 @@ function buildSpec(): Record<string, unknown> {
       { name: "Admin — Learned Patterns", description: "Admin CRUD for learned query patterns (requires admin role)" },
       { name: "Admin — Suggestions", description: "Admin query suggestion management (requires admin role)" },
       { name: "Admin — Prompts", description: "Admin CRUD for prompt collections and items (requires admin role)" },
+      { name: "Admin — Usage", description: "Admin usage metering and billing data (requires admin role)" },
       { name: "Admin — Organizations", description: "Admin organization management (requires admin role)" },
     ],
   };

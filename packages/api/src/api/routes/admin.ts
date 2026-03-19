@@ -44,6 +44,7 @@ import { adminLearnedPatterns } from "./admin-learned-patterns";
 import { adminPrompts } from "./admin-prompts";
 import { adminSuggestions } from "./admin-suggestions";
 import { adminAuthPreamble, authErrorCode } from "./admin-auth";
+import { adminUsage } from "./admin-usage";
 
 const log = createLogger("admin-routes");
 
@@ -57,6 +58,8 @@ admin.route("/prompts", adminPrompts);
 admin.route("/prompts/", adminPrompts);
 admin.route("/suggestions", adminSuggestions);
 admin.route("/suggestions/", adminSuggestions);
+admin.route("/usage", adminUsage);
+admin.route("/usage/", adminUsage);
 
 // Path traversal guard, YAML helpers, entity discovery, and file finding
 // are all imported from @atlas/api/lib/semantic-files above.

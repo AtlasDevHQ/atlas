@@ -555,6 +555,38 @@ export async function migrateInternalDB(): Promise<void> {
 
   // Soft-delete support for conversations (needed by workspace cascade delete)
   await pool.query(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;`);
+
+  // Usage metering (0.9.0 — per-workspace usage tracking)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS usage_events (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      workspace_id TEXT,
+      user_id TEXT,
+      event_type TEXT NOT NULL,
+      quantity INTEGER NOT NULL DEFAULT 1,
+      metadata JSONB,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_usage_events_workspace ON usage_events(workspace_id, created_at);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_usage_events_type ON usage_events(event_type, created_at);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_usage_events_user ON usage_events(user_id, created_at);`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS usage_summaries (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      workspace_id TEXT NOT NULL,
+      period TEXT NOT NULL,
+      period_start TIMESTAMPTZ NOT NULL,
+      query_count INTEGER NOT NULL DEFAULT 0,
+      token_count INTEGER NOT NULL DEFAULT 0,
+      active_users INTEGER NOT NULL DEFAULT 0,
+      storage_bytes BIGINT NOT NULL DEFAULT 0,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_summaries_ws_period ON usage_summaries(workspace_id, period, period_start);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_usage_summaries_workspace ON usage_summaries(workspace_id, period_start);`);
 }
 
 /** Seed built-in prompt collections. Idempotent — checks each collection by name. */
@@ -679,7 +711,7 @@ await pool.query(`
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_query_suggestions_tables ON query_suggestions USING GIN(tables_involved);`);
   await pool.query(`ALTER TABLE query_suggestions ADD CONSTRAINT uq_query_suggestions_org_hash UNIQUE NULLS NOT DISTINCT (org_id, normalized_hash);`).catch(() => { /* constraint already exists */ });
 
-  log.info("Internal DB migration complete (audit_log, conversations, messages, slack, action_log, scheduled_tasks, connections, token_usage, invitations, plugin_settings, settings, org scoping, semantic_entities, learned_patterns, prompt_collections, prompt_items, query_suggestions)");
+  log.info("Internal DB migration complete (audit_log, conversations, messages, slack, action_log, scheduled_tasks, connections, token_usage, invitations, plugin_settings, settings, org scoping, semantic_entities, learned_patterns, prompt_collections, prompt_items, query_suggestions, usage_events, usage_summaries)");
 
 }
 

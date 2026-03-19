@@ -88,13 +88,21 @@ Final 0.7.x release closing the refinement arc. Comprehensive feature-to-docs ma
 
 Dynamic learning layer that gets smarter with every query. Agent proposes learned patterns after successful queries with deduplication and confidence scoring; approved patterns are injected into agent context with relevance filtering. Admin review/approve/reject UI with bulk operations. Curated per-industry prompt library (SaaS, e-commerce, cybersecurity) with admin CRUD and chat browser. Query suggestion engine mining the audit log for ranked suggestions with contextual display. Self-hosted model improvements with test matrix for Ollama/vLLM/TGI. Notebook-style interface for cell-based exploratory analysis with re-run, keyboard navigation, and persistent state.
 
-</details>
+---
+
+## 0.8.1 — Notebook Refinement
+
+The current milestone. Polishing and extending the notebook UI introduced in 0.8.0.
+
+- **Hardening** — Error boundaries, shared transport hook, error feedback improvements
+- **Quality** — Keyboard navigation tests, UX polish (keybinding consistency, auto-expand, dialog dedup, stable cell state)
+- **Features** — Phase 2 (fork/branch, drag-and-drop reorder, server persistence), Phase 3 (export, text cells)
 
 ---
 
 ## 0.9.0 — SaaS Infrastructure
 
-The current milestone. Platform foundation for hosted Atlas at app.useatlas.dev.
+Platform foundation for hosted Atlas at app.useatlas.dev.
 
 - **Provisioning** — Self-serve signup, workspace lifecycle, guided semantic layer setup wizard
 - **Billing** — Usage metering, Stripe integration, free and paid tiers, overage handling

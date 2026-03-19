@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { DefaultChatTransport } from "ai";
+import { DefaultChatTransport, type UIMessage } from "ai";
 import { AUTH_MODES, type AuthMode } from "../lib/types";
 import { applyBrandColor, OKLCH_RE } from "./use-dark-mode";
 
@@ -17,7 +17,7 @@ export interface UseAtlasTransportOptions {
 }
 
 export interface UseAtlasTransportReturn {
-  transport: DefaultChatTransport;
+  transport: DefaultChatTransport<UIMessage>;
   authMode: AuthMode | null;
   authResolved: boolean;
   apiKey: string;
@@ -125,7 +125,8 @@ export function useAtlasTransport(
           }
           return;
         }
-        const mode = data?.checks?.auth?.mode;
+        const checks = data?.checks as Record<string, Record<string, unknown>> | undefined;
+        const mode = checks?.auth?.mode;
         if (!cancelled) {
           if (
             typeof mode === "string" &&

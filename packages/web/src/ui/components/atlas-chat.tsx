@@ -643,7 +643,7 @@ export function AtlasChat() {
                 {error && (
                   <ErrorBanner
                     error={error}
-                    authMode={authMode}
+                    authMode={authMode ?? "none"}
                     onRetry={
                       messages.some((m) => m.role === "user")
                         ? () => {

@@ -175,15 +175,22 @@ export function useNotebook({ chat, conversationId }: UseNotebookOptions): UseNo
   const [warning, setWarning] = useState<string | null>(null);
   const warningTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const showWarning = useCallback((msg: string) => {
+  function showWarning(msg: string): void {
     if (warningTimer.current) clearTimeout(warningTimer.current);
     setWarning(msg);
     warningTimer.current = setTimeout(() => setWarning(null), 5000);
-  }, []);
+  }
 
-  const clearWarning = useCallback(() => {
+  function clearWarning(): void {
     if (warningTimer.current) clearTimeout(warningTimer.current);
     setWarning(null);
+  }
+
+  // Clean up warning timer on unmount
+  useEffect(() => {
+    return () => {
+      if (warningTimer.current) clearTimeout(warningTimer.current);
+    };
   }, []);
 
   const [cellState, setCellState] = useState<NotebookCell[]>(() => {
@@ -226,7 +233,7 @@ export function useNotebook({ chat, conversationId }: UseNotebookOptions): UseNo
   // Two-phase rerun: setMessages is async (React batches state updates), so we
   // can't call sendMessage immediately after truncating — useChat would still see
   // the old messages. Instead, store the question in a ref and fire sendMessage
-  // in a subsequent effect once the truncated messages are committed and status is idle.
+  // in a subsequent effect once the truncated messages are committed and status is ready.
   useEffect(() => {
     if (pendingRerun.current && chat.status === "ready") {
       const text = pendingRerun.current;

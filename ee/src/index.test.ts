@@ -47,6 +47,19 @@ describe("isEnterpriseEnabled", () => {
     process.env.ATLAS_ENTERPRISE_ENABLED = "true";
     expect(isEnterpriseEnabled()).toBe(false);
   });
+
+  it("falls through to env var when config loaded but no enterprise section", () => {
+    mockConfig = {};
+    process.env.ATLAS_ENTERPRISE_ENABLED = "true";
+    expect(isEnterpriseEnabled()).toBe(true);
+  });
+
+  it("uses strict equality — '1' and 'TRUE' are not true", () => {
+    process.env.ATLAS_ENTERPRISE_ENABLED = "1";
+    expect(isEnterpriseEnabled()).toBe(false);
+    process.env.ATLAS_ENTERPRISE_ENABLED = "TRUE";
+    expect(isEnterpriseEnabled()).toBe(false);
+  });
 });
 
 describe("getEnterpriseLicenseKey", () => {
@@ -74,29 +87,48 @@ describe("getEnterpriseLicenseKey", () => {
     process.env.ATLAS_ENTERPRISE_LICENSE_KEY = "key-from-env";
     expect(getEnterpriseLicenseKey()).toBe("key-from-config");
   });
+
+  it("falls through to env var when config has no licenseKey", () => {
+    mockConfig = { enterprise: { enabled: true } };
+    process.env.ATLAS_ENTERPRISE_LICENSE_KEY = "key-from-env";
+    expect(getEnterpriseLicenseKey()).toBe("key-from-env");
+  });
 });
 
 describe("requireEnterprise", () => {
   beforeEach(() => {
     mockConfig = null;
     delete process.env.ATLAS_ENTERPRISE_ENABLED;
+    delete process.env.ATLAS_ENTERPRISE_LICENSE_KEY;
   });
 
   it("throws when enterprise is not enabled", () => {
-    expect(() => requireEnterprise()).toThrow("Enterprise features");
+    expect(() => requireEnterprise()).toThrow("are not enabled");
   });
 
   it("includes feature name in error when provided", () => {
     expect(() => requireEnterprise("SSO")).toThrow("(SSO)");
   });
 
-  it("does not throw when enterprise is enabled", () => {
+  it("throws when enterprise is enabled but no license key", () => {
     mockConfig = { enterprise: { enabled: true } };
+    expect(() => requireEnterprise()).toThrow("no license key is configured");
+  });
+
+  it("throws with feature name when enabled but no license key", () => {
+    process.env.ATLAS_ENTERPRISE_ENABLED = "true";
+    expect(() => requireEnterprise("SCIM")).toThrow("(SCIM)");
+    expect(() => requireEnterprise("SCIM")).toThrow("no license key is configured");
+  });
+
+  it("does not throw when enterprise is enabled with license key via config", () => {
+    mockConfig = { enterprise: { enabled: true, licenseKey: "valid-key" } };
     expect(() => requireEnterprise()).not.toThrow();
   });
 
-  it("does not throw when env var is set", () => {
+  it("does not throw when enterprise is enabled with license key via env", () => {
     process.env.ATLAS_ENTERPRISE_ENABLED = "true";
+    process.env.ATLAS_ENTERPRISE_LICENSE_KEY = "valid-key";
     expect(() => requireEnterprise()).not.toThrow();
   });
 });

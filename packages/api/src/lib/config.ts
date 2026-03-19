@@ -356,15 +356,16 @@ const AtlasConfigSchema = z.object({
   }).optional(),
 
   /**
-   * Enterprise feature gating. When enabled (with a valid license key),
-   * enterprise-only features in `/ee` are unlocked at runtime.
-   * AGPL core is completely unaffected when this is absent or disabled.
+   * Enterprise feature gating. When enabled, enterprise-only features
+   * in `/ee` are unlocked at runtime. A license key is required for
+   * production use. AGPL core is completely unaffected when this is
+   * absent or disabled.
    */
   enterprise: z.object({
     /** Whether enterprise features are enabled. Default: false. */
     enabled: z.boolean().default(false),
     /** License key for enterprise features. */
-    licenseKey: z.string().optional(),
+    licenseKey: z.string().min(1).optional(),
   }).optional(),
 });
 
@@ -598,16 +599,12 @@ export function configFromEnv(): ResolvedConfig {
       };
     })()),
     // Enterprise config from env vars
-    ...(process.env.ATLAS_ENTERPRISE_ENABLED === "true"
-      ? {
-          enterprise: {
-            enabled: true,
-            ...(process.env.ATLAS_ENTERPRISE_LICENSE_KEY
-              ? { licenseKey: process.env.ATLAS_ENTERPRISE_LICENSE_KEY }
-              : {}),
-          },
-        }
-      : {}),
+    enterprise: {
+      enabled: process.env.ATLAS_ENTERPRISE_ENABLED === "true",
+      ...(process.env.ATLAS_ENTERPRISE_LICENSE_KEY
+        ? { licenseKey: process.env.ATLAS_ENTERPRISE_LICENSE_KEY }
+        : {}),
+    },
     source: "env",
   };
 }
@@ -958,7 +955,7 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
     ...(config.pool ? { pool: config.pool } : {}),
     ...(config.cache ? { cache: config.cache } : {}),
     ...(config.learn ? { learn: config.learn } : {}),
-    ...(config.enterprise?.enabled ? { enterprise: config.enterprise } : {}),
+    ...(config.enterprise ? { enterprise: config.enterprise } : {}),
     source: "file",
   };
 }

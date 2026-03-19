@@ -1,1 +1,1 @@
-// Bun test preload — reset env between tests
+// Bun test preload — reserved for future setup (env cleanup is in beforeEach)

@@ -514,6 +514,18 @@ These can also be configured via [`atlas.config.ts`](/reference/config#enterpris
 
 ---
 
+## Demo Mode
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_DEMO_ENABLED` | `false` | Enable demo mode at `/demo`. Allows unauthenticated users to try Atlas against the sample database with an email gate |
+| `ATLAS_DEMO_RATE_LIMIT_RPM` | `10` | Max requests per minute per demo user |
+| `ATLAS_DEMO_MAX_STEPS` | `10` | Max agent steps per demo request (lower than authenticated default of 25) |
+
+Requires `BETTER_AUTH_SECRET` for demo token signing.
+
+---
+
 ## Runtime
 
 | Variable | Default | Description |

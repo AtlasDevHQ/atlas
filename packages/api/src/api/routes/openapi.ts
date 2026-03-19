@@ -3797,6 +3797,141 @@ function buildSpec(): Record<string, unknown> {
       },
 
       // -----------------------------------------------------------------
+      // Onboarding — self-serve signup flow
+      // -----------------------------------------------------------------
+      "/api/v1/onboarding/social-providers": {
+        get: {
+          operationId: "getOnboardingSocialProviders",
+          summary: "List enabled social login providers",
+          description:
+            "Returns which OAuth providers (Google, GitHub, Microsoft) are configured so the signup page can render the correct buttons. Public endpoint — no authentication required.",
+          tags: ["Onboarding"],
+          security: [],
+          responses: {
+            "200": {
+              description: "List of enabled social providers",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      providers: {
+                        type: "array",
+                        items: { type: "string", enum: ["google", "github", "microsoft"] },
+                        description: "Provider names with both CLIENT_ID and CLIENT_SECRET configured.",
+                      },
+                    },
+                    required: ["providers"],
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+
+      "/api/v1/onboarding/test-connection": {
+        post: {
+          operationId: "testOnboardingConnection",
+          summary: "Test a database connection",
+          description:
+            "Validates the URL scheme, creates a temporary connection, runs a health check, and returns the result. " +
+            "The connection is not persisted. Requires managed auth mode and an authenticated session.",
+          tags: ["Onboarding"],
+          security: [{ bearerAuth: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    url: { type: "string", description: "Database connection URL (postgresql:// or mysql://)" },
+                  },
+                  required: ["url"],
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Connection test result",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      status: { type: "string", description: "Connection health status" },
+                      latencyMs: { type: "number", description: "Connection latency in milliseconds" },
+                      dbType: { type: "string", description: "Detected database type (postgresql or mysql)" },
+                      maskedUrl: { type: "string", description: "Connection URL with credentials redacted" },
+                    },
+                    required: ["status", "latencyMs", "dbType", "maskedUrl"],
+                  },
+                },
+              },
+            },
+            "400": errorResponse("Invalid URL scheme or connection test failed"),
+            "401": errorResponse("Authentication required"),
+            "404": errorResponse("Onboarding requires managed auth mode"),
+          },
+        },
+      },
+
+      "/api/v1/onboarding/complete": {
+        post: {
+          operationId: "completeOnboarding",
+          summary: "Complete workspace setup",
+          description:
+            "Finalizes onboarding by testing the connection, encrypting the URL, and persisting it to the internal database " +
+            "scoped to the user's active organization. Resets the semantic layer whitelist cache so new tables become queryable immediately.",
+          tags: ["Onboarding"],
+          security: [{ bearerAuth: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    url: { type: "string", description: "Database connection URL (postgresql:// or mysql://)" },
+                    connectionId: {
+                      type: "string",
+                      description: "Optional connection ID (defaults to \"default\"). Lowercase alphanumeric, hyphens, underscores, 2-64 chars.",
+                    },
+                  },
+                  required: ["url"],
+                },
+              },
+            },
+          },
+          responses: {
+            "201": {
+              description: "Connection saved and workspace setup complete",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      connectionId: { type: "string", description: "The connection ID (\"default\" or custom)" },
+                      dbType: { type: "string", description: "Detected database type" },
+                      maskedUrl: { type: "string", description: "Connection URL with credentials redacted" },
+                    },
+                    required: ["connectionId", "dbType", "maskedUrl"],
+                  },
+                },
+              },
+            },
+            "400": errorResponse("Invalid URL, connection test failed, or no active organization"),
+            "401": errorResponse("Authentication required"),
+            "404": errorResponse("Onboarding requires managed auth mode and DATABASE_URL"),
+            "409": errorResponse("Connection ID already in use by another organization"),
+            "500": errorResponse("Failed to encrypt or save connection"),
+          },
+        },
+      },
+
+      // -----------------------------------------------------------------
       // Widget — embeddable chat widget
       // -----------------------------------------------------------------
       "/widget": {
@@ -3977,6 +4112,7 @@ function buildSpec(): Record<string, unknown> {
       { name: "Admin — Usage", description: "Admin usage metering and billing data (requires admin role)" },
       { name: "Admin — Organizations", description: "Admin organization management (requires admin role)" },
       { name: "Admin — SSO", description: "Enterprise SSO provider management (requires admin role + enterprise license)" },
+      { name: "Onboarding", description: "Self-serve signup flow (requires managed auth)" },
     ],
   };
 }

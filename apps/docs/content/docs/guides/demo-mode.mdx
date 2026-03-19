@@ -1,0 +1,129 @@
+---
+title: Demo Mode
+description: Enable an interactive, email-gated demo of Atlas at /demo for lead capture and evaluation.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Demo mode lets you expose a public, email-gated preview of Atlas at `/demo`. Visitors enter their email to start a sandboxed chat session — no account creation required. It's designed for lead capture and product evaluation with built-in rate limiting and reduced agent capabilities.
+
+<Callout title="Prerequisites">
+- `ATLAS_DEMO_ENABLED=true`
+- `BETTER_AUTH_SECRET` set (used to sign demo tokens)
+- A datasource configured (`ATLAS_DATASOURCE_URL`)
+</Callout>
+
+---
+
+## How It Works
+
+1. Visitor navigates to `/demo` and enters their email address
+2. Atlas validates the email and issues an HMAC-SHA256 signed token (24-hour TTL)
+3. The visitor chats with the agent using the demo token for authentication
+4. Sessions are rate-limited and capped at fewer agent steps than production
+
+Demo sessions use a separate auth path from the main application. The demo token is derived from `BETTER_AUTH_SECRET` with a `demo` suffix — it does not grant access to any authenticated endpoints.
+
+### Lead Capture
+
+Every demo start captures:
+- Email address (used as the demo user identifier)
+- IP address and user agent
+- Session count and whether the user is returning
+
+User IDs are deterministic hashes (`demo:<sha256(email)>`) — the raw email is stored only in the lead capture record, not in conversation metadata.
+
+---
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_DEMO_ENABLED` | `false` | Enable demo mode and the `/demo` route |
+| `ATLAS_DEMO_MAX_STEPS` | `10` | Maximum agent steps per demo chat (1–100) |
+| `ATLAS_DEMO_RATE_LIMIT_RPM` | `10` | Requests per minute per demo user (0 = disabled) |
+
+```bash
+# .env — enable demo mode with custom limits
+ATLAS_DEMO_ENABLED=true
+ATLAS_DEMO_MAX_STEPS=15
+ATLAS_DEMO_RATE_LIMIT_RPM=20
+```
+
+---
+
+## Demo vs Production
+
+| Feature | Demo | Production |
+|---------|------|------------|
+| **Auth** | Email-gated token (24h TTL) | Managed auth, API key, or BYOT |
+| **Agent steps** | Reduced (default 10) | Full (default 25) |
+| **Tools** | Default tools only | All tools + plugin tools + actions |
+| **Rate limit** | Separate per-user limiter | Main rate limiter |
+| **Conversations** | Persisted with `surface="demo"` | Persisted with standard surface |
+| **Token expiry** | 24 hours | Session-based |
+
+<Callout type="warn">
+Demo mode uses the default datasource and semantic layer. Ensure the demo datasource does not contain sensitive production data.
+</Callout>
+
+---
+
+## API Endpoints
+
+Demo endpoints are mounted at `/api/v1/demo`.
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/start` | None (rate-limited by IP) | Email gate — validates email, signs token, captures lead |
+| `POST` | `/chat` | Bearer demo token | Stream a chat response (mirrors main chat) |
+| `GET` | `/conversations` | Bearer demo token | List the demo user's conversations |
+| `GET` | `/conversations/:id` | Bearer demo token | Get a conversation with messages |
+
+### Start a Demo Session
+
+```bash
+curl -X POST https://your-atlas.example.com/api/v1/demo/start \
+  -H "Content-Type: application/json" \
+  -d '{ "email": "visitor@example.com" }'
+```
+
+Response:
+
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiIs...",
+  "expiresAt": "2026-03-21T12:00:00.000Z",
+  "returning": false,
+  "conversationCount": 0
+}
+```
+
+### Chat via Demo Token
+
+```bash
+curl -X POST https://your-atlas.example.com/api/v1/demo/chat \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIs..." \
+  -d '{ "messages": [{ "role": "user", "content": "Show me revenue by month" }] }'
+```
+
+---
+
+## Limitations
+
+- **No plugin tools** — demo sessions use default tools only (executeSQL, explore). Custom actions and plugin-provided tools are not available
+- **No write operations** — actions are disabled in demo mode
+- **Reduced steps** — the agent has fewer steps to work with, which may limit complex multi-step analyses
+- **Token expiry** — demo tokens expire after 24 hours; the user must re-enter their email to continue
+- **Rate limiting** — each demo user is rate-limited independently from production users
+
+---
+
+## See Also
+
+- [Environment Variables](/reference/environment-variables) — Full variable reference
+- [Rate Limiting](/guides/rate-limiting) — Configure rate limits for production
+- [Embedding Widget](/guides/embedding-widget) — Alternative: embed Atlas in your own site

@@ -1,0 +1,164 @@
+---
+title: Self-Serve Signup
+description: Let users sign up, create a workspace, and connect their database through a guided wizard.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas includes a self-serve signup flow that walks new users through account creation, workspace setup, and database connection — all from the browser. Once complete, users land in the chat UI ready to query.
+
+<Callout title="Prerequisites">
+- [Managed auth](/deployment/authentication#managed-auth) enabled (`ATLAS_AUTH_MODE=managed`)
+- Internal database configured (`DATABASE_URL`)
+- At least one LLM provider configured (`ATLAS_PROVIDER` + API key)
+</Callout>
+
+---
+
+## How It Works
+
+The signup wizard is a four-step flow at `/signup`:
+
+| Step | Route | What happens |
+|------|-------|-------------|
+| 1. **Create account** | `/signup` | Email/password or OAuth (Google, GitHub, Microsoft) |
+| 2. **Name workspace** | `/signup/workspace` | Workspace name + auto-generated slug (max 48 chars) |
+| 3. **Connect database** | `/signup/connect` | Paste a PostgreSQL or MySQL URL, test it, save |
+| 4. **Done** | `/signup/success` | Confirmation with next steps |
+
+Each step validates before allowing the user to proceed. The database URL is tested against the live server before being saved.
+
+---
+
+## Enabling Social Login
+
+Social OAuth buttons appear automatically when the corresponding environment variables are set. Each provider requires both a client ID and client secret:
+
+| Provider | Environment Variables |
+|----------|----------------------|
+| Google | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` |
+| GitHub | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` |
+| Microsoft | `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET` |
+
+```bash
+# .env — enable Google and GitHub OAuth
+GOOGLE_CLIENT_ID=your-google-client-id
+GOOGLE_CLIENT_SECRET=your-google-client-secret
+GITHUB_CLIENT_ID=your-github-client-id
+GITHUB_CLIENT_SECRET=your-github-client-secret
+```
+
+The signup page checks which providers are available via `GET /api/v1/onboarding/social-providers` and renders OAuth buttons accordingly. If no social providers are configured, only email/password signup is shown.
+
+See [Social Providers](/guides/social-providers) for detailed OAuth setup instructions per provider.
+
+---
+
+## Database Connection
+
+In step 3, the user pastes a database URL (`postgresql://` or `mysql://`). The wizard:
+
+1. **Validates the URL scheme** — only PostgreSQL and MySQL are supported
+2. **Tests connectivity** — creates a temporary connection, runs a health check, reports latency
+3. **Persists on success** — encrypts the URL at rest and saves it scoped to the user's workspace
+
+<Callout type="info">
+Connection URLs are encrypted using `BETTER_AUTH_SECRET` or `ATLAS_ENCRYPTION_KEY` before storage. The URL is never stored in plaintext.
+</Callout>
+
+The connection is registered with a default ID of `"default"`. If you need multiple datasources, add them later via the [Admin Console](/guides/admin-console#connections).
+
+### Connection ID Rules
+
+Custom connection IDs (optional) must be:
+- 2–64 characters
+- Lowercase alphanumeric, hyphens, or underscores
+- Must not start with an underscore (reserved for internal use)
+
+---
+
+## API Endpoints
+
+The onboarding API is mounted at `/api/v1/onboarding`. All endpoints require managed auth mode.
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/social-providers` | None | List enabled OAuth providers |
+| `POST` | `/test-connection` | Session | Test a database URL without saving |
+| `POST` | `/complete` | Session | Save connection and finalize workspace setup |
+
+### Test Connection
+
+```bash
+curl -X POST https://your-atlas.example.com/api/v1/onboarding/test-connection \
+  -H "Content-Type: application/json" \
+  -H "Cookie: your-session-cookie" \
+  -d '{ "url": "postgresql://user:pass@host:5432/mydb" }'
+```
+
+Response:
+
+```json
+{
+  "status": "healthy",
+  "latencyMs": 42,
+  "dbType": "postgresql",
+  "maskedUrl": "postgresql://user:****@host:5432/mydb"
+}
+```
+
+### Complete Onboarding
+
+```bash
+curl -X POST https://your-atlas.example.com/api/v1/onboarding/complete \
+  -H "Content-Type: application/json" \
+  -H "Cookie: your-session-cookie" \
+  -d '{ "url": "postgresql://user:pass@host:5432/mydb" }'
+```
+
+Response (201):
+
+```json
+{
+  "connectionId": "default",
+  "dbType": "postgresql",
+  "maskedUrl": "postgresql://user:****@host:5432/mydb"
+}
+```
+
+---
+
+## Configuration
+
+```typescript
+// atlas.config.ts
+export default defineConfig({
+  auth: "managed",
+  datasources: {
+    default: { url: process.env.ATLAS_DATASOURCE_URL! },
+  },
+});
+```
+
+For most self-serve deployments, the datasource URL comes from the onboarding flow rather than a static config file. The `atlas.config.ts` is primarily used for self-hosted deployments with pre-configured connections.
+
+---
+
+## After Signup
+
+Once a user completes onboarding:
+
+1. Their workspace is active with one datasource connection
+2. The semantic layer whitelist cache is flushed, so new tables are queryable immediately
+3. They can start chatting, or run `atlas init` to generate a semantic layer from the connected database
+
+For semantic layer setup, see [Semantic Layer](/getting-started/semantic-layer).
+
+---
+
+## See Also
+
+- [Authentication](/deployment/authentication) — Auth mode setup and configuration
+- [Social Providers](/guides/social-providers) — Detailed OAuth setup per provider
+- [Admin Console](/guides/admin-console) — Manage connections and users after signup
+- [Environment Variables](/reference/environment-variables) — Full variable reference

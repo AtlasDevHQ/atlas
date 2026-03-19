@@ -545,13 +545,20 @@ export async function migrateInternalDB(): Promise<void> {
 
   // Workspace lifecycle (0.9.0 — SaaS infrastructure)
   // Extends the Better Auth `organization` table with workspace management columns.
-  await pool.query(`ALTER TABLE organization ADD COLUMN IF NOT EXISTS workspace_status TEXT NOT NULL DEFAULT 'active';`);
-  await pool.query(`DO $$ BEGIN ALTER TABLE organization ADD CONSTRAINT chk_workspace_status CHECK (workspace_status IN ('active', 'suspended', 'deleted')); EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
-  await pool.query(`ALTER TABLE organization ADD COLUMN IF NOT EXISTS plan_tier TEXT NOT NULL DEFAULT 'free';`);
-  await pool.query(`DO $$ BEGIN ALTER TABLE organization ADD CONSTRAINT chk_plan_tier CHECK (plan_tier IN ('free', 'team', 'enterprise')); EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
-  await pool.query(`ALTER TABLE organization ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMPTZ;`);
-  await pool.query(`ALTER TABLE organization ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_organization_workspace_status ON organization(workspace_status);`);
+  // The organization table is created by Better Auth migrations (which run after this).
+  // On first boot, this block is skipped; columns are added on subsequent restarts.
+  const orgTableExists = await pool.query(
+    `SELECT 1 FROM information_schema.tables WHERE table_name = 'organization' LIMIT 1`,
+  );
+  if (orgTableExists.rows.length > 0) {
+    await pool.query(`ALTER TABLE organization ADD COLUMN IF NOT EXISTS workspace_status TEXT NOT NULL DEFAULT 'active';`);
+    await pool.query(`DO $$ BEGIN ALTER TABLE organization ADD CONSTRAINT chk_workspace_status CHECK (workspace_status IN ('active', 'suspended', 'deleted')); EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
+    await pool.query(`ALTER TABLE organization ADD COLUMN IF NOT EXISTS plan_tier TEXT NOT NULL DEFAULT 'free';`);
+    await pool.query(`DO $$ BEGIN ALTER TABLE organization ADD CONSTRAINT chk_plan_tier CHECK (plan_tier IN ('free', 'team', 'enterprise')); EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
+    await pool.query(`ALTER TABLE organization ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMPTZ;`);
+    await pool.query(`ALTER TABLE organization ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_organization_workspace_status ON organization(workspace_status);`);
+  }
 
   // Soft-delete support for conversations (needed by workspace cascade delete)
   await pool.query(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;`);

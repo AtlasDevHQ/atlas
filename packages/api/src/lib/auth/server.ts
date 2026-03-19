@@ -142,7 +142,7 @@ export function getAuthInstance(): AuthInstance {
     plugins: [
       bearer(),
       apiKey(),
-      admin({ defaultRole: "member", adminRoles: ["admin", "owner"] }),
+      admin({ defaultRole: "member", adminRoles: ["admin"] }),
       organization({
         ac,
         roles: { owner: ownerRole, admin: adminRole, member: memberRole },

@@ -17,7 +17,7 @@ export function buildCellsFromMessages(messages: UIMessage[]): NotebookCell[] {
     if (message.role === "user") {
       cellNumber++;
       cells.push({
-        id: `cell-${message.id}`,
+        id: `cell-${cellNumber}`,
         messageId: message.id,
         number: cellNumber,
         collapsed: false,
@@ -183,7 +183,7 @@ export function useNotebook({ chat, conversationId }: UseNotebookOptions): UseNo
     const fresh = buildCellsFromMessages(chat.messages);
     setCellState((prev) =>
       fresh.map((fc) => {
-        const existing = prev.find((pc) => pc.messageId === fc.messageId);
+        const existing = prev.find((pc) => pc.id === fc.id);
         return existing
           ? { ...fc, collapsed: existing.collapsed, editing: existing.editing }
           : fc;

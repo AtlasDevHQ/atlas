@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 
@@ -15,18 +15,33 @@ export function NotebookCellInput({ question, editing, onSubmit, onCancel }: Cel
   const [draft, setDraft] = useState(question);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  const autoExpand = useCallback(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, []);
+
   useEffect(() => {
     if (editing) {
       setDraft(question);
-      requestAnimationFrame(() => textareaRef.current?.focus());
+      requestAnimationFrame(() => {
+        textareaRef.current?.focus();
+        autoExpand();
+      });
     }
-  }, [editing, question]);
+  }, [editing, question, autoExpand]);
 
   function handleKeyDown(e: React.KeyboardEvent) {
-    if (e.key === "Enter" && e.shiftKey) {
+    if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       onSubmit(draft);
     }
+  }
+
+  function handleChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
+    setDraft(e.target.value);
+    autoExpand();
   }
 
   if (!editing) {
@@ -42,9 +57,9 @@ export function NotebookCellInput({ question, editing, onSubmit, onCancel }: Cel
       <Textarea
         ref={textareaRef}
         value={draft}
-        onChange={(e) => setDraft(e.target.value)}
+        onChange={handleChange}
         onKeyDown={handleKeyDown}
-        className="min-h-[60px] resize-y"
+        className="min-h-[60px] resize-y overflow-hidden"
         placeholder="Edit your question..."
       />
       <div className="flex items-center gap-2">
@@ -54,7 +69,7 @@ export function NotebookCellInput({ question, editing, onSubmit, onCancel }: Cel
         <Button size="sm" variant="ghost" onClick={onCancel}>
           Cancel
         </Button>
-        <span className="text-xs text-zinc-500">Shift+Enter to run</span>
+        <span className="text-xs text-zinc-500">Enter to run, Shift+Enter for newline</span>
       </div>
     </div>
   );

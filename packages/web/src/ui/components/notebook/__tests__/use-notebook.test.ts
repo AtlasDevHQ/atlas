@@ -1229,4 +1229,361 @@ describe("useNotebook hook", () => {
       expect(parsed.conversationId).toBe(realId);
     });
   });
+
+  // ---- Text cell operations ----
+
+  describe("text cell operations", () => {
+    test("insertTextCell adds a text cell at the end", () => {
+      const messages = [makeMessage("u1", "user"), makeMessage("a1", "assistant")];
+      const chat = createMockChat({ messages });
+      const { result } = renderHook(
+        (props: UseNotebookOptions) => useNotebook(props),
+        { initialProps: { chat, conversationId: "text-insert" } },
+      );
+
+      expect(result.current.cells).toHaveLength(1);
+
+      act(() => {
+        result.current.insertTextCell();
+      });
+
+      expect(result.current.cells).toHaveLength(2);
+      const textCell = result.current.cells[1];
+      expect(textCell.type).toBe("text");
+      expect(textCell.content).toBe("");
+      expect(textCell.editing).toBe(true);
+      expect(textCell.number).toBe(2);
+    });
+
+    test("insertTextCell inserts after a specific cell", () => {
+      const messages = [
+        makeMessage("u1", "user"),
+        makeMessage("a1", "assistant"),
+        makeMessage("u2", "user"),
+        makeMessage("a2", "assistant"),
+      ];
+      const chat = createMockChat({ messages });
+      const { result } = renderHook(
+        (props: UseNotebookOptions) => useNotebook(props),
+        { initialProps: { chat, conversationId: "text-insert-after" } },
+      );
+
+      expect(result.current.cells).toHaveLength(2);
+
+      act(() => {
+        result.current.insertTextCell("cell-1");
+      });
+
+      expect(result.current.cells).toHaveLength(3);
+      // Text cell should be at index 1 (between cell-1 and cell-2)
+      expect(result.current.cells[1].type).toBe("text");
+      expect(result.current.cells[1].number).toBe(2);
+      // cell-2 should now be number 3
+      expect(result.current.cells[2].id).toBe("cell-2");
+      expect(result.current.cells[2].number).toBe(3);
+    });
+
+    test("updateTextCell updates content", () => {
+      const messages = [makeMessage("u1", "user"), makeMessage("a1", "assistant")];
+      const chat = createMockChat({ messages });
+      const { result } = renderHook(
+        (props: UseNotebookOptions) => useNotebook(props),
+        { initialProps: { chat, conversationId: "text-update" } },
+      );
+
+      act(() => {
+        result.current.insertTextCell();
+      });
+
+      const textCellId = result.current.cells[1].id;
+
+      act(() => {
+        result.current.updateTextCell(textCellId, "# Hello World");
+      });
+
+      expect(result.current.cells[1].content).toBe("# Hello World");
+    });
+
+    test("deleteCell on text cell removes only that cell", () => {
+      const messages = [
+        makeMessage("u1", "user"),
+        makeMessage("a1", "assistant"),
+        makeMessage("u2", "user"),
+        makeMessage("a2", "assistant"),
+      ];
+      const chat = createMockChat({ messages });
+      const { result } = renderHook(
+        (props: UseNotebookOptions) => useNotebook(props),
+        { initialProps: { chat, conversationId: "text-delete" } },
+      );
+
+      act(() => {
+        result.current.insertTextCell("cell-1");
+      });
+
+      expect(result.current.cells).toHaveLength(3);
+      const textCellId = result.current.cells[1].id;
+
+      act(() => {
+        result.current.deleteCell(textCellId);
+      });
+
+      // Text cell removed, query cells remain
+      expect(result.current.cells).toHaveLength(2);
+      expect(result.current.cells[0].id).toBe("cell-1");
+      expect(result.current.cells[1].id).toBe("cell-2");
+      // Messages should not be affected
+      expect(chat.setMessages).not.toHaveBeenCalled();
+    });
+
+    test("deleteCell on query cell preserves text cells", () => {
+      const messages = [
+        makeMessage("u1", "user"),
+        makeMessage("a1", "assistant"),
+        makeMessage("u2", "user"),
+        makeMessage("a2", "assistant"),
+      ];
+      const chat = createMockChat({ messages });
+      const { result } = renderHook(
+        (props: UseNotebookOptions) => useNotebook(props),
+        { initialProps: { chat, conversationId: "text-preserve" } },
+      );
+
+      act(() => {
+        result.current.insertTextCell("cell-1");
+      });
+
+      expect(result.current.cells).toHaveLength(3);
+      const textCellId = result.current.cells[1].id;
+
+      // Delete query cell-2 (which cascades subsequent query cells)
+      act(() => {
+        result.current.deleteCell("cell-2");
+      });
+
+      // Text cell should survive — only query cells are cascade-deleted
+      const textCell = result.current.cells.find((c) => c.id === textCellId);
+      expect(textCell).toBeDefined();
+      expect(textCell!.type).toBe("text");
+    });
+
+    test("text cells survive message reconciliation", () => {
+      const messages = [makeMessage("u1", "user"), makeMessage("a1", "assistant")];
+      const chat = createMockChat({ messages });
+      const { result, rerender } = renderHook(
+        (props: UseNotebookOptions) => useNotebook(props),
+        { initialProps: { chat, conversationId: "text-reconcile" } },
+      );
+
+      act(() => {
+        result.current.insertTextCell();
+      });
+
+      const textCellId = result.current.cells[1].id;
+
+      act(() => {
+        result.current.updateTextCell(textCellId, "my notes");
+      });
+
+      // Simulate new message arriving
+      const newMessages = [
+        ...messages,
+        makeMessage("u2", "user"),
+        makeMessage("a2", "assistant"),
+      ];
+      const newChat = createMockChat({ messages: newMessages });
+      rerender({ chat: newChat, conversationId: "text-reconcile" });
+
+      // Text cell should still be present with its content
+      const textCell = result.current.cells.find((c) => c.type === "text");
+      expect(textCell).toBeDefined();
+      expect(textCell!.content).toBe("my notes");
+    });
+
+    test("text cells are persisted to localStorage", () => {
+      const convId = "text-persist";
+      const messages = [makeMessage("u1", "user"), makeMessage("a1", "assistant")];
+      const chat = createMockChat({ messages });
+      const { result } = renderHook(
+        (props: UseNotebookOptions) => useNotebook(props),
+        { initialProps: { chat, conversationId: convId } },
+      );
+
+      act(() => {
+        result.current.insertTextCell();
+      });
+
+      const textCellId = result.current.cells[1].id;
+
+      act(() => {
+        result.current.updateTextCell(textCellId, "persisted content");
+      });
+
+      const raw = localStorage.getItem(`atlas:notebook:${convId}`);
+      expect(raw).not.toBeNull();
+      const stored = JSON.parse(raw!) as NotebookState;
+      const textCell = stored.cells.find((c) => c.type === "text");
+      expect(textCell).toBeDefined();
+      expect(textCell!.content).toBe("persisted content");
+    });
+
+    test("text cells restored from localStorage on mount", () => {
+      const convId = "text-restore";
+      const saved: NotebookState = {
+        conversationId: convId,
+        version: 3,
+        cells: [
+          { id: "cell-1", messageId: "u1", number: 1, collapsed: false, editing: false, status: "idle" },
+          { id: "text-999", messageId: "", number: 0, collapsed: false, editing: false, status: "idle", type: "text", content: "restored notes" },
+        ],
+        cellOrder: ["cell-1", "text-999"],
+      };
+      localStorage.setItem(`atlas:notebook:${convId}`, JSON.stringify(saved));
+
+      const messages = [makeMessage("u1", "user"), makeMessage("a1", "assistant")];
+      const chat = createMockChat({ messages });
+      const { result } = renderHook(
+        (props: UseNotebookOptions) => useNotebook(props),
+        { initialProps: { chat, conversationId: convId } },
+      );
+
+      expect(result.current.cells).toHaveLength(2);
+      const textCell = result.current.cells.find((c) => c.type === "text");
+      expect(textCell).toBeDefined();
+      expect(textCell!.content).toBe("restored notes");
+    });
+
+    test("text cells restored from server state on mount", () => {
+      const messages = [makeMessage("u1", "user"), makeMessage("a1", "assistant")];
+      const chat = createMockChat({ messages });
+      const serverState = {
+        version: 3,
+        cellOrder: ["cell-1", "text-server-1"],
+        cellProps: {},
+        textCells: { "text-server-1": { content: "server notes" } },
+      };
+
+      const { result } = renderHook(
+        (props: UseNotebookOptions) => useNotebook(props),
+        {
+          initialProps: {
+            chat,
+            conversationId: "text-server",
+            initialServerState: serverState,
+          },
+        },
+      );
+
+      const textCell = result.current.cells.find((c) => c.type === "text");
+      expect(textCell).toBeDefined();
+      expect(textCell!.content).toBe("server notes");
+    });
+
+    test("text cells are reorderable via cellOrder", () => {
+      const messages = [
+        makeMessage("u1", "user"),
+        makeMessage("a1", "assistant"),
+        makeMessage("u2", "user"),
+        makeMessage("a2", "assistant"),
+      ];
+      const chat = createMockChat({ messages });
+      const { result } = renderHook(
+        (props: UseNotebookOptions) => useNotebook(props),
+        { initialProps: { chat, conversationId: "text-reorder" } },
+      );
+
+      act(() => {
+        result.current.insertTextCell("cell-1");
+      });
+
+      const textCellId = result.current.cells[1].id;
+
+      // Reorder: move text cell to end
+      act(() => {
+        result.current.reorderCells(["cell-1", "cell-2", textCellId]);
+      });
+
+      expect(result.current.cells[0].id).toBe("cell-1");
+      expect(result.current.cells[1].id).toBe("cell-2");
+      expect(result.current.cells[2].id).toBe(textCellId);
+    });
+
+    test("text cell has synthetic userMessage for display", () => {
+      const messages = [makeMessage("u1", "user"), makeMessage("a1", "assistant")];
+      const chat = createMockChat({ messages });
+      const { result } = renderHook(
+        (props: UseNotebookOptions) => useNotebook(props),
+        { initialProps: { chat, conversationId: "text-synthetic" } },
+      );
+
+      act(() => {
+        result.current.insertTextCell();
+        result.current.updateTextCell(result.current.cells[1]?.id ?? "", "hello world");
+      });
+
+      const textCell = result.current.cells.find((c) => c.type === "text");
+      expect(textCell).toBeDefined();
+      expect(textCell!.userMessage.role).toBe("user");
+      expect(textCell!.assistantMessage).toBeNull();
+    });
+
+    test("toggleEdit works for text cells", () => {
+      const messages = [makeMessage("u1", "user"), makeMessage("a1", "assistant")];
+      const chat = createMockChat({ messages });
+      const { result } = renderHook(
+        (props: UseNotebookOptions) => useNotebook(props),
+        { initialProps: { chat, conversationId: "text-edit" } },
+      );
+
+      act(() => {
+        result.current.insertTextCell();
+      });
+
+      const textCellId = result.current.cells[1].id;
+      expect(result.current.cells[1].editing).toBe(true); // starts in edit mode
+
+      act(() => {
+        result.current.toggleEdit(textCellId);
+      });
+
+      expect(result.current.cells[1].editing).toBe(false);
+    });
+
+    test("server persistence includes textCells data", async () => {
+      const messages = [makeMessage("u1", "user"), makeMessage("a1", "assistant")];
+      const chat = createMockChat({ messages });
+      const saveToServer = mock(() => {});
+
+      const { result } = renderHook(
+        (props: UseNotebookOptions) => useNotebook(props),
+        {
+          initialProps: {
+            chat,
+            conversationId: "text-server-persist",
+            saveToServer,
+          },
+        },
+      );
+
+      act(() => {
+        result.current.insertTextCell();
+      });
+
+      const textCellId = result.current.cells[1].id;
+
+      act(() => {
+        result.current.updateTextCell(textCellId, "server content");
+      });
+
+      // Wait for debounce (500ms)
+      await new Promise((r) => setTimeout(r, 600));
+
+      expect(saveToServer).toHaveBeenCalled();
+      const lastCall = saveToServer.mock.calls.at(-1);
+      expect(lastCall).toBeDefined();
+      const wire = lastCall![0] as { textCells?: Record<string, { content: string }> };
+      expect(wire.textCells).toBeDefined();
+      expect(wire.textCells![textCellId]).toEqual({ content: "server content" });
+    });
+  });
 });

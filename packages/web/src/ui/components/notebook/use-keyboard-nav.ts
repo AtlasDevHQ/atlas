@@ -5,6 +5,7 @@ export interface UseKeyboardNavOptions {
   onEnterEdit: (index: number) => void;
   onExitEdit: () => void;
   onDelete: (index: number) => void;
+  onInsertTextCell?: (index: number) => void;
   editing: boolean;
 }
 
@@ -16,6 +17,7 @@ export interface UseKeyboardNavOptions {
  *   Enter                — enter edit mode for focused cell
  *   Escape               — exit edit mode, return focus to cell
  *   Ctrl+Shift+Backspace — delete focused cell (shows confirmation dialog)
+ *   Ctrl+Shift+T         — insert text cell after focused cell
  *
  * When inside an INPUT/TEXTAREA, only Escape is handled (exits edit mode).
  * In-editor key handling (Enter to submit, Shift+Enter for newline) is
@@ -26,6 +28,7 @@ export function useKeyboardNav({
   onEnterEdit,
   onExitEdit,
   onDelete,
+  onInsertTextCell,
   editing,
 }: UseKeyboardNavOptions) {
   const focusedIndex = useRef(0);
@@ -88,12 +91,19 @@ export function useKeyboardNav({
             onDelete(focusedIndex.current);
           }
           break;
+        case "t":
+        case "T":
+          if (e.ctrlKey && e.shiftKey && onInsertTextCell) {
+            e.preventDefault();
+            onInsertTextCell(focusedIndex.current);
+          }
+          break;
       }
     }
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [cellCount, editing, focusCell, onEnterEdit, onExitEdit, onDelete]);
+  }, [cellCount, editing, focusCell, onEnterEdit, onExitEdit, onDelete, onInsertTextCell]);
 
   return { setRef, focusCell, focusedIndex };
 }

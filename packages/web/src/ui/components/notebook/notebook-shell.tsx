@@ -1,15 +1,24 @@
 "use client";
 
 import { useRef, useEffect, useState } from "react";
+import { Plus, Download } from "lucide-react";
 import type { UseNotebookReturn } from "./use-notebook";
 import { useKeyboardNav } from "./use-keyboard-nav";
 import { NotebookCell } from "./notebook-cell";
+import { NotebookTextCell } from "./notebook-text-cell";
 import { NotebookEmptyState } from "./notebook-empty-state";
 import { NotebookInputBar } from "./notebook-input-bar";
 import { DeleteCellDialog } from "./delete-cell-dialog";
 import { ForkBranchSelector } from "./fork-branch-selector";
+import { exportToMarkdown, exportToHTML, downloadFile } from "./notebook-export";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Sortable,
   SortableContent,
@@ -41,6 +50,10 @@ export function NotebookShell({ notebook, focusCellId }: NotebookShellProps) {
     onDelete: (index) => {
       setPendingDeleteIndex(index);
     },
+    onInsertTextCell: (index) => {
+      const cell = notebook.cells[index];
+      notebook.insertTextCell(cell?.id);
+    },
     editing: editingCellId !== null,
   });
 
@@ -60,6 +73,8 @@ export function NotebookShell({ notebook, focusCellId }: NotebookShellProps) {
     }
     prevCellCount.current = notebook.cells.length;
   }, [notebook.cells.length]);
+
+  const pendingDeleteCell = pendingDeleteIndex !== null ? notebook.cells[pendingDeleteIndex] : null;
 
   return (
     <div className="flex h-full flex-col">
@@ -93,6 +108,72 @@ export function NotebookShell({ notebook, focusCellId }: NotebookShellProps) {
             />
           )}
 
+          {/* Notebook toolbar — insert text cell + export */}
+          {notebook.cells.length > 0 && (
+            <div className="flex items-center justify-between">
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 gap-1.5 text-xs"
+                onClick={() => notebook.insertTextCell()}
+              >
+                <Plus className="size-3" />
+                Text Cell
+              </Button>
+
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 gap-1.5 text-xs"
+                  >
+                    <Download className="size-3" />
+                    Export
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem
+                    onClick={() => {
+                      try {
+                        downloadFile(
+                          exportToMarkdown(notebook.cells),
+                          "notebook.md",
+                          "text/markdown",
+                        );
+                      } catch (err: unknown) {
+                        console.error(
+                          "Export to Markdown failed:",
+                          err instanceof Error ? err.message : String(err),
+                        );
+                      }
+                    }}
+                  >
+                    Markdown (.md)
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => {
+                      try {
+                        downloadFile(
+                          exportToHTML(notebook.cells),
+                          "notebook.html",
+                          "text/html",
+                        );
+                      } catch (err: unknown) {
+                        console.error(
+                          "Export to HTML failed:",
+                          err instanceof Error ? err.message : String(err),
+                        );
+                      }
+                    }}
+                  >
+                    HTML (.html)
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          )}
+
           {notebook.cells.length === 0 ? (
             <NotebookEmptyState />
           ) : (
@@ -119,17 +200,27 @@ export function NotebookShell({ notebook, focusCellId }: NotebookShellProps) {
                         </div>
                       )}
                     >
-                      <NotebookCell
-                        ref={setRef(i)}
-                        cell={cell}
-                        anyRunning={anyRunning}
-                        onRerun={notebook.rerunCell}
-                        onDelete={notebook.deleteCell}
-                        onToggleEdit={notebook.toggleEdit}
-                        onToggleCollapse={notebook.toggleCollapse}
-                        onCopy={notebook.copyCell}
-                        onFork={notebook.forkCell}
-                      />
+                      {cell.type === "text" ? (
+                        <NotebookTextCell
+                          ref={setRef(i)}
+                          cell={cell}
+                          onUpdateContent={notebook.updateTextCell}
+                          onDelete={notebook.deleteCell}
+                          onToggleEdit={notebook.toggleEdit}
+                        />
+                      ) : (
+                        <NotebookCell
+                          ref={setRef(i)}
+                          cell={cell}
+                          anyRunning={anyRunning}
+                          onRerun={notebook.rerunCell}
+                          onDelete={notebook.deleteCell}
+                          onToggleEdit={notebook.toggleEdit}
+                          onToggleCollapse={notebook.toggleCollapse}
+                          onCopy={notebook.copyCell}
+                          onFork={notebook.forkCell}
+                        />
+                      )}
                     </ErrorBoundary>
                   </SortableItem>
                 ))}
@@ -154,7 +245,8 @@ export function NotebookShell({ notebook, focusCellId }: NotebookShellProps) {
       <DeleteCellDialog
         open={pendingDeleteIndex !== null}
         onOpenChange={(open) => { if (!open) setPendingDeleteIndex(null); }}
-        cellNumber={pendingDeleteIndex !== null ? (notebook.cells[pendingDeleteIndex]?.number ?? 0) : 0}
+        cellNumber={pendingDeleteCell?.number ?? 0}
+        isTextCell={pendingDeleteCell?.type === "text"}
         onConfirm={() => {
           if (pendingDeleteIndex !== null) {
             const cell = notebook.cells[pendingDeleteIndex];

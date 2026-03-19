@@ -11,15 +11,17 @@ interface TestNavProps {
   onEnterEdit: (index: number) => void;
   onExitEdit: () => void;
   onDelete: (index: number) => void;
+  onInsertTextCell?: (index: number) => void;
   editing: boolean;
 }
 
-function TestNav({ cellCount, onEnterEdit, onExitEdit, onDelete, editing }: TestNavProps) {
+function TestNav({ cellCount, onEnterEdit, onExitEdit, onDelete, onInsertTextCell, editing }: TestNavProps) {
   const { setRef, focusedIndex } = useKeyboardNav({
     cellCount,
     onEnterEdit,
     onExitEdit,
     onDelete,
+    onInsertTextCell,
     editing,
   });
 
@@ -357,6 +359,58 @@ describe("useKeyboardNav", () => {
       });
 
       expect(document.activeElement).toBe(getByTestId("cell-4"));
+    });
+  });
+
+  // ------ Insert text cell shortcut ------
+
+  describe("insert text cell (Ctrl+Shift+T)", () => {
+    const onInsertTextCell = mock<(index: number) => void>(() => {});
+
+    beforeEach(() => {
+      onInsertTextCell.mockClear();
+    });
+
+    test("Ctrl+Shift+T calls onInsertTextCell with focused index", () => {
+      const { getByTestId } = renderNav({ onInsertTextCell });
+
+      act(() => getByTestId("cell-0").focus());
+      act(() => dispatchKeyOnDocument("ArrowDown")); // index 1
+      act(() => dispatchKeyOnDocument("T", { ctrlKey: true, shiftKey: true }));
+
+      expect(onInsertTextCell).toHaveBeenCalledWith(1);
+    });
+
+    test("Ctrl+Shift+T with lowercase t also works", () => {
+      const { getByTestId } = renderNav({ onInsertTextCell });
+
+      act(() => getByTestId("cell-0").focus());
+      act(() => dispatchKeyOnDocument("t", { ctrlKey: true, shiftKey: true }));
+
+      expect(onInsertTextCell).toHaveBeenCalledWith(0);
+    });
+
+    test("plain T key does not insert text cell", () => {
+      renderNav({ onInsertTextCell });
+
+      act(() => dispatchKeyOnDocument("T"));
+
+      expect(onInsertTextCell).not.toHaveBeenCalled();
+    });
+
+    test("Ctrl+T without Shift does not insert text cell", () => {
+      renderNav({ onInsertTextCell });
+
+      act(() => dispatchKeyOnDocument("T", { ctrlKey: true }));
+
+      expect(onInsertTextCell).not.toHaveBeenCalled();
+    });
+
+    test("shortcut does nothing when onInsertTextCell is not provided", () => {
+      renderNav(); // No onInsertTextCell prop
+
+      // Should not throw
+      act(() => dispatchKeyOnDocument("T", { ctrlKey: true, shiftKey: true }));
     });
   });
 

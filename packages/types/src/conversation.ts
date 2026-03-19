@@ -28,6 +28,8 @@ export interface NotebookStateWire {
   forkRootId?: string;
   /** If this conversation is a fork, the cell ID at the fork point. */
   forkPointCellId?: string;
+  /** Text cell content keyed by cell ID (text cells are not message-backed). */
+  textCells?: Record<string, { content: string }>;
 }
 
 /** A fork branch — metadata for a forked conversation. */

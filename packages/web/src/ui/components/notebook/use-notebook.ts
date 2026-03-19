@@ -94,6 +94,11 @@ export function loadNotebookState(
     ) {
       return parsed as NotebookState;
     }
+    console.warn(
+      `Notebook state for ${conversationId} exists but has unexpected shape (version: ${
+        (parsed as Record<string, unknown>).version ?? "missing"
+      }). Discarding saved state.`,
+    );
     return null;
   } catch (err: unknown) {
     console.warn(
@@ -185,6 +190,8 @@ export interface UseNotebookReturn {
   forkInfo: ForkInfo | null;
   input: string;
   setInput: (value: string) => void;
+  insertTextCell: (afterCellId?: string) => void;
+  updateTextCell: (cellId: string, content: string) => void;
 }
 
 export function useNotebook({
@@ -222,7 +229,7 @@ export function useNotebook({
   const [cellState, setCellState] = useState<NotebookCell[]>(() => {
     if (typeof window === "undefined") return [];
 
-    // Build cells from messages first
+    // Build query cells from messages first
     const freshCells = buildCellsFromMessages(chat.messages);
 
     // Apply server-side persisted props if available
@@ -231,20 +238,38 @@ export function useNotebook({
         const props = initialServerState.cellProps[cell.id];
         if (props?.collapsed) cell.collapsed = true;
       }
+      // Restore text cells from server state
+      if (initialServerState.textCells) {
+        for (const [id, data] of Object.entries(initialServerState.textCells)) {
+          freshCells.push({
+            id,
+            messageId: "",
+            number: 0,
+            collapsed: false,
+            editing: false,
+            status: "idle",
+            type: "text",
+            content: data.content,
+          });
+        }
+      }
       return freshCells;
     }
 
     // Fallback to localStorage
     const saved = loadNotebookState(conversationId);
     if (saved?.cells) {
-      // Merge saved cell state onto fresh cells
-      return freshCells.map((fc) => {
+      // Merge saved cell state onto fresh query cells
+      const queryCells = freshCells.map((fc) => {
         const existing = saved.cells.find((sc) => sc.id === fc.id);
         if (existing) {
           return { ...fc, collapsed: existing.collapsed, editing: existing.editing };
         }
         return fc;
       });
+      // Restore text cells from saved state
+      const textCells = saved.cells.filter((c) => c.type === "text");
+      return [...queryCells, ...textCells];
     }
 
     return freshCells;
@@ -268,9 +293,12 @@ export function useNotebook({
   useEffect(() => {
     const fresh = buildCellsFromMessages(chat.messages);
     setCellState((prev) => {
+      // Preserve text cells — they are not derived from messages
+      const textCells = prev.filter((c) => c.type === "text");
+
       let usedFallback = false;
-      const result = fresh.map((fc) => {
-        const existing = prev.find((pc) => pc.id === fc.id);
+      const queryCells = fresh.map((fc) => {
+        const existing = prev.find((pc) => pc.id === fc.id && pc.type !== "text");
         if (existing) {
           return { ...fc, collapsed: existing.collapsed, editing: existing.editing };
         }
@@ -284,7 +312,7 @@ export function useNotebook({
       if (usedFallback) {
         preRerunCells.current = [];
       }
-      return result;
+      return [...queryCells, ...textCells];
     });
   }, [chat.messages]);
 
@@ -310,10 +338,20 @@ export function useNotebook({
           cellProps[cell.id] = { collapsed: true };
         }
       }
+
+      // Persist text cell content
+      const textCells: Record<string, { content: string }> = {};
+      for (const cell of cellState) {
+        if (cell.type === "text") {
+          textCells[cell.id] = { content: cell.content ?? "" };
+        }
+      }
+
       const wire: NotebookStateWire = {
         version: 3,
         cellOrder: cellOrder.length > 0 ? cellOrder : undefined,
         cellProps: Object.keys(cellProps).length > 0 ? cellProps : undefined,
+        textCells: Object.keys(textCells).length > 0 ? textCells : undefined,
       };
       saveToServer(wire);
     }, 500);
@@ -359,6 +397,22 @@ export function useNotebook({
     : cellState;
 
   const cells: ResolvedCell[] = orderedCellState.map((cell, displayIndex) => {
+    // Text cells have a synthetic user message for display purposes
+    if (cell.type === "text") {
+      return {
+        ...cell,
+        number: displayIndex + 1,
+        userMessage: {
+          id: cell.id,
+          role: "user" as const,
+          parts: [{ type: "text" as const, text: cell.content ?? "" }],
+        },
+        assistantMessage: null,
+        status: "idle" as const,
+      };
+    }
+
+    // Query cell — resolve from messages
     const userMsg = chat.messages.find((m) => m.id === cell.messageId);
     const userIdx = chat.messages.findIndex((m) => m.id === cell.messageId);
     const nextMsg = userIdx !== -1 ? chat.messages[userIdx + 1] : undefined;
@@ -413,11 +467,26 @@ export function useNotebook({
         console.warn(`deleteCell: cell ${cellId} not found`);
         return;
       }
+
+      if (cell.type === "text") {
+        // Text cells: remove only this cell, no message truncation
+        setCellState((prev) => prev.filter((c) => c.id !== cellId));
+        setCellOrder((prev) => prev.filter((id) => id !== cellId));
+        return;
+      }
+
+      // Query cell: truncate messages and remove subsequent query cells
       const truncated = truncateMessagesForRerun(chat.messages, cell.messageId);
       chat.setMessages(truncated);
-      setCellState((prev) => prev.filter((c) => c.number < cell.number));
-      // Remove from cellOrder if present
-      setCellOrder((prev) => prev.filter((id) => id !== cellId));
+      // Remove this and subsequent query cells; preserve text cells
+      setCellState((prev) => prev.filter((c) => c.type === "text" || c.number < cell.number));
+      // Clean up cellOrder: remove deleted query cell IDs
+      const deletedIds = new Set(
+        cellState
+          .filter((c) => c.type !== "text" && c.number >= cell.number)
+          .map((c) => c.id),
+      );
+      setCellOrder((prev) => prev.filter((id) => !deletedIds.has(id)));
     },
     [cellState, chat],
   );
@@ -504,6 +573,46 @@ export function useNotebook({
     [onNavigateToBranch],
   );
 
+  /** Insert a new text cell. If afterCellId is provided, inserts after that cell; otherwise appends to the end. */
+  const insertTextCell = useCallback(
+    (afterCellId?: string) => {
+      const id = `text-${crypto.randomUUID()}`;
+      const newCell: NotebookCell = {
+        id,
+        messageId: "",
+        number: 0,
+        collapsed: false,
+        editing: true,
+        status: "idle",
+        type: "text",
+        content: "",
+      };
+
+      setCellState((prev) => [...prev, newCell]);
+
+      setCellOrder((prev) => {
+        // Initialize order from current cells if empty
+        const currentOrder =
+          prev.length > 0 ? [...prev] : cellState.map((c) => c.id);
+        if (afterCellId) {
+          const idx = currentOrder.indexOf(afterCellId);
+          if (idx !== -1) {
+            return currentOrder.toSpliced(idx + 1, 0, id);
+          }
+        }
+        return [...currentOrder, id];
+      });
+    },
+    [cellState],
+  );
+
+  /** Update the markdown content of a text cell. */
+  const updateTextCell = useCallback((cellId: string, content: string) => {
+    setCellState((prev) =>
+      prev.map((c) => (c.id === cellId && c.type === "text" ? { ...c, content } : c)),
+    );
+  }, []);
+
   return {
     cells,
     status: chat.status,
@@ -522,5 +631,7 @@ export function useNotebook({
     forkInfo: forkInfoProp ?? null,
     input,
     setInput,
+    insertTextCell,
+    updateTextCell,
   };
 }

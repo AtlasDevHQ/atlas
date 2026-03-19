@@ -12,6 +12,7 @@ import {
 } from "../use-notebook";
 import type { UIMessage } from "@ai-sdk/react";
 import type { NotebookState } from "../types";
+import type { NotebookStateWire } from "@/ui/lib/types";
 
 function makeMessage(id: string, role: "user" | "assistant"): UIMessage {
   return {
@@ -1552,7 +1553,7 @@ describe("useNotebook hook", () => {
     test("server persistence includes textCells data", async () => {
       const messages = [makeMessage("u1", "user"), makeMessage("a1", "assistant")];
       const chat = createMockChat({ messages });
-      const saveToServer = mock(() => {});
+      const saveToServer = mock((_state: NotebookStateWire) => {});
 
       const { result } = renderHook(
         (props: UseNotebookOptions) => useNotebook(props),
@@ -1581,7 +1582,7 @@ describe("useNotebook hook", () => {
       expect(saveToServer).toHaveBeenCalled();
       const lastCall = saveToServer.mock.calls.at(-1);
       expect(lastCall).toBeDefined();
-      const wire = lastCall![0] as { textCells?: Record<string, { content: string }> };
+      const wire = lastCall![0];
       expect(wire.textCells).toBeDefined();
       expect(wire.textCells![textCellId]).toEqual({ content: "server content" });
     });

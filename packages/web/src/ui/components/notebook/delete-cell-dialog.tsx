@@ -30,7 +30,7 @@ export function DeleteCellDialog({ open, onOpenChange, cellNumber, isTextCell, o
           <AlertDialogDescription>
             {isTextCell
               ? "This will remove this text cell. This action cannot be undone."
-              : "This will remove this cell and all cells after it. This action cannot be undone."}
+              : "This will remove this cell and all subsequent query cells. Text cells are preserved. This action cannot be undone."}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>

@@ -134,24 +134,38 @@ export function NotebookShell({ notebook, focusCellId }: NotebookShellProps) {
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
                   <DropdownMenuItem
-                    onClick={() =>
-                      downloadFile(
-                        exportToMarkdown(notebook.cells),
-                        "notebook.md",
-                        "text/markdown",
-                      )
-                    }
+                    onClick={() => {
+                      try {
+                        downloadFile(
+                          exportToMarkdown(notebook.cells),
+                          "notebook.md",
+                          "text/markdown",
+                        );
+                      } catch (err: unknown) {
+                        console.error(
+                          "Export to Markdown failed:",
+                          err instanceof Error ? err.message : String(err),
+                        );
+                      }
+                    }}
                   >
                     Markdown (.md)
                   </DropdownMenuItem>
                   <DropdownMenuItem
-                    onClick={() =>
-                      downloadFile(
-                        exportToHTML(notebook.cells),
-                        "notebook.html",
-                        "text/html",
-                      )
-                    }
+                    onClick={() => {
+                      try {
+                        downloadFile(
+                          exportToHTML(notebook.cells),
+                          "notebook.html",
+                          "text/html",
+                        );
+                      } catch (err: unknown) {
+                        console.error(
+                          "Export to HTML failed:",
+                          err instanceof Error ? err.message : String(err),
+                        );
+                      }
+                    }}
                   >
                     HTML (.html)
                   </DropdownMenuItem>

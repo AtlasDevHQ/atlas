@@ -210,6 +210,8 @@ describe("exportToHTML", () => {
     expect(html).toContain("&lt;script&gt;");
     expect(html).toContain("&lt;b&gt;bold&lt;/b&gt;");
     expect(html).toContain("&amp;");
+    expect(html).toContain("&#39;");
+    expect(html).not.toContain("'quoted'");
   });
 
   test("is self-contained — inline styles, no external deps", () => {

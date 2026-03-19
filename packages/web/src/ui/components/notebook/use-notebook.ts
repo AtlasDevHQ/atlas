@@ -94,6 +94,11 @@ export function loadNotebookState(
     ) {
       return parsed as NotebookState;
     }
+    console.warn(
+      `Notebook state for ${conversationId} exists but has unexpected shape (version: ${
+        (parsed as Record<string, unknown>).version ?? "missing"
+      }). Discarding saved state.`,
+    );
     return null;
   } catch (err: unknown) {
     console.warn(
@@ -568,9 +573,10 @@ export function useNotebook({
     [onNavigateToBranch],
   );
 
+  /** Insert a new text cell. If afterCellId is provided, inserts after that cell; otherwise appends to the end. */
   const insertTextCell = useCallback(
     (afterCellId?: string) => {
-      const id = `text-${Date.now()}`;
+      const id = `text-${crypto.randomUUID()}`;
       const newCell: NotebookCell = {
         id,
         messageId: "",
@@ -591,20 +597,19 @@ export function useNotebook({
         if (afterCellId) {
           const idx = currentOrder.indexOf(afterCellId);
           if (idx !== -1) {
-            currentOrder.splice(idx + 1, 0, id);
-            return currentOrder;
+            return currentOrder.toSpliced(idx + 1, 0, id);
           }
         }
-        currentOrder.push(id);
-        return currentOrder;
+        return [...currentOrder, id];
       });
     },
     [cellState],
   );
 
+  /** Update the markdown content of a text cell. */
   const updateTextCell = useCallback((cellId: string, content: string) => {
     setCellState((prev) =>
-      prev.map((c) => (c.id === cellId ? { ...c, content } : c)),
+      prev.map((c) => (c.id === cellId && c.type === "text" ? { ...c, content } : c)),
     );
   }, []);
 

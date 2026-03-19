@@ -3,33 +3,39 @@ import type { ResolvedCell } from "./types";
 import { extractTextContent } from "./use-notebook";
 import { getToolArgs, getToolResult, isToolComplete } from "../../lib/helpers";
 
-/** Escape HTML entities for safe embedding in HTML documents. */
+/** Escape &, <, >, ", and ' for safe embedding in HTML element content and attributes. */
 function escapeHtml(str: string): string {
   return str
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
-/** Format an array of column/row data as a Markdown table. */
+/** Escape pipe and newline characters for safe embedding in Markdown table cells. */
+function escapeMarkdownTableCell(str: string): string {
+  return str.replace(/\|/g, "\\|").replace(/\n/g, " ");
+}
+
+/** Format column/row data as a Markdown table. Caps output at 100 rows for readability. */
 function toMarkdownTable(
   columns: string[],
   rows: Record<string, unknown>[],
 ): string {
   if (columns.length === 0) return "";
-  const header = `| ${columns.join(" | ")} |`;
+  const header = `| ${columns.map(escapeMarkdownTableCell).join(" | ")} |`;
   const divider = `| ${columns.map(() => "---").join(" | ")} |`;
   const body = rows
     .slice(0, 100) // Cap at 100 rows for readability
-    .map((row) => `| ${columns.map((c) => String(row[c] ?? "")).join(" | ")} |`)
+    .map((row) => `| ${columns.map((c) => escapeMarkdownTableCell(String(row[c] ?? ""))).join(" | ")} |`)
     .join("\n");
   const truncation =
     rows.length > 100 ? `\n\n*...and ${rows.length - 100} more rows*` : "";
   return `${header}\n${divider}\n${body}${truncation}`;
 }
 
-/** Format an array of column/row data as an HTML table. */
+/** Format column/row data as an HTML table. Caps output at 100 rows for readability. */
 function toHtmlTable(
   columns: string[],
   rows: Record<string, unknown>[],
@@ -56,7 +62,7 @@ function toHtmlTable(
   </table>`;
 }
 
-/** Extract SQL query and result table from a tool invocation part. */
+/** Extract tool-specific data (SQL query/results, Python code/stdout) from a tool invocation part. */
 function extractToolData(part: unknown): {
   toolName: string;
   sql?: string;
@@ -67,14 +73,8 @@ function extractToolData(part: unknown): {
 } {
   const args = getToolArgs(part);
   const result = isToolComplete(part) ? getToolResult(part) : null;
-  let toolName = "unknown";
-  try {
-    const p = part as Record<string, unknown>;
-    toolName =
-      typeof p.toolName === "string" ? p.toolName : "unknown";
-  } catch {
-    // intentionally ignored: fallback to "unknown"
-  }
+  const p = part as Record<string, unknown> | null;
+  const toolName = typeof p?.toolName === "string" ? p.toolName : "unknown";
 
   const data: ReturnType<typeof extractToolData> = { toolName };
 
@@ -99,7 +99,7 @@ function extractToolData(part: unknown): {
   return data;
 }
 
-/** Serialize tool invocation parts of a message into Markdown sections. */
+/** Serialize all parts of an assistant message (text and tool invocations) into Markdown sections. */
 function serializeToolPartsMarkdown(message: UIMessage): string {
   const sections: string[] = [];
   for (const part of message.parts) {
@@ -118,7 +118,7 @@ function serializeToolPartsMarkdown(message: UIMessage): string {
   return sections.join("\n\n");
 }
 
-/** Serialize tool invocation parts of a message into HTML sections. */
+/** Serialize all parts of an assistant message (text and tool invocations) into HTML sections. */
 function serializeToolPartsHtml(message: UIMessage): string {
   const sections: string[] = [];
   for (const part of message.parts) {
@@ -157,49 +157,65 @@ function serializeToolPartsHtml(message: UIMessage): string {
 // Public API
 // ---------------------------------------------------------------------------
 
-/** Export notebook cells as a Markdown string. */
+/** Export notebook cells as a Markdown string. Starts with an H1 header; text cells render as-is, query cells as H2 with cell number. */
 export function exportToMarkdown(cells: ResolvedCell[]): string {
   const sections: string[] = ["# Atlas Notebook Export\n"];
 
   for (const cell of cells) {
-    if (cell.type === "text") {
-      sections.push(cell.content ?? "");
-      continue;
-    }
+    try {
+      if (cell.type === "text") {
+        sections.push(cell.content ?? "");
+        continue;
+      }
 
-    // Query cell
-    const question = extractTextContent(cell.userMessage);
-    sections.push(`## [${cell.number}] ${question}`);
+      // Query cell
+      const question = extractTextContent(cell.userMessage);
+      sections.push(`## [${cell.number}] ${question}`);
 
-    if (cell.assistantMessage) {
-      sections.push(serializeToolPartsMarkdown(cell.assistantMessage));
+      if (cell.assistantMessage) {
+        sections.push(serializeToolPartsMarkdown(cell.assistantMessage));
+      }
+    } catch (err: unknown) {
+      console.warn(
+        `Export: skipped cell ${cell.number} due to error:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      sections.push(`## [${cell.number}] (export error — cell data could not be serialized)`);
     }
   }
 
   return sections.join("\n\n");
 }
 
-/** Export notebook cells as a self-contained HTML string. */
+/** Export notebook cells as a self-contained HTML document with inline CSS. No external dependencies. */
 export function exportToHTML(cells: ResolvedCell[]): string {
   const bodyParts: string[] = [];
 
   for (const cell of cells) {
-    if (cell.type === "text") {
-      const paragraphs = (cell.content ?? "")
-        .split("\n\n")
-        .map((p) => `<p>${escapeHtml(p)}</p>`)
-        .join("\n");
-      bodyParts.push(`<section class="text-cell">${paragraphs}</section>`);
-      continue;
-    }
+    try {
+      if (cell.type === "text") {
+        const paragraphs = (cell.content ?? "")
+          .split("\n\n")
+          .map((p) => `<p>${escapeHtml(p)}</p>`)
+          .join("\n");
+        bodyParts.push(`<section class="text-cell">${paragraphs}</section>`);
+        continue;
+      }
 
-    // Query cell
-    const question = extractTextContent(cell.userMessage);
-    let content = `<h2><span class="cell-num">[${cell.number}]</span> ${escapeHtml(question)}</h2>`;
-    if (cell.assistantMessage) {
-      content += `<div class="response">${serializeToolPartsHtml(cell.assistantMessage)}</div>`;
+      // Query cell
+      const question = extractTextContent(cell.userMessage);
+      let content = `<h2><span class="cell-num">[${cell.number}]</span> ${escapeHtml(question)}</h2>`;
+      if (cell.assistantMessage) {
+        content += `<div class="response">${serializeToolPartsHtml(cell.assistantMessage)}</div>`;
+      }
+      bodyParts.push(`<section class="cell">${content}</section>`);
+    } catch (err: unknown) {
+      console.warn(
+        `Export: skipped cell ${cell.number} due to error:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      bodyParts.push(`<section class="cell"><h2>[${cell.number}]</h2><p><em>Export error — cell data could not be serialized.</em></p></section>`);
     }
-    bodyParts.push(`<section class="cell">${content}</section>`);
   }
 
   return `<!DOCTYPE html>
@@ -259,10 +275,9 @@ export function downloadFile(
     a.download = filename;
     a.click();
   } catch (err) {
-    console.error(
-      "Download failed:",
-      err instanceof Error ? err.message : String(err),
-    );
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error("Download failed:", detail);
+    window.alert(`Download failed: ${detail}. Try again or copy the content manually.`);
   } finally {
     if (url) {
       const blobUrl = url;

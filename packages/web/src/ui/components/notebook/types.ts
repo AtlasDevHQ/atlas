@@ -25,7 +25,7 @@ export interface NotebookState {
   cellOrder?: string[];
 }
 
-/** A cell with its resolved user + assistant messages attached. */
+/** A cell with its resolved messages attached. For query cells, these are real conversation messages; for text cells, userMessage is synthetic and assistantMessage is always null. */
 export interface ResolvedCell extends NotebookCell {
   userMessage: UIMessage;
   assistantMessage: UIMessage | null;

@@ -23,7 +23,7 @@ Atlas supports enterprise SSO via SAML 2.0 and OpenID Connect (OIDC). Admins reg
 3. When a user with that email domain signs in, Atlas routes them to the configured IdP
 4. On successful IdP authentication, the user is auto-provisioned into the workspace
 
-Each organization can have multiple SSO providers, each mapped to a different email domain. Domain uniqueness is enforced per organization — no two providers in the same org can claim the same domain.
+Each organization can have multiple SSO providers, each mapped to a different email domain. Domain uniqueness is enforced globally — no two providers across any organization can claim the same domain.
 
 ---
 
@@ -34,7 +34,7 @@ SAML providers require three pieces of information from your identity provider:
 | Field | Description |
 |-------|-------------|
 | `idpEntityId` | The IdP's entity identifier (issuer URI) |
-| `idpSsoUrl` | The IdP's single sign-on URL (HTTP-POST binding) |
+| `idpSsoUrl` | The IdP's single sign-on URL (HTTP-Redirect or HTTP-POST binding) |
 | `idpCertificate` | The IdP's signing certificate in PEM format |
 
 Optional fields for service provider (SP) configuration:
@@ -95,7 +95,7 @@ curl -X POST https://your-atlas.example.com/api/v1/admin/sso/providers \
 ```
 
 <Callout type="info">
-Client secrets are encrypted at rest using `BETTER_AUTH_SECRET` or `ATLAS_ENCRYPTION_KEY`. They are never returned in API responses — the provider detail endpoint redacts secret fields.
+Client secrets are encrypted at rest using `BETTER_AUTH_SECRET` or `ATLAS_ENCRYPTION_KEY`. They are never returned in API responses — the provider detail endpoint redacts secret fields. The `enabled` field defaults to `false` if omitted — providers must be explicitly enabled.
 </Callout>
 
 ---
@@ -106,7 +106,7 @@ All SSO endpoints require the `admin` role and an active enterprise license. The
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/providers` | List all SSO providers for the org |
+| `GET` | `/providers` | List SSO provider summaries (config omitted) |
 | `GET` | `/providers/:id` | Get a single provider (secrets redacted) |
 | `POST` | `/providers` | Register a new SSO provider |
 | `PATCH` | `/providers/:id` | Update a provider (partial config merge) |
@@ -119,7 +119,7 @@ All SSO endpoints require the `admin` role and an active enterprise license. The
 | 400 | `validation` | Invalid config fields, malformed domain |
 | 403 | `enterprise_required` | Enterprise license not active |
 | 404 | `not_found` | Provider ID doesn't exist |
-| 409 | `conflict` | Domain already claimed by another provider in the org |
+| 409 | `conflict` | Domain already claimed by another SSO provider |
 
 ---
 

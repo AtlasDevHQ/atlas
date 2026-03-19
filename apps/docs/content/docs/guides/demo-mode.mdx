@@ -22,7 +22,7 @@ Demo mode lets you expose a public, email-gated preview of Atlas at `/demo`. Vis
 3. The visitor chats with the agent using the demo token for authentication
 4. Sessions are rate-limited and capped at fewer agent steps than production
 
-Demo sessions use a separate auth path from the main application. The demo token is derived from `BETTER_AUTH_SECRET` with a `demo` suffix — it does not grant access to any authenticated endpoints.
+Demo sessions use a separate auth path from the main application. The demo token is derived from `BETTER_AUTH_SECRET` with a `:demo` suffix — it does not grant access to any authenticated endpoints.
 
 ### Lead Capture
 
@@ -31,7 +31,7 @@ Every demo start captures:
 - IP address and user agent
 - Session count and whether the user is returning
 
-User IDs are deterministic hashes (`demo:<sha256(email)>`) — the raw email is stored only in the lead capture record, not in conversation metadata.
+User IDs are deterministic hashes (`demo:<sha256(email)[0:16]>`) — the raw email is stored only in the lead capture record, not in conversation metadata.
 
 ---
 
@@ -94,8 +94,8 @@ Response:
 
 ```json
 {
-  "token": "eyJhbGciOiJIUzI1NiIs...",
-  "expiresAt": "2026-03-21T12:00:00.000Z",
+  "token": "eyJlbWFpbCI6InZpc2l0b3JAZ...",
+  "expiresAt": 1742565600000,
   "returning": false,
   "conversationCount": 0
 }
@@ -106,7 +106,7 @@ Response:
 ```bash
 curl -X POST https://your-atlas.example.com/api/v1/demo/chat \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIs..." \
+  -H "Authorization: Bearer eyJlbWFpbCI6InZpc2l0b3JAZ..." \
   -d '{ "messages": [{ "role": "user", "content": "Show me revenue by month" }] }'
 ```
 

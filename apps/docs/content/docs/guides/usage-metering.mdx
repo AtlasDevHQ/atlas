@@ -61,7 +61,7 @@ Response:
   "tokenCount": 245000,
   "activeUsers": 12,
   "periodStart": "2026-03-01T00:00:00.000Z",
-  "periodEnd": "2026-03-31T23:59:59.999Z"
+  "periodEnd": "2026-04-01T00:00:00.000Z"
 }
 ```
 
@@ -76,7 +76,7 @@ curl "https://your-atlas.example.com/api/v1/admin/usage/history?period=daily&sta
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `period` | `daily` \| `monthly` | `daily` | Aggregation granularity |
+| `period` | `daily` \| `monthly` | `monthly` | Aggregation granularity |
 | `startDate` | ISO 8601 | — | Start of date range |
 | `endDate` | ISO 8601 | — | End of date range |
 | `limit` | number | `90` | Max summaries to return |
@@ -89,6 +89,12 @@ Shows usage by individual user within a date range.
 curl "https://your-atlas.example.com/api/v1/admin/usage/breakdown?startDate=2026-03-01&endDate=2026-03-19" \
   -H "Authorization: Bearer <admin-token>"
 ```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `startDate` | ISO 8601 | — | Start of date range |
+| `endDate` | ISO 8601 | — | End of date range |
+| `limit` | number | `100` | Max users to return (max 500) |
 
 Response:
 

@@ -2329,7 +2329,17 @@ function buildSpec(): Record<string, unknown> {
                 },
               },
             },
-            "401": errorResponse("Authentication required"),
+            "401": {
+              description: "Authentication required",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: { error: { type: "string" } },
+                  },
+                },
+              },
+            },
             "429": {
               description: "Rate limit exceeded",
               content: {
@@ -2377,7 +2387,17 @@ function buildSpec(): Record<string, unknown> {
                 },
               },
             },
-            "401": errorResponse("Authentication required"),
+            "401": {
+              description: "Authentication required",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: { error: { type: "string" } },
+                  },
+                },
+              },
+            },
             "429": {
               description: "Rate limit exceeded",
               content: {
@@ -2406,7 +2426,17 @@ function buildSpec(): Record<string, unknown> {
           ],
           responses: {
             "204": { description: "Click tracked (fire-and-forget)" },
-            "401": errorResponse("Authentication required"),
+            "401": {
+              description: "Authentication required",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: { error: { type: "string" } },
+                  },
+                },
+              },
+            },
             "429": { description: "Rate limit exceeded (empty body)" },
           },
         },
@@ -2671,7 +2701,7 @@ function buildSpec(): Record<string, unknown> {
           operationId: "validateSQL",
           summary: "Validate SQL without executing",
           description:
-            "Runs the full 4-layer SQL validation pipeline (empty check, regex guard, AST parse, table whitelist) and returns structured results. Does NOT execute the query.",
+            "Runs the full 5-layer SQL validation pipeline (empty check, connection check, regex guard, AST parse, table whitelist) and returns structured results. Does NOT execute the query.",
           tags: ["Validate SQL"],
           security: [{ bearerAuth: [] }, {}],
           requestBody: {

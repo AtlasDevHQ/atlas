@@ -13128,21 +13128,12 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$schema": "https://json-schema.org/draft/2020-12/schema",
                   "type": "object",
                   "properties": {
                     "error": {
                       "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
                     }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ],
-                  "additionalProperties": false
+                  }
                 }
               }
             }
@@ -13220,21 +13211,12 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$schema": "https://json-schema.org/draft/2020-12/schema",
                   "type": "object",
                   "properties": {
                     "error": {
                       "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
                     }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ],
-                  "additionalProperties": false
+                  }
                 }
               }
             }
@@ -13291,21 +13273,12 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$schema": "https://json-schema.org/draft/2020-12/schema",
                   "type": "object",
                   "properties": {
                     "error": {
                       "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
                     }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ],
-                  "additionalProperties": false
+                  }
                 }
               }
             }
@@ -14490,7 +14463,7 @@
       "post": {
         "operationId": "validateSQL",
         "summary": "Validate SQL without executing",
-        "description": "Runs the full 4-layer SQL validation pipeline (empty check, regex guard, AST parse, table whitelist) and returns structured results. Does NOT execute the query.",
+        "description": "Runs the full 5-layer SQL validation pipeline (empty check, connection check, regex guard, AST parse, table whitelist) and returns structured results. Does NOT execute the query.",
         "tags": [
           "Validate SQL"
         ],

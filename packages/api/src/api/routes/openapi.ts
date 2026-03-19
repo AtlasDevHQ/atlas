@@ -4035,6 +4035,67 @@ function buildSpec(): Record<string, unknown> {
           },
         },
       },
+      // -----------------------------------------------------------------
+      // Wizard — Guided semantic layer setup
+      // -----------------------------------------------------------------
+      "/api/v1/wizard/profile": {
+        post: {
+          operationId: "wizardProfile",
+          summary: "List tables from a connected datasource",
+          description: "Discovers tables, views, and materialized views in a connected database for the wizard table selection step.",
+          tags: ["Wizard"],
+          security: [{ bearerAuth: [] }],
+          requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["connectionId"], properties: { connectionId: { type: "string" } } } } } },
+          responses: {
+            200: { description: "Table list", content: { "application/json": { schema: { type: "object", properties: { connectionId: { type: "string" }, dbType: { type: "string" }, schema: { type: "string" }, tables: { type: "array", items: { type: "object", properties: { name: { type: "string" }, type: { type: "string", enum: ["table", "view", "materialized_view"] } } } } } } } } },
+            400: { description: "Invalid request" },
+            401: { description: "Not authenticated" },
+            403: { description: "Admin role required" },
+          },
+        },
+      },
+      "/api/v1/wizard/generate": {
+        post: {
+          operationId: "wizardGenerate",
+          summary: "Profile tables and generate entity YAML",
+          description: "Profiles selected tables and generates entity YAML with dimensions, measures, joins, and query patterns.",
+          tags: ["Wizard"],
+          security: [{ bearerAuth: [] }],
+          requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["connectionId", "tables"], properties: { connectionId: { type: "string" }, tables: { type: "array", items: { type: "string" } } } } } } },
+          responses: {
+            200: { description: "Generated entities", content: { "application/json": { schema: { type: "object", properties: { connectionId: { type: "string" }, dbType: { type: "string" }, entities: { type: "array", items: { type: "object", properties: { tableName: { type: "string" }, yaml: { type: "string" }, rowCount: { type: "integer" }, columnCount: { type: "integer" } } } }, errors: { type: "array" } } } } } },
+            400: { description: "Invalid request" },
+          },
+        },
+      },
+      "/api/v1/wizard/preview": {
+        post: {
+          operationId: "wizardPreview",
+          summary: "Preview agent behavior with entities",
+          description: "Shows how the agent would interpret the semantic layer when answering a question.",
+          tags: ["Wizard"],
+          security: [{ bearerAuth: [] }],
+          requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["question", "entities"], properties: { question: { type: "string" }, entities: { type: "array", items: { type: "object", properties: { tableName: { type: "string" }, yaml: { type: "string" } } } } } } } } },
+          responses: {
+            200: { description: "Preview result", content: { "application/json": { schema: { type: "object", properties: { question: { type: "string" }, semanticContext: { type: "string" }, availableTables: { type: "array", items: { type: "string" } }, entityCount: { type: "integer" } } } } } },
+            400: { description: "Invalid request" },
+          },
+        },
+      },
+      "/api/v1/wizard/save": {
+        post: {
+          operationId: "wizardSave",
+          summary: "Save entities to org-scoped semantic layer",
+          description: "Persists generated entity YAML files to the org-scoped semantic layer directory.",
+          tags: ["Wizard"],
+          security: [{ bearerAuth: [] }],
+          requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["connectionId", "entities"], properties: { connectionId: { type: "string" }, entities: { type: "array", items: { type: "object", required: ["tableName", "yaml"], properties: { tableName: { type: "string" }, yaml: { type: "string" } } } } } } } } },
+          responses: {
+            201: { description: "Entities saved", content: { "application/json": { schema: { type: "object", properties: { saved: { type: "boolean" }, orgId: { type: "string" }, connectionId: { type: "string" }, entityCount: { type: "integer" }, files: { type: "array", items: { type: "string" } } } } } } },
+            400: { description: "Invalid request or no active organization" },
+          },
+        },
+      },
     },
     components: {
       securitySchemes: {
@@ -4113,6 +4174,7 @@ function buildSpec(): Record<string, unknown> {
       { name: "Admin — Organizations", description: "Admin organization management (requires admin role)" },
       { name: "Admin — SSO", description: "Enterprise SSO provider management (requires admin role + enterprise license)" },
       { name: "Onboarding", description: "Self-serve signup flow (requires managed auth)" },
+      { name: "Wizard", description: "Guided semantic layer setup wizard (requires admin role)" },
     ],
   };
 }

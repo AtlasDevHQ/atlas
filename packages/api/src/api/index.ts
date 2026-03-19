@@ -126,6 +126,17 @@ try {
   );
 }
 
+// Wizard routes — guided semantic layer setup (admin-gated).
+try {
+  const { wizard } = await import("./routes/wizard");
+  app.route("/api/v1/wizard", wizard);
+} catch (err) {
+  log.error(
+    { err: err instanceof Error ? err : new Error(String(err)) },
+    "Failed to load wizard routes",
+  );
+}
+
 // Suggestions routes — user-facing query suggestions.
 try {
   const { suggestions } = await import("./routes/suggestions");

@@ -66,7 +66,7 @@ export function useKeyboardNav({
           focusCell(focusedIndex.current + 1);
           break;
         case "Enter":
-          if (!editing) {
+          if (!editing && cellCount > 0) {
             e.preventDefault();
             onEnterEdit(focusedIndex.current);
           }
@@ -79,7 +79,7 @@ export function useKeyboardNav({
           }
           break;
         case "Backspace":
-          if (e.ctrlKey && e.shiftKey) {
+          if (e.ctrlKey && e.shiftKey && cellCount > 0) {
             e.preventDefault();
             onDelete(focusedIndex.current);
           }

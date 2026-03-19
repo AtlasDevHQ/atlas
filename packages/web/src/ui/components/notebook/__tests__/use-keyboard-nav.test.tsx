@@ -305,19 +305,30 @@ describe("useKeyboardNav", () => {
     test("zero cells — key presses do not throw", () => {
       renderNav({ cellCount: 0 });
 
-      // Should not throw — the hook doesn't guard against empty cell arrays,
-      // that's the consumer's job (NotebookShell shows empty state when 0 cells)
       act(() => dispatchKeyOnDocument("ArrowDown"));
       act(() => dispatchKeyOnDocument("ArrowUp"));
-      act(() => dispatchKeyOnDocument("Enter"));
       act(() => dispatchKeyOnDocument("Escape"));
+
+      expect(onEnterEdit).not.toHaveBeenCalled();
+      expect(onDelete).not.toHaveBeenCalled();
+    });
+
+    test("zero cells — Enter does not call onEnterEdit", () => {
+      renderNav({ cellCount: 0 });
+
+      act(() => dispatchKeyOnDocument("Enter"));
+
+      expect(onEnterEdit).not.toHaveBeenCalled();
+    });
+
+    test("zero cells — Ctrl+Shift+Backspace does not call onDelete", () => {
+      renderNav({ cellCount: 0 });
+
       act(() =>
         dispatchKeyOnDocument("Backspace", { ctrlKey: true, shiftKey: true }),
       );
 
-      // Enter fires onEnterEdit(0) even with 0 cells — safe because consumer
-      // checks bounds before acting
-      expect(onEnterEdit).toHaveBeenCalledWith(0);
+      expect(onDelete).not.toHaveBeenCalled();
     });
 
     test("unrelated keys are ignored", () => {

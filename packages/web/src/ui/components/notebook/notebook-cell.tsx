@@ -1,8 +1,9 @@
 "use client";
 
 import { forwardRef, useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, GripVertical } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { SortableItemHandle } from "@/components/ui/sortable";
 import { cn } from "@/lib/utils";
 import type { ResolvedCell } from "./types";
 import { NotebookCellToolbar } from "./notebook-cell-toolbar";
@@ -19,11 +20,12 @@ interface NotebookCellProps {
   onToggleEdit: (cellId: string) => void;
   onToggleCollapse: (cellId: string) => void;
   onCopy: (cellId: string) => Promise<void>;
+  onFork: (cellId: string) => Promise<void>;
 }
 
 export const NotebookCell = forwardRef<HTMLElement, NotebookCellProps>(
   function NotebookCell(
-    { cell, anyRunning, onRerun, onDelete, onToggleEdit, onToggleCollapse, onCopy },
+    { cell, anyRunning, onRerun, onDelete, onToggleEdit, onToggleCollapse, onCopy, onFork },
     ref,
   ) {
     const [showDeleteDialog, setShowDeleteDialog] = useState(false);
@@ -43,6 +45,14 @@ export const NotebookCell = forwardRef<HTMLElement, NotebookCellProps>(
           )}
         >
           <div className="flex items-start gap-3 border-b border-zinc-100 px-4 py-3 dark:border-zinc-800/50">
+            <SortableItemHandle asChild>
+              <button
+                className="mt-0.5 flex size-6 shrink-0 cursor-grab items-center justify-center rounded text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300"
+                aria-label="Drag to reorder"
+              >
+                <GripVertical className="size-3.5" />
+              </button>
+            </SortableItemHandle>
             <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded bg-zinc-100 font-mono text-xs font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400">
               {cell.number}
             </span>
@@ -78,6 +88,7 @@ export const NotebookCell = forwardRef<HTMLElement, NotebookCellProps>(
                 onEdit={() => onToggleEdit(cell.id)}
                 onRun={() => onRerun(cell.id, question)}
                 onCopy={() => onCopy(cell.id)}
+                onFork={() => onFork(cell.id)}
                 onDelete={() => setShowDeleteDialog(true)}
               />
             </div>

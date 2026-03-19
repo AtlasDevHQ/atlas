@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef } from "react";
-import type { Conversation, ConversationWithMessages, Message, ShareStatus, ShareMode, ShareExpiryKey } from "../lib/types";
+import type { Conversation, ConversationWithMessages, Message, ShareStatus, ShareMode, ShareExpiryKey, NotebookStateWire, ForkBranchWire } from "../lib/types";
 import type { UIMessage } from "@ai-sdk/react";
 
 export interface UseConversationsOptions {
@@ -21,6 +21,9 @@ export interface UseConversationsReturn {
   setSelectedId: (id: string | null) => void;
   fetchList: () => Promise<void>;
   loadConversation: (id: string) => Promise<UIMessage[]>;
+  getConversationData: (id: string) => Promise<ConversationWithMessages>;
+  saveNotebookState: (id: string, state: NotebookStateWire) => Promise<void>;
+  forkConversation: (sourceId: string, forkPointMessageId: string, label?: string) => Promise<{ id: string; branches: ForkBranchWire[]; warning?: string }>;
   deleteConversation: (id: string) => Promise<void>;
   starConversation: (id: string, starred: boolean) => Promise<void>;
   shareConversation: (id: string, opts?: { expiresIn?: ShareExpiryKey; shareMode?: ShareMode }) => Promise<{ token: string; url: string }>;
@@ -207,6 +210,69 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
     return data;
   }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);
 
+  const getConversationData = useCallback(async (id: string): Promise<ConversationWithMessages> => {
+    const res = await fetch(`${opts.apiUrl}/api/v1/conversations/${id}`, {
+      headers: opts.getHeaders(),
+      credentials: opts.getCredentials(),
+    });
+
+    if (!res.ok) {
+      console.warn(`getConversationData: HTTP ${res.status} for ${id}`);
+      throw new Error(`Failed to load conversation (HTTP ${res.status})`);
+    }
+
+    return res.json();
+  }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);
+
+  const saveNotebookState = useCallback(async (id: string, state: NotebookStateWire): Promise<void> => {
+    try {
+      const res = await fetch(`${opts.apiUrl}/api/v1/conversations/${id}/notebook-state`, {
+        method: "PATCH",
+        headers: { ...opts.getHeaders(), "Content-Type": "application/json" },
+        credentials: opts.getCredentials(),
+        body: JSON.stringify(state),
+      });
+
+      if (!res.ok) {
+        console.warn(`saveNotebookState: HTTP ${res.status} for ${id}`);
+      }
+    } catch (err: unknown) {
+      // Non-fatal — localStorage is still the backup
+      console.warn(
+        "saveNotebookState error:",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);
+
+  const forkConversation = useCallback(async (
+    sourceId: string,
+    forkPointMessageId: string,
+    label?: string,
+  ): Promise<{ id: string; branches: ForkBranchWire[]; warning?: string }> => {
+    const res = await fetch(`${opts.apiUrl}/api/v1/conversations/${sourceId}/fork`, {
+      method: "POST",
+      headers: { ...opts.getHeaders(), "Content-Type": "application/json" },
+      credentials: opts.getCredentials(),
+      body: JSON.stringify({ forkPointMessageId, label }),
+    });
+
+    if (!res.ok) {
+      console.warn(`forkConversation: HTTP ${res.status} for ${sourceId}`);
+      throw new Error(`Failed to fork conversation (HTTP ${res.status})`);
+    }
+
+    const data = await res.json();
+    if (!data.id || typeof data.id !== "string") {
+      throw new Error("Fork response missing conversation ID");
+    }
+    return {
+      id: data.id,
+      branches: (data.branches ?? []) as ForkBranchWire[],
+      warning: typeof data.warning === "string" ? data.warning : undefined,
+    };
+  }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);
+
   const refresh = useCallback(async () => {
     await fetchList();
   }, [fetchList]);
@@ -221,6 +287,9 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
     setSelectedId,
     fetchList,
     loadConversation,
+    getConversationData,
+    saveNotebookState,
+    forkConversation,
     deleteConversation,
     starConversation,
     shareConversation,

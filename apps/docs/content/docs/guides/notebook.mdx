@@ -41,6 +41,7 @@ Each cell supports the following actions:
 - **Run** — Execute the cell (or re-execute after editing)
 - **Edit** — Modify the question or prompt that produced the cell
 - **Copy** — Copy cell contents to the clipboard
+- **Fork** — Create a new analysis branch from this cell (see [Forking](#forking) below)
 - **Delete** — Remove the cell from the notebook
 - **Collapse / Expand** — Toggle cell visibility to focus on specific results
 
@@ -55,6 +56,31 @@ You can edit a cell's question and click **Run** to re-execute from that point. 
 3. All subsequent cells are cleared — they will be replaced by new results
 
 This lets you iterate on analysis without starting over from scratch.
+
+---
+
+## Reordering Cells
+
+Drag cells to rearrange them in any order using the grip handle on the left side of each cell. The display order is independent of execution order — reordering cells does not change the underlying conversation history.
+
+Cell numbers update to reflect the new display position. Keyboard navigation follows display order after reordering.
+
+---
+
+## Forking
+
+Fork from any cell to explore an alternative analysis direction without losing your existing work.
+
+1. Click the **fork** button (branch icon) on any cell
+2. A new conversation is created with the history up to that cell
+3. You're navigated to the new branch where you can continue independently
+4. The original notebook is preserved unchanged
+
+When a notebook has branches, a **branch selector** appears at the top showing all branches. Click any branch to switch between them — each branch maintains its own independent cell history.
+
+<Callout type="info">
+Forking requires server-side persistence (an internal database). Without `DATABASE_URL` configured, the fork button is disabled.
+</Callout>
 
 ---
 
@@ -73,19 +99,19 @@ This lets you iterate on analysis without starting over from scratch.
 
 ## Persistence
 
-Cell state is saved to your browser's `localStorage`. Your notebook content survives page reloads and browser restarts — you can close the tab and return to the same state.
+Cell state is persisted server-side when an internal database is configured (`DATABASE_URL`). Your notebook state — including cell order, collapsed states, and fork metadata — survives page reloads, browser restarts, and device switches.
+
+Browser `localStorage` is used as a write-through cache for fast loads and offline resilience. Server state takes priority when both are available.
 
 <Callout type="warn">
-Clearing your browser data or switching browsers will remove saved notebook state. There is no server-side persistence for notebook cells.
+Without an internal database, notebook state falls back to `localStorage` only. Clearing browser data or switching browsers will remove saved state in this mode.
 </Callout>
 
 ---
 
 ## Current Limitations
 
-The notebook view is in its first phase. The following features are not yet available:
+The following features are not yet available:
 
-- **No forking or branching** — You cannot create alternate analysis paths from a single cell
-- **No drag-and-drop reorder** — Cells maintain their execution order
 - **No export** — There is no option to export a notebook as PDF, HTML, or `.ipynb`
 - **No text cell insertion** — You cannot add freeform markdown or annotation cells between results

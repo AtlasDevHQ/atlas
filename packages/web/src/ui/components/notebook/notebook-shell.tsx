@@ -7,8 +7,15 @@ import { NotebookCell } from "./notebook-cell";
 import { NotebookEmptyState } from "./notebook-empty-state";
 import { NotebookInputBar } from "./notebook-input-bar";
 import { DeleteCellDialog } from "./delete-cell-dialog";
+import { ForkBranchSelector } from "./fork-branch-selector";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { Button } from "@/components/ui/button";
+import {
+  Sortable,
+  SortableContent,
+  SortableItem,
+  SortableOverlay,
+} from "@/components/ui/sortable";
 
 interface NotebookShellProps {
   notebook: UseNotebookReturn;
@@ -78,35 +85,57 @@ export function NotebookShell({ notebook, focusCellId }: NotebookShellProps) {
               </Button>
             </div>
           )}
+
+          {notebook.forkInfo && notebook.forkInfo.branches.length > 0 && (
+            <ForkBranchSelector
+              forkInfo={notebook.forkInfo}
+              onSwitchBranch={notebook.switchBranch}
+            />
+          )}
+
           {notebook.cells.length === 0 ? (
             <NotebookEmptyState />
           ) : (
-            notebook.cells.map((cell, i) => (
-              <ErrorBoundary
-                key={cell.id}
-                fallbackRender={(error, reset) => (
-                  <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-400">
-                    <p className="font-medium">Cell {cell.number} failed to render</p>
-                    <p className="mt-1 text-xs">This cell encountered a rendering error. Other cells should be unaffected.</p>
-                    <p className="mt-1 text-xs opacity-60">{error.message}</p>
-                    <Button variant="outline" size="sm" onClick={reset} className="mt-2 text-xs">
-                      Retry
-                    </Button>
-                  </div>
-                )}
-              >
-                <NotebookCell
-                  ref={setRef(i)}
-                  cell={cell}
-                  anyRunning={anyRunning}
-                  onRerun={notebook.rerunCell}
-                  onDelete={notebook.deleteCell}
-                  onToggleEdit={notebook.toggleEdit}
-                  onToggleCollapse={notebook.toggleCollapse}
-                  onCopy={notebook.copyCell}
-                />
-              </ErrorBoundary>
-            ))
+            <Sortable
+              value={notebook.cells}
+              onValueChange={(newCells) =>
+                notebook.reorderCells(newCells.map((c) => c.id))
+              }
+              getItemValue={(cell) => cell.id}
+              orientation="vertical"
+            >
+              <SortableContent className="space-y-4">
+                {notebook.cells.map((cell, i) => (
+                  <SortableItem key={cell.id} value={cell.id}>
+                    <ErrorBoundary
+                      fallbackRender={(error, reset) => (
+                        <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-400">
+                          <p className="font-medium">Cell {cell.number} failed to render</p>
+                          <p className="mt-1 text-xs">This cell encountered a rendering error. Other cells should be unaffected.</p>
+                          <p className="mt-1 text-xs opacity-60">{error.message}</p>
+                          <Button variant="outline" size="sm" onClick={reset} className="mt-2 text-xs">
+                            Retry
+                          </Button>
+                        </div>
+                      )}
+                    >
+                      <NotebookCell
+                        ref={setRef(i)}
+                        cell={cell}
+                        anyRunning={anyRunning}
+                        onRerun={notebook.rerunCell}
+                        onDelete={notebook.deleteCell}
+                        onToggleEdit={notebook.toggleEdit}
+                        onToggleCollapse={notebook.toggleCollapse}
+                        onCopy={notebook.copyCell}
+                        onFork={notebook.forkCell}
+                      />
+                    </ErrorBoundary>
+                  </SortableItem>
+                ))}
+              </SortableContent>
+              <SortableOverlay />
+            </Sortable>
           )}
         </div>
       </div>

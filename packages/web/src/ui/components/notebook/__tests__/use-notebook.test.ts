@@ -1194,7 +1194,7 @@ describe("useNotebook hook", () => {
       expect(raw).not.toBeNull();
       const stored = JSON.parse(raw!) as NotebookState;
       expect(stored.cells[0].collapsed).toBe(true);
-      expect(stored.version).toBe(2);
+      expect(stored.version).toBe(3);
     });
 
     test("migrates localStorage key from temp to real conversationId", () => {

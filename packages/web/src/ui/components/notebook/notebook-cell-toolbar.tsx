@@ -1,6 +1,6 @@
 "use client";
 
-import { Pencil, Play, Copy, Trash2, Loader2 } from "lucide-react";
+import { Pencil, Play, Copy, GitFork, Trash2, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { CellStatus } from "./types";
 
@@ -11,6 +11,7 @@ interface CellToolbarProps {
   onEdit: () => void;
   onRun: () => void;
   onCopy: () => void;
+  onFork: () => void;
   onDelete: () => void;
 }
 
@@ -21,6 +22,7 @@ export function NotebookCellToolbar({
   onEdit,
   onRun,
   onCopy,
+  onFork,
   onDelete,
 }: CellToolbarProps) {
   const isRunning = status === "running";
@@ -63,6 +65,16 @@ export function NotebookCellToolbar({
         aria-label="Copy cell"
       >
         <Copy className="size-3.5" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="size-7"
+        onClick={onFork}
+        disabled={isRunning || disabled}
+        aria-label="Fork from this cell"
+      >
+        <GitFork className="size-3.5" />
       </Button>
       <Button
         variant="ghost"

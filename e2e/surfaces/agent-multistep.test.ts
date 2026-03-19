@@ -127,6 +127,8 @@ mock.module("@atlas/api/lib/conversations", () => ({
   shareConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
   unshareConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
   getSharedConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
+  updateNotebookState: mock(() => Promise.resolve({ ok: true })),
+  forkConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
 }));
 
 mock.module("@atlas/api/lib/config", () => ({

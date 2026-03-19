@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { UIMessage } from "@ai-sdk/react";
-import type { NotebookCell, NotebookState, ResolvedCell } from "./types";
+import type { NotebookStateWire, ForkBranchWire } from "@/ui/lib/types";
+import type { NotebookCell, NotebookState, ResolvedCell, ForkInfo } from "./types";
 
 const STORAGE_PREFIX = "atlas:notebook:";
 
@@ -85,7 +86,9 @@ export function loadNotebookState(
       typeof parsed === "object" &&
       parsed !== null &&
       "version" in parsed &&
-      ((parsed as { version: unknown }).version === 1 || (parsed as { version: unknown }).version === 2) &&
+      ((parsed as { version: unknown }).version === 1 ||
+        (parsed as { version: unknown }).version === 2 ||
+        (parsed as { version: unknown }).version === 3) &&
       "cells" in parsed &&
       Array.isArray((parsed as { cells: unknown }).cells)
     ) {
@@ -152,6 +155,16 @@ export interface UseNotebookOptions {
     error: Error | null;
   };
   conversationId: string;
+  /** Server-side notebook state loaded from the conversation. */
+  initialServerState?: NotebookStateWire | null;
+  /** Debounced callback to persist notebook state to the server. */
+  saveToServer?: (state: NotebookStateWire) => void;
+  /** Fork a conversation at a specific message. */
+  forkConversation?: (sourceId: string, forkPointMessageId: string, label?: string) => Promise<{ id: string; branches: ForkBranchWire[]; warning?: string }>;
+  /** Navigate to a different branch conversation. */
+  onNavigateToBranch?: (conversationId: string) => void;
+  /** Fork info from server state (branches, root, etc.). */
+  forkInfo?: ForkInfo | null;
 }
 
 export interface UseNotebookReturn {
@@ -166,11 +179,23 @@ export interface UseNotebookReturn {
   toggleEdit: (cellId: string) => void;
   toggleCollapse: (cellId: string) => void;
   copyCell: (cellId: string) => Promise<void>;
+  reorderCells: (orderedIds: string[]) => void;
+  forkCell: (cellId: string) => Promise<void>;
+  switchBranch: (conversationId: string) => void;
+  forkInfo: ForkInfo | null;
   input: string;
   setInput: (value: string) => void;
 }
 
-export function useNotebook({ chat, conversationId }: UseNotebookOptions): UseNotebookReturn {
+export function useNotebook({
+  chat,
+  conversationId,
+  initialServerState,
+  saveToServer,
+  forkConversation: forkConversationFn,
+  onNavigateToBranch,
+  forkInfo: forkInfoProp,
+}: UseNotebookOptions): UseNotebookReturn {
   const [input, setInput] = useState("");
   const [warning, setWarning] = useState<string | null>(null);
   const warningTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -193,10 +218,44 @@ export function useNotebook({ chat, conversationId }: UseNotebookOptions): UseNo
     };
   }, []);
 
+  // Initialize cellState — prefer server state, then localStorage, then build from messages
   const [cellState, setCellState] = useState<NotebookCell[]>(() => {
     if (typeof window === "undefined") return [];
+
+    // Build cells from messages first
+    const freshCells = buildCellsFromMessages(chat.messages);
+
+    // Apply server-side persisted props if available
+    if (initialServerState?.cellProps) {
+      for (const cell of freshCells) {
+        const props = initialServerState.cellProps[cell.id];
+        if (props?.collapsed) cell.collapsed = true;
+      }
+      return freshCells;
+    }
+
+    // Fallback to localStorage
     const saved = loadNotebookState(conversationId);
-    return saved?.cells ?? buildCellsFromMessages(chat.messages);
+    if (saved?.cells) {
+      // Merge saved cell state onto fresh cells
+      return freshCells.map((fc) => {
+        const existing = saved.cells.find((sc) => sc.id === fc.id);
+        if (existing) {
+          return { ...fc, collapsed: existing.collapsed, editing: existing.editing };
+        }
+        return fc;
+      });
+    }
+
+    return freshCells;
+  });
+
+  // Cell display order — empty means natural message order
+  const [cellOrder, setCellOrder] = useState<string[]>(() => {
+    if (initialServerState?.cellOrder) return initialServerState.cellOrder;
+    if (typeof window === "undefined") return [];
+    const saved = loadNotebookState(conversationId);
+    return saved?.cellOrder ?? [];
   });
 
   const pendingRerun = useRef<string | null>(null);
@@ -229,11 +288,38 @@ export function useNotebook({ chat, conversationId }: UseNotebookOptions): UseNo
     });
   }, [chat.messages]);
 
-  // Persist to localStorage
+  // Persist to localStorage (write-through cache)
   useEffect(() => {
     if (!conversationId) return;
-    saveNotebookState({ conversationId, cells: cellState, version: 2 });
-  }, [cellState, conversationId]);
+    saveNotebookState({
+      conversationId,
+      cells: cellState,
+      version: 3,
+      cellOrder: cellOrder.length > 0 ? cellOrder : undefined,
+    });
+  }, [cellState, cellOrder, conversationId]);
+
+  // Debounced server persistence (500ms)
+  useEffect(() => {
+    if (!conversationId || conversationId.startsWith("temp:") || !saveToServer) return;
+
+    const timer = setTimeout(() => {
+      const cellProps: Record<string, { collapsed?: boolean }> = {};
+      for (const cell of cellState) {
+        if (cell.collapsed) {
+          cellProps[cell.id] = { collapsed: true };
+        }
+      }
+      const wire: NotebookStateWire = {
+        version: 3,
+        cellOrder: cellOrder.length > 0 ? cellOrder : undefined,
+        cellProps: Object.keys(cellProps).length > 0 ? cellProps : undefined,
+      };
+      saveToServer(wire);
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [cellState, cellOrder, conversationId, saveToServer]);
 
   // Migrate localStorage key when conversationId changes from temp to real
   const prevConversationId = useRef(conversationId);
@@ -263,8 +349,16 @@ export function useNotebook({ chat, conversationId }: UseNotebookOptions): UseNo
     }
   }, [chat.messages, chat.status, chat]);
 
-  // Resolve cells with their messages
-  const cells: ResolvedCell[] = cellState.map((cell) => {
+  // Resolve cells with their messages, applying display order
+  const orderedCellState = cellOrder.length > 0
+    ? cellOrder
+        .map((id) => cellState.find((c) => c.id === id))
+        .filter((c): c is NotebookCell => c !== undefined)
+        // Append any cells not in the order (new cells added after reorder)
+        .concat(cellState.filter((c) => !cellOrder.includes(c.id)))
+    : cellState;
+
+  const cells: ResolvedCell[] = orderedCellState.map((cell, displayIndex) => {
     const userMsg = chat.messages.find((m) => m.id === cell.messageId);
     const userIdx = chat.messages.findIndex((m) => m.id === cell.messageId);
     const nextMsg = userIdx !== -1 ? chat.messages[userIdx + 1] : undefined;
@@ -275,6 +369,7 @@ export function useNotebook({ chat, conversationId }: UseNotebookOptions): UseNo
 
     return {
       ...cell,
+      number: displayIndex + 1,
       userMessage: userMsg ?? { id: cell.messageId, role: "user" as const, parts: [] },
       assistantMessage: assistantMsg ?? null,
       status: isRunning ? "running" : cell.status,
@@ -321,6 +416,8 @@ export function useNotebook({ chat, conversationId }: UseNotebookOptions): UseNo
       const truncated = truncateMessagesForRerun(chat.messages, cell.messageId);
       chat.setMessages(truncated);
       setCellState((prev) => prev.filter((c) => c.number < cell.number));
+      // Remove from cellOrder if present
+      setCellOrder((prev) => prev.filter((id) => id !== cellId));
     },
     [cellState, chat],
   );
@@ -362,6 +459,51 @@ export function useNotebook({ chat, conversationId }: UseNotebookOptions): UseNo
     [cells],
   );
 
+  const reorderCells = useCallback((orderedIds: string[]) => {
+    setCellOrder(orderedIds);
+  }, []);
+
+  const forkCell = useCallback(
+    async (cellId: string) => {
+      if (!forkConversationFn) {
+        showWarning("Fork is not available without server-side persistence.");
+        return;
+      }
+
+      const cell = cells.find((c) => c.id === cellId);
+      if (!cell) {
+        console.warn(`forkCell: cell ${cellId} not found`);
+        return;
+      }
+
+      try {
+        const result = await forkConversationFn(
+          conversationId,
+          cell.messageId,
+          `Fork from cell ${cell.number}`,
+        );
+        if (result.warning) {
+          showWarning(result.warning);
+        }
+        onNavigateToBranch?.(result.id);
+      } catch (err: unknown) {
+        console.warn(
+          "Failed to fork conversation:",
+          err instanceof Error ? err.message : String(err),
+        );
+        showWarning("Failed to fork. Please try again.");
+      }
+    },
+    [cells, conversationId, forkConversationFn, onNavigateToBranch],
+  );
+
+  const switchBranch = useCallback(
+    (targetConversationId: string) => {
+      onNavigateToBranch?.(targetConversationId);
+    },
+    [onNavigateToBranch],
+  );
+
   return {
     cells,
     status: chat.status,
@@ -374,6 +516,10 @@ export function useNotebook({ chat, conversationId }: UseNotebookOptions): UseNo
     toggleEdit,
     toggleCollapse,
     copyCell,
+    reorderCells,
+    forkCell,
+    switchBranch,
+    forkInfo: forkInfoProp ?? null,
     input,
     setInput,
   };

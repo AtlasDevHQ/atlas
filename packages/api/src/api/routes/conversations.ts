@@ -21,6 +21,8 @@ import {
   getConversation,
   deleteConversation,
   starConversation,
+  updateNotebookState,
+  forkConversation,
   shareConversation,
   unshareConversation,
   getShareStatus,
@@ -38,6 +40,22 @@ const log = createLogger("conversations");
 // Zod schemas — exported for OpenAPI spec generation
 // ---------------------------------------------------------------------------
 
+const ForkBranchWireSchema = z.object({
+  conversationId: z.string(),
+  forkPointCellId: z.string(),
+  label: z.string(),
+  createdAt: z.string(),
+});
+
+const NotebookStateWireSchema = z.object({
+  version: z.number().int().min(1).max(10),
+  cellOrder: z.array(z.string()).optional(),
+  cellProps: z.record(z.string(), z.object({ collapsed: z.boolean().optional() })).optional(),
+  branches: z.array(ForkBranchWireSchema).optional(),
+  forkRootId: z.string().optional(),
+  forkPointCellId: z.string().optional(),
+});
+
 const ConversationSchema = z.object({
   id: z.string().uuid(),
   userId: z.string().nullable(),
@@ -47,10 +65,18 @@ const ConversationSchema = z.object({
   starred: z.boolean(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
+  notebookState: NotebookStateWireSchema.nullable().optional(),
 });
 
 export const StarConversationBodySchema = z.object({
   starred: z.boolean(),
+});
+
+export const NotebookStateBodySchema = NotebookStateWireSchema;
+
+export const ForkConversationBodySchema = z.object({
+  forkPointMessageId: z.string(),
+  label: z.string().optional(),
 });
 
 const MessageSchema = z.object({
@@ -244,6 +270,162 @@ conversations.patch("/:id/star", async (c) => {
       return c.json(fail.body, fail.status);
     }
     return c.json({ id, starred: parsed.data.starred });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PATCH /:id/notebook-state — update notebook state
+// ---------------------------------------------------------------------------
+
+conversations.patch("/:id/notebook-state", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
+  }
+
+  const preamble = await authPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  const id = c.req.param("id");
+  if (!UUID_RE.test(id)) {
+    return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch (err) {
+      log.debug({ err: err instanceof Error ? err.message : String(err) }, "Invalid JSON body in PATCH notebook-state");
+      return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+    }
+
+    const parsed = NotebookStateBodySchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: "invalid_request", message: "Invalid notebook state body." }, 400);
+    }
+
+    const result = await updateNotebookState(id, parsed.data, authResult.user?.id);
+    if (!result.ok) {
+      const fail = crudFailResponse(result.reason);
+      return c.json(fail.body, fail.status);
+    }
+    return c.json({ id, notebookState: parsed.data });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /:id/fork — fork a conversation at a specific message
+// ---------------------------------------------------------------------------
+
+conversations.post("/:id/fork", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
+  }
+
+  const preamble = await authPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  }
+  const { authResult } = preamble;
+
+  const id = c.req.param("id");
+  if (!UUID_RE.test(id)) {
+    return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
+  }
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch (err) {
+      log.debug({ err: err instanceof Error ? err.message : String(err) }, "Invalid JSON body in POST fork");
+      return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+    }
+
+    const parsed = ForkConversationBodySchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: "invalid_request", message: "Body must contain { forkPointMessageId: string }." }, 400);
+    }
+
+    const result = await forkConversation({
+      sourceId: id,
+      forkPointMessageId: parsed.data.forkPointMessageId,
+      userId: authResult.user?.id,
+      orgId: authResult.user?.activeOrganizationId,
+    });
+    if (!result.ok) {
+      const fail = crudFailResponse(result.reason);
+      return c.json(fail.body, fail.status);
+    }
+
+    // Update notebook_state on source and new conversation
+    const label = parsed.data.label ?? `Fork from cell`;
+    const branch = {
+      conversationId: result.data.id,
+      forkPointCellId: parsed.data.forkPointMessageId,
+      label,
+      createdAt: new Date().toISOString(),
+    };
+
+    // Read current notebook_state from source to preserve existing data
+    const sourceConv = await getConversation(id, authResult.user?.id);
+    if (!sourceConv.ok) {
+      log.error({ requestId, conversationId: id, reason: sourceConv.reason }, "Failed to read source conversation for branch metadata");
+      return c.json({
+        id: result.data.id,
+        messageCount: result.data.messageCount,
+        branches: [branch],
+        warning: "Fork created but branch metadata could not be saved to source conversation.",
+      });
+    }
+
+    const existing = sourceConv.data.notebookState ?? { version: 3 };
+    const existingBranches = existing.branches ?? [];
+
+    const updatedSourceState = {
+      ...existing,
+      version: existing.version || 3,
+      branches: [...existingBranches, branch],
+    };
+
+    const sourceRoot = existing.forkRootId;
+    const forkChildState = {
+      version: 3,
+      forkRootId: sourceRoot ?? id,
+      forkPointCellId: parsed.data.forkPointMessageId,
+    };
+
+    // Write both notebook_state updates in parallel
+    const [sourceResult, forkResult] = await Promise.all([
+      updateNotebookState(id, updatedSourceState, authResult.user?.id),
+      updateNotebookState(result.data.id, forkChildState, authResult.user?.id),
+    ]);
+
+    let metadataWarning: string | undefined;
+    if (!sourceResult.ok) {
+      log.error({ requestId, conversationId: id, reason: sourceResult.reason }, "Failed to update source notebook_state after fork");
+      metadataWarning = "Fork created but branch metadata could not be fully saved.";
+    }
+    if (!forkResult.ok) {
+      log.error({ requestId, conversationId: result.data.id, reason: forkResult.reason }, "Failed to set fork metadata on new conversation");
+      metadataWarning = "Fork created but branch metadata could not be fully saved.";
+    }
+
+    return c.json({
+      id: result.data.id,
+      messageCount: result.data.messageCount,
+      branches: [...existingBranches, branch],
+      ...(metadataWarning ? { warning: metadataWarning } : {}),
+    });
   });
 });
 

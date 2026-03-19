@@ -12,6 +12,8 @@ export type {
   Conversation,
   Message,
   ConversationWithMessages,
+  NotebookStateWire,
+  ForkBranchWire,
   ShareMode,
   ShareExpiryKey,
   DeliveryChannel,

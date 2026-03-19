@@ -1,6 +1,6 @@
 ---
 title: CLI Reference
-description: Complete reference for the Atlas CLI — init, diff, index, learn, query, doctor, validate, mcp, completions, and more.
+description: Complete reference for the Atlas CLI — init, diff, import, index, learn, query, doctor, validate, mcp, completions, and more.
 ---
 
 The Atlas CLI (`atlas`) profiles databases, generates semantic layers, validates configuration, and queries data from the terminal.
@@ -372,6 +372,43 @@ bun run atlas -- index --stats
 `--stats` prints a one-line summary: entity count, dimensions, measures, metrics, glossary terms, and total keywords. Use this to verify the index covers your semantic layer after adding or removing entity files.
 
 A full rebuild loads all YAML files under `semantic/` (including per-source subdirectories) and validates they parse correctly. The command prints the number of indexed entities, dimensions, measures, keyword count, and elapsed time on success.
+
+## import
+
+Import semantic layer YAML files from disk into the internal database for the active organization. Calls `POST /api/v1/admin/semantic/org/import` on a running Atlas API server.
+
+This is used in multi-tenant (org-scoped) deployments where the semantic layer is stored in the internal database rather than read from disk at runtime. After running `atlas init --org <orgId>` to generate YAML files on disk, use `atlas import` to sync them into the database.
+
+```bash
+bun run atlas -- import [options]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--connection <name>` | Associate imported entities with a named datasource |
+
+**Environment:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_API_URL` | `http://localhost:3001` | API server URL |
+| `ATLAS_API_KEY` | — | API key for authentication (required if auth is enabled) |
+
+**Requires** a running Atlas API server (`bun run dev:api` or production deployment).
+
+**Examples:**
+
+```bash
+# Import all semantic layer files for the active org
+bun run atlas -- import
+
+# Import and associate entities with a specific datasource
+bun run atlas -- import --connection warehouse
+```
+
+**Output:**
+
+The command reports how many entities were imported, how many were skipped (already up to date), the total count, and any errors encountered during import.
 
 ## learn
 

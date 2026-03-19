@@ -1,18 +1,26 @@
 {
   "title": "API Reference",
-  "description": "REST API endpoints and request/response schemas",
-  "icon": "Braces",
   "root": true,
   "pages": [
-    "index",
     "chat",
     "query",
     "conversations",
+    "suggestions",
+    "prompts",
+    "sessions",
+    "semantic",
+    "tables",
+    "validate-sql",
     "health",
     "actions",
     "scheduled-tasks",
     "auth",
     "slack",
-    "admin"
+    "widget",
+    "admin",
+    "admin-—-learned-patterns",
+    "admin-—-suggestions",
+    "admin-—-prompts",
+    "admin-—-organizations"
   ]
 }

@@ -258,7 +258,19 @@ export default defineConfig({
 });
 ```
 
-Plugins must have an `id`, `types` array, and `version`. Atlas validates these at startup. See [Plugin Authoring Guide](/plugins/authoring-guide) for building custom plugins.
+Every plugin must expose `id`, `types`, and `version`. Atlas validates these at startup and rejects plugins with missing or invalid fields.
+
+### Plugin fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | `string` | Yes | Unique identifier for the plugin. Duplicate IDs cause a startup error |
+| `types` | `string[]` | Yes | Non-empty array of plugin categories. Valid values: `datasource`, `context`, `interaction`, `action`, `sandbox` |
+| `version` | `string` | Yes | Semver version string (e.g. `"0.0.6"`) |
+
+<Callout type="info">
+Published plugins (e.g. `@useatlas/clickhouse`) set these fields internally via `definePlugin()`. You only need to worry about `types` when authoring a custom plugin. See [Plugin Authoring Guide](/plugins/authoring-guide) for details.
+</Callout>
 
 ---
 

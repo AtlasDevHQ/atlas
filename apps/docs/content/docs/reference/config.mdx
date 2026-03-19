@@ -166,7 +166,7 @@ export default defineConfig({
 | `description` | `string` | No | — | Human-readable label shown in the agent system prompt |
 | `maxConnections` | `number` | No | — | Connection pool size for this datasource |
 | `idleTimeoutMs` | `number` | No | — | Idle connection timeout in milliseconds |
-| `rateLimit` | `object` | No | — | `{ queriesPerMinute: number, concurrency: number }` (defaults: 60 qpm, 5 concurrent) |
+| `rateLimit` | `object` | No | `{ queriesPerMinute: 60, concurrency: 5 }` | Per-datasource rate limiting. `queriesPerMinute` caps queries per minute (default: 60). `concurrency` caps concurrent queries (default: 5) |
 
 The `"default"` datasource is used when the agent's `executeSQL` tool is called without a `connectionId`. See [Multi-Datasource Routing](/guides/multi-datasource) for a full guide on how the agent selects and queries multiple datasources.
 
@@ -342,13 +342,36 @@ The cache is automatically flushed on config reload. Manual flush is available v
 
 ---
 
+## Dynamic Learning
+
+Configure how the offline learning loop (`atlas learn`) promotes discovered query patterns into the semantic layer.
+
+```typescript
+export default defineConfig({
+  learn: {
+    confidenceThreshold: 0.7,  // default: 0.7
+  },
+});
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `confidenceThreshold` | `number` | `0.7` | Minimum confidence score (0–1) for a learned pattern to be eligible for auto-promotion. Lower values promote more aggressively; higher values require stronger evidence from the audit log |
+
+**Env var equivalent:**
+```bash
+ATLAS_LEARN_CONFIDENCE_THRESHOLD=0.7
+```
+
+---
+
 ## RLS (Row-Level Security)
 
 Define RLS policies that inject WHERE clauses on every query based on user JWT claims. Each policy specifies which tables it applies to, which column to filter on, and which JWT claim provides the value.
 
 See [Row-Level Security](/security/row-level-security) for the full guide.
 
-<Tabs items={["Single policy", "Per-table policies", "All tables"]}>
+<Tabs items={["Single policy", "Per-table policies", "All tables", "OR-combined"]}>
 <Tab value="Single policy">
 ```typescript
 // atlas.config.ts — single RLS policy
@@ -402,7 +425,31 @@ export default defineConfig({
 });
 ```
 </Tab>
+<Tab value="OR-combined">
+```typescript
+// atlas.config.ts — OR-combined policies (match any one policy)
+export default defineConfig({
+  rls: {
+    enabled: true,
+    // "or" = user passes if ANY policy matches (default: "and" = ALL must match)
+    combineWith: "or",
+    policies: [
+      { tables: ["orders"], column: "tenant_id", claim: "org_id" },
+      { tables: ["orders"], column: "region", claim: "region" },
+    ],
+  },
+});
+```
+</Tab>
 </Tabs>
+
+### RLS config fields
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `enabled` | `boolean` | No | `false` | Whether RLS is active. When true, policies are enforced on every query |
+| `policies` | `RLSPolicy[]` | Yes (when enabled) | `[]` | Array of RLS policies (see below) |
+| `combineWith` | `"and" \| "or"` | No | `"and"` | How to combine conditions from different policies. `"and"` requires all policies to match. `"or"` requires at least one policy to match |
 
 ### RLS policy fields
 
@@ -470,7 +517,7 @@ export default defineConfig({
 | `[actionType].approval` | `string` | Override approval mode for this action |
 | `[actionType].requiredRole` | `string` | Minimum role to approve: `viewer`, `analyst`, `admin` |
 | `[actionType].credentials` | `object` | Required env vars (`{ VAR_NAME: { env: "VAR_NAME" } }`) |
-| `[actionType].rateLimit` | `number` | Per-action rate limit |
+| `[actionType].rateLimit` | `number` | Max executions per minute for this action type |
 
 ---
 
@@ -754,6 +801,11 @@ export default defineConfig({
   semanticIndex: {
     enabled: true,
   },
+
+  // Dynamic learning (offline audit log analysis)
+  learn: {
+    confidenceThreshold: 0.7,
+  },
 });
 ```
 
@@ -778,6 +830,7 @@ export default defineConfig({
 | `cache` | `object` | — | Query result caching ([details](#query-cache)) |
 | `pool` | `object` | — | Per-org connection pool isolation ([details](#per-org-pool-isolation)) |
 | `semanticIndex` | `object` | — | Semantic index configuration ([details](#semantic-index)) |
+| `learn` | `object` | — | Dynamic learning configuration ([details](#dynamic-learning)) |
 
 ---
 

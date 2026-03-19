@@ -16,7 +16,7 @@ import { bearer, admin, organization } from "better-auth/plugins";
 // @better-auth/api-key must match the better-auth core version.
 // Both are pinned to ^1.5.1 in package.json — update together.
 import { apiKey } from "@better-auth/api-key";
-import { getInternalDB, hasInternalDB, internalQuery, internalExecute } from "@atlas/api/lib/db/internal";
+import { getInternalDB, hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import { isEnterpriseEnabled } from "../../../../../ee/src/index";
 import { ac, owner as ownerRole, admin as adminRole, member as memberRole } from "@atlas/api/lib/auth/org-permissions";
@@ -214,8 +214,9 @@ export function getAuthInstance(): AuthInstance {
               );
               if (existing.length > 0) return;
 
-              // Auto-add as member
-              internalExecute(
+              // Auto-add as member — awaited so failures are caught by the
+              // surrounding try/catch and logged as warnings.
+              await getInternalDB().query(
                 `INSERT INTO member (id, "organizationId", "userId", role, "createdAt")
                  VALUES (gen_random_uuid(), $1, $2, 'member', now())`,
                 [orgId, user.id],

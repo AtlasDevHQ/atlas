@@ -15,6 +15,7 @@ import {
   createSSOProvider,
   updateSSOProvider,
   deleteSSOProvider,
+  redactProvider,
 } from "../../../../../ee/src/auth/sso";
 import type {
   CreateSSOProviderRequest,
@@ -57,7 +58,7 @@ adminSso.get("/providers", async (c) => {
 
     try {
       const providers = await listSSOProviders(orgId);
-      return c.json({ providers, total: providers.length });
+      return c.json({ providers: providers.map(redactProvider), total: providers.length });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       // Enterprise gating errors get a 403
@@ -104,7 +105,7 @@ adminSso.get("/providers/:id", async (c) => {
       if (!provider) {
         return c.json({ error: "not_found", message: "SSO provider not found." }, 404);
       }
-      return c.json({ provider });
+      return c.json({ provider: redactProvider(provider) });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (message.includes("Enterprise features")) {
@@ -154,7 +155,7 @@ adminSso.post("/providers", async (c) => {
 
     try {
       const provider = await createSSOProvider(orgId, body);
-      return c.json({ provider }, 201);
+      return c.json({ provider: redactProvider(provider) }, 201);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (message.includes("Enterprise features")) {
@@ -210,7 +211,7 @@ adminSso.patch("/providers/:id", async (c) => {
 
     try {
       const provider = await updateSSOProvider(orgId, providerId, body);
-      return c.json({ provider });
+      return c.json({ provider: redactProvider(provider) });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (message.includes("Enterprise features")) {

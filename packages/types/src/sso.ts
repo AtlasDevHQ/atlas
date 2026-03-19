@@ -19,7 +19,7 @@ export interface SSOSamlConfig {
   idpSsoUrl: string;
   /** IdP X.509 certificate in PEM format for signature verification. */
   idpCertificate: string;
-  /** SP Entity ID. Defaults to `{BETTER_AUTH_URL}/api/auth/sso/saml/metadata`. */
+  /** SP Entity ID. Must be configured explicitly when initiating SAML flows. */
   spEntityId?: string;
   /** SP Assertion Consumer Service URL. */
   spAcsUrl?: string;
@@ -29,7 +29,7 @@ export interface SSOSamlConfig {
 export interface SSOOidcConfig {
   /** OAuth2 Client ID. */
   clientId: string;
-  /** OAuth2 Client Secret (encrypted at rest via encryptUrl). */
+  /** OAuth2 Client Secret (encrypted at rest in the sso_providers.config column). */
   clientSecret: string;
   /** OpenID Connect Discovery URL (e.g. `https://idp.example.com/.well-known/openid-configuration`). */
   discoveryUrl: string;

@@ -2,8 +2,9 @@
  * Enterprise SSO provider management.
  *
  * CRUD for per-organization SAML/OIDC identity providers and
- * domain-based auto-provisioning. Every public function calls
+ * domain-based auto-provisioning. Every CRUD function calls
  * `requireEnterprise("sso")` — unlicensed deployments get a clear error.
+ * Validation helpers and domain-matching functions do not require a license.
  */
 
 import { requireEnterprise } from "../index";
@@ -87,6 +88,20 @@ function rowToProvider(row: SSOProviderRow): SSOProvider {
     return { ...base, type: "saml", config: config as SSOSamlConfig };
   }
   return { ...base, type: "oidc", config: config as SSOOidcConfig };
+}
+
+/**
+ * Strip secrets from an SSO provider before returning in API responses.
+ * OIDC clientSecret is redacted; SAML certificates are public and left as-is.
+ */
+export function redactProvider(provider: SSOProvider): SSOProvider {
+  if (provider.type === "oidc") {
+    return {
+      ...provider,
+      config: { ...provider.config, clientSecret: "****" },
+    };
+  }
+  return provider;
 }
 
 /** Encrypt sensitive fields in config before storage. */

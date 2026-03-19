@@ -249,7 +249,7 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
     sourceId: string,
     forkPointMessageId: string,
     label?: string,
-  ): Promise<{ id: string; branches: ForkBranchWire[] }> => {
+  ): Promise<{ id: string; branches: ForkBranchWire[]; warning?: string }> => {
     const res = await fetch(`${opts.apiUrl}/api/v1/conversations/${sourceId}/fork`, {
       method: "POST",
       headers: { ...opts.getHeaders(), "Content-Type": "application/json" },

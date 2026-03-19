@@ -2993,7 +2993,7 @@ function buildSpec(): Record<string, unknown> {
           summary: "Widget script tag loader",
           description:
             "Returns a self-contained IIFE script that injects a floating chat bubble and iframe overlay into any host page. " +
-            "Reads data-* attributes from its own <script> tag for configuration. Exposes window.Atlas programmatic API.",
+            "Reads data-* attributes from its own `<script>` tag for configuration. Exposes window.Atlas programmatic API.",
           tags: ["Widget"],
           security: [],
           responses: {

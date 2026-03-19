@@ -68,9 +68,9 @@ export function NotebookShell({ notebook, focusCellId }: NotebookShellProps) {
         <div className="mx-auto max-w-5xl space-y-4">
           {notebook.error && (
             <div className="mx-auto max-w-5xl rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
-              <p className="font-medium">Failed to process notebook cell</p>
+              <p className="font-medium">Request failed</p>
               <p>{notebook.error.message}</p>
-              <p className="mt-1 text-xs text-red-500 dark:text-red-400">Try re-running the cell or rephrasing your question.</p>
+              <p className="mt-1 text-xs text-red-500 dark:text-red-400">Try re-running the last cell or refreshing the page.</p>
             </div>
           )}
           {notebook.cells.length === 0 ? (
@@ -79,10 +79,11 @@ export function NotebookShell({ notebook, focusCellId }: NotebookShellProps) {
             notebook.cells.map((cell, i) => (
               <ErrorBoundary
                 key={cell.id}
-                fallbackRender={(_error, reset) => (
+                fallbackRender={(error, reset) => (
                   <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-400">
                     <p className="font-medium">Cell {cell.number} failed to render</p>
-                    <p className="mt-1 text-xs">This cell encountered an error. Other cells are unaffected.</p>
+                    <p className="mt-1 text-xs">This cell encountered a rendering error. Other cells should be unaffected.</p>
+                    <p className="mt-1 text-xs opacity-60">{error.message}</p>
                     <Button variant="outline" size="sm" onClick={reset} className="mt-2 text-xs">
                       Retry
                     </Button>

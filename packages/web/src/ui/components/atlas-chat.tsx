@@ -276,7 +276,7 @@ export function AtlasChat() {
         const name = getToolName(part as Parameters<typeof getToolName>[0]);
         if (name !== "executeSQL") continue;
       } catch {
-        // intentionally ignored: getToolName may throw for non-standard tool parts
+        // intentionally ignored: getToolName throws if the part lacks a recognized toolName property
         continue;
       }
       if ("result" in part && part.result != null) {
@@ -455,7 +455,7 @@ export function AtlasChat() {
                         size="sm"
                         onClick={() => {
                           authClient.signOut().catch((err: unknown) => {
-                            console.error("Sign out failed:", err);
+                            console.error("Sign out failed:", err instanceof Error ? err.message : String(err));
                             setTransientWarning("Sign out failed. Please try again.");
                             setTimeout(() => setTransientWarning(""), 5000);
                           });
@@ -596,7 +596,7 @@ export function AtlasChat() {
                         {isLastAssistant && !hasVisibleParts && !isLoading && error && (
                           <div className="max-w-[90%]">
                             <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-950/30 dark:text-red-400">
-                              Something went wrong generating a response. Try sending your message again.
+                              The response stream was interrupted before producing content. Try sending your message again.
                             </div>
                           </div>
                         )}

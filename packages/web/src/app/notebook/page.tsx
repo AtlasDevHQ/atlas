@@ -90,7 +90,7 @@ function NotebookContent() {
         if (uiMessages) {
           setMessages(uiMessages);
         } else {
-          setError("Could not load conversation. It may have been deleted.");
+          setError("Could not load conversation. The server may be unavailable, or the conversation may no longer exist.");
         }
       } catch (err: unknown) {
         if (!cancelled) {

@@ -2579,6 +2579,47 @@ function buildSpec(): Record<string, unknown> {
             "404": errorResponse("Organization not found or no internal database"),
           },
         },
+        delete: {
+          operationId: "adminDeleteWorkspace",
+          summary: "Delete workspace",
+          description:
+            "Soft-deletes a workspace with cascading cleanup: drains connection pools, flushes cache, marks conversations deleted, removes semantic entities and learned patterns. Requires admin role.",
+          tags: ["Admin — Organizations"],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: "id", in: "path", required: true, schema: { type: "string" }, description: "Organization ID." },
+          ],
+          responses: {
+            "200": {
+              description: "Workspace deleted with cascade summary",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      message: { type: "string" },
+                      cascade: {
+                        type: "object",
+                        properties: {
+                          poolsDrained: { type: "integer" },
+                          conversations: { type: "integer" },
+                          semanticEntities: { type: "integer" },
+                          learnedPatterns: { type: "integer" },
+                          suggestions: { type: "integer" },
+                          scheduledTasks: { type: "integer" },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            "400": errorResponse("Invalid organization ID"),
+            ...authErrors,
+            "404": errorResponse("Organization not found"),
+            "409": errorResponse("Workspace already deleted"),
+          },
+        },
       },
 
       "/api/v1/admin/organizations/{id}/stats": {
@@ -2611,6 +2652,177 @@ function buildSpec(): Record<string, unknown> {
             "400": errorResponse("Invalid organization ID"),
             ...authErrors,
             "404": errorResponse("No internal database configured"),
+          },
+        },
+      },
+
+      "/api/v1/admin/organizations/{id}/suspend": {
+        patch: {
+          operationId: "adminSuspendWorkspace",
+          summary: "Suspend workspace",
+          description:
+            "Suspends a workspace, blocking all queries while preserving data. Connection pools are drained. Requires admin role.",
+          tags: ["Admin — Organizations"],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: "id", in: "path", required: true, schema: { type: "string" }, description: "Organization ID." },
+          ],
+          responses: {
+            "200": {
+              description: "Workspace suspended",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      message: { type: "string" },
+                      organization: { type: "object" },
+                    },
+                  },
+                },
+              },
+            },
+            "400": errorResponse("Invalid organization ID"),
+            ...authErrors,
+            "404": errorResponse("Organization not found"),
+            "409": errorResponse("Workspace already suspended or deleted"),
+          },
+        },
+      },
+
+      "/api/v1/admin/organizations/{id}/activate": {
+        patch: {
+          operationId: "adminActivateWorkspace",
+          summary: "Activate workspace",
+          description:
+            "Reactivates a suspended workspace, resuming normal operations. Requires admin role.",
+          tags: ["Admin — Organizations"],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: "id", in: "path", required: true, schema: { type: "string" }, description: "Organization ID." },
+          ],
+          responses: {
+            "200": {
+              description: "Workspace activated",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      message: { type: "string" },
+                      organization: { type: "object" },
+                    },
+                  },
+                },
+              },
+            },
+            "400": errorResponse("Invalid organization ID"),
+            ...authErrors,
+            "404": errorResponse("Organization not found"),
+            "409": errorResponse("Workspace already active or deleted"),
+          },
+        },
+      },
+
+      "/api/v1/admin/organizations/{id}/status": {
+        get: {
+          operationId: "adminGetWorkspaceStatus",
+          summary: "Workspace health summary",
+          description:
+            "Returns workspace status, plan tier, member/conversation/query counts, connection count, and pool metrics. Requires admin role.",
+          tags: ["Admin — Organizations"],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: "id", in: "path", required: true, schema: { type: "string" }, description: "Organization ID." },
+          ],
+          responses: {
+            "200": {
+              description: "Workspace health summary",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      workspace: {
+                        type: "object",
+                        properties: {
+                          id: { type: "string" },
+                          name: { type: "string" },
+                          slug: { type: "string" },
+                          workspaceStatus: { type: "string", enum: ["active", "suspended", "deleted"] },
+                          planTier: { type: "string", enum: ["free", "team", "enterprise"] },
+                          suspendedAt: { type: "string", format: "date-time", nullable: true },
+                          deletedAt: { type: "string", format: "date-time", nullable: true },
+                          createdAt: { type: "string", format: "date-time" },
+                        },
+                      },
+                      health: {
+                        type: "object",
+                        properties: {
+                          members: { type: "integer" },
+                          conversations: { type: "integer" },
+                          queriesLast24h: { type: "integer" },
+                          connections: { type: "integer" },
+                          scheduledTasks: { type: "integer" },
+                          poolMetrics: { type: "array", items: { type: "object" } },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            "400": errorResponse("Invalid organization ID"),
+            ...authErrors,
+            "404": errorResponse("Organization not found"),
+          },
+        },
+      },
+
+      "/api/v1/admin/organizations/{id}/plan": {
+        patch: {
+          operationId: "adminUpdateWorkspacePlan",
+          summary: "Update workspace plan tier",
+          description:
+            "Updates the plan tier of a workspace. Valid tiers: free, team, enterprise. Requires admin role.",
+          tags: ["Admin — Organizations"],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: "id", in: "path", required: true, schema: { type: "string" }, description: "Organization ID." },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["planTier"],
+                  properties: {
+                    planTier: { type: "string", enum: ["free", "team", "enterprise"] },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Plan tier updated",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      message: { type: "string" },
+                      organization: { type: "object" },
+                    },
+                  },
+                },
+              },
+            },
+            "400": errorResponse("Invalid plan tier or organization ID"),
+            ...authErrors,
+            "404": errorResponse("Organization not found"),
+            "409": errorResponse("Cannot update plan for deleted workspace"),
           },
         },
       },

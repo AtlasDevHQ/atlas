@@ -1,16 +1,17 @@
 /**
- * Shared profiler library — extracted from CLI for reuse by the wizard API.
+ * Shared profiler library — used by the wizard API for database profiling.
  *
  * Contains type mapping, YAML generation, heuristics, and DB-specific
- * profiling. The CLI imports from here; the wizard API calls these
- * functions directly via HTTP endpoints.
+ * profiling. Canonical type definitions live in @useatlas/types and are
+ * re-exported here for convenience.
  */
 
 import * as yaml from "js-yaml";
 import type { DBType } from "@atlas/api/lib/db/connection";
 import { createLogger } from "@atlas/api/lib/logger";
 
-// Re-export canonical types from @useatlas/types
+// Re-export canonical types so existing consumers of @atlas/api/lib/profiler
+// continue to work without import path changes.
 export type {
   ObjectType,
   ColumnProfile,

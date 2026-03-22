@@ -60,8 +60,8 @@ export interface ColumnProfile {
 /**
  * Table profile from the database profiler.
  *
- * `matview_populated` is only meaningful when `object_type === "materialized_view"`.
- * Use the `isMatView()` guard from the profiler module before accessing it.
+ * `matview_populated` is only present when `object_type === "materialized_view"`.
+ * Check `object_type` before relying on its value.
  */
 export interface TableProfile {
   table_name: string;

@@ -438,10 +438,7 @@ wizard.openapi(generateRoute, async (c) => {
   const { authResult } = preamble;
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const { connectionId, tables } = c.req.valid("json");
-
-    // Zod already validated tables as string[] — use directly
-    const tableNames = tables;
+    const { connectionId, tables: tableNames } = c.req.valid("json");
 
     let connUrl: ResolvedConnection | null;
     try {
@@ -607,12 +604,9 @@ wizard.openapi(saveRoute, async (c) => {
     const body = c.req.valid("json");
     const { connectionId, entities } = body;
 
-    // Zod already validated entities as { tableName: string; yaml: string }[]
-    const validEntities = entities;
-
     // Path traversal protection: validate all table names before writing any files
     const SAFE_TABLE_NAME = /^[a-zA-Z_][a-zA-Z0-9_.-]*$/;
-    for (const entity of validEntities) {
+    for (const entity of entities) {
       if (!SAFE_TABLE_NAME.test(entity.tableName) || entity.tableName.includes("..")) {
         return c.json({
           error: "invalid_request",
@@ -634,7 +628,7 @@ wizard.openapi(saveRoute, async (c) => {
       const savedFiles: string[] = [];
 
       // Write entity YAMLs (table names already validated above)
-      for (const entity of validEntities) {
+      for (const entity of entities) {
         const safeName = path.basename(entity.tableName);
         const filePath = path.join(entitiesDir, `${safeName}.yml`);
         fs.writeFileSync(filePath, entity.yaml, "utf-8");
@@ -689,7 +683,7 @@ wizard.openapi(saveRoute, async (c) => {
         requestId,
         orgId,
         connectionId,
-        entityCount: validEntities.length,
+        entityCount: entities.length,
         fileCount: savedFiles.length,
       }, "Wizard save complete");
 
@@ -697,7 +691,7 @@ wizard.openapi(saveRoute, async (c) => {
         saved: true,
         orgId,
         connectionId,
-        entityCount: validEntities.length,
+        entityCount: entities.length,
         files: savedFiles,
       }, 201);
     } catch (err) {

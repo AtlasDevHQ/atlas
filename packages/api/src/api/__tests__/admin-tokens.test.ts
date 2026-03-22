@@ -199,7 +199,10 @@ mock.module("@atlas/api/lib/conversations", () => ({
 }));
 
 mock.module("@atlas/api/lib/auth/types", () => ({
+  AUTH_MODES: ["none", "simple-key", "byot", "managed"],
   ATLAS_ROLES: ["member", "admin", "owner"],
+  createAtlasUser: (id: string, mode: string, label: string, opts?: Record<string, unknown>) =>
+    Object.freeze({ id, mode, label, ...opts }),
 }));
 
 mock.module("@atlas/api/lib/security", () => ({

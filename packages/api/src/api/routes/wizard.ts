@@ -17,6 +17,7 @@ import * as path from "path";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { HTTPException } from "hono/http-exception";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
+import { validationHook } from "./validation-hook";
 import { connections, detectDBType } from "@atlas/api/lib/db/connection";
 import { hasInternalDB, internalQuery, decryptUrl } from "@atlas/api/lib/db/internal";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
@@ -280,12 +281,7 @@ const saveRoute = createRoute({
 // ---------------------------------------------------------------------------
 
 const wizard = new OpenAPIHono({
-  defaultHook: (result, c) => {
-    if (!result.success) {
-      const detail = result.error.issues.map((i) => i.message).join("; ");
-      return c.json({ error: "invalid_request", message: detail || "Request body validation failed." }, 400);
-    }
-  },
+  defaultHook: validationHook,
 });
 
 wizard.onError((err, c) => {

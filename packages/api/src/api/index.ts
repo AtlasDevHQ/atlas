@@ -19,6 +19,7 @@ import {
   context as otelContext,
 } from "@opentelemetry/api";
 import { createLogger } from "@atlas/api/lib/logger";
+import { validationHook } from "./routes/validation-hook";
 import { chat } from "./routes/chat";
 import { health } from "./routes/health";
 import { auth } from "./routes/auth";
@@ -34,7 +35,7 @@ import { widgetLoader, widgetTypesLoader } from "./routes/widget-loader";
 
 const log = createLogger("api");
 const tracer = trace.getTracer("atlas");
-const app = new OpenAPIHono();
+const app = new OpenAPIHono({ defaultHook: validationHook });
 
 // OTel tracing — root span per HTTP request. No-op when SDK is not initialized.
 // Must be the first middleware so all downstream operations are children.

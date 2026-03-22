@@ -344,7 +344,7 @@ describe("POST /api/v1/wizard/profile", () => {
     const res = await postJson("/api/v1/wizard/profile", {});
     expect(res.status).toBe(400);
     const data = await json(res);
-    expect(data.error).toBe("invalid_request");
+    expect(data.error).toBe("validation_error");
   });
 
   it("returns table list for a valid connection", async () => {
@@ -500,7 +500,7 @@ describe("POST /api/v1/wizard/save", () => {
     });
     expect(res.status).toBe(400);
     const data = await json(res);
-    expect(data.error).toBe("invalid_request");
+    expect(data.error).toBe("validation_error");
   });
 
   it("returns 400 when no active org", async () => {
@@ -601,7 +601,7 @@ describe("POST /api/v1/wizard/save", () => {
     });
     expect(res.status).toBe(400);
     const data = await json(res);
-    expect(data.error).toBe("invalid_request");
+    expect(data.error).toBe("validation_error");
     // Zod validation catches missing required fields
     expect(typeof data.message).toBe("string");
     expect((data.message as string).length).toBeGreaterThan(0);
@@ -681,7 +681,7 @@ describe("POST /api/v1/wizard/save", () => {
     // Zod validation rejects the array because items don't conform to schema
     expect(res.status).toBe(400);
     const data = await json(res);
-    expect(data.error).toBe("invalid_request");
+    expect(data.error).toBe("validation_error");
   });
 
   it("returns 500 with save_failed when filesystem write throws", async () => {

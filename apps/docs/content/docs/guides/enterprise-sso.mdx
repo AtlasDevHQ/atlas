@@ -111,12 +111,15 @@ All SSO endpoints require the `admin` role and an active enterprise license. The
 | `POST` | `/providers` | Register a new SSO provider |
 | `PATCH` | `/providers/:id` | Update a provider (partial config merge) |
 | `DELETE` | `/providers/:id` | Delete a provider |
+| `GET` | `/enforcement` | Get SSO enforcement status |
+| `PUT` | `/enforcement` | Enable or disable SSO enforcement |
 
 ### Error Responses
 
 | Status | Code | When |
 |--------|------|------|
 | 400 | `validation` | Invalid config fields, malformed domain |
+| 400 | `no_provider` | Trying to enable enforcement with no active SSO provider |
 | 403 | `enterprise_required` | Enterprise license not active |
 | 404 | `not_found` | Provider ID doesn't exist |
 | 409 | `conflict` | Domain already claimed by another SSO provider |
@@ -139,6 +142,98 @@ Domain format requirements:
 
 ---
 
+## SSO Enforcement
+
+By default, SSO is an **optional** login method — users with a matching email domain are routed to the IdP, but password login remains available. SSO enforcement changes this: when enabled, **password and email-based login is blocked** for all users whose email domain matches a configured SSO provider. They must sign in through the identity provider.
+
+Enforcement is an **organization-level** setting. When toggled, it updates the `sso_enforced` flag on all SSO providers belonging to that organization.
+
+### What Happens When Enforcement Is On
+
+1. A user attempts to sign in with email `alice@acme.com`
+2. Atlas detects that `acme.com` has an SSO provider with enforcement enabled
+3. The password/session auth is blocked with a `403` response:
+   ```json
+   {
+     "error": "SSO is required for this workspace. Please sign in via your identity provider.",
+     "ssoRedirectUrl": "https://idp.acme.com/sso"
+   }
+   ```
+4. The response includes `ssoRedirectUrl` so the client can redirect the user to the IdP
+
+<Callout type="info">
+**Break-glass bypass:** API key authentication (`simple-key` mode) is not affected by SSO enforcement. If an admin is locked out of the UI, they can still access the API using an API key to disable enforcement.
+</Callout>
+
+### Check Enforcement Status
+
+```bash
+curl https://your-atlas.example.com/api/v1/admin/sso/enforcement \
+  -H "Authorization: Bearer <admin-token>"
+```
+
+**Response (200):**
+
+```json
+{
+  "enforced": false,
+  "orgId": "org_abc123"
+}
+```
+
+### Enable Enforcement
+
+```bash
+curl -X PUT https://your-atlas.example.com/api/v1/admin/sso/enforcement \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <admin-token>" \
+  -d '{ "enforced": true }'
+```
+
+**Response (200):**
+
+```json
+{
+  "enforced": true,
+  "orgId": "org_abc123"
+}
+```
+
+### Disable Enforcement
+
+```bash
+curl -X PUT https://your-atlas.example.com/api/v1/admin/sso/enforcement \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <admin-token>" \
+  -d '{ "enforced": false }'
+```
+
+<Callout type="warn">
+**Before enabling enforcement**, ensure at least one SSO provider is configured and enabled for your organization. Atlas will reject the request with a `400` error (`no_provider`) if no active provider exists:
+
+```json
+{
+  "error": "no_provider",
+  "message": "Cannot enforce SSO without at least one active SSO provider. Create and enable a SAML or OIDC provider first."
+}
+```
+</Callout>
+
+### Enforcement and Existing Users
+
+When you enable SSO enforcement:
+
+- **Active sessions are not terminated.** Users already signed in continue to have access until their session expires
+- **New sign-in attempts via password are blocked.** Users must use the SSO flow on their next login
+- **API key access is unaffected.** The `simple-key` auth mode bypasses SSO enforcement, providing a break-glass path for administrators
+
+When you disable SSO enforcement:
+
+- Password login is immediately available again for all users
+- SSO login continues to work — disabling enforcement does not remove SSO providers
+
+---
+
 ## SAML vs OIDC
 
 | Feature | SAML 2.0 | OIDC |
@@ -154,6 +249,7 @@ Choose SAML when your IdP mandates it or for compliance requirements. Choose OID
 
 ## See Also
 
+- [IP Allowlisting](/guides/ip-allowlisting) — Restrict access by IP range
 - [Authentication](/deployment/authentication) — Auth mode setup and configuration
 - [Admin Console](/guides/admin-console) — Manage users and sessions
 - [Environment Variables](/reference/environment-variables) — Full variable reference

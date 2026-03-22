@@ -1,0 +1,257 @@
+---
+title: IP Allowlisting
+description: Restrict workspace access to specific IP ranges using CIDR-based allowlisting.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas supports per-workspace IP allowlisting as an enterprise feature. When configured, only requests originating from allowed CIDR ranges can access the workspace — all other requests are rejected with a `403` response. This applies to both API and UI access.
+
+<Callout title="Prerequisites">
+- [Managed auth](/deployment/authentication#managed-auth) enabled
+- Internal database configured (`DATABASE_URL`)
+- Enterprise license (the `/ee` module must be available)
+- Admin role required for all IP allowlist endpoints
+- `ATLAS_TRUST_PROXY` set to `"true"` if running behind a reverse proxy (required for accurate IP detection)
+</Callout>
+
+---
+
+## How It Works
+
+IP allowlisting is **opt-in per workspace**. When no allowlist entries exist for an organization, all IPs are permitted. Once you add the first CIDR entry, only IPs matching at least one entry are allowed through.
+
+### Enforcement Points
+
+The IP allowlist is checked at two enforcement points in the request pipeline, both **after** authentication so that the user's organization context is available:
+
+1. **Chat endpoint** (`POST /api/v1/chat`) — checked in the chat request preamble
+2. **Admin API** (`/api/v1/admin/*`) — checked in the admin auth preamble
+
+When a request is denied:
+
+```json
+{
+  "error": "ip_not_allowed",
+  "message": "Your IP address is not in the workspace's allowlist.",
+  "requestId": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+The response status is `403 Forbidden`.
+
+### IP Detection
+
+Atlas extracts the client IP from `X-Forwarded-For` or `X-Real-IP` headers, but **only when `ATLAS_TRUST_PROXY` is enabled**. Without it, these headers are ignored to prevent spoofing. If no IP can be determined and the allowlist is non-empty, the request is denied.
+
+### Caching
+
+Allowlist entries are cached in memory with a **30-second TTL** for performance. After adding or removing entries via the API, changes take effect within 30 seconds for all requests. The API mutations (`POST` and `DELETE`) immediately invalidate the cache for the affected organization.
+
+### Fail-Closed Design
+
+If the allowlist check encounters a database error, the request is **blocked** (fail-closed). This follows the security principle that a failing security check should deny access rather than silently allow it.
+
+---
+
+## API Endpoints
+
+All endpoints are mounted at `/api/v1/admin/ip-allowlist` and require the `admin` role plus an active enterprise license.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/` | List all allowlist entries for the workspace |
+| `POST` | `/` | Add a CIDR range to the allowlist |
+| `DELETE` | `/:id` | Remove an allowlist entry by ID |
+
+### List Entries
+
+Returns all IP allowlist entries for the admin's active organization, plus the caller's current detected IP address.
+
+```bash
+curl https://your-atlas.example.com/api/v1/admin/ip-allowlist \
+  -H "Authorization: Bearer <admin-token>"
+```
+
+**Response (200):**
+
+```json
+{
+  "entries": [
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "orgId": "org_abc123",
+      "cidr": "10.0.0.0/8",
+      "description": "Office network",
+      "createdAt": "2026-03-22T10:00:00.000Z",
+      "createdBy": "user_xyz"
+    }
+  ],
+  "total": 1,
+  "callerIP": "10.0.1.42"
+}
+```
+
+The `callerIP` field shows the IP address Atlas detected for the current request. Use this to verify your IP before adding allowlist rules.
+
+### Add Entry
+
+Adds a CIDR range to the workspace's IP allowlist. Supports both IPv4 and IPv6 notation.
+
+```bash
+curl -X POST https://your-atlas.example.com/api/v1/admin/ip-allowlist \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <admin-token>" \
+  -d '{
+    "cidr": "10.0.0.0/8",
+    "description": "Office network"
+  }'
+```
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `cidr` | string | Yes | CIDR notation — e.g., `10.0.0.0/8` (IPv4) or `2001:db8::/32` (IPv6) |
+| `description` | string | No | Human-readable label for the IP range |
+
+**Response (201):**
+
+```json
+{
+  "entry": {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "orgId": "org_abc123",
+    "cidr": "10.0.0.0/8",
+    "description": "Office network",
+    "createdAt": "2026-03-22T10:00:00.000Z",
+    "createdBy": "user_xyz"
+  }
+}
+```
+
+### Remove Entry
+
+Removes an IP allowlist entry by ID. Changes take effect immediately (cache is invalidated).
+
+```bash
+curl -X DELETE https://your-atlas.example.com/api/v1/admin/ip-allowlist/550e8400-e29b-41d4-a716-446655440000 \
+  -H "Authorization: Bearer <admin-token>"
+```
+
+**Response (200):**
+
+```json
+{
+  "message": "IP allowlist entry removed."
+}
+```
+
+---
+
+## CIDR Format
+
+CIDR (Classless Inter-Domain Routing) notation specifies an IP range as a base address and prefix length.
+
+### IPv4 Examples
+
+| CIDR | Range | Use Case |
+|------|-------|----------|
+| `10.0.0.0/8` | 10.0.0.0 – 10.255.255.255 | Large corporate network |
+| `192.168.1.0/24` | 192.168.1.0 – 192.168.1.255 | Single subnet |
+| `203.0.113.42/32` | 203.0.113.42 only | Single IP address |
+
+### IPv6 Examples
+
+| CIDR | Use Case |
+|------|----------|
+| `2001:db8::/32` | IPv6 address block |
+| `::1/128` | Localhost only |
+| `fe80::/10` | Link-local addresses |
+
+<Callout type="info">
+Atlas validates CIDR format on input using the Node.js `net` module. Invalid notation is rejected with a `400` error that includes the expected format. The CIDR string is stored as provided; normalization is applied internally for IP matching.
+</Callout>
+
+---
+
+## Error Responses
+
+| Status | Code | When |
+|--------|------|------|
+| 400 | `validation` | Invalid CIDR format |
+| 400 | `bad_request` | Missing `cidr` field or no active organization |
+| 403 | `enterprise_required` | Enterprise license not active |
+| 404 | `not_found` | Entry ID does not exist |
+| 404 | `not_available` | Internal database not configured |
+| 409 | `conflict` | CIDR range already in the allowlist |
+
+---
+
+## Database Schema
+
+The `ip_allowlist` table in the internal database:
+
+```sql
+CREATE TABLE IF NOT EXISTS ip_allowlist (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id TEXT NOT NULL,
+  cidr TEXT NOT NULL,
+  description TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  created_by TEXT,
+  UNIQUE(org_id, cidr)
+);
+```
+
+A unique constraint on `(org_id, cidr)` prevents duplicate entries within an organization.
+
+---
+
+## Troubleshooting
+
+### Locked Out
+
+If you accidentally lock yourself out by adding a restrictive allowlist:
+
+1. Connect directly to the internal database (`DATABASE_URL`)
+2. Remove the restrictive entry:
+   ```sql
+   DELETE FROM ip_allowlist WHERE org_id = '<your-org-id>' AND cidr = '<restrictive-cidr>';
+   ```
+3. Alternatively, remove all entries to disable the allowlist:
+   ```sql
+   DELETE FROM ip_allowlist WHERE org_id = '<your-org-id>';
+   ```
+4. The cache expires within 30 seconds — retry after that
+
+<Callout type="warn">
+Before adding your first allowlist entry, use the `GET` endpoint to check the `callerIP` field. Make sure your current IP is covered by the CIDR range you are adding.
+</Callout>
+
+### IP Not Detected
+
+If `callerIP` is `null` in the list response:
+
+- Set `ATLAS_TRUST_PROXY=true` if Atlas is behind a reverse proxy, load balancer, or CDN
+- Ensure your proxy forwards `X-Forwarded-For` or `X-Real-IP` headers
+- Without a detectable IP, requests are denied when the allowlist is non-empty
+
+### IPv6 Support
+
+Atlas fully supports IPv6 CIDR ranges, including:
+
+- Full notation: `2001:0db8:0000:0000:0000:0000:0000:0000/32`
+- Compressed notation: `2001:db8::/32`
+- IPv4-mapped IPv6: `::ffff:192.168.1.1`
+
+IPv4 and IPv6 ranges are matched independently — an IPv4 address will not match an IPv6 CIDR range and vice versa.
+
+---
+
+## See Also
+
+- [Enterprise SSO](/guides/enterprise-sso) — SAML/OIDC single sign-on and enforcement
+- [Authentication](/deployment/authentication) — Auth mode setup and configuration
+- [Admin Console](/guides/admin-console) — Manage users and sessions
+- [Environment Variables](/reference/environment-variables) — Full variable reference

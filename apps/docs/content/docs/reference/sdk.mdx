@@ -649,7 +649,7 @@ try {
 | `plan_limit_exceeded` | 429 | No | Workspace exceeded plan query/token limit |
 | `trial_expired` | 403 | No | Trial has expired — upgrade to a paid plan |
 | `billing_check_failed` | 503 | Yes | Billing check failed — transient infrastructure issue |
-| `workspace_check_failed` | 403 | Yes | Workspace check failed — transient infrastructure issue |
+| `workspace_check_failed` | 503 | Yes | Workspace check failed — transient infrastructure issue |
 | `workspace_suspended` | 403 | No | Workspace suspended by administrator |
 | `workspace_deleted` | 404 | No | Workspace has been permanently deleted |
 | `internal_error` | 500 | Yes | Server error (includes `requestId` for log correlation) |

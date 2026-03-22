@@ -106,7 +106,7 @@ describe("checkWorkspaceStatus", () => {
     mockGetWorkspaceStatusShouldThrow = true;
     const result = await checkWorkspaceStatus("org-1");
     expect(result.allowed).toBe(false);
-    expect(result.httpStatus).toBe(403);
+    expect(result.httpStatus).toBe(503);
     expect(result.errorCode).toBe("workspace_check_failed");
   });
 });

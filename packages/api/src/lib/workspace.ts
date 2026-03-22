@@ -22,7 +22,7 @@ export interface WorkspaceCheckResult {
   status?: WorkspaceStatus;
   errorCode?: string;
   errorMessage?: string;
-  httpStatus?: 403 | 404;
+  httpStatus?: 403 | 404 | 503;
 }
 
 /**
@@ -53,7 +53,7 @@ export async function checkWorkspaceStatus(orgId: string | undefined): Promise<W
       allowed: false,
       errorCode: "workspace_check_failed",
       errorMessage: "Unable to verify workspace status. Please try again.",
-      httpStatus: 403,
+      httpStatus: 503,
     };
   }
 

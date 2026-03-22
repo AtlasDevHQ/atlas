@@ -8,6 +8,16 @@
 
 import * as yaml from "js-yaml";
 import type { DBType } from "@atlas/api/lib/db/connection";
+import { createLogger } from "@atlas/api/lib/logger";
+
+/** Minimal logger interface for profiler functions — compatible with pino and console. */
+export interface ProfileLogger {
+  info(obj: Record<string, unknown>, msg: string): void;
+  warn(obj: Record<string, unknown>, msg: string): void;
+  error(obj: Record<string, unknown>, msg: string): void;
+}
+
+const defaultLog: ProfileLogger = createLogger("profiler");
 
 // ---------------------------------------------------------------------------
 // Types
@@ -109,17 +119,17 @@ export function checkFailureThreshold(
   return { shouldAbort: failureRate > FAILURE_THRESHOLD && !force, failureRate };
 }
 
-export function logProfilingErrors(errors: ProfileError[], total: number): void {
+export function logProfilingErrors(errors: ProfileError[], total: number, log: ProfileLogger = defaultLog): void {
   const pct = Math.round((errors.length / total) * 100);
-  console.warn(
-    `\nWarning: ${errors.length}/${total} tables (${pct}%) failed to profile:`
+  log.warn(
+    { errorCount: errors.length, total, pct, tables: errors.slice(0, 5).map((e) => e.table) },
+    `${errors.length}/${total} tables (${pct}%) failed to profile`,
   );
-  const preview = errors.slice(0, 5);
-  for (const e of preview) {
-    console.warn(`  - ${e.table}: ${e.error}`);
+  for (const e of errors.slice(0, 5)) {
+    log.warn({ table: e.table }, e.error);
   }
   if (errors.length > 5) {
-    console.warn(`  ... and ${errors.length - 5} more`);
+    log.warn({ remaining: errors.length - 5 }, `... and ${errors.length - 5} more`);
   }
 }
 
@@ -1023,7 +1033,7 @@ export function outputDirForDatasource(id: string, orgId?: string): string {
 // PostgreSQL profiler — list objects and profile tables
 // ---------------------------------------------------------------------------
 
-export async function listPostgresObjects(connectionString: string, schema: string = "public"): Promise<DatabaseObject[]> {
+export async function listPostgresObjects(connectionString: string, schema: string = "public", log: ProfileLogger = defaultLog): Promise<DatabaseObject[]> {
   const { Pool } = await import("pg");
   const pool = new Pool({ connectionString, max: 1, connectionTimeoutMillis: 5000 });
   try {
@@ -1051,7 +1061,8 @@ export async function listPostgresObjects(connectionString: string, schema: stri
         objects.push({ name: r.table_name, type: "materialized_view" });
       }
     } catch (mvErr) {
-      console.warn(`  Warning: Could not discover materialized views: ${mvErr instanceof Error ? mvErr.message : String(mvErr)}`);
+      if (isFatalConnectionError(mvErr)) throw mvErr;
+      log.warn({ err: mvErr instanceof Error ? mvErr.message : String(mvErr) }, "Could not discover materialized views");
     }
 
     return objects.sort((a, b) => a.name.localeCompare(b.name));
@@ -1147,7 +1158,8 @@ export async function profilePostgres(
   filterTables?: string[],
   prefetchedObjects?: DatabaseObject[],
   schema: string = "public",
-  progress?: ProfileProgressCallbacks
+  progress?: ProfileProgressCallbacks,
+  log: ProfileLogger = defaultLog,
 ): Promise<ProfilingResult> {
   const { Pool } = await import("pg");
   const pool = new Pool({ connectionString, max: 3 });
@@ -1184,7 +1196,7 @@ export async function profilePostgres(
       }
     } catch (mvErr) {
       if (isFatalConnectionError(mvErr)) throw mvErr;
-      console.warn(`  Warning: Could not discover materialized views: ${mvErr instanceof Error ? mvErr.message : String(mvErr)}`);
+      log.warn({ err: mvErr instanceof Error ? mvErr.message : String(mvErr) }, "Could not discover materialized views");
     }
     allObjects.sort((a, b) => a.name.localeCompare(b.name));
   }
@@ -1202,7 +1214,7 @@ export async function profilePostgres(
     if (progress) {
       progress.onTableStart(table_name + objectLabel, i, objectsToProfile.length);
     } else {
-      console.log(`  [${i + 1}/${objectsToProfile.length}] Profiling ${table_name}${objectLabel}...`);
+      log.info({ table: table_name, index: i + 1, total: objectsToProfile.length }, `Profiling ${table_name}${objectLabel}`);
     }
 
     try {
@@ -1218,14 +1230,14 @@ export async function profilePostgres(
           }
         } catch (mvErr) {
           if (isFatalConnectionError(mvErr)) throw mvErr;
-          console.warn(`    Warning: Could not read matview status for ${table_name}: ${mvErr instanceof Error ? mvErr.message : String(mvErr)}`);
+          log.warn({ err: mvErr instanceof Error ? mvErr.message : String(mvErr), table: table_name }, "Could not read matview status");
         }
       }
 
       let rowCount: number;
       if (matview_populated === false) {
         rowCount = 0;
-        console.log(`    Materialized view ${table_name} is not populated — skipping data profiling`);
+        log.info({ table: table_name }, "Materialized view is not populated — skipping data profiling");
       } else {
         const countResult = await pool.query(
           `SELECT COUNT(*) as c FROM ${pgTableRef(table_name, schema)}`
@@ -1240,13 +1252,13 @@ export async function profilePostgres(
           primaryKeyColumns = await queryPrimaryKeys(pool, table_name, schema);
         } catch (pkErr) {
           if (isFatalConnectionError(pkErr)) throw pkErr;
-          console.warn(`    Warning: Could not read PK constraints for ${table_name}: ${pkErr instanceof Error ? pkErr.message : String(pkErr)}`);
+          log.warn({ err: pkErr instanceof Error ? pkErr.message : String(pkErr), table: table_name }, "Could not read PK constraints");
         }
         try {
           foreignKeys = await queryForeignKeys(pool, table_name, schema);
         } catch (fkErr) {
           if (isFatalConnectionError(fkErr)) throw fkErr;
-          console.warn(`    Warning: Could not read FK constraints for ${table_name}: ${fkErr instanceof Error ? fkErr.message : String(fkErr)}`);
+          log.warn({ err: fkErr instanceof Error ? fkErr.message : String(fkErr), table: table_name }, "Could not read FK constraints");
         }
       }
 
@@ -1324,7 +1336,7 @@ export async function profilePostgres(
             sample_values = sv.rows.map((r: { v: unknown }) => String(r.v));
           } catch (colErr) {
             if (isFatalConnectionError(colErr)) throw colErr;
-            console.warn(`    Warning: Could not profile column ${table_name}.${col.column_name}: ${colErr instanceof Error ? colErr.message : String(colErr)}`);
+            log.warn({ err: colErr instanceof Error ? colErr.message : String(colErr), table: table_name, column: col.column_name }, "Could not profile column");
           }
         }
 
@@ -1365,7 +1377,7 @@ export async function profilePostgres(
       if (progress) {
         progress.onTableError(table_name, msg, i, objectsToProfile.length);
       } else {
-        console.error(`  Warning: Failed to profile ${table_name}: ${msg}`);
+        log.warn({ err: msg, table: table_name }, "Failed to profile table");
       }
       errors.push({ table: table_name, error: msg });
       continue;
@@ -1392,7 +1404,7 @@ export async function profilePostgres(
     }
   } catch (partErr) {
     if (isFatalConnectionError(partErr)) throw partErr;
-    console.warn(`  Warning: Could not read partition metadata: ${partErr instanceof Error ? partErr.message : String(partErr)}`);
+    log.warn({ err: partErr instanceof Error ? partErr.message : String(partErr) }, "Could not read partition metadata");
   }
 
   const childrenMap = new Map<string, string[]>();
@@ -1414,7 +1426,7 @@ export async function profilePostgres(
     }
   } catch (childErr) {
     if (isFatalConnectionError(childErr)) throw childErr;
-    console.warn(`  Warning: Could not read partition children: ${childErr instanceof Error ? childErr.message : String(childErr)}`);
+    log.warn({ err: childErr instanceof Error ? childErr.message : String(childErr) }, "Could not read partition children");
   }
 
   for (const profile of profiles) {
@@ -1437,6 +1449,11 @@ export async function profilePostgres(
 // ---------------------------------------------------------------------------
 // MySQL profiler — full table profiling
 // ---------------------------------------------------------------------------
+
+/** Backtick-quoted MySQL identifier with embedded backticks escaped. */
+function mysqlQuoteIdent(name: string): string {
+  return `\`${name.replace(/`/g, "``")}\``;
+}
 
 async function queryMySQLPrimaryKeys(
   pool: { execute: (sql: string, params?: unknown[]) => Promise<[unknown[], unknown]> },
@@ -1475,7 +1492,8 @@ export async function profileMySQL(
   connectionString: string,
   filterTables?: string[],
   prefetchedObjects?: DatabaseObject[],
-  progress?: ProfileProgressCallbacks
+  progress?: ProfileProgressCallbacks,
+  log: ProfileLogger = defaultLog,
 ): Promise<ProfilingResult> {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const mysql = require("mysql2/promise");
@@ -1517,12 +1535,12 @@ export async function profileMySQL(
       if (progress) {
         progress.onTableStart(table_name + objectLabel, i, objectsToProfile.length);
       } else {
-        console.log(`  [${i + 1}/${objectsToProfile.length}] Profiling ${table_name}${objectLabel}...`);
+        log.info({ table: table_name, index: i + 1, total: objectsToProfile.length }, `Profiling ${table_name}${objectLabel}`);
       }
 
       try {
         const [countRows] = await pool.execute(
-          `SELECT COUNT(*) as c FROM \`${table_name}\``
+          `SELECT COUNT(*) as c FROM ${mysqlQuoteIdent(table_name)}`
         );
         const rowCount = parseInt(String((countRows as { c: number }[])[0].c), 10);
 
@@ -1533,13 +1551,13 @@ export async function profileMySQL(
             primaryKeyColumns = await queryMySQLPrimaryKeys(pool, table_name);
           } catch (pkErr) {
             if (isFatalConnectionError(pkErr)) throw pkErr;
-            console.warn(`    Warning: Could not read PK constraints for ${table_name}: ${pkErr instanceof Error ? pkErr.message : String(pkErr)}`);
+            log.warn({ err: pkErr instanceof Error ? pkErr.message : String(pkErr), table: table_name }, "Could not read PK constraints");
           }
           try {
             foreignKeys = await queryMySQLForeignKeys(pool, table_name);
           } catch (fkErr) {
             if (isFatalConnectionError(fkErr)) throw fkErr;
-            console.warn(`    Warning: Could not read FK constraints for ${table_name}: ${fkErr instanceof Error ? fkErr.message : String(fkErr)}`);
+            log.warn({ err: fkErr instanceof Error ? fkErr.message : String(fkErr), table: table_name }, "Could not read FK constraints");
           }
         }
 
@@ -1569,12 +1587,12 @@ export async function profileMySQL(
 
           try {
             const [uqRows] = await pool.execute(
-              `SELECT COUNT(DISTINCT \`${col.COLUMN_NAME}\`) as c FROM \`${table_name}\``
+              `SELECT COUNT(DISTINCT ${mysqlQuoteIdent(col.COLUMN_NAME)}) as c FROM ${mysqlQuoteIdent(table_name)}`
             );
             unique_count = parseInt(String((uqRows as { c: number }[])[0].c), 10);
 
             const [ncRows] = await pool.execute(
-              `SELECT COUNT(*) as c FROM \`${table_name}\` WHERE \`${col.COLUMN_NAME}\` IS NULL`
+              `SELECT COUNT(*) as c FROM ${mysqlQuoteIdent(table_name)} WHERE ${mysqlQuoteIdent(col.COLUMN_NAME)} IS NULL`
             );
             null_count = parseInt(String((ncRows as { c: number }[])[0].c), 10);
 
@@ -1597,12 +1615,12 @@ export async function profileMySQL(
 
             const sampleLimit = isEnumLike ? 100 : 10;
             const [svRows] = await pool.execute(
-              `SELECT DISTINCT \`${col.COLUMN_NAME}\` as v FROM \`${table_name}\` WHERE \`${col.COLUMN_NAME}\` IS NOT NULL ORDER BY \`${col.COLUMN_NAME}\` LIMIT ${sampleLimit}`
+              `SELECT DISTINCT ${mysqlQuoteIdent(col.COLUMN_NAME)} as v FROM ${mysqlQuoteIdent(table_name)} WHERE ${mysqlQuoteIdent(col.COLUMN_NAME)} IS NOT NULL ORDER BY ${mysqlQuoteIdent(col.COLUMN_NAME)} LIMIT ${sampleLimit}`
             );
             sample_values = (svRows as { v: unknown }[]).map((r) => String(r.v));
           } catch (colErr) {
             if (isFatalConnectionError(colErr)) throw colErr;
-            console.warn(`    Warning: Could not profile column ${table_name}.${col.COLUMN_NAME}: ${colErr instanceof Error ? colErr.message : String(colErr)}`);
+            log.warn({ err: colErr instanceof Error ? colErr.message : String(colErr), table: table_name, column: col.COLUMN_NAME }, "Could not profile column");
           }
 
           columns.push({
@@ -1641,7 +1659,7 @@ export async function profileMySQL(
         if (progress) {
           progress.onTableError(table_name, msg, i, objectsToProfile.length);
         } else {
-          console.error(`  Warning: Failed to profile ${table_name}: ${msg}`);
+          log.warn({ err: msg, table: table_name }, "Failed to profile table");
         }
         errors.push({ table: table_name, error: msg });
         continue;
@@ -1649,7 +1667,7 @@ export async function profileMySQL(
     }
   } finally {
     await pool.end().catch((err: unknown) => {
-      console.warn(`[atlas] MySQL pool cleanup warning: ${err instanceof Error ? err.message : String(err)}`);
+      log.warn({ err: err instanceof Error ? err.message : String(err) }, "MySQL pool cleanup warning");
     });
   }
 

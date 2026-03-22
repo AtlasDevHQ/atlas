@@ -1,0 +1,212 @@
+---
+title: Billing & Plans
+description: Plan tiers, usage limits, overage handling, Stripe setup, and the usage dashboard.
+icon: CreditCard
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas uses a tiered billing model. Self-hosted deployments are free with no enforcement. SaaS workspaces on [app.useatlas.dev](https://app.useatlas.dev) start with a 14-day trial, then require a paid plan. Billing is powered by Stripe with automatic usage metering and graceful overage handling.
+
+<Callout title="Prerequisites">
+- Internal database configured (`DATABASE_URL`) — required for usage tracking
+- `STRIPE_SECRET_KEY` set — enables billing routes and Stripe integration
+- Admin role required for the usage dashboard
+</Callout>
+
+---
+
+## Plan Tiers
+
+| | Trial | Team | Enterprise | Self-Hosted |
+|---|---|---|---|---|
+| **Queries / month** | 10,000 | 10,000 | Unlimited | Unlimited |
+| **Tokens / month** | 5,000,000 | 5,000,000 | Unlimited | Unlimited |
+| **Members** | 25 | 25 | Unlimited | Unlimited |
+| **Datasource connections** | 5 | 5 | Unlimited | Unlimited |
+| **Duration** | 14 days | — | — | — |
+| **Stripe required** | No | Yes | Yes | No |
+
+- **Trial** — Auto-assigned on SaaS signup. Same limits as Team. Expires after 14 days, then queries are blocked until the workspace upgrades.
+- **Team** — Standard paid tier. Monthly or annual billing via Stripe.
+- **Enterprise** — Custom contracts. No metered limits. Includes SSO, SCIM, and priority support.
+- **Self-Hosted** (free) — No billing enforcement. All features available, no Stripe needed.
+
+---
+
+## BYOT (Bring Your Own Token)
+
+BYOT lets workspaces supply their own LLM API keys instead of using Atlas-provided tokens. When enabled:
+
+- The workspace is billed at a lower Stripe price (configured via `STRIPE_TEAM_BYOT_PRICE_ID`)
+- Token usage is still metered for analytics, but token limits are not enforced
+- Admin or owner role is required to toggle BYOT
+
+Toggle via the billing API:
+
+```bash
+curl -X POST https://your-atlas.example.com/api/v1/billing/byot \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <admin-token>" \
+  -d '{ "enabled": true }'
+```
+
+---
+
+## Stripe Setup
+
+Set these environment variables to enable billing:
+
+| Variable | Description |
+|----------|-------------|
+| `STRIPE_SECRET_KEY` | Stripe secret key (test or live). Enables billing routes when set |
+| `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret for verifying events |
+| `STRIPE_TEAM_PRICE_ID` | Price ID for the Team plan (monthly) |
+| `STRIPE_TEAM_ANNUAL_PRICE_ID` | Price ID for the Team plan (annual discount) |
+| `STRIPE_TEAM_BYOT_PRICE_ID` | Price ID for Team BYOT (lower price, customer supplies LLM keys) |
+| `STRIPE_ENTERPRISE_PRICE_ID` | Price ID for the Enterprise plan |
+
+When `STRIPE_SECRET_KEY` is set:
+
+- Billing routes mount at `/api/v1/billing`
+- The Better Auth Stripe plugin handles checkout, webhooks, and subscription lifecycle at `/api/auth/stripe/*`
+- Plan changes from Stripe webhooks automatically update the workspace tier
+
+### Webhook Configuration
+
+Point your Stripe webhook endpoint to:
+
+```
+https://your-atlas.example.com/api/auth/stripe/webhook
+```
+
+For local development, use [Stripe CLI](https://docs.stripe.com/stripe-cli) to forward webhooks:
+
+```bash
+stripe listen --forward-to localhost:3001/api/auth/stripe/webhook
+```
+
+<Callout type="warn">
+The webhook signing secret (`STRIPE_WEBHOOK_SECRET`) must match the secret shown by `stripe listen` or configured in your Stripe dashboard. Mismatched secrets cause silent webhook failures.
+</Callout>
+
+---
+
+## Usage Dashboard
+
+The admin usage dashboard is available at **Admin > Usage** (`/admin/usage`). It shows:
+
+- **Query count** — total SQL queries executed this billing period, with progress bar toward limit
+- **Token count** — total LLM tokens consumed, with progress bar toward limit
+- **Active users** — unique users who triggered events this period
+- **Current plan** — tier name and trial expiry date (if applicable)
+- **Daily usage chart** — queries and tokens over the last 30 days
+- **Per-user breakdown** — sortable table of usage by individual user (top 50)
+
+If the workspace has a Stripe customer, a **Manage Plan** button opens the Stripe Customer Portal for self-service plan changes.
+
+### API Endpoints
+
+Usage data is also available programmatically via the admin API. See [Usage Metering](/guides/usage-metering) for endpoint details.
+
+---
+
+## Overage Handling
+
+Atlas uses a 4-tier degradation model instead of a hard cutoff. Enforcement runs before every agent execution, checking query and token usage against plan limits.
+
+| Tier | Usage | Behavior |
+|------|-------|----------|
+| **OK** | 0–79% | No warning. Request proceeds normally |
+| **Warning** | 80–99% | Request proceeds. Warning metadata attached to the response |
+| **Soft limit** | 100–109% | 10% grace buffer. Request allowed with overage warning |
+| **Hard limit** | 110%+ | Request blocked with HTTP 429. Upgrade CTA in error message |
+
+The worst status across all metered dimensions (queries and tokens) determines the outcome. For example, if token usage is at 85% (warning) and query usage is at 105% (soft limit), the soft limit behavior applies.
+
+### Enforcement Skipped
+
+Billing enforcement is skipped entirely when:
+
+- No internal database is configured (self-hosted without managed auth)
+- The user is not in an organization
+- The workspace is on the **free** or **enterprise** tier
+
+### Trial Expiry
+
+Trial workspaces have a separate check: if the trial has expired (14 days from creation or past the `trial_ends_at` date), all requests are blocked with HTTP 403 and a message to upgrade.
+
+### Metering Failures
+
+If usage data cannot be read (e.g., metering database is temporarily unavailable), requests are **allowed** with a warning that usage tracking may be inaccurate. Enforcement is best-effort — Atlas prefers availability over strict enforcement.
+
+---
+
+## Customer Portal
+
+Workspaces with a Stripe subscription can access the Stripe Customer Portal for self-service plan management:
+
+- Upgrade or downgrade plans
+- Update payment methods
+- View invoices and billing history
+- Cancel subscriptions
+
+Access via the **Manage Plan** button on the usage dashboard, or programmatically:
+
+```bash
+curl -X POST https://your-atlas.example.com/api/v1/billing/portal \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{ "returnUrl": "https://your-atlas.example.com/admin/usage" }'
+```
+
+The response contains a `url` field — redirect the user to this URL to open the portal.
+
+---
+
+## Self-Hosted Deployments
+
+Self-hosted Atlas has **no billing enforcement**. The `free` tier is assigned by default with unlimited queries, tokens, members, and connections. No Stripe configuration is needed.
+
+To run Atlas without any billing:
+
+1. Omit all `STRIPE_*` environment variables
+2. The billing routes will not mount
+3. The usage dashboard still works for monitoring (if `DATABASE_URL` is configured) but shows "Unlimited" for all limits
+
+---
+
+## Troubleshooting
+
+### Stripe webhooks not arriving
+
+- Verify `STRIPE_WEBHOOK_SECRET` matches the signing secret from your Stripe dashboard or `stripe listen` output
+- Ensure the webhook endpoint (`/api/auth/stripe/webhook`) is publicly reachable
+- Check Stripe dashboard **Developers > Webhooks** for failed delivery attempts
+- For local development, confirm `stripe listen` is running and forwarding to the correct port
+
+### Plan not syncing after payment
+
+- Stripe webhook events update the workspace tier. Check that webhooks are being received (see above)
+- The plan cache has a 60-second TTL — changes may take up to a minute to propagate
+- Call `GET /api/v1/billing` to check the current billing status for the workspace
+
+### Usage not updating
+
+- Usage events are fire-and-forget with a circuit breaker. After 5 consecutive write failures, events are dropped until the database recovers
+- Verify `DATABASE_URL` is set and the internal database is accessible
+- Historical summaries are aggregated on-demand when the dashboard or `/history` endpoint is accessed
+
+### Trial expired unexpectedly
+
+- Trial duration is 14 days from workspace creation (or from `trial_ends_at` if set)
+- Check the workspace's creation date via `GET /api/v1/billing` — the `trialEndsAt` field shows the expiry
+
+---
+
+## See Also
+
+- [Usage Metering](/guides/usage-metering) — Detailed metering API and aggregation
+- [Environment Variables](/reference/environment-variables) — Full variable reference including Stripe config
+- [Enterprise SSO](/guides/enterprise-sso) — SAML/OIDC single sign-on (Enterprise tier)
+- [Stripe Docs](https://docs.stripe.com) — Stripe API and dashboard reference

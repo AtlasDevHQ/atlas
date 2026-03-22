@@ -254,8 +254,8 @@ app.onError((err, c) => {
   );
 });
 
-// Auto-generated OpenAPI spec from route definitions (Phase 1).
-// Converted routes: health, validate-sql, tables, semantic.
+// Auto-generated OpenAPI spec from route definitions (Phase 1 + Phase 2a).
+// Converted routes: health, validate-sql, tables, semantic, admin (all sub-routers).
 // The manual spec at /api/v1/openapi.json continues to serve unconverted routes.
 app.doc("/api/v1/openapi-auto.json", {
   openapi: "3.1.0",

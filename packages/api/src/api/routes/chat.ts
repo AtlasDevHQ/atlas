@@ -114,14 +114,23 @@ chat.post("/", async (c) => {
     );
   }
 
-  // Plan limit check — block requests when usage exceeds plan limits
+  // Plan limit check — block or warn when usage approaches/exceeds plan limits
   const planCheck = await checkPlanLimits(authResult.user?.activeOrganizationId);
   if (!planCheck.allowed) {
     return c.json(
-      { error: planCheck.errorCode, message: planCheck.errorMessage, retryable: false, requestId },
+      {
+        error: planCheck.errorCode,
+        message: planCheck.errorMessage,
+        retryable: false,
+        requestId,
+        ...(planCheck.usage && { usage: planCheck.usage }),
+      },
       planCheck.httpStatus ?? 403,
     );
   }
+
+  // Capture plan warning for response headers (set after stream is created)
+  const planWarning = planCheck.allowed ? planCheck.warning : undefined;
 
   // withRequestContext binds requestId + user to AsyncLocalStorage for the
   // entire async call chain (including logQueryAudit deep inside executeSQL).
@@ -320,6 +329,7 @@ chat.post("/", async (c) => {
             "X-Accel-Buffering": "no",
             "Cache-Control": "no-cache, no-transform",
             ...(conversationId ? { "x-conversation-id": conversationId } : {}),
+            ...(planWarning ? { "x-plan-limit-warning": JSON.stringify(planWarning) } : {}),
           },
         });
 

@@ -25,6 +25,7 @@ import {
 } from "@atlas/api/lib/db/internal";
 import { getCurrentPeriodUsage } from "@atlas/api/lib/metering";
 import { getPlanDefinition, getPlanLimits, isUnlimited } from "@atlas/api/lib/billing/plans";
+import type { OverageStatus } from "@useatlas/types";
 
 const log = createLogger("billing");
 
@@ -123,6 +124,20 @@ billing.get("/", async (c) => {
         );
       }
 
+      // Compute overage status for each metered dimension
+      const queryLimit = isUnlimited(limits.queriesPerMonth) ? null : limits.queriesPerMonth;
+      const tokenLimit = isUnlimited(limits.tokensPerMonth) ? null : limits.tokensPerMonth;
+
+      function computeOverageStatus(current: number, limit: number | null): { usagePercent: number; status: OverageStatus } {
+        if (limit === null) return { usagePercent: 0, status: "ok" };
+        const pct = Math.round((current / limit) * 100);
+        const status: OverageStatus = pct >= 110 ? "hard_limit" : pct >= 100 ? "soft_limit" : pct >= 80 ? "warning" : "ok";
+        return { usagePercent: pct, status };
+      }
+
+      const queryOverage = computeOverageStatus(usage.queryCount, queryLimit);
+      const tokenOverage = computeOverageStatus(usage.tokenCount, tokenLimit);
+
       return c.json({
         workspaceId: orgId,
         plan: {
@@ -132,14 +147,18 @@ billing.get("/", async (c) => {
           trialEndsAt: workspace.trial_ends_at,
         },
         limits: {
-          queriesPerMonth: isUnlimited(limits.queriesPerMonth) ? null : limits.queriesPerMonth,
-          tokensPerMonth: isUnlimited(limits.tokensPerMonth) ? null : limits.tokensPerMonth,
+          queriesPerMonth: queryLimit,
+          tokensPerMonth: tokenLimit,
           maxMembers: isUnlimited(limits.maxMembers) ? null : limits.maxMembers,
           maxConnections: isUnlimited(limits.maxConnections) ? null : limits.maxConnections,
         },
         usage: {
           queryCount: usage.queryCount,
           tokenCount: usage.tokenCount,
+          queryUsagePercent: queryOverage.usagePercent,
+          tokenUsagePercent: tokenOverage.usagePercent,
+          queryOverageStatus: queryOverage.status,
+          tokenOverageStatus: tokenOverage.status,
           periodStart: usage.periodStart,
           periodEnd: usage.periodEnd,
         },

@@ -30,6 +30,7 @@ export const CHAT_ERROR_CODES = [
   "forbidden",
   "forbidden_role",
   "org_not_found",
+  "plan_limit_exceeded",
 ] as const;
 
 /** Union of all error codes the server can return in the `error` field. */
@@ -71,6 +72,7 @@ const RETRYABLE_MAP: Record<ChatErrorCode, boolean> = {
   forbidden: false,
   forbidden_role: false,
   org_not_found: false,
+  plan_limit_exceeded: false,
 };
 
 /** Returns `true` if the given error code represents a transient, retryable failure. */
@@ -480,6 +482,9 @@ export function parseChatError(error: Error, authMode: AuthMode): ChatErrorInfo 
 
     case "org_not_found":
       return { title: "No active organization.", detail: serverMessage ?? "Select an organization and try again.", code: rawCode, retryable, requestId };
+
+    case "plan_limit_exceeded":
+      return { title: "Plan limit exceeded.", detail: serverMessage ?? "Upgrade your plan or wait until the next billing period.", code: rawCode, retryable, requestId };
 
     default: {
       const _exhaustive: never = rawCode;

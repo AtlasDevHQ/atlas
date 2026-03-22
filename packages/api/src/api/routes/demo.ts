@@ -47,7 +47,7 @@ const log = createLogger("demo");
 // Schemas
 // ---------------------------------------------------------------------------
 
-const DemoStartSchema = z.object({
+export const DemoStartSchema = z.object({
   email: z.string().email("Invalid email address"),
 });
 
@@ -59,7 +59,7 @@ const UIMessageSchema = z.object({
   id: z.string(),
 });
 
-const DemoChatRequestSchema = z.object({
+export const DemoChatRequestSchema = z.object({
   messages: z.array(UIMessageSchema).min(1),
   conversationId: z.string().uuid().optional(),
 });

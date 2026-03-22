@@ -25,8 +25,10 @@ import { syncEntityToDisk } from "@atlas/api/lib/semantic-sync";
 import { adminAuthPreamble } from "./admin-auth";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import {
-  type TableProfile,
   type ProfilingResult,
+  OBJECT_TYPES,
+  FK_SOURCES,
+  PARTITION_STRATEGIES,
   listPostgresObjects,
   listMySQLObjects,
   profilePostgres,
@@ -61,7 +63,58 @@ const GenerateRequestSchema = z.object({
   tables: z.array(z.string()).min(1),
 });
 
-const GenerateResponseSchema = z.record(z.string(), z.unknown());
+const WizardEntityColumnSchema = z.object({
+  name: z.string(),
+  type: z.string(),
+  mappedType: z.string().optional(),
+  nullable: z.boolean(),
+  isPrimaryKey: z.boolean(),
+  isForeignKey: z.boolean(),
+  isEnumLike: z.boolean(),
+  sampleValues: z.array(z.string()),
+  uniqueCount: z.number().nullable(),
+  nullCount: z.number().nullable(),
+});
+
+const WizardForeignKeySchema = z.object({
+  fromColumn: z.string(),
+  toTable: z.string(),
+  toColumn: z.string(),
+  source: z.enum(FK_SOURCES),
+});
+
+const WizardInferredForeignKeySchema = z.object({
+  fromColumn: z.string(),
+  toTable: z.string(),
+  toColumn: z.string(),
+});
+
+const WizardEntityResultSchema = z.object({
+  tableName: z.string(),
+  objectType: z.enum(OBJECT_TYPES),
+  rowCount: z.number(),
+  columnCount: z.number(),
+  yaml: z.string(),
+  profile: z.object({
+    columns: z.array(WizardEntityColumnSchema),
+    primaryKeys: z.array(z.string()),
+    foreignKeys: z.array(WizardForeignKeySchema),
+    inferredForeignKeys: z.array(WizardInferredForeignKeySchema),
+    flags: z.object({
+      possiblyAbandoned: z.boolean(),
+      possiblyDenormalized: z.boolean(),
+    }),
+    notes: z.array(z.string()),
+  }),
+});
+
+const GenerateResponseSchema = z.object({
+  connectionId: z.string(),
+  dbType: z.string(),
+  schema: z.string(),
+  entities: z.array(WizardEntityResultSchema),
+  errors: z.array(z.object({ table: z.string(), error: z.string() })),
+});
 
 const PreviewRequestSchema = z.object({
   question: z.string().min(1),
@@ -70,10 +123,70 @@ const PreviewRequestSchema = z.object({
 
 const PreviewResponseSchema = z.record(z.string(), z.unknown());
 
+/**
+ * Zod schema for a column profile (snake_case wire format).
+ * Keep in sync with ColumnProfile from @useatlas/types.
+ */
+const ColumnProfileSchema = z.object({
+  name: z.string(),
+  type: z.string(),
+  nullable: z.boolean(),
+  unique_count: z.number().nullable(),
+  null_count: z.number().nullable(),
+  sample_values: z.array(z.string()),
+  is_primary_key: z.boolean(),
+  is_foreign_key: z.boolean(),
+  fk_target_table: z.string().nullable(),
+  fk_target_column: z.string().nullable(),
+  is_enum_like: z.boolean(),
+  profiler_notes: z.array(z.string()),
+}).refine(
+  (col) => !col.is_foreign_key || (col.fk_target_table !== null && col.fk_target_column !== null),
+  { message: "fk_target_table and fk_target_column must be non-null when is_foreign_key is true" },
+);
+
+/**
+ * Zod schema for a foreign key.
+ * Keep in sync with ForeignKey from @useatlas/types.
+ */
+const ForeignKeySchema = z.object({
+  from_column: z.string().min(1),
+  to_table: z.string().min(1),
+  to_column: z.string().min(1),
+  source: z.enum(FK_SOURCES),
+});
+
+/**
+ * Zod schema for a table profile (snake_case wire format).
+ * Derived from const tuples in @useatlas/types — no manual enum sync needed.
+ */
+const TableProfileSchema = z.object({
+  table_name: z.string(),
+  object_type: z.enum(OBJECT_TYPES),
+  row_count: z.number(),
+  columns: z.array(ColumnProfileSchema),
+  primary_key_columns: z.array(z.string()),
+  foreign_keys: z.array(ForeignKeySchema),
+  inferred_foreign_keys: z.array(ForeignKeySchema),
+  profiler_notes: z.array(z.string()),
+  table_flags: z.object({
+    possibly_abandoned: z.boolean(),
+    possibly_denormalized: z.boolean(),
+  }),
+  matview_populated: z.boolean().optional(),
+  partition_info: z.object({
+    strategy: z.enum(PARTITION_STRATEGIES),
+    key: z.string(),
+    children: z.array(z.string()),
+  }).optional(),
+});
+
 const SaveRequestSchema = z.object({
   connectionId: z.string().min(1),
   entities: z.array(z.object({ tableName: z.string(), yaml: z.string() })).min(1),
-}).passthrough();
+  schema: z.string().optional(),
+  profiles: z.array(TableProfileSchema).optional(),
+});
 
 const SaveResponseSchema = z.object({
   saved: z.boolean(),
@@ -379,10 +492,7 @@ wizard.openapi(generateRoute, async (c) => {
   const { authResult } = preamble;
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const { connectionId, tables } = c.req.valid("json");
-
-    // Zod already validated tables as string[] — use directly
-    const tableNames = tables;
+    const { connectionId, tables: tableNames } = c.req.valid("json");
 
     let connUrl: ResolvedConnection | null;
     try {
@@ -417,17 +527,17 @@ wizard.openapi(generateRoute, async (c) => {
           }, 400);
       }
 
-      // Run heuristics
-      analyzeTableProfiles(result.profiles);
+      // Run heuristics (returns new array — no mutation)
+      const analyzedProfiles = analyzeTableProfiles(result.profiles);
 
       // Generate entity YAML for each profile
       const sourceId = connectionId === "default" ? undefined : connectionId;
-      const entities = result.profiles.map((profile) => ({
+      const entities = analyzedProfiles.map((profile) => ({
         tableName: profile.table_name,
         objectType: profile.object_type,
         rowCount: profile.row_count,
         columnCount: profile.columns.length,
-        yaml: generateEntityYAML(profile, result.profiles, dbType, schema, sourceId),
+        yaml: generateEntityYAML(profile, analyzedProfiles, dbType, schema, sourceId),
         profile: {
           columns: profile.columns.map((col) => ({
             name: col.name,
@@ -465,7 +575,7 @@ wizard.openapi(generateRoute, async (c) => {
         requestId,
         connectionId,
         dbType,
-        profiledCount: result.profiles.length,
+        profiledCount: analyzedProfiles.length,
         errorCount: result.errors.length,
       }, "Wizard generate complete");
 
@@ -548,12 +658,9 @@ wizard.openapi(saveRoute, async (c) => {
     const body = c.req.valid("json");
     const { connectionId, entities } = body;
 
-    // Zod already validated entities as { tableName: string; yaml: string }[]
-    const validEntities = entities;
-
     // Path traversal protection: validate all table names before writing any files
     const SAFE_TABLE_NAME = /^[a-zA-Z_][a-zA-Z0-9_.-]*$/;
-    for (const entity of validEntities) {
+    for (const entity of entities) {
       if (!SAFE_TABLE_NAME.test(entity.tableName) || entity.tableName.includes("..")) {
         return c.json({
           error: "invalid_request",
@@ -575,7 +682,7 @@ wizard.openapi(saveRoute, async (c) => {
       const savedFiles: string[] = [];
 
       // Write entity YAMLs (table names already validated above)
-      for (const entity of validEntities) {
+      for (const entity of entities) {
         const safeName = path.basename(entity.tableName);
         const filePath = path.join(entitiesDir, `${safeName}.yml`);
         fs.writeFileSync(filePath, entity.yaml, "utf-8");
@@ -595,11 +702,10 @@ wizard.openapi(saveRoute, async (c) => {
       // pre-generated entity YAML via { connectionId, entities } instead.
       // This branch handles callers (e.g. future CLI integrations) that
       // provide raw TableProfile[] data for server-side generation.
-      const schema = (body as Record<string, unknown>).schema;
-      const profileData = (body as Record<string, unknown>).profiles;
-      if (Array.isArray(profileData) && profileData.length > 0) {
-        const profiles = profileData as TableProfile[];
-        const resolvedSchema = typeof schema === "string" ? schema : "public";
+      const { schema: bodySchema, profiles: profileData } = body;
+      if (profileData && profileData.length > 0) {
+        const profiles = profileData;
+        const resolvedSchema = bodySchema ?? "public";
 
         const catalogYaml = generateCatalogYAML(profiles);
         const catalogPath = path.join(outputBase, "catalog.yml");
@@ -631,7 +737,7 @@ wizard.openapi(saveRoute, async (c) => {
         requestId,
         orgId,
         connectionId,
-        entityCount: validEntities.length,
+        entityCount: entities.length,
         fileCount: savedFiles.length,
       }, "Wizard save complete");
 
@@ -639,7 +745,7 @@ wizard.openapi(saveRoute, async (c) => {
         saved: true,
         orgId,
         connectionId,
-        entityCount: validEntities.length,
+        entityCount: entities.length,
         files: savedFiles,
       }, 201);
     } catch (err) {

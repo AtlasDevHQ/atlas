@@ -27,6 +27,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
+import type { ConnectionInfo, WizardTableEntry, WizardEntityResult } from "@/ui/lib/types";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { wizardSearchParams } from "./search-params";
 import {
@@ -41,49 +42,6 @@ import {
   Sparkles,
   ArrowRight,
 } from "lucide-react";
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-interface ConnectionInfo {
-  id: string;
-  dbType: string;
-  status: string;
-}
-
-interface TableEntry {
-  name: string;
-  type: "table" | "view" | "materialized_view";
-}
-
-interface EntityColumn {
-  name: string;
-  type: string;
-  nullable: boolean;
-  isPrimaryKey: boolean;
-  isForeignKey: boolean;
-  isEnumLike: boolean;
-  sampleValues: string[];
-  uniqueCount: number | null;
-  nullCount: number | null;
-}
-
-interface EntityResult {
-  tableName: string;
-  objectType: string;
-  rowCount: number;
-  columnCount: number;
-  yaml: string;
-  profile: {
-    columns: EntityColumn[];
-    primaryKeys: string[];
-    foreignKeys: { fromColumn: string; toTable: string; toColumn: string; source: string }[];
-    inferredForeignKeys: { fromColumn: string; toTable: string; toColumn: string }[];
-    flags: { possiblyAbandoned: boolean; possiblyDenormalized: boolean };
-    notes: string[];
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Step indicators
@@ -247,7 +205,7 @@ function StepTables({
   selectedTables: string[];
   setSelectedTables: (t: string[]) => void;
 }) {
-  const [tables, setTables] = useState<TableEntry[]>([]);
+  const [tables, setTables] = useState<WizardTableEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filterText, setFilterText] = useState("");
@@ -273,7 +231,7 @@ function StepTables({
         setTables(data.tables ?? []);
         // Select all by default
         if (selectedTables.length === 0) {
-          setSelectedTables((data.tables ?? []).map((t: TableEntry) => t.name));
+          setSelectedTables((data.tables ?? []).map((t: WizardTableEntry) => t.name));
         }
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : "Network error");
@@ -431,8 +389,8 @@ function StepReview({
   credentials: RequestCredentials;
   onNext: () => void;
   onBack: () => void;
-  entities: EntityResult[];
-  setEntities: (e: EntityResult[]) => void;
+  entities: WizardEntityResult[];
+  setEntities: (e: WizardEntityResult[]) => void;
 }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -676,7 +634,7 @@ function StepPreview({
   onNext,
   onBack,
 }: {
-  entities: EntityResult[];
+  entities: WizardEntityResult[];
   apiUrl: string;
   credentials: RequestCredentials;
   onNext: () => void;
@@ -832,7 +790,7 @@ export default function WizardPage() {
   // Wizard state
   const [connectionId, setConnectionId] = useState(params.connectionId || "");
   const [selectedTables, setSelectedTables] = useState<string[]>([]);
-  const [entities, setEntities] = useState<EntityResult[]>([]);
+  const [entities, setEntities] = useState<WizardEntityResult[]>([]);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 

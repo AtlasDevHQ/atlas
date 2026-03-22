@@ -1,14 +1,45 @@
 /**
- * Shared profiler library — extracted from CLI for reuse by the wizard API.
+ * Shared profiler library — used by the wizard API for database profiling.
  *
  * Contains type mapping, YAML generation, heuristics, and DB-specific
- * profiling. The CLI imports from here; the wizard API calls these
- * functions directly via HTTP endpoints.
+ * profiling. Canonical type definitions live in @useatlas/types and are
+ * re-exported here for convenience.
  */
 
 import * as yaml from "js-yaml";
 import type { DBType } from "@atlas/api/lib/db/connection";
 import { createLogger } from "@atlas/api/lib/logger";
+
+// Re-export canonical types so existing consumers of @atlas/api/lib/profiler
+// continue to work without import path changes.
+export {
+  OBJECT_TYPES,
+  FK_SOURCES,
+  PARTITION_STRATEGIES,
+} from "@useatlas/types";
+export type {
+  ObjectType,
+  ColumnProfile,
+  DatabaseObject,
+  ForeignKey,
+  ForeignKeySource,
+  PartitionStrategy,
+  PartitionInfo,
+  TableFlags,
+  TableProfile,
+  ProfileError,
+  ProfilingResult,
+} from "@useatlas/types";
+
+// Also import locally for use within this module's function signatures.
+import type {
+  ColumnProfile,
+  DatabaseObject,
+  ForeignKey,
+  TableProfile,
+  ProfileError,
+  ProfilingResult,
+} from "@useatlas/types";
 
 /** Minimal structured logger interface — compatible with pino's (obj, msg) calling convention. */
 export interface ProfileLogger {
@@ -18,66 +49,6 @@ export interface ProfileLogger {
 }
 
 const defaultLog: ProfileLogger = createLogger("profiler");
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-export type ObjectType = "table" | "view" | "materialized_view";
-
-export interface DatabaseObject {
-  name: string;
-  type: ObjectType;
-}
-
-export interface ColumnProfile {
-  name: string;
-  type: string;
-  nullable: boolean;
-  unique_count: number | null;
-  null_count: number | null;
-  sample_values: string[];
-  is_primary_key: boolean;
-  is_foreign_key: boolean;
-  fk_target_table: string | null;
-  fk_target_column: string | null;
-  is_enum_like: boolean;
-  profiler_notes: string[];
-}
-
-export interface ForeignKey {
-  from_column: string;
-  to_table: string;
-  to_column: string;
-  source: "constraint" | "inferred";
-}
-
-export interface TableProfile {
-  table_name: string;
-  object_type: ObjectType;
-  row_count: number;
-  columns: ColumnProfile[];
-  primary_key_columns: string[];
-  foreign_keys: ForeignKey[];
-  inferred_foreign_keys: ForeignKey[];
-  profiler_notes: string[];
-  table_flags: {
-    possibly_abandoned: boolean;
-    possibly_denormalized: boolean;
-  };
-  matview_populated?: boolean;
-  partition_info?: { strategy: "range" | "list" | "hash"; key: string; children: string[] };
-}
-
-export interface ProfileError {
-  table: string;
-  error: string;
-}
-
-export interface ProfilingResult {
-  profiles: TableProfile[];
-  errors: ProfileError[];
-}
 
 /** Callbacks for progress reporting during profiling. */
 export interface ProfileProgressCallbacks {
@@ -375,20 +346,27 @@ export function detectDenormalizedTables(profiles: TableProfile[]): void {
   }
 }
 
-export function analyzeTableProfiles(profiles: TableProfile[]): void {
-  for (const p of profiles) {
-    p.inferred_foreign_keys = [];
-    p.profiler_notes = [];
-    p.table_flags = { possibly_abandoned: false, possibly_denormalized: false };
-    for (const col of p.columns) {
-      col.profiler_notes = [];
-    }
-  }
+export function analyzeTableProfiles(profiles: readonly TableProfile[]): TableProfile[] {
+  // Create fresh copies with reset analysis fields (no mutation of input).
+  // Deep-clone foreign_keys and partition_info to fully isolate from input.
+  const analyzed: TableProfile[] = profiles.map((p) => ({
+    ...p,
+    foreign_keys: p.foreign_keys.map((fk) => ({ ...fk })),
+    inferred_foreign_keys: [],
+    profiler_notes: [],
+    table_flags: { possibly_abandoned: false, possibly_denormalized: false },
+    columns: p.columns.map((col) => ({ ...col, profiler_notes: [] })),
+    partition_info: p.partition_info
+      ? { ...p.partition_info, children: [...p.partition_info.children] }
+      : undefined,
+  }));
 
-  inferForeignKeys(profiles);
-  detectAbandonedTables(profiles);
-  detectEnumInconsistency(profiles);
-  detectDenormalizedTables(profiles);
+  inferForeignKeys(analyzed);
+  detectAbandonedTables(analyzed);
+  detectEnumInconsistency(analyzed);
+  detectDenormalizedTables(analyzed);
+
+  return analyzed;
 }
 
 // ---------------------------------------------------------------------------

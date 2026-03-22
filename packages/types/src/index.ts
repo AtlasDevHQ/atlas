@@ -12,3 +12,4 @@ export * from "./prompt";
 export * from "./query-suggestion";
 export * from "./sso";
 export * from "./billing";
+export * from "./profiler";

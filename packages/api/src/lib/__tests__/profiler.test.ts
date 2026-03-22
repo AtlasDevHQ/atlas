@@ -256,22 +256,30 @@ describe("analyzeTableProfiles", () => {
       ],
     });
 
-    analyzeTableProfiles([users, orders]);
+    const result = analyzeTableProfiles([users, orders]);
+    const analyzedOrders = result.find((p) => p.table_name === "orders")!;
 
-    expect(orders.inferred_foreign_keys.length).toBe(1);
-    expect(orders.inferred_foreign_keys[0].to_table).toBe("users");
+    expect(analyzedOrders.inferred_foreign_keys.length).toBe(1);
+    expect(analyzedOrders.inferred_foreign_keys[0].to_table).toBe("users");
+  });
+
+  it("does not mutate the input profiles", () => {
+    const legacy = makeTestProfile("old_accounts");
+    const snapshot = JSON.parse(JSON.stringify(legacy));
+    analyzeTableProfiles([legacy]);
+    expect(legacy).toEqual(snapshot);
   });
 
   it("detects abandoned tables", () => {
     const legacy = makeTestProfile("old_accounts");
-    analyzeTableProfiles([legacy]);
-    expect(legacy.table_flags.possibly_abandoned).toBe(true);
+    const [result] = analyzeTableProfiles([legacy]);
+    expect(result.table_flags.possibly_abandoned).toBe(true);
   });
 
   it("detects denormalized tables", () => {
     const summary = makeTestProfile("sales_summary");
-    analyzeTableProfiles([summary]);
-    expect(summary.table_flags.possibly_denormalized).toBe(true);
+    const [result] = analyzeTableProfiles([summary]);
+    expect(result.table_flags.possibly_denormalized).toBe(true);
   });
 
   it("detects enum inconsistency", () => {
@@ -285,9 +293,9 @@ describe("analyzeTableProfiles", () => {
       ],
     });
 
-    analyzeTableProfiles([profile]);
+    const [result] = analyzeTableProfiles([profile]);
 
-    const statusCol = profile.columns.find((c) => c.name === "status");
+    const statusCol = result.columns.find((c) => c.name === "status");
     expect(statusCol?.profiler_notes.some((n) => n.startsWith("Case-inconsistent"))).toBe(true);
   });
 });

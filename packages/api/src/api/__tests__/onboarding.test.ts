@@ -220,7 +220,8 @@ describe("POST /api/v1/onboarding/test-connection", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),
     });
-    expect(res.status).toBe(400);
+    // 422: Zod validation via OpenAPIHono createRoute rejects missing required field
+    expect(res.status).toBe(422);
   });
 
   it("rejects unsupported URL schemes", async () => {

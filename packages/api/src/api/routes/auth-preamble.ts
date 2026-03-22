@@ -43,7 +43,11 @@ export async function authPreamble(
   }
   if (!authResult.authenticated) {
     log.warn({ requestId, status: authResult.status }, "Authentication failed");
-    return { error: { error: "auth_error", message: authResult.error, requestId }, status: authResult.status as 401 | 403 | 500 };
+    const errorBody: Record<string, unknown> = { error: "auth_error", message: authResult.error, requestId };
+    if (authResult.ssoRedirectUrl) {
+      errorBody.ssoRedirectUrl = authResult.ssoRedirectUrl;
+    }
+    return { error: errorBody, status: authResult.status as 401 | 403 | 500 };
   }
 
   const ip = getClientIP(req);

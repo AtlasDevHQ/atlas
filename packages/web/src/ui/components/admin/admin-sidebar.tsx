@@ -19,6 +19,7 @@ import {
   HardDrive,
   Brain,
   BookOpen,
+  ShieldCheck,
   Settings,
   ArrowLeft,
 } from "lucide-react";
@@ -53,6 +54,7 @@ const navItems = [
   { href: "/admin/learned-patterns", label: "Learned Patterns", icon: Brain },
   { href: "/admin/prompts", label: "Prompt Library", icon: BookOpen },
   { href: "/admin/actions", label: "Actions", icon: Zap },
+  { href: "/admin/sso", label: "SSO", icon: ShieldCheck },
   { href: "/admin/settings", label: "Settings", icon: Settings },
 ];
 

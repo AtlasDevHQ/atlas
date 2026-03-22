@@ -48,6 +48,7 @@ interface SSOProviderRow {
   issuer: string;
   domain: string;
   enabled: boolean;
+  sso_enforced: boolean;
   config: string | Record<string, unknown>;
   created_at: string;
   updated_at: string;
@@ -91,6 +92,7 @@ function rowToProvider(row: SSOProviderRow): SSOProvider {
     issuer: row.issuer,
     domain: row.domain.toLowerCase(),
     enabled: row.enabled,
+    ssoEnforced: row.sso_enforced ?? false,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
@@ -193,7 +195,7 @@ export async function listSSOProviders(orgId: string): Promise<SSOProvider[]> {
   if (!hasInternalDB()) return [];
 
   const rows = await internalQuery<SSOProviderRow>(
-    `SELECT id, org_id, type, issuer, domain, enabled, config, created_at, updated_at
+    `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at
      FROM sso_providers
      WHERE org_id = $1
      ORDER BY created_at ASC`,
@@ -210,7 +212,7 @@ export async function getSSOProvider(orgId: string, providerId: string): Promise
   if (!hasInternalDB()) return null;
 
   const rows = await internalQuery<SSOProviderRow>(
-    `SELECT id, org_id, type, issuer, domain, enabled, config, created_at, updated_at
+    `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at
      FROM sso_providers
      WHERE id = $1 AND org_id = $2`,
     [providerId, orgId],
@@ -260,7 +262,7 @@ export async function createSSOProvider(
   const rows = await internalQuery<SSOProviderRow>(
     `INSERT INTO sso_providers (org_id, type, issuer, domain, enabled, config)
      VALUES ($1, $2, $3, $4, $5, $6)
-     RETURNING id, org_id, type, issuer, domain, enabled, config, created_at, updated_at`,
+     RETURNING id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at`,
     [orgId, input.type, input.issuer, domain, input.enabled ?? false, JSON.stringify(storedConfig)],
   );
 
@@ -341,7 +343,7 @@ export async function updateSSOProvider(
   const rows = await internalQuery<SSOProviderRow>(
     `UPDATE sso_providers SET ${sets.join(", ")}
      WHERE id = $${paramIdx++} AND org_id = $${paramIdx}
-     RETURNING id, org_id, type, issuer, domain, enabled, config, created_at, updated_at`,
+     RETURNING id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at`,
     params,
   );
 
@@ -385,7 +387,7 @@ export async function findProviderByDomain(emailDomain: string): Promise<SSOProv
 
   const domain = normalizeDomain(emailDomain);
   const rows = await internalQuery<SSOProviderRow>(
-    `SELECT id, org_id, type, issuer, domain, enabled, config, created_at, updated_at
+    `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at
      FROM sso_providers
      WHERE domain = $1 AND enabled = true
      LIMIT 1`,
@@ -403,4 +405,113 @@ export function extractEmailDomain(email: string): string | null {
   const at = email.lastIndexOf("@");
   if (at < 1 || at === email.length - 1) return null;
   return normalizeDomain(email.slice(at + 1));
+}
+
+// ── SSO enforcement ──────────────────────────────────────────────────
+
+export type SSOEnforcementErrorCode = "no_provider" | "not_enterprise";
+
+export class SSOEnforcementError extends Error {
+  constructor(message: string, public readonly code: SSOEnforcementErrorCode) {
+    super(message);
+    this.name = "SSOEnforcementError";
+  }
+}
+
+/**
+ * Check whether SSO is enforced for the given organization.
+ * Returns the enforced provider info (with redirect URL) or null if not enforced.
+ *
+ * Does NOT call requireEnterprise — this is used during the login flow
+ * to block password auth. Enterprise gating happens on the admin toggle.
+ */
+export async function isSSOEnforced(orgId: string): Promise<{
+  enforced: boolean;
+  provider?: SSOProvider;
+  ssoRedirectUrl?: string;
+} | null> {
+  if (!hasInternalDB()) return null;
+
+  const rows = await internalQuery<SSOProviderRow>(
+    `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at
+     FROM sso_providers
+     WHERE org_id = $1 AND enabled = true AND sso_enforced = true
+     LIMIT 1`,
+    [orgId],
+  );
+
+  if (!rows[0]) return { enforced: false };
+
+  const provider = rowToProvider(rows[0]);
+  const ssoRedirectUrl = provider.type === "saml"
+    ? provider.config.idpSsoUrl
+    : provider.config.discoveryUrl;
+
+  return { enforced: true, provider, ssoRedirectUrl };
+}
+
+/**
+ * Check SSO enforcement by email domain — used in the login middleware
+ * to block password auth when the user's email domain has SSO enforced.
+ *
+ * Does NOT call requireEnterprise — this runs in the login flow.
+ */
+export async function isSSOEnforcedForDomain(emailDomain: string): Promise<{
+  enforced: boolean;
+  provider?: SSOProvider;
+  ssoRedirectUrl?: string;
+} | null> {
+  if (!hasInternalDB()) return null;
+
+  const domain = normalizeDomain(emailDomain);
+  const rows = await internalQuery<SSOProviderRow>(
+    `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at
+     FROM sso_providers
+     WHERE domain = $1 AND enabled = true AND sso_enforced = true
+     LIMIT 1`,
+    [domain],
+  );
+
+  if (!rows[0]) return { enforced: false };
+
+  const provider = rowToProvider(rows[0]);
+  const ssoRedirectUrl = provider.type === "saml"
+    ? provider.config.idpSsoUrl
+    : provider.config.discoveryUrl;
+
+  return { enforced: true, provider, ssoRedirectUrl };
+}
+
+/**
+ * Set SSO enforcement for an organization.
+ * Requires enterprise license and at least one active (enabled) SSO provider.
+ */
+export async function setSSOEnforcement(orgId: string, enforced: boolean): Promise<{ enforced: boolean; orgId: string }> {
+  requireEnterprise("sso");
+  if (!hasInternalDB()) {
+    throw new Error("Internal database required for SSO enforcement.");
+  }
+
+  if (enforced) {
+    // Verify at least one active SSO provider exists for this org
+    const active = await internalQuery<{ id: string }>(
+      `SELECT id FROM sso_providers WHERE org_id = $1 AND enabled = true LIMIT 1`,
+      [orgId],
+    );
+    if (active.length === 0) {
+      throw new SSOEnforcementError(
+        "Cannot enforce SSO without at least one active SSO provider. Create and enable a SAML or OIDC provider first.",
+        "no_provider",
+      );
+    }
+  }
+
+  // Update all providers for this org (enforcement is org-level)
+  await internalQuery<Record<string, unknown>>(
+    `UPDATE sso_providers SET sso_enforced = $1, updated_at = now() WHERE org_id = $2`,
+    [enforced, orgId],
+  );
+
+  log.info({ orgId, enforced }, "SSO enforcement %s", enforced ? "enabled" : "disabled");
+  return { enforced, orgId };
 }

@@ -45,6 +45,8 @@ interface SSOProviderBase {
   /** Email domain for auto-provisioning (e.g. "acme.com"). */
   domain: string;
   enabled: boolean;
+  /** When true, password login is blocked for this org — users must use SSO. */
+  ssoEnforced: boolean;
   createdAt: string;
   updatedAt: string;
 }

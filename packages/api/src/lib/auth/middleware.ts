@@ -15,6 +15,7 @@ import { validateManaged } from "@atlas/api/lib/auth/managed";
 import { validateBYOT } from "@atlas/api/lib/auth/byot";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getSetting } from "@atlas/api/lib/settings";
+import { isSSOEnforcedForDomain, extractEmailDomain } from "../../../../../ee/src/auth/sso";
 
 const log = createLogger("auth");
 
@@ -179,6 +180,41 @@ function categorizeAuthError(err: unknown): string {
   return "unknown";
 }
 
+/**
+ * Check SSO enforcement for a user's email domain.
+ * Returns an AuthResult rejection if SSO is enforced, null otherwise.
+ * Fails closed on errors — returns a 500 AuthResult to block login.
+ */
+async function checkSSOEnforcement(userLabel: string): Promise<AuthResult | null> {
+  try {
+    const domain = extractEmailDomain(userLabel);
+    if (!domain) return null;
+
+    const enforcement = await isSSOEnforcedForDomain(domain);
+    if (!enforcement || !enforcement.enforced) return null;
+
+    log.warn({ domain, userId: userLabel }, "Password login blocked — SSO enforcement active for domain");
+    return {
+      authenticated: false,
+      mode: "managed",
+      status: 403,
+      error: "SSO is required for this workspace. Please sign in via your identity provider.",
+      ssoRedirectUrl: enforcement.ssoRedirectUrl,
+    };
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err : new Error(String(err)) },
+      "SSO enforcement check failed — blocking login (fail-closed)",
+    );
+    return {
+      authenticated: false,
+      mode: "managed" as const,
+      status: 500 as const,
+      error: "Unable to verify SSO enforcement status. Please retry or contact your administrator.",
+    };
+  }
+}
+
 /** Authenticate an incoming request based on the detected auth mode. */
 export async function authenticateRequest(req: Request): Promise<AuthResult> {
   const mode = detectAuthMode();
@@ -192,7 +228,17 @@ export async function authenticateRequest(req: Request): Promise<AuthResult> {
 
     case "managed":
       try {
-        return await (_managedOverride ?? validateManaged)(req);
+        const managedResult = await (_managedOverride ?? validateManaged)(req);
+
+        // SSO enforcement: if the user's email domain has SSO enforced,
+        // block password/session auth and require SSO login instead.
+        // Break-glass bypass: simple-key auth (API key) is not affected.
+        if (managedResult.authenticated && managedResult.user) {
+          const enforcementCheck = await checkSSOEnforcement(managedResult.user.label);
+          if (enforcementCheck) return enforcementCheck;
+        }
+
+        return managedResult;
       } catch (err) {
         const category = categorizeAuthError(err);
         log.error(

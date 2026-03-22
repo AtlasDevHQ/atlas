@@ -14,7 +14,7 @@ import type { AuthMode, AtlasRole, AtlasUser } from "@useatlas/types/auth";
 export type AuthResult =
   | { authenticated: true; mode: Exclude<AuthMode, "none">; user: AtlasUser }
   | { authenticated: true; mode: "none"; user: undefined }
-  | { authenticated: false; mode: AuthMode; status: 401 | 500; error: string };
+  | { authenticated: false; mode: AuthMode; status: 401 | 403 | 500; error: string; ssoRedirectUrl?: string };
 
 export interface CreateAtlasUserOptions {
   role?: AtlasRole;

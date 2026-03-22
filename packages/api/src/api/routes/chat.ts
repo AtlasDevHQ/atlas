@@ -147,8 +147,12 @@ chat.openapi(chatRoute, async (c) => {
   }
   if (!authResult.authenticated) {
     log.warn({ requestId, status: authResult.status }, "Authentication failed");
+    const errorBody: Record<string, unknown> = { error: "auth_error", message: authResult.error, retryable: false, requestId };
+    if (authResult.ssoRedirectUrl) {
+      errorBody.ssoRedirectUrl = authResult.ssoRedirectUrl;
+    }
     return c.json(
-      { error: "auth_error", message: authResult.error, retryable: false, requestId },
+      errorBody,
       authResult.status as 401 | 403 | 500,
     );
   }

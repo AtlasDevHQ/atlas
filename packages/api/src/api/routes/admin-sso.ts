@@ -18,7 +18,10 @@ import {
   deleteSSOProvider,
   redactProvider,
   summarizeProvider,
+  setSSOEnforcement,
+  isSSOEnforced,
   SSOError,
+  SSOEnforcementError,
 } from "../../../../../ee/src/auth/sso";
 import type {
   CreateSSOProviderRequest,
@@ -42,6 +45,9 @@ function ssoErrorResponse(err: unknown): { body: Record<string, unknown>; status
   if (message.includes("Enterprise features")) {
     return { body: { error: "enterprise_required", message }, status: 403 };
   }
+  if (err instanceof SSOEnforcementError) {
+    return { body: { error: err.code, message: err.message }, status: 400 };
+  }
   if (err instanceof SSOError) {
     return { body: { error: err.code, message: err.message }, status: SSO_ERROR_STATUS[err.code] };
   }
@@ -60,6 +66,7 @@ const SSOProviderSummarySchema = z.object({
   issuer: z.string(),
   domain: z.string(),
   enabled: z.boolean(),
+  ssoEnforced: z.boolean(),
   createdAt: z.string(),
   updatedAt: z.string(),
 }).passthrough();
@@ -71,6 +78,7 @@ const SSOProviderDetailSchema = z.object({
   issuer: z.string(),
   domain: z.string(),
   enabled: z.boolean(),
+  ssoEnforced: z.boolean(),
   createdAt: z.string(),
   updatedAt: z.string(),
   config: z.record(z.string(), z.unknown()),
@@ -96,6 +104,15 @@ const UpdateSSOProviderBodySchema = z.object({
   domain: z.string().optional(),
   enabled: z.boolean().optional(),
   config: z.record(z.string(), z.unknown()).optional(),
+});
+
+const SSOEnforcementBodySchema = z.object({
+  enforced: z.boolean(),
+});
+
+const SSOEnforcementResponseSchema = z.object({
+  enforced: z.boolean(),
+  orgId: z.string(),
 });
 
 // ---------------------------------------------------------------------------
@@ -351,6 +368,98 @@ const deleteProviderRoute = createRoute({
   },
 });
 
+const getEnforcementRoute = createRoute({
+  method: "get",
+  path: "/enforcement",
+  tags: ["Admin — SSO"],
+  summary: "Get SSO enforcement status",
+  description:
+    "Returns whether SSO enforcement is enabled for the admin's active organization.",
+  responses: {
+    200: {
+      description: "SSO enforcement status",
+      content: {
+        "application/json": { schema: SSOEnforcementResponseSchema },
+      },
+    },
+    400: {
+      description: "No active organization",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role or enterprise license required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const setEnforcementRoute = createRoute({
+  method: "put",
+  path: "/enforcement",
+  tags: ["Admin — SSO"],
+  summary: "Set SSO enforcement",
+  description:
+    "Enable or disable SSO enforcement for the admin's active organization. When enabled, " +
+    "password login is blocked for all members — they must sign in via the configured identity provider. " +
+    "Requires at least one active SSO provider to enable enforcement.",
+  request: {
+    body: {
+      required: true,
+      content: {
+        "application/json": { schema: SSOEnforcementBodySchema },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "SSO enforcement updated",
+      content: {
+        "application/json": { schema: SSOEnforcementResponseSchema },
+      },
+    },
+    400: {
+      description: "Invalid request body, no active organization, or no active SSO provider",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role or enterprise license required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -555,6 +664,74 @@ adminSso.openapi(deleteProviderRoute, async (c) => {
       if (mapped) return c.json(mapped.body, mapped.status) as never;
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, providerId }, "Failed to delete SSO provider");
       return c.json({ error: "internal_error", message: "Failed to delete SSO provider.", requestId }, 500);
+    }
+  }) as never;
+});
+
+// GET /enforcement — get SSO enforcement status
+adminSso.openapi(getEnforcementRoute, async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  }
+  const { authResult } = preamble;
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
+    }
+
+    const orgId = authResult.user?.activeOrganizationId;
+    if (!orgId) {
+      return c.json({ error: "bad_request", message: "No active organization." }, 400);
+    }
+
+    try {
+      const result = await isSSOEnforced(orgId);
+      return c.json({ enforced: result?.enforced ?? false, orgId }, 200);
+    } catch (err) {
+      const mapped = ssoErrorResponse(err);
+      if (mapped) return c.json(mapped.body, mapped.status) as never;
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get SSO enforcement status");
+      return c.json({ error: "internal_error", message: "Failed to get SSO enforcement status.", requestId }, 500);
+    }
+  }) as never;
+});
+
+// PUT /enforcement — set SSO enforcement
+adminSso.openapi(setEnforcementRoute, async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  }
+  const { authResult } = preamble;
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
+    }
+
+    const orgId = authResult.user?.activeOrganizationId;
+    if (!orgId) {
+      return c.json({ error: "bad_request", message: "No active organization." }, 400);
+    }
+
+    const { enforced } = c.req.valid("json");
+
+    try {
+      const result = await setSSOEnforcement(orgId, enforced);
+      return c.json(result, 200);
+    } catch (err) {
+      const mapped = ssoErrorResponse(err);
+      if (mapped) return c.json(mapped.body, mapped.status) as never;
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to set SSO enforcement");
+      return c.json({ error: "internal_error", message: "Failed to set SSO enforcement.", requestId }, 500);
     }
   }) as never;
 });

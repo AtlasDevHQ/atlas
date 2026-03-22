@@ -49,7 +49,11 @@ export async function adminAuthPreamble(req: Request, requestId: string) {
   if (!authResult.authenticated) {
     log.warn({ requestId, status: authResult.status }, "Authentication failed");
     const code = authErrorCode(authResult.error);
-    return { error: { error: code, message: authResult.error, requestId }, status: authResult.status as 401 | 403 | 500 };
+    const errorBody: Record<string, unknown> = { error: code, message: authResult.error, requestId };
+    if (authResult.ssoRedirectUrl) {
+      errorBody.ssoRedirectUrl = authResult.ssoRedirectUrl;
+    }
+    return { error: errorBody, status: authResult.status as 401 | 403 | 500 };
   }
 
   // Enforce admin role — when auth mode is "none" (no auth configured, e.g.

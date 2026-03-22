@@ -68,6 +68,10 @@ const {
   isValidDomain,
   isValidSSOProviderType,
   validateProviderConfig,
+  setSSOEnforcement,
+  isSSOEnforced,
+  isSSOEnforcedForDomain,
+  SSOEnforcementError,
 } = await import("./sso");
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -87,6 +91,7 @@ const sampleSamlRow = {
   issuer: "https://idp.acme.com",
   domain: "acme.com",
   enabled: true,
+  sso_enforced: false,
   config: JSON.stringify({
     idpEntityId: "https://idp.acme.com",
     idpSsoUrl: "https://idp.acme.com/sso",
@@ -103,6 +108,7 @@ const sampleOidcRow = {
   issuer: "https://accounts.google.com",
   domain: "example.com",
   enabled: false,
+  sso_enforced: false,
   config: JSON.stringify({
     clientId: "client-123",
     clientSecret: "encrypted:secret-456",
@@ -474,5 +480,160 @@ describe("OIDC encryption round-trip", () => {
     expect(providers).toHaveLength(1);
     // The mock decryptUrl strips "encrypted:" prefix
     expect((providers[0].config as { clientSecret: string }).clientSecret).toBe("secret-456");
+  });
+});
+
+// ── SSO Enforcement Tests ────────────────────────────────────────
+
+describe("setSSOEnforcement", () => {
+  beforeEach(resetMocks);
+
+  it("enables enforcement when active provider exists", async () => {
+    // Check for active providers
+    mockRows.push([{ id: "prov-1" }]);
+    // UPDATE RETURNING query — must return at least one row
+    mockRows.push([{ id: "prov-1" }]);
+
+    const result = await setSSOEnforcement("org-1", true);
+    expect(result.enforced).toBe(true);
+    expect(result.orgId).toBe("org-1");
+
+    // Verify the UPDATE query was issued with RETURNING
+    const updateQuery = capturedQueries.find(q => q.sql.includes("UPDATE sso_providers SET sso_enforced"));
+    expect(updateQuery).toBeDefined();
+    expect(updateQuery!.sql).toContain("RETURNING id");
+    expect(updateQuery!.params[0]).toBe(true);
+    expect(updateQuery!.params[1]).toBe("org-1");
+  });
+
+  it("throws when enable UPDATE affects zero rows (providers deleted mid-request)", async () => {
+    // Check for active providers — one found
+    mockRows.push([{ id: "prov-1" }]);
+    // UPDATE RETURNING — zero rows (provider deleted between check and update)
+    mockRows.push([]);
+
+    await expect(setSSOEnforcement("org-1", true)).rejects.toThrow(
+      "No SSO providers were updated",
+    );
+  });
+
+  it("disables enforcement without checking providers", async () => {
+    // UPDATE query (no provider check needed for disabling)
+    mockRows.push([]);
+
+    const result = await setSSOEnforcement("org-1", false);
+    expect(result.enforced).toBe(false);
+    expect(result.orgId).toBe("org-1");
+  });
+
+  it("rejects enforcement without active provider", async () => {
+    // Check for active providers — none found
+    mockRows.push([]);
+
+    await expect(setSSOEnforcement("org-1", true)).rejects.toThrow(
+      "Cannot enforce SSO without at least one active SSO provider",
+    );
+  });
+
+  it("throws SSOEnforcementError when no providers", async () => {
+    mockRows.push([]);
+    try {
+      await setSSOEnforcement("org-1", true);
+      throw new Error("Should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(SSOEnforcementError);
+      expect((err as InstanceType<typeof SSOEnforcementError>).code).toBe("no_provider");
+    }
+  });
+
+  it("throws when enterprise is disabled", async () => {
+    mockEnterpriseEnabled = false;
+    await expect(setSSOEnforcement("org-1", true)).rejects.toThrow("Enterprise features");
+  });
+
+  it("throws when no license key", async () => {
+    mockEnterpriseLicenseKey = undefined;
+    await expect(setSSOEnforcement("org-1", true)).rejects.toThrow("no license key");
+  });
+});
+
+describe("isSSOEnforced", () => {
+  beforeEach(resetMocks);
+
+  it("returns enforced: true when enforcement is active", async () => {
+    const enforcedRow = { ...sampleSamlRow, sso_enforced: true };
+    mockRows.push([enforcedRow]);
+
+    const result = await isSSOEnforced("org-1");
+    expect(result).not.toBeNull();
+    expect(result!.enforced).toBe(true);
+    expect(result!.provider).toBeDefined();
+    expect(result!.ssoRedirectUrl).toBe("https://idp.acme.com/sso");
+  });
+
+  it("returns enforced: false when no enforced providers", async () => {
+    mockRows.push([]);
+
+    const result = await isSSOEnforced("org-1");
+    expect(result).not.toBeNull();
+    expect(result!.enforced).toBe(false);
+  });
+
+  it("does NOT call requireEnterprise — usable in login flow", async () => {
+    mockEnterpriseEnabled = false;
+    mockEnterpriseLicenseKey = undefined;
+    mockRows.push([]);
+
+    const result = await isSSOEnforced("org-1");
+    expect(result).not.toBeNull();
+    expect(result!.enforced).toBe(false);
+  });
+});
+
+describe("isSSOEnforcedForDomain", () => {
+  beforeEach(resetMocks);
+
+  it("returns enforced: true when domain has enforcement", async () => {
+    const enforcedRow = { ...sampleSamlRow, sso_enforced: true };
+    mockRows.push([enforcedRow]);
+
+    const result = await isSSOEnforcedForDomain("acme.com");
+    expect(result).not.toBeNull();
+    expect(result!.enforced).toBe(true);
+    expect(result!.ssoRedirectUrl).toBe("https://idp.acme.com/sso");
+  });
+
+  it("returns OIDC discovery URL for OIDC providers", async () => {
+    const enforcedOidcRow = { ...sampleOidcRow, enabled: true, sso_enforced: true };
+    mockRows.push([enforcedOidcRow]);
+
+    const result = await isSSOEnforcedForDomain("example.com");
+    expect(result).not.toBeNull();
+    expect(result!.enforced).toBe(true);
+    expect(result!.ssoRedirectUrl).toBe("https://accounts.google.com/.well-known/openid-configuration");
+  });
+
+  it("returns enforced: false when domain has no enforcement", async () => {
+    mockRows.push([]);
+
+    const result = await isSSOEnforcedForDomain("noenforcement.com");
+    expect(result).not.toBeNull();
+    expect(result!.enforced).toBe(false);
+  });
+
+  it("normalizes domain case", async () => {
+    mockRows.push([]);
+    await isSSOEnforcedForDomain("ACME.COM");
+    expect(capturedQueries[0].params[0]).toBe("acme.com");
+  });
+
+  it("does NOT call requireEnterprise — usable in login flow", async () => {
+    mockEnterpriseEnabled = false;
+    mockEnterpriseLicenseKey = undefined;
+    mockRows.push([]);
+
+    const result = await isSSOEnforcedForDomain("acme.com");
+    expect(result).not.toBeNull();
+    expect(result!.enforced).toBe(false);
   });
 });

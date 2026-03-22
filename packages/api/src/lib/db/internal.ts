@@ -621,6 +621,9 @@ export async function migrateInternalDB(): Promise<void> {
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_sso_providers_domain ON sso_providers(domain);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_sso_providers_enabled ON sso_providers(org_id, enabled) WHERE enabled = true;`);
 
+  // SSO enforcement column — when true, password auth is blocked for the org's domain (0.9.0 #659)
+  await pool.query(`DO $$ BEGIN ALTER TABLE sso_providers ADD COLUMN sso_enforced BOOLEAN NOT NULL DEFAULT false; EXCEPTION WHEN duplicate_column THEN NULL; END $$;`);
+
   // Demo leads — email-gated demo mode lead capture
   await pool.query(`
     CREATE TABLE IF NOT EXISTS demo_leads (

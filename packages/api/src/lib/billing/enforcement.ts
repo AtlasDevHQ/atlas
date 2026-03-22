@@ -52,16 +52,9 @@ export interface PlanLimitWarning {
 
 export type PlanCheckResult =
   | { allowed: true; warning?: PlanLimitWarning }
-  | {
-      allowed: false;
-      errorCode:
-        | "trial_expired"
-        | "plan_limit_exceeded"
-        | "billing_check_failed";
-      errorMessage: string;
-      httpStatus: 403 | 429 | 503;
-      usage?: { currentUsage: number; limit: number; metric: string };
-    };
+  | { allowed: false; errorCode: "trial_expired"; errorMessage: string; httpStatus: 403 }
+  | { allowed: false; errorCode: "plan_limit_exceeded"; errorMessage: string; httpStatus: 429; usage: { currentUsage: number; limit: number; metric: string } }
+  | { allowed: false; errorCode: "billing_check_failed"; errorMessage: string; httpStatus: 503 };
 
 // ---------------------------------------------------------------------------
 // Plan limit cache
@@ -176,10 +169,20 @@ export async function checkPlanLimits(
       return evaluateUsage(orgId, usage, limits);
     } catch (err) {
       // If we can't read usage, allow the request — metering is best-effort.
+      // Surface the degradation as a warning so clients know enforcement is impaired.
       log.error(
         { err: err instanceof Error ? err.message : String(err), orgId },
         "Failed to read usage for plan enforcement — allowing request (metering unavailable)",
       );
+      return {
+        allowed: true,
+        warning: {
+          code: "plan_limit_warning" as const,
+          message:
+            "Usage metering is temporarily unavailable. Your request was allowed, but usage tracking may be inaccurate.",
+          metrics: [],
+        },
+      };
     }
   }
 

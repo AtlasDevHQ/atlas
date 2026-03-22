@@ -153,9 +153,9 @@ query.post("/", async (c) => {
         error: planCheck.errorCode,
         message: planCheck.errorMessage,
         requestId,
-        ...(planCheck.usage && { usage: planCheck.usage }),
+        ...(planCheck.errorCode === "plan_limit_exceeded" && { usage: planCheck.usage }),
       },
-      planCheck.httpStatus ?? 403,
+      planCheck.httpStatus,
     );
   }
 

@@ -68,6 +68,15 @@ function expectDenied(result: PlanCheckResult): Extract<PlanCheckResult, { allow
   return result as Extract<PlanCheckResult, { allowed: false }>;
 }
 
+/** Narrow to a plan_limit_exceeded result with usage data. */
+function expectLimitExceeded(result: PlanCheckResult): Extract<PlanCheckResult, { errorCode: "plan_limit_exceeded" }> {
+  expect(result.allowed).toBe(false);
+  if (!result.allowed) {
+    expect(result.errorCode).toBe("plan_limit_exceeded");
+  }
+  return result as Extract<PlanCheckResult, { errorCode: "plan_limit_exceeded" }>;
+}
+
 /** Narrow an allowed result for type-safe assertion access. */
 function expectAllowed(result: PlanCheckResult): Extract<PlanCheckResult, { allowed: true }> {
   expect(result.allowed).toBe(true);
@@ -268,33 +277,29 @@ describe("billing/enforcement", () => {
     mockWorkspace = makeWorkspace();
     // 110% of 10,000 = 11,000
     mockUsage = { queryCount: 11_000, tokenCount: 0, activeUsers: 0, periodStart: "", periodEnd: "" };
-    const denied = expectDenied(await checkPlanLimits("org-1"));
-    expect(denied.errorCode).toBe("plan_limit_exceeded");
-    expect(denied.httpStatus).toBe(429);
-    expect(denied.errorMessage).toContain("queries");
-    expect(denied.errorMessage).toContain("grace buffer");
-    expect(denied.usage).toBeDefined();
-    expect(denied.usage!.currentUsage).toBe(11_000);
-    expect(denied.usage!.limit).toBe(10_000);
-    expect(denied.usage!.metric).toBe("queries");
+    const exceeded = expectLimitExceeded(await checkPlanLimits("org-1"));
+    expect(exceeded.httpStatus).toBe(429);
+    expect(exceeded.errorMessage).toContain("queries");
+    expect(exceeded.errorMessage).toContain("grace buffer");
+    expect(exceeded.usage.currentUsage).toBe(11_000);
+    expect(exceeded.usage.limit).toBe(10_000);
+    expect(exceeded.usage.metric).toBe("queries");
   });
 
   it("blocks at 150% token usage", async () => {
     mockWorkspace = makeWorkspace();
     // 150% of 5,000,000 = 7,500,000
     mockUsage = { queryCount: 0, tokenCount: 7_500_000, activeUsers: 0, periodStart: "", periodEnd: "" };
-    const denied = expectDenied(await checkPlanLimits("org-1"));
-    expect(denied.errorCode).toBe("plan_limit_exceeded");
-    expect(denied.httpStatus).toBe(429);
-    expect(denied.usage!.metric).toBe("tokens");
+    const exceeded = expectLimitExceeded(await checkPlanLimits("org-1"));
+    expect(exceeded.httpStatus).toBe(429);
+    expect(exceeded.usage.metric).toBe("tokens");
   });
 
   it("blocks on worst metric when queries are hard-limited but tokens are ok", async () => {
     mockWorkspace = makeWorkspace();
     mockUsage = { queryCount: 12_000, tokenCount: 1_000_000, activeUsers: 0, periodStart: "", periodEnd: "" };
-    const denied = expectDenied(await checkPlanLimits("org-1"));
-    expect(denied.errorCode).toBe("plan_limit_exceeded");
-    expect(denied.usage!.metric).toBe("queries");
+    const exceeded = expectLimitExceeded(await checkPlanLimits("org-1"));
+    expect(exceeded.usage.metric).toBe("queries");
   });
 
   // ── Trial tier — usage limits ────────────────────────────────────
@@ -326,11 +331,13 @@ describe("billing/enforcement", () => {
     expect(denied.httpStatus).toBe(503);
   });
 
-  it("allows on metering read error (fail open for usage)", async () => {
+  it("allows on metering read error with degradation warning (fail open)", async () => {
     mockWorkspace = makeWorkspace();
     mockUsageShouldThrow = true;
-    const result = await checkPlanLimits("org-1");
-    expect(result.allowed).toBe(true);
+    const result = expectAllowed(await checkPlanLimits("org-1"));
+    expect(result.warning).toBeDefined();
+    expect(result.warning!.message).toContain("metering is temporarily unavailable");
+    expect(result.warning!.metrics).toEqual([]);
   });
 
   // ── Caching ───────────────────────────────────────────────────────

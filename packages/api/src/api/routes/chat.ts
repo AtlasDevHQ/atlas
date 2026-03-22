@@ -123,9 +123,9 @@ chat.post("/", async (c) => {
         message: planCheck.errorMessage,
         retryable: false,
         requestId,
-        ...(planCheck.usage && { usage: planCheck.usage }),
+        ...(planCheck.errorCode === "plan_limit_exceeded" && { usage: planCheck.usage }),
       },
-      planCheck.httpStatus ?? 403,
+      planCheck.httpStatus,
     );
   }
 
@@ -307,6 +307,10 @@ chat.post("/", async (c) => {
         // The writer is set before merge() triggers tool execution reads.
         const stream = createUIMessageStream({
           execute: ({ writer }) => {
+            // Surface plan warning as a data annotation so clients can display it
+            if (planWarning) {
+              writer.write({ type: "data-plan-warning", data: planWarning });
+            }
             setStreamWriter(requestId, writer);
             writer.merge(agentResult.toUIMessageStream());
           },

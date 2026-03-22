@@ -22,8 +22,11 @@
     "admin-—-suggestions",
     "admin-—-prompts",
     "admin-—-usage",
+    "billing",
     "admin-—-organizations",
     "admin-—-sso",
-    "onboarding"
+    "onboarding",
+    "demo",
+    "wizard"
   ]
 }

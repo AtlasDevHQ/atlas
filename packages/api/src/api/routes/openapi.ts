@@ -17,6 +17,7 @@ import {
   NotebookStateBodySchema,
 } from "./conversations";
 import { HealthResponseSchema } from "./health";
+import { DemoStartSchema, DemoChatRequestSchema } from "./demo";
 
 const openapi = new Hono();
 
@@ -2534,6 +2535,92 @@ function buildSpec(): Record<string, unknown> {
           },
         },
       },
+      "/api/v1/admin/usage/summary": {
+        get: {
+          operationId: "adminGetUsageSummary",
+          summary: "Usage dashboard summary",
+          description:
+            "Returns a combined dashboard payload: current period usage, plan limits, up to 31 daily history points (today + past 30 days), per-user breakdown (top 50), and Stripe status. " +
+            "Aggregates today's daily summary before fetching history. Requires admin role.",
+          tags: ["Admin — Usage"],
+          security: [{ bearerAuth: [] }],
+          responses: {
+            "200": {
+              description: "Combined usage dashboard payload",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      workspaceId: { type: "string" },
+                      current: {
+                        type: "object",
+                        properties: {
+                          queryCount: { type: "integer" },
+                          tokenCount: { type: "integer" },
+                          activeUsers: { type: "integer" },
+                          periodStart: { type: "string", format: "date-time" },
+                          periodEnd: { type: "string", format: "date-time" },
+                        },
+                      },
+                      plan: {
+                        type: "object",
+                        properties: {
+                          tier: { type: "string" },
+                          displayName: { type: "string" },
+                          trialEndsAt: { type: "string", format: "date-time", nullable: true },
+                        },
+                      },
+                      limits: {
+                        type: "object",
+                        properties: {
+                          queriesPerMonth: { type: "integer", nullable: true, description: "null = unlimited" },
+                          tokensPerMonth: { type: "integer", nullable: true, description: "null = unlimited" },
+                          maxMembers: { type: "integer", nullable: true, description: "null = unlimited" },
+                          maxConnections: { type: "integer", nullable: true, description: "null = unlimited" },
+                        },
+                      },
+                      history: {
+                        type: "array",
+                        description: "Daily usage summaries in chronological order (up to 31 points).",
+                        items: {
+                          type: "object",
+                          properties: {
+                            id: { type: "string", format: "uuid" },
+                            workspace_id: { type: "string" },
+                            period: { type: "string" },
+                            period_start: { type: "string", format: "date-time" },
+                            query_count: { type: "integer" },
+                            token_count: { type: "integer" },
+                            active_users: { type: "integer" },
+                            storage_bytes: { type: "integer" },
+                            updated_at: { type: "string", format: "date-time" },
+                          },
+                        },
+                      },
+                      users: {
+                        type: "array",
+                        description: "Per-user usage breakdown (top 50).",
+                        items: {
+                          type: "object",
+                          properties: {
+                            user_id: { type: "string" },
+                            query_count: { type: "integer" },
+                            token_count: { type: "integer" },
+                            login_count: { type: "integer" },
+                          },
+                        },
+                      },
+                      hasStripe: { type: "boolean", description: "Whether this workspace has a Stripe customer ID." },
+                    },
+                  },
+                },
+              },
+            },
+            ...authErrors,
+          },
+        },
+      },
       "/api/v1/admin/usage/history": {
         get: {
           operationId: "adminGetUsageHistory",
@@ -4074,6 +4161,175 @@ function buildSpec(): Record<string, unknown> {
       },
 
       // -----------------------------------------------------------------
+      // Demo — email-gated public demo
+      // -----------------------------------------------------------------
+      "/api/v1/demo/start": {
+        post: {
+          operationId: "demoStart",
+          summary: "Start a demo session",
+          description:
+            "Email-gated demo entry point. Validates the email, signs a short-lived demo JWT, and captures the lead. " +
+            "IP-based rate limiting prevents abuse. Returns a token for subsequent demo API calls.",
+          tags: ["Demo"],
+          security: [],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: toJsonSchema(DemoStartSchema),
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Demo session started",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      token: { type: "string", description: "Demo JWT token for subsequent requests" },
+                      expiresAt: { type: "string", format: "date-time", description: "Token expiry timestamp" },
+                      returning: { type: "boolean", description: "Whether this email has been seen before" },
+                      conversationCount: { type: "integer", description: "Number of existing demo conversations for this email" },
+                    },
+                    required: ["token", "expiresAt", "returning", "conversationCount"],
+                  },
+                },
+              },
+            },
+            "400": errorResponse("Invalid JSON body"),
+            "422": errorResponse("Validation error (invalid email)", ValidationErrorSchema),
+            "429": errorResponse("Rate limit exceeded (IP-based)", RateLimitErrorSchema),
+            "500": errorResponse("Demo mode not properly configured"),
+          },
+        },
+      },
+
+      "/api/v1/demo/chat": {
+        post: {
+          operationId: "demoChat",
+          summary: "Chat in demo mode",
+          description:
+            "Mirrors the main chat endpoint with demo-specific limits. Requires a valid demo token from /demo/start. " +
+            "Streams the response as Server-Sent Events using the Vercel AI SDK UI message stream protocol. " +
+            "Demo conversations are persisted when an internal database is available.",
+          tags: ["Demo"],
+          security: [{ bearerAuth: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: toJsonSchema(DemoChatRequestSchema),
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Streaming response (SSE)",
+              headers: {
+                "x-conversation-id": {
+                  description: "Conversation UUID when persistence is active.",
+                  schema: { type: "string", format: "uuid" },
+                  required: false,
+                },
+              },
+              content: {
+                "text/event-stream": {
+                  schema: {
+                    type: "string",
+                    description: "SSE stream using the Vercel AI SDK UI message stream protocol.",
+                  },
+                },
+              },
+            },
+            "400": errorResponse("Bad request (malformed JSON, missing datasource, or configuration error)"),
+            "401": errorResponse("Valid demo token required"),
+            "404": errorResponse("Conversation not found (invalid conversationId)"),
+            "422": errorResponse("Validation error (invalid request body)", ValidationErrorSchema),
+            "429": errorResponse("Demo rate limit exceeded", RateLimitErrorSchema),
+            "500": errorResponse("Internal server error"),
+            "502": errorResponse("LLM provider error"),
+            "503": errorResponse("Provider unreachable, auth error, or rate limited"),
+            "504": errorResponse("Request timed out"),
+          },
+        },
+      },
+
+      "/api/v1/demo/conversations": {
+        get: {
+          operationId: "listDemoConversations",
+          summary: "List demo conversations",
+          description:
+            "Returns a paginated list of conversations for the demo user identified by their demo token. " +
+            "Returns an empty list when no internal database is configured.",
+          tags: ["Demo"],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            ...paginationParams({ limit: 50, maxLimit: 100 }),
+          ],
+          responses: {
+            "200": {
+              description: "Paginated list of demo conversations",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      conversations: {
+                        type: "array",
+                        items: {
+                          type: "object",
+                          properties: {
+                            id: { type: "string", format: "uuid" },
+                            title: { type: "string", nullable: true },
+                            surface: { type: "string" },
+                            starred: { type: "boolean" },
+                            createdAt: { type: "string", format: "date-time" },
+                            updatedAt: { type: "string", format: "date-time" },
+                          },
+                        },
+                      },
+                      total: { type: "integer" },
+                    },
+                  },
+                },
+              },
+            },
+            "401": errorResponse("Valid demo token required"),
+            "500": errorResponse("Failed to load conversations"),
+          },
+        },
+      },
+
+      "/api/v1/demo/conversations/{id}": {
+        get: {
+          operationId: "getDemoConversation",
+          summary: "Get a demo conversation",
+          description:
+            "Returns a single demo conversation with all its messages. Requires a valid demo token and enforces ownership.",
+          tags: ["Demo"],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            uuidPathParam("id", "Conversation UUID."),
+          ],
+          responses: {
+            "200": {
+              description: "Conversation with messages",
+              content: {
+                "application/json": {
+                  schema: toJsonSchema(ConversationWithMessagesSchema),
+                },
+              },
+            },
+            "401": errorResponse("Valid demo token required"),
+            "404": errorResponse("Conversation not found"),
+            "500": errorResponse("Failed to load conversation"),
+          },
+        },
+      },
+
+      // -----------------------------------------------------------------
       // Widget — embeddable chat widget
       // -----------------------------------------------------------------
       "/widget": {
@@ -4184,15 +4440,55 @@ function buildSpec(): Record<string, unknown> {
         post: {
           operationId: "wizardProfile",
           summary: "List tables from a connected datasource",
-          description: "Discovers tables, views, and materialized views in a connected database for the wizard table selection step.",
+          description:
+            "Discovers tables, views, and materialized views in a connected database for the wizard table selection step. " +
+            "Supports PostgreSQL and MySQL datasources. Requires admin role.",
           tags: ["Wizard"],
           security: [{ bearerAuth: [] }],
-          requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["connectionId"], properties: { connectionId: { type: "string" } } } } } },
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["connectionId"],
+                  properties: {
+                    connectionId: { type: "string", description: "Connection ID to profile (e.g. 'default')." },
+                  },
+                },
+              },
+            },
+          },
           responses: {
-            200: { description: "Table list", content: { "application/json": { schema: { type: "object", properties: { connectionId: { type: "string" }, dbType: { type: "string" }, schema: { type: "string" }, tables: { type: "array", items: { type: "object", properties: { name: { type: "string" }, type: { type: "string", enum: ["table", "view", "materialized_view"] } } } } } } } } },
-            400: { description: "Invalid request" },
-            401: { description: "Not authenticated" },
-            403: { description: "Admin role required" },
+            "200": {
+              description: "Table list from the connected datasource",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      connectionId: { type: "string" },
+                      dbType: { type: "string", enum: ["postgres", "mysql"] },
+                      schema: { type: "string" },
+                      tables: {
+                        type: "array",
+                        items: {
+                          type: "object",
+                          properties: {
+                            name: { type: "string" },
+                            type: { type: "string", enum: ["table", "view", "materialized_view"] },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            "400": errorResponse("Invalid request (missing connectionId or unsupported database type)"),
+            ...authErrors,
+            "404": errorResponse("Connection not found"),
+            "500": errorResponse("Connection resolution or profiling failed"),
           },
         },
       },
@@ -4200,13 +4496,72 @@ function buildSpec(): Record<string, unknown> {
         post: {
           operationId: "wizardGenerate",
           summary: "Profile tables and generate entity YAML",
-          description: "Profiles selected tables and generates entity YAML with dimensions, measures, joins, and query patterns.",
+          description:
+            "Profiles selected tables from a connected datasource and generates entity YAML definitions " +
+            "with dimensions, measures, joins, query patterns, and heuristic flags. Requires admin role.",
           tags: ["Wizard"],
           security: [{ bearerAuth: [] }],
-          requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["connectionId", "tables"], properties: { connectionId: { type: "string" }, tables: { type: "array", items: { type: "string" } } } } } } },
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["connectionId", "tables"],
+                  properties: {
+                    connectionId: { type: "string", description: "Connection ID to profile." },
+                    tables: {
+                      type: "array",
+                      items: { type: "string" },
+                      description: "Table names to profile and generate entities for.",
+                    },
+                  },
+                },
+              },
+            },
+          },
           responses: {
-            200: { description: "Generated entities", content: { "application/json": { schema: { type: "object", properties: { connectionId: { type: "string" }, dbType: { type: "string" }, entities: { type: "array", items: { type: "object", properties: { tableName: { type: "string" }, yaml: { type: "string" }, rowCount: { type: "integer" }, columnCount: { type: "integer" } } } }, errors: { type: "array" } } } } } },
-            400: { description: "Invalid request" },
+            "200": {
+              description: "Generated entity YAML definitions with profiling metadata",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      connectionId: { type: "string" },
+                      dbType: { type: "string", enum: ["postgres", "mysql"] },
+                      schema: { type: "string" },
+                      entities: {
+                        type: "array",
+                        items: {
+                          type: "object",
+                          properties: {
+                            tableName: { type: "string" },
+                            objectType: { type: "string" },
+                            rowCount: { type: "integer" },
+                            columnCount: { type: "integer" },
+                            yaml: { type: "string", description: "Generated entity YAML content." },
+                            profile: {
+                              type: "object",
+                              description: "Detailed profiling metadata for the table.",
+                            },
+                          },
+                        },
+                      },
+                      errors: {
+                        type: "array",
+                        items: { type: "string" },
+                        description: "Errors encountered during profiling (non-fatal).",
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            "400": errorResponse("Invalid request (missing connectionId, empty tables, or unsupported database type)"),
+            ...authErrors,
+            "404": errorResponse("Connection not found"),
+            "500": errorResponse("Profiling or generation failed"),
           },
         },
       },
@@ -4214,13 +4569,57 @@ function buildSpec(): Record<string, unknown> {
         post: {
           operationId: "wizardPreview",
           summary: "Preview agent behavior with entities",
-          description: "Shows how the agent would interpret the semantic layer when answering a question.",
+          description:
+            "Shows how the agent would interpret the semantic layer when answering a question, " +
+            "given a set of candidate entity YAML definitions. Requires admin role.",
           tags: ["Wizard"],
           security: [{ bearerAuth: [] }],
-          requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["question", "entities"], properties: { question: { type: "string" }, entities: { type: "array", items: { type: "object", properties: { tableName: { type: "string" }, yaml: { type: "string" } } } } } } } } },
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["question", "entities"],
+                  properties: {
+                    question: { type: "string", description: "Natural language question to preview." },
+                    entities: {
+                      type: "array",
+                      items: {
+                        type: "object",
+                        required: ["tableName", "yaml"],
+                        properties: {
+                          tableName: { type: "string" },
+                          yaml: { type: "string" },
+                        },
+                      },
+                      description: "Entity definitions to preview against.",
+                    },
+                  },
+                },
+              },
+            },
+          },
           responses: {
-            200: { description: "Preview result", content: { "application/json": { schema: { type: "object", properties: { question: { type: "string" }, semanticContext: { type: "string" }, availableTables: { type: "array", items: { type: "string" } }, entityCount: { type: "integer" } } } } } },
-            400: { description: "Invalid request" },
+            "200": {
+              description: "Preview of how the agent would see the semantic layer",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      question: { type: "string" },
+                      semanticContext: { type: "string" },
+                      availableTables: { type: "array", items: { type: "string" } },
+                      entityCount: { type: "integer" },
+                      sampleEntityYaml: { type: "string", description: "Truncated sample of entity YAML (max 2000 chars)." },
+                    },
+                  },
+                },
+              },
+            },
+            "400": errorResponse("Invalid request (missing question or entities)"),
+            ...authErrors,
           },
         },
       },
@@ -4228,13 +4627,64 @@ function buildSpec(): Record<string, unknown> {
         post: {
           operationId: "wizardSave",
           summary: "Save entities to org-scoped semantic layer",
-          description: "Persists generated entity YAML files to the org-scoped semantic layer directory.",
+          description:
+            "Persists generated entity YAML files to the organization's semantic layer directory on disk. " +
+            "Validates table names for path traversal, syncs to the internal database if available, " +
+            "and resets the semantic whitelist cache. Requires admin role and an active organization.",
           tags: ["Wizard"],
           security: [{ bearerAuth: [] }],
-          requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["connectionId", "entities"], properties: { connectionId: { type: "string" }, entities: { type: "array", items: { type: "object", required: ["tableName", "yaml"], properties: { tableName: { type: "string" }, yaml: { type: "string" } } } } } } } } },
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["connectionId", "entities"],
+                  properties: {
+                    connectionId: { type: "string", description: "Connection ID to associate with saved entities." },
+                    entities: {
+                      type: "array",
+                      items: {
+                        type: "object",
+                        required: ["tableName", "yaml"],
+                        properties: {
+                          tableName: { type: "string" },
+                          yaml: { type: "string" },
+                        },
+                      },
+                    },
+                    schema: { type: "string", description: "Database schema name (defaults to 'public')." },
+                    profiles: {
+                      type: "array",
+                      description: "Optional profile data for generating catalog, glossary, and metric files.",
+                      items: { type: "object" },
+                    },
+                  },
+                },
+              },
+            },
+          },
           responses: {
-            201: { description: "Entities saved", content: { "application/json": { schema: { type: "object", properties: { saved: { type: "boolean" }, orgId: { type: "string" }, connectionId: { type: "string" }, entityCount: { type: "integer" }, files: { type: "array", items: { type: "string" } } } } } } },
-            400: { description: "Invalid request or no active organization" },
+            "201": {
+              description: "Entities saved to disk",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      saved: { type: "boolean" },
+                      orgId: { type: "string" },
+                      connectionId: { type: "string" },
+                      entityCount: { type: "integer" },
+                      files: { type: "array", items: { type: "string" }, description: "Relative paths of saved files." },
+                    },
+                  },
+                },
+              },
+            },
+            "400": errorResponse("Invalid request (missing connectionId, empty entities, invalid table name, or no active organization)"),
+            ...authErrors,
+            "500": errorResponse("Failed to save entities"),
           },
         },
       },
@@ -4317,6 +4767,7 @@ function buildSpec(): Record<string, unknown> {
       { name: "Admin — Organizations", description: "Admin organization management (requires admin role)" },
       { name: "Admin — SSO", description: "Enterprise SSO provider management (requires admin role + enterprise license)" },
       { name: "Onboarding", description: "Self-serve signup flow (requires managed auth)" },
+      { name: "Demo", description: "Email-gated public demo with lead capture (requires ATLAS_DEMO_ENABLED=true)" },
       { name: "Wizard", description: "Guided semantic layer setup wizard (requires admin role)" },
     ],
   };

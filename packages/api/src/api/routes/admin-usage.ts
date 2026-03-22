@@ -2,7 +2,8 @@
  * Admin usage metering routes.
  *
  * Mounted under /api/v1/admin/usage. All routes require admin role.
- * Provides current period summary, historical summaries, and per-user breakdown.
+ * Provides current period summary, combined dashboard payload (usage + plan
+ * limits + history + per-user breakdown), historical summaries, and per-user breakdown.
  */
 
 import { Hono } from "hono";
@@ -62,7 +63,7 @@ adminUsage.get("/", async (c) => {
 
 // ---------------------------------------------------------------------------
 // GET /summary — combined usage dashboard payload
-// Returns current period usage + plan limits + 30-day daily history + per-user breakdown
+// Returns current period usage + plan limits + up to 31 daily history points (today + past 30 days) + per-user breakdown
 // ---------------------------------------------------------------------------
 
 adminUsage.get("/summary", async (c) => {

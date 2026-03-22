@@ -265,9 +265,9 @@ describe("analyzeTableProfiles", () => {
 
   it("does not mutate the input profiles", () => {
     const legacy = makeTestProfile("old_accounts");
-    const original = { ...legacy.table_flags };
+    const snapshot = JSON.parse(JSON.stringify(legacy));
     analyzeTableProfiles([legacy]);
-    expect(legacy.table_flags).toEqual(original);
+    expect(legacy).toEqual(snapshot);
   });
 
   it("detects abandoned tables", () => {

@@ -726,6 +726,46 @@ describe("POST /api/v1/wizard/save", () => {
     const data = await json(res);
     expect(data.saved).toBe(true);
   });
+
+  it("generates catalog/glossary/metric files when profiles are provided", async () => {
+    const res = await postJson("/api/v1/wizard/save", {
+      connectionId: "default",
+      entities: [{ tableName: "users", yaml: "table: users\n" }],
+      schema: "analytics",
+      profiles: [mockUserProfile],
+    });
+    expect(res.status).toBe(201);
+    const data = await json(res);
+    expect(data.saved).toBe(true);
+
+    // Entity YAML + catalog + glossary = at minimum 3 writes
+    expect(mockWriteFileSync.mock.calls.length).toBeGreaterThanOrEqual(3);
+    const files = data.files as string[];
+    expect(files).toContain("entities/users.yml");
+    expect(files).toContain("catalog.yml");
+    expect(files).toContain("glossary.yml");
+  });
+
+  it("returns 422 when profiles contain invalid objects", async () => {
+    const res = await postJson("/api/v1/wizard/save", {
+      connectionId: "default",
+      entities: [{ tableName: "users", yaml: "table: users\n" }],
+      profiles: [{ table_name: "bad", object_type: "trigger" }],
+    });
+    expect(res.status).toBe(422);
+    const data = await json(res);
+    expect(data.error).toBe("validation_error");
+  });
+
+  it("strips unknown fields from request body (no passthrough)", async () => {
+    const res = await postJson("/api/v1/wizard/save", {
+      connectionId: "default",
+      entities: [{ tableName: "users", yaml: "table: users\n" }],
+      unknownField: "should be stripped",
+    });
+    // Unknown fields are silently stripped — request still succeeds
+    expect(res.status).toBe(201);
+  });
 });
 
 // =====================================================================

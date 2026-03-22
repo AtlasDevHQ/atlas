@@ -126,7 +126,7 @@ export interface WizardForeignKey {
   fromColumn: string;
   toTable: string;
   toColumn: string;
-  source: string;
+  source: ForeignKeySource;
 }
 
 /** camelCase inferred foreign key in the wizard generate response. */
@@ -139,7 +139,7 @@ export interface WizardInferredForeignKey {
 /** Single entity result from the wizard generate endpoint. */
 export interface WizardEntityResult {
   tableName: string;
-  objectType: string;
+  objectType: ObjectType;
   rowCount: number;
   columnCount: number;
   yaml: string;

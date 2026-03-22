@@ -69,7 +69,10 @@ const PreviewRequestSchema = z.object({
 
 const PreviewResponseSchema = z.record(z.string(), z.unknown());
 
-/** Zod schema for a column profile (snake_case wire format). */
+/**
+ * Zod schema for a column profile (snake_case wire format).
+ * Keep in sync with ColumnProfile from @useatlas/types.
+ */
 const ColumnProfileSchema = z.object({
   name: z.string(),
   type: z.string(),
@@ -83,17 +86,26 @@ const ColumnProfileSchema = z.object({
   fk_target_column: z.string().nullable(),
   is_enum_like: z.boolean(),
   profiler_notes: z.array(z.string()),
-});
+}).refine(
+  (col) => !col.is_foreign_key || (col.fk_target_table !== null && col.fk_target_column !== null),
+  { message: "fk_target_table and fk_target_column must be non-null when is_foreign_key is true" },
+);
 
-/** Zod schema for a foreign key. */
+/**
+ * Zod schema for a foreign key.
+ * Keep in sync with ForeignKey from @useatlas/types.
+ */
 const ForeignKeySchema = z.object({
-  from_column: z.string(),
-  to_table: z.string(),
-  to_column: z.string(),
+  from_column: z.string().min(1),
+  to_table: z.string().min(1),
+  to_column: z.string().min(1),
   source: z.enum(["constraint", "inferred"]),
 });
 
-/** Zod schema for a table profile (snake_case wire format). */
+/**
+ * Zod schema for a table profile (snake_case wire format).
+ * Keep in sync with TableProfile from @useatlas/types.
+ */
 const TableProfileSchema = z.object({
   table_name: z.string(),
   object_type: z.enum(["table", "view", "materialized_view"]),

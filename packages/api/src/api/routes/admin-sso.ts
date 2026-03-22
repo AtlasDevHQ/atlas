@@ -24,6 +24,7 @@ import type {
   CreateSSOProviderRequest,
   UpdateSSOProviderRequest,
 } from "@useatlas/types";
+import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 const log = createLogger("admin-sso");
 
@@ -51,7 +52,6 @@ function ssoErrorResponse(err: unknown): { body: Record<string, unknown>; status
 // Schemas
 // ---------------------------------------------------------------------------
 
-import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 const SSOProviderSummarySchema = z.object({
   id: z.string(),

@@ -17,6 +17,7 @@ import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { authPreamble } from "./auth-preamble";
 import { validateSQL, parserDatabase } from "@atlas/api/lib/tools/sql";
 import { connections, detectDBType } from "@atlas/api/lib/db/connection";
+import { ErrorSchema } from "./shared-schemas";
 
 const log = createLogger("validate-sql");
 const parser = new Parser();
@@ -62,7 +63,6 @@ const ValidateSQLResponseSchema = z.object({
   tables: z.array(z.string()),
 });
 
-import { ErrorSchema } from "./shared-schemas";
 
 const validateRoute = createRoute({
   method: "post",

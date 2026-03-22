@@ -22,6 +22,7 @@ import {
 import { ACTION_STATUSES, type ActionStatus } from "@atlas/api/lib/action-types";
 import { canApprove } from "@atlas/api/lib/auth/permissions";
 import { authPreamble } from "./auth-preamble";
+import { ErrorSchema } from "./shared-schemas";
 
 const log = createLogger("actions");
 
@@ -31,7 +32,6 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // Schemas
 // ---------------------------------------------------------------------------
 
-import { ErrorSchema } from "./shared-schemas";
 
 // ---------------------------------------------------------------------------
 // Route definitions

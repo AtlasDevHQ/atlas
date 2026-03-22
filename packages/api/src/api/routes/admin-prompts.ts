@@ -12,6 +12,7 @@ import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import type { PromptCollection, PromptItem } from "@useatlas/types";
 import { adminAuthPreamble } from "./admin-auth";
+import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 const log = createLogger("admin-prompts");
 
@@ -86,7 +87,6 @@ const ReorderedSchema = z.object({
   reordered: z.boolean(),
 });
 
-import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 // ---------------------------------------------------------------------------
 // Route definitions

@@ -24,6 +24,7 @@ import {
 import { DELIVERY_CHANNELS, RUN_STATUSES, type RunStatus } from "@atlas/api/lib/scheduled-task-types";
 import { ACTION_APPROVAL_MODES } from "@atlas/api/lib/action-types";
 import { authPreamble } from "./auth-preamble";
+import { ErrorSchema } from "./shared-schemas";
 
 const log = createLogger("scheduled-tasks-routes");
 
@@ -60,7 +61,6 @@ const UpdateScheduledTaskSchema = z.object({
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-import { ErrorSchema } from "./shared-schemas";
 
 function crudFailResponse(reason: CrudFailReason, requestId?: string) {
   switch (reason) {

@@ -12,6 +12,7 @@ import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { LEARNED_PATTERN_STATUSES, type LearnedPattern } from "@useatlas/types";
 import { adminAuthPreamble } from "./admin-auth";
 import { invalidatePatternCache } from "@atlas/api/lib/learn/pattern-cache";
+import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 const log = createLogger("admin-learned-patterns");
 
@@ -101,7 +102,6 @@ const DeletedSchema = z.object({
   deleted: z.boolean(),
 });
 
-import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 // ---------------------------------------------------------------------------
 // Route definitions

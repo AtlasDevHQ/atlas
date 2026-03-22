@@ -22,6 +22,7 @@ import {
 } from "@atlas/api/lib/db/internal";
 import { toQuerySuggestion } from "@atlas/api/lib/learn/suggestion-helpers";
 import { authPreamble } from "./auth-preamble";
+import { ErrorSchema } from "./shared-schemas";
 
 const log = createLogger("suggestions");
 
@@ -34,7 +35,6 @@ const SuggestionsResponseSchema = z.object({
   total: z.number().int(),
 });
 
-import { ErrorSchema } from "./shared-schemas";
 
 // ---------------------------------------------------------------------------
 // Route definitions

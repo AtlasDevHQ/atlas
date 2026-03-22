@@ -22,6 +22,7 @@ import { connections } from "@atlas/api/lib/db/connection";
 import { flushCache } from "@atlas/api/lib/cache/index";
 import { adminAuthPreamble } from "./admin-auth";
 import { invalidatePlanCache } from "@atlas/api/lib/billing/enforcement";
+import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 const log = createLogger("admin-orgs");
 
@@ -31,7 +32,6 @@ const MAX_ID_LENGTH = 128;
 // Schemas
 // ---------------------------------------------------------------------------
 
-import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 const OrgIdParamSchema = z.object({
   id: z.string().min(1).max(MAX_ID_LENGTH).openapi({

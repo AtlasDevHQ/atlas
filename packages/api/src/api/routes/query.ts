@@ -29,6 +29,7 @@ import {
   generateTitle,
 } from "@atlas/api/lib/conversations";
 import { authPreamble } from "./auth-preamble";
+import { ErrorSchema } from "./shared-schemas";
 
 
 const log = createLogger("query");
@@ -65,7 +66,6 @@ export const QueryResponseSchema = z.object({
     .optional(),
 });
 
-import { ErrorSchema } from "./shared-schemas";
 
 /**
  * Derive the public base URL for constructing action approve/deny URLs.

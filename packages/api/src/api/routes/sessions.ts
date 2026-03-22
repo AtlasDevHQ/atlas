@@ -12,6 +12,7 @@ import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { authPreamble } from "./auth-preamble";
+import { ErrorSchema } from "./shared-schemas";
 
 const log = createLogger("sessions-routes");
 
@@ -19,7 +20,6 @@ const log = createLogger("sessions-routes");
 // Schemas
 // ---------------------------------------------------------------------------
 
-import { ErrorSchema } from "./shared-schemas";
 
 const SessionSchema = z.object({
   id: z.string(),

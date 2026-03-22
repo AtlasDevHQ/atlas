@@ -17,6 +17,7 @@ import {
   findEntityFile,
 } from "@atlas/api/lib/semantic-files";
 import { authPreamble } from "./auth-preamble";
+import { ErrorSchema } from "./shared-schemas";
 
 const log = createLogger("semantic-routes");
 
@@ -39,7 +40,6 @@ const EntityDetailResponseSchema = z.object({
   entity: z.unknown(),
 });
 
-import { ErrorSchema } from "./shared-schemas";
 
 // ---------------------------------------------------------------------------
 // Route definitions

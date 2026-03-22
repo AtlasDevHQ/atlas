@@ -16,6 +16,7 @@ import { authPreamble } from "./auth-preamble";
 import { hasInternalDB, internalQuery, encryptUrl } from "@atlas/api/lib/db/internal";
 import { maskConnectionUrl } from "@atlas/api/lib/security";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
+import { ErrorSchema } from "./shared-schemas";
 
 const log = createLogger("onboarding");
 
@@ -26,7 +27,6 @@ const CONNECTION_ID_PATTERN = /^[a-z][a-z0-9_-]{0,62}[a-z0-9]$/;
 // Schemas
 // ---------------------------------------------------------------------------
 
-import { ErrorSchema } from "./shared-schemas";
 
 const TestConnectionRequestSchema = z.object({
   url: z.string().min(1, "Database URL is required."),

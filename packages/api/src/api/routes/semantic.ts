@@ -50,7 +50,7 @@ semantic.get("/entities", async (c) => {
       });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), root }, "Failed to discover entities");
-      return c.json({ error: "internal_error", message: "Failed to load entity list." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to load entity list.", requestId }, 500);
     }
   });
 });
@@ -84,7 +84,7 @@ semantic.get("/entities/:name", async (c) => {
     const resolved = path.resolve(filePath);
     if (!resolved.startsWith(path.resolve(root))) {
       log.error({ requestId, name, resolved, root }, "Resolved entity path escaped semantic root");
-      return c.json({ error: "forbidden", message: "Access denied." }, 403);
+      return c.json({ error: "forbidden", message: "Access denied.", requestId }, 403);
     }
 
     try {
@@ -92,7 +92,7 @@ semantic.get("/entities/:name", async (c) => {
       return c.json({ entity: raw });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), filePath, entityName: name }, "Failed to parse entity YAML file");
-      return c.json({ error: "internal_error", message: `Failed to parse entity file for "${name}".` }, 500);
+      return c.json({ error: "internal_error", message: `Failed to parse entity file for "${name}".`, requestId }, 500);
     }
   });
 });

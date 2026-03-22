@@ -259,7 +259,7 @@ admin.get("/semantic/entities/:name", async (c) => {
     const resolved = path.resolve(filePath);
     if (!resolved.startsWith(path.resolve(root))) {
       log.error({ requestId, name, resolved, root }, "Resolved entity path escaped semantic root");
-      return c.json({ error: "forbidden", message: "Access denied." }, 403);
+      return c.json({ error: "forbidden", message: "Access denied." , requestId}, 403);
     }
 
     try {
@@ -267,7 +267,7 @@ admin.get("/semantic/entities/:name", async (c) => {
       return c.json({ entity: raw });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), filePath, entityName: name }, "Failed to parse entity YAML file");
-      return c.json({ error: "internal_error", message: `Failed to parse entity file for "${name}".` }, 500);
+      return c.json({ error: "internal_error", message: `Failed to parse entity file for "${name}".` , requestId}, 500);
     }
   });
 });
@@ -330,7 +330,7 @@ admin.get("/semantic/catalog", async (c) => {
       return c.json({ catalog: raw });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), file: catalogFile }, "Failed to parse catalog YAML");
-      return c.json({ error: "internal_error", message: "Failed to parse catalog file." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to parse catalog file." , requestId}, 500);
     }
   });
 });
@@ -353,7 +353,7 @@ function serveRawYaml(c: Context, requestId: string, filePath: string) {
   const resolved = path.resolve(root, filePath);
   if (!resolved.startsWith(path.resolve(root))) {
     log.error({ requestId, filePath, resolved, root }, "Raw YAML path escaped semantic root");
-    return c.json({ error: "forbidden", message: "Access denied." }, 403);
+    return c.json({ error: "forbidden", message: "Access denied." , requestId}, 403);
   }
 
   if (!fs.existsSync(resolved)) {
@@ -365,7 +365,7 @@ function serveRawYaml(c: Context, requestId: string, filePath: string) {
     return c.text(content);
   } catch (err) {
     log.error({ err: err instanceof Error ? err : new Error(String(err)), filePath }, "Failed to read raw YAML file");
-    return c.json({ error: "internal_error", message: "Failed to read file." }, 500);
+    return c.json({ error: "internal_error", message: "Failed to read file." , requestId}, 500);
   }
 }
 
@@ -458,7 +458,7 @@ admin.get("/semantic/diff", async (c) => {
         { err: err instanceof Error ? err : new Error(String(err)), connectionId, requestId },
         "Schema diff failed",
       );
-      return c.json({ error: "internal_error", message: `Schema diff failed: ${message}` }, 500);
+      return c.json({ error: "internal_error", message: `Schema diff failed: ${message}` , requestId}, 500);
     }
   });
 });
@@ -493,7 +493,7 @@ admin.get("/semantic/org/entities", async (c) => {
     }
 
     if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Org-scoped semantic entities require an internal database (DATABASE_URL)." }, 501);
+      return c.json({ error: "not_available", message: "Org-scoped semantic entities require an internal database (DATABASE_URL)." , requestId}, 501);
     }
 
     try {
@@ -515,7 +515,7 @@ admin.get("/semantic/org/entities", async (c) => {
       });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to list org semantic entities");
-      return c.json({ error: "internal_error", message: "Failed to list entities." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to list entities." , requestId}, 500);
     }
   });
 });
@@ -537,7 +537,7 @@ admin.get("/semantic/org/entities/:name", async (c) => {
     }
 
     if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Org-scoped semantic entities require an internal database (DATABASE_URL)." }, 501);
+      return c.json({ error: "not_available", message: "Org-scoped semantic entities require an internal database (DATABASE_URL)." , requestId}, 501);
     }
 
     const name = c.req.param("name");
@@ -561,7 +561,7 @@ admin.get("/semantic/org/entities/:name", async (c) => {
       });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, name }, "Failed to get org semantic entity");
-      return c.json({ error: "internal_error", message: "Failed to get entity." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to get entity." , requestId}, 500);
     }
   });
 });
@@ -583,7 +583,7 @@ admin.put("/semantic/org/entities/:name", async (c) => {
     }
 
     if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Org-scoped semantic entities require an internal database (DATABASE_URL)." }, 501);
+      return c.json({ error: "not_available", message: "Org-scoped semantic entities require an internal database (DATABASE_URL)." , requestId}, 501);
     }
 
     const name = c.req.param("name");
@@ -629,7 +629,7 @@ admin.put("/semantic/org/entities/:name", async (c) => {
       return c.json({ ok: true, name, entityType });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, name }, "Failed to upsert org semantic entity");
-      return c.json({ error: "internal_error", message: "Failed to save entity." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to save entity." , requestId}, 500);
     }
   });
 });
@@ -651,7 +651,7 @@ admin.delete("/semantic/org/entities/:name", async (c) => {
     }
 
     if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Org-scoped semantic entities require an internal database (DATABASE_URL)." }, 501);
+      return c.json({ error: "not_available", message: "Org-scoped semantic entities require an internal database (DATABASE_URL)." , requestId}, 501);
     }
 
     const name = c.req.param("name");
@@ -674,7 +674,7 @@ admin.delete("/semantic/org/entities/:name", async (c) => {
       return c.json({ ok: true, name, entityType });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, name }, "Failed to delete org semantic entity");
-      return c.json({ error: "internal_error", message: "Failed to delete entity." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to delete entity." , requestId}, 500);
     }
   });
 });
@@ -696,7 +696,7 @@ admin.post("/semantic/org/import", async (c) => {
     }
 
     if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Org-scoped semantic entities require an internal database (DATABASE_URL)." }, 501);
+      return c.json({ error: "not_available", message: "Org-scoped semantic entities require an internal database (DATABASE_URL)." , requestId}, 501);
     }
 
     let body: { connectionId?: string } = {};
@@ -722,7 +722,7 @@ admin.post("/semantic/org/import", async (c) => {
       return c.json(result);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to import org semantic entities");
-      return c.json({ error: "internal_error", message: "Failed to import entities." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to import entities." , requestId}, 500);
     }
   });
 });
@@ -784,7 +784,7 @@ admin.get("/connections/pool/orgs", async (c) => {
       return c.json({ metrics, config, orgCount: connections.listOrgs().length });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to retrieve org pool metrics");
-      return c.json({ error: "metrics_failed", message: err instanceof Error ? err.message : "Failed to retrieve metrics" }, 500);
+      return c.json({ error: "metrics_failed", message: err instanceof Error ? err.message : "Failed to retrieve metrics" , requestId}, 500);
     }
   });
 });
@@ -808,7 +808,7 @@ admin.post("/connections/pool/orgs/:orgId/drain", async (c) => {
       return c.json(result);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), orgId, requestId }, "Org pool drain failed");
-      return c.json({ error: "drain_failed", message: err instanceof Error ? err.message : "Org drain failed" }, 500);
+      return c.json({ error: "drain_failed", message: err instanceof Error ? err.message : "Org drain failed" , requestId}, 500);
     }
   });
 });
@@ -838,7 +838,7 @@ admin.post("/connections/:id/drain", async (c) => {
       return c.json({ drained: true, message: result.message });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id, requestId }, "Pool drain failed");
-      return c.json({ error: "drain_failed", message: err instanceof Error ? err.message : "Drain failed" }, 500);
+      return c.json({ error: "drain_failed", message: err instanceof Error ? err.message : "Drain failed" , requestId}, 500);
     }
   });
 });
@@ -867,7 +867,7 @@ admin.get("/cache/stats", async (c) => {
       return c.json({ enabled: true, ...stats, hitRate, missRate });
     } catch (err) {
       log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to retrieve cache stats");
-      return c.json({ error: "internal_error", message: "Failed to retrieve cache statistics." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to retrieve cache statistics." , requestId}, 500);
     }
   });
 });
@@ -895,7 +895,7 @@ admin.post("/cache/flush", async (c) => {
       return c.json({ ok: true, flushed: count, message: "Cache flushed" });
     } catch (err) {
       log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to flush cache");
-      return c.json({ error: "internal_error", message: "Failed to flush cache." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to flush cache." , requestId}, 500);
     }
   });
 });
@@ -980,7 +980,7 @@ admin.post("/connections/:id/test", async (c) => {
       return c.json(result);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Health check failed");
-      return c.json({ error: "internal_error", message: "Health check failed." }, 500);
+      return c.json({ error: "internal_error", message: "Health check failed." , requestId}, 500);
     }
   });
 });
@@ -1059,7 +1059,7 @@ admin.post("/connections", async (c) => {
     } catch (err) {
       connections.unregister(id as string);
       log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to encrypt connection URL");
-      return c.json({ error: "encryption_failed", message: "Failed to encrypt connection URL. Check ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET." }, 500);
+      return c.json({ error: "encryption_failed", message: "Failed to encrypt connection URL. Check ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET." , requestId}, 500);
     }
 
     try {
@@ -1070,7 +1070,7 @@ admin.post("/connections", async (c) => {
     } catch (err) {
       connections.unregister(id as string);
       log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Failed to persist connection");
-      return c.json({ error: "internal_error", message: "Failed to save connection." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to save connection." , requestId}, 500);
     }
 
     // Rebuild whitelist for new connection
@@ -1105,7 +1105,7 @@ admin.put("/connections/:id", async (c) => {
     const id = c.req.param("id");
 
     if (id === "default") {
-      return c.json({ error: "forbidden", message: "Cannot modify the default connection. Update ATLAS_DATASOURCE_URL instead." }, 403);
+      return c.json({ error: "forbidden", message: "Cannot modify the default connection. Update ATLAS_DATASOURCE_URL instead." , requestId}, 403);
     }
 
     // Check it exists in the DB (admin-managed), not just in the registry
@@ -1134,7 +1134,7 @@ admin.put("/connections/:id", async (c) => {
       currentUrl = decryptUrl(current.url);
     } catch (err) {
       log.error({ connectionId: id, err: err instanceof Error ? err.message : String(err) }, "Failed to decrypt stored connection URL");
-      return c.json({ error: "decryption_failed", message: "Stored connection URL could not be decrypted. The encryption key may have changed." }, 500);
+      return c.json({ error: "decryption_failed", message: "Stored connection URL could not be decrypted. The encryption key may have changed." , requestId}, 500);
     }
 
     const newUrl = typeof url === "string" ? url : currentUrl;
@@ -1188,7 +1188,7 @@ admin.put("/connections/:id", async (c) => {
         });
       } catch (err) {
         log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Failed to re-register connection with updated metadata");
-        return c.json({ error: "internal_error", message: "Failed to update connection." }, 500);
+        return c.json({ error: "internal_error", message: "Failed to update connection." , requestId}, 500);
       }
     }
 
@@ -1209,7 +1209,7 @@ admin.put("/connections/:id", async (c) => {
         connections.unregister(id);
       }
       log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to encrypt connection URL");
-      return c.json({ error: "encryption_failed", message: "Failed to encrypt connection URL. Check ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET." }, 500);
+      return c.json({ error: "encryption_failed", message: "Failed to encrypt connection URL. Check ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET." , requestId}, 500);
     }
 
     try {
@@ -1230,7 +1230,7 @@ admin.put("/connections/:id", async (c) => {
         connections.unregister(id);
       }
       log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Failed to update connection in DB");
-      return c.json({ error: "internal_error", message: "Failed to update connection." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to update connection." , requestId}, 500);
     }
 
     _resetWhitelists();
@@ -1264,7 +1264,7 @@ admin.delete("/connections/:id", async (c) => {
     const id = c.req.param("id");
 
     if (id === "default") {
-      return c.json({ error: "forbidden", message: "Cannot delete the default connection." }, 403);
+      return c.json({ error: "forbidden", message: "Cannot delete the default connection." , requestId}, 403);
     }
 
     // Must exist in the DB (admin-managed)
@@ -1299,7 +1299,7 @@ admin.delete("/connections/:id", async (c) => {
       await internalQuery("DELETE FROM connections WHERE id = $1", [id]);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Failed to delete connection from DB");
-      return c.json({ error: "internal_error", message: "Failed to delete connection." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to delete connection." , requestId}, 500);
     }
 
     connections.unregister(id);
@@ -1522,7 +1522,7 @@ admin.get("/audit", async (c) => {
       return c.json({ rows, total, limit, offset });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Audit query failed");
-      return c.json({ error: "internal_error", message: "Failed to query audit log." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to query audit log." , requestId}, 500);
     }
   });
 });
@@ -1617,7 +1617,7 @@ admin.get("/audit/export", async (c) => {
       });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Audit export failed");
-      return c.json({ error: "internal_error", message: "Failed to export audit log." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to export audit log." , requestId}, 500);
     }
   });
 });
@@ -1663,7 +1663,7 @@ admin.get("/audit/stats", async (c) => {
       });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Audit stats query failed");
-      return c.json({ error: "internal_error", message: "Failed to query audit stats." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to query audit stats." , requestId}, 500);
     }
   });
 });
@@ -1771,7 +1771,7 @@ admin.get("/audit/analytics/volume", async (c) => {
       });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Audit analytics volume query failed");
-      return c.json({ error: "internal_error", message: "Failed to query volume analytics." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to query volume analytics." , requestId}, 500);
     }
   });
 });
@@ -1822,7 +1822,7 @@ admin.get("/audit/analytics/slow", async (c) => {
       });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Audit analytics slow query failed");
-      return c.json({ error: "internal_error", message: "Failed to query slow analytics." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to query slow analytics." , requestId}, 500);
     }
   });
 });
@@ -1873,7 +1873,7 @@ admin.get("/audit/analytics/frequent", async (c) => {
       });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Audit analytics frequent query failed");
-      return c.json({ error: "internal_error", message: "Failed to query frequency analytics." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to query frequency analytics." , requestId}, 500);
     }
   });
 });
@@ -1919,7 +1919,7 @@ admin.get("/audit/analytics/errors", async (c) => {
       });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Audit analytics errors query failed");
-      return c.json({ error: "internal_error", message: "Failed to query error analytics." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to query error analytics." , requestId}, 500);
     }
   });
 });
@@ -1980,7 +1980,7 @@ admin.get("/audit/analytics/users", async (c) => {
       });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Audit analytics users query failed");
-      return c.json({ error: "internal_error", message: "Failed to query user analytics." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to query user analytics." , requestId}, 500);
     }
   });
 });
@@ -2286,7 +2286,7 @@ admin.put("/plugins/:id/config", async (c) => {
       });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), pluginId: id }, "Failed to save plugin config");
-      return c.json({ error: "internal_error", message: "Failed to save plugin configuration." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to save plugin configuration." , requestId}, 500);
     }
   });
 });
@@ -2306,11 +2306,11 @@ admin.get("/me/password-status", async (c) => {
     authResult = await authenticateRequest(req);
   } catch (err) {
     log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Authentication system error in password-status check");
-    return c.json({ error: "auth_error", message: "Authentication system error" }, 500);
+    return c.json({ error: "auth_error", message: "Authentication system error", requestId }, 500);
   }
   if (!authResult.authenticated) {
     const code = authErrorCode(authResult.error);
-    return c.json({ error: code, message: authResult.error }, authResult.status);
+    return c.json({ error: code, message: authResult.error, requestId }, authResult.status);
   }
   const user = authResult.user;
   if (authResult.mode !== "managed" || !user) {
@@ -2328,7 +2328,7 @@ admin.get("/me/password-status", async (c) => {
       return c.json({ passwordChangeRequired: rows[0]?.password_change_required === true });
     } catch (err) {
       log.error({ err: err instanceof Error ? err.message : String(err), userId: user.id, requestId }, "Failed to check password_change_required — returning 500 to avoid bypassing forced password change");
-      return c.json({ error: "internal_error", message: "Unable to verify password status. Please try again." }, 500);
+      return c.json({ error: "internal_error", message: "Unable to verify password status. Please try again." , requestId}, 500);
     }
   });
 });
@@ -2343,11 +2343,11 @@ admin.post("/me/password", async (c) => {
     authResult = await authenticateRequest(req);
   } catch (err) {
     log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Authentication system error in password change");
-    return c.json({ error: "auth_error", message: "Authentication system error" }, 500);
+    return c.json({ error: "auth_error", message: "Authentication system error", requestId }, 500);
   }
   if (!authResult.authenticated) {
     const code = authErrorCode(authResult.error);
-    return c.json({ error: code, message: authResult.error }, authResult.status);
+    return c.json({ error: code, message: authResult.error, requestId }, authResult.status);
   }
   const user = authResult.user;
   if (authResult.mode !== "managed" || !user) {
@@ -2396,7 +2396,7 @@ admin.post("/me/password", async (c) => {
       if (message.includes("password") || message.includes("incorrect") || message.includes("invalid")) {
         return c.json({ error: "invalid_request", message: "Current password is incorrect." }, 400);
       }
-      return c.json({ error: "internal_error", message: "Failed to change password." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to change password." , requestId}, 500);
     }
   });
 });
@@ -2485,7 +2485,7 @@ admin.get("/sessions", async (c) => {
       });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to list sessions");
-      return c.json({ error: "internal_error", message: "Failed to list sessions." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to list sessions." , requestId}, 500);
     }
   });
 });
@@ -2520,7 +2520,7 @@ admin.get("/sessions/stats", async (c) => {
       });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to get session stats");
-      return c.json({ error: "internal_error", message: "Failed to get session stats." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to get session stats." , requestId}, 500);
     }
   });
 });
@@ -2556,7 +2556,7 @@ admin.delete("/sessions/:id", async (c) => {
       return c.json({ success: true });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), sessionId }, "Failed to revoke session");
-      return c.json({ error: "internal_error", message: "Failed to revoke session." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to revoke session." , requestId}, 500);
     }
   });
 });
@@ -2593,7 +2593,7 @@ admin.delete("/sessions/user/:userId", async (c) => {
       return c.json({ success: true, count });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to revoke user sessions");
-      return c.json({ error: "internal_error", message: "Failed to revoke user sessions." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to revoke user sessions." , requestId}, 500);
     }
   });
 });
@@ -2689,7 +2689,7 @@ admin.get("/users", async (c) => {
       });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to list users");
-      return c.json({ error: "internal_error", message: "Failed to list users." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to list users." , requestId}, 500);
     }
   });
 });
@@ -2731,7 +2731,7 @@ admin.get("/users/stats", async (c) => {
       return c.json({ total, banned, byRole });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "User stats query failed");
-      return c.json({ error: "internal_error", message: "Failed to query user stats." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to query user stats." , requestId}, 500);
     }
   });
 });
@@ -2766,7 +2766,7 @@ admin.patch("/users/:id/role", async (c) => {
 
     // Self-protection: cannot change own role
     if (authResult.user?.id === userId) {
-      return c.json({ error: "forbidden", message: "Cannot change your own role." }, 403);
+      return c.json({ error: "forbidden", message: "Cannot change your own role." , requestId}, 403);
     }
 
     // Last admin guard: if demoting an admin, ensure at least one admin remains
@@ -2781,12 +2781,12 @@ admin.patch("/users/:id/role", async (c) => {
             `SELECT COUNT(*) as count FROM "user" WHERE role = 'admin'`,
           );
           if (parseInt(String(adminCount[0]?.count ?? "0"), 10) <= 1) {
-            return c.json({ error: "forbidden", message: "Cannot demote the last admin." }, 403);
+            return c.json({ error: "forbidden", message: "Cannot demote the last admin." , requestId}, 403);
           }
         }
       } catch (err) {
         log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Last admin guard check failed");
-        return c.json({ error: "internal_error", message: "Failed to verify admin count." }, 500);
+        return c.json({ error: "internal_error", message: "Failed to verify admin count." , requestId}, 500);
       }
     }
 
@@ -2799,7 +2799,7 @@ admin.patch("/users/:id/role", async (c) => {
       return c.json({ success: true });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to set user role");
-      return c.json({ error: "internal_error", message: "Failed to update user role." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to update user role." , requestId}, 500);
     }
   });
 });
@@ -2824,7 +2824,7 @@ admin.post("/users/:id/ban", async (c) => {
     const userId = c.req.param("id");
 
     if (authResult.user?.id === userId) {
-      return c.json({ error: "forbidden", message: "Cannot ban yourself." }, 403);
+      return c.json({ error: "forbidden", message: "Cannot ban yourself." , requestId}, 403);
     }
 
     const body = await c.req.json().catch((err) => {
@@ -2845,7 +2845,7 @@ admin.post("/users/:id/ban", async (c) => {
       return c.json({ success: true });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to ban user");
-      return c.json({ error: "internal_error", message: "Failed to ban user." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to ban user." , requestId}, 500);
     }
   });
 });
@@ -2878,7 +2878,7 @@ admin.post("/users/:id/unban", async (c) => {
       return c.json({ success: true });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to unban user");
-      return c.json({ error: "internal_error", message: "Failed to unban user." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to unban user." , requestId}, 500);
     }
   });
 });
@@ -2903,7 +2903,7 @@ admin.delete("/users/:id", async (c) => {
     const userId = c.req.param("id");
 
     if (authResult.user?.id === userId) {
-      return c.json({ error: "forbidden", message: "Cannot delete yourself." }, 403);
+      return c.json({ error: "forbidden", message: "Cannot delete yourself." , requestId}, 403);
     }
 
     // Last admin guard
@@ -2918,12 +2918,12 @@ admin.delete("/users/:id", async (c) => {
             `SELECT COUNT(*) as count FROM "user" WHERE role = 'admin'`,
           );
           if (parseInt(String(adminCount[0]?.count ?? "0"), 10) <= 1) {
-            return c.json({ error: "forbidden", message: "Cannot delete the last admin." }, 403);
+            return c.json({ error: "forbidden", message: "Cannot delete the last admin." , requestId}, 403);
           }
         }
       } catch (err) {
         log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Last admin guard check failed");
-        return c.json({ error: "internal_error", message: "Failed to verify admin count." }, 500);
+        return c.json({ error: "internal_error", message: "Failed to verify admin count." , requestId}, 500);
       }
     }
 
@@ -2936,7 +2936,7 @@ admin.delete("/users/:id", async (c) => {
       return c.json({ success: true });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to delete user");
-      return c.json({ error: "internal_error", message: "Failed to delete user." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to delete user." , requestId}, 500);
     }
   });
 });
@@ -2969,7 +2969,7 @@ admin.post("/users/:id/revoke", async (c) => {
       return c.json({ success: true });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to revoke sessions");
-      return c.json({ error: "internal_error", message: "Failed to revoke sessions." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to revoke sessions." , requestId}, 500);
     }
   });
 });
@@ -3050,7 +3050,7 @@ admin.post("/users/invite", async (c) => {
       ]);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to check existing user/invitation");
-      return c.json({ error: "internal_error", message: "Failed to validate invitation." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to validate invitation." , requestId}, 500);
     }
 
     if (existing.length > 0) {
@@ -3075,7 +3075,7 @@ admin.post("/users/invite", async (c) => {
       const invitation = rows[0];
       if (!invitation) {
         log.error({ email, role, requestId }, "INSERT RETURNING returned no rows");
-        return c.json({ error: "internal_error", message: "Failed to create invitation." }, 500);
+        return c.json({ error: "internal_error", message: "Failed to create invitation." , requestId}, 500);
       }
       const baseUrl = resolveBaseUrl(req);
       const inviteUrl = `${baseUrl}/?invite=${token}`;
@@ -3135,7 +3135,7 @@ admin.post("/users/invite", async (c) => {
       });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to create invitation");
-      return c.json({ error: "internal_error", message: "Failed to create invitation." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to create invitation." , requestId}, 500);
     }
   });
 });
@@ -3199,7 +3199,7 @@ admin.get("/users/invitations", async (c) => {
       return c.json({ invitations });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to list invitations");
-      return c.json({ error: "internal_error", message: "Failed to list invitations." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to list invitations." , requestId}, 500);
     }
   });
 });
@@ -3236,7 +3236,7 @@ admin.delete("/users/invitations/:id", async (c) => {
       return c.json({ success: true });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), invitationId }, "Failed to revoke invitation");
-      return c.json({ error: "internal_error", message: "Failed to revoke invitation." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to revoke invitation." , requestId}, 500);
     }
   });
 });
@@ -3309,7 +3309,7 @@ admin.get("/tokens/summary", async (c) => {
     });
   } catch (err) {
     log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to fetch token summary");
-    return c.json({ error: "internal_error", message: "Failed to fetch token usage summary." }, 500);
+    return c.json({ error: "internal_error", message: "Failed to fetch token usage summary." , requestId}, 500);
   }
 });
 
@@ -3377,7 +3377,7 @@ admin.get("/tokens/by-user", async (c) => {
     });
   } catch (err) {
     log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to fetch token usage by user");
-    return c.json({ error: "internal_error", message: "Failed to fetch token usage by user." }, 500);
+    return c.json({ error: "internal_error", message: "Failed to fetch token usage by user." , requestId}, 500);
   }
 });
 
@@ -3436,7 +3436,7 @@ admin.get("/tokens/trends", async (c) => {
     });
   } catch (err) {
     log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to fetch token trends");
-    return c.json({ error: "internal_error", message: "Failed to fetch token usage trends." }, 500);
+    return c.json({ error: "internal_error", message: "Failed to fetch token usage trends." , requestId}, 500);
   }
 });
 
@@ -3492,7 +3492,7 @@ admin.put("/settings/:key", async (c) => {
 
     // Secret settings are read-only
     if (def.secret) {
-      return c.json({ error: "forbidden", message: "Secret settings cannot be modified from the UI." }, 403);
+      return c.json({ error: "forbidden", message: "Secret settings cannot be modified from the UI." , requestId}, 403);
     }
 
     let body: { value?: unknown };
@@ -3536,7 +3536,7 @@ admin.put("/settings/:key", async (c) => {
       return c.json({ success: true, key, value });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), key }, "Failed to save setting");
-      return c.json({ error: "internal_error", message: "Failed to save setting." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to save setting." , requestId}, 500);
     }
   });
 });
@@ -3570,7 +3570,7 @@ admin.delete("/settings/:key", async (c) => {
     }
 
     if (def.secret) {
-      return c.json({ error: "forbidden", message: "Secret settings cannot be modified from the UI." }, 403);
+      return c.json({ error: "forbidden", message: "Secret settings cannot be modified from the UI." , requestId}, 403);
     }
 
     try {
@@ -3579,7 +3579,7 @@ admin.delete("/settings/:key", async (c) => {
       return c.json({ success: true, key });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), key }, "Failed to delete setting");
-      return c.json({ error: "internal_error", message: "Failed to delete setting." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to delete setting." , requestId}, 500);
     }
   });
 });

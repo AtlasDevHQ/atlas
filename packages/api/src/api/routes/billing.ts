@@ -56,7 +56,7 @@ async function billingAuthPreamble(req: Request, requestId: string) {
   if (!rateCheck.allowed) {
     const retryAfterSeconds = Math.ceil((rateCheck.retryAfterMs ?? 60000) / 1000);
     return {
-      error: { error: "rate_limited", message: "Too many requests.", retryAfterSeconds },
+      error: { error: "rate_limited", message: "Too many requests.", retryAfterSeconds, requestId },
       status: 429 as const,
       headers: { "Retry-After": String(retryAfterSeconds) },
     };
@@ -209,8 +209,9 @@ billing.post("/portal", async (c) => {
       try {
         const raw = await req.json() as Record<string, unknown>;
         if (typeof raw?.returnUrl === "string") returnUrl = raw.returnUrl;
-      } catch {
+      } catch (err) {
         // No body is fine — returnUrl is optional
+        log.debug({ err: err instanceof Error ? err.message : String(err) }, "No returnUrl body in portal request");
       }
 
       const stripeClient = new Stripe(process.env.STRIPE_SECRET_KEY!);
@@ -248,7 +249,7 @@ billing.post("/byot", async (c) => {
 
     // Require admin or owner role for BYOT toggle
     if (authResult.mode !== "none" && (!authResult.user || (authResult.user.role !== "admin" && authResult.user.role !== "owner"))) {
-      return c.json({ error: "forbidden_role", message: "Admin or owner role required to change BYOT setting." }, 403);
+      return c.json({ error: "forbidden_role", message: "Admin or owner role required to change BYOT setting.", requestId }, 403);
     }
 
     const orgId = authResult.user?.activeOrganizationId;

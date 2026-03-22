@@ -30,10 +30,10 @@ sessions.get("/", async (c) => {
     authResult = await authenticateRequest(req);
   } catch (err) {
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Auth failed");
-    return c.json({ error: "auth_error", message: "Authentication system error" }, 500);
+    return c.json({ error: "auth_error", message: "Authentication system error", requestId }, 500);
   }
   if (!authResult.authenticated) {
-    return c.json({ error: "auth_error", message: authResult.error }, authResult.status);
+    return c.json({ error: "auth_error", message: authResult.error, requestId }, authResult.status);
   }
 
   // Rate limiting
@@ -43,7 +43,7 @@ sessions.get("/", async (c) => {
   if (!rateCheck.allowed) {
     const retryAfterSeconds = Math.ceil((rateCheck.retryAfterMs ?? 60000) / 1000);
     return c.json(
-      { error: "rate_limited", message: "Too many requests.", retryAfterSeconds },
+      { error: "rate_limited", message: "Too many requests.", retryAfterSeconds, requestId },
       { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } },
     );
   }
@@ -85,7 +85,7 @@ sessions.get("/", async (c) => {
       });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to list user sessions");
-      return c.json({ error: "internal_error", message: "Failed to list sessions." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to list sessions.", requestId }, 500);
     }
   });
 });
@@ -100,10 +100,10 @@ sessions.delete("/:id", async (c) => {
     authResult = await authenticateRequest(req);
   } catch (err) {
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Auth failed");
-    return c.json({ error: "auth_error", message: "Authentication system error" }, 500);
+    return c.json({ error: "auth_error", message: "Authentication system error", requestId }, 500);
   }
   if (!authResult.authenticated) {
-    return c.json({ error: "auth_error", message: authResult.error }, authResult.status);
+    return c.json({ error: "auth_error", message: authResult.error, requestId }, authResult.status);
   }
 
   const ip = getClientIP(req);
@@ -112,7 +112,7 @@ sessions.delete("/:id", async (c) => {
   if (!rateCheck.allowed) {
     const retryAfterSeconds = Math.ceil((rateCheck.retryAfterMs ?? 60000) / 1000);
     return c.json(
-      { error: "rate_limited", message: "Too many requests.", retryAfterSeconds },
+      { error: "rate_limited", message: "Too many requests.", retryAfterSeconds, requestId },
       { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } },
     );
   }
@@ -142,14 +142,14 @@ sessions.delete("/:id", async (c) => {
         if (exists.length === 0) {
           return c.json({ error: "not_found", message: "Session not found." }, 404);
         }
-        return c.json({ error: "forbidden", message: "Cannot revoke another user's session." }, 403);
+        return c.json({ error: "forbidden", message: "Cannot revoke another user's session.", requestId }, 403);
       }
 
       log.info({ requestId, sessionId, userId }, "User revoked own session");
       return c.json({ success: true });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), sessionId, userId }, "Failed to revoke session");
-      return c.json({ error: "internal_error", message: "Failed to revoke session." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to revoke session.", requestId }, 500);
     }
   });
 });

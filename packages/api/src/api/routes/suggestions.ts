@@ -30,16 +30,36 @@ export const suggestions = new Hono();
 suggestions.get("/", async (c) => {
   const requestId = crypto.randomUUID();
   const req = c.req.raw;
-  const authResult = await authenticateRequest(req);
+
+  let authResult;
+  try {
+    authResult = await authenticateRequest(req);
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err : new Error(String(err)), requestId },
+      "Auth dispatch failed",
+    );
+    return c.json(
+      { error: "auth_error", message: "Authentication system error", requestId },
+      500,
+    );
+  }
   if (!authResult.authenticated) {
-    return c.json({ error: authResult.error }, { status: authResult.status });
+    return c.json(
+      { error: "auth_error", message: authResult.error, requestId },
+      authResult.status as 401 | 403 | 500,
+    );
   }
 
   const ip = getClientIP(req);
   const rateLimitKey = authResult.user?.id ?? (ip ? `ip:${ip}` : "anon");
   const rateCheck = checkRateLimit(rateLimitKey);
   if (!rateCheck.allowed) {
-    return c.json({ error: "Rate limit exceeded" }, { status: 429 });
+    const retryAfterSeconds = Math.ceil((rateCheck.retryAfterMs ?? 60000) / 1000);
+    return c.json(
+      { error: "rate_limited", message: "Too many requests.", retryAfterSeconds, requestId },
+      { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } },
+    );
   }
 
   if (!hasInternalDB()) {
@@ -65,16 +85,36 @@ suggestions.get("/", async (c) => {
 suggestions.get("/popular", async (c) => {
   const requestId = crypto.randomUUID();
   const req = c.req.raw;
-  const authResult = await authenticateRequest(req);
+
+  let authResult;
+  try {
+    authResult = await authenticateRequest(req);
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err : new Error(String(err)), requestId },
+      "Auth dispatch failed",
+    );
+    return c.json(
+      { error: "auth_error", message: "Authentication system error", requestId },
+      500,
+    );
+  }
   if (!authResult.authenticated) {
-    return c.json({ error: authResult.error }, { status: authResult.status });
+    return c.json(
+      { error: "auth_error", message: authResult.error, requestId },
+      authResult.status as 401 | 403 | 500,
+    );
   }
 
   const ip = getClientIP(req);
   const rateLimitKey = authResult.user?.id ?? (ip ? `ip:${ip}` : "anon");
   const rateCheck = checkRateLimit(rateLimitKey);
   if (!rateCheck.allowed) {
-    return c.json({ error: "Rate limit exceeded" }, { status: 429 });
+    const retryAfterSeconds = Math.ceil((rateCheck.retryAfterMs ?? 60000) / 1000);
+    return c.json(
+      { error: "rate_limited", message: "Too many requests.", retryAfterSeconds, requestId },
+      { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } },
+    );
   }
 
   if (!hasInternalDB()) {
@@ -95,16 +135,36 @@ suggestions.get("/popular", async (c) => {
 suggestions.post("/:id/click", async (c) => {
   const requestId = crypto.randomUUID();
   const req = c.req.raw;
-  const authResult = await authenticateRequest(req);
+
+  let authResult;
+  try {
+    authResult = await authenticateRequest(req);
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err : new Error(String(err)), requestId },
+      "Auth dispatch failed",
+    );
+    return c.json(
+      { error: "auth_error", message: "Authentication system error", requestId },
+      500,
+    );
+  }
   if (!authResult.authenticated) {
-    return c.json({ error: authResult.error }, { status: authResult.status });
+    return c.json(
+      { error: "auth_error", message: authResult.error, requestId },
+      authResult.status as 401 | 403 | 500,
+    );
   }
 
   const ip = getClientIP(req);
   const rateLimitKey = authResult.user?.id ?? (ip ? `ip:${ip}` : "anon");
   const rateCheck = checkRateLimit(rateLimitKey);
   if (!rateCheck.allowed) {
-    return new Response(null, { status: 429 });
+    const retryAfterSeconds = Math.ceil((rateCheck.retryAfterMs ?? 60000) / 1000);
+    return c.json(
+      { error: "rate_limited", message: "Too many requests.", retryAfterSeconds, requestId },
+      { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } },
+    );
   }
 
   const orgId = authResult.user?.activeOrganizationId ?? null;

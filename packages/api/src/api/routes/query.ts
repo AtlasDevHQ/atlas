@@ -103,14 +103,14 @@ query.post("/", async (c) => {
       "Auth dispatch failed",
     );
     return c.json(
-      { error: "auth_error", message: "Authentication system error" },
+      { error: "auth_error", message: "Authentication system error", requestId },
       500,
     );
   }
   if (!authResult.authenticated) {
     log.warn({ requestId, status: authResult.status }, "Authentication failed");
     return c.json(
-      { error: "auth_error", message: authResult.error },
+      { error: "auth_error", message: authResult.error, requestId },
       authResult.status as 401 | 403 | 500,
     );
   }
@@ -132,6 +132,7 @@ query.post("/", async (c) => {
         error: "rate_limited",
         message: "Too many requests. Please wait before trying again.",
         retryAfterSeconds,
+        requestId,
       },
       { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } },
     );
@@ -289,47 +290,47 @@ query.post("/", async (c) => {
 
         if (GatewayModelNotFoundError.isInstance(err)) {
           log.error({ err: err instanceof Error ? err : new Error(String(err)), category: "provider_model_not_found" }, "Gateway model not found");
-          return c.json({ error: "provider_model_not_found", message: "Model not found on the AI Gateway. Check that your ATLAS_MODEL uses the correct provider/model format." }, 400);
+          return c.json({ error: "provider_model_not_found", message: "Model not found on the AI Gateway. Check that your ATLAS_MODEL uses the correct provider/model format.", requestId }, 400);
         }
 
         if (NoSuchModelError.isInstance(err)) {
           log.error({ err: err instanceof Error ? err : new Error(String(err)), category: "provider_model_not_found" }, "Model not found");
-          return c.json({ error: "provider_model_not_found", message: "The configured model was not found. Check ATLAS_MODEL and ATLAS_PROVIDER settings." }, 400);
+          return c.json({ error: "provider_model_not_found", message: "The configured model was not found. Check ATLAS_MODEL and ATLAS_PROVIDER settings.", requestId }, 400);
         }
 
         if (LoadAPIKeyError.isInstance(err)) {
           log.error({ err: err instanceof Error ? err : new Error(String(err)), category: "provider_auth_error" }, "API key not loaded");
-          return c.json({ error: "provider_auth_error", message: "LLM provider API key could not be loaded. Check that the required API key environment variable is set." }, 503);
+          return c.json({ error: "provider_auth_error", message: "LLM provider API key could not be loaded. Check that the required API key environment variable is set.", requestId }, 503);
         }
 
         if (APICallError.isInstance(err)) {
           const status = err.statusCode;
           if (status === 401 || status === 403) {
             log.error({ err: err instanceof Error ? err : new Error(String(err)), category: "provider_auth_error", statusCode: status }, "Provider auth error");
-            return c.json({ error: "provider_auth_error", message: "LLM provider authentication failed. Check that your API key is valid and has not expired." }, 503);
+            return c.json({ error: "provider_auth_error", message: "LLM provider authentication failed. Check that your API key is valid and has not expired.", requestId }, 503);
           }
           if (status === 429) {
             log.error({ err: err instanceof Error ? err : new Error(String(err)), category: "provider_rate_limit", statusCode: status }, "Provider rate limit");
-            return c.json({ error: "provider_rate_limit", message: "LLM provider rate limit reached. Wait a moment and try again." }, 503);
+            return c.json({ error: "provider_rate_limit", message: "LLM provider rate limit reached. Wait a moment and try again.", requestId }, 503);
           }
           if (status === 408 || /timeout/i.test(message)) {
             log.error({ err: err instanceof Error ? err : new Error(String(err)), category: "provider_timeout", statusCode: status }, "Request timed out");
-            return c.json({ error: "provider_timeout", message: "The request timed out. The LLM provider took too long to respond. Try again, or if using a local model, ensure it has sufficient resources." }, 504);
+            return c.json({ error: "provider_timeout", message: "The request timed out. The LLM provider took too long to respond. Try again, or if using a local model, ensure it has sufficient resources.", requestId }, 504);
           }
           log.error({ err: err instanceof Error ? err : new Error(String(err)), category: "provider_error", statusCode: status }, "Provider error");
-          return c.json({ error: "provider_error", message: `The LLM provider returned an error (HTTP ${status}). This is usually a temporary issue. Try again in a moment.` }, 502);
+          return c.json({ error: "provider_error", message: `The LLM provider returned an error (HTTP ${status}). This is usually a temporary issue. Try again in a moment.`, requestId }, 502);
         }
 
         // --- Regex fallbacks ---
 
         if (/timeout|timed out|AbortError/i.test(message)) {
           log.error({ err: err instanceof Error ? err : new Error(String(err)), category: "provider_timeout" }, "Request timed out");
-          return c.json({ error: "provider_timeout", message: "The request timed out. The LLM provider took too long to respond. Try again, or if using a local model, ensure it has sufficient resources." }, 504);
+          return c.json({ error: "provider_timeout", message: "The request timed out. The LLM provider took too long to respond. Try again, or if using a local model, ensure it has sufficient resources.", requestId }, 504);
         }
 
         if (/fetch failed|ECONNREFUSED|ENOTFOUND/i.test(message)) {
           log.error({ err: err instanceof Error ? err : new Error(String(err)), category: "provider_unreachable" }, "Provider unreachable");
-          return c.json({ error: "provider_unreachable", message: "Could not reach the LLM provider. Check your network connection and provider status." }, 503);
+          return c.json({ error: "provider_unreachable", message: "Could not reach the LLM provider. Check your network connection and provider status.", requestId }, 503);
         }
 
         log.error(
@@ -340,6 +341,7 @@ query.post("/", async (c) => {
           {
             error: "internal_error",
             message: `An unexpected error occurred (ref: ${requestId.slice(0, 8)}). If this persists, check the server logs.`,
+            requestId,
           },
           500,
         );

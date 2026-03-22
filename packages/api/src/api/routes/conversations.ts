@@ -106,17 +106,17 @@ const ShareConversationBodySchema = z.object({
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Map a CrudFailReason to { body, status } for JSON responses. */
-function crudFailResponse(reason: CrudFailReason) {
+function crudFailResponse(reason: CrudFailReason, requestId?: string) {
   switch (reason) {
     case "no_db":
       return { body: { error: "not_available", message: "Conversation history is not available (no internal database configured)." }, status: 404 as const };
     case "not_found":
       return { body: { error: "not_found", message: "Conversation not found." }, status: 404 as const };
     case "error":
-      return { body: { error: "internal_error", message: "A database error occurred. Please try again." }, status: 500 as const };
+      return { body: { error: "internal_error", message: "A database error occurred. Please try again.", ...(requestId && { requestId }) }, status: 500 as const };
     default: {
       const _exhaustive: never = reason;
-      return { body: { error: "internal_error", message: `Unexpected failure: ${_exhaustive}` }, status: 500 as const };
+      return { body: { error: "internal_error", message: `Unexpected failure: ${_exhaustive}`, ...(requestId && { requestId }) }, status: 500 as const };
     }
   }
 }
@@ -136,11 +136,11 @@ async function authPreamble(req: Request, requestId: string) {
       { err: err instanceof Error ? err : new Error(String(err)), requestId },
       "Auth dispatch failed",
     );
-    return { error: { error: "auth_error", message: "Authentication system error" }, status: 500 as const };
+    return { error: { error: "auth_error", message: "Authentication system error", requestId }, status: 500 as const };
   }
   if (!authResult.authenticated) {
     log.warn({ requestId, status: authResult.status }, "Authentication failed");
-    return { error: { error: "auth_error", message: authResult.error }, status: authResult.status as 401 | 403 | 500 };
+    return { error: { error: "auth_error", message: authResult.error, requestId }, status: authResult.status as 401 | 403 | 500 };
   }
 
   const ip = getClientIP(req);
@@ -149,7 +149,7 @@ async function authPreamble(req: Request, requestId: string) {
   if (!rateCheck.allowed) {
     const retryAfterSeconds = Math.ceil((rateCheck.retryAfterMs ?? 60000) / 1000);
     return {
-      error: { error: "rate_limited", message: "Too many requests. Please wait before trying again.", retryAfterSeconds },
+      error: { error: "rate_limited", message: "Too many requests. Please wait before trying again.", retryAfterSeconds, requestId },
       status: 429 as const,
       headers: { "Retry-After": String(retryAfterSeconds) },
     };
@@ -220,7 +220,7 @@ conversations.get("/:id", async (c) => {
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     const result = await getConversation(id, authResult.user?.id);
     if (!result.ok) {
-      const fail = crudFailResponse(result.reason);
+      const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);
     }
     return c.json(result.data);
@@ -266,7 +266,7 @@ conversations.patch("/:id/star", async (c) => {
 
     const result = await starConversation(id, parsed.data.starred, authResult.user?.id);
     if (!result.ok) {
-      const fail = crudFailResponse(result.reason);
+      const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);
     }
     return c.json({ id, starred: parsed.data.starred });
@@ -312,7 +312,7 @@ conversations.patch("/:id/notebook-state", async (c) => {
 
     const result = await updateNotebookState(id, parsed.data, authResult.user?.id);
     if (!result.ok) {
-      const fail = crudFailResponse(result.reason);
+      const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);
     }
     return c.json({ id, notebookState: parsed.data });
@@ -363,7 +363,7 @@ conversations.post("/:id/fork", async (c) => {
       orgId: authResult.user?.activeOrganizationId,
     });
     if (!result.ok) {
-      const fail = crudFailResponse(result.reason);
+      const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);
     }
 
@@ -458,7 +458,7 @@ conversations.get("/:id/share", async (c) => {
       if (result.reason === "error") {
         log.error({ requestId, conversationId: id }, "Share status fetch failed due to DB error");
       }
-      const fail = crudFailResponse(result.reason);
+      const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);
     }
     if (!result.data.shared) {
@@ -519,7 +519,7 @@ conversations.post("/:id/share", async (c) => {
       shareMode: opts?.shareMode,
     });
     if (!result.ok) {
-      const fail = crudFailResponse(result.reason);
+      const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);
     }
     const baseUrl = new URL(req.url).origin;
@@ -558,7 +558,7 @@ conversations.delete("/:id/share", async (c) => {
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     const result = await unshareConversation(id, authResult.user?.id);
     if (!result.ok) {
-      const fail = crudFailResponse(result.reason);
+      const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);
     }
     return c.body(null, 204);
@@ -591,7 +591,7 @@ conversations.delete("/:id", async (c) => {
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     const result = await deleteConversation(id, authResult.user?.id);
     if (!result.ok) {
-      const fail = crudFailResponse(result.reason);
+      const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);
     }
     return c.body(null, 204);
@@ -694,7 +694,7 @@ publicConversations.get("/:token", async (c) => {
   const rateLimitKey = ip ?? `unknown-${requestId}`;
   if (!checkPublicRateLimit(rateLimitKey)) {
     log.warn({ requestId, ip }, "Public conversation rate limited");
-    return c.json({ error: "rate_limited", message: "Too many requests. Please wait before trying again." }, 429);
+    return c.json({ error: "rate_limited", message: "Too many requests. Please wait before trying again.", requestId }, 429);
   }
 
   const token = c.req.param("token");
@@ -721,10 +721,10 @@ publicConversations.get("/:token", async (c) => {
         { err: err instanceof Error ? err.message : String(err), requestId, token },
         "Auth check failed for org-scoped share",
       );
-      return c.json({ error: "internal_error", message: "Authentication check failed. Please try again." }, 500);
+      return c.json({ error: "internal_error", message: "Authentication check failed. Please try again.", requestId }, 500);
     }
     if (!authResult.authenticated) {
-      return c.json({ error: "auth_required", message: "This shared conversation requires authentication." }, 403);
+      return c.json({ error: "auth_required", message: "This shared conversation requires authentication.", requestId }, 403);
     }
   }
 

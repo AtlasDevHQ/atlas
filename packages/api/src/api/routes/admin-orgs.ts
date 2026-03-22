@@ -84,7 +84,7 @@ adminOrgs.get("/", async (c) => {
       return c.json({ organizations: result, total: result.length });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to list organizations");
-      return c.json({ error: "internal_error", message: "Failed to list organizations." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to list organizations.", requestId }, 500);
     }
   });
 });
@@ -184,7 +184,7 @@ adminOrgs.get("/:id", async (c) => {
       });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get organization");
-      return c.json({ error: "internal_error", message: "Failed to get organization." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to get organization.", requestId }, 500);
     }
   });
 });
@@ -227,7 +227,7 @@ adminOrgs.get("/:id/stats", async (c) => {
       });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get org stats");
-      return c.json({ error: "internal_error", message: "Failed to get organization stats." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to get organization stats.", requestId }, 500);
     }
   });
 });

@@ -45,11 +45,11 @@ async function authPreamble(req: Request, requestId: string) {
       { err: err instanceof Error ? err : new Error(String(err)), requestId },
       "Auth dispatch failed",
     );
-    return { error: { error: "auth_error", message: "Authentication system error" }, status: 500 as const };
+    return { error: { error: "auth_error", message: "Authentication system error", requestId }, status: 500 as const };
   }
   if (!authResult.authenticated) {
     log.warn({ requestId, status: authResult.status }, "Authentication failed");
-    return { error: { error: "auth_error", message: authResult.error }, status: authResult.status as 401 | 403 | 500 };
+    return { error: { error: "auth_error", message: authResult.error, requestId }, status: authResult.status as 401 | 403 | 500 };
   }
 
   const ip = getClientIP(req);
@@ -58,7 +58,7 @@ async function authPreamble(req: Request, requestId: string) {
   if (!rateCheck.allowed) {
     const retryAfterSeconds = Math.ceil((rateCheck.retryAfterMs ?? 60000) / 1000);
     return {
-      error: { error: "rate_limited", message: "Too many requests. Please wait before trying again.", retryAfterSeconds },
+      error: { error: "rate_limited", message: "Too many requests. Please wait before trying again.", retryAfterSeconds, requestId },
       status: 429 as const,
       headers: { "Retry-After": String(retryAfterSeconds) },
     };
@@ -102,7 +102,7 @@ actions.get("/", async (c) => {
       return c.json({ actions: result });
     } catch (err) {
       log.error({ err: err instanceof Error ? err.message : String(err), requestId, op: "listActions" }, "Failed to list actions");
-      return c.json({ error: "internal_error", message: "Failed to list actions." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to list actions.", requestId }, 500);
     }
   });
 });
@@ -139,7 +139,7 @@ actions.get("/:id", async (c) => {
       return c.json(action);
     } catch (err) {
       log.error({ err: err instanceof Error ? err.message : String(err), requestId, op: "getAction" }, "Failed to get action");
-      return c.json({ error: "internal_error", message: "Failed to retrieve action." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to retrieve action.", requestId }, 500);
     }
   });
 });
@@ -180,12 +180,12 @@ actions.post("/:id/approve", async (c) => {
       const cfg = getActionConfig(action.action_type);
 
       if (!canApprove(authResult.user, cfg.approval, cfg.requiredRole)) {
-        return c.json({ error: "forbidden", message: "Insufficient role to approve this action." }, 403);
+        return c.json({ error: "forbidden", message: "Insufficient role to approve this action.", requestId }, 403);
       }
 
       // Enforce admin-only separation of duties: requester cannot approve their own admin-only action
       if (cfg.approval === "admin-only" && authResult.user?.id === action.requested_by) {
-        return c.json({ error: "forbidden", message: "admin-only actions cannot be approved by the requester" }, 403);
+        return c.json({ error: "forbidden", message: "admin-only actions cannot be approved by the requester", requestId }, 403);
       }
 
       const executor = getActionExecutor(id);
@@ -197,7 +197,7 @@ actions.post("/:id/approve", async (c) => {
       return c.json(result);
     } catch (err) {
       log.error({ err: err instanceof Error ? err.message : String(err), requestId, op: "approveAction" }, "Failed to approve action");
-      return c.json({ error: "internal_error", message: "Failed to approve action." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to approve action.", requestId }, 500);
     }
   });
 });
@@ -239,12 +239,12 @@ actions.post("/:id/deny", async (c) => {
 
       // Deny requires the same minimum role as approve — consistent permission model for all action operations.
       if (!canApprove(authResult.user, cfg.approval, cfg.requiredRole)) {
-        return c.json({ error: "forbidden", message: "Insufficient role to deny this action." }, 403);
+        return c.json({ error: "forbidden", message: "Insufficient role to deny this action.", requestId }, 403);
       }
 
       // Enforce admin-only separation of duties: requester cannot deny their own admin-only action
       if (cfg.approval === "admin-only" && authResult.user?.id === action.requested_by) {
-        return c.json({ error: "forbidden", message: "admin-only actions cannot be denied by the requester" }, 403);
+        return c.json({ error: "forbidden", message: "admin-only actions cannot be denied by the requester", requestId }, 403);
       }
 
       let reason: string | undefined;
@@ -267,7 +267,7 @@ actions.post("/:id/deny", async (c) => {
       return c.json(result);
     } catch (err) {
       log.error({ err: err instanceof Error ? err.message : String(err), requestId, op: "denyAction" }, "Failed to deny action");
-      return c.json({ error: "internal_error", message: "Failed to deny action." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to deny action.", requestId }, 500);
     }
   });
 });
@@ -305,7 +305,7 @@ actions.post("/:id/rollback", async (c) => {
       const cfg = getActionConfig(action.action_type);
 
       if (!canApprove(authResult.user, cfg.approval, cfg.requiredRole)) {
-        return c.json({ error: "forbidden", message: "Insufficient role to rollback this action." }, 403);
+        return c.json({ error: "forbidden", message: "Insufficient role to rollback this action.", requestId }, 403);
       }
 
       if (!action.rollback_info) {
@@ -323,7 +323,7 @@ actions.post("/:id/rollback", async (c) => {
       return c.json(result);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, op: "rollbackAction" }, "Failed to rollback action");
-      return c.json({ error: "internal_error", message: "Failed to rollback action." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to rollback action.", requestId }, 500);
     }
   });
 });

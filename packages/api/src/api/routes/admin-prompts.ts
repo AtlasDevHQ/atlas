@@ -192,7 +192,7 @@ adminPrompts.patch("/:id", async (c) => {
       }
 
       if (existing[0].is_builtin === true) {
-        return c.json({ error: "forbidden", message: "Built-in collections cannot be modified." }, 403);
+        return c.json({ error: "forbidden", message: "Built-in collections cannot be modified.", requestId }, 403);
       }
 
       let body: Record<string, unknown>;
@@ -297,7 +297,7 @@ adminPrompts.delete("/:id", async (c) => {
       }
 
       if (existing[0].is_builtin === true) {
-        return c.json({ error: "forbidden", message: "Built-in collections cannot be modified." }, 403);
+        return c.json({ error: "forbidden", message: "Built-in collections cannot be modified.", requestId }, 403);
       }
 
       await internalQuery(
@@ -356,7 +356,7 @@ adminPrompts.post("/:id/items", async (c) => {
       }
 
       if (collection[0].is_builtin === true) {
-        return c.json({ error: "forbidden", message: "Built-in collections cannot be modified." }, 403);
+        return c.json({ error: "forbidden", message: "Built-in collections cannot be modified.", requestId }, 403);
       }
 
       let body: Record<string, unknown>;
@@ -444,7 +444,7 @@ adminPrompts.patch("/:collectionId/items/:itemId", async (c) => {
       }
 
       if (collection[0].is_builtin === true) {
-        return c.json({ error: "forbidden", message: "Built-in collections cannot be modified." }, 403);
+        return c.json({ error: "forbidden", message: "Built-in collections cannot be modified.", requestId }, 403);
       }
 
       // Verify item exists and belongs to collection
@@ -560,7 +560,7 @@ adminPrompts.delete("/:collectionId/items/:itemId", async (c) => {
       }
 
       if (collection[0].is_builtin === true) {
-        return c.json({ error: "forbidden", message: "Built-in collections cannot be modified." }, 403);
+        return c.json({ error: "forbidden", message: "Built-in collections cannot be modified.", requestId }, 403);
       }
 
       // Verify item exists
@@ -629,7 +629,7 @@ adminPrompts.put("/:id/reorder", async (c) => {
       }
 
       if (collection[0].is_builtin === true) {
-        return c.json({ error: "forbidden", message: "Built-in collections cannot be modified." }, 403);
+        return c.json({ error: "forbidden", message: "Built-in collections cannot be modified.", requestId }, 403);
       }
 
       let body: Record<string, unknown>;

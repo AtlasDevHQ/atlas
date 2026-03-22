@@ -36,7 +36,7 @@ tables.get("/", async (c) => {
       });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), root, requestId }, "Failed to discover tables");
-      return c.json({ error: "internal_error", message: "Failed to load table list." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to load table list.", requestId }, 500);
     }
   });
 });

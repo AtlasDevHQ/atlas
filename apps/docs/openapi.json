@@ -14593,6 +14593,30 @@
               }
             }
           },
+          "400": {
+            "description": "No active organization selected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
           "401": {
             "description": "Authentication required",
             "content": {
@@ -14619,6 +14643,30 @@
           },
           "403": {
             "description": "Forbidden — insufficient permissions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No internal database configured",
             "content": {
               "application/json": {
                 "schema": {
@@ -21422,7 +21470,7 @@
             }
           },
           "400": {
-            "description": "Bad request (malformed JSON, missing datasource, or configuration error)",
+            "description": "Bad request (malformed JSON, missing datasource, configuration error, or model not found)",
             "content": {
               "application/json": {
                 "schema": {
@@ -21707,6 +21755,9 @@
                             "type": "string",
                             "format": "uuid"
                           },
+                          "userId": {
+                            "type": "string"
+                          },
                           "title": {
                             "type": "string",
                             "nullable": true
@@ -21716,6 +21767,14 @@
                           },
                           "starred": {
                             "type": "boolean"
+                          },
+                          "connectionId": {
+                            "type": "string",
+                            "nullable": true
+                          },
+                          "notebookState": {
+                            "type": "object",
+                            "nullable": true
                           },
                           "createdAt": {
                             "type": "string",

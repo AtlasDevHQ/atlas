@@ -268,7 +268,8 @@ mock.module("@atlas/api/lib/profiler", () => ({
 const { wizard } = await import("../routes/wizard");
 const { OpenAPIHono } = await import("@hono/zod-openapi");
 
-const app = new OpenAPIHono();
+import { validationHook } from "../routes/validation-hook";
+const app = new OpenAPIHono({ defaultHook: validationHook });
 app.route("/api/v1/wizard", wizard);
 
 function request(path: string, init?: RequestInit) {
@@ -342,9 +343,9 @@ beforeEach(() => {
 describe("POST /api/v1/wizard/profile", () => {
   it("returns 400 without connectionId", async () => {
     const res = await postJson("/api/v1/wizard/profile", {});
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(422);
     const data = await json(res);
-    expect(data.error).toBe("invalid_request");
+    expect(data.error).toBe("validation_error");
   });
 
   it("returns table list for a valid connection", async () => {
@@ -404,12 +405,12 @@ describe("POST /api/v1/wizard/profile", () => {
 describe("POST /api/v1/wizard/generate", () => {
   it("returns 400 without tables", async () => {
     const res = await postJson("/api/v1/wizard/generate", { connectionId: "default" });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(422);
   });
 
   it("returns 400 with empty tables array", async () => {
     const res = await postJson("/api/v1/wizard/generate", { connectionId: "default", tables: [] });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(422);
   });
 
   it("generates entities for selected tables", async () => {
@@ -451,14 +452,14 @@ describe("POST /api/v1/wizard/preview", () => {
     const res = await postJson("/api/v1/wizard/preview", {
       entities: [{ tableName: "users", yaml: "table: users" }],
     });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(422);
   });
 
   it("returns 400 without entities", async () => {
     const res = await postJson("/api/v1/wizard/preview", {
       question: "How many users?",
     });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(422);
   });
 
   it("returns preview for valid input", async () => {
@@ -483,14 +484,14 @@ describe("POST /api/v1/wizard/save", () => {
     const res = await postJson("/api/v1/wizard/save", {
       entities: [{ tableName: "users", yaml: "table: users" }],
     });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(422);
   });
 
   it("returns 400 without entities", async () => {
     const res = await postJson("/api/v1/wizard/save", {
       connectionId: "default",
     });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(422);
   });
 
   it("returns 400 with empty entities array", async () => {
@@ -498,9 +499,9 @@ describe("POST /api/v1/wizard/save", () => {
       connectionId: "default",
       entities: [],
     });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(422);
     const data = await json(res);
-    expect(data.error).toBe("invalid_request");
+    expect(data.error).toBe("validation_error");
   });
 
   it("returns 400 when no active org", async () => {
@@ -599,9 +600,9 @@ describe("POST /api/v1/wizard/save", () => {
       connectionId: "default",
       entities: [{ foo: "bar" }, { baz: 123 }],
     });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(422);
     const data = await json(res);
-    expect(data.error).toBe("invalid_request");
+    expect(data.error).toBe("validation_error");
     // Zod validation catches missing required fields
     expect(typeof data.message).toBe("string");
     expect((data.message as string).length).toBeGreaterThan(0);
@@ -679,9 +680,9 @@ describe("POST /api/v1/wizard/save", () => {
       ],
     });
     // Zod validation rejects the array because items don't conform to schema
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(422);
     const data = await json(res);
-    expect(data.error).toBe("invalid_request");
+    expect(data.error).toBe("validation_error");
   });
 
   it("returns 500 with save_failed when filesystem write throws", async () => {

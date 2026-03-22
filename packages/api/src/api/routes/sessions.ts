@@ -7,6 +7,7 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { validationHook } from "./validation-hook";
 import { z } from "zod";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
@@ -121,7 +122,7 @@ const revokeSessionRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const sessions = new OpenAPIHono();
+const sessions = new OpenAPIHono({ defaultHook: validationHook });
 
 // GET / — list the current user's sessions
 sessions.openapi(listSessionsRoute, async (c) => {

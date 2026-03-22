@@ -530,7 +530,7 @@ describe("conversations routes", () => {
           body: JSON.stringify({ starred: "yes" }),
         }),
       );
-      expect(response.status).toBe(400);
+      expect(response.status).toBe(422);
     });
 
     it("returns 400 for missing body", async () => {
@@ -539,7 +539,7 @@ describe("conversations routes", () => {
           method: "PATCH",
         }),
       );
-      expect(response.status).toBe(400);
+      expect(response.status).toBe(422);
     });
 
     it("returns 400 for invalid conversation ID format", async () => {

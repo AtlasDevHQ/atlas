@@ -7,6 +7,7 @@
  */
 
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import { validationHook } from "./validation-hook";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { hasInternalDB, getWorkspaceDetails } from "@atlas/api/lib/db/internal";
 import {
@@ -259,7 +260,7 @@ const getUsageBreakdownRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const adminUsage = new OpenAPIHono();
+const adminUsage = new OpenAPIHono({ defaultHook: validationHook });
 
 // GET / — current period usage summary for the active workspace
 adminUsage.openapi(getCurrentUsageRoute, async (c) => {

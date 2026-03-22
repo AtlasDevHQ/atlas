@@ -6,6 +6,7 @@
  */
 
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import { validationHook } from "./validation-hook";
 import { adminAuthPreamble } from "./admin-auth";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery, deleteSuggestion } from "@atlas/api/lib/db/internal";
@@ -132,7 +133,7 @@ const deleteSuggestionRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-export const adminSuggestions = new OpenAPIHono();
+export const adminSuggestions = new OpenAPIHono({ defaultHook: validationHook });
 
 // GET / — list suggestions with filters
 adminSuggestions.openapi(listSuggestionsRoute, async (c) => {

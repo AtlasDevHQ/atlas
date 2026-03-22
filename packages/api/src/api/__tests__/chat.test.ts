@@ -387,7 +387,7 @@ describe("POST /api/v1/chat", () => {
       }),
     );
     // OpenAPIHono's built-in Zod validation returns 400 by default (no defaultHook override)
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(422);
   });
 
   it("passes action tools to runAgent when ATLAS_ACTIONS_ENABLED=true", async () => {

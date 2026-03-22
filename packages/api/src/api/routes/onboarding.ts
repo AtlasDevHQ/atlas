@@ -7,6 +7,7 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
@@ -181,7 +182,7 @@ const completeOnboardingRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const onboarding = new OpenAPIHono();
+const onboarding = new OpenAPIHono({ defaultHook: validationHook });
 
 // Normalize JSON parse errors. Only catch SyntaxError (malformed JSON); let
 // other 400s (e.g. Zod query/path param validation) propagate with their message.

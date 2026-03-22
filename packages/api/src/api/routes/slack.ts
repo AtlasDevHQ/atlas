@@ -13,6 +13,7 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { validationHook } from "./validation-hook";
 import { z } from "zod";
 import { executeAgentQuery } from "@atlas/api/lib/agent-query";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -29,7 +30,7 @@ import { ErrorSchema } from "./shared-schemas";
 
 const log = createLogger("slack");
 
-const slack = new OpenAPIHono();
+const slack = new OpenAPIHono({ defaultHook: validationHook });
 
 // --- Verify Slack signature ---
 

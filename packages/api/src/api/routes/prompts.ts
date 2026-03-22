@@ -8,6 +8,7 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { validationHook } from "./validation-hook";
 import { z } from "zod";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
@@ -143,7 +144,7 @@ const getCollectionRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-export const prompts = new OpenAPIHono();
+export const prompts = new OpenAPIHono({ defaultHook: validationHook });
 
 // ---------------------------------------------------------------------------
 // GET / — list collections (built-in + user's org)

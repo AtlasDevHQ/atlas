@@ -6,6 +6,7 @@
  */
 
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
@@ -464,7 +465,7 @@ const setEnforcementRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const adminSso = new OpenAPIHono();
+const adminSso = new OpenAPIHono({ defaultHook: validationHook });
 
 adminSso.onError((err, c) => {
   if (err instanceof HTTPException && err.status === 400) {

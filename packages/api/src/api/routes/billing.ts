@@ -13,6 +13,7 @@ import { z } from "zod";
 import { HTTPException } from "hono/http-exception";
 import Stripe from "stripe";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
+import { validationHook } from "./validation-hook";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
 import {
   authenticateRequest,
@@ -239,12 +240,7 @@ const toggleByotRoute = createRoute({
 // ---------------------------------------------------------------------------
 
 const billing = new OpenAPIHono({
-  defaultHook: (result, c) => {
-    if (!result.success) {
-      const detail = result.error.issues.map((i) => i.message).join("; ");
-      return c.json({ error: "invalid_request", message: detail || "Request validation failed." }, 400);
-    }
-  },
+  defaultHook: validationHook,
 });
 
 // GET / — billing status for the active workspace

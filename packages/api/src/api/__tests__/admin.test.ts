@@ -1545,7 +1545,7 @@ describe("PUT /api/v1/admin/semantic/org/entities/:name", () => {
   it("returns 400 when yamlContent is missing", async () => {
     setOrgAdmin("org-1");
     const res = await app.fetch(adminRequest("/api/v1/admin/semantic/org/entities/users", "PUT", {}));
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(422);
   });
 
   it("returns 400 for invalid YAML", async () => {

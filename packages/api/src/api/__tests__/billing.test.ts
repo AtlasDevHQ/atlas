@@ -276,7 +276,7 @@ describe("billing routes", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
       });
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(422);
     });
 
     it("returns 404 when workspace not found", async () => {

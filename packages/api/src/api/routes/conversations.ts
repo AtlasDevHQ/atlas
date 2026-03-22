@@ -10,6 +10,7 @@ import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { z } from "zod";
 import { HTTPException } from "hono/http-exception";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
+import { validationHook } from "./validation-hook";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
 import {
   authenticateRequest,
@@ -550,15 +551,12 @@ const deleteConversationRoute = createRoute({
 // ---------------------------------------------------------------------------
 
 const conversations = new OpenAPIHono({
-  defaultHook: (result, c) => {
-    if (!result.success) {
-      const detail = result.error.issues.map((i) => i.message).join("; ");
-      return c.json({ error: "invalid_request", message: detail || "Request validation failed." }, 400);
-    }
-  },
+  defaultHook: validationHook,
 });
 
-// JSON parse error handler for routes that accept request bodies
+// JSON parse error handler — only for truly malformed request bodies
+// (e.g. unparseable JSON). Zod validation failures are handled by the
+// defaultHook above which uses the `target` field for accurate messages.
 conversations.onError((err, c) => {
   if (err instanceof HTTPException && err.status === 400) {
     return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
@@ -1092,7 +1090,7 @@ const getSharedConversationRoute = createRoute({
   },
 });
 
-const publicConversations = new OpenAPIHono();
+const publicConversations = new OpenAPIHono({ defaultHook: validationHook });
 
 /** Map a SharedConversationFailReason to a JSON response. */
 function sharedConversationFailResponse(reason: SharedConversationFailReason) {

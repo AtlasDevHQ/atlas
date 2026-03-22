@@ -10,6 +10,7 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { Parser } from "node-sql-parser";
@@ -105,7 +106,7 @@ const validateRoute = createRoute({
   },
 });
 
-export const validateSqlRoute = new OpenAPIHono();
+export const validateSqlRoute = new OpenAPIHono({ defaultHook: validationHook });
 
 // Normalize JSON parse errors from @hono/zod-openapi into the standard API error format.
 // The framework throws HTTPException(400) for unparseable JSON bodies; this preserves

@@ -465,11 +465,38 @@ export default defineConfig({
 
 ### RLS policy fields
 
+Each policy must specify **either** `{ column, claim }` (single-condition shorthand) **or** `{ conditions }` (multi-condition array), but not both.
+
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `tables` | `string[]` | Yes | Tables this policy applies to. Use `["*"]` for all tables |
-| `column` | `string` | Yes | Column name to filter on (must be a valid SQL identifier) |
-| `claim` | `string` | Yes | Dot-delimited JWT claim path (e.g. `org_id`, `app_metadata.tenant`) |
+| `column` | `string` | Required when `conditions` not used | Column name to filter on (must be a valid SQL identifier) |
+| `claim` | `string` | Required when `conditions` not used | Dot-delimited JWT claim path (e.g. `org_id`, `app_metadata.tenant`) |
+| `conditions` | `Array<{ column, claim }>` | Required when `column`/`claim` not used | Multiple column/claim conditions — ANDed together within this policy. Each entry has the same `column` and `claim` fields described above |
+
+#### Multi-condition example
+
+Use `conditions` when a single policy must filter on multiple columns simultaneously. All conditions within a policy are ANDed together:
+
+```typescript
+// atlas.config.ts — multi-condition RLS policy
+export default defineConfig({
+  rls: {
+    enabled: true,
+    policies: [
+      {
+        tables: ["orders", "invoices"],
+        // Both conditions must match — the query gets:
+        // WHERE tenant_id = <org_id claim> AND region = <region claim>
+        conditions: [
+          { column: "tenant_id", claim: "org_id" },
+          { column: "region", claim: "app_metadata.region" },
+        ],
+      },
+    ],
+  },
+});
+```
 
 <Callout type="warn">
 When `rls.enabled` is `true`, at least one policy must be defined. RLS is fail-closed — if the user's claims are missing, the query is blocked.
@@ -483,7 +510,7 @@ ATLAS_RLS_COLUMN=tenant_id
 ATLAS_RLS_CLAIM=org_id
 ```
 
-For per-table policies, use the config file.
+For per-table policies or multi-condition policies, use the config file.
 
 ---
 

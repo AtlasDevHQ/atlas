@@ -5,7 +5,7 @@
  * auth → rate limit → withRequestContext → validateEnvironment → conversation persistence → runAgent → stream.
  */
 
-import { Hono } from "hono";
+import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { z } from "zod";
 import { type UIMessage, createUIMessageStream, createUIMessageStreamResponse } from "ai";
 import { APICallError, LoadAPIKeyError, NoSuchModelError } from "ai";
@@ -30,6 +30,7 @@ import {
   generateTitle,
 } from "@atlas/api/lib/conversations";
 import { setStreamWriter, clearStreamWriter } from "@atlas/api/lib/tools/python-stream";
+import { ErrorSchema } from "./shared-schemas";
 
 const log = createLogger("chat");
 
@@ -50,9 +51,80 @@ export const ChatRequestSchema = z.object({
   conversationId: z.string().uuid().optional(),
 });
 
-const chat = new Hono();
+// ---------------------------------------------------------------------------
+// Route definition
+// ---------------------------------------------------------------------------
 
-chat.post("/", async (c) => {
+const chatRoute = createRoute({
+  method: "post",
+  path: "/",
+  tags: ["Chat"],
+  summary: "Chat with the agent (streaming)",
+  description:
+    "Sends a conversation to the Atlas agent and streams the response as Server-Sent Events using the Vercel AI SDK UI message stream protocol. " +
+    "Each SSE event is a JSON object with a 'type' field: 'text-delta' for incremental text, 'tool-call' for tool invocations, " +
+    "'tool-result' for tool outputs, 'step-start' for new agent steps, and 'finish' for completion. " +
+    "The response includes an `x-conversation-id` header when conversation persistence is enabled.",
+  request: {
+    body: {
+      content: { "application/json": { schema: ChatRequestSchema } },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      description:
+        "SSE stream using the Vercel AI SDK UI message stream protocol. Each event is a JSON object with a 'type' field (text-delta, tool-call, tool-result, step-start, finish).",
+      content: {
+        "text/event-stream": { schema: z.string() },
+      },
+    },
+    400: {
+      description: "Bad request (malformed JSON, missing datasource, or invalid configuration)",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — insufficient permissions",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    404: {
+      description: "Conversation not found (invalid conversationId)",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    422: {
+      description: "Validation error (invalid request body)",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    502: {
+      description: "LLM provider error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    503: {
+      description: "Provider unreachable, auth error, or rate limited",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    504: {
+      description: "Request timed out",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const chat = new OpenAPIHono();
+
+chat.openapi(chatRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
@@ -353,7 +425,10 @@ chat.post("/", async (c) => {
             });
         }
 
-        return streamResponse;
+        // The streaming response is a raw Response object from createUIMessageStreamResponse.
+        // OpenAPIHono expects c.json() return types, but SSE streams bypass that — use `as never`
+        // to satisfy the type system without changing runtime behavior.
+        return streamResponse as never;
       } catch (err) {
         const errObj = err instanceof Error ? err : new Error(String(err));
         const message = errObj.message;

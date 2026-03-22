@@ -360,7 +360,7 @@ describe("/api/v1/slack", () => {
 
       expect(resp.status).toBe(401);
       const json = (await resp.json()) as Record<string, unknown>;
-      expect(json.error).toBe("Invalid signature");
+      expect(json.error).toBe("invalid_signature");
     });
 
     it("processes thread follow-up events and calls the agent", async () => {
@@ -712,7 +712,7 @@ describe("/api/v1/slack", () => {
 
       expect(resp.status).toBe(400);
       const json = (await resp.json()) as Record<string, unknown>;
-      expect(json.error).toBe("Missing payload");
+      expect(json.error).toBe("missing_payload");
     });
   });
 
@@ -804,15 +804,13 @@ describe("/api/v1/slack", () => {
       process.env.SLACK_CLIENT_SECRET = "test_client_secret";
       const app = await getApp();
 
-      // No state at all
+      // No state at all — OpenAPIHono schema validation rejects before handler runs
       const resp1 = await app.request("/api/v1/slack/callback?code=test_code", {
         method: "GET",
       });
       expect(resp1.status).toBe(400);
-      const json1 = (await resp1.json()) as Record<string, unknown>;
-      expect(json1.error).toContain("state");
 
-      // Bogus state value
+      // Bogus state value — passes schema validation but handler rejects unknown state
       const resp2 = await app.request(
         "/api/v1/slack/callback?code=test_code&state=bogus-state-value",
         { method: "GET" },
@@ -845,7 +843,8 @@ describe("/api/v1/slack", () => {
       delete process.env.SLACK_CLIENT_SECRET;
       const app = await getApp();
 
-      const resp = await app.request("/api/v1/slack/callback?code=test", {
+      // Both code and state are required by the OpenAPIHono route schema
+      const resp = await app.request("/api/v1/slack/callback?code=test&state=dummy", {
         method: "GET",
       });
       expect(resp.status).toBe(501);

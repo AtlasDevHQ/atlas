@@ -509,7 +509,7 @@ export function parseChatError(error: Error, authMode: AuthMode): ChatErrorInfo 
       return { title: "Workspace suspended.", detail: serverMessage ?? "Contact your workspace administrator to reactivate it.", code: rawCode, retryable, requestId };
 
     case "workspace_deleted":
-      return { title: "Workspace deleted.", detail: serverMessage ?? "This workspace has been permanently deleted.", code: rawCode, retryable, requestId };
+      return { title: "Workspace deleted.", detail: serverMessage ?? "This workspace has been permanently deleted. Create a new workspace to continue.", code: rawCode, retryable, requestId };
 
     default: {
       const _exhaustive: never = rawCode;

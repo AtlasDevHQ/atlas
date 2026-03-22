@@ -58,7 +58,7 @@ These codes are returned by billing enforcement and workspace status middleware.
 |------|-------------|-------------|--------------|-----|
 | `trial_expired` | 403 | Trial has expired | 14-day SaaS trial ended | Upgrade to a paid plan |
 | `billing_check_failed` | 503 | Billing check failed | Failed to fetch plan data from internal DB | Retry — transient infrastructure issue |
-| `workspace_check_failed` | 500 | Workspace check failed | Failed to verify workspace status | Retry — transient infrastructure issue |
+| `workspace_check_failed` | 403 | Workspace check failed | Failed to verify workspace status | Retry — transient infrastructure issue |
 | `workspace_suspended` | 403 | Workspace suspended | Admin suspended the workspace | Contact your workspace administrator |
 | `workspace_deleted` | 404 | Workspace deleted | Workspace has been permanently deleted | Create a new workspace |
 

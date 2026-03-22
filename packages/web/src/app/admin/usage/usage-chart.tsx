@@ -10,8 +10,10 @@ import {
   Tooltip,
   Legend,
 } from "recharts";
+import { formatNumber } from "./format";
 
-const TOKENS = {
+// Design tokens for light/dark chart theming
+const CHART_THEME = {
   light: { grid: "#e4e4e7", axis: "#71717a", bg: "#ffffff", border: "#e4e4e7", text: "#27272a" },
   dark: { grid: "#3f3f46", axis: "#a1a1aa", bg: "#18181b", border: "#3f3f46", text: "#e4e4e7" },
 } as const;
@@ -28,14 +30,8 @@ function formatDay(value: string) {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-function formatNumber(value: number) {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
-  return String(value);
-}
-
 export default function UsageChart({ data, dark }: { data: DailyUsagePoint[]; dark: boolean }) {
-  const t = dark ? TOKENS.dark : TOKENS.light;
+  const t = dark ? CHART_THEME.dark : CHART_THEME.light;
 
   return (
     <ResponsiveContainer width="100%" height={300}>

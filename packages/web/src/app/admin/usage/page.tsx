@@ -16,6 +16,7 @@ import { DataTable } from "@/components/data-table/data-table";
 import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
 import { DataTableSortList } from "@/components/data-table/data-table-sort-list";
 import { getUserUsageColumns, type UserUsageRow } from "./columns";
+import { formatNumber } from "./format";
 import { useDataTable } from "@/hooks/use-data-table";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
@@ -70,12 +71,7 @@ interface UsageSummary {
 
 // ── Helpers ───────────────────────────────────────────────────────
 
-function formatNumber(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return n.toLocaleString();
-}
-
+/** Returns usage percentage (0–100), or null if limit is null (unlimited). */
 function pct(used: number, limit: number | null): number | null {
   if (limit === null) return null;
   if (limit === 0) return 100;

@@ -3,18 +3,13 @@
 import type { ColumnDef } from "@tanstack/react-table";
 import { DataTableColumnHeader } from "@/components/data-table/data-table-column-header";
 import { User, MessageSquare, Coins, LogIn } from "lucide-react";
+import { formatNumber } from "./format";
 
 export interface UserUsageRow {
   user_id: string;
   query_count: number;
   token_count: number;
   login_count: number;
-}
-
-function formatNumber(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return n.toLocaleString();
 }
 
 export function getUserUsageColumns(): ColumnDef<UserUsageRow>[] {

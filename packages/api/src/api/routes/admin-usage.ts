@@ -106,8 +106,8 @@ adminUsage.get("/summary", async (c) => {
       const [usage, workspace, history, users] = await Promise.all([
         getCurrentPeriodUsage(orgId),
         getWorkspaceDetails(orgId),
-        getUsageHistory(orgId, "daily", thirtyDaysAgo.toISOString(), undefined, 31),
-        getUsageBreakdown(orgId, undefined, undefined, 50),
+        getUsageHistory(orgId, "daily", thirtyDaysAgo.toISOString(), undefined, 31), // today + past 30 days
+        getUsageBreakdown(orgId, undefined, undefined, 50), // top 50 users (dashboard summary, not full breakdown)
       ]);
 
       if (!workspace) {
@@ -137,7 +137,7 @@ adminUsage.get("/summary", async (c) => {
           maxMembers: isUnlimited(limits.maxMembers) ? null : limits.maxMembers,
           maxConnections: isUnlimited(limits.maxConnections) ? null : limits.maxConnections,
         },
-        history: history.toReversed(),
+        history: history.toReversed(), // DB returns newest-first; reverse to chronological for chart
         users,
         hasStripe: !!workspace?.stripe_customer_id,
       });

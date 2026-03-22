@@ -4550,7 +4550,13 @@ function buildSpec(): Record<string, unknown> {
                       },
                       errors: {
                         type: "array",
-                        items: { type: "string" },
+                        items: {
+                          type: "object",
+                          properties: {
+                            table: { type: "string" },
+                            error: { type: "string" },
+                          },
+                        },
                         description: "Errors encountered during profiling (non-fatal).",
                       },
                     },

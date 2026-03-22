@@ -14,13 +14,15 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { Hono } from "hono";
+import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import { HTTPException } from "hono/http-exception";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { connections, detectDBType } from "@atlas/api/lib/db/connection";
 import { hasInternalDB, internalQuery, decryptUrl } from "@atlas/api/lib/db/internal";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import { syncEntityToDisk } from "@atlas/api/lib/semantic-sync";
 import { adminAuthPreamble } from "./admin-auth";
+import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import {
   type TableProfile,
   type ProfilingResult,
@@ -38,35 +40,277 @@ import {
 
 const log = createLogger("wizard");
 
-const wizard = new Hono();
+// ---------------------------------------------------------------------------
+// Schemas
+// ---------------------------------------------------------------------------
+
+const ProfileRequestSchema = z.object({
+  connectionId: z.string().min(1),
+});
+
+const ProfileResponseSchema = z.object({
+  connectionId: z.string(),
+  dbType: z.string(),
+  schema: z.string(),
+  tables: z.array(z.record(z.string(), z.unknown())),
+});
+
+const GenerateRequestSchema = z.object({
+  connectionId: z.string().min(1),
+  tables: z.array(z.string()).min(1),
+});
+
+const GenerateResponseSchema = z.record(z.string(), z.unknown());
+
+const PreviewRequestSchema = z.object({
+  question: z.string().min(1),
+  entities: z.array(z.object({ tableName: z.string(), yaml: z.string() })).min(1),
+});
+
+const PreviewResponseSchema = z.record(z.string(), z.unknown());
+
+const SaveRequestSchema = z.object({
+  connectionId: z.string().min(1),
+  entities: z.array(z.object({ tableName: z.string(), yaml: z.string() })).min(1),
+}).passthrough();
+
+const SaveResponseSchema = z.object({
+  saved: z.boolean(),
+  orgId: z.string().nullable(),
+  connectionId: z.string(),
+  entityCount: z.number(),
+  files: z.array(z.string()),
+});
+
+// ---------------------------------------------------------------------------
+// Route definitions
+// ---------------------------------------------------------------------------
+
+const profileRoute = createRoute({
+  method: "post",
+  path: "/profile",
+  tags: ["Wizard"],
+  summary: "List tables from a connected datasource",
+  description:
+    "Discovers tables, views, and materialized views in a connected database for the wizard table selection step. " +
+    "Supports PostgreSQL and MySQL datasources. Requires admin role.",
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: ProfileRequestSchema,
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Table list from the connected datasource",
+      content: { "application/json": { schema: ProfileResponseSchema } },
+    },
+    400: {
+      description: "Invalid request (missing connectionId or unsupported database type)",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Connection not found",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Connection resolution or profiling failed",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const generateRoute = createRoute({
+  method: "post",
+  path: "/generate",
+  tags: ["Wizard"],
+  summary: "Profile tables and generate entity YAML",
+  description:
+    "Profiles selected tables from a connected datasource and generates entity YAML definitions " +
+    "with dimensions, measures, joins, query patterns, and heuristic flags. Requires admin role.",
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: GenerateRequestSchema,
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Generated entity YAML definitions with profiling metadata",
+      content: { "application/json": { schema: GenerateResponseSchema } },
+    },
+    400: {
+      description: "Invalid request (missing connectionId, empty tables, or unsupported database type)",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Connection not found",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Profiling or generation failed",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const previewRoute = createRoute({
+  method: "post",
+  path: "/preview",
+  tags: ["Wizard"],
+  summary: "Preview agent behavior with entities",
+  description:
+    "Shows how the agent would interpret the semantic layer when answering a question, " +
+    "given a set of candidate entity YAML definitions. Requires admin role.",
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: PreviewRequestSchema,
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Preview of how the agent would see the semantic layer",
+      content: { "application/json": { schema: PreviewResponseSchema } },
+    },
+    400: {
+      description: "Invalid request (missing question or entities)",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const saveRoute = createRoute({
+  method: "post",
+  path: "/save",
+  tags: ["Wizard"],
+  summary: "Save entities to org-scoped semantic layer",
+  description:
+    "Persists generated entity YAML files to the organization's semantic layer directory on disk. " +
+    "Validates table names for path traversal, syncs to the internal database if available, " +
+    "and resets the semantic whitelist cache. Requires admin role and an active organization.",
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: SaveRequestSchema,
+        },
+      },
+    },
+  },
+  responses: {
+    201: {
+      description: "Entities saved to disk",
+      content: { "application/json": { schema: SaveResponseSchema } },
+    },
+    400: {
+      description: "Invalid request (missing connectionId, empty entities, invalid table name, or no active organization)",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Failed to save entities",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Router
+// ---------------------------------------------------------------------------
+
+const wizard = new OpenAPIHono({
+  defaultHook: (result, c) => {
+    if (!result.success) {
+      const detail = result.error.issues.map((i) => i.message).join("; ");
+      return c.json({ error: "invalid_request", message: detail || "Request body validation failed." }, 400);
+    }
+  },
+});
+
+wizard.onError((err, c) => {
+  if (err instanceof HTTPException && err.status === 400) {
+    return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+  }
+  throw err;
+});
 
 // ---------------------------------------------------------------------------
 // POST /profile — List tables/views from a connected datasource
 // ---------------------------------------------------------------------------
 
-wizard.post("/profile", async (c) => {
+wizard.openapi(profileRoute, async (c) => {
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(c.req.raw, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    // Auth preamble returns dynamic shapes — use `as never` to satisfy typed route
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const body = await c.req.json().catch((err: unknown) => {
-      log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse wizard profile request body");
-      return null;
-    });
-
-    if (!body || typeof body !== "object") {
-      return c.json({ error: "invalid_request", message: "Request body is required." }, 400);
-    }
-
-    const { connectionId } = body as Record<string, unknown>;
-    if (!connectionId || typeof connectionId !== "string") {
-      return c.json({ error: "invalid_request", message: "connectionId is required." }, 400);
-    }
+    const { connectionId } = c.req.valid("json");
 
     // Look up the connection URL — resolveConnectionUrl throws on infrastructure errors
     let connUrl: ResolvedConnection | null;
@@ -112,7 +356,7 @@ wizard.post("/profile", async (c) => {
           name: o.name,
           type: o.type,
         })),
-      });
+      }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, connectionId }, "Wizard profile failed");
       return c.json({
@@ -128,38 +372,21 @@ wizard.post("/profile", async (c) => {
 // POST /generate — Profile selected tables and generate entity YAML
 // ---------------------------------------------------------------------------
 
-wizard.post("/generate", async (c) => {
+wizard.openapi(generateRoute, async (c) => {
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(c.req.raw, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    // Auth preamble returns dynamic shapes — use `as never` to satisfy typed route
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const body = await c.req.json().catch((err: unknown) => {
-      log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse wizard generate request body");
-      return null;
-    });
+    const { connectionId, tables } = c.req.valid("json");
 
-    if (!body || typeof body !== "object") {
-      return c.json({ error: "invalid_request", message: "Request body is required." }, 400);
-    }
-
-    const { connectionId, tables } = body as Record<string, unknown>;
-    if (!connectionId || typeof connectionId !== "string") {
-      return c.json({ error: "invalid_request", message: "connectionId is required." }, 400);
-    }
-    if (!Array.isArray(tables) || tables.length === 0) {
-      return c.json({ error: "invalid_request", message: "tables array is required and must not be empty." }, 400);
-    }
-
-    // Validate table names
-    const tableNames = tables.filter((t): t is string => typeof t === "string");
-    if (tableNames.length === 0) {
-      return c.json({ error: "invalid_request", message: "tables must contain string values." }, 400);
-    }
+    // Zod already validated tables as string[] — use directly
+    const tableNames = tables;
 
     let connUrl: ResolvedConnection | null;
     try {
@@ -252,7 +479,7 @@ wizard.post("/generate", async (c) => {
         schema,
         entities,
         errors: result.errors,
-      });
+      }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, connectionId }, "Wizard generate failed");
       return c.json({
@@ -268,61 +495,37 @@ wizard.post("/generate", async (c) => {
 // POST /preview — Preview agent behavior with generated entities
 // ---------------------------------------------------------------------------
 
-wizard.post("/preview", async (c) => {
+wizard.openapi(previewRoute, async (c) => {
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(c.req.raw, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    // Auth preamble returns dynamic shapes — use `as never` to satisfy typed route
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const body = await c.req.json().catch((err: unknown) => {
-      log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse wizard preview request body");
-      return null;
-    });
-
-    if (!body || typeof body !== "object") {
-      return c.json({ error: "invalid_request", message: "Request body is required." }, 400);
-    }
-
-    const { question, entities } = body as Record<string, unknown>;
-    if (!question || typeof question !== "string") {
-      return c.json({ error: "invalid_request", message: "question is required." }, 400);
-    }
-    if (!Array.isArray(entities) || entities.length === 0) {
-      return c.json({ error: "invalid_request", message: "entities array is required." }, 400);
-    }
+    const { question, entities } = c.req.valid("json");
 
     // Build a semantic context summary from the provided entity YAMLs
+    // (Zod already validated that entities are { tableName: string; yaml: string }[])
     const entitySummaries = entities
-      .filter((e): e is { tableName: string; yaml: string } =>
-        typeof e === "object" && e !== null && typeof (e as Record<string, unknown>).tableName === "string" && typeof (e as Record<string, unknown>).yaml === "string"
-      )
       .map((e) => `--- ${e.tableName} ---\n${e.yaml}`)
       .join("\n\n");
-
-    if (!entitySummaries) {
-      return c.json({ error: "invalid_request", message: "entities must contain objects with tableName and yaml fields." }, 400);
-    }
 
     // Generate a preview response showing what the agent would see
     const preview = {
       question,
       semanticContext: `The agent would see ${entities.length} entity definitions when answering this question.`,
-      availableTables: entities
-        .filter((e): e is { tableName: string } =>
-          typeof e === "object" && e !== null && typeof (e as Record<string, unknown>).tableName === "string"
-        )
-        .map((e) => e.tableName),
+      availableTables: entities.map((e) => e.tableName),
       entityCount: entities.length,
       sampleEntityYaml: entitySummaries.slice(0, 2000),
     };
 
     log.info({ requestId, question, entityCount: entities.length }, "Wizard preview generated");
 
-    return c.json(preview);
+    return c.json(preview, 200);
   });
 });
 
@@ -330,12 +533,13 @@ wizard.post("/preview", async (c) => {
 // POST /save — Save entities to org-scoped semantic layer
 // ---------------------------------------------------------------------------
 
-wizard.post("/save", async (c) => {
+wizard.openapi(saveRoute, async (c) => {
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(c.req.raw, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    // Auth preamble returns dynamic shapes — use `as never` to satisfy typed route
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -345,33 +549,11 @@ wizard.post("/save", async (c) => {
       return c.json({ error: "no_organization", message: "No active organization. Create a workspace first." }, 400);
     }
 
-    const body = await c.req.json().catch((err: unknown) => {
-      log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse wizard save request body");
-      return null;
-    });
+    const body = c.req.valid("json");
+    const { connectionId, entities } = body;
 
-    if (!body || typeof body !== "object") {
-      return c.json({ error: "invalid_request", message: "Request body is required." }, 400);
-    }
-
-    const { connectionId, entities, schema } = body as Record<string, unknown>;
-    if (!connectionId || typeof connectionId !== "string") {
-      return c.json({ error: "invalid_request", message: "connectionId is required." }, 400);
-    }
-    if (!Array.isArray(entities) || entities.length === 0) {
-      return c.json({ error: "invalid_request", message: "entities array is required." }, 400);
-    }
-
-    // Validate entity payloads
-    const validEntities = entities.filter((e): e is { tableName: string; yaml: string } =>
-      typeof e === "object" && e !== null &&
-      typeof (e as Record<string, unknown>).tableName === "string" &&
-      typeof (e as Record<string, unknown>).yaml === "string"
-    );
-
-    if (validEntities.length === 0) {
-      return c.json({ error: "invalid_request", message: "entities must contain objects with tableName and yaml fields." }, 400);
-    }
+    // Zod already validated entities as { tableName: string; yaml: string }[]
+    const validEntities = entities;
 
     // Path traversal protection: validate all table names before writing any files
     const SAFE_TABLE_NAME = /^[a-zA-Z_][a-zA-Z0-9_.-]*$/;
@@ -417,6 +599,7 @@ wizard.post("/save", async (c) => {
       // pre-generated entity YAML via { connectionId, entities } instead.
       // This branch handles callers (e.g. future CLI integrations) that
       // provide raw TableProfile[] data for server-side generation.
+      const schema = (body as Record<string, unknown>).schema;
       const profileData = (body as Record<string, unknown>).profiles;
       if (Array.isArray(profileData) && profileData.length > 0) {
         const profiles = profileData as TableProfile[];

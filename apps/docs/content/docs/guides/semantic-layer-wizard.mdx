@@ -9,7 +9,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 The setup wizard is a browser-based alternative to `atlas init`. It walks you through profiling your database, selecting tables, reviewing generated entity YAML, and saving everything to your workspace — all from `/wizard`.
 
 <Callout title="Prerequisites">
-- An **admin** role in your Atlas workspace
+- An **admin** or **owner** role in your Atlas workspace
 - At least one [datasource connection](/guides/admin-console#connections) configured
 - [Managed auth](/deployment/authentication#managed-auth) enabled with an internal database (`DATABASE_URL`)
 </Callout>
@@ -42,7 +42,7 @@ If no connections appear, add one first via **Admin → Connections** or the [si
 
 ### 2. Select Tables
 
-The wizard queries your database and lists all tables, views, and materialized views. All objects are selected by default.
+The wizard queries your database and lists all tables and views (plus materialized views for PostgreSQL). All objects are selected by default.
 
 - Use the **filter** input to narrow the list by name
 - Toggle individual tables or use the header checkbox to select/deselect all visible rows
@@ -56,7 +56,7 @@ For each profiled table, the wizard generates an entity YAML file. Click any tab
 
 - **Columns** — name, data type, flags (PK, FK, enum-like, nullable), and sample values
 - **Relationships** — declared foreign keys (from constraints) and inferred foreign keys (from naming conventions)
-- **Flags** — warnings like "possibly abandoned" (empty or near-empty table) or "denormalized" (wide table with many columns)
+- **Flags** — warnings like "possibly abandoned" (table name matches legacy/temp patterns such as `old_*`, `temp_*`, `*_backup`) or "denormalized" (name matches reporting/cache patterns such as `*_summary`, `*_stats`, `*_cache`)
 - **Entity YAML** — editable in-place so you can refine descriptions, adjust column types, or add custom measures before saving
 - **Profiler notes** — additional observations from the heuristic analysis
 
@@ -64,35 +64,34 @@ Review the generated YAML and make any adjustments. Click **Preview** to continu
 
 ### 4. Preview (Optional)
 
-Type a natural-language question (e.g., "How many orders by status?") and click the sparkle button. The wizard shows which entities and tables the agent would see when answering that question.
+Type a natural-language question (e.g., "How many orders by status?") and click the sparkle button. The wizard shows a summary of the entities available to the agent, including the table count and names. This is a static summary — it does not simulate actual agent behavior or query generation.
 
 This step is optional — you can skip straight to **Save & Finish**.
 
-### 5. Save
+### 5. Done
 
-Click **Save & Finish**. The wizard persists your entities to the workspace's org-scoped semantic layer. Once saved:
+Click **Save & Finish** in the preview step. The wizard persists your entities to the workspace's org-scoped semantic layer. Once saved:
 
 - Entity YAML files are written to disk under the org-scoped `semantic/` directory
-- If an internal database is available, entities are also synced to the DB for durability
 - The semantic layer whitelist cache is flushed, so new tables are queryable immediately
-- A catalog, glossary, and metric files are generated alongside the entities
 
 You'll see a confirmation screen with links to **View Entities** in the admin console or **Start Chatting**.
+
+<Callout type="info">
+The wizard generates entity YAML files only. For a complete semantic layer scaffold including catalog, glossary, and metric files, use `atlas init` from the CLI.
+</Callout>
 
 ---
 
 ## What Gets Generated
 
-The wizard generates the same artifacts as `atlas init`:
+The wizard generates entity YAML files — one per profiled table:
 
 | File | Description |
 |------|-------------|
-| `entities/<table>.yml` | One entity YAML per table — dimensions, measures, joins, query patterns |
-| `catalog.yml` | Database-level metadata (tables, schemas, relationships) |
-| `glossary.yml` | Business terms extracted from column names and descriptions |
-| `metrics/<table>.yml` | Pre-built metric definitions for tables with numeric columns |
+| `entities/<table>.yml` | Dimensions, measures, joins, and query patterns for each table |
 
-All files are stored scoped to your organization. In a multi-tenant deployment, each workspace gets its own isolated semantic layer.
+All files are stored scoped to your organization. In a multi-tenant deployment, each workspace gets its own isolated semantic layer. For a complete scaffold including `catalog.yml`, `glossary.yml`, and `metrics/*.yml`, use `atlas init` from the CLI.
 
 ---
 
@@ -102,14 +101,14 @@ All files are stored scoped to your organization. In a multi-tenant deployment, 
 |---|---|---|
 | **Interface** | Browser UI — point and click | Terminal — command line |
 | **Auth** | Requires admin session | Uses `ATLAS_DATASOURCE_URL` directly |
-| **Storage** | Org-scoped (internal DB + disk) | Local `semantic/` directory |
+| **Storage** | Org-scoped (disk) | Local `semantic/` directory |
 | **Table selection** | Visual checklist with filter | `--tables` flag or interactive prompt |
 | **YAML editing** | In-place editor before save | Edit files after generation |
 | **Preview** | Built-in question preview step | N/A — run `atlas query` separately |
 | **Best for** | SaaS deployments, non-technical admins | Self-hosted, CI pipelines, version-controlled semantic layers |
 
 <Callout type="info">
-Both tools use the same profiler engine. The generated YAML is identical — the difference is where it's stored and how you interact with it.
+Both tools use the same profiler engine. The generated entity YAML is identical — the difference is where it's stored and how you interact with it. The CLI additionally generates catalog, glossary, and metric files.
 </Callout>
 
 ---
@@ -142,7 +141,7 @@ If some tables fail to profile while others succeed, the wizard reports per-tabl
 
 - **Permission denied** — the database user lacks `SELECT` on specific tables
 - **Unsupported column types** — exotic types may not map cleanly to dimension types
-- **Empty tables** — tables with zero rows still generate entities but are flagged as "possibly abandoned"
+- **Empty tables** — tables with zero rows still generate entities but may produce less useful sample values
 
 Check the error details in the review step. You can proceed with the successfully profiled tables and re-run the wizard for failed tables after fixing the underlying issue.
 
@@ -156,12 +155,12 @@ The wizard currently supports **PostgreSQL** and **MySQL**. For other databases 
 
 The wizard API is mounted at `/api/v1/wizard`. All endpoints require admin authentication.
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/profile` | List tables and views from a connected datasource |
-| `POST` | `/generate` | Profile selected tables and generate entity YAML |
-| `POST` | `/preview` | Preview agent behavior with generated entities |
-| `POST` | `/save` | Persist entities to the org-scoped semantic layer |
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/profile` | Admin session | List tables and views from a connected datasource |
+| `POST` | `/generate` | Admin session | Profile selected tables and generate entity YAML |
+| `POST` | `/preview` | Admin session | Preview agent behavior with generated entities |
+| `POST` | `/save` | Admin session | Persist entities to the org-scoped semantic layer |
 
 ---
 

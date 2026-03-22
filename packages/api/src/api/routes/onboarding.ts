@@ -40,7 +40,7 @@ onboarding.post("/test-connection", async (c) => {
   const authResult = await authenticateRequest(c.req.raw);
   if (!authResult.authenticated) {
     log.warn({ requestId, status: authResult.status }, "Authentication failed");
-    return c.json({ error: "auth_error", message: authResult.error }, authResult.status);
+    return c.json({ error: "auth_error", message: authResult.error, requestId }, authResult.status);
   }
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
@@ -116,7 +116,7 @@ onboarding.post("/complete", async (c) => {
   const authResult = await authenticateRequest(c.req.raw);
   if (!authResult.authenticated) {
     log.warn({ requestId, status: authResult.status }, "Authentication failed");
-    return c.json({ error: "auth_error", message: authResult.error }, authResult.status);
+    return c.json({ error: "auth_error", message: authResult.error, requestId }, authResult.status);
   }
 
   const orgId = authResult.user?.activeOrganizationId;

@@ -2306,11 +2306,11 @@ admin.get("/me/password-status", async (c) => {
     authResult = await authenticateRequest(req);
   } catch (err) {
     log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Authentication system error in password-status check");
-    return c.json({ error: "auth_error", message: "Authentication system error" }, 500);
+    return c.json({ error: "auth_error", message: "Authentication system error", requestId }, 500);
   }
   if (!authResult.authenticated) {
     const code = authErrorCode(authResult.error);
-    return c.json({ error: code, message: authResult.error }, authResult.status);
+    return c.json({ error: code, message: authResult.error, requestId }, authResult.status);
   }
   const user = authResult.user;
   if (authResult.mode !== "managed" || !user) {
@@ -2343,11 +2343,11 @@ admin.post("/me/password", async (c) => {
     authResult = await authenticateRequest(req);
   } catch (err) {
     log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Authentication system error in password change");
-    return c.json({ error: "auth_error", message: "Authentication system error" }, 500);
+    return c.json({ error: "auth_error", message: "Authentication system error", requestId }, 500);
   }
   if (!authResult.authenticated) {
     const code = authErrorCode(authResult.error);
-    return c.json({ error: code, message: authResult.error }, authResult.status);
+    return c.json({ error: code, message: authResult.error, requestId }, authResult.status);
   }
   const user = authResult.user;
   if (authResult.mode !== "managed" || !user) {

@@ -136,11 +136,11 @@ async function authPreamble(req: Request, requestId: string) {
       { err: err instanceof Error ? err : new Error(String(err)), requestId },
       "Auth dispatch failed",
     );
-    return { error: { error: "auth_error", message: "Authentication system error" }, status: 500 as const };
+    return { error: { error: "auth_error", message: "Authentication system error", requestId }, status: 500 as const };
   }
   if (!authResult.authenticated) {
     log.warn({ requestId, status: authResult.status }, "Authentication failed");
-    return { error: { error: "auth_error", message: authResult.error }, status: authResult.status as 401 | 403 | 500 };
+    return { error: { error: "auth_error", message: authResult.error, requestId }, status: authResult.status as 401 | 403 | 500 };
   }
 
   const ip = getClientIP(req);
@@ -149,7 +149,7 @@ async function authPreamble(req: Request, requestId: string) {
   if (!rateCheck.allowed) {
     const retryAfterSeconds = Math.ceil((rateCheck.retryAfterMs ?? 60000) / 1000);
     return {
-      error: { error: "rate_limited", message: "Too many requests. Please wait before trying again.", retryAfterSeconds },
+      error: { error: "rate_limited", message: "Too many requests. Please wait before trying again.", retryAfterSeconds, requestId },
       status: 429 as const,
       headers: { "Retry-After": String(retryAfterSeconds) },
     };
@@ -694,7 +694,7 @@ publicConversations.get("/:token", async (c) => {
   const rateLimitKey = ip ?? `unknown-${requestId}`;
   if (!checkPublicRateLimit(rateLimitKey)) {
     log.warn({ requestId, ip }, "Public conversation rate limited");
-    return c.json({ error: "rate_limited", message: "Too many requests. Please wait before trying again." }, 429);
+    return c.json({ error: "rate_limited", message: "Too many requests. Please wait before trying again.", requestId }, 429);
   }
 
   const token = c.req.param("token");
@@ -721,10 +721,10 @@ publicConversations.get("/:token", async (c) => {
         { err: err instanceof Error ? err.message : String(err), requestId, token },
         "Auth check failed for org-scoped share",
       );
-      return c.json({ error: "internal_error", message: "Authentication check failed. Please try again." }, 500);
+      return c.json({ error: "internal_error", message: "Authentication check failed. Please try again.", requestId }, 500);
     }
     if (!authResult.authenticated) {
-      return c.json({ error: "auth_required", message: "This shared conversation requires authentication." }, 403);
+      return c.json({ error: "auth_required", message: "This shared conversation requires authentication.", requestId }, 403);
     }
   }
 

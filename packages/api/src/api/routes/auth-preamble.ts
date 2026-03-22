@@ -39,11 +39,11 @@ export async function authPreamble(
       { err: err instanceof Error ? err : new Error(String(err)), requestId },
       "Auth dispatch failed",
     );
-    return { error: { error: "auth_error", message: "Authentication system error" }, status: 500 as const };
+    return { error: { error: "auth_error", message: "Authentication system error", requestId }, status: 500 as const };
   }
   if (!authResult.authenticated) {
     log.warn({ requestId, status: authResult.status }, "Authentication failed");
-    return { error: { error: "auth_error", message: authResult.error }, status: authResult.status as 401 | 403 | 500 };
+    return { error: { error: "auth_error", message: authResult.error, requestId }, status: authResult.status as 401 | 403 | 500 };
   }
 
   const ip = getClientIP(req);
@@ -52,7 +52,7 @@ export async function authPreamble(
   if (!rateCheck.allowed) {
     const retryAfterSeconds = Math.ceil((rateCheck.retryAfterMs ?? 60000) / 1000);
     return {
-      error: { error: "rate_limited", message: "Too many requests. Please wait before trying again.", retryAfterSeconds },
+      error: { error: "rate_limited", message: "Too many requests. Please wait before trying again.", retryAfterSeconds, requestId },
       status: 429 as const,
       headers: { "Retry-After": String(retryAfterSeconds) },
     };

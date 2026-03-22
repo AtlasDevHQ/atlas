@@ -94,11 +94,11 @@ async function authPreamble(req: Request, requestId: string) {
       { err: err instanceof Error ? err : new Error(String(err)), requestId },
       "Auth dispatch failed",
     );
-    return { error: { error: "auth_error", message: "Authentication system error" }, status: 500 as const };
+    return { error: { error: "auth_error", message: "Authentication system error", requestId }, status: 500 as const };
   }
   if (!authResult.authenticated) {
     log.warn({ requestId, status: authResult.status }, "Authentication failed");
-    return { error: { error: "auth_error", message: authResult.error }, status: authResult.status as 401 | 403 | 500 };
+    return { error: { error: "auth_error", message: authResult.error, requestId }, status: authResult.status as 401 | 403 | 500 };
   }
 
   const ip = getClientIP(req);
@@ -107,7 +107,7 @@ async function authPreamble(req: Request, requestId: string) {
   if (!rateCheck.allowed) {
     const retryAfterSeconds = Math.ceil((rateCheck.retryAfterMs ?? 60000) / 1000);
     return {
-      error: { error: "rate_limited", message: "Too many requests. Please wait before trying again.", retryAfterSeconds },
+      error: { error: "rate_limited", message: "Too many requests. Please wait before trying again.", retryAfterSeconds, requestId },
       status: 429 as const,
       headers: { "Retry-After": String(retryAfterSeconds) },
     };
@@ -216,6 +216,7 @@ scheduledTasks.post("/", async (c) => {
 
 scheduledTasks.post("/tick", async (c) => {
   const req = c.req.raw;
+  const requestId = crypto.randomUUID();
 
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Scheduled tasks require an internal database." }, 404);
@@ -229,7 +230,7 @@ scheduledTasks.post("/tick", async (c) => {
   if (secret) {
     const authHeader = req.headers.get("authorization");
     if (authHeader !== `Bearer ${secret}`) {
-      return c.json({ error: "unauthorized", message: "Invalid or missing cron secret." }, 401);
+      return c.json({ error: "unauthorized", message: "Invalid or missing cron secret.", requestId }, 401);
     }
   } else if (config?.scheduler?.backend === "vercel") {
     return c.json(

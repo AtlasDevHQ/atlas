@@ -102,14 +102,14 @@ query.post("/", async (c) => {
       "Auth dispatch failed",
     );
     return c.json(
-      { error: "auth_error", message: "Authentication system error" },
+      { error: "auth_error", message: "Authentication system error", requestId },
       500,
     );
   }
   if (!authResult.authenticated) {
     log.warn({ requestId, status: authResult.status }, "Authentication failed");
     return c.json(
-      { error: "auth_error", message: authResult.error },
+      { error: "auth_error", message: authResult.error, requestId },
       authResult.status as 401 | 403 | 500,
     );
   }
@@ -131,6 +131,7 @@ query.post("/", async (c) => {
         error: "rate_limited",
         message: "Too many requests. Please wait before trying again.",
         retryAfterSeconds,
+        requestId,
       },
       { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } },
     );

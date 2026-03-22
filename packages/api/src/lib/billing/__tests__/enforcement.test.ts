@@ -174,6 +174,14 @@ describe("billing/enforcement", () => {
 
   // ── Team tier — OK (below 80%) ────────────────────────────────────
 
+  it("allows at 79% with no warning (boundary: just below warning)", async () => {
+    mockWorkspace = makeWorkspace();
+    // 79% of 10,000 = 7,900
+    mockUsage = { queryCount: 7_900, tokenCount: 0, activeUsers: 0, periodStart: "", periodEnd: "" };
+    const result = expectAllowed(await checkPlanLimits("org-1"));
+    expect(result.warning).toBeUndefined();
+  });
+
   it("allows team tier below 80% with no warning", async () => {
     mockWorkspace = makeWorkspace();
     mockUsage = { queryCount: 500, tokenCount: 10_000, activeUsers: 0, periodStart: "", periodEnd: "" };
@@ -240,6 +248,18 @@ describe("billing/enforcement", () => {
     expect(result.warning).toBeDefined();
     const tokenMetric = result.warning!.metrics.find((m) => m.metric === "tokens");
     expect(tokenMetric!.status).toBe("soft_limit");
+  });
+
+  // ── Team tier — Boundary: 109% is soft, 110% is hard ──────────────
+
+  it("allows at 109% query usage (boundary: just below hard limit)", async () => {
+    mockWorkspace = makeWorkspace();
+    // 109% of 10,000 = 10,900
+    mockUsage = { queryCount: 10_900, tokenCount: 0, activeUsers: 0, periodStart: "", periodEnd: "" };
+    const result = expectAllowed(await checkPlanLimits("org-1"));
+    expect(result.warning).toBeDefined();
+    const queryMetric = result.warning!.metrics.find((m) => m.metric === "queries");
+    expect(queryMetric!.status).toBe("soft_limit");
   });
 
   // ── Team tier — Hard limit (110%+) ────────────────────────────────
@@ -316,22 +336,21 @@ describe("billing/enforcement", () => {
   // ── Caching ───────────────────────────────────────────────────────
 
   it("uses cached workspace on second call", async () => {
-    mockWorkspace = makeWorkspace();
-    mockUsage = { queryCount: 500, tokenCount: 0, activeUsers: 0, periodStart: "", periodEnd: "" };
+    mockWorkspace = makeWorkspace(); // team tier
+    mockUsage = { queryCount: 8_500, tokenCount: 0, activeUsers: 0, periodStart: "", periodEnd: "" };
 
-    // First call — populates cache
-    const r1 = await checkPlanLimits("org-1");
-    expect(r1.allowed).toBe(true);
+    // First call — populates cache with "team" tier, 85% usage → warning
+    const r1 = expectAllowed(await checkPlanLimits("org-1"));
+    expect(r1.warning).toBeDefined();
 
-    // Change the mock — but cache should still have old value
-    mockWorkspace = makeWorkspace({ plan_tier: "enterprise" });
+    // Change mock to expired trial — if cache is bypassed, this would block the request
+    const pastDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    mockWorkspace = makeWorkspace({ plan_tier: "trial", trial_ends_at: pastDate });
 
-    // Second call — should still use cached "team" workspace
-    // (usage is still fetched fresh, but workspace tier is cached)
+    // Second call — cache should still serve "team" tier → allowed with warning
     const r2 = expectAllowed(await checkPlanLimits("org-1"));
-    // It returned allowed:true, so it either used the cached team tier (checked usage)
-    // or the new enterprise tier (skipped usage). Either way, allowed.
-    expect(r2.allowed).toBe(true);
+    expect(r2.warning).toBeDefined();
+    // If cache was bypassed, we'd get { allowed: false, errorCode: "trial_expired" }
   });
 
   it("invalidatePlanCache clears cache for a specific org", async () => {

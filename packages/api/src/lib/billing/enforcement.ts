@@ -98,7 +98,7 @@ async function getCachedWorkspace(
   return workspace;
 }
 
-/** Clear cache for a workspace (e.g. after plan change). Exported for tests. */
+/** Clear cached workspace data. Called after plan tier changes (e.g. Stripe webhook) to force a fresh DB read. */
 export function invalidatePlanCache(orgId?: string): void {
   if (orgId) {
     planCache.delete(orgId);
@@ -314,11 +314,17 @@ function evaluateUsage(
 // Helpers
 // ---------------------------------------------------------------------------
 
-function buildMetricStatus(
+export function buildMetricStatus(
   metric: "queries" | "tokens",
   currentUsage: number,
   limit: number,
 ): PlanLimitStatus {
+  if (limit <= 0) {
+    // Invalid limit (not the -1 unlimited sentinel, which is filtered upstream).
+    // Fail safe: treat as hard limit so misconfigured plans don't silently allow everything.
+    log.error({ metric, limit }, "Invalid plan limit value — treating as hard limit");
+    return { metric, currentUsage, limit, usagePercent: 999, status: "hard_limit" };
+  }
   const usagePercent = Math.round((currentUsage / limit) * 100);
   return {
     metric,

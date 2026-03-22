@@ -20,6 +20,7 @@ import {
 import { connections } from "@atlas/api/lib/db/connection";
 import { flushCache } from "@atlas/api/lib/cache/index";
 import { adminAuthPreamble } from "./admin-auth";
+import { invalidatePlanCache } from "@atlas/api/lib/billing/enforcement";
 
 const log = createLogger("admin-orgs");
 
@@ -523,6 +524,7 @@ adminOrgs.patch("/:id/plan", async (c) => {
       }
 
       await updateWorkspacePlanTier(orgId, body.planTier as PlanTier);
+      invalidatePlanCache(orgId);
 
       log.info({ orgId, requestId, admin: authResult.user?.id, planTier: body.planTier }, "Workspace plan tier updated");
 

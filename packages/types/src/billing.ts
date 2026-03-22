@@ -18,7 +18,7 @@ export interface PlanLimitStatus {
   currentUsage: number;
   /** Plan limit for the billing period. -1 = unlimited. */
   limit: number;
-  /** Usage as a percentage of the limit (0–999). */
+  /** Usage as a percentage of the limit. 0 = no usage, 100 = at limit. No upper bound. */
   usagePercent: number;
   /** Overage status level. */
   status: OverageStatus;

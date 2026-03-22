@@ -25,7 +25,7 @@ import {
 } from "@atlas/api/lib/db/internal";
 import { getCurrentPeriodUsage } from "@atlas/api/lib/metering";
 import { getPlanDefinition, getPlanLimits, isUnlimited } from "@atlas/api/lib/billing/plans";
-import type { OverageStatus } from "@useatlas/types";
+import { buildMetricStatus } from "@atlas/api/lib/billing/enforcement";
 
 const log = createLogger("billing");
 
@@ -124,19 +124,16 @@ billing.get("/", async (c) => {
         );
       }
 
-      // Compute overage status for each metered dimension
+      // Compute overage status for each metered dimension (reuses shared thresholds from enforcement)
       const queryLimit = isUnlimited(limits.queriesPerMonth) ? null : limits.queriesPerMonth;
       const tokenLimit = isUnlimited(limits.tokensPerMonth) ? null : limits.tokensPerMonth;
 
-      function computeOverageStatus(current: number, limit: number | null): { usagePercent: number; status: OverageStatus } {
-        if (limit === null) return { usagePercent: 0, status: "ok" };
-        const pct = Math.round((current / limit) * 100);
-        const status: OverageStatus = pct >= 110 ? "hard_limit" : pct >= 100 ? "soft_limit" : pct >= 80 ? "warning" : "ok";
-        return { usagePercent: pct, status };
-      }
-
-      const queryOverage = computeOverageStatus(usage.queryCount, queryLimit);
-      const tokenOverage = computeOverageStatus(usage.tokenCount, tokenLimit);
+      const queryOverage = queryLimit !== null
+        ? buildMetricStatus("queries", usage.queryCount, queryLimit)
+        : { usagePercent: 0, status: "ok" as const };
+      const tokenOverage = tokenLimit !== null
+        ? buildMetricStatus("tokens", usage.tokenCount, tokenLimit)
+        : { usagePercent: 0, status: "ok" as const };
 
       return c.json({
         workspaceId: orgId,

@@ -421,6 +421,15 @@ export async function deleteRole(orgId: string, roleId: string): Promise<boolean
     throw new RoleError("Built-in roles cannot be deleted.", "builtin_protected");
   }
 
+  // Block deletion when role has active members
+  const members = await listRoleMembers(orgId, roleId);
+  if (members.length > 0) {
+    throw new RoleError(
+      `Cannot delete role with ${members.length} active member(s). Reassign them first.`,
+      "validation",
+    );
+  }
+
   const pool = getInternalDB();
   const result = await pool.query(
     `DELETE FROM custom_roles WHERE id = $1 AND org_id = $2 RETURNING id`,

@@ -412,14 +412,33 @@ describe("CRUD operations", () => {
   });
 
   describe("deleteRole", () => {
-    it("deletes a custom role", async () => {
+    it("deletes a custom role with no active members", async () => {
       // getRole (via internalQuery) returns custom role
       mockRows.push([makeRoleRow({ is_builtin: false })]);
+      // listRoleMembers: getRole returns the role again
+      mockRows.push([makeRoleRow({ is_builtin: false })]);
+      // listRoleMembers: member table query returns empty (no members)
+      mockRows.push([]);
       // DELETE (via getInternalDB().query) returns the deleted row
       mockRows.push([{ id: "role-1" }]);
 
       const result = await deleteRole("org-1", "role-1");
       expect(result).toBe(true);
+    });
+
+    it("rejects deletion when role has active members", async () => {
+      mockRows.push([makeRoleRow({ is_builtin: false })]);
+      // listRoleMembers: getRole
+      mockRows.push([makeRoleRow({ is_builtin: false })]);
+      // listRoleMembers: member table returns 2 members
+      mockRows.push([
+        { userId: "u1", role: "analyst", createdAt: "2026-01-01" },
+        { userId: "u2", role: "analyst", createdAt: "2026-01-01" },
+      ]);
+
+      await expect(
+        deleteRole("org-1", "role-1"),
+      ).rejects.toThrow("Cannot delete role with 2 active member(s)");
     });
 
     it("rejects deletion of built-in roles", async () => {

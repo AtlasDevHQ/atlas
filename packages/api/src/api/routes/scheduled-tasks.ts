@@ -234,12 +234,12 @@ scheduledTasks.post("/tick", async (c) => {
     }
   } else if (config?.scheduler?.backend === "vercel") {
     return c.json(
-      { error: "misconfigured", message: "Vercel backend requires CRON_SECRET or ATLAS_SCHEDULER_SECRET to be set." },
+      { error: "misconfigured", message: "Vercel backend requires CRON_SECRET or ATLAS_SCHEDULER_SECRET to be set.", requestId },
       500,
     );
   } else if (process.env.NODE_ENV === "production") {
     return c.json(
-      { error: "misconfigured", message: "CRON_SECRET or ATLAS_SCHEDULER_SECRET must be set in production." },
+      { error: "misconfigured", message: "CRON_SECRET or ATLAS_SCHEDULER_SECRET must be set in production.", requestId },
       500,
     );
   } else {
@@ -250,12 +250,12 @@ scheduledTasks.post("/tick", async (c) => {
     const { runTick } = await import("@atlas/api/lib/scheduler/engine");
     const result = await runTick();
     if (result.error) {
-      return c.json(result, 500);
+      return c.json({ ...result, requestId }, 500);
     }
     return c.json(result);
   } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Tick execution failed");
-    return c.json({ error: "internal_error", message: "Tick execution failed." }, 500);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Tick execution failed");
+    return c.json({ error: "internal_error", message: "Tick execution failed.", requestId }, 500);
   }
 });
 

@@ -37,7 +37,13 @@ onboarding.post("/test-connection", async (c) => {
     return c.json({ error: "not_available", message: "Onboarding requires managed auth mode." }, 404);
   }
 
-  const authResult = await authenticateRequest(c.req.raw);
+  let authResult;
+  try {
+    authResult = await authenticateRequest(c.req.raw);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Auth dispatch failed");
+    return c.json({ error: "auth_error", message: "Authentication system error", requestId }, 500);
+  }
   if (!authResult.authenticated) {
     log.warn({ requestId, status: authResult.status }, "Authentication failed");
     return c.json({ error: "auth_error", message: authResult.error, requestId }, authResult.status);
@@ -113,7 +119,13 @@ onboarding.post("/complete", async (c) => {
     return c.json({ error: "not_available", message: "Onboarding requires an internal database (DATABASE_URL)." }, 404);
   }
 
-  const authResult = await authenticateRequest(c.req.raw);
+  let authResult;
+  try {
+    authResult = await authenticateRequest(c.req.raw);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Auth dispatch failed");
+    return c.json({ error: "auth_error", message: "Authentication system error", requestId }, 500);
+  }
   if (!authResult.authenticated) {
     log.warn({ requestId, status: authResult.status }, "Authentication failed");
     return c.json({ error: "auth_error", message: authResult.error, requestId }, authResult.status);

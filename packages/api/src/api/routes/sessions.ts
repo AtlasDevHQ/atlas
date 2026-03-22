@@ -85,7 +85,7 @@ sessions.get("/", async (c) => {
       });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to list user sessions");
-      return c.json({ error: "internal_error", message: "Failed to list sessions." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to list sessions.", requestId }, 500);
     }
   });
 });
@@ -149,7 +149,7 @@ sessions.delete("/:id", async (c) => {
       return c.json({ success: true });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), sessionId, userId }, "Failed to revoke session");
-      return c.json({ error: "internal_error", message: "Failed to revoke session." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to revoke session.", requestId }, 500);
     }
   });
 });

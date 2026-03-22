@@ -646,6 +646,7 @@ try {
 | `provider_timeout` | 504 | Yes | LLM provider timed out |
 | `provider_unreachable` | 502 | Yes | Could not reach the AI provider |
 | `provider_error` | 502 | Yes | LLM provider error |
+| `plan_limit_exceeded` | 429 | No | Workspace exceeded plan query/token limit |
 | `internal_error` | 500 | Yes | Server error (includes `requestId` for log correlation) |
 | `network_error` | 0 | Yes | Could not reach the API (SDK-only) |
 | `invalid_response` | (varies) | No | Response could not be parsed (SDK-only) |
@@ -809,7 +810,6 @@ import type {
   SemanticStats,
   ConnectionHealth,
   ConnectionInfo,
-  ConnectionDetail,
   AuditLogEntry,
   AuditLogResponse,
   AuditLogOptions,

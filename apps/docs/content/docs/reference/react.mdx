@@ -736,7 +736,8 @@ type ChatErrorCode =
   | "forbidden"
   | "session_expired"
   | "forbidden_role"
-  | "org_not_found";
+  | "org_not_found"
+  | "plan_limit_exceeded";
 
 // ChatErrorInfo — parsed error details (use parseChatError() to extract)
 interface ChatErrorInfo {

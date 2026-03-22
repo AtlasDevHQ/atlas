@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
+import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
 import { useAtlasConfig } from "@/ui/context";
 import { useDarkMode } from "@/ui/hooks/use-dark-mode";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -27,12 +27,19 @@ import {
   ExternalLink,
   CreditCard,
 } from "lucide-react";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 
 import type { DailyUsagePoint } from "./usage-chart";
 
 // Dynamic import — Recharts is heavy
-const UsageChart = dynamic(() => import("./usage-chart"), { ssr: false });
+const UsageChart = dynamic(() => import("./usage-chart"), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-[300px] items-center justify-center text-sm text-muted-foreground">
+      Loading chart...
+    </div>
+  ),
+});
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -88,8 +95,9 @@ export default function UsageDashboardPage() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
   const [portalLoading, setPortalLoading] = useState(false);
+  const [portalError, setPortalError] = useState<string | null>(null);
 
-  const { data, loading, error } = useAdminFetch<UsageSummary>(
+  const { data, loading, error, refetch } = useAdminFetch<UsageSummary>(
     "/api/v1/admin/usage/summary",
   );
 
@@ -114,6 +122,7 @@ export default function UsageDashboardPage() {
 
   async function openBillingPortal() {
     setPortalLoading(true);
+    setPortalError(null);
     try {
       const res = await fetch(`${apiUrl}/api/v1/billing/portal`, {
         method: "POST",
@@ -122,13 +131,19 @@ export default function UsageDashboardPage() {
         body: JSON.stringify({ returnUrl: window.location.href }),
       });
       if (!res.ok) {
-        console.debug("Billing portal request failed:", res.status);
+        setPortalError(`Failed to open billing portal (HTTP ${res.status}). Please try again.`);
         return;
       }
       const json = (await res.json()) as { url?: string };
-      if (json.url) window.location.href = json.url;
+      if (!json.url) {
+        setPortalError("Billing portal URL was not returned. Please contact support.");
+        return;
+      }
+      window.location.href = json.url;
     } catch (err) {
-      console.debug("Failed to open billing portal:", err instanceof Error ? err.message : String(err));
+      setPortalError(
+        `Could not reach the billing service. ${err instanceof Error ? err.message : "Please try again."}`,
+      );
     } finally {
       setPortalLoading(false);
     }
@@ -163,8 +178,11 @@ export default function UsageDashboardPage() {
       </div>
 
       <div className="flex-1 overflow-auto p-6 space-y-6">
+        {/* Portal error */}
+        {portalError && <ErrorBanner message={portalError} onRetry={openBillingPortal} />}
+
         {/* Error state */}
-        {error && <ErrorBanner message={error.message} />}
+        {error && <ErrorBanner message={friendlyError(error)} onRetry={refetch} />}
 
         {/* Loading state */}
         {loading && <LoadingState message="Loading usage data..." />}
@@ -264,7 +282,7 @@ function UsageMetricCard({
   title: string;
   used: number;
   limit: number | null;
-  icon: React.ReactNode;
+  icon: ReactNode;
 }) {
   const percentage = pct(used, limit);
 

@@ -86,10 +86,18 @@ adminUsage.get("/summary", async (c) => {
     }
 
     try {
-      // Aggregate today's daily summary before fetching history
+      // Aggregate today's daily summary before fetching history.
+      // Non-critical — stale data is acceptable if this fails.
       const now = new Date();
       const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      await aggregateUsageSummary(orgId, "daily", todayStart);
+      try {
+        await aggregateUsageSummary(orgId, "daily", todayStart);
+      } catch (aggErr) {
+        log.warn(
+          { err: aggErr instanceof Error ? aggErr : new Error(String(aggErr)), requestId },
+          "Non-critical: failed to aggregate today's usage summary; proceeding with stale data",
+        );
+      }
 
       // 30 days ago
       const thirtyDaysAgo = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 30);
@@ -101,6 +109,9 @@ adminUsage.get("/summary", async (c) => {
         getUsageBreakdown(orgId, undefined, undefined, 50),
       ]);
 
+      if (!workspace) {
+        log.warn({ orgId, requestId }, "Workspace row not found for org; defaulting to free tier");
+      }
       const planTier = workspace?.plan_tier ?? "free";
       const plan = getPlanDefinition(planTier);
       const limits = getPlanLimits(planTier);

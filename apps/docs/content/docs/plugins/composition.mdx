@@ -116,13 +116,13 @@ When `ATLAS_SANDBOX=nsjail` is explicitly set, sandbox plugins are **skipped ent
 ```typescript
 // atlas.config.ts
 import { defineConfig } from "@atlas/api/lib/config";
-import { e2bPlugin } from "@useatlas/e2b";
-import { daytonaPlugin } from "@useatlas/daytona";
+import { e2bSandboxPlugin } from "@useatlas/e2b";
+import { daytonaSandboxPlugin } from "@useatlas/daytona";
 
 export default defineConfig({
   plugins: [
-    e2bPlugin({ apiKey: process.env.E2B_API_KEY!, priority: 90 }),
-    daytonaPlugin({ endpoint: process.env.DAYTONA_URL!, priority: 80 }),
+    e2bSandboxPlugin({ apiKey: process.env.E2B_API_KEY!, priority: 90 }),
+    daytonaSandboxPlugin({ endpoint: process.env.DAYTONA_URL!, priority: 80 }),
   ],
 });
 ```

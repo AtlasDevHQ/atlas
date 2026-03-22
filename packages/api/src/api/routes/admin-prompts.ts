@@ -494,7 +494,7 @@ export const adminPrompts = new OpenAPIHono();
 
 adminPrompts.onError((err, c) => {
   if (err instanceof HTTPException && err.status === 400) {
-    return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+    return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
   }
   throw err;
 });

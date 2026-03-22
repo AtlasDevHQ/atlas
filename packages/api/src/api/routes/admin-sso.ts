@@ -83,7 +83,7 @@ const SSOProviderDetailSchema = z.object({
 }).passthrough();
 
 const ProviderIdParamSchema = z.object({
-  id: z.string().max(MAX_ID_LENGTH).openapi({
+  id: z.string().min(1).max(MAX_ID_LENGTH).openapi({
     param: { name: "id", in: "path" },
     example: "prov_abc123",
   }),
@@ -365,7 +365,7 @@ const adminSso = new OpenAPIHono();
 
 adminSso.onError((err, c) => {
   if (err instanceof HTTPException && err.status === 400) {
-    return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+    return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
   }
   throw err;
 });

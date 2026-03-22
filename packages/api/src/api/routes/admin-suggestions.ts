@@ -153,7 +153,7 @@ adminSuggestions.openapi(listSuggestionsRoute, async (c) => {
   const { authResult } = preamble;
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Internal database not configured." }, 404);
+    return c.json({ error: "Internal database not configured" }, 404);
   }
 
   const orgId = authResult.user?.activeOrganizationId ?? null;
@@ -227,7 +227,7 @@ adminSuggestions.openapi(deleteSuggestionRoute, async (c) => {
   const { authResult } = preamble;
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Internal database not configured." }, 404);
+    return c.json({ error: "Internal database not configured" }, 404);
   }
 
   const orgId = authResult.user?.activeOrganizationId ?? null;

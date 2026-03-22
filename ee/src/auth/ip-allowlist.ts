@@ -113,10 +113,10 @@ function parseIPv6(ip: string): bigint | null {
   if (v4Suffix) {
     const v4 = parseIPv4(v4Suffix[1]);
     if (v4 === null) return null;
-    const hex1 = ((v4 >> 8n) & 0xFFn).toString(16);
-    const hex2 = (v4 & 0xFFn).toString(16);
-    const hex3 = ((v4 >> 24n) & 0xFFn).toString(16);
-    const hex4 = ((v4 >> 16n) & 0xFFn).toString(16);
+    const hex1 = ((v4 >> 8n) & 0xFFn).toString(16).padStart(2, "0");
+    const hex2 = (v4 & 0xFFn).toString(16).padStart(2, "0");
+    const hex3 = ((v4 >> 24n) & 0xFFn).toString(16).padStart(2, "0");
+    const hex4 = ((v4 >> 16n) & 0xFFn).toString(16).padStart(2, "0");
     expandedIP = ip.slice(0, v4Suffix.index) + `${hex3}${hex4}:${hex1}${hex2}`;
   }
 
@@ -372,12 +372,12 @@ export async function checkIPAllowlist(
       }
       cache.set(orgId, { ranges, expiry: now + CACHE_TTL_MS });
     } catch (err) {
-      // On DB error, fail open to avoid locking out all users
+      // Fail closed per CLAUDE.md: "catch { return false } on a security check is a bug"
       log.error(
         { err: err instanceof Error ? err.message : String(err), orgId },
-        "Failed to load IP allowlist — allowing request",
+        "Failed to load IP allowlist — blocking request (fail-closed)",
       );
-      return { allowed: true };
+      throw err;
     }
   }
 

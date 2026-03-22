@@ -643,7 +643,8 @@ export async function migrateInternalDB(): Promise<void> {
       cidr TEXT NOT NULL,
       description TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      created_by TEXT
+      created_by TEXT,
+      UNIQUE(org_id, cidr)
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_ip_allowlist_org ON ip_allowlist(org_id);`);

@@ -403,7 +403,8 @@ wizard.post("/save", async (c) => {
         fs.writeFileSync(filePath, entity.yaml, "utf-8");
         savedFiles.push(`entities/${safeName}.yml`);
 
-        // Also sync to DB if internal DB is available
+        // Also write to org-scoped semantic directory (semantic/.orgs/{orgId}/)
+        // so the explore tool can discover this entity.
         if (hasInternalDB()) {
           await syncEntityToDisk(orgId, entity.tableName, "entity", entity.yaml).catch((err) => {
             log.warn({ err: err instanceof Error ? err.message : String(err), tableName: entity.tableName }, "Disk sync after wizard save failed");
@@ -411,8 +412,11 @@ wizard.post("/save", async (c) => {
         }
       }
 
-      // Generate and write catalog.yml if we have profile data
-      // (The entities array may include profile data from the generate step)
+      // Generate catalog, glossary, and metric files from raw profile data.
+      // The wizard frontend does not send raw profile data — it sends
+      // pre-generated entity YAML via { connectionId, entities } instead.
+      // This branch handles callers (e.g. future CLI integrations) that
+      // provide raw TableProfile[] data for server-side generation.
       const profileData = (body as Record<string, unknown>).profiles;
       if (Array.isArray(profileData) && profileData.length > 0) {
         const profiles = profileData as TableProfile[];

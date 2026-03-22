@@ -32,6 +32,7 @@ export function authErrorCode(error: string): "session_expired" | "auth_error" {
  * - `{ error, status, headers? }` on failure (401/403/429/500)
  * - `{ authResult }` on success (authenticated admin user)
  *
+ * All error objects include `requestId` for log correlation.
  * The `headers` field is only present for 429 rate-limit responses.
  */
 export async function adminAuthPreamble(req: Request, requestId: string) {
@@ -48,7 +49,7 @@ export async function adminAuthPreamble(req: Request, requestId: string) {
   if (!authResult.authenticated) {
     log.warn({ requestId, status: authResult.status }, "Authentication failed");
     const code = authErrorCode(authResult.error);
-    return { error: { error: code, message: authResult.error }, status: authResult.status as 401 | 403 | 500 };
+    return { error: { error: code, message: authResult.error, requestId }, status: authResult.status as 401 | 403 | 500 };
   }
 
   // Enforce admin role — when auth mode is "none" (no auth configured, e.g.
@@ -56,7 +57,7 @@ export async function adminAuthPreamble(req: Request, requestId: string) {
   // identity boundary to enforce.
   if (authResult.mode !== "none" && (!authResult.user || (authResult.user.role !== "admin" && authResult.user.role !== "owner"))) {
     log.warn({ requestId, userId: authResult.user?.id, role: authResult.user?.role }, "Non-admin access attempt");
-    return { error: { error: "forbidden_role", message: "Admin role required." }, status: 403 as const };
+    return { error: { error: "forbidden_role", message: "Admin role required.", requestId }, status: 403 as const };
   }
 
   const ip = getClientIP(req);
@@ -65,7 +66,7 @@ export async function adminAuthPreamble(req: Request, requestId: string) {
   if (!rateCheck.allowed) {
     const retryAfterSeconds = Math.ceil((rateCheck.retryAfterMs ?? 60000) / 1000);
     return {
-      error: { error: "rate_limited", message: "Too many requests. Please wait before trying again.", retryAfterSeconds },
+      error: { error: "rate_limited", message: "Too many requests. Please wait before trying again.", retryAfterSeconds, requestId },
       status: 429 as const,
       headers: { "Retry-After": String(retryAfterSeconds) },
     };

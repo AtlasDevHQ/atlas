@@ -242,6 +242,7 @@ app.onError((err, c) => {
     {
       error: "internal_error",
       message: `An unexpected server error occurred (ref: ${requestId.slice(0, 8)}). Please try again.`,
+      requestId,
     },
     500,
   );

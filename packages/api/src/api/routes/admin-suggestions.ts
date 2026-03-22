@@ -41,13 +41,7 @@ const ListSuggestionsResponseSchema = z.object({
   offset: z.number(),
 });
 
-const ErrorSchema = z.object({
-  error: z.string(),
-  message: z.string(),
-  requestId: z.string().optional(),
-});
-
-const AuthErrorSchema = z.record(z.string(), z.unknown());
+import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 // ---------------------------------------------------------------------------
 // Route definitions
@@ -153,7 +147,7 @@ adminSuggestions.openapi(listSuggestionsRoute, async (c) => {
   const { authResult } = preamble;
 
   if (!hasInternalDB()) {
-    return c.json({ error: "Internal database not configured" }, 404) as never;
+    return c.json({ error: "not_available", message: "Internal database not configured." }, 404);
   }
 
   const orgId = authResult.user?.activeOrganizationId ?? null;
@@ -227,7 +221,7 @@ adminSuggestions.openapi(deleteSuggestionRoute, async (c) => {
   const { authResult } = preamble;
 
   if (!hasInternalDB()) {
-    return c.json({ error: "Internal database not configured" }, 404) as never;
+    return c.json({ error: "Internal database not configured" }, 404);
   }
 
   const orgId = authResult.user?.activeOrganizationId ?? null;
@@ -239,7 +233,7 @@ adminSuggestions.openapi(deleteSuggestionRoute, async (c) => {
       if (!deleted) {
         return c.json({ error: "not_found", message: "Suggestion not found." }, 404);
       }
-      return new Response(null, { status: 204 }) as never;
+      return new Response(null, { status: 204 });
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to delete suggestion");
       return c.json({ error: "internal_error", message: "Failed to delete suggestion.", requestId }, 500);

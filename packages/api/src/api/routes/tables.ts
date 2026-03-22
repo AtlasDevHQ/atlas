@@ -19,11 +19,7 @@ const TablesResponseSchema = z.object({
   warnings: z.array(z.string()).optional(),
 });
 
-const ErrorSchema = z.object({
-  error: z.string(),
-  message: z.string(),
-  requestId: z.string().optional(),
-});
+import { ErrorSchema } from "./shared-schemas";
 
 const tablesRoute = createRoute({
   method: "get",

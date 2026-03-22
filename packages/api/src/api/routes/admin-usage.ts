@@ -29,13 +29,7 @@ function isValidDateParam(value: string): boolean {
 // Schemas
 // ---------------------------------------------------------------------------
 
-const ErrorSchema = z.object({
-  error: z.string(),
-  message: z.string(),
-  requestId: z.string().optional(),
-});
-
-const AuthErrorSchema = z.record(z.string(), z.unknown());
+import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 const CurrentPeriodUsageResponseSchema = z.object({
   workspaceId: z.string(),

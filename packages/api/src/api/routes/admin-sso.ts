@@ -51,13 +51,7 @@ function ssoErrorResponse(err: unknown): { body: Record<string, unknown>; status
 // Schemas
 // ---------------------------------------------------------------------------
 
-const ErrorSchema = z.object({
-  error: z.string(),
-  message: z.string(),
-  requestId: z.string().optional(),
-});
-
-const AuthErrorSchema = z.record(z.string(), z.unknown());
+import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 const SSOProviderSummarySchema = z.object({
   id: z.string(),

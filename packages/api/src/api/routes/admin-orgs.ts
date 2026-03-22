@@ -31,13 +31,7 @@ const MAX_ID_LENGTH = 128;
 // Schemas
 // ---------------------------------------------------------------------------
 
-const ErrorSchema = z.object({
-  error: z.string(),
-  message: z.string(),
-  requestId: z.string().optional(),
-});
-
-const AuthErrorSchema = z.record(z.string(), z.unknown());
+import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 const OrgIdParamSchema = z.object({
   id: z.string().min(1).max(MAX_ID_LENGTH).openapi({

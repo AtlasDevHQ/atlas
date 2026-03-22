@@ -86,13 +86,7 @@ const ReorderedSchema = z.object({
   reordered: z.boolean(),
 });
 
-const ErrorSchema = z.object({
-  error: z.string(),
-  message: z.string(),
-  requestId: z.string().optional(),
-});
-
-const AuthErrorSchema = z.record(z.string(), z.unknown());
+import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 // ---------------------------------------------------------------------------
 // Route definitions

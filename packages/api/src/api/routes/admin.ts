@@ -55,13 +55,7 @@ const log = createLogger("admin-routes");
 // Schemas
 // ---------------------------------------------------------------------------
 
-const ErrorSchema = z.object({
-  error: z.string(),
-  message: z.string(),
-  requestId: z.string().optional(),
-});
-
-const AuthErrorSchema = z.record(z.string(), z.unknown());
+import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 // ---------------------------------------------------------------------------
 // Router

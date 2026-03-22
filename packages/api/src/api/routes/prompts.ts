@@ -51,11 +51,7 @@ function toPromptItem(row: Record<string, unknown>): PromptItem {
 // Schemas
 // ---------------------------------------------------------------------------
 
-const ErrorSchema = z.object({
-  error: z.string(),
-  message: z.string(),
-  requestId: z.string().optional(),
-});
+import { ErrorSchema } from "./shared-schemas";
 
 // ---------------------------------------------------------------------------
 // Route definitions

@@ -62,11 +62,7 @@ const ValidateSQLResponseSchema = z.object({
   tables: z.array(z.string()),
 });
 
-const ErrorSchema = z.object({
-  error: z.string(),
-  message: z.string(),
-  requestId: z.string().optional(),
-});
+import { ErrorSchema } from "./shared-schemas";
 
 const validateRoute = createRoute({
   method: "post",

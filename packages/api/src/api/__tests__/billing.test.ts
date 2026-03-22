@@ -144,9 +144,9 @@ mock.module("@atlas/api/lib/semantic", () => ({
 // --- Import billing routes ---
 
 import { billing } from "../routes/billing";
-import { Hono } from "hono";
+import { OpenAPIHono } from "@hono/zod-openapi";
 
-const app = new Hono();
+const app = new OpenAPIHono();
 app.route("/api/v1/billing", billing);
 
 function request(path: string, options?: RequestInit) {

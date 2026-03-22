@@ -209,8 +209,9 @@ billing.post("/portal", async (c) => {
       try {
         const raw = await req.json() as Record<string, unknown>;
         if (typeof raw?.returnUrl === "string") returnUrl = raw.returnUrl;
-      } catch {
+      } catch (err) {
         // No body is fine — returnUrl is optional
+        log.debug({ err: err instanceof Error ? err.message : String(err) }, "No returnUrl body in portal request");
       }
 
       const stripeClient = new Stripe(process.env.STRIPE_SECRET_KEY!);

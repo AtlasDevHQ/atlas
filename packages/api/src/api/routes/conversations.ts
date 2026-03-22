@@ -106,17 +106,17 @@ const ShareConversationBodySchema = z.object({
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Map a CrudFailReason to { body, status } for JSON responses. */
-function crudFailResponse(reason: CrudFailReason) {
+function crudFailResponse(reason: CrudFailReason, requestId?: string) {
   switch (reason) {
     case "no_db":
       return { body: { error: "not_available", message: "Conversation history is not available (no internal database configured)." }, status: 404 as const };
     case "not_found":
       return { body: { error: "not_found", message: "Conversation not found." }, status: 404 as const };
     case "error":
-      return { body: { error: "internal_error", message: "A database error occurred. Please try again." }, status: 500 as const };
+      return { body: { error: "internal_error", message: "A database error occurred. Please try again.", ...(requestId && { requestId }) }, status: 500 as const };
     default: {
       const _exhaustive: never = reason;
-      return { body: { error: "internal_error", message: `Unexpected failure: ${_exhaustive}` }, status: 500 as const };
+      return { body: { error: "internal_error", message: `Unexpected failure: ${_exhaustive}`, ...(requestId && { requestId }) }, status: 500 as const };
     }
   }
 }
@@ -220,7 +220,7 @@ conversations.get("/:id", async (c) => {
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     const result = await getConversation(id, authResult.user?.id);
     if (!result.ok) {
-      const fail = crudFailResponse(result.reason);
+      const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);
     }
     return c.json(result.data);
@@ -266,7 +266,7 @@ conversations.patch("/:id/star", async (c) => {
 
     const result = await starConversation(id, parsed.data.starred, authResult.user?.id);
     if (!result.ok) {
-      const fail = crudFailResponse(result.reason);
+      const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);
     }
     return c.json({ id, starred: parsed.data.starred });
@@ -312,7 +312,7 @@ conversations.patch("/:id/notebook-state", async (c) => {
 
     const result = await updateNotebookState(id, parsed.data, authResult.user?.id);
     if (!result.ok) {
-      const fail = crudFailResponse(result.reason);
+      const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);
     }
     return c.json({ id, notebookState: parsed.data });
@@ -363,7 +363,7 @@ conversations.post("/:id/fork", async (c) => {
       orgId: authResult.user?.activeOrganizationId,
     });
     if (!result.ok) {
-      const fail = crudFailResponse(result.reason);
+      const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);
     }
 
@@ -458,7 +458,7 @@ conversations.get("/:id/share", async (c) => {
       if (result.reason === "error") {
         log.error({ requestId, conversationId: id }, "Share status fetch failed due to DB error");
       }
-      const fail = crudFailResponse(result.reason);
+      const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);
     }
     if (!result.data.shared) {
@@ -519,7 +519,7 @@ conversations.post("/:id/share", async (c) => {
       shareMode: opts?.shareMode,
     });
     if (!result.ok) {
-      const fail = crudFailResponse(result.reason);
+      const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);
     }
     const baseUrl = new URL(req.url).origin;
@@ -558,7 +558,7 @@ conversations.delete("/:id/share", async (c) => {
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     const result = await unshareConversation(id, authResult.user?.id);
     if (!result.ok) {
-      const fail = crudFailResponse(result.reason);
+      const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);
     }
     return c.body(null, 204);
@@ -591,7 +591,7 @@ conversations.delete("/:id", async (c) => {
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     const result = await deleteConversation(id, authResult.user?.id);
     if (!result.ok) {
-      const fail = crudFailResponse(result.reason);
+      const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);
     }
     return c.body(null, 204);

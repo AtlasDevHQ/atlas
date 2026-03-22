@@ -64,17 +64,17 @@ const UpdateScheduledTaskSchema = z.object({
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function crudFailResponse(reason: CrudFailReason) {
+function crudFailResponse(reason: CrudFailReason, requestId?: string) {
   switch (reason) {
     case "no_db":
       return { body: { error: "not_available", message: "Scheduled tasks require an internal database." }, status: 404 as const };
     case "not_found":
       return { body: { error: "not_found", message: "Scheduled task not found." }, status: 404 as const };
     case "error":
-      return { body: { error: "internal_error", message: "A database error occurred. Please try again." }, status: 500 as const };
+      return { body: { error: "internal_error", message: "A database error occurred. Please try again.", ...(requestId && { requestId }) }, status: 500 as const };
     default: {
       const _exhaustive: never = reason;
-      return { body: { error: "internal_error", message: `Unexpected failure: ${_exhaustive}` }, status: 500 as const };
+      return { body: { error: "internal_error", message: `Unexpected failure: ${_exhaustive}`, ...(requestId && { requestId }) }, status: 500 as const };
     }
   }
 }
@@ -202,7 +202,7 @@ scheduledTasks.post("/", async (c) => {
     });
 
     if (!result.ok) {
-      const fail = crudFailResponse(result.reason);
+      const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);
     }
 
@@ -326,7 +326,7 @@ scheduledTasks.get("/:id", async (c) => {
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     const result = await getScheduledTask(id, authResult.user?.id);
     if (!result.ok) {
-      const fail = crudFailResponse(result.reason);
+      const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);
     }
 
@@ -382,7 +382,7 @@ scheduledTasks.put("/:id", async (c) => {
 
     const result = await updateScheduledTask(id, authResult.user?.id ?? "anonymous", parsed.data);
     if (!result.ok) {
-      const fail = crudFailResponse(result.reason);
+      const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);
     }
 
@@ -421,7 +421,7 @@ scheduledTasks.delete("/:id", async (c) => {
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     const result = await deleteScheduledTask(id, authResult.user?.id);
     if (!result.ok) {
-      const fail = crudFailResponse(result.reason);
+      const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);
     }
     return c.body(null, 204);
@@ -454,7 +454,7 @@ scheduledTasks.post("/:id/run", async (c) => {
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     const task = await getScheduledTask(id, authResult.user?.id);
     if (!task.ok) {
-      const fail = crudFailResponse(task.reason);
+      const fail = crudFailResponse(task.reason, requestId);
       return c.json(fail.body, fail.status);
     }
 
@@ -464,7 +464,7 @@ scheduledTasks.post("/:id/run", async (c) => {
       return c.json({ message: "Task triggered successfully.", taskId: id });
     } catch (err) {
       log.error({ err: err instanceof Error ? err.message : String(err), taskId: id }, "Trigger failed");
-      return c.json({ error: "internal_error", message: "Failed to trigger task execution." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to trigger task execution.", requestId }, 500);
     }
   });
 });
@@ -495,7 +495,7 @@ scheduledTasks.post("/:id/preview", async (c) => {
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     const task = await getScheduledTask(id, authResult.user?.id);
     if (!task.ok) {
-      const fail = crudFailResponse(task.reason);
+      const fail = crudFailResponse(task.reason, requestId);
       return c.json(fail.body, fail.status);
     }
 
@@ -505,7 +505,7 @@ scheduledTasks.post("/:id/preview", async (c) => {
       return c.json(preview);
     } catch (err) {
       log.error({ err: err instanceof Error ? err.message : String(err), taskId: id }, "Preview generation failed");
-      return c.json({ error: "internal_error", message: "Failed to generate delivery preview." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to generate delivery preview.", requestId }, 500);
     }
   });
 });
@@ -537,7 +537,7 @@ scheduledTasks.get("/:id/runs", async (c) => {
     // Verify task ownership
     const task = await getScheduledTask(id, authResult.user?.id);
     if (!task.ok) {
-      const fail = crudFailResponse(task.reason);
+      const fail = crudFailResponse(task.reason, requestId);
       return c.json(fail.body, fail.status);
     }
 

@@ -10,9 +10,9 @@ import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
-import { authenticateRequest } from "@atlas/api/lib/auth/middleware";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { connections, detectDBType } from "@atlas/api/lib/db/connection";
+import { authPreamble } from "./auth-preamble";
 import { hasInternalDB, internalQuery, encryptUrl } from "@atlas/api/lib/db/internal";
 import { maskConnectionUrl } from "@atlas/api/lib/security";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
@@ -187,10 +187,15 @@ const completeOnboardingRoute = createRoute({
 
 const onboarding = new OpenAPIHono();
 
-// Normalize JSON parse errors from @hono/zod-openapi into the standard API error format.
+// Normalize JSON parse errors. Only catch SyntaxError (malformed JSON); let
+// other 400s (e.g. Zod query/path param validation) propagate with their message.
 onboarding.onError((err, c) => {
   if (err instanceof HTTPException && err.status === 400) {
-    return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+    if (err.cause instanceof SyntaxError) {
+      log.warn("Malformed JSON body in request");
+      return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+    }
+    return c.json({ error: "invalid_request", message: err.message || "Bad request." }, 400);
   }
   throw err;
 });
@@ -217,20 +222,14 @@ onboarding.openapi(
     const requestId = crypto.randomUUID();
 
     if (detectAuthMode() !== "managed") {
-      return c.json({ error: "not_available", message: "Onboarding requires managed auth mode." }, 404) as never;
+      return c.json({ error: "not_available", message: "Onboarding requires managed auth mode.", requestId }, 404) as never;
     }
 
-    let authResult;
-    try {
-      authResult = await authenticateRequest(c.req.raw);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Auth dispatch failed");
-      return c.json({ error: "auth_error", message: "Authentication system error", requestId }, 500) as never;
+    const preamble = await authPreamble(c.req.raw, requestId);
+    if ("error" in preamble) {
+      return c.json(preamble.error, preamble.status, preamble.headers) as never;
     }
-    if (!authResult.authenticated) {
-      log.warn({ requestId, status: authResult.status }, "Authentication failed");
-      return c.json({ error: "auth_error", message: authResult.error, requestId }, authResult.status as 401 | 404) as never;
-    }
+    const { authResult } = preamble;
 
     return withRequestContext({ requestId, user: authResult.user }, async () => {
       const { url } = c.req.valid("json");
@@ -291,24 +290,18 @@ onboarding.openapi(
     const requestId = crypto.randomUUID();
 
     if (detectAuthMode() !== "managed") {
-      return c.json({ error: "not_available", message: "Onboarding requires managed auth mode." }, 404) as never;
+      return c.json({ error: "not_available", message: "Onboarding requires managed auth mode.", requestId }, 404) as never;
     }
 
     if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Onboarding requires an internal database (DATABASE_URL)." }, 404) as never;
+      return c.json({ error: "not_available", message: "Onboarding requires an internal database (DATABASE_URL).", requestId }, 404) as never;
     }
 
-    let authResult;
-    try {
-      authResult = await authenticateRequest(c.req.raw);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Auth dispatch failed");
-      return c.json({ error: "auth_error", message: "Authentication system error", requestId }, 500) as never;
+    const preamble = await authPreamble(c.req.raw, requestId);
+    if ("error" in preamble) {
+      return c.json(preamble.error, preamble.status, preamble.headers) as never;
     }
-    if (!authResult.authenticated) {
-      log.warn({ requestId, status: authResult.status }, "Authentication failed");
-      return c.json({ error: "auth_error", message: authResult.error, requestId }, authResult.status as 401 | 404) as never;
-    }
+    const { authResult } = preamble;
 
     const orgId = authResult.user?.activeOrganizationId;
     if (!orgId) {

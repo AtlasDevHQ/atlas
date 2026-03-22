@@ -291,6 +291,9 @@ describe("scheduled-tasks routes", () => {
       );
       // 422: Zod validation via OpenAPIHono createRoute rejects missing required field
       expect(response.status).toBe(422);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await response.json()) as any;
+      expect(body.error).toBe("validation_error");
     });
 
     it("returns 400 for invalid JSON", async () => {

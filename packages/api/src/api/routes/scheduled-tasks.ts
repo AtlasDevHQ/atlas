@@ -349,10 +349,15 @@ const listTaskRunsRoute = createRoute({
 
 const scheduledTasks = new OpenAPIHono();
 
-// Normalize JSON parse errors from @hono/zod-openapi into the standard API error format.
+// Normalize JSON parse errors. Only catch SyntaxError (malformed JSON); let
+// other 400s (e.g. Zod query/path param validation) propagate with their message.
 scheduledTasks.onError((err, c) => {
   if (err instanceof HTTPException && err.status === 400) {
-    return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+    if (err.cause instanceof SyntaxError) {
+      log.warn("Malformed JSON body in request");
+      return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+    }
+    return c.json({ error: "invalid_request", message: err.message || "Bad request." }, 400);
   }
   throw err;
 });
@@ -366,7 +371,7 @@ scheduledTasks.openapi(listTasksRoute, async (c) => {
   const requestId = crypto.randomUUID();
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database." }, 404) as never;
+    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404) as never;
   }
 
   const preamble = await authPreamble(req, requestId);
@@ -404,7 +409,7 @@ scheduledTasks.openapi(
     const requestId = crypto.randomUUID();
 
     if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Scheduled tasks require an internal database." }, 404) as never;
+      return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404) as never;
     }
 
     const preamble = await authPreamble(req, requestId);
@@ -460,7 +465,7 @@ scheduledTasks.openapi(tickRoute, async (c) => {
   const requestId = crypto.randomUUID();
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database." }, 404) as never;
+    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404) as never;
   }
 
   // Auth: check CRON_SECRET (Vercel-native) or ATLAS_SCHEDULER_SECRET (generic)
@@ -509,7 +514,7 @@ scheduledTasks.openapi(listAllRunsRoute, async (c) => {
   const requestId = crypto.randomUUID();
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database." }, 404) as never;
+    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404) as never;
   }
 
   const preamble = await authPreamble(req, requestId);
@@ -550,7 +555,7 @@ scheduledTasks.openapi(getTaskRoute, async (c) => {
   const requestId = crypto.randomUUID();
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database." }, 404) as never;
+    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404) as never;
   }
 
   const preamble = await authPreamble(req, requestId);
@@ -587,7 +592,7 @@ scheduledTasks.openapi(
     const requestId = crypto.randomUUID();
 
     if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Scheduled tasks require an internal database." }, 404) as never;
+      return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404) as never;
     }
 
     const preamble = await authPreamble(req, requestId);
@@ -645,7 +650,7 @@ scheduledTasks.openapi(deleteTaskRoute, async (c) => {
   const requestId = crypto.randomUUID();
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database." }, 404) as never;
+    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404) as never;
   }
 
   const preamble = await authPreamble(req, requestId);
@@ -678,7 +683,7 @@ scheduledTasks.openapi(triggerTaskRoute, async (c) => {
   const requestId = crypto.randomUUID();
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database." }, 404) as never;
+    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404) as never;
   }
 
   const preamble = await authPreamble(req, requestId);
@@ -719,7 +724,7 @@ scheduledTasks.openapi(previewTaskRoute, async (c) => {
   const requestId = crypto.randomUUID();
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database." }, 404) as never;
+    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404) as never;
   }
 
   const preamble = await authPreamble(req, requestId);
@@ -760,7 +765,7 @@ scheduledTasks.openapi(listTaskRunsRoute, async (c) => {
   const requestId = crypto.randomUUID();
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database." }, 404) as never;
+    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404) as never;
   }
 
   const preamble = await authPreamble(req, requestId);

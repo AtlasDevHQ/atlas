@@ -160,10 +160,15 @@ const queryRoute = createRoute({
 
 const query = new OpenAPIHono();
 
-// Normalize JSON parse errors from @hono/zod-openapi into the standard API error format.
+// Normalize JSON parse errors. Only catch SyntaxError (malformed JSON); let
+// other 400s (e.g. Zod query/path param validation) propagate with their message.
 query.onError((err, c) => {
   if (err instanceof HTTPException && err.status === 400) {
-    return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+    if (err.cause instanceof SyntaxError) {
+      log.warn("Malformed JSON body in request");
+      return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+    }
+    return c.json({ error: "invalid_request", message: err.message || "Bad request." }, 400);
   }
   throw err;
 });
@@ -236,8 +241,8 @@ query.openapi(
           );
         }
 
-        const { question } = c.req.valid("json");
-        let conversationId = c.req.valid("json").conversationId;
+        const { question, conversationId: parsedConversationId } = c.req.valid("json");
+        let conversationId = parsedConversationId;
 
         try {
           const queryResult = await executeAgentQuery(question, requestId);

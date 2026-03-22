@@ -140,7 +140,7 @@ sessions.openapi(listSessionsRoute, async (c) => {
 
   const user = authResult.user;
   if (!hasInternalDB() || detectAuthMode() !== "managed" || !user) {
-    return c.json({ error: "not_available", message: "Session management requires managed auth mode." }, 404) as never;
+    return c.json({ error: "not_available", message: "Session management requires managed auth mode.", requestId }, 404) as never;
   }
 
   return withRequestContext({ requestId, user }, async () => {
@@ -193,7 +193,7 @@ sessions.openapi(revokeSessionRoute, async (c) => {
 
   const user = authResult.user;
   if (!hasInternalDB() || detectAuthMode() !== "managed" || !user) {
-    return c.json({ error: "not_available", message: "Session management requires managed auth mode." }, 404) as never;
+    return c.json({ error: "not_available", message: "Session management requires managed auth mode.", requestId }, 404) as never;
   }
 
   return withRequestContext({ requestId, user }, async () => {

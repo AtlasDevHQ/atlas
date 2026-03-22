@@ -297,10 +297,15 @@ const rollbackActionRoute = createRoute({
 
 const actions = new OpenAPIHono();
 
-// Normalize JSON parse errors for routes with optional bodies
+// Normalize JSON parse errors. Only catch SyntaxError (malformed JSON); let
+// other 400s (e.g. Zod query/path param validation) propagate with their message.
 actions.onError((err, c) => {
   if (err instanceof HTTPException && err.status === 400) {
-    return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+    if (err.cause instanceof SyntaxError) {
+      log.warn("Malformed JSON body in request");
+      return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+    }
+    return c.json({ error: "invalid_request", message: err.message || "Bad request." }, 400);
   }
   throw err;
 });
@@ -314,7 +319,7 @@ actions.openapi(listActionsRoute, async (c) => {
   const requestId = crypto.randomUUID();
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured)." }, 404) as never;
+    return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured).", requestId }, 404) as never;
   }
 
   const preamble = await authPreamble(req, requestId);
@@ -354,7 +359,7 @@ actions.openapi(getActionRoute, async (c) => {
   const requestId = crypto.randomUUID();
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured)." }, 404) as never;
+    return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured).", requestId }, 404) as never;
   }
 
   const preamble = await authPreamble(req, requestId);
@@ -391,7 +396,7 @@ actions.openapi(approveActionRoute, async (c) => {
   const requestId = crypto.randomUUID();
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured)." }, 404) as never;
+    return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured).", requestId }, 404) as never;
   }
 
   const preamble = await authPreamble(req, requestId);
@@ -451,7 +456,7 @@ actions.openapi(
     const requestId = crypto.randomUUID();
 
     if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured)." }, 404) as never;
+      return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured).", requestId }, 404) as never;
     }
 
     const preamble = await authPreamble(req, requestId);
@@ -496,7 +501,8 @@ actions.openapi(
             if (body && typeof body.reason === "string") {
               reason = body.reason;
             }
-          } catch {
+          } catch (err) {
+            log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse deny action request body");
             return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
           }
         }
@@ -531,7 +537,7 @@ actions.openapi(rollbackActionRoute, async (c) => {
   const requestId = crypto.randomUUID();
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured)." }, 404) as never;
+    return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured).", requestId }, 404) as never;
   }
 
   const preamble = await authPreamble(req, requestId);

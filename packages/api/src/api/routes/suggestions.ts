@@ -34,6 +34,12 @@ const SuggestionsResponseSchema = z.object({
   total: z.number().int(),
 });
 
+const ErrorSchema = z.object({
+  error: z.string(),
+  message: z.string(),
+  requestId: z.string().optional(),
+});
+
 // ---------------------------------------------------------------------------
 // Route definitions
 // ---------------------------------------------------------------------------
@@ -77,6 +83,10 @@ const listSuggestionsRoute = createRoute({
       description: "Rate limit exceeded",
       content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
     },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
   },
 });
 
@@ -112,6 +122,10 @@ const listPopularRoute = createRoute({
     429: {
       description: "Rate limit exceeded",
       content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
     },
   },
 });
@@ -178,8 +192,13 @@ suggestions.openapi(listSuggestionsRoute, async (c) => {
   const orgId = authResult.user?.activeOrganizationId ?? null;
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const rows = await getSuggestionsByTables(orgId, tables, limit);
-    return c.json({ suggestions: rows.map(toQuerySuggestion), total: rows.length }, 200);
+    try {
+      const rows = await getSuggestionsByTables(orgId, tables, limit);
+      return c.json({ suggestions: rows.map(toQuerySuggestion), total: rows.length }, 200);
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to fetch suggestions");
+      return c.json({ error: "internal_error", message: "Failed to fetch suggestions.", requestId }, 500);
+    }
   });
 });
 
@@ -203,8 +222,13 @@ suggestions.openapi(listPopularRoute, async (c) => {
   const orgId = authResult.user?.activeOrganizationId ?? null;
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const rows = await getPopularSuggestions(orgId, limit);
-    return c.json({ suggestions: rows.map(toQuerySuggestion), total: rows.length }, 200);
+    try {
+      const rows = await getPopularSuggestions(orgId, limit);
+      return c.json({ suggestions: rows.map(toQuerySuggestion), total: rows.length }, 200);
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to fetch popular suggestions");
+      return c.json({ error: "internal_error", message: "Failed to fetch suggestions.", requestId }, 500);
+    }
   });
 });
 

@@ -170,7 +170,7 @@ CIDR (Classless Inter-Domain Routing) notation specifies an IP range as a base a
 | `fe80::/10` | Link-local addresses |
 
 <Callout type="info">
-Atlas validates CIDR format on input using the Node.js `net` module. Invalid notation is rejected with a `400` error that includes the expected format. The network address is normalized — for example, `10.0.0.5/8` is stored as `10.0.0.0/8`.
+Atlas validates CIDR format on input using the Node.js `net` module. Invalid notation is rejected with a `400` error that includes the expected format. The CIDR string is stored as provided; normalization is applied internally for IP matching.
 </Callout>
 
 ---

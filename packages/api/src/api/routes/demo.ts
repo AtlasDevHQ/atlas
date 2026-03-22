@@ -525,7 +525,8 @@ demo.openapi(demoChatRoute, async (c) => {
             });
         }
 
-        return streamResponse;
+        // Raw Response bypasses OpenAPIHono's typed return — `as never` required
+        return streamResponse as never;
       } catch (err) {
         // Error handling mirrors main chat route
         const errObj = err instanceof Error ? err : new Error(String(err));
@@ -558,20 +559,29 @@ demo.openapi(demoChatRoute, async (c) => {
         if (APICallError.isInstance(err)) {
           const status = err.statusCode;
           if (status === 401 || status === 403) {
+            log.error({ err: errObj, category: "provider_auth_error", statusCode: status, requestId }, "Provider auth error");
             return c.json({ error: "provider_auth_error", message: "LLM provider authentication failed.", retryable: false, requestId }, 503);
           }
           if (status === 429) {
+            log.warn({ err: errObj, category: "provider_rate_limit", statusCode: status, requestId }, "Provider rate limit");
             return c.json({ error: "provider_rate_limit", message: "LLM provider rate limit reached.", retryable: true, requestId }, 503);
           }
           if (status === 408 || /timeout/i.test(message)) {
+            log.error({ err: errObj, category: "provider_timeout", statusCode: status, requestId }, "Provider timeout");
             return c.json({ error: "provider_timeout", message: "The request timed out.", retryable: true, requestId }, 504);
           }
+          log.error({ err: errObj, category: "provider_error", statusCode: status, requestId }, "Provider error (HTTP %s)", String(status));
           return c.json({ error: "provider_error", message: `LLM provider error (HTTP ${status}).`, retryable: true, requestId }, 502);
         }
 
         const matched = matchError(err);
         if (matched) {
           const httpStatus = matched.code === "rate_limited" ? 429 : 500;
+          if (matched.code === "rate_limited") {
+            log.warn({ err: errObj, category: matched.code, requestId }, "Matched error: %s", matched.code);
+          } else {
+            log.error({ err: errObj, category: matched.code, requestId }, "Matched error: %s", matched.code);
+          }
           return c.json(
             { error: matched.code, message: matched.message, retryable: isRetryableError(matched.code), requestId },
             httpStatus as 500,

@@ -447,6 +447,13 @@ export async function isSSOEnforced(orgId: string): Promise<{
     ? provider.config.idpSsoUrl
     : provider.config.discoveryUrl;
 
+  if (!ssoRedirectUrl) {
+    log.error(
+      { providerId: provider.id, type: provider.type },
+      "SSO enforcement active but provider has no redirect URL configured",
+    );
+  }
+
   return { enforced: true, provider, ssoRedirectUrl };
 }
 
@@ -479,6 +486,13 @@ export async function isSSOEnforcedForDomain(emailDomain: string): Promise<{
     ? provider.config.idpSsoUrl
     : provider.config.discoveryUrl;
 
+  if (!ssoRedirectUrl) {
+    log.error(
+      { providerId: provider.id, type: provider.type },
+      "SSO enforcement active but provider has no redirect URL configured",
+    );
+  }
+
   return { enforced: true, provider, ssoRedirectUrl };
 }
 
@@ -507,10 +521,17 @@ export async function setSSOEnforcement(orgId: string, enforced: boolean): Promi
   }
 
   // Update all providers for this org (enforcement is org-level)
-  await internalQuery<Record<string, unknown>>(
-    `UPDATE sso_providers SET sso_enforced = $1, updated_at = now() WHERE org_id = $2`,
+  const updated = await internalQuery<{ id: string }>(
+    `UPDATE sso_providers SET sso_enforced = $1, updated_at = now() WHERE org_id = $2 RETURNING id`,
     [enforced, orgId],
   );
+
+  if (enforced && updated.length === 0) {
+    throw new SSOEnforcementError(
+      "No SSO providers were updated. Providers may have been deleted.",
+      "no_provider",
+    );
+  }
 
   log.info({ orgId, enforced }, "SSO enforcement %s", enforced ? "enabled" : "disabled");
   return { enforced, orgId };

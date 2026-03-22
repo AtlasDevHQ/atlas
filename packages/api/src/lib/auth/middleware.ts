@@ -183,7 +183,7 @@ function categorizeAuthError(err: unknown): string {
 /**
  * Check SSO enforcement for a user's email domain.
  * Returns an AuthResult rejection if SSO is enforced, null otherwise.
- * Silently skips on errors — SSO enforcement should not break normal auth.
+ * Fails closed on errors — returns a 500 AuthResult to block login.
  */
 async function checkSSOEnforcement(userLabel: string): Promise<AuthResult | null> {
   try {
@@ -202,12 +202,16 @@ async function checkSSOEnforcement(userLabel: string): Promise<AuthResult | null
       ssoRedirectUrl: enforcement.ssoRedirectUrl,
     };
   } catch (err) {
-    // SSO enforcement check should not break normal auth flow
-    log.warn(
-      { err: err instanceof Error ? err.message : String(err) },
-      "SSO enforcement check failed — allowing login",
+    log.error(
+      { err: err instanceof Error ? err : new Error(String(err)) },
+      "SSO enforcement check failed — blocking login (fail-closed)",
     );
-    return null;
+    return {
+      authenticated: false,
+      mode: "managed" as const,
+      status: 500 as const,
+      error: "Unable to verify SSO enforcement status. Please retry or contact your administrator.",
+    };
   }
 }
 

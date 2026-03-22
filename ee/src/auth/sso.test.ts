@@ -491,18 +491,30 @@ describe("setSSOEnforcement", () => {
   it("enables enforcement when active provider exists", async () => {
     // Check for active providers
     mockRows.push([{ id: "prov-1" }]);
-    // UPDATE query
-    mockRows.push([]);
+    // UPDATE RETURNING query — must return at least one row
+    mockRows.push([{ id: "prov-1" }]);
 
     const result = await setSSOEnforcement("org-1", true);
     expect(result.enforced).toBe(true);
     expect(result.orgId).toBe("org-1");
 
-    // Verify the UPDATE query was issued
+    // Verify the UPDATE query was issued with RETURNING
     const updateQuery = capturedQueries.find(q => q.sql.includes("UPDATE sso_providers SET sso_enforced"));
     expect(updateQuery).toBeDefined();
+    expect(updateQuery!.sql).toContain("RETURNING id");
     expect(updateQuery!.params[0]).toBe(true);
     expect(updateQuery!.params[1]).toBe("org-1");
+  });
+
+  it("throws when enable UPDATE affects zero rows (providers deleted mid-request)", async () => {
+    // Check for active providers — one found
+    mockRows.push([{ id: "prov-1" }]);
+    // UPDATE RETURNING — zero rows (provider deleted between check and update)
+    mockRows.push([]);
+
+    await expect(setSSOEnforcement("org-1", true)).rejects.toThrow(
+      "No SSO providers were updated",
+    );
   });
 
   it("disables enforcement without checking providers", async () => {

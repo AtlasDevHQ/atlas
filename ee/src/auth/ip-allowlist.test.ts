@@ -90,6 +90,7 @@ describe("parseCIDR", () => {
     expect(result).not.toBeNull();
     expect(result!.version).toBe(4);
     expect(result!.original).toBe("10.0.0.0/8");
+    expect(result!.normalized).toBe("10.0.0.0/8");
   });
 
   it("parses /32 single-host IPv4", () => {
@@ -102,7 +103,7 @@ describe("parseCIDR", () => {
     const result = parseCIDR("0.0.0.0/0");
     expect(result).not.toBeNull();
     expect(result!.version).toBe(4);
-    expect(result!.mask).toBe(0n);
+    expect(result!.normalized).toBe("0.0.0.0/0");
   });
 
   it("parses valid IPv6 CIDR", () => {
@@ -122,15 +123,13 @@ describe("parseCIDR", () => {
     const result = parseCIDR("::/0");
     expect(result).not.toBeNull();
     expect(result!.version).toBe(6);
-    expect(result!.mask).toBe(0n);
   });
 
   it("normalizes network address", () => {
     // 192.168.1.100/24 should normalize to network 192.168.1.0
     const result = parseCIDR("192.168.1.100/24");
     expect(result).not.toBeNull();
-    // The network should be 192.168.1.0 = 0xC0A80100
-    expect(result!.network).toBe(0xC0A80100n);
+    expect(result!.normalized).toBe("192.168.1.0/24");
   });
 
   it("trims whitespace", () => {
@@ -139,8 +138,18 @@ describe("parseCIDR", () => {
     expect(result!.original).toBe("10.0.0.0/8");
   });
 
-  it("returns null for missing prefix", () => {
-    expect(parseCIDR("10.0.0.0")).toBeNull();
+  it("accepts plain IPv4 (no prefix) as /32", () => {
+    const result = parseCIDR("10.0.0.1");
+    expect(result).not.toBeNull();
+    expect(result!.version).toBe(4);
+    expect(result!.normalized).toBe("10.0.0.1/32");
+  });
+
+  it("accepts plain IPv6 (no prefix) as /128", () => {
+    const result = parseCIDR("::1");
+    expect(result).not.toBeNull();
+    expect(result!.version).toBe(6);
+    expect(result!.normalized).toBe("::1/128");
   });
 
   it("returns null for invalid IP", () => {
@@ -474,5 +483,95 @@ describe("edge cases", () => {
     expect(isIPInRange("fe80::1", cidr)).toBe(true);
     expect(isIPInRange("febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff", cidr)).toBe(true);
     expect(isIPInRange("fec0::1", cidr)).toBe(false);
+  });
+});
+
+// ── Tests: Fixed issues ─────────────────────────────────────────────
+
+describe("fixed issues", () => {
+  beforeEach(resetMocks);
+
+  it("detects overlapping CIDRs as duplicates via normalized form", () => {
+    // 10.0.0.5/8 and 10.0.0.0/8 represent the same network
+    const a = parseCIDR("10.0.0.5/8")!;
+    const b = parseCIDR("10.0.0.0/8")!;
+    expect(a.normalized).toBe("10.0.0.0/8");
+    expect(b.normalized).toBe("10.0.0.0/8");
+    expect(a.normalized).toBe(b.normalized);
+  });
+
+  it("addIPAllowlistEntry normalizes CIDR for duplicate check", async () => {
+    // First call: add 10.0.0.0/8
+    mockRows.push([]); // no duplicates
+    mockRows.push([
+      {
+        id: "new-id",
+        org_id: "org-1",
+        cidr: "10.0.0.0/8",
+        description: null,
+        created_at: "2026-03-22T00:00:00Z",
+        created_by: null,
+      },
+    ]);
+
+    await addIPAllowlistEntry("org-1", "10.0.0.5/8", null, null);
+
+    // The duplicate check query should use normalized "10.0.0.0/8", not raw "10.0.0.5/8"
+    expect(capturedQueries[0].params).toEqual(["org-1", "10.0.0.0/8"]);
+    // The INSERT should also use normalized form
+    expect(capturedQueries[1].params[1]).toBe("10.0.0.0/8");
+  });
+
+  it("IPv4-mapped IPv6 matches IPv4 CIDR", () => {
+    const cidr = parseCIDR("10.0.0.0/8")!;
+    // ::ffff:10.0.0.1 is the IPv4-mapped IPv6 form of 10.0.0.1
+    expect(isIPInRange("::ffff:10.0.0.1", cidr)).toBe(true);
+    expect(isIPInRange("::ffff:10.255.255.255", cidr)).toBe(true);
+    expect(isIPInRange("::ffff:11.0.0.1", cidr)).toBe(false);
+  });
+
+  it("IPv4-mapped IPv6 works in isIPAllowed with mixed ranges", () => {
+    const ranges = [parseCIDR("10.0.0.0/8")!, parseCIDR("192.168.0.0/16")!];
+    expect(isIPAllowed("::ffff:10.0.0.1", ranges)).toBe(true);
+    expect(isIPAllowed("::ffff:192.168.1.1", ranges)).toBe(true);
+    expect(isIPAllowed("::ffff:172.16.0.1", ranges)).toBe(false);
+  });
+
+  it("plain IP without prefix is accepted as single-host CIDR", () => {
+    // IPv4
+    const v4 = parseCIDR("10.0.0.1")!;
+    expect(v4).not.toBeNull();
+    expect(v4.version).toBe(4);
+    expect(v4.normalized).toBe("10.0.0.1/32");
+    expect(isIPInRange("10.0.0.1", v4)).toBe(true);
+    expect(isIPInRange("10.0.0.2", v4)).toBe(false);
+
+    // IPv6
+    const v6 = parseCIDR("2001:db8::1")!;
+    expect(v6).not.toBeNull();
+    expect(v6.version).toBe(6);
+    expect(v6.normalized).toBe("2001:db8::1/128");
+    expect(isIPInRange("2001:db8::1", v6)).toBe(true);
+    expect(isIPInRange("2001:db8::2", v6)).toBe(false);
+  });
+
+  it("plain IP can be added to allowlist", async () => {
+    mockRows.push([]); // no duplicates
+    mockRows.push([
+      {
+        id: "new-id",
+        org_id: "org-1",
+        cidr: "10.0.0.1/32",
+        description: "Single host",
+        created_at: "2026-03-22T00:00:00Z",
+        created_by: null,
+      },
+    ]);
+
+    const entry = await addIPAllowlistEntry("org-1", "10.0.0.1", "Single host", null);
+    expect(entry.cidr).toBe("10.0.0.1/32");
+
+    // The stored CIDR should be the normalized /32 form
+    expect(capturedQueries[1].params[1]).toBe("10.0.0.1/32");
   });
 });

@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@atlas/api": "workspace:*",
-    "@useatlas/types": "workspace:*"
+    "@useatlas/types": "workspace:*",
+    "ipaddr.js": "^2.3.0"
   }
 }

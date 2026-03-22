@@ -257,10 +257,14 @@ export async function checkPermission(
 
 /**
  * List all roles for an organization (built-in + custom).
+ * Lazily seeds built-in roles on first access per org.
  */
 export async function listRoles(orgId: string): Promise<CustomRole[]> {
   requireEnterprise("roles");
   if (!hasInternalDB()) return [];
+
+  // Lazy seed: ensure built-in roles exist for this org
+  await seedBuiltinRoles(orgId);
 
   const rows = await internalQuery<CustomRoleRow>(
     `SELECT id, org_id, name, description, permissions, is_builtin, created_at, updated_at
@@ -307,6 +311,12 @@ export async function createRole(
       `Invalid role name: "${input.name}". Must start with a letter, contain only lowercase letters, numbers, hyphens, or underscores, and be 1-63 characters.`,
       "validation",
     );
+  }
+
+  // Reject reserved legacy role names that would shadow built-in behavior
+  const RESERVED_ROLE_NAMES = new Set(["member", "owner"]);
+  if (RESERVED_ROLE_NAMES.has(name)) {
+    throw new RoleError(`"${name}" is a reserved role name.`, "validation");
   }
 
   // Validate permissions

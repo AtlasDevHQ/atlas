@@ -305,6 +305,12 @@ describe("CRUD operations", () => {
     });
 
     it("returns roles from DB", async () => {
+      // seedBuiltinRoles: 3 built-in roles × (SELECT existence check + INSERT if needed)
+      // Each SELECT returns a row (already exists), so no INSERT needed
+      mockRows.push([{ id: "r1" }]); // admin exists
+      mockRows.push([{ id: "r2" }]); // analyst exists
+      mockRows.push([{ id: "r3" }]); // viewer exists
+      // listRoles query result
       mockRows.push([
         makeRoleRow(),
         makeRoleRow({ id: "role-2", name: "custom", is_builtin: false }),
@@ -364,6 +370,16 @@ describe("CRUD operations", () => {
       await expect(
         createRole("org-1", { name: "test", permissions: ["nonexistent"] }),
       ).rejects.toThrow("Invalid permissions");
+    });
+
+    it("rejects reserved legacy role names", async () => {
+      await expect(
+        createRole("org-1", { name: "member", permissions: ["query"] }),
+      ).rejects.toThrow("reserved role name");
+
+      await expect(
+        createRole("org-1", { name: "owner", permissions: ["query"] }),
+      ).rejects.toThrow("reserved role name");
     });
 
     it("rejects duplicate names", async () => {

@@ -1,0 +1,196 @@
+---
+title: Custom Roles
+description: Define granular roles with permission flags beyond the default admin/user binary.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas supports custom role definitions with granular permission flags. Move beyond the default admin/member/owner hierarchy by creating named roles with specific permission sets. Custom roles are part of the Atlas Enterprise (`/ee`) module.
+
+<Callout title="Prerequisites">
+- [Managed auth](/deployment/authentication#managed-auth) enabled
+- Internal database configured (`DATABASE_URL`)
+- Enterprise license (the `/ee` module must be available)
+- Admin role required for all role management endpoints
+</Callout>
+
+---
+
+## How It Works
+
+1. Atlas ships with three built-in roles: **admin**, **analyst**, and **viewer**
+2. Admins create custom roles via the admin API or the admin UI
+3. Each role is a set of permission flags (additive model)
+4. Users are assigned roles via the organization membership system
+5. Permission checks happen at request time, falling back to legacy behavior when enterprise is not enabled
+
+---
+
+## Permission Flags
+
+| Permission | Description |
+|-----------|-------------|
+| `query` | Can send chat queries |
+| `query:raw_data` | Can see raw row data (vs aggregates only) |
+| `admin:users` | Can manage users |
+| `admin:connections` | Can manage data connections |
+| `admin:settings` | Can manage application settings |
+| `admin:audit` | Can view audit logs |
+| `admin:roles` | Can manage roles |
+| `admin:semantic` | Can edit the semantic layer |
+
+Permissions are **additive** — a role is the union of its flags. There is no "deny" mechanism.
+
+---
+
+## Built-in Roles
+
+Three roles are seeded automatically and cannot be modified or deleted:
+
+| Role | Permissions | Use Case |
+|------|------------|----------|
+| `admin` | All permissions | Full administrative access |
+| `analyst` | `query`, `query:raw_data`, `admin:audit` | Data team members who need raw data and audit visibility |
+| `viewer` | `query` | Stakeholders who only need aggregate query results |
+
+---
+
+## Admin UI
+
+Navigate to **Admin Console > Roles** to manage roles visually:
+
+- View built-in and custom roles with their permission badges
+- Create new roles with a permission checkbox dialog
+- Edit custom role descriptions and permissions
+- Delete custom roles (built-in roles show a lock icon)
+
+---
+
+## API Reference
+
+All endpoints are mounted under `/api/v1/admin/roles` and require admin authentication.
+
+### List Roles
+
+```http
+GET /api/v1/admin/roles
+```
+
+Returns all roles (built-in + custom) for the active organization, along with the list of available permissions.
+
+```json
+{
+  "roles": [
+    {
+      "id": "...",
+      "orgId": "...",
+      "name": "admin",
+      "description": "Full access to all features and administration",
+      "permissions": ["query", "query:raw_data", "admin:users", "..."],
+      "isBuiltin": true,
+      "createdAt": "2026-01-01T00:00:00Z",
+      "updatedAt": "2026-01-01T00:00:00Z"
+    }
+  ],
+  "permissions": ["query", "query:raw_data", "admin:users", "..."],
+  "total": 3
+}
+```
+
+### Create Role
+
+```http
+POST /api/v1/admin/roles
+Content-Type: application/json
+
+{
+  "name": "data-engineer",
+  "description": "Can query and manage connections",
+  "permissions": ["query", "query:raw_data", "admin:connections"]
+}
+```
+
+Role names must be lowercase, start with a letter, and contain only letters, numbers, hyphens, or underscores (1-63 characters).
+
+### Update Role
+
+```http
+PUT /api/v1/admin/roles/:id
+Content-Type: application/json
+
+{
+  "description": "Updated description",
+  "permissions": ["query", "admin:connections", "admin:semantic"]
+}
+```
+
+<Callout type="warn">
+Built-in roles cannot be modified. Attempting to update a built-in role returns `403`.
+</Callout>
+
+### Delete Role
+
+```http
+DELETE /api/v1/admin/roles/:id
+```
+
+<Callout type="warn">
+Built-in roles cannot be deleted. Attempting to delete a built-in role returns `403`.
+</Callout>
+
+### List Role Members
+
+```http
+GET /api/v1/admin/roles/:id/members
+```
+
+Returns users assigned to the specified role in the organization.
+
+### Assign Role to User
+
+```http
+PUT /api/v1/admin/roles/users/:userId/role
+Content-Type: application/json
+
+{
+  "role": "data-engineer"
+}
+```
+
+The role name must match an existing role (built-in or custom) in the organization.
+
+---
+
+## Backward Compatibility
+
+Custom roles are fully backward compatible with the existing auth system:
+
+- **No enterprise license?** The legacy `admin`/`member`/`owner` roles continue to work exactly as before. `admin` and `owner` get all permissions; `member` gets query permissions.
+- **Enterprise enabled but no custom roles assigned?** Users fall back to their existing role's default permissions.
+- **Mixed deployment?** The permission resolver checks for custom roles first, then falls back to the legacy mapping.
+
+---
+
+## Integration with Permission Checks
+
+The `checkPermission` function can be used in route handlers to enforce fine-grained access:
+
+```typescript
+import { checkPermission } from "ee/src/auth/roles";
+
+// In a route handler:
+const denied = await checkPermission(user, "admin:connections", requestId);
+if (denied) {
+  return c.json(denied.body, denied.status);
+}
+```
+
+The `hasPermission` function returns a boolean for simpler conditional checks:
+
+```typescript
+import { hasPermission } from "ee/src/auth/roles";
+
+if (await hasPermission(user, "admin:semantic")) {
+  // User can edit semantic layer
+}
+```

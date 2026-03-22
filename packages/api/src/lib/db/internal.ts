@@ -652,6 +652,23 @@ export async function migrateInternalDB(): Promise<void> {
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_ip_allowlist_org ON ip_allowlist(org_id);`);
 
+  // Enterprise custom roles (0.9.0 — granular permission-based RBAC)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS custom_roles (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      org_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      permissions JSONB NOT NULL DEFAULT '[]',
+      is_builtin BOOLEAN NOT NULL DEFAULT false,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_roles_org_name ON custom_roles(org_id, name);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_custom_roles_org ON custom_roles(org_id);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_custom_roles_builtin ON custom_roles(is_builtin) WHERE is_builtin = true;`);
+
   log.info("Internal DB migration complete");
 }
 

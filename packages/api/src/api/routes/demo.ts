@@ -11,8 +11,8 @@
  *   GET  /conversations/:id — get demo conversation with messages
  */
 
-import { Hono } from "hono";
-import { z } from "zod";
+import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { z } from "@hono/zod-openapi";
 import { type UIMessage, createUIMessageStream, createUIMessageStreamResponse } from "ai";
 import { APICallError, LoadAPIKeyError, NoSuchModelError } from "ai";
 import { matchError, isRetryableError } from "@useatlas/types";
@@ -43,6 +43,13 @@ import {
 
 const log = createLogger("demo");
 
+/**
+ * Permissive error schema for route definitions. Handlers return extra fields
+ * (retryAfterSeconds, retryable, requestId, diagnostics, details) beyond the
+ * base ErrorSchema — a record type allows those without breaking type inference.
+ */
+const DemoErrorSchema = z.record(z.string(), z.unknown());
+
 // ---------------------------------------------------------------------------
 // Schemas
 // ---------------------------------------------------------------------------
@@ -64,6 +71,13 @@ export const DemoChatRequestSchema = z.object({
   conversationId: z.string().uuid().optional(),
 });
 
+const DemoStartResponseSchema = z.object({
+  token: z.string(),
+  expiresAt: z.number(),
+  returning: z.boolean(),
+  conversationCount: z.number().int(),
+});
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -80,13 +94,186 @@ function extractDemoEmail(req: Request): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// Route definitions
+// ---------------------------------------------------------------------------
+
+const demoStartRoute = createRoute({
+  method: "post",
+  path: "/start",
+  tags: ["Demo"],
+  summary: "Start a demo session",
+  description:
+    "Email-gated demo entry point. Validates the email, signs a short-lived demo JWT, and captures the lead. " +
+    "IP-based rate limiting prevents abuse. Returns a token for subsequent demo API calls.",
+  request: {
+    body: {
+      content: { "application/json": { schema: DemoStartSchema } },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      description: "Demo session started",
+      content: { "application/json": { schema: DemoStartResponseSchema } },
+    },
+    400: {
+      description: "Invalid JSON body",
+      content: { "application/json": { schema: DemoErrorSchema } },
+    },
+    422: {
+      description: "Validation error (invalid email)",
+      content: { "application/json": { schema: DemoErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded (IP-based)",
+      content: { "application/json": { schema: DemoErrorSchema } },
+    },
+    500: {
+      description: "Demo mode not properly configured",
+      content: { "application/json": { schema: DemoErrorSchema } },
+    },
+  },
+});
+
+const demoChatRoute = createRoute({
+  method: "post",
+  path: "/chat",
+  tags: ["Demo"],
+  summary: "Chat in demo mode (streaming)",
+  description:
+    "Mirrors the main chat endpoint with demo-specific limits. Requires a valid demo token from /demo/start. " +
+    "Streams the response as Server-Sent Events using the Vercel AI SDK UI message stream protocol. " +
+    "Demo conversations are persisted when an internal database is available.",
+  request: {
+    body: {
+      content: { "application/json": { schema: DemoChatRequestSchema } },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      description:
+        "Streaming SSE response using the Vercel AI SDK UI message stream protocol. " +
+        "Each event is a JSON object with a 'type' field (text-delta, tool-call, tool-result, step-start, finish).",
+      content: {
+        "text/event-stream": {
+          schema: z.string(),
+        },
+      },
+    },
+    400: {
+      description: "Bad request (malformed JSON, missing datasource, configuration error, or model not found)",
+      content: { "application/json": { schema: DemoErrorSchema } },
+    },
+    401: {
+      description: "Valid demo token required",
+      content: { "application/json": { schema: DemoErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — insufficient permissions",
+      content: { "application/json": { schema: DemoErrorSchema } },
+    },
+    404: {
+      description: "Conversation not found (invalid conversationId)",
+      content: { "application/json": { schema: DemoErrorSchema } },
+    },
+    422: {
+      description: "Validation error (invalid request body)",
+      content: { "application/json": { schema: DemoErrorSchema } },
+    },
+    429: {
+      description: "Demo rate limit exceeded",
+      content: { "application/json": { schema: DemoErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: DemoErrorSchema } },
+    },
+    502: {
+      description: "LLM provider error",
+      content: { "application/json": { schema: DemoErrorSchema } },
+    },
+    503: {
+      description: "Provider unreachable, auth error, or rate limited",
+      content: { "application/json": { schema: DemoErrorSchema } },
+    },
+    504: {
+      description: "Request timed out",
+      content: { "application/json": { schema: DemoErrorSchema } },
+    },
+  },
+});
+
+const listDemoConversationsRoute = createRoute({
+  method: "get",
+  path: "/conversations",
+  tags: ["Demo"],
+  summary: "List demo conversations",
+  description:
+    "Returns a paginated list of conversations for the demo user identified by their demo token. " +
+    "Returns an empty list when no internal database is configured.",
+  request: {
+    query: z.object({
+      limit: z.string().optional().openapi({ description: "Maximum number of items to return (1-100, default 50)" }),
+      offset: z.string().optional().openapi({ description: "Number of items to skip (default 0)" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Paginated list of demo conversations",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    401: {
+      description: "Valid demo token required",
+      content: { "application/json": { schema: DemoErrorSchema } },
+    },
+    500: {
+      description: "Failed to load conversations",
+      content: { "application/json": { schema: DemoErrorSchema } },
+    },
+  },
+});
+
+const getDemoConversationRoute = createRoute({
+  method: "get",
+  path: "/conversations/{id}",
+  tags: ["Demo"],
+  summary: "Get a demo conversation",
+  description:
+    "Returns a single demo conversation with all its messages. Requires a valid demo token and enforces ownership.",
+  request: {
+    params: z.object({
+      id: z.string().uuid().openapi({ description: "Conversation UUID" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Conversation with messages",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    401: {
+      description: "Valid demo token required",
+      content: { "application/json": { schema: DemoErrorSchema } },
+    },
+    404: {
+      description: "Conversation not found",
+      content: { "application/json": { schema: DemoErrorSchema } },
+    },
+    500: {
+      description: "Failed to load conversation",
+      content: { "application/json": { schema: DemoErrorSchema } },
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
 
-const demo = new Hono();
+const demo = new OpenAPIHono();
 
 // POST /start — email gate, returns demo token
-demo.post("/start", async (c) => {
+demo.openapi(demoStartRoute, async (c) => {
   const requestId = crypto.randomUUID();
 
   // IP-based rate limit to prevent abuse (email enumeration, DB flooding)
@@ -148,11 +335,11 @@ demo.post("/start", async (c) => {
     expiresAt: result.expiresAt,
     returning: leadResult.returning,
     conversationCount,
-  });
+  }, 200);
 });
 
 // POST /chat — demo chat (mirrors main chat route with demo limits)
-demo.post("/chat", async (c) => {
+demo.openapi(demoChatRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
@@ -338,7 +525,8 @@ demo.post("/chat", async (c) => {
             });
         }
 
-        return streamResponse;
+        // Raw Response bypasses OpenAPIHono's typed return — `as never` required
+        return streamResponse as never;
       } catch (err) {
         // Error handling mirrors main chat route
         const errObj = err instanceof Error ? err : new Error(String(err));
@@ -371,20 +559,29 @@ demo.post("/chat", async (c) => {
         if (APICallError.isInstance(err)) {
           const status = err.statusCode;
           if (status === 401 || status === 403) {
+            log.error({ err: errObj, category: "provider_auth_error", statusCode: status, requestId }, "Provider auth error");
             return c.json({ error: "provider_auth_error", message: "LLM provider authentication failed.", retryable: false, requestId }, 503);
           }
           if (status === 429) {
+            log.warn({ err: errObj, category: "provider_rate_limit", statusCode: status, requestId }, "Provider rate limit");
             return c.json({ error: "provider_rate_limit", message: "LLM provider rate limit reached.", retryable: true, requestId }, 503);
           }
           if (status === 408 || /timeout/i.test(message)) {
+            log.error({ err: errObj, category: "provider_timeout", statusCode: status, requestId }, "Provider timeout");
             return c.json({ error: "provider_timeout", message: "The request timed out.", retryable: true, requestId }, 504);
           }
+          log.error({ err: errObj, category: "provider_error", statusCode: status, requestId }, "Provider error (HTTP %s)", String(status));
           return c.json({ error: "provider_error", message: `LLM provider error (HTTP ${status}).`, retryable: true, requestId }, 502);
         }
 
         const matched = matchError(err);
         if (matched) {
           const httpStatus = matched.code === "rate_limited" ? 429 : 500;
+          if (matched.code === "rate_limited") {
+            log.warn({ err: errObj, category: matched.code, requestId }, "Matched error: %s", matched.code);
+          } else {
+            log.error({ err: errObj, category: matched.code, requestId }, "Matched error: %s", matched.code);
+          }
           return c.json(
             { error: matched.code, message: matched.message, retryable: isRetryableError(matched.code), requestId },
             httpStatus as 500,
@@ -407,7 +604,7 @@ demo.post("/chat", async (c) => {
 });
 
 // GET /conversations — list demo user's conversations
-demo.get("/conversations", async (c) => {
+demo.openapi(listDemoConversationsRoute, async (c) => {
   const requestId = crypto.randomUUID();
   const email = extractDemoEmail(c.req.raw);
   if (!email) {
@@ -415,7 +612,7 @@ demo.get("/conversations", async (c) => {
   }
 
   if (!hasInternalDB()) {
-    return c.json({ conversations: [], total: 0 });
+    return c.json({ conversations: [], total: 0 }, 200);
   }
 
   try {
@@ -423,7 +620,7 @@ demo.get("/conversations", async (c) => {
     const limit = Math.min(parseInt(c.req.query("limit") ?? "50", 10) || 50, 100);
     const offset = parseInt(c.req.query("offset") ?? "0", 10) || 0;
     const result = await listConversations({ userId, limit, offset });
-    return c.json(result);
+    return c.json(result, 200);
   } catch (err) {
     log.error(
       { err: err instanceof Error ? err : new Error(String(err)), requestId },
@@ -437,7 +634,7 @@ demo.get("/conversations", async (c) => {
 });
 
 // GET /conversations/:id — get demo conversation with messages
-demo.get("/conversations/:id", async (c) => {
+demo.openapi(getDemoConversationRoute, async (c) => {
   const requestId = crypto.randomUUID();
   const email = extractDemoEmail(c.req.raw);
   if (!email) {
@@ -453,7 +650,7 @@ demo.get("/conversations/:id", async (c) => {
       return c.json({ error: "not_found", message: "Conversation not found.", requestId }, 404);
     }
 
-    return c.json(result.data);
+    return c.json(result.data, 200);
   } catch (err) {
     log.error(
       { err: err instanceof Error ? err : new Error(String(err)), requestId },

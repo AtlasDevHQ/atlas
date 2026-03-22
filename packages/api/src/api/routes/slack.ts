@@ -3,6 +3,7 @@
  *
  * - POST /api/v1/slack/commands  — slash command handler (/atlas)
  * - POST /api/v1/slack/events   — Events API (thread follow-ups, url_verification)
+ * - POST /api/v1/slack/interactions — Block action interactions
  * - GET  /api/v1/slack/install   — OAuth install redirect
  * - GET  /api/v1/slack/callback  — OAuth callback
  *
@@ -11,7 +12,8 @@
  * and processes the query asynchronously.
  */
 
-import { Hono } from "hono";
+import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { z } from "zod";
 import { executeAgentQuery } from "@atlas/api/lib/agent-query";
 import { createLogger } from "@atlas/api/lib/logger";
 import { checkRateLimit } from "@atlas/api/lib/auth/middleware";
@@ -23,10 +25,11 @@ import { getBotToken, saveInstallation } from "@atlas/api/lib/slack/store";
 import { getConversationId, setConversationId } from "@atlas/api/lib/slack/threads";
 import { createConversation, addMessage, getConversation, generateTitle } from "@atlas/api/lib/conversations";
 import { SENSITIVE_PATTERNS } from "@atlas/api/lib/security";
+import { ErrorSchema } from "./shared-schemas";
 
 const log = createLogger("slack");
 
-const slack = new Hono();
+const slack = new OpenAPIHono();
 
 // --- Verify Slack signature ---
 
@@ -60,12 +63,152 @@ function scrubError(message: string): string {
   return message;
 }
 
+// ---------------------------------------------------------------------------
+// Route definitions
+// ---------------------------------------------------------------------------
+
+const SlackCommandResponseSchema = z.object({
+  response_type: z.string(),
+  text: z.string(),
+});
+
+const SlackOkResponseSchema = z.object({
+  ok: z.boolean(),
+});
+
+const SlackEventResponseSchema = z.record(z.string(), z.unknown());
+
+const commandsRoute = createRoute({
+  method: "post",
+  path: "/commands",
+  tags: ["Slack"],
+  summary: "Slack slash command",
+  description:
+    "Handles Slack slash commands (/atlas). Acks within 3 seconds and processes the query asynchronously. " +
+    "Requires SLACK_SIGNING_SECRET. Request signature is verified via x-slack-signature header.",
+  responses: {
+    200: {
+      description: "Immediate acknowledgment (processing continues asynchronously)",
+      content: { "application/json": { schema: SlackCommandResponseSchema } },
+    },
+    401: {
+      description: "Invalid Slack signature",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const eventsRoute = createRoute({
+  method: "post",
+  path: "/events",
+  tags: ["Slack"],
+  summary: "Slack Events API",
+  description:
+    "Handles Slack Events API callbacks including url_verification challenges and thread follow-up messages. " +
+    "Bot messages are ignored to prevent loops. Request signature is verified via x-slack-signature header.",
+  responses: {
+    200: {
+      description: "Event acknowledged",
+      content: { "application/json": { schema: SlackEventResponseSchema } },
+    },
+    400: {
+      description: "Invalid JSON body",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Invalid Slack signature",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const interactionsRoute = createRoute({
+  method: "post",
+  path: "/interactions",
+  tags: ["Slack"],
+  summary: "Slack block action interactions",
+  description:
+    "Handles Slack block_actions interactions (approve/deny action prompts). " +
+    "Acks immediately and processes the action asynchronously. " +
+    "Request signature is verified via x-slack-signature header.",
+  responses: {
+    200: {
+      description: "Interaction acknowledged",
+      content: { "application/json": { schema: SlackOkResponseSchema } },
+    },
+    400: {
+      description: "Missing or invalid payload",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Invalid Slack signature",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const installRoute = createRoute({
+  method: "get",
+  path: "/install",
+  tags: ["Slack"],
+  summary: "Slack OAuth install redirect",
+  description:
+    "Redirects to the Slack OAuth authorization page. Requires SLACK_CLIENT_ID to be configured.",
+  responses: {
+    302: {
+      description: "Redirect to Slack OAuth authorization page",
+    },
+    501: {
+      description: "OAuth not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const callbackRoute = createRoute({
+  method: "get",
+  path: "/callback",
+  tags: ["Slack"],
+  summary: "Slack OAuth callback",
+  description:
+    "Handles the OAuth callback from Slack, exchanges the code for a bot token, and saves the installation. " +
+    "Returns HTML on success or failure.",
+  request: {
+    query: z.object({
+      code: z.string().openapi({ description: "OAuth authorization code" }),
+      state: z.string().openapi({ description: "CSRF state parameter" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Installation successful (HTML response)",
+      content: { "text/html": { schema: z.string() } },
+    },
+    400: {
+      description: "Invalid or expired state, or missing code",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Installation failed (HTML response)",
+      content: { "text/html": { schema: z.string() } },
+    },
+    501: {
+      description: "OAuth not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Handlers
+// ---------------------------------------------------------------------------
+
 // --- POST /api/v1/slack/commands ---
 
-slack.post("/commands", async (c) => {
+slack.openapi(commandsRoute, async (c) => {
   const { valid, body } = await verifyRequest(c);
   if (!valid) {
-    return c.json({ error: "Invalid signature" }, 401);
+    return c.json({ error: "invalid_signature", message: "Invalid signature" }, 401);
   }
 
   const params = new URLSearchParams(body);
@@ -79,7 +222,7 @@ slack.post("/commands", async (c) => {
     return c.json({
       response_type: "ephemeral",
       text: "Usage: `/atlas <your question>`\nExample: `/atlas how many active users last month?`",
-    });
+    }, 200);
   }
 
   log.info({ channelId, userId, teamId, question: text.slice(0, 100) }, "Slash command received");
@@ -209,12 +352,12 @@ slack.post("/commands", async (c) => {
   return c.json({
     response_type: "in_channel",
     text: `:hourglass_flowing_sand: Processing your question...`,
-  });
+  }, 200);
 });
 
 // --- POST /api/v1/slack/events ---
 
-slack.post("/events", async (c) => {
+slack.openapi(eventsRoute, async (c) => {
   const { valid, body } = await verifyRequest(c);
 
   let payload: Record<string, unknown>;
@@ -222,27 +365,27 @@ slack.post("/events", async (c) => {
     payload = JSON.parse(body);
   } catch (err) {
     log.warn({ err: err instanceof Error ? err.message : String(err) }, "Slack events received non-JSON body");
-    return c.json({ error: "Invalid JSON" }, 400);
+    return c.json({ error: "invalid_json", message: "Invalid JSON" }, 400);
   }
 
   if (!valid) {
-    return c.json({ error: "Invalid signature" }, 401);
+    return c.json({ error: "invalid_signature", message: "Invalid signature" }, 401);
   }
 
   // Handle url_verification challenge (signature verified above)
   if (payload.type === "url_verification") {
-    return c.json({ challenge: payload.challenge });
+    return c.json({ challenge: payload.challenge }, 200);
   }
 
   if (payload.type === "event_callback") {
     const event = payload.event as Record<string, unknown> | undefined;
     if (!event) {
-      return c.json({ ok: true });
+      return c.json({ ok: true }, 200);
     }
 
     // Ignore bot messages to prevent loops
     if (event.bot_id) {
-      return c.json({ ok: true });
+      return c.json({ ok: true }, 200);
     }
 
     const eventType = event.type as string;
@@ -365,22 +508,22 @@ slack.post("/events", async (c) => {
     }
   }
 
-  return c.json({ ok: true });
+  return c.json({ ok: true }, 200);
 });
 
 // --- POST /api/v1/slack/interactions ---
 
-slack.post("/interactions", async (c) => {
+slack.openapi(interactionsRoute, async (c) => {
   const { valid, body } = await verifyRequest(c);
   if (!valid) {
-    return c.json({ error: "Invalid signature" }, 401);
+    return c.json({ error: "invalid_signature", message: "Invalid signature" }, 401);
   }
 
   // Slack sends interactions as URL-encoded form with a "payload" JSON field
   const params = new URLSearchParams(body);
   const payloadStr = params.get("payload");
   if (!payloadStr) {
-    return c.json({ error: "Missing payload" }, 400);
+    return c.json({ error: "missing_payload", message: "Missing payload" }, 400);
   }
 
   let payload: Record<string, unknown>;
@@ -388,12 +531,12 @@ slack.post("/interactions", async (c) => {
     payload = JSON.parse(payloadStr);
   } catch (err) {
     log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to parse block_actions payload JSON");
-    return c.json({ error: "Invalid payload JSON" }, 400);
+    return c.json({ error: "invalid_payload", message: "Invalid payload JSON" }, 400);
   }
 
   if (payload.type !== "block_actions") {
     log.debug({ type: payload.type }, "Acked non-block_actions Slack interaction type");
-    return c.json({ ok: true });
+    return c.json({ ok: true }, 200);
   }
 
   const actions = payload.actions as Array<{
@@ -402,7 +545,7 @@ slack.post("/interactions", async (c) => {
   }> | undefined;
 
   if (!actions?.length) {
-    return c.json({ ok: true });
+    return c.json({ ok: true }, 200);
   }
 
   const responseUrl = (payload.response_url as string) ?? "";
@@ -525,7 +668,7 @@ slack.post("/interactions", async (c) => {
     );
   });
 
-  return c.json({ ok: true });
+  return c.json({ ok: true }, 200);
 });
 
 // --- OAuth CSRF state ---
@@ -540,10 +683,10 @@ setInterval(() => {
 
 // --- GET /api/v1/slack/install ---
 
-slack.get("/install", (c) => {
+slack.openapi(installRoute, (c) => {
   const clientId = process.env.SLACK_CLIENT_ID;
   if (!clientId) {
-    return c.json({ error: "OAuth not configured" }, 501);
+    return c.json({ error: "oauth_not_configured", message: "OAuth not configured" }, 501);
   }
 
   const state = crypto.randomUUID();
@@ -556,23 +699,23 @@ slack.get("/install", (c) => {
 
 // --- GET /api/v1/slack/callback ---
 
-slack.get("/callback", async (c) => {
+slack.openapi(callbackRoute, async (c) => {
   const clientId = process.env.SLACK_CLIENT_ID;
   const clientSecret = process.env.SLACK_CLIENT_SECRET;
 
   if (!clientId || !clientSecret) {
-    return c.json({ error: "OAuth not configured" }, 501);
+    return c.json({ error: "oauth_not_configured", message: "OAuth not configured" }, 501);
   }
 
   const state = c.req.query("state");
   if (!state || !pendingOAuthStates.has(state)) {
-    return c.json({ error: "Invalid or expired state parameter" }, 400);
+    return c.json({ error: "invalid_state", message: "Invalid or expired state parameter" }, 400);
   }
   pendingOAuthStates.delete(state);
 
   const code = c.req.query("code");
   if (!code) {
-    return c.json({ error: "Missing code parameter" }, 400);
+    return c.json({ error: "missing_code", message: "Missing code parameter" }, 400);
   }
 
   const result = await slackAPI("oauth.v2.access", "", {
@@ -583,7 +726,7 @@ slack.get("/callback", async (c) => {
 
   if (!result.ok) {
     log.error({ error: result.error }, "OAuth exchange failed");
-    return c.json({ error: "OAuth failed" }, 400);
+    return c.json({ error: "oauth_failed", message: "OAuth failed" }, 400);
   }
 
   const data = result as unknown as Record<string, unknown>;

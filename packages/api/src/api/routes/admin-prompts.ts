@@ -6,7 +6,8 @@
  * (is_builtin = true) are read-only — mutations return 403.
  */
 
-import { Hono } from "hono";
+import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import { HTTPException } from "hono/http-exception";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import type { PromptCollection, PromptItem } from "@useatlas/types";
@@ -46,22 +47,467 @@ function toPromptItem(row: Record<string, unknown>): PromptItem {
 }
 
 // ---------------------------------------------------------------------------
+// Schemas
+// ---------------------------------------------------------------------------
+
+const PromptCollectionSchema = z.object({
+  id: z.string(),
+  orgId: z.string().nullable(),
+  name: z.string(),
+  industry: z.string(),
+  description: z.string(),
+  isBuiltin: z.boolean(),
+  sortOrder: z.number(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+const PromptItemSchema = z.object({
+  id: z.string(),
+  collectionId: z.string(),
+  question: z.string(),
+  description: z.string().nullable(),
+  category: z.string().nullable(),
+  sortOrder: z.number(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+const ListCollectionsResponseSchema = z.object({
+  collections: z.array(PromptCollectionSchema),
+  total: z.number(),
+});
+
+const DeletedSchema = z.object({
+  deleted: z.boolean(),
+});
+
+const ReorderedSchema = z.object({
+  reordered: z.boolean(),
+});
+
+const ErrorSchema = z.object({
+  error: z.string(),
+  message: z.string(),
+  requestId: z.string().optional(),
+});
+
+const AuthErrorSchema = z.record(z.string(), z.unknown());
+
+// ---------------------------------------------------------------------------
+// Route definitions
+// ---------------------------------------------------------------------------
+
+const listCollectionsRoute = createRoute({
+  method: "get",
+  path: "/",
+  tags: ["Admin — Prompts"],
+  summary: "List prompt collections",
+  description:
+    "Returns all prompt collections for the admin's active organization, including built-in collections. Ordered by sort_order then created_at.",
+  responses: {
+    200: {
+      description: "List of prompt collections",
+      content: { "application/json": { schema: ListCollectionsResponseSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const createCollectionRoute = createRoute({
+  method: "post",
+  path: "/",
+  tags: ["Admin — Prompts"],
+  summary: "Create a prompt collection",
+  description:
+    "Creates a new prompt collection. The handler validates that name and industry are present. The collection is always created as non-built-in.",
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            name: z.string().optional().openapi({ description: "Collection name" }),
+            industry: z.string().optional().openapi({ description: "Industry category" }),
+            description: z.string().optional().openapi({ description: "Optional description" }),
+          }).passthrough(),
+        },
+      },
+    },
+  },
+  responses: {
+    201: {
+      description: "Created prompt collection",
+      content: { "application/json": { schema: PromptCollectionSchema } },
+    },
+    400: {
+      description: "Invalid request body",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const updateCollectionRoute = createRoute({
+  method: "patch",
+  path: "/{id}",
+  tags: ["Admin — Prompts"],
+  summary: "Update a prompt collection",
+  description:
+    "Updates a prompt collection's name, industry, and/or description. Built-in collections cannot be modified.",
+  request: {
+    params: z.object({
+      id: z.string().openapi({ param: { name: "id", in: "path" }, example: "abc123" }),
+    }),
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            name: z.string().optional().openapi({ description: "New collection name" }),
+            industry: z.string().optional().openapi({ description: "New industry category" }),
+            description: z.string().optional().openapi({ description: "New description" }),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Updated prompt collection",
+      content: { "application/json": { schema: PromptCollectionSchema } },
+    },
+    400: {
+      description: "Invalid request body",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required or built-in collection",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Collection not found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const deleteCollectionRoute = createRoute({
+  method: "delete",
+  path: "/{id}",
+  tags: ["Admin — Prompts"],
+  summary: "Delete a prompt collection",
+  description:
+    "Permanently deletes a prompt collection and cascades to its items. Built-in collections cannot be deleted.",
+  request: {
+    params: z.object({
+      id: z.string().openapi({ param: { name: "id", in: "path" }, example: "abc123" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Collection deleted",
+      content: { "application/json": { schema: DeletedSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required or built-in collection",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Collection not found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const createItemRoute = createRoute({
+  method: "post",
+  path: "/{id}/items",
+  tags: ["Admin — Prompts"],
+  summary: "Create a prompt item",
+  description:
+    "Adds a new prompt item to a collection. The collection must not be built-in. Sort order defaults to MAX + 1 if not provided.",
+  request: {
+    params: z.object({
+      id: z.string().openapi({ param: { name: "id", in: "path" }, description: "Collection ID", example: "abc123" }),
+    }),
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            question: z.string().openapi({ description: "Prompt question text" }),
+            description: z.string().optional().openapi({ description: "Optional description" }),
+            category: z.string().optional().openapi({ description: "Optional category" }),
+            sort_order: z.number().optional().openapi({ description: "Sort position (defaults to end)" }),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    201: {
+      description: "Created prompt item",
+      content: { "application/json": { schema: PromptItemSchema } },
+    },
+    400: {
+      description: "Invalid request body",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required or built-in collection",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Collection not found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const updateItemRoute = createRoute({
+  method: "patch",
+  path: "/{collectionId}/items/{itemId}",
+  tags: ["Admin — Prompts"],
+  summary: "Update a prompt item",
+  description:
+    "Updates a prompt item's question, description, and/or category. The parent collection must not be built-in.",
+  request: {
+    params: z.object({
+      collectionId: z.string().openapi({ param: { name: "collectionId", in: "path" }, example: "abc123" }),
+      itemId: z.string().openapi({ param: { name: "itemId", in: "path" }, example: "def456" }),
+    }),
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            question: z.string().optional().openapi({ description: "New question text" }),
+            description: z.string().optional().openapi({ description: "New description" }),
+            category: z.string().optional().openapi({ description: "New category" }),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Updated prompt item",
+      content: { "application/json": { schema: PromptItemSchema } },
+    },
+    400: {
+      description: "Invalid request body",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required or built-in collection",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Collection or item not found, or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const deleteItemRoute = createRoute({
+  method: "delete",
+  path: "/{collectionId}/items/{itemId}",
+  tags: ["Admin — Prompts"],
+  summary: "Delete a prompt item",
+  description:
+    "Permanently removes a prompt item. The parent collection must not be built-in.",
+  request: {
+    params: z.object({
+      collectionId: z.string().openapi({ param: { name: "collectionId", in: "path" }, example: "abc123" }),
+      itemId: z.string().openapi({ param: { name: "itemId", in: "path" }, example: "def456" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Item deleted",
+      content: { "application/json": { schema: DeletedSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required or built-in collection",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Collection or item not found, or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const reorderItemsRoute = createRoute({
+  method: "put",
+  path: "/{id}/reorder",
+  tags: ["Admin — Prompts"],
+  summary: "Reorder prompt items",
+  description:
+    "Reorders all items within a collection. The itemIds array must contain every item ID in the collection exactly once.",
+  request: {
+    params: z.object({
+      id: z.string().openapi({ param: { name: "id", in: "path" }, description: "Collection ID", example: "abc123" }),
+    }),
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            itemIds: z.array(z.string()).openapi({ description: "Ordered array of all item IDs in the collection" }),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Items reordered",
+      content: { "application/json": { schema: ReorderedSchema } },
+    },
+    400: {
+      description: "Invalid request body or item ID mismatch",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required or built-in collection",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Collection not found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
-export const adminPrompts = new Hono();
+export const adminPrompts = new OpenAPIHono();
+
+adminPrompts.onError((err, c) => {
+  if (err instanceof HTTPException && err.status === 400) {
+    return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
+  }
+  throw err;
+});
 
 // ---------------------------------------------------------------------------
 // GET / — list all collections (admin view)
 // ---------------------------------------------------------------------------
 
-adminPrompts.get("/", async (c) => {
-  const req = c.req.raw;
+adminPrompts.openapi(listCollectionsRoute, async (c) => {
   const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
+  const preamble = await adminAuthPreamble(c.req.raw, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: (preamble as { headers?: Record<string, string> }).headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -86,7 +532,7 @@ adminPrompts.get("/", async (c) => {
         );
       }
 
-      return c.json({ collections: rows.map(toPromptCollection), total: rows.length });
+      return c.json({ collections: rows.map(toPromptCollection), total: rows.length }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to list prompt collections");
       return c.json({ error: "internal_error", message: "Failed to list prompt collections.", requestId }, 500);
@@ -98,13 +544,11 @@ adminPrompts.get("/", async (c) => {
 // POST / — create collection
 // ---------------------------------------------------------------------------
 
-adminPrompts.post("/", async (c) => {
-  const req = c.req.raw;
+adminPrompts.openapi(createCollectionRoute, async (c) => {
   const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
+  const preamble = await adminAuthPreamble(c.req.raw, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: (preamble as { headers?: Record<string, string> }).headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -153,13 +597,11 @@ adminPrompts.post("/", async (c) => {
 // PATCH /:id — update collection
 // ---------------------------------------------------------------------------
 
-adminPrompts.patch("/:id", async (c) => {
-  const req = c.req.raw;
+adminPrompts.openapi(updateCollectionRoute, async (c) => {
   const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
+  const preamble = await adminAuthPreamble(c.req.raw, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: (preamble as { headers?: Record<string, string> }).headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -170,7 +612,7 @@ adminPrompts.patch("/:id", async (c) => {
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     try {
-      const id = c.req.param("id");
+      const { id } = c.req.valid("param");
       const orgId = authResult.user?.activeOrganizationId;
 
       // Lookup collection with org check
@@ -246,7 +688,7 @@ adminPrompts.patch("/:id", async (c) => {
         return c.json({ error: "not_found", message: "Collection was deleted before update completed." }, 404);
       }
 
-      return c.json(toPromptCollection(updated[0]));
+      return c.json(toPromptCollection(updated[0]), 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to update prompt collection");
       return c.json({ error: "internal_error", message: "Failed to update prompt collection.", requestId }, 500);
@@ -258,13 +700,11 @@ adminPrompts.patch("/:id", async (c) => {
 // DELETE /:id — delete collection (cascades to items)
 // ---------------------------------------------------------------------------
 
-adminPrompts.delete("/:id", async (c) => {
-  const req = c.req.raw;
+adminPrompts.openapi(deleteCollectionRoute, async (c) => {
   const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
+  const preamble = await adminAuthPreamble(c.req.raw, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: (preamble as { headers?: Record<string, string> }).headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -275,7 +715,7 @@ adminPrompts.delete("/:id", async (c) => {
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     try {
-      const id = c.req.param("id");
+      const { id } = c.req.valid("param");
       const orgId = authResult.user?.activeOrganizationId;
 
       // Lookup collection with org check
@@ -305,7 +745,7 @@ adminPrompts.delete("/:id", async (c) => {
         [id],
       );
 
-      return c.json({ deleted: true });
+      return c.json({ deleted: true }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to delete prompt collection");
       return c.json({ error: "internal_error", message: "Failed to delete prompt collection.", requestId }, 500);
@@ -317,13 +757,11 @@ adminPrompts.delete("/:id", async (c) => {
 // POST /:id/items — add item to collection
 // ---------------------------------------------------------------------------
 
-adminPrompts.post("/:id/items", async (c) => {
-  const req = c.req.raw;
+adminPrompts.openapi(createItemRoute, async (c) => {
   const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
+  const preamble = await adminAuthPreamble(c.req.raw, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: (preamble as { headers?: Record<string, string> }).headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -334,7 +772,7 @@ adminPrompts.post("/:id/items", async (c) => {
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     try {
-      const collectionId = c.req.param("id");
+      const { id: collectionId } = c.req.valid("param");
       const orgId = authResult.user?.activeOrganizationId;
 
       // Verify collection exists and ownership
@@ -404,13 +842,11 @@ adminPrompts.post("/:id/items", async (c) => {
 // PATCH /:collectionId/items/:itemId — update item
 // ---------------------------------------------------------------------------
 
-adminPrompts.patch("/:collectionId/items/:itemId", async (c) => {
-  const req = c.req.raw;
+adminPrompts.openapi(updateItemRoute, async (c) => {
   const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
+  const preamble = await adminAuthPreamble(c.req.raw, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: (preamble as { headers?: Record<string, string> }).headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -421,8 +857,7 @@ adminPrompts.patch("/:collectionId/items/:itemId", async (c) => {
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     try {
-      const collectionId = c.req.param("collectionId");
-      const itemId = c.req.param("itemId");
+      const { collectionId, itemId } = c.req.valid("param");
       const orgId = authResult.user?.activeOrganizationId;
 
       // Verify collection ownership + not built-in
@@ -508,7 +943,7 @@ adminPrompts.patch("/:collectionId/items/:itemId", async (c) => {
         return c.json({ error: "not_found", message: "Item was deleted before update completed." }, 404);
       }
 
-      return c.json(toPromptItem(updated[0]));
+      return c.json(toPromptItem(updated[0]), 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to update prompt item");
       return c.json({ error: "internal_error", message: "Failed to update prompt item.", requestId }, 500);
@@ -520,13 +955,11 @@ adminPrompts.patch("/:collectionId/items/:itemId", async (c) => {
 // DELETE /:collectionId/items/:itemId — delete item
 // ---------------------------------------------------------------------------
 
-adminPrompts.delete("/:collectionId/items/:itemId", async (c) => {
-  const req = c.req.raw;
+adminPrompts.openapi(deleteItemRoute, async (c) => {
   const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
+  const preamble = await adminAuthPreamble(c.req.raw, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: (preamble as { headers?: Record<string, string> }).headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -537,8 +970,7 @@ adminPrompts.delete("/:collectionId/items/:itemId", async (c) => {
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     try {
-      const collectionId = c.req.param("collectionId");
-      const itemId = c.req.param("itemId");
+      const { collectionId, itemId } = c.req.valid("param");
       const orgId = authResult.user?.activeOrganizationId;
 
       // Verify collection ownership + not built-in
@@ -578,7 +1010,7 @@ adminPrompts.delete("/:collectionId/items/:itemId", async (c) => {
         [itemId],
       );
 
-      return c.json({ deleted: true });
+      return c.json({ deleted: true }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to delete prompt item");
       return c.json({ error: "internal_error", message: "Failed to delete prompt item.", requestId }, 500);
@@ -590,13 +1022,11 @@ adminPrompts.delete("/:collectionId/items/:itemId", async (c) => {
 // PUT /:id/reorder — reorder items within a collection
 // ---------------------------------------------------------------------------
 
-adminPrompts.put("/:id/reorder", async (c) => {
-  const req = c.req.raw;
+adminPrompts.openapi(reorderItemsRoute, async (c) => {
   const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
+  const preamble = await adminAuthPreamble(c.req.raw, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: (preamble as { headers?: Record<string, string> }).headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -607,7 +1037,7 @@ adminPrompts.put("/:id/reorder", async (c) => {
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     try {
-      const collectionId = c.req.param("id");
+      const { id: collectionId } = c.req.valid("param");
       const orgId = authResult.user?.activeOrganizationId;
 
       // Verify collection ownership + not built-in
@@ -682,7 +1112,7 @@ adminPrompts.put("/:id/reorder", async (c) => {
         );
       }
 
-      return c.json({ reordered: true });
+      return c.json({ reordered: true }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to reorder prompt items");
       return c.json({ error: "internal_error", message: "Failed to reorder prompt items.", requestId }, 500);

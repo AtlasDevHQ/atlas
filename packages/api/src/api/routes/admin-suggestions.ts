@@ -2,10 +2,10 @@
  * Admin query-suggestions CRUD routes.
  *
  * Mounted under /api/v1/admin/suggestions. All routes require admin role.
- * Provides list and delete for query suggestions (learned query patterns).
+ * Provides list and delete for query suggestions (auto-generated from query frequency).
  */
 
-import { Hono } from "hono";
+import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { adminAuthPreamble } from "./admin-auth";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery, deleteSuggestion } from "@atlas/api/lib/db/internal";
@@ -14,19 +14,146 @@ import type { QuerySuggestionRow } from "@atlas/api/lib/db/internal";
 
 const log = createLogger("admin-suggestions");
 
-export const adminSuggestions = new Hono();
+// ---------------------------------------------------------------------------
+// Schemas
+// ---------------------------------------------------------------------------
+
+const SuggestionSchema = z.object({
+  id: z.string(),
+  orgId: z.string().nullable(),
+  description: z.string(),
+  patternSql: z.string(),
+  normalizedHash: z.string(),
+  tablesInvolved: z.array(z.string()),
+  primaryTable: z.string().nullable(),
+  frequency: z.number(),
+  clickedCount: z.number(),
+  score: z.number(),
+  lastSeenAt: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+const ListSuggestionsResponseSchema = z.object({
+  suggestions: z.array(SuggestionSchema),
+  total: z.number(),
+  limit: z.number(),
+  offset: z.number(),
+});
+
+const ErrorSchema = z.object({
+  error: z.string(),
+  message: z.string(),
+  requestId: z.string().optional(),
+});
+
+const AuthErrorSchema = z.record(z.string(), z.unknown());
+
+// ---------------------------------------------------------------------------
+// Route definitions
+// ---------------------------------------------------------------------------
+
+const listSuggestionsRoute = createRoute({
+  method: "get",
+  path: "/",
+  tags: ["Admin — Suggestions"],
+  summary: "List query suggestions",
+  description:
+    "Returns a paginated list of query suggestions for the admin's active organization. Supports filtering by table name and minimum frequency.",
+  request: {
+    query: z.object({
+      table: z.string().optional().openapi({ description: "Filter by primary table name" }),
+      min_frequency: z.string().optional().openapi({ description: "Minimum frequency threshold" }),
+      limit: z.string().optional().openapi({ description: "Maximum results (default 50, max 200)" }),
+      offset: z.string().optional().openapi({ description: "Pagination offset (default 0)" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Paginated list of suggestions",
+      content: { "application/json": { schema: ListSuggestionsResponseSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const deleteSuggestionRoute = createRoute({
+  method: "delete",
+  path: "/{id}",
+  tags: ["Admin — Suggestions"],
+  summary: "Delete a query suggestion",
+  description: "Permanently removes a query suggestion by ID.",
+  request: {
+    params: z.object({
+      id: z.string().openapi({ param: { name: "id", in: "path" }, example: "abc123" }),
+    }),
+  },
+  responses: {
+    204: {
+      description: "Suggestion deleted",
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Suggestion not found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Router
+// ---------------------------------------------------------------------------
+
+export const adminSuggestions = new OpenAPIHono();
 
 // GET / — list suggestions with filters
-adminSuggestions.get("/", async (c) => {
+adminSuggestions.openapi(listSuggestionsRoute, async (c) => {
   const requestId = crypto.randomUUID();
   const preamble = await adminAuthPreamble(c.req.raw, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: (preamble as { headers?: Record<string, string> }).headers });
+    // Auth errors return dynamic status codes (401/403/429/500). These are declared in the
+    // route responses for spec accuracy, but TypeScript can't narrow the union at the call
+    // site — `as never` is required until auth moves to middleware in Phase 2.
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
   if (!hasInternalDB()) {
-    return c.json({ error: "Internal database not configured" }, { status: 404 });
+    return c.json({ error: "Internal database not configured" }, 404) as never;
   }
 
   const orgId = authResult.user?.activeOrganizationId ?? null;
@@ -82,7 +209,7 @@ adminSuggestions.get("/", async (c) => {
         total,
         limit,
         offset,
-      });
+      }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to list suggestions");
       return c.json({ error: "internal_error", message: "Failed to list suggestions.", requestId }, 500);
@@ -91,20 +218,20 @@ adminSuggestions.get("/", async (c) => {
 });
 
 // DELETE /:id — prune a suggestion
-adminSuggestions.delete("/:id", async (c) => {
+adminSuggestions.openapi(deleteSuggestionRoute, async (c) => {
   const requestId = crypto.randomUUID();
   const preamble = await adminAuthPreamble(c.req.raw, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: (preamble as { headers?: Record<string, string> }).headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
   if (!hasInternalDB()) {
-    return c.json({ error: "Internal database not configured" }, { status: 404 });
+    return c.json({ error: "Internal database not configured" }, 404) as never;
   }
 
   const orgId = authResult.user?.activeOrganizationId ?? null;
-  const { id } = c.req.param();
+  const { id } = c.req.valid("param");
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     try {
@@ -112,7 +239,7 @@ adminSuggestions.delete("/:id", async (c) => {
       if (!deleted) {
         return c.json({ error: "not_found", message: "Suggestion not found." }, 404);
       }
-      return new Response(null, { status: 204 });
+      return new Response(null, { status: 204 }) as never;
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to delete suggestion");
       return c.json({ error: "internal_error", message: "Failed to delete suggestion.", requestId }, 500);

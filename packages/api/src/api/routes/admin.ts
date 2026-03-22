@@ -11,7 +11,9 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { Hono, type Context } from "hono";
+import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import type { Context } from "hono";
+import { HTTPException } from "hono/http-exception";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
 import { authenticateRequest } from "@atlas/api/lib/auth/middleware";
@@ -49,7 +51,30 @@ import { adminUsage } from "./admin-usage";
 
 const log = createLogger("admin-routes");
 
-const admin = new Hono();
+// ---------------------------------------------------------------------------
+// Schemas
+// ---------------------------------------------------------------------------
+
+const ErrorSchema = z.object({
+  error: z.string(),
+  message: z.string(),
+  requestId: z.string().optional(),
+});
+
+const AuthErrorSchema = z.record(z.string(), z.unknown());
+
+// ---------------------------------------------------------------------------
+// Router
+// ---------------------------------------------------------------------------
+
+const admin = new OpenAPIHono();
+
+admin.onError((err, c) => {
+  if (err instanceof HTTPException && err.status === 400) {
+    return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
+  }
+  throw err;
+});
 
 // Mount organization management sub-router
 admin.route("/organizations", adminOrgs);
@@ -151,17 +176,1657 @@ function loadGlossary(root: string): unknown[] {
   return glossaries;
 }
 
+function serveRawYaml(c: Context, requestId: string, filePath: string) {
+  // Validate: no traversal, must be .yml
+  if (filePath.includes("..") || filePath.includes("\0") || filePath.includes("\\") || !filePath.endsWith(".yml")) {
+    return c.json({ error: "invalid_request", message: "Invalid file path." }, 400);
+  }
+
+  const allowedPattern = /^(catalog|glossary)\.yml$|^(entities|metrics)\/[a-zA-Z0-9_-]+\.yml$/;
+  if (!allowedPattern.test(filePath)) {
+    return c.json({ error: "invalid_request", message: "File path not allowed." }, 400);
+  }
+
+  const root = getSemanticRoot();
+  const resolved = path.resolve(root, filePath);
+  if (!resolved.startsWith(path.resolve(root))) {
+    log.error({ requestId, filePath, resolved, root }, "Raw YAML path escaped semantic root");
+    return c.json({ error: "forbidden", message: "Access denied." , requestId}, 403);
+  }
+
+  if (!fs.existsSync(resolved)) {
+    return c.json({ error: "not_found", message: `File "${filePath}" not found.` }, 404);
+  }
+
+  try {
+    const content = fs.readFileSync(resolved, "utf-8");
+    return c.text(content);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), filePath }, "Failed to read raw YAML file");
+    return c.json({ error: "internal_error", message: "Failed to read file." , requestId}, 500);
+  }
+}
+
+/** Escape ILIKE special characters so they are matched literally. */
+function escapeIlike(s: string): string {
+  return s.replace(/[%_\\]/g, "\\$&");
+}
+
+/** Quote a value for safe CSV output (RFC 4180). */
+function csvField(val: string | null | undefined): string {
+  const s = val ?? "";
+  if (s.includes(",") || s.includes('"') || s.includes("\n") || s.includes("\r")) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+type AuditFilterResult =
+  | { ok: true; conditions: string[]; params: unknown[]; paramIdx: number }
+  | { ok: false; error: string; message: string; status: 400 };
+
+/** Shared filter builder for audit list + export endpoints. */
+function buildAuditFilters(query: (key: string) => string | undefined): AuditFilterResult {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  let paramIdx = 1;
+
+  const user = query("user");
+  if (user) {
+    conditions.push(`a.user_id = $${paramIdx++}`);
+    params.push(user);
+  }
+
+  const success = query("success");
+  if (success === "true" || success === "false") {
+    conditions.push(`a.success = $${paramIdx++}`);
+    params.push(success === "true");
+  }
+
+  const from = query("from");
+  if (from) {
+    if (isNaN(Date.parse(from))) {
+      return { ok: false, error: "invalid_request", message: `Invalid 'from' date format: "${from}". Use ISO 8601 (e.g. 2026-01-01).`, status: 400 };
+    }
+    conditions.push(`a.timestamp >= $${paramIdx++}`);
+    params.push(from);
+  }
+
+  const to = query("to");
+  if (to) {
+    if (isNaN(Date.parse(to))) {
+      return { ok: false, error: "invalid_request", message: `Invalid 'to' date format: "${to}". Use ISO 8601 (e.g. 2026-03-03).`, status: 400 };
+    }
+    conditions.push(`a.timestamp <= $${paramIdx++}`);
+    params.push(to);
+  }
+
+  const connection = query("connection");
+  if (connection) {
+    conditions.push(`a.source_id = $${paramIdx++}`);
+    params.push(connection);
+  }
+
+  const table = query("table");
+  if (table) {
+    conditions.push(`a.tables_accessed ? $${paramIdx++}`);
+    params.push(table.toLowerCase());
+  }
+
+  const column = query("column");
+  if (column) {
+    conditions.push(`a.columns_accessed ? $${paramIdx++}`);
+    params.push(column.toLowerCase());
+  }
+
+  const search = query("search");
+  if (search) {
+    const term = `%${escapeIlike(search)}%`;
+    conditions.push(`(a.sql ILIKE $${paramIdx} OR u.email ILIKE $${paramIdx} OR a.error ILIKE $${paramIdx})`);
+    params.push(term);
+    paramIdx++;
+  }
+
+  return { ok: true, conditions, params, paramIdx };
+}
+
+/** Build WHERE clause from optional `from` and `to` query params. */
+function analyticsDateRange(c: { req: { query(name: string): string | undefined } }) {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  let idx = 1;
+
+  const from = c.req.query("from");
+  if (from) {
+    if (isNaN(Date.parse(from))) return { error: `Invalid 'from' date format. Use ISO 8601 (e.g. 2026-01-01).` } as const;
+    conditions.push(`timestamp >= $${idx++}`);
+    params.push(from);
+  }
+
+  const to = c.req.query("to");
+  if (to) {
+    if (isNaN(Date.parse(to))) return { error: `Invalid 'to' date format. Use ISO 8601 (e.g. 2026-01-01).` } as const;
+    conditions.push(`timestamp <= $${idx++}`);
+    params.push(to);
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  return { where, params, nextIdx: idx } as const;
+}
+
+const VALID_ENTITY_TYPES = new Set(["entity", "metric", "glossary", "catalog"]);
+
+type SemanticEntityType = "entity" | "metric" | "glossary" | "catalog";
+
+function validateEntityType(raw: string | undefined, defaultType: string = "entity"): SemanticEntityType | null {
+  const value = raw ?? defaultType;
+  return VALID_ENTITY_TYPES.has(value) ? value as SemanticEntityType : null;
+}
+
+/** Parse and validate ISO date strings for token usage queries. */
+function parseDateRange(from?: string, to?: string): { fromDate: string; toDate: string } | { error: string } {
+  if (from && isNaN(Date.parse(from))) {
+    return { error: `Invalid 'from' date format: "${from}". Use ISO 8601 (e.g. 2026-01-01).` };
+  }
+  if (to && isNaN(Date.parse(to))) {
+    return { error: `Invalid 'to' date format: "${to}". Use ISO 8601 (e.g. 2026-01-01).` };
+  }
+  const now = new Date();
+  const defaultFrom = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const fromDate = from || defaultFrom.toISOString();
+  const toDate = to || now.toISOString();
+  return { fromDate, toDate };
+}
+
+/**
+ * Server-side admin API methods from Better Auth's admin plugin.
+ * The base Auth type doesn't expose plugin-specific methods (see server.ts
+ * for why), but they exist at runtime. This interface types the subset we use.
+ */
+interface AdminApi {
+  listUsers(opts: { query: Record<string, unknown>; headers: Headers }): Promise<{
+    users: Array<Record<string, unknown>>;
+    total: number;
+  }>;
+  setRole(opts: { body: { userId: string; role: string }; headers: Headers }): Promise<unknown>;
+  banUser(opts: { body: Record<string, unknown>; headers: Headers }): Promise<unknown>;
+  unbanUser(opts: { body: { userId: string }; headers: Headers }): Promise<unknown>;
+  removeUser(opts: { body: { userId: string }; headers: Headers }): Promise<unknown>;
+  revokeSessions(opts: { body: { userId: string }; headers: Headers }): Promise<unknown>;
+}
+
+/**
+ * Get the Better Auth instance's admin API, or null if managed auth is not active.
+ * Lazy-imports to avoid pulling in Better Auth when not needed.
+ */
+async function getAdminApi(): Promise<AdminApi | null> {
+  if (detectAuthMode() !== "managed") return null;
+  const { getAuthInstance } = await import("@atlas/api/lib/auth/server");
+  // Cast: admin plugin methods exist at runtime but aren't in the base Auth type
+  return getAuthInstance().api as unknown as AdminApi;
+}
+
+/** Validate that a role string is a valid Atlas role. */
+function isValidRole(role: unknown): role is AtlasRole {
+  return typeof role === "string" && (ATLAS_ROLES as readonly string[]).includes(role);
+}
+
+const INVITE_EXPIRY_DAYS = 7;
+
+/** Basic email format validation (not exhaustive — just enough to catch obvious mistakes). */
+function isValidEmail(email: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+/**
+ * Resolve the frontend base URL for invite links. Priority:
+ *  1. Request Origin header (browser sends the frontend origin)
+ *  2. ATLAS_CORS_ORIGIN (frontend origin in cross-origin deployments)
+ *  3. Fallback: http://localhost:3000 (local development)
+ *
+ * Deliberately avoids BETTER_AUTH_URL and NEXT_PUBLIC_ATLAS_API_URL
+ * because those point to the API server, not the frontend.
+ */
+function resolveBaseUrl(req: Request): string {
+  return (
+    req.headers.get("origin") ??
+    process.env.ATLAS_CORS_ORIGIN ??
+    "http://localhost:3000"
+  );
+}
+
 // ---------------------------------------------------------------------------
-// GET /overview — Dashboard data
+// Route definitions
 // ---------------------------------------------------------------------------
 
-admin.get("/overview", async (c) => {
+// -- Overview ---------------------------------------------------------------
+
+const overviewRoute = createRoute({
+  method: "get",
+  path: "/overview",
+  tags: ["Admin — Overview"],
+  summary: "Dashboard overview",
+  description: "Returns aggregate counts for connections, entities, metrics, glossary terms, plugins, and health warnings.",
+  responses: {
+    200: {
+      description: "Dashboard overview data",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+// -- Semantic Layer ---------------------------------------------------------
+
+const listEntitiesRoute = createRoute({
+  method: "get",
+  path: "/semantic/entities",
+  tags: ["Admin — Semantic"],
+  summary: "List semantic entities",
+  description: "Returns all discovered semantic layer entities from YAML files.",
+  responses: {
+    200: {
+      description: "Entity list with optional warnings",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const getEntityRoute = createRoute({
+  method: "get",
+  path: "/semantic/entities/{name}",
+  tags: ["Admin — Semantic"],
+  summary: "Get entity detail",
+  description: "Returns the full parsed YAML for a single semantic entity.",
+  request: {
+    params: z.object({
+      name: z.string().min(1).openapi({ param: { name: "name", in: "path" }, example: "users" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Entity detail",
+      content: { "application/json": { schema: z.object({ entity: z.unknown() }) } },
+    },
+    400: { description: "Invalid entity name", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden", content: { "application/json": { schema: ErrorSchema } } },
+    404: { description: "Entity not found", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const listMetricsRoute = createRoute({
+  method: "get",
+  path: "/semantic/metrics",
+  tags: ["Admin — Semantic"],
+  summary: "List semantic metrics",
+  description: "Returns all discovered semantic metrics from YAML files.",
+  responses: {
+    200: {
+      description: "Metrics list",
+      content: { "application/json": { schema: z.object({ metrics: z.array(z.unknown()) }) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const getGlossaryRoute = createRoute({
+  method: "get",
+  path: "/semantic/glossary",
+  tags: ["Admin — Semantic"],
+  summary: "Get glossary",
+  description: "Returns all glossary terms from semantic/glossary.yml and per-source glossaries.",
+  responses: {
+    200: {
+      description: "Glossary data",
+      content: { "application/json": { schema: z.object({ glossary: z.array(z.unknown()) }) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const getCatalogRoute = createRoute({
+  method: "get",
+  path: "/semantic/catalog",
+  tags: ["Admin — Semantic"],
+  summary: "Get catalog",
+  description: "Returns the semantic layer catalog (catalog.yml) if it exists.",
+  responses: {
+    200: {
+      description: "Catalog data",
+      content: { "application/json": { schema: z.object({ catalog: z.unknown() }) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const getRawYamlDirFileRoute = createRoute({
+  method: "get",
+  path: "/semantic/raw/{dir}/{file}",
+  tags: ["Admin — Semantic"],
+  summary: "Get raw YAML (subdirectory)",
+  description: "Serves raw YAML content for a file in a subdirectory (e.g. entities/users.yml).",
+  request: {
+    params: z.object({
+      dir: z.string().min(1).openapi({ param: { name: "dir", in: "path" }, example: "entities" }),
+      file: z.string().min(1).openapi({ param: { name: "file", in: "path" }, example: "users.yml" }),
+    }),
+  },
+  responses: {
+    200: { description: "Raw YAML content", content: { "text/plain": { schema: z.string() } } },
+    400: { description: "Invalid file path", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden", content: { "application/json": { schema: ErrorSchema } } },
+    404: { description: "File not found", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const getRawYamlFileRoute = createRoute({
+  method: "get",
+  path: "/semantic/raw/{file}",
+  tags: ["Admin — Semantic"],
+  summary: "Get raw YAML (top-level)",
+  description: "Serves raw YAML content for a top-level file (catalog.yml, glossary.yml).",
+  request: {
+    params: z.object({
+      file: z.string().min(1).openapi({ param: { name: "file", in: "path" }, example: "glossary.yml" }),
+    }),
+  },
+  responses: {
+    200: { description: "Raw YAML content", content: { "text/plain": { schema: z.string() } } },
+    400: { description: "Invalid file path", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden", content: { "application/json": { schema: ErrorSchema } } },
+    404: { description: "File not found", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const getSemanticStatsRoute = createRoute({
+  method: "get",
+  path: "/semantic/stats",
+  tags: ["Admin — Semantic"],
+  summary: "Semantic layer stats",
+  description: "Returns aggregate stats: entity count, column count, join count, measure count, coverage gaps.",
+  responses: {
+    200: {
+      description: "Semantic layer statistics",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const getSemanticDiffRoute = createRoute({
+  method: "get",
+  path: "/semantic/diff",
+  tags: ["Admin — Semantic"],
+  summary: "Schema diff",
+  description: "Compares the live database schema against YAML entity definitions. Optionally specify a connection via ?connection=id.",
+  responses: {
+    200: {
+      description: "Schema diff result",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Connection not found", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+// -- Org-scoped semantic CRUD -----------------------------------------------
+
+const listOrgEntitiesRoute = createRoute({
+  method: "get",
+  path: "/semantic/org/entities",
+  tags: ["Admin — Semantic"],
+  summary: "List org semantic entities",
+  description: "Lists DB-backed semantic entities for the active organization.",
+  responses: {
+    200: {
+      description: "Org entity list",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    400: { description: "No active organization or invalid type", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+    501: { description: "Internal database not available", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const getOrgEntityRoute = createRoute({
+  method: "get",
+  path: "/semantic/org/entities/{name}",
+  tags: ["Admin — Semantic"],
+  summary: "Get org semantic entity",
+  description: "Returns a single DB-backed semantic entity for the active organization.",
+  request: {
+    params: z.object({
+      name: z.string().min(1).openapi({ param: { name: "name", in: "path" }, example: "users" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Org entity detail",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    400: { description: "No active organization or invalid type", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Entity not found", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+    501: { description: "Internal database not available", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const putOrgEntityRoute = createRoute({
+  method: "put",
+  path: "/semantic/org/entities/{name}",
+  tags: ["Admin — Semantic"],
+  summary: "Create or update org semantic entity",
+  description: "Upserts a DB-backed semantic entity for the active organization.",
+  request: {
+    params: z.object({
+      name: z.string().min(1).openapi({ param: { name: "name", in: "path" }, example: "users" }),
+    }),
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            yamlContent: z.string(),
+            entityType: z.string().optional(),
+            connectionId: z.string().optional(),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Entity upserted",
+      content: { "application/json": { schema: z.object({ ok: z.boolean(), name: z.string(), entityType: z.string() }) } },
+    },
+    400: { description: "Invalid request", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+    501: { description: "Internal database not available", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const deleteOrgEntityRoute = createRoute({
+  method: "delete",
+  path: "/semantic/org/entities/{name}",
+  tags: ["Admin — Semantic"],
+  summary: "Delete org semantic entity",
+  description: "Deletes a DB-backed semantic entity for the active organization.",
+  request: {
+    params: z.object({
+      name: z.string().min(1).openapi({ param: { name: "name", in: "path" }, example: "users" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Entity deleted",
+      content: { "application/json": { schema: z.object({ ok: z.boolean(), name: z.string(), entityType: z.string() }) } },
+    },
+    400: { description: "Invalid request", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Entity not found", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+    501: { description: "Internal database not available", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const importOrgEntitiesRoute = createRoute({
+  method: "post",
+  path: "/semantic/org/import",
+  tags: ["Admin — Semantic"],
+  summary: "Bulk import org entities from disk",
+  description: "Imports semantic entities from the org's disk directory into the database.",
+  responses: {
+    200: {
+      description: "Import result",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    400: { description: "Invalid request", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+    501: { description: "Internal database not available", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+// -- Connections -------------------------------------------------------------
+
+const listConnectionsRoute = createRoute({
+  method: "get",
+  path: "/connections",
+  tags: ["Admin — Connections"],
+  summary: "List connections",
+  description: "Returns all registered database connections.",
+  responses: {
+    200: {
+      description: "Connection list",
+      content: { "application/json": { schema: z.object({ connections: z.array(z.unknown()) }) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const getPoolMetricsRoute = createRoute({
+  method: "get",
+  path: "/connections/pool",
+  tags: ["Admin — Connections"],
+  summary: "Pool metrics",
+  description: "Returns connection pool metrics for all connections.",
+  responses: {
+    200: {
+      description: "Pool metrics",
+      content: { "application/json": { schema: z.object({ metrics: z.unknown() }) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const getOrgPoolMetricsRoute = createRoute({
+  method: "get",
+  path: "/connections/pool/orgs",
+  tags: ["Admin — Connections"],
+  summary: "Org-scoped pool metrics",
+  description: "Returns connection pool metrics scoped by organization.",
+  responses: {
+    200: {
+      description: "Org pool metrics",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const drainOrgPoolRoute = createRoute({
+  method: "post",
+  path: "/connections/pool/orgs/{orgId}/drain",
+  tags: ["Admin — Connections"],
+  summary: "Drain org pools",
+  description: "Drains all connection pools for a specific organization.",
+  request: {
+    params: z.object({
+      orgId: z.string().min(1).openapi({ param: { name: "orgId", in: "path" }, example: "org_abc123" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Drain result",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const drainConnectionPoolRoute = createRoute({
+  method: "post",
+  path: "/connections/{id}/drain",
+  tags: ["Admin — Connections"],
+  summary: "Drain connection pool",
+  description: "Drains and recreates the pool for a specific connection.",
+  request: {
+    params: z.object({
+      id: z.string().min(1).openapi({ param: { name: "id", in: "path" }, example: "warehouse" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Pool drained",
+      content: { "application/json": { schema: z.object({ drained: z.boolean(), message: z.string() }) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Connection not found", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: "Pool drain conflict", content: { "application/json": { schema: z.object({ drained: z.boolean(), message: z.string() }) } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const getCacheStatsRoute = createRoute({
+  method: "get",
+  path: "/cache/stats",
+  tags: ["Admin — Connections"],
+  summary: "Cache statistics",
+  description: "Returns cache hit/miss statistics.",
+  responses: {
+    200: {
+      description: "Cache stats",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const flushCacheRoute = createRoute({
+  method: "post",
+  path: "/cache/flush",
+  tags: ["Admin — Connections"],
+  summary: "Flush cache",
+  description: "Flushes all cache entries.",
+  responses: {
+    200: {
+      description: "Cache flushed",
+      content: { "application/json": { schema: z.object({ ok: z.boolean(), flushed: z.number(), message: z.string() }) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const testConnectionRoute = createRoute({
+  method: "post",
+  path: "/connections/test",
+  tags: ["Admin — Connections"],
+  summary: "Test connection URL",
+  description: "Tests a database connection URL without persisting it.",
+  responses: {
+    200: {
+      description: "Connection test result",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    400: { description: "Invalid request or connection failed", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const testExistingConnectionRoute = createRoute({
+  method: "post",
+  path: "/connections/{id}/test",
+  tags: ["Admin — Connections"],
+  summary: "Health check connection",
+  description: "Runs a health check on an existing connection.",
+  request: {
+    params: z.object({
+      id: z.string().min(1).openapi({ param: { name: "id", in: "path" }, example: "warehouse" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Health check result",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Connection not found", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const createConnectionRoute = createRoute({
+  method: "post",
+  path: "/connections",
+  tags: ["Admin — Connections"],
+  summary: "Create connection",
+  description: "Creates a new database connection. Tests it before saving.",
+  responses: {
+    201: {
+      description: "Connection created",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    400: { description: "Invalid request or connection failed", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: "Connection already exists", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const updateConnectionRoute = createRoute({
+  method: "put",
+  path: "/connections/{id}",
+  tags: ["Admin — Connections"],
+  summary: "Update connection",
+  description: "Updates an existing connection's URL, description, or schema.",
+  request: {
+    params: z.object({
+      id: z.string().min(1).openapi({ param: { name: "id", in: "path" }, example: "warehouse" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Connection updated",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    400: { description: "Invalid request or connection failed", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden", content: { "application/json": { schema: ErrorSchema } } },
+    404: { description: "Connection not found", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const deleteConnectionRoute = createRoute({
+  method: "delete",
+  path: "/connections/{id}",
+  tags: ["Admin — Connections"],
+  summary: "Delete connection",
+  description: "Removes a connection from the registry and internal database.",
+  request: {
+    params: z.object({
+      id: z.string().min(1).openapi({ param: { name: "id", in: "path" }, example: "warehouse" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Connection deleted",
+      content: { "application/json": { schema: z.object({ success: z.boolean() }) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden", content: { "application/json": { schema: ErrorSchema } } },
+    404: { description: "Connection not found", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: "Connection has references", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const getConnectionRoute = createRoute({
+  method: "get",
+  path: "/connections/{id}",
+  tags: ["Admin — Connections"],
+  summary: "Get connection detail",
+  description: "Returns connection detail including masked URL and schema.",
+  request: {
+    params: z.object({
+      id: z.string().min(1).openapi({ param: { name: "id", in: "path" }, example: "warehouse" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Connection detail",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Connection not found", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+// -- Audit ------------------------------------------------------------------
+
+const listAuditRoute = createRoute({
+  method: "get",
+  path: "/audit",
+  tags: ["Admin — Audit"],
+  summary: "Query audit log",
+  description: "Returns paginated audit log entries with optional filters for user, success, date range, connection, table, column, and search.",
+  responses: {
+    200: {
+      description: "Audit log entries",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    400: { description: "Invalid filter", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const exportAuditRoute = createRoute({
+  method: "get",
+  path: "/audit/export",
+  tags: ["Admin — Audit"],
+  summary: "Export audit log as CSV",
+  description: "Exports audit log entries as a CSV file (up to 10,000 rows). Respects current filters.",
+  responses: {
+    200: { description: "CSV file", content: { "text/csv": { schema: z.string() } } },
+    400: { description: "Invalid filter", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const getAuditStatsRoute = createRoute({
+  method: "get",
+  path: "/audit/stats",
+  tags: ["Admin — Audit"],
+  summary: "Audit statistics",
+  description: "Returns aggregate audit stats: total queries, error count, error rate, and queries per day for the last 7 days.",
+  responses: {
+    200: {
+      description: "Audit statistics",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const getAuditFacetsRoute = createRoute({
+  method: "get",
+  path: "/audit/facets",
+  tags: ["Admin — Audit"],
+  summary: "Audit filter facets",
+  description: "Returns distinct tables and columns from the audit log for filter dropdowns.",
+  responses: {
+    200: {
+      description: "Facet values",
+      content: { "application/json": { schema: z.object({ tables: z.array(z.string()), columns: z.array(z.string()) }) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+// -- Audit Analytics --------------------------------------------------------
+
+const auditVolumeRoute = createRoute({
+  method: "get",
+  path: "/audit/analytics/volume",
+  tags: ["Admin — Audit Analytics"],
+  summary: "Query volume over time",
+  description: "Returns queries per day over an optional date range.",
+  responses: {
+    200: {
+      description: "Volume data",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    400: { description: "Invalid date format", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const auditSlowRoute = createRoute({
+  method: "get",
+  path: "/audit/analytics/slow",
+  tags: ["Admin — Audit Analytics"],
+  summary: "Slowest queries",
+  description: "Returns top 20 queries by average duration.",
+  responses: {
+    200: {
+      description: "Slow query data",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    400: { description: "Invalid date format", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const auditFrequentRoute = createRoute({
+  method: "get",
+  path: "/audit/analytics/frequent",
+  tags: ["Admin — Audit Analytics"],
+  summary: "Most frequent queries",
+  description: "Returns top 20 queries by execution count.",
+  responses: {
+    200: {
+      description: "Frequent query data",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    400: { description: "Invalid date format", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const auditErrorsRoute = createRoute({
+  method: "get",
+  path: "/audit/analytics/errors",
+  tags: ["Admin — Audit Analytics"],
+  summary: "Error distribution",
+  description: "Returns error count grouped by error message pattern.",
+  responses: {
+    200: {
+      description: "Error analytics data",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    400: { description: "Invalid date format", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const auditUsersRoute = createRoute({
+  method: "get",
+  path: "/audit/analytics/users",
+  tags: ["Admin — Audit Analytics"],
+  summary: "Per-user stats",
+  description: "Returns per-user query stats: count, average duration, error count, error rate.",
+  responses: {
+    200: {
+      description: "User analytics data",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    400: { description: "Invalid date format", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+// -- Plugins ----------------------------------------------------------------
+
+const listPluginsRoute = createRoute({
+  method: "get",
+  path: "/plugins",
+  tags: ["Admin — Plugins"],
+  summary: "List plugins",
+  description: "Returns all installed plugins with their status.",
+  responses: {
+    200: {
+      description: "Plugin list",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const pluginHealthRoute = createRoute({
+  method: "post",
+  path: "/plugins/{id}/health",
+  tags: ["Admin — Plugins"],
+  summary: "Plugin health check",
+  description: "Triggers a health check for a specific plugin.",
+  request: {
+    params: z.object({
+      id: z.string().min(1).openapi({ param: { name: "id", in: "path" }, example: "bigquery" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Health check result",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Plugin not found", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const enablePluginRoute = createRoute({
+  method: "post",
+  path: "/plugins/{id}/enable",
+  tags: ["Admin — Plugins"],
+  summary: "Enable plugin",
+  description: "Enables a plugin. Persists to DB if available.",
+  request: {
+    params: z.object({
+      id: z.string().min(1).openapi({ param: { name: "id", in: "path" }, example: "bigquery" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Plugin enabled",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Plugin not found", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const disablePluginRoute = createRoute({
+  method: "post",
+  path: "/plugins/{id}/disable",
+  tags: ["Admin — Plugins"],
+  summary: "Disable plugin",
+  description: "Disables a plugin. Persists to DB if available.",
+  request: {
+    params: z.object({
+      id: z.string().min(1).openapi({ param: { name: "id", in: "path" }, example: "bigquery" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Plugin disabled",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Plugin not found", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const getPluginSchemaRoute = createRoute({
+  method: "get",
+  path: "/plugins/{id}/schema",
+  tags: ["Admin — Plugins"],
+  summary: "Plugin config schema",
+  description: "Returns the configuration schema and current values for a plugin.",
+  request: {
+    params: z.object({
+      id: z.string().min(1).openapi({ param: { name: "id", in: "path" }, example: "bigquery" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Plugin schema and values",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Plugin not found", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const updatePluginConfigRoute = createRoute({
+  method: "put",
+  path: "/plugins/{id}/config",
+  tags: ["Admin — Plugins"],
+  summary: "Update plugin config",
+  description: "Updates the configuration for a plugin. Validates against the schema if available.",
+  request: {
+    params: z.object({
+      id: z.string().min(1).openapi({ param: { name: "id", in: "path" }, example: "bigquery" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Config saved",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    400: { description: "Validation error", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Plugin not found", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: "No internal database", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+// -- Password ---------------------------------------------------------------
+
+const getPasswordStatusRoute = createRoute({
+  method: "get",
+  path: "/me/password-status",
+  tags: ["Admin — Password"],
+  summary: "Check password status",
+  description: "Checks if the current user must change their password. Requires authentication but not admin role.",
+  responses: {
+    200: {
+      description: "Password status",
+      content: { "application/json": { schema: z.object({ passwordChangeRequired: z.boolean() }) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const changePasswordRoute = createRoute({
+  method: "post",
+  path: "/me/password",
+  tags: ["Admin — Password"],
+  summary: "Change password",
+  description: "Changes the current user's password and clears the password_change_required flag. Requires managed auth mode.",
+  responses: {
+    200: {
+      description: "Password changed",
+      content: { "application/json": { schema: z.object({ success: z.boolean() }) } },
+    },
+    400: { description: "Invalid request", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Not available — requires managed auth", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+// -- Sessions ---------------------------------------------------------------
+
+const listSessionsRoute = createRoute({
+  method: "get",
+  path: "/sessions",
+  tags: ["Admin — Sessions"],
+  summary: "List sessions",
+  description: "Returns paginated active sessions with user info. Supports search by email or IP.",
+  responses: {
+    200: {
+      description: "Session list",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Not available — requires managed auth", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const getSessionStatsRoute = createRoute({
+  method: "get",
+  path: "/sessions/stats",
+  tags: ["Admin — Sessions"],
+  summary: "Session statistics",
+  description: "Returns total, active, and unique user session counts.",
+  responses: {
+    200: {
+      description: "Session stats",
+      content: { "application/json": { schema: z.object({ total: z.number(), active: z.number(), uniqueUsers: z.number() }) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Not available — requires managed auth", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const deleteSessionRoute = createRoute({
+  method: "delete",
+  path: "/sessions/{id}",
+  tags: ["Admin — Sessions"],
+  summary: "Revoke session",
+  description: "Revokes a single session by ID.",
+  request: {
+    params: z.object({
+      id: z.string().min(1).openapi({ param: { name: "id", in: "path" }, example: "sess_abc123" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Session revoked",
+      content: { "application/json": { schema: z.object({ success: z.boolean() }) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Session not found or not available", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const deleteUserSessionsRoute = createRoute({
+  method: "delete",
+  path: "/sessions/user/{userId}",
+  tags: ["Admin — Sessions"],
+  summary: "Revoke all user sessions",
+  description: "Revokes all sessions for a specific user.",
+  request: {
+    params: z.object({
+      userId: z.string().min(1).openapi({ param: { name: "userId", in: "path" }, example: "user_abc123" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Sessions revoked",
+      content: { "application/json": { schema: z.object({ success: z.boolean(), count: z.number() }) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "No sessions found or not available", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+// -- Users ------------------------------------------------------------------
+
+const listUsersRoute = createRoute({
+  method: "get",
+  path: "/users",
+  tags: ["Admin — Users"],
+  summary: "List users",
+  description: "Returns paginated users with optional search and role filtering.",
+  responses: {
+    200: {
+      description: "User list",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Not available — requires managed auth", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const getUserStatsRoute = createRoute({
+  method: "get",
+  path: "/users/stats",
+  tags: ["Admin — Users"],
+  summary: "User statistics",
+  description: "Returns aggregate user stats: total, banned, and breakdown by role.",
+  responses: {
+    200: {
+      description: "User stats",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Not available — requires managed auth", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const changeUserRoleRoute = createRoute({
+  method: "patch",
+  path: "/users/{id}/role",
+  tags: ["Admin — Users"],
+  summary: "Change user role",
+  description: "Changes a user's role. Cannot change own role or demote the last admin.",
+  request: {
+    params: z.object({
+      id: z.string().min(1).openapi({ param: { name: "id", in: "path" }, example: "user_abc123" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Role changed",
+      content: { "application/json": { schema: z.object({ success: z.boolean() }) } },
+    },
+    400: { description: "Invalid role", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden", content: { "application/json": { schema: ErrorSchema } } },
+    404: { description: "Not available — requires managed auth", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const banUserRoute = createRoute({
+  method: "post",
+  path: "/users/{id}/ban",
+  tags: ["Admin — Users"],
+  summary: "Ban user",
+  description: "Bans a user with optional reason and expiry.",
+  request: {
+    params: z.object({
+      id: z.string().min(1).openapi({ param: { name: "id", in: "path" }, example: "user_abc123" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "User banned",
+      content: { "application/json": { schema: z.object({ success: z.boolean() }) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden", content: { "application/json": { schema: ErrorSchema } } },
+    404: { description: "Not available — requires managed auth", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const unbanUserRoute = createRoute({
+  method: "post",
+  path: "/users/{id}/unban",
+  tags: ["Admin — Users"],
+  summary: "Unban user",
+  description: "Removes a ban from a user.",
+  request: {
+    params: z.object({
+      id: z.string().min(1).openapi({ param: { name: "id", in: "path" }, example: "user_abc123" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "User unbanned",
+      content: { "application/json": { schema: z.object({ success: z.boolean() }) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Not available — requires managed auth", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const deleteUserRoute = createRoute({
+  method: "delete",
+  path: "/users/{id}",
+  tags: ["Admin — Users"],
+  summary: "Delete user",
+  description: "Permanently deletes a user. Cannot delete yourself or the last admin.",
+  request: {
+    params: z.object({
+      id: z.string().min(1).openapi({ param: { name: "id", in: "path" }, example: "user_abc123" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "User deleted",
+      content: { "application/json": { schema: z.object({ success: z.boolean() }) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden", content: { "application/json": { schema: ErrorSchema } } },
+    404: { description: "Not available — requires managed auth", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const revokeUserSessionsRoute = createRoute({
+  method: "post",
+  path: "/users/{id}/revoke",
+  tags: ["Admin — Users"],
+  summary: "Revoke user sessions",
+  description: "Revokes all sessions for a user (force logout).",
+  request: {
+    params: z.object({
+      id: z.string().min(1).openapi({ param: { name: "id", in: "path" }, example: "user_abc123" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Sessions revoked",
+      content: { "application/json": { schema: z.object({ success: z.boolean() }) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Not available — requires managed auth", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+// -- Invitations ------------------------------------------------------------
+
+const inviteUserRoute = createRoute({
+  method: "post",
+  path: "/users/invite",
+  tags: ["Admin — Invitations"],
+  summary: "Create invitation",
+  description: "Creates an invitation for a new user. Optionally sends an email via Resend.",
+  responses: {
+    200: {
+      description: "Invitation created",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    400: { description: "Invalid request", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Not available — requires managed auth", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: "User or invitation already exists", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const listInvitationsRoute = createRoute({
+  method: "get",
+  path: "/users/invitations",
+  tags: ["Admin — Invitations"],
+  summary: "List invitations",
+  description: "Returns invitations with optional status filter (pending, accepted, revoked, expired).",
+  responses: {
+    200: {
+      description: "Invitation list",
+      content: { "application/json": { schema: z.object({ invitations: z.array(z.unknown()) }) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Not available — requires managed auth", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const revokeInvitationRoute = createRoute({
+  method: "delete",
+  path: "/users/invitations/{id}",
+  tags: ["Admin — Invitations"],
+  summary: "Revoke invitation",
+  description: "Revokes a pending invitation.",
+  request: {
+    params: z.object({
+      id: z.string().min(1).openapi({ param: { name: "id", in: "path" }, example: "inv_abc123" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Invitation revoked",
+      content: { "application/json": { schema: z.object({ success: z.boolean() }) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Invitation not found or not available", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+// -- Tokens -----------------------------------------------------------------
+
+const getTokenSummaryRoute = createRoute({
+  method: "get",
+  path: "/tokens/summary",
+  tags: ["Admin — Tokens"],
+  summary: "Token usage summary",
+  description: "Returns total token consumption with prompt/completion breakdown over a date range.",
+  responses: {
+    200: {
+      description: "Token summary",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    400: { description: "Invalid date format", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const getTokensByUserRoute = createRoute({
+  method: "get",
+  path: "/tokens/by-user",
+  tags: ["Admin — Tokens"],
+  summary: "Token usage by user",
+  description: "Returns top N users by token consumption over a date range.",
+  responses: {
+    200: {
+      description: "Token usage by user",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    400: { description: "Invalid date format", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const getTokenTrendsRoute = createRoute({
+  method: "get",
+  path: "/tokens/trends",
+  tags: ["Admin — Tokens"],
+  summary: "Token usage trends",
+  description: "Returns time-series token usage data for charting.",
+  responses: {
+    200: {
+      description: "Token trends",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    400: { description: "Invalid date format", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+// -- Settings ---------------------------------------------------------------
+
+const getSettingsRoute = createRoute({
+  method: "get",
+  path: "/settings",
+  tags: ["Admin — Settings"],
+  summary: "Get all settings",
+  description: "Returns all known settings with current values and sources.",
+  responses: {
+    200: {
+      description: "Settings list",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const updateSettingRoute = createRoute({
+  method: "put",
+  path: "/settings/{key}",
+  tags: ["Admin — Settings"],
+  summary: "Update setting",
+  description: "Sets or updates a settings override. Requires internal database.",
+  request: {
+    params: z.object({
+      key: z.string().min(1).openapi({ param: { name: "key", in: "path" }, example: "ATLAS_ROW_LIMIT" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Setting saved",
+      content: { "application/json": { schema: z.object({ success: z.boolean(), key: z.string(), value: z.string() }) } },
+    },
+    400: { description: "Invalid request", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden", content: { "application/json": { schema: ErrorSchema } } },
+    404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const deleteSettingRoute = createRoute({
+  method: "delete",
+  path: "/settings/{key}",
+  tags: ["Admin — Settings"],
+  summary: "Delete setting override",
+  description: "Removes a settings override, reverting to env var or default value.",
+  request: {
+    params: z.object({
+      key: z.string().min(1).openapi({ param: { name: "key", in: "path" }, example: "ATLAS_ROW_LIMIT" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Setting deleted",
+      content: { "application/json": { schema: z.object({ success: z.boolean(), key: z.string() }) } },
+    },
+    400: { description: "Unknown setting key", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden", content: { "application/json": { schema: ErrorSchema } } },
+    404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Route handlers
+// ---------------------------------------------------------------------------
+
+// -- Overview ---------------------------------------------------------------
+
+admin.openapi(overviewRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -200,22 +1865,19 @@ admin.get("/overview", async (c) => {
       })),
       ...(warnings.length > 0 && { warnings }),
       ...(poolWarnings.length > 0 && { poolWarnings }),
-    });
+    }, 200);
   });
 });
 
-// ---------------------------------------------------------------------------
-// Semantic Layer routes
-// ---------------------------------------------------------------------------
+// -- Semantic Layer ---------------------------------------------------------
 
-// GET /semantic/entities — list all entities
-admin.get("/semantic/entities", async (c) => {
+admin.openapi(listEntitiesRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -225,24 +1887,22 @@ admin.get("/semantic/entities", async (c) => {
     return c.json({
       entities: result.entities,
       ...(result.warnings.length > 0 && { warnings: result.warnings }),
-    });
+    }, 200);
   });
 });
 
-// GET /semantic/entities/:name — full entity detail
-admin.get("/semantic/entities/:name", async (c) => {
+admin.openapi(getEntityRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
+  const { name } = c.req.valid("param");
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
   return withRequestContext({ requestId, user: authResult.user }, () => {
-    const name = c.req.param("name");
-
     // Path traversal protection
     if (!isValidEntityName(name)) {
       log.warn({ requestId, name }, "Rejected invalid entity name");
@@ -264,7 +1924,7 @@ admin.get("/semantic/entities/:name", async (c) => {
 
     try {
       const raw = readYamlFile(filePath);
-      return c.json({ entity: raw });
+      return c.json({ entity: raw }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), filePath, entityName: name }, "Failed to parse entity YAML file");
       return c.json({ error: "internal_error", message: `Failed to parse entity file for "${name}".` , requestId}, 500);
@@ -272,50 +1932,47 @@ admin.get("/semantic/entities/:name", async (c) => {
   });
 });
 
-// GET /semantic/metrics — list all metrics
-admin.get("/semantic/metrics", async (c) => {
+admin.openapi(listMetricsRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
   return withRequestContext({ requestId, user: authResult.user }, () => {
     const root = getSemanticRoot();
     const metrics = discoverMetrics(root);
-    return c.json({ metrics });
+    return c.json({ metrics }, 200);
   });
 });
 
-// GET /semantic/glossary
-admin.get("/semantic/glossary", async (c) => {
+admin.openapi(getGlossaryRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
   return withRequestContext({ requestId, user: authResult.user }, () => {
     const root = getSemanticRoot();
     const glossary = loadGlossary(root);
-    return c.json({ glossary });
+    return c.json({ glossary }, 200);
   });
 });
 
-// GET /semantic/catalog
-admin.get("/semantic/catalog", async (c) => {
+admin.openapi(getCatalogRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -323,11 +1980,11 @@ admin.get("/semantic/catalog", async (c) => {
     const root = getSemanticRoot();
     const catalogFile = path.join(root, "catalog.yml");
     if (!fs.existsSync(catalogFile)) {
-      return c.json({ catalog: null });
+      return c.json({ catalog: null }, 200);
     }
     try {
       const raw = readYamlFile(catalogFile);
-      return c.json({ catalog: raw });
+      return c.json({ catalog: raw }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), file: catalogFile }, "Failed to parse catalog YAML");
       return c.json({ error: "internal_error", message: "Failed to parse catalog file." , requestId}, 500);
@@ -335,70 +1992,37 @@ admin.get("/semantic/catalog", async (c) => {
   });
 });
 
-// GET /semantic/raw/:file — serve raw YAML for top-level files (catalog.yml, glossary.yml)
-// GET /semantic/raw/:dir/:file — serve raw YAML for subdirectory files (entities/x.yml, metrics/x.yml)
-
-function serveRawYaml(c: Context, requestId: string, filePath: string) {
-  // Validate: no traversal, must be .yml
-  if (filePath.includes("..") || filePath.includes("\0") || filePath.includes("\\") || !filePath.endsWith(".yml")) {
-    return c.json({ error: "invalid_request", message: "Invalid file path." }, 400);
-  }
-
-  const allowedPattern = /^(catalog|glossary)\.yml$|^(entities|metrics)\/[a-zA-Z0-9_-]+\.yml$/;
-  if (!allowedPattern.test(filePath)) {
-    return c.json({ error: "invalid_request", message: "File path not allowed." }, 400);
-  }
-
-  const root = getSemanticRoot();
-  const resolved = path.resolve(root, filePath);
-  if (!resolved.startsWith(path.resolve(root))) {
-    log.error({ requestId, filePath, resolved, root }, "Raw YAML path escaped semantic root");
-    return c.json({ error: "forbidden", message: "Access denied." , requestId}, 403);
-  }
-
-  if (!fs.existsSync(resolved)) {
-    return c.json({ error: "not_found", message: `File "${filePath}" not found.` }, 404);
-  }
-
-  try {
-    const content = fs.readFileSync(resolved, "utf-8");
-    return c.text(content);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), filePath }, "Failed to read raw YAML file");
-    return c.json({ error: "internal_error", message: "Failed to read file." , requestId}, 500);
-  }
-}
-
-admin.get("/semantic/raw/:dir/:file", async (c) => {
+admin.openapi(getRawYamlDirFileRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
+  const { dir, file } = c.req.valid("param");
   const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  if ("error" in preamble) return c.json(preamble.error, preamble.status, preamble.headers) as never;
   const { authResult } = preamble;
   return withRequestContext({ requestId, user: authResult.user }, () => {
-    return serveRawYaml(c, requestId, `${c.req.param("dir")}/${c.req.param("file")}`);
+    return serveRawYaml(c as unknown as Context, requestId, `${dir}/${file}`) as never;
   });
 });
 
-admin.get("/semantic/raw/:file", async (c) => {
+admin.openapi(getRawYamlFileRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
+  const { file } = c.req.valid("param");
   const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+  if ("error" in preamble) return c.json(preamble.error, preamble.status, preamble.headers) as never;
   const { authResult } = preamble;
   return withRequestContext({ requestId, user: authResult.user }, () => {
-    return serveRawYaml(c, requestId, c.req.param("file"));
+    return serveRawYaml(c as unknown as Context, requestId, file) as never;
   });
 });
 
-// GET /semantic/stats — aggregate stats
-admin.get("/semantic/stats", async (c) => {
+admin.openapi(getSemanticStatsRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -425,18 +2049,17 @@ admin.get("/semantic/stats", async (c) => {
         noJoins,
       },
       ...(warnings.length > 0 && { warnings }),
-    });
+    }, 200);
   });
 });
 
-// GET /semantic/diff — compare DB schema against YAML entities
-admin.get("/semantic/diff", async (c) => {
+admin.openapi(getSemanticDiffRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -451,7 +2074,7 @@ admin.get("/semantic/diff", async (c) => {
 
     try {
       const result = await runDiff(connectionId);
-      return c.json(result);
+      return c.json(result, 200);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
       log.error(
@@ -463,26 +2086,14 @@ admin.get("/semantic/diff", async (c) => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Org-scoped semantic entity CRUD (DB-backed)
-// ---------------------------------------------------------------------------
+// -- Org-scoped semantic CRUD -----------------------------------------------
 
-const VALID_ENTITY_TYPES = new Set(["entity", "metric", "glossary", "catalog"]);
-
-type SemanticEntityType = "entity" | "metric" | "glossary" | "catalog";
-
-function validateEntityType(raw: string | undefined, defaultType: string = "entity"): SemanticEntityType | null {
-  const value = raw ?? defaultType;
-  return VALID_ENTITY_TYPES.has(value) ? value as SemanticEntityType : null;
-}
-
-// GET /semantic/org/entities — list entities for the active org
-admin.get("/semantic/org/entities", async (c) => {
+admin.openapi(listOrgEntitiesRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -512,7 +2123,7 @@ admin.get("/semantic/org/entities", async (c) => {
           updatedAt: r.updated_at,
         })),
         total: rows.length,
-      });
+      }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to list org semantic entities");
       return c.json({ error: "internal_error", message: "Failed to list entities." , requestId}, 500);
@@ -520,13 +2131,13 @@ admin.get("/semantic/org/entities", async (c) => {
   });
 });
 
-// GET /semantic/org/entities/:name — get a single entity
-admin.get("/semantic/org/entities/:name", async (c) => {
+admin.openapi(getOrgEntityRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
+  const { name } = c.req.valid("param");
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -540,7 +2151,6 @@ admin.get("/semantic/org/entities/:name", async (c) => {
       return c.json({ error: "not_available", message: "Org-scoped semantic entities require an internal database (DATABASE_URL)." , requestId}, 501);
     }
 
-    const name = c.req.param("name");
     const entityType = validateEntityType(c.req.query("type"));
     if (!entityType) {
       return c.json({ error: "bad_request", message: `Invalid type. Must be one of: ${[...VALID_ENTITY_TYPES].join(", ")}` }, 400);
@@ -558,7 +2168,7 @@ admin.get("/semantic/org/entities/:name", async (c) => {
         yamlContent: row.yaml_content,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
-      });
+      }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, name }, "Failed to get org semantic entity");
       return c.json({ error: "internal_error", message: "Failed to get entity." , requestId}, 500);
@@ -566,13 +2176,13 @@ admin.get("/semantic/org/entities/:name", async (c) => {
   });
 });
 
-// PUT /semantic/org/entities/:name — create or update an entity
-admin.put("/semantic/org/entities/:name", async (c) => {
+admin.openapi(putOrgEntityRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
+  const { name } = c.req.valid("param");
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -586,7 +2196,6 @@ admin.put("/semantic/org/entities/:name", async (c) => {
       return c.json({ error: "not_available", message: "Org-scoped semantic entities require an internal database (DATABASE_URL)." , requestId}, 501);
     }
 
-    const name = c.req.param("name");
     let body: { yamlContent: string; entityType?: string; connectionId?: string };
     try {
       body = await c.req.json();
@@ -626,7 +2235,7 @@ admin.put("/semantic/org/entities/:name", async (c) => {
       await syncEntityToDisk(orgId, name, entityType, body.yamlContent);
 
       log.info({ requestId, orgId, name, entityType }, "Org semantic entity upserted");
-      return c.json({ ok: true, name, entityType });
+      return c.json({ ok: true, name, entityType }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, name }, "Failed to upsert org semantic entity");
       return c.json({ error: "internal_error", message: "Failed to save entity." , requestId}, 500);
@@ -634,13 +2243,13 @@ admin.put("/semantic/org/entities/:name", async (c) => {
   });
 });
 
-// DELETE /semantic/org/entities/:name — delete an entity
-admin.delete("/semantic/org/entities/:name", async (c) => {
+admin.openapi(deleteOrgEntityRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
+  const { name } = c.req.valid("param");
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -654,7 +2263,6 @@ admin.delete("/semantic/org/entities/:name", async (c) => {
       return c.json({ error: "not_available", message: "Org-scoped semantic entities require an internal database (DATABASE_URL)." , requestId}, 501);
     }
 
-    const name = c.req.param("name");
     const entityType = validateEntityType(c.req.query("type"));
     if (!entityType) {
       return c.json({ error: "bad_request", message: `Invalid type. Must be one of: ${[...VALID_ENTITY_TYPES].join(", ")}` }, 400);
@@ -671,7 +2279,7 @@ admin.delete("/semantic/org/entities/:name", async (c) => {
       await syncEntityDeleteFromDisk(orgId, name, entityType);
 
       log.info({ requestId, orgId, name, entityType }, "Org semantic entity deleted");
-      return c.json({ ok: true, name, entityType });
+      return c.json({ ok: true, name, entityType }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, name }, "Failed to delete org semantic entity");
       return c.json({ error: "internal_error", message: "Failed to delete entity." , requestId}, 500);
@@ -679,13 +2287,12 @@ admin.delete("/semantic/org/entities/:name", async (c) => {
   });
 });
 
-// POST /semantic/org/import — bulk import from org's disk directory to DB
-admin.post("/semantic/org/import", async (c) => {
+admin.openapi(importOrgEntitiesRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -719,7 +2326,7 @@ admin.post("/semantic/org/import", async (c) => {
         { requestId, orgId, imported: result.imported, skipped: result.skipped, total: result.total },
         "Org semantic import completed",
       );
-      return c.json(result);
+      return c.json(result, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to import org semantic entities");
       return c.json({ error: "internal_error", message: "Failed to import entities." , requestId}, 500);
@@ -727,52 +2334,47 @@ admin.post("/semantic/org/import", async (c) => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Connection routes
-// ---------------------------------------------------------------------------
+// -- Connections ------------------------------------------------------------
 
-// GET /connections — list connections
-admin.get("/connections", async (c) => {
+admin.openapi(listConnectionsRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
   return withRequestContext({ requestId, user: authResult.user }, () => {
     const connList = connections.describe();
-    return c.json({ connections: connList });
+    return c.json({ connections: connList }, 200);
   });
 });
 
-// GET /connections/pool — pool metrics for all connections
-admin.get("/connections/pool", async (c) => {
+admin.openapi(getPoolMetricsRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
   return withRequestContext({ requestId, user: authResult.user }, () => {
     const metrics = connections.getAllPoolMetrics();
-    return c.json({ metrics });
+    return c.json({ metrics }, 200);
   });
 });
 
-// GET /connections/pool/orgs — org-scoped pool metrics
-admin.get("/connections/pool/orgs", async (c) => {
+admin.openapi(getOrgPoolMetricsRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -781,7 +2383,7 @@ admin.get("/connections/pool/orgs", async (c) => {
       const orgId = c.req.query("orgId");
       const metrics = connections.getOrgPoolMetrics(orgId || undefined);
       const config = connections.getOrgPoolConfig();
-      return c.json({ metrics, config, orgCount: connections.listOrgs().length });
+      return c.json({ metrics, config, orgCount: connections.listOrgs().length }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to retrieve org pool metrics");
       return c.json({ error: "metrics_failed", message: err instanceof Error ? err.message : "Failed to retrieve metrics" , requestId}, 500);
@@ -789,23 +2391,22 @@ admin.get("/connections/pool/orgs", async (c) => {
   });
 });
 
-// POST /connections/pool/orgs/:orgId/drain — drain all pools for an org
-admin.post("/connections/pool/orgs/:orgId/drain", async (c) => {
+admin.openapi(drainOrgPoolRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
+  const { orgId } = c.req.valid("param");
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const orgId = c.req.param("orgId");
     try {
       const result = await connections.drainOrg(orgId);
       log.info({ orgId, drained: result.drained, requestId, userId: authResult.user?.id }, "Org pools drained via admin API");
-      return c.json(result);
+      return c.json(result, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), orgId, requestId }, "Org pool drain failed");
       return c.json({ error: "drain_failed", message: err instanceof Error ? err.message : "Org drain failed" , requestId}, 500);
@@ -813,19 +2414,18 @@ admin.post("/connections/pool/orgs/:orgId/drain", async (c) => {
   });
 });
 
-// POST /connections/:id/drain — drain and recreate a pool
-admin.post("/connections/:id/drain", async (c) => {
+admin.openapi(drainConnectionPoolRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
+  const { id } = c.req.valid("param");
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const id = c.req.param("id");
     if (!connections.has(id)) {
       return c.json({ error: "not_found", message: `Connection "${id}" not found` }, 404);
     }
@@ -835,7 +2435,7 @@ admin.post("/connections/:id/drain", async (c) => {
         return c.json({ drained: false, message: result.message }, 409);
       }
       log.info({ connectionId: id, requestId, userId: authResult.user?.id }, "Pool drained via admin API");
-      return c.json({ drained: true, message: result.message });
+      return c.json({ drained: true, message: result.message }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id, requestId }, "Pool drain failed");
       return c.json({ error: "drain_failed", message: err instanceof Error ? err.message : "Drain failed" , requestId}, 500);
@@ -843,28 +2443,27 @@ admin.post("/connections/:id/drain", async (c) => {
   });
 });
 
-// GET /cache/stats — cache hit/miss statistics
-admin.get("/cache/stats", async (c) => {
+admin.openapi(getCacheStatsRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
   const { getCache, cacheEnabled } = await import("@atlas/api/lib/cache/index");
   return withRequestContext({ requestId, user: authResult.user }, () => {
     if (!cacheEnabled()) {
-      return c.json({ enabled: false, hits: 0, misses: 0, hitRate: 0, missRate: 0, entryCount: 0, maxSize: 0, ttl: 0 });
+      return c.json({ enabled: false, hits: 0, misses: 0, hitRate: 0, missRate: 0, entryCount: 0, maxSize: 0, ttl: 0 }, 200);
     }
     try {
       const stats = getCache().stats();
       const total = stats.hits + stats.misses;
       const hitRate = total > 0 ? stats.hits / total : 0;
       const missRate = total > 0 ? stats.misses / total : 0;
-      return c.json({ enabled: true, ...stats, hitRate, missRate });
+      return c.json({ enabled: true, ...stats, hitRate, missRate }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to retrieve cache stats");
       return c.json({ error: "internal_error", message: "Failed to retrieve cache statistics." , requestId}, 500);
@@ -872,27 +2471,26 @@ admin.get("/cache/stats", async (c) => {
   });
 });
 
-// POST /cache/flush — flush all cache entries
-admin.post("/cache/flush", async (c) => {
+admin.openapi(flushCacheRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
   const { getCache, flushCache, cacheEnabled } = await import("@atlas/api/lib/cache/index");
   return withRequestContext({ requestId, user: authResult.user }, () => {
     if (!cacheEnabled()) {
-      return c.json({ ok: false, flushed: 0, message: "Cache is disabled" });
+      return c.json({ ok: false, flushed: 0, message: "Cache is disabled" }, 200);
     }
     try {
       const count = getCache().stats().entryCount;
       flushCache();
       log.info({ requestId, userId: authResult.user?.id, flushed: count }, "Cache flushed via admin API");
-      return c.json({ ok: true, flushed: count, message: "Cache flushed" });
+      return c.json({ ok: true, flushed: count, message: "Cache flushed" }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to flush cache");
       return c.json({ error: "internal_error", message: "Failed to flush cache." , requestId}, 500);
@@ -900,14 +2498,13 @@ admin.post("/cache/flush", async (c) => {
   });
 });
 
-// POST /connections/test — test a connection URL without persisting
-admin.post("/connections/test", async (c) => {
+admin.openapi(testConnectionRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -941,7 +2538,7 @@ admin.post("/connections/test", async (c) => {
         schema: typeof schema === "string" ? schema : undefined,
       });
       const result = await connections.healthCheck(tempId);
-      return c.json({ status: result.status, latencyMs: result.latencyMs, dbType });
+      return c.json({ status: result.status, latencyMs: result.latencyMs, dbType }, 200);
     } catch (err) {
       return c.json({
         error: "connection_failed",
@@ -958,26 +2555,25 @@ admin.post("/connections/test", async (c) => {
   });
 });
 
-// POST /connections/:id/test — health check a connection
-admin.post("/connections/:id/test", async (c) => {
+admin.openapi(testExistingConnectionRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
+  const { id } = c.req.valid("param");
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const id = c.req.param("id");
     const registered = connections.list();
     if (!registered.includes(id)) {
       return c.json({ error: "not_found", message: `Connection "${id}" not found.` }, 404);
     }
     try {
       const result = await connections.healthCheck(id);
-      return c.json(result);
+      return c.json(result, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Health check failed");
       return c.json({ error: "internal_error", message: "Health check failed." , requestId}, 500);
@@ -985,14 +2581,13 @@ admin.post("/connections/:id/test", async (c) => {
   });
 });
 
-// POST /connections — create a new connection
-admin.post("/connections", async (c) => {
+admin.openapi(createConnectionRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -1086,14 +2681,14 @@ admin.post("/connections", async (c) => {
   });
 });
 
-// PUT /connections/:id — update connection config
-admin.put("/connections/:id", async (c) => {
+admin.openapi(updateConnectionRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
+  const { id } = c.req.valid("param");
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -1102,8 +2697,6 @@ admin.put("/connections/:id", async (c) => {
   }
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const id = c.req.param("id");
-
     if (id === "default") {
       return c.json({ error: "forbidden", message: "Cannot modify the default connection. Update ATLAS_DATASOURCE_URL instead." , requestId}, 403);
     }
@@ -1241,18 +2834,18 @@ admin.put("/connections/:id", async (c) => {
       dbType,
       description: newDescription,
       maskedUrl: maskConnectionUrl(newUrl),
-    });
+    }, 200);
   });
 });
 
-// DELETE /connections/:id — remove connection
-admin.delete("/connections/:id", async (c) => {
+admin.openapi(deleteConnectionRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
+  const { id } = c.req.valid("param");
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -1261,8 +2854,6 @@ admin.delete("/connections/:id", async (c) => {
   }
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const id = c.req.param("id");
-
     if (id === "default") {
       return c.json({ error: "forbidden", message: "Cannot delete the default connection." , requestId}, 403);
     }
@@ -1305,24 +2896,22 @@ admin.delete("/connections/:id", async (c) => {
     connections.unregister(id);
 
     log.info({ requestId, connectionId: id, actorId: authResult.user?.id }, "Connection deleted");
-    return c.json({ success: true });
+    return c.json({ success: true }, 200);
   });
 });
 
-// GET /connections/:id — get connection detail (including masked URL)
-admin.get("/connections/:id", async (c) => {
+admin.openapi(getConnectionRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
+  const { id } = c.req.valid("param");
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const id = c.req.param("id");
-
     if (!connections.has(id)) {
       return c.json({ error: "not_found", message: `Connection "${id}" not found.` }, 404);
     }
@@ -1362,106 +2951,20 @@ admin.get("/connections/:id", async (c) => {
       maskedUrl,
       schema,
       managed,
-    });
+    }, 200);
   });
 });
 
-// ---------------------------------------------------------------------------
-// Audit routes
-// ---------------------------------------------------------------------------
+// -- Audit ------------------------------------------------------------------
 
-/** Escape ILIKE special characters so they are matched literally. */
-function escapeIlike(s: string): string {
-  return s.replace(/[%_\\]/g, "\\$&");
-}
-
-/** Quote a value for safe CSV output (RFC 4180). */
-function csvField(val: string | null | undefined): string {
-  const s = val ?? "";
-  if (s.includes(",") || s.includes('"') || s.includes("\n") || s.includes("\r")) {
-    return `"${s.replace(/"/g, '""')}"`;
-  }
-  return s;
-}
-
-type AuditFilterResult =
-  | { ok: true; conditions: string[]; params: unknown[]; paramIdx: number }
-  | { ok: false; error: string; message: string; status: 400 };
-
-/** Shared filter builder for audit list + export endpoints. */
-function buildAuditFilters(query: (key: string) => string | undefined): AuditFilterResult {
-  const conditions: string[] = [];
-  const params: unknown[] = [];
-  let paramIdx = 1;
-
-  const user = query("user");
-  if (user) {
-    conditions.push(`a.user_id = $${paramIdx++}`);
-    params.push(user);
-  }
-
-  const success = query("success");
-  if (success === "true" || success === "false") {
-    conditions.push(`a.success = $${paramIdx++}`);
-    params.push(success === "true");
-  }
-
-  const from = query("from");
-  if (from) {
-    if (isNaN(Date.parse(from))) {
-      return { ok: false, error: "invalid_request", message: `Invalid 'from' date format: "${from}". Use ISO 8601 (e.g. 2026-01-01).`, status: 400 };
-    }
-    conditions.push(`a.timestamp >= $${paramIdx++}`);
-    params.push(from);
-  }
-
-  const to = query("to");
-  if (to) {
-    if (isNaN(Date.parse(to))) {
-      return { ok: false, error: "invalid_request", message: `Invalid 'to' date format: "${to}". Use ISO 8601 (e.g. 2026-03-03).`, status: 400 };
-    }
-    conditions.push(`a.timestamp <= $${paramIdx++}`);
-    params.push(to);
-  }
-
-  const connection = query("connection");
-  if (connection) {
-    conditions.push(`a.source_id = $${paramIdx++}`);
-    params.push(connection);
-  }
-
-  const table = query("table");
-  if (table) {
-    conditions.push(`a.tables_accessed ? $${paramIdx++}`);
-    params.push(table.toLowerCase());
-  }
-
-  const column = query("column");
-  if (column) {
-    conditions.push(`a.columns_accessed ? $${paramIdx++}`);
-    params.push(column.toLowerCase());
-  }
-
-  const search = query("search");
-  if (search) {
-    const term = `%${escapeIlike(search)}%`;
-    conditions.push(`(a.sql ILIKE $${paramIdx} OR u.email ILIKE $${paramIdx} OR a.error ILIKE $${paramIdx})`);
-    params.push(term);
-    paramIdx++;
-  }
-
-  return { ok: true, conditions, params, paramIdx };
-}
-
-// GET /audit — query audit_log (paginated)
-admin.get("/audit", async (c) => {
+admin.openapi(listAuditRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   // Auth before feature-availability check to avoid info disclosure
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -1519,7 +3022,7 @@ admin.get("/audit", async (c) => {
         [...params, limit, offset],
       );
 
-      return c.json({ rows, total, limit, offset });
+      return c.json({ rows, total, limit, offset }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Audit query failed");
       return c.json({ error: "internal_error", message: "Failed to query audit log." , requestId}, 500);
@@ -1527,14 +3030,13 @@ admin.get("/audit", async (c) => {
   });
 });
 
-// GET /audit/export — CSV export of audit_log (respects current filters)
-admin.get("/audit/export", async (c) => {
+admin.openapi(exportAuditRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -1622,15 +3124,14 @@ admin.get("/audit/export", async (c) => {
   });
 });
 
-// GET /audit/stats — aggregate audit stats
-admin.get("/audit/stats", async (c) => {
+admin.openapi(getAuditStatsRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   // Auth before feature-availability check to avoid info disclosure
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -1660,7 +3161,7 @@ admin.get("/audit/stats", async (c) => {
           day: r.day,
           count: parseInt(String(r.count), 10),
         })),
-      });
+      }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Audit stats query failed");
       return c.json({ error: "internal_error", message: "Failed to query audit stats." , requestId}, 500);
@@ -1668,14 +3169,13 @@ admin.get("/audit/stats", async (c) => {
   });
 });
 
-// GET /audit/facets — distinct tables and columns for filter dropdowns
-admin.get("/audit/facets", async (c) => {
+admin.openapi(getAuditFacetsRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -1704,46 +3204,19 @@ admin.get("/audit/facets", async (c) => {
     return c.json({
       tables: tableResult.status === "fulfilled" ? tableResult.value.map((r) => r.val) : [],
       columns: columnResult.status === "fulfilled" ? columnResult.value.map((r) => r.val) : [],
-    });
+    }, 200);
   });
 });
 
-// ---------------------------------------------------------------------------
-// Audit analytics routes
-// ---------------------------------------------------------------------------
+// -- Audit Analytics --------------------------------------------------------
 
-/** Build WHERE clause from optional `from` and `to` query params. */
-function analyticsDateRange(c: { req: { query(name: string): string | undefined } }) {
-  const conditions: string[] = [];
-  const params: unknown[] = [];
-  let idx = 1;
-
-  const from = c.req.query("from");
-  if (from) {
-    if (isNaN(Date.parse(from))) return { error: `Invalid 'from' date format. Use ISO 8601 (e.g. 2026-01-01).` } as const;
-    conditions.push(`timestamp >= $${idx++}`);
-    params.push(from);
-  }
-
-  const to = c.req.query("to");
-  if (to) {
-    if (isNaN(Date.parse(to))) return { error: `Invalid 'to' date format. Use ISO 8601 (e.g. 2026-01-01).` } as const;
-    conditions.push(`timestamp <= $${idx++}`);
-    params.push(to);
-  }
-
-  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-  return { where, params, nextIdx: idx } as const;
-}
-
-// GET /audit/analytics/volume — queries per day over date range
-admin.get("/audit/analytics/volume", async (c) => {
+admin.openapi(auditVolumeRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -1753,7 +3226,7 @@ admin.get("/audit/analytics/volume", async (c) => {
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     const range = analyticsDateRange(c);
-    if ("error" in range) return c.json({ error: "invalid_request", message: range.error }, 400);
+    if ("error" in range) return c.json({ error: "invalid_request", message: range.error }, 400) as never;
 
     try {
       const rows = await internalQuery<{ day: string; count: string; errors: string }>(
@@ -1768,22 +3241,21 @@ admin.get("/audit/analytics/volume", async (c) => {
           count: parseInt(String(r.count), 10),
           errors: parseInt(String(r.errors), 10),
         })),
-      });
+      }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Audit analytics volume query failed");
       return c.json({ error: "internal_error", message: "Failed to query volume analytics." , requestId}, 500);
     }
-  });
+  }) as never;
 });
 
-// GET /audit/analytics/slow — top 20 queries by average duration
-admin.get("/audit/analytics/slow", async (c) => {
+admin.openapi(auditSlowRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -1793,7 +3265,7 @@ admin.get("/audit/analytics/slow", async (c) => {
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     const range = analyticsDateRange(c);
-    if ("error" in range) return c.json({ error: "invalid_request", message: range.error }, 400);
+    if ("error" in range) return c.json({ error: "invalid_request", message: range.error }, 400) as never;
 
     try {
       const rows = await internalQuery<{
@@ -1819,22 +3291,21 @@ admin.get("/audit/analytics/slow", async (c) => {
           maxDuration: parseInt(String(r.max_duration), 10),
           count: parseInt(String(r.count), 10),
         })),
-      });
+      }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Audit analytics slow query failed");
       return c.json({ error: "internal_error", message: "Failed to query slow analytics." , requestId}, 500);
     }
-  });
+  }) as never;
 });
 
-// GET /audit/analytics/frequent — top 20 queries by execution count
-admin.get("/audit/analytics/frequent", async (c) => {
+admin.openapi(auditFrequentRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -1844,7 +3315,7 @@ admin.get("/audit/analytics/frequent", async (c) => {
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     const range = analyticsDateRange(c);
-    if ("error" in range) return c.json({ error: "invalid_request", message: range.error }, 400);
+    if ("error" in range) return c.json({ error: "invalid_request", message: range.error }, 400) as never;
 
     try {
       const rows = await internalQuery<{
@@ -1870,22 +3341,21 @@ admin.get("/audit/analytics/frequent", async (c) => {
           avgDuration: parseInt(String(r.avg_duration), 10),
           errorCount: parseInt(String(r.error_count), 10),
         })),
-      });
+      }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Audit analytics frequent query failed");
       return c.json({ error: "internal_error", message: "Failed to query frequency analytics." , requestId}, 500);
     }
-  });
+  }) as never;
 });
 
-// GET /audit/analytics/errors — error count grouped by error message pattern
-admin.get("/audit/analytics/errors", async (c) => {
+admin.openapi(auditErrorsRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -1895,7 +3365,7 @@ admin.get("/audit/analytics/errors", async (c) => {
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     const range = analyticsDateRange(c);
-    if ("error" in range) return c.json({ error: "invalid_request", message: range.error }, 400);
+    if ("error" in range) return c.json({ error: "invalid_request", message: range.error }, 400) as never;
 
     const errorCondition = range.where
       ? `${range.where} AND NOT success`
@@ -1916,22 +3386,21 @@ admin.get("/audit/analytics/errors", async (c) => {
           error: r.error,
           count: parseInt(String(r.count), 10),
         })),
-      });
+      }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Audit analytics errors query failed");
       return c.json({ error: "internal_error", message: "Failed to query error analytics." , requestId}, 500);
     }
-  });
+  }) as never;
 });
 
-// GET /audit/analytics/users — per-user stats
-admin.get("/audit/analytics/users", async (c) => {
+admin.openapi(auditUsersRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -1941,7 +3410,7 @@ admin.get("/audit/analytics/users", async (c) => {
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     const range = analyticsDateRange(c);
-    if ("error" in range) return c.json({ error: "invalid_request", message: range.error }, 400);
+    if ("error" in range) return c.json({ error: "invalid_request", message: range.error }, 400) as never;
 
     try {
       const rows = await internalQuery<{
@@ -1977,51 +3446,47 @@ admin.get("/audit/analytics/users", async (c) => {
             errorRate: count > 0 ? errorCount / count : 0,
           };
         }),
-      });
+      }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Audit analytics users query failed");
       return c.json({ error: "internal_error", message: "Failed to query user analytics." , requestId}, 500);
     }
-  });
+  }) as never;
 });
 
-// ---------------------------------------------------------------------------
-// Plugin routes
-// ---------------------------------------------------------------------------
+// -- Plugins ----------------------------------------------------------------
 
-// GET /plugins — list installed plugins
-admin.get("/plugins", async (c) => {
+admin.openapi(listPluginsRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
   return withRequestContext({ requestId, user: authResult.user }, () => {
     const pluginList = plugins.describe();
-    return c.json({ plugins: pluginList, manageable: hasInternalDB() });
+    return c.json({ plugins: pluginList, manageable: hasInternalDB() }, 200);
   });
 });
 
-// POST /plugins/:id/health — trigger health check
-admin.post("/plugins/:id/health", async (c) => {
+admin.openapi(pluginHealthRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
+  const { id } = c.req.valid("param");
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const id = c.req.param("id");
     const plugin = plugins.get(id);
     if (!plugin) {
-      return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404);
+      return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404) as never;
     }
 
     if (!plugin.healthCheck) {
@@ -2029,12 +3494,12 @@ admin.post("/plugins/:id/health", async (c) => {
         healthy: true,
         message: "Plugin does not implement healthCheck.",
         status: plugins.getStatus(id),
-      });
+      }, 200);
     }
 
     try {
       const result = await plugin.healthCheck();
-      return c.json({ ...result, status: plugins.getStatus(id) });
+      return c.json({ ...result, status: plugins.getStatus(id) }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), pluginId: id }, "Plugin health check threw an exception");
       return c.json({
@@ -2044,22 +3509,21 @@ admin.post("/plugins/:id/health", async (c) => {
         status: plugins.getStatus(id),
       }, 500);
     }
-  });
+  }) as never;
 });
 
-// POST /plugins/:id/enable — enable a plugin
-admin.post("/plugins/:id/enable", async (c) => {
+admin.openapi(enablePluginRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
+  const { id } = c.req.valid("param");
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const id = c.req.param("id");
     const plugin = plugins.get(id);
     if (!plugin) {
       return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404);
@@ -2081,23 +3545,22 @@ admin.post("/plugins/:id/enable", async (c) => {
       warning = "No internal database — state will reset on restart.";
     }
 
-    return c.json({ id, enabled: true, status: plugins.getStatus(id), persisted, warning });
-  });
+    return c.json({ id, enabled: true, status: plugins.getStatus(id), persisted, warning }, 200);
+  }) as never;
 });
 
-// POST /plugins/:id/disable — disable a plugin
-admin.post("/plugins/:id/disable", async (c) => {
+admin.openapi(disablePluginRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
+  const { id } = c.req.valid("param");
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const id = c.req.param("id");
     const plugin = plugins.get(id);
     if (!plugin) {
       return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404);
@@ -2119,23 +3582,22 @@ admin.post("/plugins/:id/disable", async (c) => {
       warning = "No internal database — state will reset on restart.";
     }
 
-    return c.json({ id, enabled: false, status: plugins.getStatus(id), persisted, warning });
-  });
+    return c.json({ id, enabled: false, status: plugins.getStatus(id), persisted, warning }, 200);
+  }) as never;
 });
 
-// GET /plugins/:id/schema — return config schema and current values
-admin.get("/plugins/:id/schema", async (c) => {
+admin.openapi(getPluginSchemaRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
+  const { id } = c.req.valid("param");
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const id = c.req.param("id");
     const plugin = plugins.get(id);
     if (!plugin) {
       return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404);
@@ -2170,23 +3632,22 @@ admin.get("/plugins/:id/schema", async (c) => {
       values: maskedValues,
       hasSchema: schema.length > 0,
       manageable: hasInternalDB(),
-    });
+    }, 200);
   });
 });
 
-// PUT /plugins/:id/config — update plugin configuration
-admin.put("/plugins/:id/config", async (c) => {
+admin.openapi(updatePluginConfigRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
+  const { id } = c.req.valid("param");
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const id = c.req.param("id");
     const plugin = plugins.get(id);
     if (!plugin) {
       return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404);
@@ -2283,7 +3744,7 @@ admin.put("/plugins/:id/config", async (c) => {
       return c.json({
         id,
         message: "Configuration saved. Changes take effect on next restart.",
-      });
+      }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), pluginId: id }, "Failed to save plugin config");
       return c.json({ error: "internal_error", message: "Failed to save plugin configuration." , requestId}, 500);
@@ -2291,12 +3752,9 @@ admin.put("/plugins/:id/config", async (c) => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Password change required — any authenticated managed-auth user (not admin-only)
-// ---------------------------------------------------------------------------
+// -- Password ---------------------------------------------------------------
 
-// GET /me/password-status — check if current user must change password
-admin.get("/me/password-status", async (c) => {
+admin.openapi(getPasswordStatusRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
@@ -2314,10 +3772,10 @@ admin.get("/me/password-status", async (c) => {
   }
   const user = authResult.user;
   if (authResult.mode !== "managed" || !user) {
-    return c.json({ passwordChangeRequired: false });
+    return c.json({ passwordChangeRequired: false }, 200);
   }
 
-  if (!hasInternalDB()) return c.json({ passwordChangeRequired: false });
+  if (!hasInternalDB()) return c.json({ passwordChangeRequired: false }, 200);
 
   return withRequestContext({ requestId, user }, async () => {
     try {
@@ -2325,7 +3783,7 @@ admin.get("/me/password-status", async (c) => {
         `SELECT password_change_required FROM "user" WHERE id = $1`,
         [user.id],
       );
-      return c.json({ passwordChangeRequired: rows[0]?.password_change_required === true });
+      return c.json({ passwordChangeRequired: rows[0]?.password_change_required === true }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err.message : String(err), userId: user.id, requestId }, "Failed to check password_change_required — returning 500 to avoid bypassing forced password change");
       return c.json({ error: "internal_error", message: "Unable to verify password status. Please try again." , requestId}, 500);
@@ -2333,8 +3791,7 @@ admin.get("/me/password-status", async (c) => {
   });
 });
 
-// POST /me/password — change password and clear the flag
-admin.post("/me/password", async (c) => {
+admin.openapi(changePasswordRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
@@ -2388,7 +3845,7 @@ admin.post("/me/password", async (c) => {
       }
 
       log.info({ requestId, userId: user.id }, "Password changed and flag cleared");
-      return c.json({ success: true });
+      return c.json({ success: true }, 200);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Password change failed";
       log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Password change failed");
@@ -2401,18 +3858,15 @@ admin.post("/me/password", async (c) => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Session management routes (requires managed auth mode + internal DB)
-// ---------------------------------------------------------------------------
+// -- Sessions ---------------------------------------------------------------
 
-// GET /sessions — list all active sessions with user info
-admin.get("/sessions", async (c) => {
+admin.openapi(listSessionsRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -2482,7 +3936,7 @@ admin.get("/sessions", async (c) => {
         total: parseInt(String(countResult[0]?.count ?? "0"), 10),
         limit,
         offset,
-      });
+      }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to list sessions");
       return c.json({ error: "internal_error", message: "Failed to list sessions." , requestId}, 500);
@@ -2490,14 +3944,13 @@ admin.get("/sessions", async (c) => {
   });
 });
 
-// GET /sessions/stats — session counts
-admin.get("/sessions/stats", async (c) => {
+admin.openapi(getSessionStatsRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -2517,7 +3970,7 @@ admin.get("/sessions/stats", async (c) => {
         total: parseInt(String(totalResult[0]?.count ?? "0"), 10),
         active: parseInt(String(activeResult[0]?.count ?? "0"), 10),
         uniqueUsers: parseInt(String(uniqueUsersResult[0]?.count ?? "0"), 10),
-      });
+      }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to get session stats");
       return c.json({ error: "internal_error", message: "Failed to get session stats." , requestId}, 500);
@@ -2525,14 +3978,14 @@ admin.get("/sessions/stats", async (c) => {
   });
 });
 
-// DELETE /sessions/:id — revoke a single session by ID
-admin.delete("/sessions/:id", async (c) => {
+admin.openapi(deleteSessionRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
+  const { id: sessionId } = c.req.valid("param");
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -2541,8 +3994,6 @@ admin.delete("/sessions/:id", async (c) => {
   }
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const sessionId = c.req.param("id");
-
     try {
       const deleted = await internalQuery<{ id: string }>(
         `DELETE FROM session WHERE id = $1 RETURNING id`,
@@ -2553,7 +4004,7 @@ admin.delete("/sessions/:id", async (c) => {
       }
 
       log.info({ requestId, sessionId, actorId: authResult.user?.id }, "Session revoked");
-      return c.json({ success: true });
+      return c.json({ success: true }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), sessionId }, "Failed to revoke session");
       return c.json({ error: "internal_error", message: "Failed to revoke session." , requestId}, 500);
@@ -2561,14 +4012,14 @@ admin.delete("/sessions/:id", async (c) => {
   });
 });
 
-// DELETE /sessions/user/:userId — revoke all sessions for a user
-admin.delete("/sessions/user/:userId", async (c) => {
+admin.openapi(deleteUserSessionsRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
+  const { userId } = c.req.valid("param");
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -2577,8 +4028,6 @@ admin.delete("/sessions/user/:userId", async (c) => {
   }
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const userId = c.req.param("userId");
-
     try {
       const deleted = await internalQuery<{ id: string }>(
         `DELETE FROM session WHERE "userId" = $1 RETURNING id`,
@@ -2590,7 +4039,7 @@ admin.delete("/sessions/user/:userId", async (c) => {
 
       const count = deleted.length;
       log.info({ requestId, targetUserId: userId, count, actorId: authResult.user?.id }, "All user sessions revoked");
-      return c.json({ success: true, count });
+      return c.json({ success: true, count }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to revoke user sessions");
       return c.json({ error: "internal_error", message: "Failed to revoke user sessions." , requestId}, 500);
@@ -2598,51 +4047,15 @@ admin.delete("/sessions/user/:userId", async (c) => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// User management routes (requires managed auth mode + Better Auth admin plugin)
-// ---------------------------------------------------------------------------
+// -- Users ------------------------------------------------------------------
 
-/**
- * Server-side admin API methods from Better Auth's admin plugin.
- * The base Auth type doesn't expose plugin-specific methods (see server.ts
- * for why), but they exist at runtime. This interface types the subset we use.
- */
-interface AdminApi {
-  listUsers(opts: { query: Record<string, unknown>; headers: Headers }): Promise<{
-    users: Array<Record<string, unknown>>;
-    total: number;
-  }>;
-  setRole(opts: { body: { userId: string; role: string }; headers: Headers }): Promise<unknown>;
-  banUser(opts: { body: Record<string, unknown>; headers: Headers }): Promise<unknown>;
-  unbanUser(opts: { body: { userId: string }; headers: Headers }): Promise<unknown>;
-  removeUser(opts: { body: { userId: string }; headers: Headers }): Promise<unknown>;
-  revokeSessions(opts: { body: { userId: string }; headers: Headers }): Promise<unknown>;
-}
-
-/**
- * Get the Better Auth instance's admin API, or null if managed auth is not active.
- * Lazy-imports to avoid pulling in Better Auth when not needed.
- */
-async function getAdminApi(): Promise<AdminApi | null> {
-  if (detectAuthMode() !== "managed") return null;
-  const { getAuthInstance } = await import("@atlas/api/lib/auth/server");
-  // Cast: admin plugin methods exist at runtime but aren't in the base Auth type
-  return getAuthInstance().api as unknown as AdminApi;
-}
-
-/** Validate that a role string is a valid Atlas role. */
-function isValidRole(role: unknown): role is AtlasRole {
-  return typeof role === "string" && (ATLAS_ROLES as readonly string[]).includes(role);
-}
-
-// GET /users — list users (paginated, filterable)
-admin.get("/users", async (c) => {
+admin.openapi(listUsersRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -2686,7 +4099,7 @@ admin.get("/users", async (c) => {
         total: result.total,
         limit,
         offset,
-      });
+      }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to list users");
       return c.json({ error: "internal_error", message: "Failed to list users." , requestId}, 500);
@@ -2694,14 +4107,13 @@ admin.get("/users", async (c) => {
   });
 });
 
-// GET /users/stats — aggregate user stats
-admin.get("/users/stats", async (c) => {
+admin.openapi(getUserStatsRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -2728,7 +4140,7 @@ admin.get("/users/stats", async (c) => {
         byRole[r.role] = parseInt(String(r.count), 10);
       }
 
-      return c.json({ total, banned, byRole });
+      return c.json({ total, banned, byRole }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "User stats query failed");
       return c.json({ error: "internal_error", message: "Failed to query user stats." , requestId}, 500);
@@ -2736,14 +4148,14 @@ admin.get("/users/stats", async (c) => {
   });
 });
 
-// PATCH /users/:id/role — change user role
-admin.patch("/users/:id/role", async (c) => {
+admin.openapi(changeUserRoleRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
+  const { id: userId } = c.req.valid("param");
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -2753,7 +4165,6 @@ admin.patch("/users/:id/role", async (c) => {
   }
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const userId = c.req.param("id");
     const body = await c.req.json().catch((err) => {
       log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in role change request");
       return null;
@@ -2796,7 +4207,7 @@ admin.patch("/users/:id/role", async (c) => {
         headers: req.headers,
       });
       log.info({ requestId, targetUserId: userId, newRole, actorId: authResult.user?.id }, "User role changed");
-      return c.json({ success: true });
+      return c.json({ success: true }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to set user role");
       return c.json({ error: "internal_error", message: "Failed to update user role." , requestId}, 500);
@@ -2804,14 +4215,14 @@ admin.patch("/users/:id/role", async (c) => {
   });
 });
 
-// POST /users/:id/ban — ban a user
-admin.post("/users/:id/ban", async (c) => {
+admin.openapi(banUserRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
+  const { id: userId } = c.req.valid("param");
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -2821,8 +4232,6 @@ admin.post("/users/:id/ban", async (c) => {
   }
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const userId = c.req.param("id");
-
     if (authResult.user?.id === userId) {
       return c.json({ error: "forbidden", message: "Cannot ban yourself." , requestId}, 403);
     }
@@ -2842,7 +4251,7 @@ admin.post("/users/:id/ban", async (c) => {
         headers: req.headers,
       });
       log.info({ requestId, targetUserId: userId, reason: body.reason, actorId: authResult.user?.id }, "User banned");
-      return c.json({ success: true });
+      return c.json({ success: true }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to ban user");
       return c.json({ error: "internal_error", message: "Failed to ban user." , requestId}, 500);
@@ -2850,14 +4259,14 @@ admin.post("/users/:id/ban", async (c) => {
   });
 });
 
-// POST /users/:id/unban — unban a user
-admin.post("/users/:id/unban", async (c) => {
+admin.openapi(unbanUserRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
+  const { id: userId } = c.req.valid("param");
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -2867,15 +4276,13 @@ admin.post("/users/:id/unban", async (c) => {
   }
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const userId = c.req.param("id");
-
     try {
       await adminApi.unbanUser({
         body: { userId },
         headers: req.headers,
       });
       log.info({ requestId, targetUserId: userId, actorId: authResult.user?.id }, "User unbanned");
-      return c.json({ success: true });
+      return c.json({ success: true }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to unban user");
       return c.json({ error: "internal_error", message: "Failed to unban user." , requestId}, 500);
@@ -2883,14 +4290,14 @@ admin.post("/users/:id/unban", async (c) => {
   });
 });
 
-// DELETE /users/:id — delete a user
-admin.delete("/users/:id", async (c) => {
+admin.openapi(deleteUserRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
+  const { id: userId } = c.req.valid("param");
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -2900,8 +4307,6 @@ admin.delete("/users/:id", async (c) => {
   }
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const userId = c.req.param("id");
-
     if (authResult.user?.id === userId) {
       return c.json({ error: "forbidden", message: "Cannot delete yourself." , requestId}, 403);
     }
@@ -2933,7 +4338,7 @@ admin.delete("/users/:id", async (c) => {
         headers: req.headers,
       });
       log.info({ requestId, targetUserId: userId, actorId: authResult.user?.id }, "User deleted");
-      return c.json({ success: true });
+      return c.json({ success: true }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to delete user");
       return c.json({ error: "internal_error", message: "Failed to delete user." , requestId}, 500);
@@ -2941,14 +4346,14 @@ admin.delete("/users/:id", async (c) => {
   });
 });
 
-// POST /users/:id/revoke — revoke all sessions (force logout)
-admin.post("/users/:id/revoke", async (c) => {
+admin.openapi(revokeUserSessionsRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
+  const { id: userId } = c.req.valid("param");
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -2958,15 +4363,13 @@ admin.post("/users/:id/revoke", async (c) => {
   }
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const userId = c.req.param("id");
-
     try {
       await adminApi.revokeSessions({
         body: { userId },
         headers: req.headers,
       });
       log.info({ requestId, targetUserId: userId, actorId: authResult.user?.id }, "User sessions revoked");
-      return c.json({ success: true });
+      return c.json({ success: true }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to revoke sessions");
       return c.json({ error: "internal_error", message: "Failed to revoke sessions." , requestId}, 500);
@@ -2974,42 +4377,15 @@ admin.post("/users/:id/revoke", async (c) => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// User Invitations
-// ---------------------------------------------------------------------------
+// -- Invitations ------------------------------------------------------------
 
-const INVITE_EXPIRY_DAYS = 7;
-
-/** Basic email format validation (not exhaustive — just enough to catch obvious mistakes). */
-function isValidEmail(email: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-}
-
-/**
- * Resolve the frontend base URL for invite links. Priority:
- *  1. Request Origin header (browser sends the frontend origin)
- *  2. ATLAS_CORS_ORIGIN (frontend origin in cross-origin deployments)
- *  3. Fallback: http://localhost:3000 (local development)
- *
- * Deliberately avoids BETTER_AUTH_URL and NEXT_PUBLIC_ATLAS_API_URL
- * because those point to the API server, not the frontend.
- */
-function resolveBaseUrl(req: Request): string {
-  return (
-    req.headers.get("origin") ??
-    process.env.ATLAS_CORS_ORIGIN ??
-    "http://localhost:3000"
-  );
-}
-
-// POST /users/invite — create an invitation
-admin.post("/users/invite", async (c) => {
+admin.openapi(inviteUserRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -3132,7 +4508,7 @@ admin.post("/users/invite", async (c) => {
         ...(emailError ? { emailError } : {}),
         expiresAt: expiresAt.toISOString(),
         createdAt: invitation.created_at,
-      });
+      }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to create invitation");
       return c.json({ error: "internal_error", message: "Failed to create invitation." , requestId}, 500);
@@ -3140,14 +4516,13 @@ admin.post("/users/invite", async (c) => {
   });
 });
 
-// GET /users/invitations — list invitations
-admin.get("/users/invitations", async (c) => {
+admin.openapi(listInvitationsRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -3196,7 +4571,7 @@ admin.get("/users/invitations", async (c) => {
         status: inv.status === "pending" && new Date(inv.expires_at) < now ? "expired" : inv.status,
       }));
 
-      return c.json({ invitations });
+      return c.json({ invitations }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to list invitations");
       return c.json({ error: "internal_error", message: "Failed to list invitations." , requestId}, 500);
@@ -3204,14 +4579,14 @@ admin.get("/users/invitations", async (c) => {
   });
 });
 
-// DELETE /users/invitations/:id — revoke a pending invitation
-admin.delete("/users/invitations/:id", async (c) => {
+admin.openapi(revokeInvitationRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
+  const { id: invitationId } = c.req.valid("param");
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -3220,8 +4595,6 @@ admin.delete("/users/invitations/:id", async (c) => {
   }
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const invitationId = c.req.param("id");
-
     try {
       const result = await internalQuery<{ id: string }>(
         `UPDATE invitations SET status = 'revoked' WHERE id = $1 AND status = 'pending' RETURNING id`,
@@ -3233,7 +4606,7 @@ admin.delete("/users/invitations/:id", async (c) => {
       }
 
       log.info({ requestId, invitationId, actorId: authResult.user?.id }, "Invitation revoked");
-      return c.json({ success: true });
+      return c.json({ success: true }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), invitationId }, "Failed to revoke invitation");
       return c.json({ error: "internal_error", message: "Failed to revoke invitation." , requestId}, 500);
@@ -3241,33 +4614,15 @@ admin.delete("/users/invitations/:id", async (c) => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Token usage analytics
-// ---------------------------------------------------------------------------
+// -- Tokens -----------------------------------------------------------------
 
-/** Parse and validate ISO date strings for token usage queries. */
-function parseDateRange(from?: string, to?: string): { fromDate: string; toDate: string } | { error: string } {
-  if (from && isNaN(Date.parse(from))) {
-    return { error: `Invalid 'from' date format: "${from}". Use ISO 8601 (e.g. 2026-01-01).` };
-  }
-  if (to && isNaN(Date.parse(to))) {
-    return { error: `Invalid 'to' date format: "${to}". Use ISO 8601 (e.g. 2026-01-01).` };
-  }
-  const now = new Date();
-  const defaultFrom = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-  const fromDate = from || defaultFrom.toISOString();
-  const toDate = to || now.toISOString();
-  return { fromDate, toDate };
-}
-
-// GET /tokens/summary — total tokens by period with prompt/completion breakdown
-admin.get("/tokens/summary", async (c) => {
+admin.openapi(getTokenSummaryRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
 
   if (!hasInternalDB()) {
@@ -3306,21 +4661,20 @@ admin.get("/tokens/summary", async (c) => {
       totalRequests: parseInt(row?.total_requests ?? "0", 10),
       from: fromDate,
       to: toDate,
-    });
+    }, 200);
   } catch (err) {
     log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to fetch token summary");
     return c.json({ error: "internal_error", message: "Failed to fetch token usage summary." , requestId}, 500);
   }
 });
 
-// GET /tokens/by-user — top N users by token consumption
-admin.get("/tokens/by-user", async (c) => {
+admin.openapi(getTokensByUserRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
 
   if (!hasInternalDB()) {
@@ -3374,21 +4728,20 @@ admin.get("/tokens/by-user", async (c) => {
       })),
       from: fromDate,
       to: toDate,
-    });
+    }, 200);
   } catch (err) {
     log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to fetch token usage by user");
     return c.json({ error: "internal_error", message: "Failed to fetch token usage by user." , requestId}, 500);
   }
 });
 
-// GET /tokens/trends — time-series data for charting
-admin.get("/tokens/trends", async (c) => {
+admin.openapi(getTokenTrendsRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
 
   if (!hasInternalDB()) {
@@ -3433,43 +4786,40 @@ admin.get("/tokens/trends", async (c) => {
       })),
       from: fromDate,
       to: toDate,
-    });
+    }, 200);
   } catch (err) {
     log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to fetch token trends");
     return c.json({ error: "internal_error", message: "Failed to fetch token usage trends." , requestId}, 500);
   }
 });
 
-// ---------------------------------------------------------------------------
-// Settings routes
-// ---------------------------------------------------------------------------
+// -- Settings ---------------------------------------------------------------
 
-// GET /settings — all known settings with current values and sources
-admin.get("/settings", async (c) => {
+admin.openapi(getSettingsRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
   return withRequestContext({ requestId, user: authResult.user }, () => {
     const settings = getSettingsForAdmin();
     const manageable = hasInternalDB();
-    return c.json({ settings, manageable });
+    return c.json({ settings, manageable }, 200);
   });
 });
 
-// PUT /settings/:key — set or update a settings override
-admin.put("/settings/:key", async (c) => {
+admin.openapi(updateSettingRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
+  const { key } = c.req.valid("param");
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -3481,8 +4831,6 @@ admin.put("/settings/:key", async (c) => {
   }
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const key = c.req.param("key");
-
     // Validate that the key is in the registry
     const registry = getSettingsRegistry();
     const def = registry.find((s) => s.key === key);
@@ -3533,7 +4881,7 @@ admin.put("/settings/:key", async (c) => {
     try {
       await setSetting(key, value, authResult.user?.id);
       log.info({ requestId, key, actorId: authResult.user?.id }, "Setting override saved via admin API");
-      return c.json({ success: true, key, value });
+      return c.json({ success: true, key, value }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), key }, "Failed to save setting");
       return c.json({ error: "internal_error", message: "Failed to save setting." , requestId}, 500);
@@ -3541,14 +4889,14 @@ admin.put("/settings/:key", async (c) => {
   });
 });
 
-// DELETE /settings/:key — remove override, revert to env var / default
-admin.delete("/settings/:key", async (c) => {
+admin.openapi(deleteSettingRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
+  const { key } = c.req.valid("param");
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -3560,8 +4908,6 @@ admin.delete("/settings/:key", async (c) => {
   }
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const key = c.req.param("key");
-
     // Validate that the key is in the registry
     const registry = getSettingsRegistry();
     const def = registry.find((s) => s.key === key);
@@ -3576,7 +4922,7 @@ admin.delete("/settings/:key", async (c) => {
     try {
       await deleteSetting(key, authResult.user?.id);
       log.info({ requestId, key, actorId: authResult.user?.id }, "Setting override removed via admin API");
-      return c.json({ success: true, key });
+      return c.json({ success: true, key }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), key }, "Failed to delete setting");
       return c.json({ error: "internal_error", message: "Failed to delete setting." , requestId}, 500);

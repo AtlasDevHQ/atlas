@@ -2,10 +2,11 @@
  * Admin SSO provider management routes.
  *
  * Mounted under /api/v1/admin/sso. All routes require admin role AND
- * enterprise license (via `requireEnterprise("sso")`).
+ * enterprise license (enforced within the SSO service layer).
  */
 
-import { Hono } from "hono";
+import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import { HTTPException } from "hono/http-exception";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { adminAuthPreamble } from "./admin-auth";
@@ -46,19 +47,337 @@ function ssoErrorResponse(err: unknown): { body: Record<string, unknown>; status
   return null;
 }
 
-const adminSso = new Hono();
+// ---------------------------------------------------------------------------
+// Schemas
+// ---------------------------------------------------------------------------
+
+const ErrorSchema = z.object({
+  error: z.string(),
+  message: z.string(),
+  requestId: z.string().optional(),
+});
+
+const AuthErrorSchema = z.record(z.string(), z.unknown());
+
+const SSOProviderSummarySchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  type: z.enum(["saml", "oidc"]),
+  issuer: z.string(),
+  domain: z.string(),
+  enabled: z.boolean(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+}).passthrough();
+
+const SSOProviderDetailSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  type: z.enum(["saml", "oidc"]),
+  issuer: z.string(),
+  domain: z.string(),
+  enabled: z.boolean(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  config: z.record(z.string(), z.unknown()),
+}).passthrough();
+
+const ProviderIdParamSchema = z.object({
+  id: z.string().min(1).max(MAX_ID_LENGTH).openapi({
+    param: { name: "id", in: "path" },
+    example: "prov_abc123",
+  }),
+});
+
+const CreateSSOProviderBodySchema = z.object({
+  type: z.enum(["saml", "oidc"]),
+  issuer: z.string(),
+  domain: z.string(),
+  enabled: z.boolean().optional(),
+  config: z.record(z.string(), z.unknown()),
+});
+
+const UpdateSSOProviderBodySchema = z.object({
+  issuer: z.string().optional(),
+  domain: z.string().optional(),
+  enabled: z.boolean().optional(),
+  config: z.record(z.string(), z.unknown()).optional(),
+});
 
 // ---------------------------------------------------------------------------
+// Route definitions
+// ---------------------------------------------------------------------------
+
+const listProvidersRoute = createRoute({
+  method: "get",
+  path: "/providers",
+  tags: ["Admin — SSO"],
+  summary: "List SSO providers",
+  description:
+    "Returns all SSO providers configured for the admin's active organization. Each provider is returned as a summary (without full config).",
+  responses: {
+    200: {
+      description: "List of SSO providers",
+      content: {
+        "application/json": {
+          schema: z.object({
+            providers: z.array(SSOProviderSummarySchema),
+            total: z.number(),
+          }),
+        },
+      },
+    },
+    400: {
+      description: "No active organization",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role or enterprise license required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const getProviderRoute = createRoute({
+  method: "get",
+  path: "/providers/{id}",
+  tags: ["Admin — SSO"],
+  summary: "Get SSO provider",
+  description:
+    "Returns a single SSO provider by ID, including the full (redacted) configuration.",
+  request: {
+    params: ProviderIdParamSchema,
+  },
+  responses: {
+    200: {
+      description: "SSO provider details",
+      content: {
+        "application/json": {
+          schema: z.object({ provider: SSOProviderDetailSchema }),
+        },
+      },
+    },
+    400: {
+      description: "Invalid provider ID or no active organization",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role or enterprise license required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "SSO provider not found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const createProviderRoute = createRoute({
+  method: "post",
+  path: "/providers",
+  tags: ["Admin — SSO"],
+  summary: "Create SSO provider",
+  description:
+    "Creates a new SSO provider for the admin's active organization. Requires type, issuer, domain, and config.",
+  request: {
+    body: {
+      required: true,
+      content: {
+        "application/json": { schema: CreateSSOProviderBodySchema },
+      },
+    },
+  },
+  responses: {
+    201: {
+      description: "SSO provider created",
+      content: {
+        "application/json": {
+          schema: z.object({ provider: SSOProviderDetailSchema }),
+        },
+      },
+    },
+    400: {
+      description: "Invalid request body or no active organization",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role or enterprise license required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    409: {
+      description: "SSO provider conflict (duplicate domain)",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const updateProviderRoute = createRoute({
+  method: "patch",
+  path: "/providers/{id}",
+  tags: ["Admin — SSO"],
+  summary: "Update SSO provider",
+  description:
+    "Updates an existing SSO provider. All fields are optional — only provided fields are updated.",
+  request: {
+    params: ProviderIdParamSchema,
+    body: {
+      required: true,
+      content: {
+        "application/json": { schema: UpdateSSOProviderBodySchema },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "SSO provider updated",
+      content: {
+        "application/json": {
+          schema: z.object({ provider: SSOProviderDetailSchema }),
+        },
+      },
+    },
+    400: {
+      description: "Invalid provider ID, request body, or no active organization",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role or enterprise license required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "SSO provider not found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    409: {
+      description: "SSO provider conflict (duplicate domain)",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const deleteProviderRoute = createRoute({
+  method: "delete",
+  path: "/providers/{id}",
+  tags: ["Admin — SSO"],
+  summary: "Delete SSO provider",
+  description:
+    "Permanently removes an SSO provider by ID.",
+  request: {
+    params: ProviderIdParamSchema,
+  },
+  responses: {
+    200: {
+      description: "SSO provider deleted",
+      content: {
+        "application/json": {
+          schema: z.object({ message: z.string() }),
+        },
+      },
+    },
+    400: {
+      description: "Invalid provider ID or no active organization",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role or enterprise license required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "SSO provider not found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Router
+// ---------------------------------------------------------------------------
+
+const adminSso = new OpenAPIHono();
+
+adminSso.onError((err, c) => {
+  if (err instanceof HTTPException && err.status === 400) {
+    return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
+  }
+  throw err;
+});
+
 // GET /providers — list SSO providers for the active org
-// ---------------------------------------------------------------------------
-
-adminSso.get("/providers", async (c) => {
+adminSso.openapi(listProvidersRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: (preamble as { headers?: Record<string, string> }).headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -74,24 +393,21 @@ adminSso.get("/providers", async (c) => {
 
     try {
       const providers = await listSSOProviders(orgId);
-      return c.json({ providers: providers.map(summarizeProvider), total: providers.length });
+      return c.json({ providers: providers.map(summarizeProvider), total: providers.length }, 200);
     } catch (err) {
       const mapped = ssoErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status);
+      if (mapped) return c.json(mapped.body, mapped.status) as never;
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to list SSO providers");
       return c.json({ error: "internal_error", message: "Failed to list SSO providers.", requestId }, 500);
     }
-  });
+  }) as never;
 });
 
-// ---------------------------------------------------------------------------
 // GET /providers/:id — get a single SSO provider
-// ---------------------------------------------------------------------------
-
-adminSso.get("/providers/:id", async (c) => {
+adminSso.openapi(getProviderRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
-  const providerId = c.req.param("id");
+  const { id: providerId } = c.req.valid("param");
 
   if (!isValidId(providerId)) {
     return c.json({ error: "bad_request", message: "Invalid provider ID." }, 400);
@@ -99,7 +415,7 @@ adminSso.get("/providers/:id", async (c) => {
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: (preamble as { headers?: Record<string, string> }).headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -118,27 +434,24 @@ adminSso.get("/providers/:id", async (c) => {
       if (!provider) {
         return c.json({ error: "not_found", message: "SSO provider not found." }, 404);
       }
-      return c.json({ provider: redactProvider(provider) });
+      return c.json({ provider: redactProvider(provider) }, 200);
     } catch (err) {
       const mapped = ssoErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status);
+      if (mapped) return c.json(mapped.body, mapped.status) as never;
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get SSO provider");
       return c.json({ error: "internal_error", message: "Failed to get SSO provider.", requestId }, 500);
     }
-  });
+  }) as never;
 });
 
-// ---------------------------------------------------------------------------
 // POST /providers — create a new SSO provider
-// ---------------------------------------------------------------------------
-
-adminSso.post("/providers", async (c) => {
+adminSso.openapi(createProviderRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: (preamble as { headers?: Record<string, string> }).headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -152,12 +465,7 @@ adminSso.post("/providers", async (c) => {
       return c.json({ error: "bad_request", message: "No active organization." }, 400);
     }
 
-    let body: CreateSSOProviderRequest;
-    try {
-      body = await c.req.json();
-    } catch {
-      return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
-    }
+    const body = c.req.valid("json");
 
     // Structural check only — business validation is in createSSOProvider
     if (!body.type || !body.issuer || !body.domain || !body.config) {
@@ -165,25 +473,22 @@ adminSso.post("/providers", async (c) => {
     }
 
     try {
-      const provider = await createSSOProvider(orgId, body);
+      const provider = await createSSOProvider(orgId, body as unknown as CreateSSOProviderRequest);
       return c.json({ provider: redactProvider(provider) }, 201);
     } catch (err) {
       const mapped = ssoErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status);
+      if (mapped) return c.json(mapped.body, mapped.status) as never;
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to create SSO provider");
       return c.json({ error: "internal_error", message: "Failed to create SSO provider.", requestId }, 500);
     }
-  });
+  }) as never;
 });
 
-// ---------------------------------------------------------------------------
 // PATCH /providers/:id — update an SSO provider
-// ---------------------------------------------------------------------------
-
-adminSso.patch("/providers/:id", async (c) => {
+adminSso.openapi(updateProviderRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
-  const providerId = c.req.param("id");
+  const { id: providerId } = c.req.valid("param");
 
   if (!isValidId(providerId)) {
     return c.json({ error: "bad_request", message: "Invalid provider ID." }, 400);
@@ -191,7 +496,7 @@ adminSso.patch("/providers/:id", async (c) => {
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: (preamble as { headers?: Record<string, string> }).headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -205,33 +510,25 @@ adminSso.patch("/providers/:id", async (c) => {
       return c.json({ error: "bad_request", message: "No active organization." }, 400);
     }
 
-    let body: UpdateSSOProviderRequest;
-    try {
-      body = await c.req.json();
-    } catch {
-      return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
-    }
+    const body = c.req.valid("json") as UpdateSSOProviderRequest;
 
     try {
       const provider = await updateSSOProvider(orgId, providerId, body);
-      return c.json({ provider: redactProvider(provider) });
+      return c.json({ provider: redactProvider(provider) }, 200);
     } catch (err) {
       const mapped = ssoErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status);
+      if (mapped) return c.json(mapped.body, mapped.status) as never;
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, providerId }, "Failed to update SSO provider");
       return c.json({ error: "internal_error", message: "Failed to update SSO provider.", requestId }, 500);
     }
-  });
+  }) as never;
 });
 
-// ---------------------------------------------------------------------------
 // DELETE /providers/:id — delete an SSO provider
-// ---------------------------------------------------------------------------
-
-adminSso.delete("/providers/:id", async (c) => {
+adminSso.openapi(deleteProviderRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
-  const providerId = c.req.param("id");
+  const { id: providerId } = c.req.valid("param");
 
   if (!isValidId(providerId)) {
     return c.json({ error: "bad_request", message: "Invalid provider ID." }, 400);
@@ -239,7 +536,7 @@ adminSso.delete("/providers/:id", async (c) => {
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: (preamble as { headers?: Record<string, string> }).headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -258,14 +555,14 @@ adminSso.delete("/providers/:id", async (c) => {
       if (!deleted) {
         return c.json({ error: "not_found", message: "SSO provider not found." }, 404);
       }
-      return c.json({ message: "SSO provider deleted." });
+      return c.json({ message: "SSO provider deleted." }, 200);
     } catch (err) {
       const mapped = ssoErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status);
+      if (mapped) return c.json(mapped.body, mapped.status) as never;
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, providerId }, "Failed to delete SSO provider");
       return c.json({ error: "internal_error", message: "Failed to delete SSO provider.", requestId }, 500);
     }
-  });
+  }) as never;
 });
 
 export { adminSso };

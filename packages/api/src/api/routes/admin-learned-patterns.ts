@@ -5,7 +5,8 @@
  * Provides list, get, update, delete, and bulk status change for learned query patterns.
  */
 
-import { Hono } from "hono";
+import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import { HTTPException } from "hono/http-exception";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { LEARNED_PATTERN_STATUSES, type LearnedPattern } from "@useatlas/types";
@@ -64,22 +65,307 @@ const VALID_STATUSES = new Set<string>(LEARNED_PATTERN_STATUSES);
 const BULK_STATUSES = new Set(["approved", "rejected"]);
 
 // ---------------------------------------------------------------------------
+// Schemas
+// ---------------------------------------------------------------------------
+
+const LearnedPatternSchema = z.object({
+  id: z.string(),
+  orgId: z.string().nullable(),
+  patternSql: z.string(),
+  description: z.string().nullable(),
+  sourceEntity: z.string().nullable(),
+  sourceQueries: z.array(z.string()).nullable(),
+  confidence: z.number(),
+  repetitionCount: z.number(),
+  status: z.enum(["pending", "approved", "rejected"]),
+  proposedBy: z.enum(["agent", "atlas-learn"]).nullable(),
+  reviewedBy: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  reviewedAt: z.string().nullable(),
+});
+
+const ListResponseSchema = z.object({
+  patterns: z.array(LearnedPatternSchema),
+  total: z.number(),
+  limit: z.number(),
+  offset: z.number(),
+});
+
+const BulkResponseSchema = z.object({
+  updated: z.array(z.string()),
+  notFound: z.array(z.string()),
+  errors: z.array(z.object({ id: z.string(), error: z.string() })).optional(),
+});
+
+const DeletedSchema = z.object({
+  deleted: z.boolean(),
+});
+
+const ErrorSchema = z.object({
+  error: z.string(),
+  message: z.string(),
+  requestId: z.string().optional(),
+});
+
+const AuthErrorSchema = z.record(z.string(), z.unknown());
+
+// ---------------------------------------------------------------------------
+// Route definitions
+// ---------------------------------------------------------------------------
+
+const listPatternsRoute = createRoute({
+  method: "get",
+  path: "/",
+  tags: ["Admin — Learned Patterns"],
+  summary: "List learned patterns",
+  description:
+    "Returns a paginated list of learned query patterns. Supports filtering by status, source entity, and confidence range.",
+  request: {
+    query: z.object({
+      status: z.string().optional().openapi({ description: "Filter by status: pending, approved, rejected" }),
+      source_entity: z.string().optional().openapi({ description: "Filter by source entity name" }),
+      min_confidence: z.string().optional().openapi({ description: "Minimum confidence (0–1)" }),
+      max_confidence: z.string().optional().openapi({ description: "Maximum confidence (0–1)" }),
+      limit: z.string().optional().openapi({ description: "Maximum results (default 50, max 200)" }),
+      offset: z.string().optional().openapi({ description: "Pagination offset (default 0)" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Paginated list of learned patterns",
+      content: { "application/json": { schema: ListResponseSchema } },
+    },
+    400: {
+      description: "Invalid filter parameters",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const getPatternRoute = createRoute({
+  method: "get",
+  path: "/{id}",
+  tags: ["Admin — Learned Patterns"],
+  summary: "Get a learned pattern",
+  description: "Returns a single learned pattern by ID.",
+  request: {
+    params: z.object({
+      id: z.string().openapi({ param: { name: "id", in: "path" }, example: "abc123" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Learned pattern details",
+      content: { "application/json": { schema: LearnedPatternSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Pattern not found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const updatePatternRoute = createRoute({
+  method: "patch",
+  path: "/{id}",
+  tags: ["Admin — Learned Patterns"],
+  summary: "Update a learned pattern",
+  description: "Updates a learned pattern's description and/or status. Setting a status records the reviewer and review timestamp.",
+  request: {
+    params: z.object({
+      id: z.string().openapi({ param: { name: "id", in: "path" }, example: "abc123" }),
+    }),
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            description: z.string().optional().openapi({ description: "New description for the pattern" }),
+            status: z.enum(["pending", "approved", "rejected"]).optional().openapi({ description: "New status" }),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Updated learned pattern",
+      content: { "application/json": { schema: LearnedPatternSchema } },
+    },
+    400: {
+      description: "Invalid request body",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Pattern not found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const deletePatternRoute = createRoute({
+  method: "delete",
+  path: "/{id}",
+  tags: ["Admin — Learned Patterns"],
+  summary: "Delete a learned pattern",
+  description: "Permanently removes a learned pattern by ID and invalidates the pattern cache.",
+  request: {
+    params: z.object({
+      id: z.string().openapi({ param: { name: "id", in: "path" }, example: "abc123" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Pattern deleted",
+      content: { "application/json": { schema: DeletedSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Pattern not found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const bulkStatusRoute = createRoute({
+  method: "post",
+  path: "/bulk",
+  tags: ["Admin — Learned Patterns"],
+  summary: "Bulk status change",
+  description: "Updates the status of multiple learned patterns at once. Maximum 100 IDs per request. Only 'approved' and 'rejected' statuses are allowed.",
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            ids: z.array(z.string()).openapi({ description: "Pattern IDs to update (max 100)" }),
+            status: z.enum(["approved", "rejected"]).openapi({ description: "Target status" }),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Bulk operation result",
+      content: { "application/json": { schema: BulkResponseSchema } },
+    },
+    400: {
+      description: "Invalid request body",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
-const adminLearnedPatterns = new Hono();
+const adminLearnedPatterns = new OpenAPIHono();
+
+adminLearnedPatterns.onError((err, c) => {
+  if (err instanceof HTTPException && err.status === 400) {
+    return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
+  }
+  throw err;
+});
 
 // ---------------------------------------------------------------------------
 // GET / — list with filters
 // ---------------------------------------------------------------------------
 
-adminLearnedPatterns.get("/", async (c) => {
-  const req = c.req.raw;
+adminLearnedPatterns.openapi(listPatternsRoute, async (c) => {
   const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
+  const preamble = await adminAuthPreamble(c.req.raw, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: (preamble as { headers?: Record<string, string> }).headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -90,7 +376,7 @@ adminLearnedPatterns.get("/", async (c) => {
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     try {
-      const url = new URL(req.url);
+      const url = new URL(c.req.raw.url);
       const status = url.searchParams.get("status");
       const sourceEntity = url.searchParams.get("source_entity");
       const minConfidence = url.searchParams.get("min_confidence");
@@ -183,7 +469,7 @@ adminLearnedPatterns.get("/", async (c) => {
         total,
         limit,
         offset,
-      });
+      }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to list learned patterns");
       return c.json({ error: "internal_error", message: "Failed to list learned patterns.", requestId }, 500);
@@ -195,13 +481,11 @@ adminLearnedPatterns.get("/", async (c) => {
 // GET /:id — single pattern
 // ---------------------------------------------------------------------------
 
-adminLearnedPatterns.get("/:id", async (c) => {
-  const req = c.req.raw;
+adminLearnedPatterns.openapi(getPatternRoute, async (c) => {
   const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
+  const preamble = await adminAuthPreamble(c.req.raw, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: (preamble as { headers?: Record<string, string> }).headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -212,7 +496,7 @@ adminLearnedPatterns.get("/:id", async (c) => {
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     try {
-      const id = c.req.param("id");
+      const { id } = c.req.valid("param");
       const orgId = authResult.user?.activeOrganizationId;
       const params: unknown[] = [id];
       const org = orgFilter(orgId, params, params.length + 1);
@@ -226,7 +510,7 @@ adminLearnedPatterns.get("/:id", async (c) => {
         return c.json({ error: "not_found", message: "Learned pattern not found." }, 404);
       }
 
-      return c.json(toLearnedPattern(rows[0]));
+      return c.json(toLearnedPattern(rows[0]), 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to get learned pattern");
       return c.json({ error: "internal_error", message: "Failed to get learned pattern.", requestId }, 500);
@@ -238,13 +522,11 @@ adminLearnedPatterns.get("/:id", async (c) => {
 // PATCH /:id — update
 // ---------------------------------------------------------------------------
 
-adminLearnedPatterns.patch("/:id", async (c) => {
-  const req = c.req.raw;
+adminLearnedPatterns.openapi(updatePatternRoute, async (c) => {
   const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
+  const preamble = await adminAuthPreamble(c.req.raw, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: (preamble as { headers?: Record<string, string> }).headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -255,7 +537,7 @@ adminLearnedPatterns.patch("/:id", async (c) => {
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     try {
-      const id = c.req.param("id");
+      const { id } = c.req.valid("param");
 
       let body: Record<string, unknown>;
       try {
@@ -325,7 +607,7 @@ adminLearnedPatterns.patch("/:id", async (c) => {
       if (updated.length === 0) {
         return c.json({ error: "not_found", message: "Pattern was deleted before update completed." }, 404);
       }
-      return c.json(toLearnedPattern(updated[0]));
+      return c.json(toLearnedPattern(updated[0]), 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to update learned pattern");
       return c.json({ error: "internal_error", message: "Failed to update learned pattern.", requestId }, 500);
@@ -337,13 +619,11 @@ adminLearnedPatterns.patch("/:id", async (c) => {
 // DELETE /:id — hard delete
 // ---------------------------------------------------------------------------
 
-adminLearnedPatterns.delete("/:id", async (c) => {
-  const req = c.req.raw;
+adminLearnedPatterns.openapi(deletePatternRoute, async (c) => {
   const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
+  const preamble = await adminAuthPreamble(c.req.raw, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: (preamble as { headers?: Record<string, string> }).headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -354,7 +634,7 @@ adminLearnedPatterns.delete("/:id", async (c) => {
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     try {
-      const id = c.req.param("id");
+      const { id } = c.req.valid("param");
       const orgId = authResult.user?.activeOrganizationId;
       const checkParams: unknown[] = [id];
       const org = orgFilter(orgId, checkParams, checkParams.length + 1);
@@ -377,7 +657,7 @@ adminLearnedPatterns.delete("/:id", async (c) => {
 
       invalidatePatternCache(orgId ?? null);
 
-      return c.json({ deleted: true });
+      return c.json({ deleted: true }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to delete learned pattern");
       return c.json({ error: "internal_error", message: "Failed to delete learned pattern.", requestId }, 500);
@@ -389,13 +669,11 @@ adminLearnedPatterns.delete("/:id", async (c) => {
 // POST /bulk — bulk status change
 // ---------------------------------------------------------------------------
 
-adminLearnedPatterns.post("/bulk", async (c) => {
-  const req = c.req.raw;
+adminLearnedPatterns.openapi(bulkStatusRoute, async (c) => {
   const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
+  const preamble = await adminAuthPreamble(c.req.raw, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: (preamble as { headers?: Record<string, string> }).headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -466,7 +744,7 @@ adminLearnedPatterns.post("/bulk", async (c) => {
         }
       }
 
-      return c.json({ updated, notFound, ...(errors.length > 0 ? { errors } : {}) });
+      return c.json({ updated, notFound, ...(errors.length > 0 ? { errors } : {}) }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to bulk update learned patterns");
       return c.json({ error: "internal_error", message: "Failed to bulk update learned patterns.", requestId }, 500);

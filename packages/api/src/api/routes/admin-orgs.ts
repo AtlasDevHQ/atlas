@@ -5,7 +5,8 @@
  * Provides CRUD for organizations and their members (platform admin view).
  */
 
-import { Hono } from "hono";
+import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import { HTTPException } from "hono/http-exception";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import {
   hasInternalDB,
@@ -26,23 +27,517 @@ const log = createLogger("admin-orgs");
 
 const MAX_ID_LENGTH = 128;
 
-function isValidOrgId(id: string | undefined): id is string {
-  return !!id && id.length > 0 && id.length <= MAX_ID_LENGTH;
-}
+// ---------------------------------------------------------------------------
+// Schemas
+// ---------------------------------------------------------------------------
 
-const adminOrgs = new Hono();
+const ErrorSchema = z.object({
+  error: z.string(),
+  message: z.string(),
+  requestId: z.string().optional(),
+});
+
+const AuthErrorSchema = z.record(z.string(), z.unknown());
+
+const OrgIdParamSchema = z.object({
+  id: z.string().min(1).max(MAX_ID_LENGTH).openapi({
+    param: { name: "id", in: "path" },
+    example: "org_abc123",
+  }),
+});
+
+const OrgSummarySchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  slug: z.string(),
+  logo: z.string().nullable(),
+  metadata: z.record(z.string(), z.unknown()).nullable(),
+  createdAt: z.string(),
+  memberCount: z.number(),
+  workspaceStatus: z.string(),
+  planTier: z.string(),
+  suspendedAt: z.string().nullable(),
+  deletedAt: z.string().nullable(),
+});
+
+const OrgDetailSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  slug: z.string(),
+  logo: z.string().nullable(),
+  metadata: z.record(z.string(), z.unknown()).nullable(),
+  createdAt: z.string(),
+  workspaceStatus: z.string(),
+  planTier: z.string(),
+  suspendedAt: z.string().nullable(),
+  deletedAt: z.string().nullable(),
+});
+
+const MemberSchema = z.object({
+  id: z.string(),
+  organizationId: z.string(),
+  userId: z.string(),
+  role: z.string(),
+  createdAt: z.string(),
+  user: z.object({
+    id: z.string(),
+    name: z.string(),
+    email: z.string(),
+    image: z.string().nullable(),
+  }),
+});
+
+const InvitationSchema = z.object({
+  id: z.string(),
+  email: z.string(),
+  role: z.string(),
+  status: z.string(),
+  inviterId: z.string(),
+  expiresAt: z.string(),
+  createdAt: z.string(),
+});
+
+const OrgStatsSchema = z.object({
+  members: z.number(),
+  conversations: z.number(),
+  queries: z.number(),
+});
+
+const WorkspaceActionResponseSchema = z.object({
+  message: z.string(),
+  organization: z.unknown(),
+});
+
+const DeleteCascadeSchema = z.object({
+  message: z.string(),
+  cascade: z.record(z.string(), z.unknown()),
+});
+
+const WorkspaceHealthSchema = z.object({
+  workspace: z.object({
+    id: z.string(),
+    name: z.string(),
+    slug: z.string(),
+    workspaceStatus: z.string(),
+    planTier: z.string(),
+    suspendedAt: z.unknown().nullable(),
+    deletedAt: z.unknown().nullable(),
+    createdAt: z.string(),
+  }),
+  health: z.object({
+    members: z.unknown(),
+    conversations: z.unknown(),
+    queriesLast24h: z.unknown(),
+    connections: z.unknown(),
+    scheduledTasks: z.unknown(),
+    poolMetrics: z.array(z.unknown()),
+  }),
+});
+
+const ConflictErrorSchema = z.object({
+  error: z.string(),
+  message: z.string(),
+});
+
+const UpdatePlanBodySchema = z.object({
+  planTier: z.string().openapi({ example: "team" }),
+});
+
+// ---------------------------------------------------------------------------
+// Route definitions
+// ---------------------------------------------------------------------------
+
+const listOrgsRoute = createRoute({
+  method: "get",
+  path: "/",
+  tags: ["Admin — Organizations"],
+  summary: "List organizations",
+  description:
+    "Returns all organizations with member counts, workspace status, and plan tiers. Ordered by creation date descending.",
+  responses: {
+    200: {
+      description: "List of organizations",
+      content: {
+        "application/json": {
+          schema: z.object({
+            organizations: z.array(OrgSummarySchema),
+            total: z.number(),
+          }),
+        },
+      },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const getOrgRoute = createRoute({
+  method: "get",
+  path: "/{id}",
+  tags: ["Admin — Organizations"],
+  summary: "Get organization details",
+  description:
+    "Returns full organization details including members and pending invitations.",
+  request: {
+    params: OrgIdParamSchema,
+  },
+  responses: {
+    200: {
+      description: "Organization details with members and invitations",
+      content: {
+        "application/json": {
+          schema: z.object({
+            organization: OrgDetailSchema,
+            members: z.array(MemberSchema),
+            invitations: z.array(InvitationSchema),
+          }),
+        },
+      },
+    },
+    400: {
+      description: "Invalid organization ID",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Organization not found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const getOrgStatsRoute = createRoute({
+  method: "get",
+  path: "/{id}/stats",
+  tags: ["Admin — Organizations"],
+  summary: "Get organization stats",
+  description:
+    "Returns aggregate stats for an organization: member count, conversation count, and audit query count.",
+  request: {
+    params: OrgIdParamSchema,
+  },
+  responses: {
+    200: {
+      description: "Organization statistics",
+      content: { "application/json": { schema: OrgStatsSchema } },
+    },
+    400: {
+      description: "Invalid organization ID",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const suspendOrgRoute = createRoute({
+  method: "patch",
+  path: "/{id}/suspend",
+  tags: ["Admin — Organizations"],
+  summary: "Suspend organization",
+  description:
+    "Suspends a workspace, blocking all queries until reactivation. Drains connection pools for the organization.",
+  request: {
+    params: OrgIdParamSchema,
+  },
+  responses: {
+    200: {
+      description: "Workspace suspended",
+      content: { "application/json": { schema: WorkspaceActionResponseSchema } },
+    },
+    400: {
+      description: "Invalid organization ID",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Organization not found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    409: {
+      description: "Conflict — workspace already suspended or deleted",
+      content: { "application/json": { schema: ConflictErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const activateOrgRoute = createRoute({
+  method: "patch",
+  path: "/{id}/activate",
+  tags: ["Admin — Organizations"],
+  summary: "Activate organization",
+  description:
+    "Reactivates a suspended workspace, resuming normal operations.",
+  request: {
+    params: OrgIdParamSchema,
+  },
+  responses: {
+    200: {
+      description: "Workspace activated",
+      content: { "application/json": { schema: WorkspaceActionResponseSchema } },
+    },
+    400: {
+      description: "Invalid organization ID",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Organization not found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    409: {
+      description: "Conflict — workspace already active or deleted",
+      content: { "application/json": { schema: ConflictErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const deleteOrgRoute = createRoute({
+  method: "delete",
+  path: "/{id}",
+  tags: ["Admin — Organizations"],
+  summary: "Delete organization",
+  description:
+    "Soft-deletes a workspace with cascading cleanup: drains connection pools, flushes cache, removes associated data, and marks the workspace as deleted.",
+  request: {
+    params: OrgIdParamSchema,
+  },
+  responses: {
+    200: {
+      description: "Workspace deleted with cascade summary",
+      content: { "application/json": { schema: DeleteCascadeSchema } },
+    },
+    400: {
+      description: "Invalid organization ID",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Organization not found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    409: {
+      description: "Conflict — workspace already deleted",
+      content: { "application/json": { schema: ConflictErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const getOrgStatusRoute = createRoute({
+  method: "get",
+  path: "/{id}/status",
+  tags: ["Admin — Organizations"],
+  summary: "Workspace health summary",
+  description:
+    "Returns a health summary for a workspace including member count, conversation count, recent queries, connection status, scheduled tasks, and pool metrics.",
+  request: {
+    params: OrgIdParamSchema,
+  },
+  responses: {
+    200: {
+      description: "Workspace health summary",
+      content: { "application/json": { schema: WorkspaceHealthSchema } },
+    },
+    400: {
+      description: "Invalid organization ID",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Organization not found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const updatePlanRoute = createRoute({
+  method: "patch",
+  path: "/{id}/plan",
+  tags: ["Admin — Organizations"],
+  summary: "Update organization plan",
+  description:
+    "Updates the plan tier for a workspace. Valid tiers: free, trial, team, enterprise.",
+  request: {
+    params: OrgIdParamSchema,
+    body: {
+      content: {
+        "application/json": {
+          schema: UpdatePlanBodySchema,
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Plan tier updated",
+      content: { "application/json": { schema: WorkspaceActionResponseSchema } },
+    },
+    400: {
+      description: "Invalid organization ID or invalid plan tier",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Organization not found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    409: {
+      description: "Conflict — workspace is deleted",
+      content: { "application/json": { schema: ConflictErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Router
+// ---------------------------------------------------------------------------
+
+const adminOrgs = new OpenAPIHono();
+
+adminOrgs.onError((err, c) => {
+  if (err instanceof HTTPException && err.status === 400) {
+    return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
+  }
+  throw err;
+});
 
 // ---------------------------------------------------------------------------
 // GET / — list all organizations (platform admin view)
 // ---------------------------------------------------------------------------
 
-adminOrgs.get("/", async (c) => {
+adminOrgs.openapi(listOrgsRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: (preamble as { headers?: Record<string, string> }).headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -81,7 +576,7 @@ adminOrgs.get("/", async (c) => {
         deletedAt: o.deleted_at ? String(o.deleted_at) : null,
       }));
 
-      return c.json({ organizations: result, total: result.length });
+      return c.json({ organizations: result, total: result.length }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to list organizations");
       return c.json({ error: "internal_error", message: "Failed to list organizations.", requestId }, 500);
@@ -93,18 +588,14 @@ adminOrgs.get("/", async (c) => {
 // GET /:id — get organization details with members
 // ---------------------------------------------------------------------------
 
-adminOrgs.get("/:id", async (c) => {
+adminOrgs.openapi(getOrgRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
-  const orgId = c.req.param("id");
-
-  if (!isValidOrgId(orgId)) {
-    return c.json({ error: "bad_request", message: "Invalid organization ID." }, 400);
-  }
+  const { id: orgId } = c.req.valid("param");
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: (preamble as { headers?: Record<string, string> }).headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -181,7 +672,7 @@ adminOrgs.get("/:id", async (c) => {
           expiresAt: String(i.expiresAt),
           createdAt: String(i.createdAt),
         })),
-      });
+      }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get organization");
       return c.json({ error: "internal_error", message: "Failed to get organization.", requestId }, 500);
@@ -193,18 +684,14 @@ adminOrgs.get("/:id", async (c) => {
 // GET /:id/stats — org stats (conversations, members, queries)
 // ---------------------------------------------------------------------------
 
-adminOrgs.get("/:id/stats", async (c) => {
+adminOrgs.openapi(getOrgStatsRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
-  const orgId = c.req.param("id");
-
-  if (!isValidOrgId(orgId)) {
-    return c.json({ error: "bad_request", message: "Invalid organization ID." }, 400);
-  }
+  const { id: orgId } = c.req.valid("param");
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: (preamble as { headers?: Record<string, string> }).headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -224,7 +711,7 @@ adminOrgs.get("/:id/stats", async (c) => {
         members: memberRows[0]?.count ?? 0,
         conversations: convRows[0]?.count ?? 0,
         queries: queryRows[0]?.count ?? 0,
-      });
+      }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get org stats");
       return c.json({ error: "internal_error", message: "Failed to get organization stats.", requestId }, 500);
@@ -236,18 +723,14 @@ adminOrgs.get("/:id/stats", async (c) => {
 // PATCH /:id/suspend — suspend a workspace
 // ---------------------------------------------------------------------------
 
-adminOrgs.patch("/:id/suspend", async (c) => {
+adminOrgs.openapi(suspendOrgRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
-  const orgId = c.req.param("id");
-
-  if (!isValidOrgId(orgId)) {
-    return c.json({ error: "bad_request", message: "Invalid organization ID." }, 400);
-  }
+  const { id: orgId } = c.req.valid("param");
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: (preamble as { headers?: Record<string, string> }).headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -281,7 +764,7 @@ adminOrgs.patch("/:id/suspend", async (c) => {
       return c.json({
         message: "Workspace suspended. All queries are blocked until reactivation.",
         organization: updated,
-      });
+      }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to suspend workspace");
       return c.json({ error: "internal_error", message: "Failed to suspend workspace.", requestId }, 500);
@@ -293,18 +776,14 @@ adminOrgs.patch("/:id/suspend", async (c) => {
 // PATCH /:id/activate — reactivate a suspended workspace
 // ---------------------------------------------------------------------------
 
-adminOrgs.patch("/:id/activate", async (c) => {
+adminOrgs.openapi(activateOrgRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
-  const orgId = c.req.param("id");
-
-  if (!isValidOrgId(orgId)) {
-    return c.json({ error: "bad_request", message: "Invalid organization ID." }, 400);
-  }
+  const { id: orgId } = c.req.valid("param");
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: (preamble as { headers?: Record<string, string> }).headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -333,7 +812,7 @@ adminOrgs.patch("/:id/activate", async (c) => {
       return c.json({
         message: "Workspace activated. Normal operations resumed.",
         organization: updated,
-      });
+      }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to activate workspace");
       return c.json({ error: "internal_error", message: "Failed to activate workspace.", requestId }, 500);
@@ -345,18 +824,14 @@ adminOrgs.patch("/:id/activate", async (c) => {
 // DELETE /:id — soft-delete a workspace with cascading cleanup
 // ---------------------------------------------------------------------------
 
-adminOrgs.delete("/:id", async (c) => {
+adminOrgs.openapi(deleteOrgRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
-  const orgId = c.req.param("id");
-
-  if (!isValidOrgId(orgId)) {
-    return c.json({ error: "bad_request", message: "Invalid organization ID." }, 400);
-  }
+  const { id: orgId } = c.req.valid("param");
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: (preamble as { headers?: Record<string, string> }).headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -406,7 +881,7 @@ adminOrgs.delete("/:id", async (c) => {
           poolsDrained,
           ...cascade,
         },
-      });
+      }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to delete workspace");
       return c.json({ error: "internal_error", message: "Failed to delete workspace.", requestId }, 500);
@@ -418,18 +893,14 @@ adminOrgs.delete("/:id", async (c) => {
 // GET /:id/status — workspace health summary
 // ---------------------------------------------------------------------------
 
-adminOrgs.get("/:id/status", async (c) => {
+adminOrgs.openapi(getOrgStatusRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
-  const orgId = c.req.param("id");
-
-  if (!isValidOrgId(orgId)) {
-    return c.json({ error: "bad_request", message: "Invalid organization ID." }, 400);
-  }
+  const { id: orgId } = c.req.valid("param");
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: (preamble as { headers?: Record<string, string> }).headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -468,7 +939,7 @@ adminOrgs.get("/:id/status", async (c) => {
           scheduledTasks: summary.scheduledTasks,
           poolMetrics,
         },
-      });
+      }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get workspace status");
       return c.json({ error: "internal_error", message: "Failed to get workspace status.", requestId }, 500);
@@ -482,18 +953,14 @@ adminOrgs.get("/:id/status", async (c) => {
 
 const VALID_PLAN_TIERS = new Set<PlanTier>(["free", "trial", "team", "enterprise"]);
 
-adminOrgs.patch("/:id/plan", async (c) => {
+adminOrgs.openapi(updatePlanRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
-  const orgId = c.req.param("id");
-
-  if (!isValidOrgId(orgId)) {
-    return c.json({ error: "bad_request", message: "Invalid organization ID." }, 400);
-  }
+  const { id: orgId } = c.req.valid("param");
 
   const preamble = await adminAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: (preamble as { headers?: Record<string, string> }).headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -502,13 +969,7 @@ adminOrgs.patch("/:id/plan", async (c) => {
       return c.json({ error: "not_available", message: "No internal database configured." }, 404);
     }
 
-    let body: { planTier?: string };
-    try {
-      body = await c.req.json();
-    } catch (err) {
-      log.debug({ err: err instanceof Error ? err.message : String(err) }, "Invalid JSON in plan tier update");
-      return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
-    }
+    const body = c.req.valid("json");
 
     if (!body.planTier || !VALID_PLAN_TIERS.has(body.planTier as PlanTier)) {
       return c.json({ error: "bad_request", message: `Invalid plan tier. Must be one of: ${[...VALID_PLAN_TIERS].join(", ")}` }, 400);
@@ -532,7 +993,7 @@ adminOrgs.patch("/:id/plan", async (c) => {
       return c.json({
         message: `Plan tier updated to ${body.planTier}.`,
         organization: updated,
-      });
+      }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to update plan tier");
       return c.json({ error: "internal_error", message: "Failed to update plan tier.", requestId }, 500);

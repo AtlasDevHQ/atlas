@@ -547,7 +547,14 @@ const deleteConversationRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const conversations = new OpenAPIHono();
+const conversations = new OpenAPIHono({
+  defaultHook: (result, c) => {
+    if (!result.success) {
+      const detail = result.error.issues.map((i) => i.message).join("; ");
+      return c.json({ error: "invalid_request", message: detail || "Request validation failed." }, 400);
+    }
+  },
+});
 
 // JSON parse error handler for routes that accept request bodies
 conversations.onError((err, c) => {

@@ -238,7 +238,14 @@ const toggleByotRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const billing = new OpenAPIHono();
+const billing = new OpenAPIHono({
+  defaultHook: (result, c) => {
+    if (!result.success) {
+      const detail = result.error.issues.map((i) => i.message).join("; ");
+      return c.json({ error: "invalid_request", message: detail || "Request validation failed." }, 400);
+    }
+  },
+});
 
 // GET / — billing status for the active workspace
 billing.openapi(getBillingStatusRoute, async (c) => {
@@ -380,8 +387,9 @@ billing.openapi(createPortalSessionRoute, async (c) => {
       try {
         const body = c.req.valid("json");
         returnUrl = body.returnUrl;
-      } catch {
-        // No body is fine — returnUrl is optional
+      } catch (err) {
+        // No body is fine — returnUrl is optional. Log if validation failed on a present body.
+        log.debug({ err: err instanceof Error ? err.message : String(err), requestId }, "Portal body parse/validation skipped — using default returnUrl");
       }
 
       const stripeClient = new Stripe(process.env.STRIPE_SECRET_KEY!);
@@ -447,11 +455,8 @@ billing.openapi(toggleByotRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 billing.onError((err, c) => {
-  if (err instanceof HTTPException) {
-    return c.json(
-      { error: "bad_request", message: err.message },
-      err.status,
-    );
+  if (err instanceof HTTPException && err.status === 400) {
+    return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
   }
   throw err;
 });

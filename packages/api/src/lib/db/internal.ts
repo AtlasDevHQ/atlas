@@ -635,6 +635,20 @@ export async function migrateInternalDB(): Promise<void> {
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_demo_leads_created ON demo_leads(created_at);`);
 
+  // Enterprise IP allowlist (0.9.0 — per-workspace IP allowlisting)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ip_allowlist (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      org_id TEXT NOT NULL,
+      cidr TEXT NOT NULL,
+      description TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      created_by TEXT,
+      UNIQUE(org_id, cidr)
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_ip_allowlist_org ON ip_allowlist(org_id);`);
+
   log.info("Internal DB migration complete");
 }
 

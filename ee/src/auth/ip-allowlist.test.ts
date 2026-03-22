@@ -1,0 +1,478 @@
+import { describe, it, expect, beforeEach, mock } from "bun:test";
+
+// ── Mocks ───────────────────────────────────────────────────────────
+
+let mockEnterpriseEnabled = false;
+let mockEnterpriseLicenseKey: string | undefined = "test-key";
+
+mock.module("../index", () => ({
+  isEnterpriseEnabled: () => mockEnterpriseEnabled,
+  getEnterpriseLicenseKey: () => mockEnterpriseLicenseKey,
+  requireEnterprise: (feature?: string) => {
+    const label = feature ? ` (${feature})` : "";
+    if (!mockEnterpriseEnabled) {
+      throw new Error(`Enterprise features${label} are not enabled.`);
+    }
+    if (!mockEnterpriseLicenseKey) {
+      throw new Error(`Enterprise features${label} are enabled but no license key is configured.`);
+    }
+  },
+}));
+
+// Mock internal DB
+const mockRows: Record<string, unknown>[][] = [];
+let queryCallCount = 0;
+const capturedQueries: { sql: string; params: unknown[] }[] = [];
+
+mock.module("@atlas/api/lib/db/internal", () => ({
+  hasInternalDB: () => true,
+  getInternalDB: () => ({
+    query: async (sql: string, params?: unknown[]) => {
+      capturedQueries.push({ sql, params: params ?? [] });
+      const rows = mockRows[queryCallCount] ?? [];
+      queryCallCount++;
+      return { rows };
+    },
+    end: async () => {},
+    on: () => {},
+  }),
+  internalQuery: async (sql: string, params?: unknown[]) => {
+    capturedQueries.push({ sql, params: params ?? [] });
+    const rows = mockRows[queryCallCount] ?? [];
+    queryCallCount++;
+    return rows;
+  },
+  internalExecute: () => {},
+  encryptUrl: (v: string) => `encrypted:${v}`,
+  decryptUrl: (v: string) => v.startsWith("encrypted:") ? v.slice(10) : v,
+}));
+
+mock.module("@atlas/api/lib/logger", () => ({
+  createLogger: () => ({
+    info: () => {},
+    warn: () => {},
+    error: () => {},
+    debug: () => {},
+  }),
+}));
+
+// Import after mocks
+const {
+  parseCIDR,
+  isIPInRange,
+  isIPAllowed,
+  listIPAllowlistEntries,
+  addIPAllowlistEntry,
+  removeIPAllowlistEntry,
+  checkIPAllowlist,
+  IPAllowlistError,
+  _clearCache,
+} = await import("./ip-allowlist");
+
+// ── Helpers ─────────────────────────────────────────────────────────
+
+function resetMocks() {
+  mockRows.length = 0;
+  queryCallCount = 0;
+  capturedQueries.length = 0;
+  mockEnterpriseEnabled = true;
+  mockEnterpriseLicenseKey = "test-key";
+  _clearCache();
+}
+
+// ── Tests: CIDR Parsing ─────────────────────────────────────────────
+
+describe("parseCIDR", () => {
+  beforeEach(resetMocks);
+
+  it("parses valid IPv4 CIDR", () => {
+    const result = parseCIDR("10.0.0.0/8");
+    expect(result).not.toBeNull();
+    expect(result!.version).toBe(4);
+    expect(result!.original).toBe("10.0.0.0/8");
+  });
+
+  it("parses /32 single-host IPv4", () => {
+    const result = parseCIDR("192.168.1.1/32");
+    expect(result).not.toBeNull();
+    expect(result!.version).toBe(4);
+  });
+
+  it("parses /0 all-IPs IPv4", () => {
+    const result = parseCIDR("0.0.0.0/0");
+    expect(result).not.toBeNull();
+    expect(result!.version).toBe(4);
+    expect(result!.mask).toBe(0n);
+  });
+
+  it("parses valid IPv6 CIDR", () => {
+    const result = parseCIDR("2001:db8::/32");
+    expect(result).not.toBeNull();
+    expect(result!.version).toBe(6);
+    expect(result!.original).toBe("2001:db8::/32");
+  });
+
+  it("parses IPv6 /128 single-host", () => {
+    const result = parseCIDR("::1/128");
+    expect(result).not.toBeNull();
+    expect(result!.version).toBe(6);
+  });
+
+  it("parses IPv6 /0", () => {
+    const result = parseCIDR("::/0");
+    expect(result).not.toBeNull();
+    expect(result!.version).toBe(6);
+    expect(result!.mask).toBe(0n);
+  });
+
+  it("normalizes network address", () => {
+    // 192.168.1.100/24 should normalize to network 192.168.1.0
+    const result = parseCIDR("192.168.1.100/24");
+    expect(result).not.toBeNull();
+    // The network should be 192.168.1.0 = 0xC0A80100
+    expect(result!.network).toBe(0xC0A80100n);
+  });
+
+  it("trims whitespace", () => {
+    const result = parseCIDR("  10.0.0.0/8  ");
+    expect(result).not.toBeNull();
+    expect(result!.original).toBe("10.0.0.0/8");
+  });
+
+  it("returns null for missing prefix", () => {
+    expect(parseCIDR("10.0.0.0")).toBeNull();
+  });
+
+  it("returns null for invalid IP", () => {
+    expect(parseCIDR("999.999.999.999/8")).toBeNull();
+  });
+
+  it("returns null for negative prefix", () => {
+    expect(parseCIDR("10.0.0.0/-1")).toBeNull();
+  });
+
+  it("returns null for prefix too large (IPv4)", () => {
+    expect(parseCIDR("10.0.0.0/33")).toBeNull();
+  });
+
+  it("returns null for prefix too large (IPv6)", () => {
+    expect(parseCIDR("::1/129")).toBeNull();
+  });
+
+  it("returns null for empty string", () => {
+    expect(parseCIDR("")).toBeNull();
+  });
+
+  it("returns null for non-numeric prefix", () => {
+    expect(parseCIDR("10.0.0.0/abc")).toBeNull();
+  });
+
+  it("returns null for garbage input", () => {
+    expect(parseCIDR("not-a-cidr")).toBeNull();
+  });
+});
+
+// ── Tests: IP Range Matching ────────────────────────────────────────
+
+describe("isIPInRange", () => {
+  beforeEach(resetMocks);
+
+  it("matches IP in /8 range", () => {
+    const cidr = parseCIDR("10.0.0.0/8")!;
+    expect(isIPInRange("10.0.0.1", cidr)).toBe(true);
+    expect(isIPInRange("10.255.255.255", cidr)).toBe(true);
+  });
+
+  it("rejects IP outside /8 range", () => {
+    const cidr = parseCIDR("10.0.0.0/8")!;
+    expect(isIPInRange("11.0.0.1", cidr)).toBe(false);
+    expect(isIPInRange("192.168.1.1", cidr)).toBe(false);
+  });
+
+  it("matches exact IP with /32", () => {
+    const cidr = parseCIDR("192.168.1.1/32")!;
+    expect(isIPInRange("192.168.1.1", cidr)).toBe(true);
+    expect(isIPInRange("192.168.1.2", cidr)).toBe(false);
+  });
+
+  it("matches all IPs with /0", () => {
+    const cidr = parseCIDR("0.0.0.0/0")!;
+    expect(isIPInRange("1.2.3.4", cidr)).toBe(true);
+    expect(isIPInRange("255.255.255.255", cidr)).toBe(true);
+  });
+
+  it("matches /24 network correctly", () => {
+    const cidr = parseCIDR("192.168.1.0/24")!;
+    expect(isIPInRange("192.168.1.0", cidr)).toBe(true); // network address
+    expect(isIPInRange("192.168.1.255", cidr)).toBe(true); // broadcast
+    expect(isIPInRange("192.168.1.42", cidr)).toBe(true);
+    expect(isIPInRange("192.168.2.1", cidr)).toBe(false);
+  });
+
+  it("matches IPv6 range", () => {
+    const cidr = parseCIDR("2001:db8::/32")!;
+    expect(isIPInRange("2001:db8::1", cidr)).toBe(true);
+    expect(isIPInRange("2001:db8:ffff:ffff:ffff:ffff:ffff:ffff", cidr)).toBe(true);
+    expect(isIPInRange("2001:db9::1", cidr)).toBe(false);
+  });
+
+  it("does not match IPv4 against IPv6 CIDR", () => {
+    const cidr = parseCIDR("2001:db8::/32")!;
+    expect(isIPInRange("10.0.0.1", cidr)).toBe(false);
+  });
+
+  it("does not match IPv6 against IPv4 CIDR", () => {
+    const cidr = parseCIDR("10.0.0.0/8")!;
+    expect(isIPInRange("2001:db8::1", cidr)).toBe(false);
+  });
+
+  it("returns false for invalid IP", () => {
+    const cidr = parseCIDR("10.0.0.0/8")!;
+    expect(isIPInRange("not-an-ip", cidr)).toBe(false);
+  });
+
+  it("matches loopback /128", () => {
+    const cidr = parseCIDR("::1/128")!;
+    expect(isIPInRange("::1", cidr)).toBe(true);
+    expect(isIPInRange("::2", cidr)).toBe(false);
+  });
+});
+
+// ── Tests: isIPAllowed ──────────────────────────────────────────────
+
+describe("isIPAllowed", () => {
+  beforeEach(resetMocks);
+
+  it("allows all IPs when ranges is empty", () => {
+    expect(isIPAllowed("1.2.3.4", [])).toBe(true);
+  });
+
+  it("allows IP matching one of multiple ranges", () => {
+    const ranges = [parseCIDR("10.0.0.0/8")!, parseCIDR("192.168.0.0/16")!];
+    expect(isIPAllowed("192.168.1.1", ranges)).toBe(true);
+  });
+
+  it("rejects IP not matching any range", () => {
+    const ranges = [parseCIDR("10.0.0.0/8")!, parseCIDR("192.168.0.0/16")!];
+    expect(isIPAllowed("172.16.0.1", ranges)).toBe(false);
+  });
+});
+
+// ── Tests: CRUD operations ──────────────────────────────────────────
+
+describe("listIPAllowlistEntries", () => {
+  beforeEach(resetMocks);
+
+  it("returns entries from DB", async () => {
+    mockRows.push([
+      {
+        id: "entry-1",
+        org_id: "org-1",
+        cidr: "10.0.0.0/8",
+        description: "Office",
+        created_at: "2026-03-22T00:00:00Z",
+        created_by: "admin-1",
+      },
+    ]);
+
+    const entries = await listIPAllowlistEntries("org-1");
+    expect(entries).toHaveLength(1);
+    expect(entries[0].cidr).toBe("10.0.0.0/8");
+    expect(entries[0].description).toBe("Office");
+    expect(entries[0].orgId).toBe("org-1");
+  });
+
+  it("throws if enterprise not enabled", async () => {
+    mockEnterpriseEnabled = false;
+    await expect(listIPAllowlistEntries("org-1")).rejects.toThrow("Enterprise features");
+  });
+});
+
+describe("addIPAllowlistEntry", () => {
+  beforeEach(resetMocks);
+
+  it("adds a valid CIDR entry", async () => {
+    // First query: duplicate check (no results)
+    mockRows.push([]);
+    // Second query: INSERT RETURNING
+    mockRows.push([
+      {
+        id: "new-id",
+        org_id: "org-1",
+        cidr: "10.0.0.0/8",
+        description: "Office",
+        created_at: "2026-03-22T00:00:00Z",
+        created_by: "admin-1",
+      },
+    ]);
+
+    const entry = await addIPAllowlistEntry("org-1", "10.0.0.0/8", "Office", "admin-1");
+    expect(entry.cidr).toBe("10.0.0.0/8");
+    expect(entry.description).toBe("Office");
+  });
+
+  it("rejects invalid CIDR format", async () => {
+    try {
+      await addIPAllowlistEntry("org-1", "not-a-cidr", null, null);
+      expect.unreachable("Should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(IPAllowlistError);
+      expect((err as InstanceType<typeof IPAllowlistError>).code).toBe("validation");
+    }
+  });
+
+  it("rejects duplicate CIDR", async () => {
+    // Duplicate check returns existing row
+    mockRows.push([{ id: "existing-id" }]);
+
+    try {
+      await addIPAllowlistEntry("org-1", "10.0.0.0/8", null, null);
+      expect.unreachable("Should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(IPAllowlistError);
+      expect((err as InstanceType<typeof IPAllowlistError>).code).toBe("conflict");
+    }
+  });
+
+  it("throws if enterprise not enabled", async () => {
+    mockEnterpriseEnabled = false;
+    await expect(addIPAllowlistEntry("org-1", "10.0.0.0/8", null, null)).rejects.toThrow("Enterprise features");
+  });
+});
+
+describe("removeIPAllowlistEntry", () => {
+  beforeEach(resetMocks);
+
+  it("removes existing entry", async () => {
+    mockRows.push([{ id: "entry-1" }]);
+    const deleted = await removeIPAllowlistEntry("org-1", "entry-1");
+    expect(deleted).toBe(true);
+  });
+
+  it("returns false for non-existent entry", async () => {
+    mockRows.push([]);
+    const deleted = await removeIPAllowlistEntry("org-1", "no-such-entry");
+    expect(deleted).toBe(false);
+  });
+
+  it("throws if enterprise not enabled", async () => {
+    mockEnterpriseEnabled = false;
+    await expect(removeIPAllowlistEntry("org-1", "entry-1")).rejects.toThrow("Enterprise features");
+  });
+});
+
+// ── Tests: checkIPAllowlist (middleware integration) ─────────────────
+
+describe("checkIPAllowlist", () => {
+  beforeEach(resetMocks);
+
+  it("allows when enterprise is disabled", async () => {
+    mockEnterpriseEnabled = false;
+    const result = await checkIPAllowlist("org-1", "1.2.3.4");
+    expect(result.allowed).toBe(true);
+  });
+
+  it("allows when no allowlist entries exist (opt-in)", async () => {
+    mockRows.push([]); // empty allowlist
+    const result = await checkIPAllowlist("org-1", "1.2.3.4");
+    expect(result.allowed).toBe(true);
+  });
+
+  it("allows matching IP", async () => {
+    mockRows.push([{ cidr: "10.0.0.0/8" }]);
+    const result = await checkIPAllowlist("org-1", "10.0.0.1");
+    expect(result.allowed).toBe(true);
+  });
+
+  it("blocks non-matching IP", async () => {
+    mockRows.push([{ cidr: "10.0.0.0/8" }]);
+    const result = await checkIPAllowlist("org-1", "192.168.1.1");
+    expect(result.allowed).toBe(false);
+  });
+
+  it("blocks when IP is null and allowlist has entries", async () => {
+    mockRows.push([{ cidr: "10.0.0.0/8" }]);
+    const result = await checkIPAllowlist("org-1", null);
+    expect(result.allowed).toBe(false);
+  });
+
+  it("uses cache on second call", async () => {
+    mockRows.push([{ cidr: "10.0.0.0/8" }]);
+    await checkIPAllowlist("org-1", "10.0.0.1");
+    // Second call should not query DB (no additional rows needed)
+    const result = await checkIPAllowlist("org-1", "10.0.0.1");
+    expect(result.allowed).toBe(true);
+    // Only 1 DB query should have been made
+    expect(capturedQueries).toHaveLength(1);
+  });
+
+  it("cache invalidation forces DB reload", async () => {
+    mockRows.push([{ cidr: "10.0.0.0/8" }]);
+    await checkIPAllowlist("org-1", "10.0.0.1");
+
+    // Invalidate cache
+    _clearCache();
+    mockRows.push([{ cidr: "192.168.0.0/16" }]);
+
+    const result = await checkIPAllowlist("org-1", "10.0.0.1");
+    // Should now be blocked because cache was cleared and new DB data loaded
+    expect(result.allowed).toBe(false);
+    expect(capturedQueries).toHaveLength(2);
+  });
+});
+
+// ── Tests: Edge cases ───────────────────────────────────────────────
+
+describe("edge cases", () => {
+  beforeEach(resetMocks);
+
+  it("handles multiple CIDR ranges for one org", async () => {
+    mockRows.push([
+      { cidr: "10.0.0.0/8" },
+      { cidr: "172.16.0.0/12" },
+      { cidr: "192.168.0.0/16" },
+    ]);
+    // RFC 1918 address in the 172.16.x.x range
+    const result = await checkIPAllowlist("org-1", "172.16.5.10");
+    expect(result.allowed).toBe(true);
+  });
+
+  it("handles mixed IPv4/IPv6 in allowlist", async () => {
+    mockRows.push([
+      { cidr: "10.0.0.0/8" },
+      { cidr: "2001:db8::/32" },
+    ]);
+    const v4 = await checkIPAllowlist("org-1", "10.0.0.1");
+    expect(v4.allowed).toBe(true);
+
+    // Clear cache for fresh query
+    _clearCache();
+    mockRows.push([
+      { cidr: "10.0.0.0/8" },
+      { cidr: "2001:db8::/32" },
+    ]);
+    const v6 = await checkIPAllowlist("org-1", "2001:db8::1");
+    expect(v6.allowed).toBe(true);
+  });
+
+  it("parseCIDR handles /16 boundary correctly", () => {
+    const cidr = parseCIDR("172.16.0.0/16")!;
+    expect(isIPInRange("172.16.0.1", cidr)).toBe(true);
+    expect(isIPInRange("172.16.255.255", cidr)).toBe(true);
+    expect(isIPInRange("172.17.0.1", cidr)).toBe(false);
+  });
+
+  it("parseCIDR handles /12 boundary correctly", () => {
+    const cidr = parseCIDR("172.16.0.0/12")!;
+    expect(isIPInRange("172.16.0.1", cidr)).toBe(true);
+    expect(isIPInRange("172.31.255.255", cidr)).toBe(true);
+    expect(isIPInRange("172.32.0.1", cidr)).toBe(false);
+  });
+
+  it("IPv6 fe80::/10 link-local range", () => {
+    const cidr = parseCIDR("fe80::/10")!;
+    expect(isIPInRange("fe80::1", cidr)).toBe(true);
+    expect(isIPInRange("febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff", cidr)).toBe(true);
+    expect(isIPInRange("fec0::1", cidr)).toBe(false);
+  });
+});

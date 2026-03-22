@@ -178,8 +178,13 @@ chat.openapi(chatRoute, async (c) => {
   }
 
   // IP allowlist check — enterprise feature, after auth so we have org context
+  let checkIPAllowlist: ((orgId: string, clientIP: string | null) => Promise<{ allowed: boolean }>) | undefined;
   try {
-    const { checkIPAllowlist } = await import("../../../../../ee/src/auth/ip-allowlist");
+    ({ checkIPAllowlist } = await import("../../../../../ee/src/auth/ip-allowlist"));
+  } catch {
+    // ee module not installed — IP allowlist feature unavailable, skip
+  }
+  if (checkIPAllowlist) {
     const orgId = authResult.user?.activeOrganizationId;
     if (orgId) {
       const ipCheck = await checkIPAllowlist(orgId, ip);
@@ -191,12 +196,6 @@ chat.openapi(chatRoute, async (c) => {
         );
       }
     }
-  } catch (err) {
-    // IP allowlist check must not break the request if ee module is unavailable
-    log.debug(
-      { err: err instanceof Error ? err.message : String(err) },
-      "IP allowlist check skipped",
-    );
   }
 
   // Workspace status check — block suspended/deleted workspaces

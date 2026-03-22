@@ -1,5 +1,5 @@
 /**
- * Atlas API — Hono application.
+ * Atlas API — OpenAPIHono application.
  *
  * Mounts chat, health, auth, v1 query, conversations, public shared
  * conversations, semantic, OpenAPI, admin, and widget routes with CORS
@@ -10,7 +10,8 @@
  * fetch (when NEXT_PUBLIC_ATLAS_API_URL is set).
  */
 
-import { Hono } from "hono";
+import { OpenAPIHono } from "@hono/zod-openapi";
+import { HTTPException } from "hono/http-exception";
 import { cors } from "hono/cors";
 import {
   trace,
@@ -33,7 +34,7 @@ import { widgetLoader, widgetTypesLoader } from "./routes/widget-loader";
 
 const log = createLogger("api");
 const tracer = trace.getTracer("atlas");
-const app = new Hono();
+const app = new OpenAPIHono();
 
 // OTel tracing — root span per HTTP request. No-op when SDK is not initialized.
 // Must be the first middleware so all downstream operations are children.
@@ -236,6 +237,11 @@ if (process.env.SLACK_SIGNING_SECRET) {
 }
 
 app.onError((err, c) => {
+  // Framework HTTP exceptions (e.g., malformed JSON from @hono/zod-openapi) carry
+  // their own status code and response — forward them instead of converting to 500.
+  if (err instanceof HTTPException) {
+    return err.getResponse();
+  }
   const requestId = crypto.randomUUID();
   log.error({ err, path: c.req.path, requestId }, "Unhandled error");
   return c.json(
@@ -246,6 +252,14 @@ app.onError((err, c) => {
     },
     500,
   );
+});
+
+// Auto-generated OpenAPI spec from route definitions (Phase 1).
+// Converted routes: health, validate-sql, tables, semantic.
+// The manual spec at /api/v1/openapi.json continues to serve unconverted routes.
+app.doc("/api/v1/openapi-auto.json", {
+  openapi: "3.1.0",
+  info: { title: "Atlas API", version: "0.9.0" },
 });
 
 export { app };

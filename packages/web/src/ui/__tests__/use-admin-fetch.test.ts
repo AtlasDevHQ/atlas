@@ -34,6 +34,17 @@ describe("friendlyError", () => {
     const err: FetchError = { message: "Internal Server Error", status: 500 };
     expect(friendlyError(err)).toBe("Internal Server Error");
   });
+
+  test("appends requestId when present", () => {
+    const err: FetchError = { message: "Internal Server Error", status: 500, requestId: "req-xyz" };
+    expect(friendlyError(err)).toBe("Internal Server Error (Request ID: req-xyz)");
+  });
+
+  test("appends requestId to status-specific messages", () => {
+    const err: FetchError = { message: "HTTP 401", status: 401, requestId: "req-abc" };
+    expect(friendlyError(err)).toContain("Not authenticated");
+    expect(friendlyError(err)).toContain("(Request ID: req-abc)");
+  });
 });
 
 /* ------------------------------------------------------------------ */
@@ -86,7 +97,7 @@ describe("useAdminFetch", () => {
     expect(result.current.error).toBeNull();
   });
 
-  test("sets error on non-OK response", async () => {
+  test("sets error on non-OK response with non-JSON body", async () => {
     globalThis.fetch = mock(() =>
       Promise.resolve(new Response("", { status: 403 })),
     ) as unknown as typeof fetch;
@@ -100,7 +111,44 @@ describe("useAdminFetch", () => {
     expect(result.current.error).not.toBeNull();
     expect(result.current.error!.status).toBe(403);
     expect(result.current.error!.message).toBe("HTTP 403");
+    expect(result.current.error!.requestId).toBeUndefined();
     expect(result.current.data).toBeNull();
+  });
+
+  test("extracts message and requestId from JSON error body", async () => {
+    const body = JSON.stringify({ message: "Failed to fetch usage summary", requestId: "req-abc123" });
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response(body, { status: 500, headers: { "Content-Type": "application/json" } })),
+    ) as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useAdminFetch("/api/test"), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.error).not.toBeNull();
+    expect(result.current.error!.status).toBe(500);
+    expect(result.current.error!.message).toBe("Failed to fetch usage summary");
+    expect(result.current.error!.requestId).toBe("req-abc123");
+  });
+
+  test("extracts message without requestId from JSON error body", async () => {
+    const body = JSON.stringify({ message: "Rate limit exceeded" });
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response(body, { status: 429, headers: { "Content-Type": "application/json" } })),
+    ) as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useAdminFetch("/api/test"), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.error).not.toBeNull();
+    expect(result.current.error!.status).toBe(429);
+    expect(result.current.error!.message).toBe("Rate limit exceeded");
+    expect(result.current.error!.requestId).toBeUndefined();
   });
 
   test("sets error on network failure", async () => {

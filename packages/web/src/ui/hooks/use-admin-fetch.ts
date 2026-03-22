@@ -6,15 +6,20 @@ import { useAtlasConfig } from "@/ui/context";
 export interface FetchError {
   message: string;
   status?: number;
+  requestId?: string;
 }
 
 /** Map HTTP status codes to user-friendly messages for admin pages. */
 export function friendlyError(err: FetchError): string {
-  if (err.status === 401) return "Not authenticated. Please sign in.";
-  if (err.status === 403)
-    return "Access denied. Admin role required to view this page.";
-  if (err.status === 404) return "This feature is not enabled on this server.";
-  return err.message;
+  let msg: string;
+  if (err.status === 401) msg = "Not authenticated. Please sign in.";
+  else if (err.status === 403)
+    msg = "Access denied. Admin role required to view this page.";
+  else if (err.status === 404)
+    msg = "This feature is not enabled on this server.";
+  else msg = err.message;
+  if (err.requestId) msg += ` (Request ID: ${err.requestId})`;
+  return msg;
 }
 
 /**
@@ -45,7 +50,22 @@ export function useAdminFetch<T>(
         signal,
       });
       if (!res.ok) {
-        const e: FetchError = { message: `HTTP ${res.status}`, status: res.status };
+        let message = `HTTP ${res.status}`;
+        let requestId: string | undefined;
+        try {
+          const body: unknown = await res.json();
+          if (
+            typeof body === "object" &&
+            body !== null
+          ) {
+            const obj = body as Record<string, unknown>;
+            if (typeof obj.message === "string") message = obj.message;
+            if (typeof obj.requestId === "string") requestId = obj.requestId;
+          }
+        } catch {
+          // intentionally ignored: body wasn't JSON — keep the status-only message
+        }
+        const e: FetchError = { message, status: res.status, requestId };
         if (!signal?.aborted) setError(e);
         return;
       }

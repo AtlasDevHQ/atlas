@@ -1458,7 +1458,7 @@ export async function profilePostgres(
 // ---------------------------------------------------------------------------
 
 /** Backtick-quoted MySQL identifier with embedded backticks escaped. */
-function mysqlQuoteIdent(name: string): string {
+export function mysqlQuoteIdent(name: string): string {
   return `\`${name.replace(/`/g, "``")}\``;
 }
 

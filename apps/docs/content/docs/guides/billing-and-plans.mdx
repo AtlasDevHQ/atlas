@@ -98,7 +98,7 @@ The admin usage dashboard is available at **Admin > Usage** (`/admin/usage`). It
 
 - **Query count** — total SQL queries executed this billing period, with progress bar toward limit
 - **Token count** — total LLM tokens consumed, with progress bar toward limit
-- **Active users** — unique users who triggered events this period
+- **Active users** — unique users who logged in this period (requires login event instrumentation; may show 0 if not yet configured)
 - **Current plan** — tier name and trial expiry date (if applicable)
 - **Daily usage chart** — queries and tokens over the last 30 days
 - **Per-user breakdown** — sortable table of usage by individual user (top 50)
@@ -138,7 +138,7 @@ Trial workspaces have a separate check: if the trial has expired (14 days from c
 
 ### Metering Failures
 
-If usage data cannot be read (e.g., metering database is temporarily unavailable), requests are **allowed** with a warning that usage tracking may be inaccurate. Enforcement is best-effort — Atlas prefers availability over strict enforcement.
+If workspace or plan data cannot be fetched, the request is **blocked** with HTTP 503 as a security precaution. If usage metering data specifically cannot be read (e.g., metering database is temporarily unavailable), the request is **allowed** with a warning that usage tracking may be inaccurate. Enforcement is best-effort for metering — Atlas prefers availability over strict enforcement.
 
 ---
 
@@ -150,6 +150,8 @@ Workspaces with a Stripe subscription can access the Stripe Customer Portal for 
 - Update payment methods
 - View invoices and billing history
 - Cancel subscriptions
+
+Available features depend on your [Stripe Customer Portal configuration](https://docs.stripe.com/customer-management/activate-no-code-customer-portal).
 
 Access via the **Manage Plan** button on the usage dashboard, or programmatically:
 
@@ -193,7 +195,7 @@ To run Atlas without any billing:
 
 ### Usage not updating
 
-- Usage events are fire-and-forget with a circuit breaker. After 5 consecutive write failures, events are dropped until the database recovers
+- Usage events are fire-and-forget with a circuit breaker. After 5 consecutive write failures, events are dropped for 60 seconds before the circuit breaker resets and retries
 - Verify `DATABASE_URL` is set and the internal database is accessible
 - Historical summaries are aggregated on-demand when the dashboard or `/history` endpoint is accessed
 

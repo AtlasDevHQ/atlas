@@ -9,7 +9,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { type UIMessage, createUIMessageStream, createUIMessageStreamResponse } from "ai";
 import { APICallError, LoadAPIKeyError, NoSuchModelError } from "ai";
-import { matchError, isRetryableError } from "@useatlas/types";
+import { matchError, isRetryableError, isChatErrorCode } from "@useatlas/types";
 import { runAgent } from "@atlas/api/lib/agent";
 import { validateEnvironment } from "@atlas/api/lib/startup";
 import { GatewayModelNotFoundError } from "@ai-sdk/gateway";
@@ -109,7 +109,7 @@ chat.post("/", async (c) => {
   const wsCheck = await checkWorkspaceStatus(authResult.user?.activeOrganizationId);
   if (!wsCheck.allowed) {
     return c.json(
-      { error: wsCheck.errorCode, message: wsCheck.errorMessage, retryable: false, requestId },
+      { error: wsCheck.errorCode, message: wsCheck.errorMessage, retryable: wsCheck.errorCode && isChatErrorCode(wsCheck.errorCode) ? isRetryableError(wsCheck.errorCode) : false, requestId },
       wsCheck.httpStatus ?? 403,
     );
   }
@@ -121,7 +121,7 @@ chat.post("/", async (c) => {
       {
         error: planCheck.errorCode,
         message: planCheck.errorMessage,
-        retryable: false,
+        retryable: isChatErrorCode(planCheck.errorCode) ? isRetryableError(planCheck.errorCode) : false,
         requestId,
         ...(planCheck.errorCode === "plan_limit_exceeded" && { usage: planCheck.usage }),
       },

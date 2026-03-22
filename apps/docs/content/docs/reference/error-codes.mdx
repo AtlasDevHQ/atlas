@@ -50,6 +50,18 @@ Retrying these will not help — the request or configuration must be changed.
 | `provider_model_not_found` | 400 | AI model not found | The model specified in `ATLAS_MODEL` doesn't exist at the configured provider | Check `ATLAS_MODEL` and `ATLAS_PROVIDER` values. See [Environment Variables](/reference/environment-variables) |
 | `provider_auth_error` | 503 | AI provider authentication failed | Invalid or expired LLM provider API key (e.g., `ANTHROPIC_API_KEY`) | Verify your provider API key. Regenerate it if expired |
 
+### Billing & Workspace Errors
+
+These codes are returned by billing enforcement and workspace status middleware. They block requests before the agent loop runs.
+
+| Code | HTTP Status | Description | Common Cause | Fix |
+|------|-------------|-------------|--------------|-----|
+| `trial_expired` | 403 | Trial has expired | 14-day SaaS trial ended | Upgrade to a paid plan |
+| `billing_check_failed` | 503 | Billing check failed | Failed to fetch plan data from internal DB | Retry — transient infrastructure issue |
+| `workspace_check_failed` | 503 | Workspace check failed | Failed to verify workspace status | Retry — transient infrastructure issue |
+| `workspace_suspended` | 403 | Workspace suspended | Admin suspended the workspace | Contact your workspace administrator |
+| `workspace_deleted` | 404 | Workspace deleted | Workspace has been permanently deleted | Create a new workspace |
+
 ---
 
 ## Client Error Codes (ClientErrorCode)

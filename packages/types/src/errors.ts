@@ -31,6 +31,11 @@ export const CHAT_ERROR_CODES = [
   "forbidden_role",
   "org_not_found",
   "plan_limit_exceeded",
+  "trial_expired",
+  "billing_check_failed",
+  "workspace_check_failed",
+  "workspace_suspended",
+  "workspace_deleted",
 ] as const;
 
 /** Union of all error codes the server can return in the `error` field. */
@@ -73,6 +78,11 @@ const RETRYABLE_MAP: Record<ChatErrorCode, boolean> = {
   forbidden_role: false,
   org_not_found: false,
   plan_limit_exceeded: false,
+  trial_expired: false,
+  billing_check_failed: true,
+  workspace_check_failed: true,
+  workspace_suspended: false,
+  workspace_deleted: false,
 };
 
 /** Returns `true` if the given error code represents a transient, retryable failure. */
@@ -485,6 +495,21 @@ export function parseChatError(error: Error, authMode: AuthMode): ChatErrorInfo 
 
     case "plan_limit_exceeded":
       return { title: "Plan limit exceeded.", detail: serverMessage ?? "Upgrade your plan or wait until the next billing period.", code: rawCode, retryable, requestId };
+
+    case "trial_expired":
+      return { title: "Trial expired.", detail: serverMessage ?? "Upgrade to a paid plan to continue using Atlas.", code: rawCode, retryable, requestId };
+
+    case "billing_check_failed":
+      return { title: "Billing check failed.", detail: serverMessage ?? "Unable to verify billing status. Please try again.", code: rawCode, retryable, requestId };
+
+    case "workspace_check_failed":
+      return { title: "Workspace check failed.", detail: serverMessage ?? "Unable to verify workspace status. Please try again.", code: rawCode, retryable, requestId };
+
+    case "workspace_suspended":
+      return { title: "Workspace suspended.", detail: serverMessage ?? "Contact your workspace administrator to reactivate it.", code: rawCode, retryable, requestId };
+
+    case "workspace_deleted":
+      return { title: "Workspace deleted.", detail: serverMessage ?? "This workspace has been permanently deleted. Create a new workspace to continue.", code: rawCode, retryable, requestId };
 
     default: {
       const _exhaustive: never = rawCode;

@@ -14,6 +14,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { APICallError, LoadAPIKeyError, NoSuchModelError } from "ai";
 import { GatewayModelNotFoundError } from "@ai-sdk/gateway";
+import { isRetryableError, isChatErrorCode } from "@useatlas/types";
 import { executeAgentQuery } from "@atlas/api/lib/agent-query";
 import { validateEnvironment } from "@atlas/api/lib/startup";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
@@ -140,7 +141,7 @@ query.post("/", async (c) => {
   const wsCheck = await checkWorkspaceStatus(authResult.user?.activeOrganizationId);
   if (!wsCheck.allowed) {
     return c.json(
-      { error: wsCheck.errorCode, message: wsCheck.errorMessage, requestId },
+      { error: wsCheck.errorCode, message: wsCheck.errorMessage, retryable: wsCheck.errorCode && isChatErrorCode(wsCheck.errorCode) ? isRetryableError(wsCheck.errorCode) : false, requestId },
       wsCheck.httpStatus ?? 403,
     );
   }
@@ -152,6 +153,7 @@ query.post("/", async (c) => {
       {
         error: planCheck.errorCode,
         message: planCheck.errorMessage,
+        retryable: isChatErrorCode(planCheck.errorCode) ? isRetryableError(planCheck.errorCode) : false,
         requestId,
         ...(planCheck.errorCode === "plan_limit_exceeded" && { usage: planCheck.usage }),
       },

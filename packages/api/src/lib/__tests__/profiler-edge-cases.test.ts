@@ -1,8 +1,9 @@
 /**
  * Edge case tests for profiler pure functions.
  *
- * Tests YAML generation, MySQL backtick escaping, entityName,
- * and boundary conditions (empty columns, zero rows, long names).
+ * Tests YAML generation (entity, catalog, metric, glossary), MySQL backtick
+ * escaping (mysqlQuoteIdent), entityName, mapSQLType boundary cases,
+ * and edge conditions (empty columns, zero rows, long names, views).
  */
 
 import { describe, it, expect, mock } from "bun:test";

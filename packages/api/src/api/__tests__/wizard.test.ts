@@ -8,7 +8,10 @@
  * - POST /api/v1/wizard/save
  *
  * Also covers resolveConnectionUrl (indirectly via endpoints):
- * - Connection found, not found, infrastructure error, decryption failure
+ * - Not found (registry miss + no internal DB; registry miss + empty internal DB)
+ * - Infrastructure error (internal DB query throws)
+ * - Decryption failure
+ * - Env-var fallback (ATLAS_DATASOURCE_URL for default connection)
  */
 
 import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
@@ -210,6 +213,24 @@ const mockUserProfile = {
   table_flags: { possibly_abandoned: false, possibly_denormalized: false },
 };
 
+// Controllable mocks for DB-calling profiler functions
+const mockListPostgresObjects: Mock<() => Promise<{ name: string; type: string }[]>> = mock(
+  async () => [
+    { name: "users", type: "table" },
+    { name: "orders", type: "table" },
+    { name: "user_stats", type: "view" },
+  ],
+);
+const mockListMySQLObjects: Mock<() => Promise<{ name: string; type: string }[]>> = mock(
+  async () => [{ name: "products", type: "table" }],
+);
+const mockProfilePostgres: Mock<() => Promise<{ profiles: typeof mockUserProfile[]; errors: unknown[] }>> = mock(
+  async () => ({ profiles: [mockUserProfile], errors: [] }),
+);
+const mockProfileMySQL: Mock<() => Promise<{ profiles: never[]; errors: unknown[] }>> = mock(
+  async () => ({ profiles: [], errors: [] }),
+);
+
 mock.module("@atlas/api/lib/profiler", () => ({
   // Re-export all pure functions
   analyzeTableProfiles: _analyzeReal,
@@ -235,23 +256,11 @@ mock.module("@atlas/api/lib/profiler", () => ({
   detectDenormalizedTables: _detectDenReal,
   mysqlQuoteIdent: _mysqlQuoteIdentReal,
   FATAL_ERROR_PATTERN: _fatalPatternReal,
-  // Mock DB-calling functions
-  listPostgresObjects: async () => [
-    { name: "users", type: "table" },
-    { name: "orders", type: "table" },
-    { name: "user_stats", type: "view" },
-  ],
-  listMySQLObjects: async () => [
-    { name: "products", type: "table" },
-  ],
-  profilePostgres: async () => ({
-    profiles: [mockUserProfile],
-    errors: [],
-  }),
-  profileMySQL: async () => ({
-    profiles: [],
-    errors: [],
-  }),
+  // Mock DB-calling functions — use Mock instances for per-test overrides
+  listPostgresObjects: mockListPostgresObjects,
+  listMySQLObjects: mockListMySQLObjects,
+  profilePostgres: mockProfilePostgres,
+  profileMySQL: mockProfileMySQL,
 }));
 
 // --- Import after mocks ---
@@ -311,6 +320,19 @@ beforeEach(() => {
   mockResetWhitelists.mockReset();
   mockSyncEntityToDisk.mockReset();
   mockSyncEntityToDisk.mockImplementation(async () => {});
+
+  mockListPostgresObjects.mockReset();
+  mockListPostgresObjects.mockImplementation(async () => [
+    { name: "users", type: "table" },
+    { name: "orders", type: "table" },
+    { name: "user_stats", type: "view" },
+  ]);
+  mockListMySQLObjects.mockReset();
+  mockListMySQLObjects.mockImplementation(async () => [{ name: "products", type: "table" }]);
+  mockProfilePostgres.mockReset();
+  mockProfilePostgres.mockImplementation(async () => ({ profiles: [mockUserProfile], errors: [] }));
+  mockProfileMySQL.mockReset();
+  mockProfileMySQL.mockImplementation(async () => ({ profiles: [], errors: [] }));
 });
 
 // =====================================================================
@@ -353,6 +375,26 @@ describe("POST /api/v1/wizard/profile", () => {
     const res = await postJson("/api/v1/wizard/profile", { connectionId: "default" });
     expect(res.status).toBe(403);
   });
+
+  it("returns 500 with profile_failed when listing tables throws", async () => {
+    mockListPostgresObjects.mockImplementation(async () => {
+      throw new Error("connection timeout");
+    });
+    const res = await postJson("/api/v1/wizard/profile", { connectionId: "default" });
+    expect(res.status).toBe(500);
+    const data = await json(res);
+    expect(data.error).toBe("profile_failed");
+    expect(data.requestId).toBeDefined();
+  });
+
+  it("returns 400 for malformed JSON body", async () => {
+    const res = await request("/api/v1/wizard/profile", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "not valid json{{{",
+    });
+    expect(res.status).toBe(400);
+  });
 });
 
 // =====================================================================
@@ -383,6 +425,20 @@ describe("POST /api/v1/wizard/generate", () => {
     expect(entities.length).toBe(1);
     expect(entities[0].tableName).toBe("users");
     expect(entities[0].yaml).toContain("name: Users");
+  });
+
+  it("returns 500 with generate_failed when profiling throws", async () => {
+    mockProfilePostgres.mockImplementation(async () => {
+      throw new Error("statement timeout");
+    });
+    const res = await postJson("/api/v1/wizard/generate", {
+      connectionId: "default",
+      tables: ["users"],
+    });
+    expect(res.status).toBe(500);
+    const data = await json(res);
+    expect(data.error).toBe("generate_failed");
+    expect(data.requestId).toBeDefined();
   });
 });
 
@@ -624,6 +680,48 @@ describe("POST /api/v1/wizard/save", () => {
     const data = await json(res);
     expect(data.entityCount).toBe(1);
   });
+
+  it("returns 500 with save_failed when filesystem write throws", async () => {
+    mockWriteFileSync.mockImplementation(() => {
+      throw new Error("ENOSPC: no space left on device");
+    });
+    const res = await postJson("/api/v1/wizard/save", {
+      connectionId: "default",
+      entities: [{ tableName: "users", yaml: "table: users\n" }],
+    });
+    expect(res.status).toBe(500);
+    const data = await json(res);
+    expect(data.error).toBe("save_failed");
+    expect(data.requestId).toBeDefined();
+  });
+
+  it("returns 500 with save_failed when mkdirSync throws", async () => {
+    mockMkdirSync.mockImplementation(() => {
+      throw new Error("EACCES: permission denied");
+    });
+    const res = await postJson("/api/v1/wizard/save", {
+      connectionId: "default",
+      entities: [{ tableName: "users", yaml: "table: users\n" }],
+    });
+    expect(res.status).toBe(500);
+    const data = await json(res);
+    expect(data.error).toBe("save_failed");
+    expect(data.requestId).toBeDefined();
+  });
+
+  it("still returns 201 when syncEntityToDisk fails (best-effort sync)", async () => {
+    mockSyncEntityToDisk.mockImplementation(async () => {
+      throw new Error("Internal DB connection lost");
+    });
+    const res = await postJson("/api/v1/wizard/save", {
+      connectionId: "default",
+      entities: [{ tableName: "users", yaml: "table: users\n" }],
+    });
+    // Save succeeds even when sync fails — the .catch() is intentional
+    expect(res.status).toBe(201);
+    const data = await json(res);
+    expect(data.saved).toBe(true);
+  });
 });
 
 // =====================================================================
@@ -686,19 +784,20 @@ describe("resolveConnectionUrl", () => {
     const originalUrl = process.env.ATLAS_DATASOURCE_URL;
     process.env.ATLAS_DATASOURCE_URL = "postgresql://fallback/test";
 
-    // Registry has it, but internal DB returns empty
-    mockConnectionHas.mockImplementation(() => true);
-    mockHasInternalDB.mockImplementation(() => false);
+    try {
+      // Registry has it, but no internal DB configured
+      mockConnectionHas.mockImplementation(() => true);
+      mockHasInternalDB.mockImplementation(() => false);
 
-    const res = await postJson("/api/v1/wizard/profile", { connectionId: "default" });
-    // Should succeed using the env var fallback
-    expect(res.status).toBe(200);
-
-    // Restore
-    if (originalUrl === undefined) {
-      delete process.env.ATLAS_DATASOURCE_URL;
-    } else {
-      process.env.ATLAS_DATASOURCE_URL = originalUrl;
+      const res = await postJson("/api/v1/wizard/profile", { connectionId: "default" });
+      // Should succeed using the env var fallback
+      expect(res.status).toBe(200);
+    } finally {
+      if (originalUrl === undefined) {
+        delete process.env.ATLAS_DATASOURCE_URL;
+      } else {
+        process.env.ATLAS_DATASOURCE_URL = originalUrl;
+      }
     }
   });
 });

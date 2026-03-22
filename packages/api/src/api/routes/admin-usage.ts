@@ -7,13 +7,14 @@
 
 import { Hono } from "hono";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
-import { hasInternalDB } from "@atlas/api/lib/db/internal";
+import { hasInternalDB, getWorkspaceDetails } from "@atlas/api/lib/db/internal";
 import {
   getCurrentPeriodUsage,
   getUsageHistory,
   getUsageBreakdown,
   aggregateUsageSummary,
 } from "@atlas/api/lib/metering";
+import { getPlanDefinition, getPlanLimits, isUnlimited } from "@atlas/api/lib/billing/plans";
 import { adminAuthPreamble } from "./admin-auth";
 
 const log = createLogger("admin-usage");
@@ -55,6 +56,82 @@ adminUsage.get("/", async (c) => {
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to fetch current usage");
       return c.json({ error: "internal_error", message: "Failed to fetch usage data.", requestId }, 500);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /summary — combined usage dashboard payload
+// Returns current period usage + plan limits + 30-day daily history + per-user breakdown
+// ---------------------------------------------------------------------------
+
+adminUsage.get("/summary", async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, { status: preamble.status, headers: (preamble as { headers?: Record<string, string> }).headers });
+  }
+  const { authResult } = preamble;
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
+    }
+
+    const orgId = authResult.user?.activeOrganizationId;
+    if (!orgId) {
+      return c.json({ error: "org_required", message: "No active organization. Select a workspace first." }, 400);
+    }
+
+    try {
+      // Aggregate today's daily summary before fetching history
+      const now = new Date();
+      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      await aggregateUsageSummary(orgId, "daily", todayStart);
+
+      // 30 days ago
+      const thirtyDaysAgo = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 30);
+
+      const [usage, workspace, history, users] = await Promise.all([
+        getCurrentPeriodUsage(orgId),
+        getWorkspaceDetails(orgId),
+        getUsageHistory(orgId, "daily", thirtyDaysAgo.toISOString(), undefined, 31),
+        getUsageBreakdown(orgId, undefined, undefined, 50),
+      ]);
+
+      const planTier = workspace?.plan_tier ?? "free";
+      const plan = getPlanDefinition(planTier);
+      const limits = getPlanLimits(planTier);
+
+      return c.json({
+        workspaceId: orgId,
+        current: {
+          queryCount: usage.queryCount,
+          tokenCount: usage.tokenCount,
+          activeUsers: usage.activeUsers,
+          periodStart: usage.periodStart,
+          periodEnd: usage.periodEnd,
+        },
+        plan: {
+          tier: planTier,
+          displayName: plan.displayName,
+          trialEndsAt: workspace?.trial_ends_at ?? null,
+        },
+        limits: {
+          queriesPerMonth: isUnlimited(limits.queriesPerMonth) ? null : limits.queriesPerMonth,
+          tokensPerMonth: isUnlimited(limits.tokensPerMonth) ? null : limits.tokensPerMonth,
+          maxMembers: isUnlimited(limits.maxMembers) ? null : limits.maxMembers,
+          maxConnections: isUnlimited(limits.maxConnections) ? null : limits.maxConnections,
+        },
+        history: history.toReversed(),
+        users,
+        hasStripe: !!workspace?.stripe_customer_id,
+      });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to fetch usage summary");
+      return c.json({ error: "internal_error", message: "Failed to fetch usage summary.", requestId }, 500);
     }
   });
 });

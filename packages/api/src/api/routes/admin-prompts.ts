@@ -139,7 +139,7 @@ const createCollectionRoute = createRoute({
   tags: ["Admin — Prompts"],
   summary: "Create a prompt collection",
   description:
-    "Creates a new prompt collection. Requires name and industry. The collection is always created as non-built-in.",
+    "Creates a new prompt collection. The handler validates that name and industry are present. The collection is always created as non-built-in.",
   request: {
     body: {
       content: {

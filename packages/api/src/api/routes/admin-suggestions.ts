@@ -2,7 +2,7 @@
  * Admin query-suggestions CRUD routes.
  *
  * Mounted under /api/v1/admin/suggestions. All routes require admin role.
- * Provides list and delete for query suggestions (learned query patterns).
+ * Provides list and delete for query suggestions (auto-generated from query frequency).
  */
 
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
@@ -153,7 +153,7 @@ adminSuggestions.openapi(listSuggestionsRoute, async (c) => {
   const { authResult } = preamble;
 
   if (!hasInternalDB()) {
-    return c.json({ error: "Internal database not configured" }, 404);
+    return c.json({ error: "Internal database not configured" }, 404) as never;
   }
 
   const orgId = authResult.user?.activeOrganizationId ?? null;
@@ -227,7 +227,7 @@ adminSuggestions.openapi(deleteSuggestionRoute, async (c) => {
   const { authResult } = preamble;
 
   if (!hasInternalDB()) {
-    return c.json({ error: "Internal database not configured" }, 404);
+    return c.json({ error: "Internal database not configured" }, 404) as never;
   }
 
   const orgId = authResult.user?.activeOrganizationId ?? null;

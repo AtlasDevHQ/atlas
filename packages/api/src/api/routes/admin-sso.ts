@@ -2,7 +2,7 @@
  * Admin SSO provider management routes.
  *
  * Mounted under /api/v1/admin/sso. All routes require admin role AND
- * enterprise license (via `requireEnterprise("sso")`).
+ * enterprise license (enforced within the SSO service layer).
  */
 
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";

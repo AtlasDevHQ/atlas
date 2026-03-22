@@ -6,6 +6,12 @@
  * - POST /api/v1/wizard/generate
  * - POST /api/v1/wizard/preview
  * - POST /api/v1/wizard/save
+ *
+ * Also covers resolveConnectionUrl (indirectly via endpoints):
+ * - Not found (registry miss + no internal DB; registry miss + empty internal DB)
+ * - Infrastructure error (internal DB query throws)
+ * - Decryption failure
+ * - Env-var fallback (ATLAS_DATASOURCE_URL for default connection)
  */
 
 import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
@@ -38,10 +44,12 @@ mock.module("@atlas/api/lib/auth/detect", () => ({
   resetAuthModeCache: () => {},
 }));
 
+const mockConnectionHas: Mock<(id: string) => boolean> = mock(() => true);
+
 mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     connections: {
-      has: () => true,
+      has: mockConnectionHas,
       describe: () => [{ id: "default", dbType: "postgres", status: "healthy" }],
     },
     detectDBType: (url?: string) => {
@@ -53,13 +61,21 @@ mock.module("@atlas/api/lib/db/connection", () =>
   }),
 );
 
+const mockHasInternalDB: Mock<() => boolean> = mock(() => true);
+const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<Record<string, unknown>[]>> = mock(
+  async () => [{ url: "postgresql://localhost/test", schema_name: "public" }],
+);
+const mockDecryptUrl: Mock<(url: string) => string> = mock(
+  (url: string) => url.startsWith("postgresql://") ? url : "postgresql://localhost/test",
+);
+
 mock.module("@atlas/api/lib/db/internal", () => ({
-  hasInternalDB: () => true,
+  hasInternalDB: mockHasInternalDB,
   getInternalDB: () => ({ query: async () => ({ rows: [] }) }),
-  internalQuery: async () => [{ url: "postgresql://localhost/test", schema_name: "public" }],
+  internalQuery: mockInternalQuery,
   internalExecute: () => {},
   encryptUrl: (url: string) => `encrypted:${url}`,
-  decryptUrl: (url: string) => url.startsWith("postgresql://") ? url : "postgresql://localhost/test",
+  decryptUrl: mockDecryptUrl,
   migrateInternalDB: async () => {},
   loadSavedConnections: async () => 0,
   isPlaintextUrl: () => true,
@@ -70,6 +86,8 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   closeInternalDB: async () => {},
 }));
 
+const mockResetWhitelists: Mock<() => void> = mock(() => {});
+
 mock.module("@atlas/api/lib/semantic", () => ({
   getWhitelistedTables: () => new Set(),
   getOrgWhitelistedTables: () => new Set(),
@@ -79,11 +97,15 @@ mock.module("@atlas/api/lib/semantic", () => ({
   invalidateOrgSemanticIndex: () => {},
   _resetOrgWhitelists: () => {},
   _resetOrgSemanticIndexes: () => {},
-  _resetWhitelists: () => {},
+  _resetWhitelists: mockResetWhitelists,
 }));
 
+const mockSyncEntityToDisk: Mock<(orgId: string, name: string, type: string, yaml: string) => Promise<void>> = mock(
+  async () => {},
+);
+
 mock.module("@atlas/api/lib/semantic-sync", () => ({
-  syncEntityToDisk: async () => {},
+  syncEntityToDisk: mockSyncEntityToDisk,
   syncEntityDeleteFromDisk: async () => {},
   syncAllEntitiesToDisk: async () => 0,
   getSemanticRoot: () => "/tmp/test-semantic",
@@ -112,6 +134,15 @@ mock.module("@atlas/api/lib/security", () => ({
   maskConnectionUrl: (url: string) => url.replace(/\/\/.*@/, "//***@"),
 }));
 
+// Mock fs to avoid real filesystem writes in save endpoint
+const mockMkdirSync: Mock<(dir: string, opts?: unknown) => void> = mock(() => {});
+const mockWriteFileSync: Mock<(path: string, data: string, encoding?: string) => void> = mock(() => {});
+
+mock.module("fs", () => ({
+  mkdirSync: mockMkdirSync,
+  writeFileSync: mockWriteFileSync,
+}));
+
 // Mock the profiler functions that talk to real databases.
 // We import the actual pure functions (YAML generation, heuristics) but mock
 // the DB-calling functions (listPostgresObjects, profilePostgres, etc.).
@@ -137,6 +168,7 @@ import {
   detectAbandonedTables as _detectAbReal,
   detectEnumInconsistency as _detectEnumReal,
   detectDenormalizedTables as _detectDenReal,
+  mysqlQuoteIdent as _mysqlQuoteIdentReal,
   FATAL_ERROR_PATTERN as _fatalPatternReal,
 } from "@atlas/api/lib/profiler";
 
@@ -181,6 +213,24 @@ const mockUserProfile = {
   table_flags: { possibly_abandoned: false, possibly_denormalized: false },
 };
 
+// Controllable mocks for DB-calling profiler functions
+const mockListPostgresObjects: Mock<() => Promise<{ name: string; type: string }[]>> = mock(
+  async () => [
+    { name: "users", type: "table" },
+    { name: "orders", type: "table" },
+    { name: "user_stats", type: "view" },
+  ],
+);
+const mockListMySQLObjects: Mock<() => Promise<{ name: string; type: string }[]>> = mock(
+  async () => [{ name: "products", type: "table" }],
+);
+const mockProfilePostgres: Mock<() => Promise<{ profiles: typeof mockUserProfile[]; errors: unknown[] }>> = mock(
+  async () => ({ profiles: [mockUserProfile], errors: [] }),
+);
+const mockProfileMySQL: Mock<() => Promise<{ profiles: never[]; errors: unknown[] }>> = mock(
+  async () => ({ profiles: [], errors: [] }),
+);
+
 mock.module("@atlas/api/lib/profiler", () => ({
   // Re-export all pure functions
   analyzeTableProfiles: _analyzeReal,
@@ -204,24 +254,13 @@ mock.module("@atlas/api/lib/profiler", () => ({
   detectAbandonedTables: _detectAbReal,
   detectEnumInconsistency: _detectEnumReal,
   detectDenormalizedTables: _detectDenReal,
+  mysqlQuoteIdent: _mysqlQuoteIdentReal,
   FATAL_ERROR_PATTERN: _fatalPatternReal,
-  // Mock DB-calling functions
-  listPostgresObjects: async () => [
-    { name: "users", type: "table" },
-    { name: "orders", type: "table" },
-    { name: "user_stats", type: "view" },
-  ],
-  listMySQLObjects: async () => [
-    { name: "products", type: "table" },
-  ],
-  profilePostgres: async () => ({
-    profiles: [mockUserProfile],
-    errors: [],
-  }),
-  profileMySQL: async () => ({
-    profiles: [],
-    errors: [],
-  }),
+  // Mock DB-calling functions — use Mock instances for per-test overrides
+  listPostgresObjects: mockListPostgresObjects,
+  listMySQLObjects: mockListMySQLObjects,
+  profilePostgres: mockProfilePostgres,
+  profileMySQL: mockProfileMySQL,
 }));
 
 // --- Import after mocks ---
@@ -259,7 +298,46 @@ beforeEach(() => {
       user: { id: "user-1", mode: "managed", label: "admin@test.com", role: "admin", activeOrganizationId: "org-1" },
     }),
   );
+
+  mockConnectionHas.mockReset();
+  mockConnectionHas.mockImplementation(() => true);
+
+  mockHasInternalDB.mockReset();
+  mockHasInternalDB.mockImplementation(() => true);
+
+  mockInternalQuery.mockReset();
+  mockInternalQuery.mockImplementation(
+    async () => [{ url: "postgresql://localhost/test", schema_name: "public" }],
+  );
+
+  mockDecryptUrl.mockReset();
+  mockDecryptUrl.mockImplementation(
+    (url: string) => url.startsWith("postgresql://") ? url : "postgresql://localhost/test",
+  );
+
+  mockMkdirSync.mockReset();
+  mockWriteFileSync.mockReset();
+  mockResetWhitelists.mockReset();
+  mockSyncEntityToDisk.mockReset();
+  mockSyncEntityToDisk.mockImplementation(async () => {});
+
+  mockListPostgresObjects.mockReset();
+  mockListPostgresObjects.mockImplementation(async () => [
+    { name: "users", type: "table" },
+    { name: "orders", type: "table" },
+    { name: "user_stats", type: "view" },
+  ]);
+  mockListMySQLObjects.mockReset();
+  mockListMySQLObjects.mockImplementation(async () => [{ name: "products", type: "table" }]);
+  mockProfilePostgres.mockReset();
+  mockProfilePostgres.mockImplementation(async () => ({ profiles: [mockUserProfile], errors: [] }));
+  mockProfileMySQL.mockReset();
+  mockProfileMySQL.mockImplementation(async () => ({ profiles: [], errors: [] }));
 });
+
+// =====================================================================
+// POST /api/v1/wizard/profile
+// =====================================================================
 
 describe("POST /api/v1/wizard/profile", () => {
   it("returns 400 without connectionId", async () => {
@@ -297,7 +375,31 @@ describe("POST /api/v1/wizard/profile", () => {
     const res = await postJson("/api/v1/wizard/profile", { connectionId: "default" });
     expect(res.status).toBe(403);
   });
+
+  it("returns 500 with profile_failed when listing tables throws", async () => {
+    mockListPostgresObjects.mockImplementation(async () => {
+      throw new Error("connection timeout");
+    });
+    const res = await postJson("/api/v1/wizard/profile", { connectionId: "default" });
+    expect(res.status).toBe(500);
+    const data = await json(res);
+    expect(data.error).toBe("profile_failed");
+    expect(data.requestId).toBeDefined();
+  });
+
+  it("returns 400 for malformed JSON body", async () => {
+    const res = await request("/api/v1/wizard/profile", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "not valid json{{{",
+    });
+    expect(res.status).toBe(400);
+  });
 });
+
+// =====================================================================
+// POST /api/v1/wizard/generate
+// =====================================================================
 
 describe("POST /api/v1/wizard/generate", () => {
   it("returns 400 without tables", async () => {
@@ -324,7 +426,25 @@ describe("POST /api/v1/wizard/generate", () => {
     expect(entities[0].tableName).toBe("users");
     expect(entities[0].yaml).toContain("name: Users");
   });
+
+  it("returns 500 with generate_failed when profiling throws", async () => {
+    mockProfilePostgres.mockImplementation(async () => {
+      throw new Error("statement timeout");
+    });
+    const res = await postJson("/api/v1/wizard/generate", {
+      connectionId: "default",
+      tables: ["users"],
+    });
+    expect(res.status).toBe(500);
+    const data = await json(res);
+    expect(data.error).toBe("generate_failed");
+    expect(data.requestId).toBeDefined();
+  });
 });
+
+// =====================================================================
+// POST /api/v1/wizard/preview
+// =====================================================================
 
 describe("POST /api/v1/wizard/preview", () => {
   it("returns 400 without question", async () => {
@@ -354,6 +474,10 @@ describe("POST /api/v1/wizard/preview", () => {
   });
 });
 
+// =====================================================================
+// POST /api/v1/wizard/save
+// =====================================================================
+
 describe("POST /api/v1/wizard/save", () => {
   it("returns 400 without connectionId", async () => {
     const res = await postJson("/api/v1/wizard/save", {
@@ -367,6 +491,16 @@ describe("POST /api/v1/wizard/save", () => {
       connectionId: "default",
     });
     expect(res.status).toBe(400);
+  });
+
+  it("returns 400 with empty entities array", async () => {
+    const res = await postJson("/api/v1/wizard/save", {
+      connectionId: "default",
+      entities: [],
+    });
+    expect(res.status).toBe(400);
+    const data = await json(res);
+    expect(data.error).toBe("invalid_request");
   });
 
   it("returns 400 when no active org", async () => {
@@ -384,5 +518,286 @@ describe("POST /api/v1/wizard/save", () => {
     expect(res.status).toBe(400);
     const data = await json(res);
     expect(data.error).toBe("no_organization");
+  });
+
+  it("returns 403 for non-admin users", async () => {
+    mockAuthenticate.mockImplementation(() =>
+      Promise.resolve({
+        authenticated: true,
+        mode: "managed",
+        user: { id: "user-2", mode: "managed", label: "user@test.com", role: "member" },
+      }),
+    );
+    const res = await postJson("/api/v1/wizard/save", {
+      connectionId: "default",
+      entities: [{ tableName: "users", yaml: "table: users\n" }],
+    });
+    expect(res.status).toBe(403);
+    const data = await json(res);
+    expect(data.error).toBe("forbidden_role");
+  });
+
+  it("saves valid entities and returns 201", async () => {
+    const res = await postJson("/api/v1/wizard/save", {
+      connectionId: "default",
+      entities: [
+        { tableName: "users", yaml: "table: users\ndescription: User accounts\n" },
+        { tableName: "orders", yaml: "table: orders\ndescription: Customer orders\n" },
+      ],
+    });
+    expect(res.status).toBe(201);
+    const data = await json(res);
+    expect(data.saved).toBe(true);
+    expect(data.orgId).toBe("org-1");
+    expect(data.connectionId).toBe("default");
+    expect(data.entityCount).toBe(2);
+    expect(Array.isArray(data.files)).toBe(true);
+    const files = data.files as string[];
+    expect(files).toContain("entities/users.yml");
+    expect(files).toContain("entities/orders.yml");
+  });
+
+  it("creates directories and writes entity files", async () => {
+    await postJson("/api/v1/wizard/save", {
+      connectionId: "default",
+      entities: [{ tableName: "users", yaml: "table: users\n" }],
+    });
+
+    // mkdirSync called for entities and metrics dirs
+    expect(mockMkdirSync).toHaveBeenCalledTimes(2);
+    expect(mockMkdirSync.mock.calls[0][1]).toEqual({ recursive: true });
+
+    // writeFileSync called for the entity YAML
+    expect(mockWriteFileSync).toHaveBeenCalledTimes(1);
+    const [writePath, content, encoding] = mockWriteFileSync.mock.calls[0];
+    expect((writePath as string).endsWith("users.yml")).toBe(true);
+    expect(content).toBe("table: users\n");
+    expect(encoding).toBe("utf-8");
+  });
+
+  it("resets semantic whitelist cache after save", async () => {
+    await postJson("/api/v1/wizard/save", {
+      connectionId: "default",
+      entities: [{ tableName: "users", yaml: "table: users\n" }],
+    });
+    expect(mockResetWhitelists).toHaveBeenCalledTimes(1);
+  });
+
+  it("syncs entities to disk when internal DB is available", async () => {
+    await postJson("/api/v1/wizard/save", {
+      connectionId: "default",
+      entities: [
+        { tableName: "users", yaml: "table: users\n" },
+        { tableName: "orders", yaml: "table: orders\n" },
+      ],
+    });
+    expect(mockSyncEntityToDisk).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns 400 for invalid entity objects (missing tableName/yaml)", async () => {
+    const res = await postJson("/api/v1/wizard/save", {
+      connectionId: "default",
+      entities: [{ foo: "bar" }, { baz: 123 }],
+    });
+    expect(res.status).toBe(400);
+    const data = await json(res);
+    expect(data.error).toBe("invalid_request");
+    expect(data.message).toContain("tableName");
+  });
+
+  it("returns 400 for path-traversal table name with '..'", async () => {
+    const res = await postJson("/api/v1/wizard/save", {
+      connectionId: "default",
+      entities: [{ tableName: "../../../etc/passwd", yaml: "malicious: true\n" }],
+    });
+    expect(res.status).toBe(400);
+    const data = await json(res);
+    expect(data.error).toBe("invalid_request");
+    expect(data.message).toContain("Invalid table name");
+  });
+
+  it("returns 400 for table name with path separators", async () => {
+    const res = await postJson("/api/v1/wizard/save", {
+      connectionId: "default",
+      entities: [{ tableName: "foo/bar", yaml: "table: foo\n" }],
+    });
+    expect(res.status).toBe(400);
+    const data = await json(res);
+    expect(data.error).toBe("invalid_request");
+  });
+
+  it("returns 400 for table name with spaces", async () => {
+    const res = await postJson("/api/v1/wizard/save", {
+      connectionId: "default",
+      entities: [{ tableName: "my table", yaml: "table: my table\n" }],
+    });
+    expect(res.status).toBe(400);
+    const data = await json(res);
+    expect(data.error).toBe("invalid_request");
+  });
+
+  it("allows table names with dots and hyphens", async () => {
+    const res = await postJson("/api/v1/wizard/save", {
+      connectionId: "default",
+      entities: [
+        { tableName: "user.accounts", yaml: "table: user.accounts\n" },
+        { tableName: "order-items", yaml: "table: order-items\n" },
+      ],
+    });
+    expect(res.status).toBe(201);
+    const data = await json(res);
+    expect(data.entityCount).toBe(2);
+  });
+
+  it("handles duplicate entity names (last write wins)", async () => {
+    const res = await postJson("/api/v1/wizard/save", {
+      connectionId: "default",
+      entities: [
+        { tableName: "users", yaml: "table: users\nversion: 1\n" },
+        { tableName: "users", yaml: "table: users\nversion: 2\n" },
+      ],
+    });
+    expect(res.status).toBe(201);
+    const data = await json(res);
+    expect(data.entityCount).toBe(2);
+
+    // Both writes happen — the second overwrites the first
+    expect(mockWriteFileSync).toHaveBeenCalledTimes(2);
+    const lastWriteContent = mockWriteFileSync.mock.calls[1][1];
+    expect(lastWriteContent).toBe("table: users\nversion: 2\n");
+  });
+
+  it("skips invalid entities but saves valid ones", async () => {
+    const res = await postJson("/api/v1/wizard/save", {
+      connectionId: "default",
+      entities: [
+        { tableName: "users", yaml: "table: users\n" },
+        { noTableName: true }, // invalid — filtered out
+        42, // invalid — filtered out
+      ],
+    });
+    expect(res.status).toBe(201);
+    const data = await json(res);
+    expect(data.entityCount).toBe(1);
+  });
+
+  it("returns 500 with save_failed when filesystem write throws", async () => {
+    mockWriteFileSync.mockImplementation(() => {
+      throw new Error("ENOSPC: no space left on device");
+    });
+    const res = await postJson("/api/v1/wizard/save", {
+      connectionId: "default",
+      entities: [{ tableName: "users", yaml: "table: users\n" }],
+    });
+    expect(res.status).toBe(500);
+    const data = await json(res);
+    expect(data.error).toBe("save_failed");
+    expect(data.requestId).toBeDefined();
+  });
+
+  it("returns 500 with save_failed when mkdirSync throws", async () => {
+    mockMkdirSync.mockImplementation(() => {
+      throw new Error("EACCES: permission denied");
+    });
+    const res = await postJson("/api/v1/wizard/save", {
+      connectionId: "default",
+      entities: [{ tableName: "users", yaml: "table: users\n" }],
+    });
+    expect(res.status).toBe(500);
+    const data = await json(res);
+    expect(data.error).toBe("save_failed");
+    expect(data.requestId).toBeDefined();
+  });
+
+  it("still returns 201 when syncEntityToDisk fails (best-effort sync)", async () => {
+    mockSyncEntityToDisk.mockImplementation(async () => {
+      throw new Error("Internal DB connection lost");
+    });
+    const res = await postJson("/api/v1/wizard/save", {
+      connectionId: "default",
+      entities: [{ tableName: "users", yaml: "table: users\n" }],
+    });
+    // Save succeeds even when sync fails — the .catch() is intentional
+    expect(res.status).toBe(201);
+    const data = await json(res);
+    expect(data.saved).toBe(true);
+  });
+});
+
+// =====================================================================
+// resolveConnectionUrl — tested indirectly via endpoints
+// =====================================================================
+
+describe("resolveConnectionUrl", () => {
+  it("returns 404 when connection is not found anywhere", async () => {
+    mockConnectionHas.mockImplementation(() => false);
+    mockHasInternalDB.mockImplementation(() => false);
+
+    const res = await postJson("/api/v1/wizard/profile", { connectionId: "nonexistent" });
+    expect(res.status).toBe(404);
+    const data = await json(res);
+    expect(data.error).toBe("not_found");
+    expect(data.message).toContain("nonexistent");
+  });
+
+  it("returns 404 when connection not in registry and internal DB returns empty", async () => {
+    mockConnectionHas.mockImplementation(() => false);
+    mockHasInternalDB.mockImplementation(() => true);
+    mockInternalQuery.mockImplementation(async () => []);
+
+    const res = await postJson("/api/v1/wizard/profile", { connectionId: "missing-conn" });
+    expect(res.status).toBe(404);
+    const data = await json(res);
+    expect(data.error).toBe("not_found");
+  });
+
+  it("returns 500 when internal DB query throws (infrastructure error)", async () => {
+    mockConnectionHas.mockImplementation(() => true);
+    mockInternalQuery.mockImplementation(async () => {
+      throw new Error("Connection pool exhausted");
+    });
+
+    const res = await postJson("/api/v1/wizard/profile", { connectionId: "default" });
+    expect(res.status).toBe(500);
+    const data = await json(res);
+    expect(data.error).toBe("connection_resolution_failed");
+    expect(data.requestId).toBeDefined();
+  });
+
+  it("returns 500 when decryption fails", async () => {
+    mockConnectionHas.mockImplementation(() => true);
+    mockInternalQuery.mockImplementation(
+      async () => [{ url: "encrypted:secret-url", schema_name: "public" }],
+    );
+    mockDecryptUrl.mockImplementation(() => {
+      throw new Error("Decryption failed: invalid key");
+    });
+
+    const res = await postJson("/api/v1/wizard/profile", { connectionId: "default" });
+    expect(res.status).toBe(500);
+    const data = await json(res);
+    expect(data.error).toBe("connection_resolution_failed");
+    expect(data.requestId).toBeDefined();
+  });
+
+  it("falls back to ATLAS_DATASOURCE_URL for default connection", async () => {
+    const originalUrl = process.env.ATLAS_DATASOURCE_URL;
+    process.env.ATLAS_DATASOURCE_URL = "postgresql://fallback/test";
+
+    try {
+      // Registry has it, but no internal DB configured
+      mockConnectionHas.mockImplementation(() => true);
+      mockHasInternalDB.mockImplementation(() => false);
+
+      const res = await postJson("/api/v1/wizard/profile", { connectionId: "default" });
+      // Should succeed using the env var fallback
+      expect(res.status).toBe(200);
+    } finally {
+      if (originalUrl === undefined) {
+        delete process.env.ATLAS_DATASOURCE_URL;
+      } else {
+        process.env.ATLAS_DATASOURCE_URL = originalUrl;
+      }
+    }
   });
 });

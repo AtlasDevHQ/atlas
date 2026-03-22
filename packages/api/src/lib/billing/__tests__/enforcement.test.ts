@@ -1,5 +1,5 @@
 /**
- * Tests for plan limit enforcement.
+ * Tests for plan limit enforcement with graceful degradation.
  */
 
 import {
@@ -60,12 +60,45 @@ mock.module("@atlas/api/lib/logger", () => ({
 
 // --- Import under test ---
 
-import { checkPlanLimits, type PlanCheckResult } from "@atlas/api/lib/billing/enforcement";
+import { checkPlanLimits, invalidatePlanCache, type PlanCheckResult } from "@atlas/api/lib/billing/enforcement";
 
 /** Narrow a denied result for type-safe assertion access. */
 function expectDenied(result: PlanCheckResult): Extract<PlanCheckResult, { allowed: false }> {
   expect(result.allowed).toBe(false);
   return result as Extract<PlanCheckResult, { allowed: false }>;
+}
+
+/** Narrow to a plan_limit_exceeded result with usage data. */
+function expectLimitExceeded(result: PlanCheckResult): Extract<PlanCheckResult, { errorCode: "plan_limit_exceeded" }> {
+  expect(result.allowed).toBe(false);
+  if (!result.allowed) {
+    expect(result.errorCode).toBe("plan_limit_exceeded");
+  }
+  return result as Extract<PlanCheckResult, { errorCode: "plan_limit_exceeded" }>;
+}
+
+/** Narrow an allowed result for type-safe assertion access. */
+function expectAllowed(result: PlanCheckResult): Extract<PlanCheckResult, { allowed: true }> {
+  expect(result.allowed).toBe(true);
+  return result as Extract<PlanCheckResult, { allowed: true }>;
+}
+
+/** Create a standard workspace fixture. */
+function makeWorkspace(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+  return {
+    id: "org-1",
+    name: "Test",
+    slug: "test",
+    workspace_status: "active",
+    plan_tier: "team",
+    byot: false,
+    stripe_customer_id: null,
+    trial_ends_at: null,
+    suspended_at: null,
+    deleted_at: null,
+    createdAt: "2026-01-01T00:00:00Z",
+    ...overrides,
+  };
 }
 
 describe("billing/enforcement", () => {
@@ -75,6 +108,7 @@ describe("billing/enforcement", () => {
     mockUsageShouldThrow = false;
     mockUsage = { queryCount: 0, tokenCount: 0, activeUsers: 0, periodStart: "", periodEnd: "" };
     mockWorkspace = null;
+    invalidatePlanCache();
   });
 
   // ── Pass-through cases ────────────────────────────────────────────
@@ -99,7 +133,7 @@ describe("billing/enforcement", () => {
   // ── Free tier ─────────────────────────────────────────────────────
 
   it("allows free tier unconditionally", async () => {
-    mockWorkspace = { id: "org-1", name: "Test", slug: "test", workspace_status: "active", plan_tier: "free", byot: false, stripe_customer_id: null, trial_ends_at: null, suspended_at: null, deleted_at: null, createdAt: "2026-01-01T00:00:00Z" };
+    mockWorkspace = makeWorkspace({ plan_tier: "free" });
     mockUsage = { queryCount: 999_999, tokenCount: 999_999_999, activeUsers: 0, periodStart: "", periodEnd: "" };
     const result = await checkPlanLimits("org-1");
     expect(result.allowed).toBe(true);
@@ -108,7 +142,7 @@ describe("billing/enforcement", () => {
   // ── Enterprise tier ───────────────────────────────────────────────
 
   it("allows enterprise tier unconditionally", async () => {
-    mockWorkspace = { id: "org-1", name: "Test", slug: "test", workspace_status: "active", plan_tier: "enterprise", byot: false, stripe_customer_id: null, trial_ends_at: null, suspended_at: null, deleted_at: null, createdAt: "2026-01-01T00:00:00Z" };
+    mockWorkspace = makeWorkspace({ plan_tier: "enterprise" });
     mockUsage = { queryCount: 999_999, tokenCount: 999_999_999, activeUsers: 0, periodStart: "", periodEnd: "" };
     const result = await checkPlanLimits("org-1");
     expect(result.allowed).toBe(true);
@@ -118,7 +152,7 @@ describe("billing/enforcement", () => {
 
   it("allows trial tier within trial period", async () => {
     const futureDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-    mockWorkspace = { id: "org-1", name: "Test", slug: "test", workspace_status: "active", plan_tier: "trial", byot: false, stripe_customer_id: null, trial_ends_at: futureDate, suspended_at: null, deleted_at: null, createdAt: new Date().toISOString() };
+    mockWorkspace = makeWorkspace({ plan_tier: "trial", trial_ends_at: futureDate, createdAt: new Date().toISOString() });
     mockUsage = { queryCount: 100, tokenCount: 1000, activeUsers: 0, periodStart: "", periodEnd: "" };
     const result = await checkPlanLimits("org-1");
     expect(result.allowed).toBe(true);
@@ -126,7 +160,7 @@ describe("billing/enforcement", () => {
 
   it("blocks expired trial", async () => {
     const pastDate = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString();
-    mockWorkspace = { id: "org-1", name: "Test", slug: "test", workspace_status: "active", plan_tier: "trial", byot: false, stripe_customer_id: null, trial_ends_at: pastDate, suspended_at: null, deleted_at: null, createdAt: "2026-01-01T00:00:00Z" };
+    mockWorkspace = makeWorkspace({ plan_tier: "trial", trial_ends_at: pastDate });
     const denied = expectDenied(await checkPlanLimits("org-1"));
     expect(denied.errorCode).toBe("trial_expired");
     expect(denied.httpStatus).toBe(403);
@@ -134,7 +168,7 @@ describe("billing/enforcement", () => {
 
   it("allows trial without trial_ends_at when created recently", async () => {
     const recentDate = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
-    mockWorkspace = { id: "org-1", name: "Test", slug: "test", workspace_status: "active", plan_tier: "trial", byot: false, stripe_customer_id: null, trial_ends_at: null, suspended_at: null, deleted_at: null, createdAt: recentDate };
+    mockWorkspace = makeWorkspace({ plan_tier: "trial", trial_ends_at: null, createdAt: recentDate });
     mockUsage = { queryCount: 100, tokenCount: 1000, activeUsers: 0, periodStart: "", periodEnd: "" };
     const result = await checkPlanLimits("org-1");
     expect(result.allowed).toBe(true);
@@ -142,45 +176,150 @@ describe("billing/enforcement", () => {
 
   it("blocks trial without trial_ends_at when created > 14 days ago", async () => {
     const oldDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-    mockWorkspace = { id: "org-1", name: "Test", slug: "test", workspace_status: "active", plan_tier: "trial", byot: false, stripe_customer_id: null, trial_ends_at: null, suspended_at: null, deleted_at: null, createdAt: oldDate };
+    mockWorkspace = makeWorkspace({ plan_tier: "trial", trial_ends_at: null, createdAt: oldDate });
     const denied = expectDenied(await checkPlanLimits("org-1"));
     expect(denied.errorCode).toBe("trial_expired");
   });
 
-  // ── Team tier — usage limits ──────────────────────────────────────
+  // ── Team tier — OK (below 80%) ────────────────────────────────────
 
-  it("allows team tier within limits", async () => {
-    mockWorkspace = { id: "org-1", name: "Test", slug: "test", workspace_status: "active", plan_tier: "team", byot: false, stripe_customer_id: null, trial_ends_at: null, suspended_at: null, deleted_at: null, createdAt: "2026-01-01T00:00:00Z" };
+  it("allows at 79% with no warning (boundary: just below warning)", async () => {
+    mockWorkspace = makeWorkspace();
+    // 79% of 10,000 = 7,900
+    mockUsage = { queryCount: 7_900, tokenCount: 0, activeUsers: 0, periodStart: "", periodEnd: "" };
+    const result = expectAllowed(await checkPlanLimits("org-1"));
+    expect(result.warning).toBeUndefined();
+  });
+
+  it("allows team tier below 80% with no warning", async () => {
+    mockWorkspace = makeWorkspace();
     mockUsage = { queryCount: 500, tokenCount: 10_000, activeUsers: 0, periodStart: "", periodEnd: "" };
-    const result = await checkPlanLimits("org-1");
-    expect(result.allowed).toBe(true);
+    const result = expectAllowed(await checkPlanLimits("org-1"));
+    expect(result.warning).toBeUndefined();
   });
 
-  it("blocks team tier when query limit exceeded", async () => {
-    mockWorkspace = { id: "org-1", name: "Test", slug: "test", workspace_status: "active", plan_tier: "team", byot: false, stripe_customer_id: null, trial_ends_at: null, suspended_at: null, deleted_at: null, createdAt: "2026-01-01T00:00:00Z" };
+  // ── Team tier — Warning (80–99%) ──────────────────────────────────
+
+  it("returns warning at 80% query usage", async () => {
+    mockWorkspace = makeWorkspace();
+    // 80% of 10,000 = 8,000
+    mockUsage = { queryCount: 8_000, tokenCount: 0, activeUsers: 0, periodStart: "", periodEnd: "" };
+    const result = expectAllowed(await checkPlanLimits("org-1"));
+    expect(result.warning).toBeDefined();
+    expect(result.warning!.code).toBe("plan_limit_warning");
+    expect(result.warning!.message).toContain("approaching");
+    const queryMetric = result.warning!.metrics.find((m) => m.metric === "queries");
+    expect(queryMetric).toBeDefined();
+    expect(queryMetric!.status).toBe("warning");
+    expect(queryMetric!.usagePercent).toBe(80);
+  });
+
+  it("returns warning at 95% token usage", async () => {
+    mockWorkspace = makeWorkspace();
+    // 95% of 5,000,000 = 4,750,000
+    mockUsage = { queryCount: 0, tokenCount: 4_750_000, activeUsers: 0, periodStart: "", periodEnd: "" };
+    const result = expectAllowed(await checkPlanLimits("org-1"));
+    expect(result.warning).toBeDefined();
+    const tokenMetric = result.warning!.metrics.find((m) => m.metric === "tokens");
+    expect(tokenMetric).toBeDefined();
+    expect(tokenMetric!.status).toBe("warning");
+    expect(tokenMetric!.usagePercent).toBe(95);
+  });
+
+  // ── Team tier — Soft limit (100–109%) ─────────────────────────────
+
+  it("allows with soft limit warning at 100% query usage", async () => {
+    mockWorkspace = makeWorkspace();
     mockUsage = { queryCount: 10_000, tokenCount: 0, activeUsers: 0, periodStart: "", periodEnd: "" };
-    const denied = expectDenied(await checkPlanLimits("org-1"));
-    expect(denied.errorCode).toBe("query_limit_exceeded");
-    expect(denied.httpStatus).toBe(429);
+    const result = expectAllowed(await checkPlanLimits("org-1"));
+    expect(result.warning).toBeDefined();
+    expect(result.warning!.message).toContain("grace period");
+    const queryMetric = result.warning!.metrics.find((m) => m.metric === "queries");
+    expect(queryMetric!.status).toBe("soft_limit");
+    expect(queryMetric!.usagePercent).toBe(100);
   });
 
-  it("blocks team tier when token limit exceeded", async () => {
-    mockWorkspace = { id: "org-1", name: "Test", slug: "test", workspace_status: "active", plan_tier: "team", byot: false, stripe_customer_id: null, trial_ends_at: null, suspended_at: null, deleted_at: null, createdAt: "2026-01-01T00:00:00Z" };
-    mockUsage = { queryCount: 0, tokenCount: 5_000_000, activeUsers: 0, periodStart: "", periodEnd: "" };
-    const denied = expectDenied(await checkPlanLimits("org-1"));
-    expect(denied.errorCode).toBe("token_limit_exceeded");
-    expect(denied.httpStatus).toBe(429);
+  it("allows with soft limit warning at 105% query usage", async () => {
+    mockWorkspace = makeWorkspace();
+    // 105% of 10,000 = 10,500
+    mockUsage = { queryCount: 10_500, tokenCount: 0, activeUsers: 0, periodStart: "", periodEnd: "" };
+    const result = expectAllowed(await checkPlanLimits("org-1"));
+    expect(result.warning).toBeDefined();
+    const queryMetric = result.warning!.metrics.find((m) => m.metric === "queries");
+    expect(queryMetric!.status).toBe("soft_limit");
+  });
+
+  it("allows with soft limit at 109% token usage", async () => {
+    mockWorkspace = makeWorkspace();
+    // 109% of 5,000,000 = 5,450,000
+    mockUsage = { queryCount: 0, tokenCount: 5_450_000, activeUsers: 0, periodStart: "", periodEnd: "" };
+    const result = expectAllowed(await checkPlanLimits("org-1"));
+    expect(result.warning).toBeDefined();
+    const tokenMetric = result.warning!.metrics.find((m) => m.metric === "tokens");
+    expect(tokenMetric!.status).toBe("soft_limit");
+  });
+
+  // ── Team tier — Boundary: 109% is soft, 110% is hard ──────────────
+
+  it("allows at 109% query usage (boundary: just below hard limit)", async () => {
+    mockWorkspace = makeWorkspace();
+    // 109% of 10,000 = 10,900
+    mockUsage = { queryCount: 10_900, tokenCount: 0, activeUsers: 0, periodStart: "", periodEnd: "" };
+    const result = expectAllowed(await checkPlanLimits("org-1"));
+    expect(result.warning).toBeDefined();
+    const queryMetric = result.warning!.metrics.find((m) => m.metric === "queries");
+    expect(queryMetric!.status).toBe("soft_limit");
+  });
+
+  // ── Team tier — Hard limit (110%+) ────────────────────────────────
+
+  it("blocks at 110% query usage", async () => {
+    mockWorkspace = makeWorkspace();
+    // 110% of 10,000 = 11,000
+    mockUsage = { queryCount: 11_000, tokenCount: 0, activeUsers: 0, periodStart: "", periodEnd: "" };
+    const exceeded = expectLimitExceeded(await checkPlanLimits("org-1"));
+    expect(exceeded.httpStatus).toBe(429);
+    expect(exceeded.errorMessage).toContain("queries");
+    expect(exceeded.errorMessage).toContain("grace buffer");
+    expect(exceeded.usage.currentUsage).toBe(11_000);
+    expect(exceeded.usage.limit).toBe(10_000);
+    expect(exceeded.usage.metric).toBe("queries");
+  });
+
+  it("blocks at 150% token usage", async () => {
+    mockWorkspace = makeWorkspace();
+    // 150% of 5,000,000 = 7,500,000
+    mockUsage = { queryCount: 0, tokenCount: 7_500_000, activeUsers: 0, periodStart: "", periodEnd: "" };
+    const exceeded = expectLimitExceeded(await checkPlanLimits("org-1"));
+    expect(exceeded.httpStatus).toBe(429);
+    expect(exceeded.usage.metric).toBe("tokens");
+  });
+
+  it("blocks on worst metric when queries are hard-limited but tokens are ok", async () => {
+    mockWorkspace = makeWorkspace();
+    mockUsage = { queryCount: 12_000, tokenCount: 1_000_000, activeUsers: 0, periodStart: "", periodEnd: "" };
+    const exceeded = expectLimitExceeded(await checkPlanLimits("org-1"));
+    expect(exceeded.usage.metric).toBe("queries");
   });
 
   // ── Trial tier — usage limits ────────────────────────────────────
 
-  it("blocks trial tier when query limit exceeded", async () => {
+  it("blocks trial tier at hard limit", async () => {
     const futureDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-    mockWorkspace = { id: "org-1", name: "Test", slug: "test", workspace_status: "active", plan_tier: "trial", byot: false, stripe_customer_id: null, trial_ends_at: futureDate, suspended_at: null, deleted_at: null, createdAt: new Date().toISOString() };
-    mockUsage = { queryCount: 10_000, tokenCount: 0, activeUsers: 0, periodStart: "", periodEnd: "" };
+    mockWorkspace = makeWorkspace({ plan_tier: "trial", trial_ends_at: futureDate, createdAt: new Date().toISOString() });
+    mockUsage = { queryCount: 11_000, tokenCount: 0, activeUsers: 0, periodStart: "", periodEnd: "" };
     const denied = expectDenied(await checkPlanLimits("org-1"));
-    expect(denied.errorCode).toBe("query_limit_exceeded");
+    expect(denied.errorCode).toBe("plan_limit_exceeded");
     expect(denied.httpStatus).toBe(429);
+  });
+
+  it("warns trial tier at 85% usage", async () => {
+    const futureDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    mockWorkspace = makeWorkspace({ plan_tier: "trial", trial_ends_at: futureDate, createdAt: new Date().toISOString() });
+    mockUsage = { queryCount: 8_500, tokenCount: 0, activeUsers: 0, periodStart: "", periodEnd: "" };
+    const result = expectAllowed(await checkPlanLimits("org-1"));
+    expect(result.warning).toBeDefined();
+    expect(result.warning!.code).toBe("plan_limit_warning");
   });
 
   // ── Error handling ────────────────────────────────────────────────
@@ -192,10 +331,47 @@ describe("billing/enforcement", () => {
     expect(denied.httpStatus).toBe(503);
   });
 
-  it("allows on metering read error (fail open for usage)", async () => {
-    mockWorkspace = { id: "org-1", name: "Test", slug: "test", workspace_status: "active", plan_tier: "team", byot: false, stripe_customer_id: null, trial_ends_at: null, suspended_at: null, deleted_at: null, createdAt: "2026-01-01T00:00:00Z" };
+  it("allows on metering read error with degradation warning (fail open)", async () => {
+    mockWorkspace = makeWorkspace();
     mockUsageShouldThrow = true;
+    const result = expectAllowed(await checkPlanLimits("org-1"));
+    expect(result.warning).toBeDefined();
+    expect(result.warning!.message).toContain("metering is temporarily unavailable");
+    expect(result.warning!.metrics).toEqual([]);
+  });
+
+  // ── Caching ───────────────────────────────────────────────────────
+
+  it("uses cached workspace on second call", async () => {
+    mockWorkspace = makeWorkspace(); // team tier
+    mockUsage = { queryCount: 8_500, tokenCount: 0, activeUsers: 0, periodStart: "", periodEnd: "" };
+
+    // First call — populates cache with "team" tier, 85% usage → warning
+    const r1 = expectAllowed(await checkPlanLimits("org-1"));
+    expect(r1.warning).toBeDefined();
+
+    // Change mock to expired trial — if cache is bypassed, this would block the request
+    const pastDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    mockWorkspace = makeWorkspace({ plan_tier: "trial", trial_ends_at: pastDate });
+
+    // Second call — cache should still serve "team" tier → allowed with warning
+    const r2 = expectAllowed(await checkPlanLimits("org-1"));
+    expect(r2.warning).toBeDefined();
+    // If cache was bypassed, we'd get { allowed: false, errorCode: "trial_expired" }
+  });
+
+  it("invalidatePlanCache clears cache for a specific org", async () => {
+    mockWorkspace = makeWorkspace();
+    mockUsage = { queryCount: 500, tokenCount: 0, activeUsers: 0, periodStart: "", periodEnd: "" };
+
+    await checkPlanLimits("org-1");
+
+    // Invalidate and change mock
+    invalidatePlanCache("org-1");
+    mockWorkspace = makeWorkspace({ plan_tier: "free" });
+
     const result = await checkPlanLimits("org-1");
     expect(result.allowed).toBe(true);
+    // After invalidation, it should have re-fetched and gotten "free" tier
   });
 });

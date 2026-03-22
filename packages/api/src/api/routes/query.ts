@@ -145,14 +145,22 @@ query.post("/", async (c) => {
     );
   }
 
-  // Plan limit check — block requests when usage exceeds plan limits
+  // Plan limit check — block or warn when usage approaches/exceeds plan limits
   const planCheck = await checkPlanLimits(authResult.user?.activeOrganizationId);
   if (!planCheck.allowed) {
     return c.json(
-      { error: planCheck.errorCode, message: planCheck.errorMessage, requestId },
-      planCheck.httpStatus ?? 403,
+      {
+        error: planCheck.errorCode,
+        message: planCheck.errorMessage,
+        requestId,
+        ...(planCheck.errorCode === "plan_limit_exceeded" && { usage: planCheck.usage }),
+      },
+      planCheck.httpStatus,
     );
   }
+
+  // Capture plan warning for JSON response
+  const planWarning = planCheck.allowed ? planCheck.warning : undefined;
 
   return withRequestContext(
     { requestId, user: authResult.user },
@@ -270,6 +278,7 @@ query.post("/", async (c) => {
           ...queryResult,
           ...(conversationId && { conversationId }),
           ...(enrichedPendingActions && { pendingActions: enrichedPendingActions }),
+          ...(planWarning && { planWarning }),
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : "";

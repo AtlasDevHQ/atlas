@@ -23,6 +23,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { isEnterpriseEnabled } from "../../../../../ee/src/index";
 import { ac, owner as ownerRole, admin as adminRole, member as memberRole } from "@atlas/api/lib/auth/org-permissions";
 import { getStripePlans } from "@atlas/api/lib/billing/plans";
+import { invalidatePlanCache } from "@atlas/api/lib/billing/enforcement";
 
 /**
  * Build the socialProviders config from environment variables.
@@ -109,6 +110,7 @@ function buildPlugins() {
                 if (orgId && (plan.name === "team" || plan.name === "enterprise")) {
                   try {
                     await updateWorkspacePlanTier(orgId, plan.name as PlanTier);
+                    invalidatePlanCache(orgId);
                     log.info({ orgId, plan: plan.name }, "Subscription activated — plan tier synced");
                   } catch (err) {
                     log.error(
@@ -124,6 +126,7 @@ function buildPlugins() {
                 if (orgId) {
                   try {
                     await updateWorkspacePlanTier(orgId, "free");
+                    invalidatePlanCache(orgId);
                     log.info({ orgId }, "Subscription canceled — downgraded to free tier");
                   } catch (err) {
                     log.error(
@@ -139,6 +142,7 @@ function buildPlugins() {
                 if (orgId) {
                   try {
                     await updateWorkspacePlanTier(orgId, "free");
+                    invalidatePlanCache(orgId);
                     log.info({ orgId }, "Subscription deleted — downgraded to free tier");
                   } catch (err) {
                     log.error(

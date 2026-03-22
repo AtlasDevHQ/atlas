@@ -25,6 +25,7 @@ import {
 } from "@atlas/api/lib/db/internal";
 import { getCurrentPeriodUsage } from "@atlas/api/lib/metering";
 import { getPlanDefinition, getPlanLimits, isUnlimited } from "@atlas/api/lib/billing/plans";
+import { buildMetricStatus } from "@atlas/api/lib/billing/enforcement";
 
 const log = createLogger("billing");
 
@@ -123,6 +124,17 @@ billing.get("/", async (c) => {
         );
       }
 
+      // Compute overage status for each metered dimension (reuses shared thresholds from enforcement)
+      const queryLimit = isUnlimited(limits.queriesPerMonth) ? null : limits.queriesPerMonth;
+      const tokenLimit = isUnlimited(limits.tokensPerMonth) ? null : limits.tokensPerMonth;
+
+      const queryOverage = queryLimit !== null
+        ? buildMetricStatus("queries", usage.queryCount, queryLimit)
+        : { usagePercent: 0, status: "ok" as const };
+      const tokenOverage = tokenLimit !== null
+        ? buildMetricStatus("tokens", usage.tokenCount, tokenLimit)
+        : { usagePercent: 0, status: "ok" as const };
+
       return c.json({
         workspaceId: orgId,
         plan: {
@@ -132,14 +144,18 @@ billing.get("/", async (c) => {
           trialEndsAt: workspace.trial_ends_at,
         },
         limits: {
-          queriesPerMonth: isUnlimited(limits.queriesPerMonth) ? null : limits.queriesPerMonth,
-          tokensPerMonth: isUnlimited(limits.tokensPerMonth) ? null : limits.tokensPerMonth,
+          queriesPerMonth: queryLimit,
+          tokensPerMonth: tokenLimit,
           maxMembers: isUnlimited(limits.maxMembers) ? null : limits.maxMembers,
           maxConnections: isUnlimited(limits.maxConnections) ? null : limits.maxConnections,
         },
         usage: {
           queryCount: usage.queryCount,
           tokenCount: usage.tokenCount,
+          queryUsagePercent: queryOverage.usagePercent,
+          tokenUsagePercent: tokenOverage.usagePercent,
+          queryOverageStatus: queryOverage.status,
+          tokenOverageStatus: tokenOverage.status,
           periodStart: usage.periodStart,
           periodEnd: usage.periodEnd,
         },

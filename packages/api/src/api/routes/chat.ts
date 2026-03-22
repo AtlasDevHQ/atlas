@@ -114,14 +114,23 @@ chat.post("/", async (c) => {
     );
   }
 
-  // Plan limit check — block requests when usage exceeds plan limits
+  // Plan limit check — block or warn when usage approaches/exceeds plan limits
   const planCheck = await checkPlanLimits(authResult.user?.activeOrganizationId);
   if (!planCheck.allowed) {
     return c.json(
-      { error: planCheck.errorCode, message: planCheck.errorMessage, retryable: false, requestId },
-      planCheck.httpStatus ?? 403,
+      {
+        error: planCheck.errorCode,
+        message: planCheck.errorMessage,
+        retryable: false,
+        requestId,
+        ...(planCheck.errorCode === "plan_limit_exceeded" && { usage: planCheck.usage }),
+      },
+      planCheck.httpStatus,
     );
   }
+
+  // Capture plan warning for response headers (set after stream is created)
+  const planWarning = planCheck.allowed ? planCheck.warning : undefined;
 
   // withRequestContext binds requestId + user to AsyncLocalStorage for the
   // entire async call chain (including logQueryAudit deep inside executeSQL).
@@ -298,6 +307,10 @@ chat.post("/", async (c) => {
         // The writer is set before merge() triggers tool execution reads.
         const stream = createUIMessageStream({
           execute: ({ writer }) => {
+            // Surface plan warning as a data annotation so clients can display it
+            if (planWarning) {
+              writer.write({ type: "data-plan-warning", data: planWarning });
+            }
             setStreamWriter(requestId, writer);
             writer.merge(agentResult.toUIMessageStream());
           },
@@ -320,6 +333,7 @@ chat.post("/", async (c) => {
             "X-Accel-Buffering": "no",
             "Cache-Control": "no-cache, no-transform",
             ...(conversationId ? { "x-conversation-id": conversationId } : {}),
+            ...(planWarning ? { "x-plan-limit-warning": JSON.stringify(planWarning) } : {}),
           },
         });
 

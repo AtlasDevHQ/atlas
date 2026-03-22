@@ -25,7 +25,6 @@ import { syncEntityToDisk } from "@atlas/api/lib/semantic-sync";
 import { adminAuthPreamble } from "./admin-auth";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import {
-  type TableProfile,
   type ProfilingResult,
   listPostgresObjects,
   listMySQLObjects,
@@ -70,10 +69,58 @@ const PreviewRequestSchema = z.object({
 
 const PreviewResponseSchema = z.record(z.string(), z.unknown());
 
+/** Zod schema for a column profile (snake_case wire format). */
+const ColumnProfileSchema = z.object({
+  name: z.string(),
+  type: z.string(),
+  nullable: z.boolean(),
+  unique_count: z.number().nullable(),
+  null_count: z.number().nullable(),
+  sample_values: z.array(z.string()),
+  is_primary_key: z.boolean(),
+  is_foreign_key: z.boolean(),
+  fk_target_table: z.string().nullable(),
+  fk_target_column: z.string().nullable(),
+  is_enum_like: z.boolean(),
+  profiler_notes: z.array(z.string()),
+});
+
+/** Zod schema for a foreign key. */
+const ForeignKeySchema = z.object({
+  from_column: z.string(),
+  to_table: z.string(),
+  to_column: z.string(),
+  source: z.enum(["constraint", "inferred"]),
+});
+
+/** Zod schema for a table profile (snake_case wire format). */
+const TableProfileSchema = z.object({
+  table_name: z.string(),
+  object_type: z.enum(["table", "view", "materialized_view"]),
+  row_count: z.number(),
+  columns: z.array(ColumnProfileSchema),
+  primary_key_columns: z.array(z.string()),
+  foreign_keys: z.array(ForeignKeySchema),
+  inferred_foreign_keys: z.array(ForeignKeySchema),
+  profiler_notes: z.array(z.string()),
+  table_flags: z.object({
+    possibly_abandoned: z.boolean(),
+    possibly_denormalized: z.boolean(),
+  }),
+  matview_populated: z.boolean().optional(),
+  partition_info: z.object({
+    strategy: z.enum(["range", "list", "hash"]),
+    key: z.string(),
+    children: z.array(z.string()),
+  }).optional(),
+});
+
 const SaveRequestSchema = z.object({
   connectionId: z.string().min(1),
   entities: z.array(z.object({ tableName: z.string(), yaml: z.string() })).min(1),
-}).passthrough();
+  schema: z.string().optional(),
+  profiles: z.array(TableProfileSchema).optional(),
+});
 
 const SaveResponseSchema = z.object({
   saved: z.boolean(),
@@ -417,17 +464,17 @@ wizard.openapi(generateRoute, async (c) => {
           }, 400);
       }
 
-      // Run heuristics
-      analyzeTableProfiles(result.profiles);
+      // Run heuristics (returns new array — no mutation)
+      const analyzedProfiles = analyzeTableProfiles(result.profiles);
 
       // Generate entity YAML for each profile
       const sourceId = connectionId === "default" ? undefined : connectionId;
-      const entities = result.profiles.map((profile) => ({
+      const entities = analyzedProfiles.map((profile) => ({
         tableName: profile.table_name,
         objectType: profile.object_type,
         rowCount: profile.row_count,
         columnCount: profile.columns.length,
-        yaml: generateEntityYAML(profile, result.profiles, dbType, schema, sourceId),
+        yaml: generateEntityYAML(profile, analyzedProfiles, dbType, schema, sourceId),
         profile: {
           columns: profile.columns.map((col) => ({
             name: col.name,
@@ -465,7 +512,7 @@ wizard.openapi(generateRoute, async (c) => {
         requestId,
         connectionId,
         dbType,
-        profiledCount: result.profiles.length,
+        profiledCount: analyzedProfiles.length,
         errorCount: result.errors.length,
       }, "Wizard generate complete");
 
@@ -595,11 +642,10 @@ wizard.openapi(saveRoute, async (c) => {
       // pre-generated entity YAML via { connectionId, entities } instead.
       // This branch handles callers (e.g. future CLI integrations) that
       // provide raw TableProfile[] data for server-side generation.
-      const schema = (body as Record<string, unknown>).schema;
-      const profileData = (body as Record<string, unknown>).profiles;
-      if (Array.isArray(profileData) && profileData.length > 0) {
-        const profiles = profileData as TableProfile[];
-        const resolvedSchema = typeof schema === "string" ? schema : "public";
+      const { schema: bodySchema, profiles: profileData } = body;
+      if (profileData && profileData.length > 0) {
+        const profiles = profileData;
+        const resolvedSchema = bodySchema ?? "public";
 
         const catalogYaml = generateCatalogYAML(profiles);
         const catalogPath = path.join(outputBase, "catalog.yml");

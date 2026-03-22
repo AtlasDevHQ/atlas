@@ -45,6 +45,12 @@ export type {
   PromptItem,
   PromptIndustry,
   QuerySuggestion,
+  ObjectType,
+  WizardEntityColumn,
+  WizardEntityResult,
+  WizardForeignKey,
+  WizardInferredForeignKey,
+  WizardTableEntry,
 } from "@useatlas/types";
 export { SHARE_EXPIRY_OPTIONS, PROMPT_INDUSTRIES } from "@useatlas/types";
 export { parseChatError } from "@useatlas/types/errors";

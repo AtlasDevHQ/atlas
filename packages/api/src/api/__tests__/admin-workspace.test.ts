@@ -472,7 +472,7 @@ describe("Workspace Lifecycle", () => {
       const res = await app.fetch(
         adminRequest("PATCH", "/api/v1/admin/organizations/org-1/plan", {}),
       );
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(422);
     });
 
     it("returns 409 for deleted workspace", async () => {

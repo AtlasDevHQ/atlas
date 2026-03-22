@@ -12,6 +12,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import { validationHook } from "./validation-hook";
 import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
@@ -62,7 +63,7 @@ const log = createLogger("admin-routes");
 // Router
 // ---------------------------------------------------------------------------
 
-const admin = new OpenAPIHono();
+const admin = new OpenAPIHono({ defaultHook: validationHook });
 
 admin.onError((err, c) => {
   if (err instanceof HTTPException && err.status === 400) {

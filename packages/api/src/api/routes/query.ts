@@ -11,6 +11,7 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { APICallError, LoadAPIKeyError, NoSuchModelError } from "ai";
@@ -158,7 +159,7 @@ const queryRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const query = new OpenAPIHono();
+const query = new OpenAPIHono({ defaultHook: validationHook });
 
 // Normalize JSON parse errors. Only catch SyntaxError (malformed JSON); let
 // other 400s (e.g. Zod query/path param validation) propagate with their message.

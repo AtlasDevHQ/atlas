@@ -12,6 +12,7 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { validationHook } from "./validation-hook";
 import { z } from "@hono/zod-openapi";
 import { type UIMessage, createUIMessageStream, createUIMessageStreamResponse } from "ai";
 import { APICallError, LoadAPIKeyError, NoSuchModelError } from "ai";
@@ -270,7 +271,7 @@ const getDemoConversationRoute = createRoute({
 // Routes
 // ---------------------------------------------------------------------------
 
-const demo = new OpenAPIHono();
+const demo = new OpenAPIHono({ defaultHook: validationHook });
 
 // POST /start — email gate, returns demo token
 demo.openapi(demoStartRoute, async (c) => {

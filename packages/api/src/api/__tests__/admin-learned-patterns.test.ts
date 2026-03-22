@@ -551,7 +551,7 @@ describe("admin learned-patterns routes", () => {
     it("returns 400 for invalid status", async () => {
       mockInternalQuery.mockImplementation(() => Promise.resolve([mockRow()]));
       const res = await req("PATCH", "/pat-1", { status: "invalid" });
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(422);
     });
 
     it("returns 404 for missing pattern", async () => {
@@ -637,7 +637,7 @@ describe("admin learned-patterns routes", () => {
 
     it("returns 400 for invalid status", async () => {
       const res = await req("POST", "/bulk", { ids: ["pat-1"], status: "pending" });
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(422);
     });
   });
 

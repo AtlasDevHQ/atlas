@@ -8,6 +8,7 @@
 
 import * as path from "path";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import { validationHook } from "./validation-hook";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import {
   getSemanticRoot,
@@ -124,7 +125,7 @@ const getEntityRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-export const semantic = new OpenAPIHono();
+export const semantic = new OpenAPIHono({ defaultHook: validationHook });
 
 // GET /entities — list all entities (public summary: drops measureCount, connection, source)
 semantic.openapi(listEntitiesRoute, async (c) => {

@@ -641,7 +641,7 @@ describe("admin prompt routes", () => {
         Promise.resolve([mockCollectionRow()]),
       );
       const res = await adminReq("POST", "/col-1/items", { description: "No question" });
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(422);
     });
 
     it("returns 404 for missing collection", async () => {

@@ -7,6 +7,7 @@
  */
 
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
@@ -484,7 +485,7 @@ const reorderItemsRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-export const adminPrompts = new OpenAPIHono();
+export const adminPrompts = new OpenAPIHono({ defaultHook: validationHook });
 
 adminPrompts.onError((err, c) => {
   if (err instanceof HTTPException && err.status === 400) {

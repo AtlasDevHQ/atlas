@@ -6,6 +6,7 @@
  */
 
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
@@ -341,7 +342,7 @@ const bulkStatusRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const adminLearnedPatterns = new OpenAPIHono();
+const adminLearnedPatterns = new OpenAPIHono({ defaultHook: validationHook });
 
 adminLearnedPatterns.onError((err, c) => {
   if (err instanceof HTTPException && err.status === 400) {

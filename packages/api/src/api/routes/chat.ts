@@ -6,6 +6,7 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { validationHook } from "./validation-hook";
 import { z } from "zod";
 import { type UIMessage, createUIMessageStream, createUIMessageStreamResponse } from "ai";
 import { APICallError, LoadAPIKeyError, NoSuchModelError } from "ai";
@@ -122,7 +123,7 @@ const chatRoute = createRoute({
   },
 });
 
-const chat = new OpenAPIHono();
+const chat = new OpenAPIHono({ defaultHook: validationHook });
 
 chat.openapi(chatRoute, async (c) => {
   const req = c.req.raw;

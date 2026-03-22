@@ -12,6 +12,7 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { validationHook } from "./validation-hook";
 import { z } from "zod";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import {
@@ -161,7 +162,7 @@ const trackClickRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-export const suggestions = new OpenAPIHono();
+export const suggestions = new OpenAPIHono({ defaultHook: validationHook });
 
 // GET / — contextual suggestions by table
 suggestions.openapi(listSuggestionsRoute, async (c) => {

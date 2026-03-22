@@ -1090,7 +1090,7 @@ const getSharedConversationRoute = createRoute({
   },
 });
 
-const publicConversations = new OpenAPIHono();
+const publicConversations = new OpenAPIHono({ defaultHook: validationHook });
 
 /** Map a SharedConversationFailReason to a JSON response. */
 function sharedConversationFailResponse(reason: SharedConversationFailReason) {

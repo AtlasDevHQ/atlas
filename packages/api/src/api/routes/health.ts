@@ -8,6 +8,7 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { validationHook } from "./validation-hook";
 import { z } from "zod";
 import {
   validateEnvironment,
@@ -135,7 +136,7 @@ const healthRoute = createRoute({
   },
 });
 
-const health = new OpenAPIHono();
+const health = new OpenAPIHono({ defaultHook: validationHook });
 
 health.openapi(healthRoute, async (c) => {
   try {

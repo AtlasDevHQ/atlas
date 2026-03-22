@@ -808,7 +808,7 @@ describe("/api/v1/slack", () => {
       const resp1 = await app.request("/api/v1/slack/callback?code=test_code", {
         method: "GET",
       });
-      expect(resp1.status).toBe(400);
+      expect(resp1.status).toBe(422);
 
       // Bogus state value — passes schema validation but handler rejects unknown state
       const resp2 = await app.request(
@@ -835,7 +835,7 @@ describe("/api/v1/slack", () => {
         `/api/v1/slack/callback?state=${stateParam}`,
         { method: "GET" },
       );
-      expect(resp.status).toBe(400);
+      expect(resp.status).toBe(422);
     });
 
     it("returns 501 when OAuth is not configured", async () => {

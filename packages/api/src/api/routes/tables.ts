@@ -7,6 +7,7 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { validationHook } from "./validation-hook";
 import { z } from "zod";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { getSemanticRoot, discoverTables } from "@atlas/api/lib/semantic-files";
@@ -52,7 +53,7 @@ const tablesRoute = createRoute({
   },
 });
 
-export const tables = new OpenAPIHono();
+export const tables = new OpenAPIHono({ defaultHook: validationHook });
 
 // GET / — list all tables with columns
 tables.openapi(tablesRoute, async (c) => {

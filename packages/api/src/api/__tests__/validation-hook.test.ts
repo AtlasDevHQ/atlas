@@ -100,18 +100,18 @@ describe("validationHook", () => {
   describe("query param validation", () => {
     it("returns 'Invalid query parameters' for bad query params", async () => {
       const response = await app.request("/test-query?page=abc");
-      expect(response.status).toBe(400);
+      expect(response.status).toBe(422);
 
       const body = (await response.json()) as Record<string, unknown>;
       expect(body.error).toBe("validation_error");
       expect(body.message).toBe("Invalid query parameters");
-      expect(body.issues).toBeDefined();
-      expect(Array.isArray(body.issues)).toBe(true);
+      expect(body.details).toBeDefined();
+      expect(Array.isArray(body.details)).toBe(true);
     });
 
     it("returns 'Invalid query parameters' when required param is missing", async () => {
       const response = await app.request("/test-query");
-      expect(response.status).toBe(400);
+      expect(response.status).toBe(422);
 
       const body = (await response.json()) as Record<string, unknown>;
       expect(body.error).toBe("validation_error");
@@ -120,7 +120,7 @@ describe("validationHook", () => {
 
     it("does NOT say 'Invalid JSON body' for query param errors", async () => {
       const response = await app.request("/test-query?page=abc");
-      expect(response.status).toBe(400);
+      expect(response.status).toBe(422);
 
       const body = (await response.json()) as Record<string, unknown>;
       expect(body.message).not.toContain("Invalid JSON body");
@@ -131,12 +131,12 @@ describe("validationHook", () => {
   describe("path param validation", () => {
     it("returns 'Invalid path parameters' for bad path params", async () => {
       const response = await app.request("/test-param/not-a-uuid");
-      expect(response.status).toBe(400);
+      expect(response.status).toBe(422);
 
       const body = (await response.json()) as Record<string, unknown>;
       expect(body.error).toBe("validation_error");
       expect(body.message).toBe("Invalid path parameters");
-      expect(body.issues).toBeDefined();
+      expect(body.details).toBeDefined();
     });
   });
 
@@ -147,12 +147,12 @@ describe("validationHook", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: "", age: -5 }),
       });
-      expect(response.status).toBe(400);
+      expect(response.status).toBe(422);
 
       const body = (await response.json()) as Record<string, unknown>;
       expect(body.error).toBe("validation_error");
       expect(body.message).toBe("Invalid request body");
-      expect(body.issues).toBeDefined();
+      expect(body.details).toBeDefined();
     });
   });
 

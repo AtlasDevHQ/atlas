@@ -47,6 +47,11 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   decryptUrl: (v: string) => v.startsWith("encrypted:") ? v.slice(10) : v,
 }));
 
+let mockAuthMode = "none";
+mock.module("@atlas/api/lib/auth/detect", () => ({
+  detectAuthMode: () => mockAuthMode,
+}));
+
 mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
@@ -84,6 +89,7 @@ function resetMocks() {
   capturedQueries.length = 0;
   mockEnterpriseEnabled = true;
   mockEnterpriseLicenseKey = "test-key";
+  mockAuthMode = "none";
 }
 
 function makeRoleRow(overrides: Partial<Record<string, unknown>> = {}) {
@@ -188,12 +194,19 @@ describe("Built-in roles", () => {
 describe("resolvePermissions", () => {
   beforeEach(resetMocks);
 
-  it("returns all permissions for undefined user (no-auth mode)", async () => {
+  it("returns all permissions for undefined user in no-auth mode", async () => {
+    mockAuthMode = "none";
     const perms = await resolvePermissions(undefined);
     expect(perms.size).toBe(PERMISSIONS.length);
     for (const p of PERMISSIONS) {
       expect(perms.has(p)).toBe(true);
     }
+  });
+
+  it("returns empty permissions for undefined user in managed auth mode", async () => {
+    mockAuthMode = "managed";
+    const perms = await resolvePermissions(undefined);
+    expect(perms.size).toBe(0);
   });
 
   it("returns custom role permissions when found in DB", async () => {
@@ -234,6 +247,17 @@ describe("resolvePermissions", () => {
     const perms = await resolvePermissions(user);
     expect(perms.has("query")).toBe(true);
     expect(perms.has("query:raw_data")).toBe(true);
+    expect(perms.has("admin:users")).toBe(false);
+  });
+
+  it("fails closed with empty permissions on corrupt role data", async () => {
+    // Simulate corrupt JSON in permissions column
+    mockRows.push([{ id: "r1", org_id: "org-1", name: "test", description: "", permissions: "INVALID_JSON{", is_builtin: false, created_at: "", updated_at: "" }]);
+
+    const user = makeUser({ role: "test" });
+    const perms = await resolvePermissions(user);
+    // Corrupt data → empty permissions (fail closed), not elevated legacy
+    expect(perms.size).toBe(0);
     expect(perms.has("admin:users")).toBe(false);
   });
 });

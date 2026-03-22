@@ -107,11 +107,21 @@ export class RoleError extends Error {
 // ── Helpers ──────────────────────────────────────────────────────
 
 function rowToRole(row: CustomRoleRow): CustomRole {
-  const rawPermissions = typeof row.permissions === "string"
-    ? JSON.parse(row.permissions) as string[]
-    : row.permissions;
+  let rawPermissions: string[];
+  try {
+    rawPermissions = typeof row.permissions === "string"
+      ? JSON.parse(row.permissions) as string[]
+      : row.permissions;
+  } catch (err) {
+    log.error({ roleId: row.id, roleName: row.name, raw: row.permissions }, "Failed to parse permissions JSON for role — defaulting to empty");
+    rawPermissions = [];
+  }
 
-  // Filter out any unknown permissions (forward compat)
+  // Filter out any unknown permissions (forward compat) with warning
+  const unknown = rawPermissions.filter((p) => !isValidPermission(p));
+  if (unknown.length > 0) {
+    log.warn({ roleId: row.id, unknownPermissions: unknown }, "Role contains unrecognized permissions — these will be ignored");
+  }
   const permissions = rawPermissions.filter(isValidPermission);
 
   return {
@@ -155,9 +165,15 @@ const LEGACY_ROLE_PERMISSIONS: Record<string, readonly Permission[]> = {
  * handling where the check should be transparent.
  */
 export async function resolvePermissions(user: AtlasUser | undefined): Promise<Set<Permission>> {
-  // No user (none auth mode) → all permissions (local dev)
+  // No user → check auth mode. Only grant all permissions in no-auth mode (local dev).
   if (!user) {
-    return new Set([...PERMISSIONS]);
+    const { detectAuthMode } = await import("@atlas/api/lib/auth/detect");
+    const mode = detectAuthMode();
+    if (mode === "none") {
+      return new Set([...PERMISSIONS]);
+    }
+    log.warn("resolvePermissions called with undefined user in managed auth mode — denying all");
+    return new Set<Permission>();
   }
 
   const role = user.role ?? "member";
@@ -179,10 +195,14 @@ export async function resolvePermissions(user: AtlasUser | undefined): Promise<S
         return new Set(customRole.permissions);
       }
     } catch (err) {
-      // If the table doesn't exist yet (pre-migration), fall through to legacy
       const msg = err instanceof Error ? err.message : String(err);
-      if (!msg.includes("does not exist")) {
-        log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to resolve custom role — falling back to legacy");
+      if (msg.includes("does not exist")) {
+        // Table not yet created by migration — fall through to legacy
+        log.debug("custom_roles table not yet created — using legacy permissions");
+      } else {
+        // Fail closed: DB error → minimal permissions, not elevated legacy ones
+        log.error({ err: msg }, "Failed to resolve custom role — denying elevated permissions");
+        return new Set<Permission>(["query"]);
       }
     }
   }
@@ -389,7 +409,9 @@ export async function updateRole(
  */
 export async function deleteRole(orgId: string, roleId: string): Promise<boolean> {
   requireEnterprise("roles");
-  if (!hasInternalDB()) return false;
+  if (!hasInternalDB()) {
+    throw new Error("Internal database required for role deletion.");
+  }
 
   // Check if it's a built-in role
   const role = await getRole(orgId, roleId);
@@ -494,20 +516,28 @@ export async function assignRole(
  * Idempotent — checks each role by name + org_id before inserting.
  */
 export async function seedBuiltinRoles(orgId: string): Promise<void> {
-  if (!hasInternalDB()) return;
+  if (!hasInternalDB()) {
+    log.debug("seedBuiltinRoles skipped — no internal DB");
+    return;
+  }
 
   const pool = getInternalDB();
   for (const def of BUILTIN_ROLES) {
-    const existing = await pool.query(
-      `SELECT id FROM custom_roles WHERE org_id = $1 AND name = $2`,
-      [orgId, def.name],
-    );
-    if (existing.rows.length === 0) {
-      await pool.query(
-        `INSERT INTO custom_roles (org_id, name, description, permissions, is_builtin)
-         VALUES ($1, $2, $3, $4, true)`,
-        [orgId, def.name, def.description, JSON.stringify(def.permissions)],
+    try {
+      const existing = await pool.query(
+        `SELECT id FROM custom_roles WHERE org_id = $1 AND name = $2`,
+        [orgId, def.name],
       );
+      if (existing.rows.length === 0) {
+        await pool.query(
+          `INSERT INTO custom_roles (org_id, name, description, permissions, is_builtin)
+           VALUES ($1, $2, $3, $4, true)`,
+          [orgId, def.name, def.description, JSON.stringify(def.permissions)],
+        );
+      }
+    } catch (err) {
+      log.error({ orgId, roleName: def.name, err: err instanceof Error ? err.message : String(err) }, "Failed to seed built-in role");
+      throw err;
     }
   }
 }

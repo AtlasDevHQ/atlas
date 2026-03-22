@@ -174,7 +174,10 @@ function RoleDialog({
         body: JSON.stringify(body),
       });
       if (!res.ok) {
-        const data: unknown = await res.json().catch(() => null);
+        const data: unknown = await res.json().catch((parseErr: unknown) => {
+          console.debug("[Atlas Admin] Failed to parse error response:", parseErr);
+          return null;
+        });
         const msg = typeof data === "object" && data !== null && "message" in data
           ? String((data as Record<string, unknown>).message)
           : `HTTP ${res.status}`;
@@ -308,7 +311,10 @@ function DeleteRoleDialog({
         { method: "DELETE", credentials },
       );
       if (!res.ok) {
-        const data = await res.json().catch(() => null);
+        const data = await res.json().catch((parseErr: unknown) => {
+          console.debug("[Atlas Admin] Failed to parse error response:", parseErr);
+          return null;
+        });
         throw new Error(
           (data as Record<string, unknown> | null)?.message
             ? String((data as Record<string, unknown>).message)

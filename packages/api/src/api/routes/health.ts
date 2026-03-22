@@ -7,7 +7,7 @@
  * structured `components` object for the admin dashboard.
  */
 
-import { Hono } from "hono";
+import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { z } from "zod";
 import {
   validateEnvironment,
@@ -105,9 +105,39 @@ function findDiagnostic(
   return diagnostics.find((d) => codes.includes(d.code));
 }
 
-const health = new Hono();
+const HealthErrorSchema = z.object({
+  status: z.string(),
+  error: z.string(),
+});
 
-health.get("/", async (c) => {
+const healthRoute = createRoute({
+  method: "get",
+  path: "/",
+  tags: ["Health"],
+  summary: "Health check",
+  description:
+    "Returns the health status of the Atlas API including checks for datasource connectivity, LLM provider, semantic layer, internal database, explore backend, auth mode, and Slack integration. " +
+    "Returns HTTP 200 for 'ok' or 'degraded' status, and 503 for 'error' status.",
+  responses: {
+    200: {
+      description:
+        "Service is healthy or degraded (some optional components unavailable)",
+      content: { "application/json": { schema: HealthResponseSchema } },
+    },
+    503: {
+      description: "Service is unhealthy (critical component failure)",
+      content: {
+        "application/json": {
+          schema: z.union([HealthResponseSchema, HealthErrorSchema]),
+        },
+      },
+    },
+  },
+});
+
+const health = new OpenAPIHono();
+
+health.openapi(healthRoute, async (c) => {
   try {
     const diagnostics = await validateEnvironment();
 
@@ -200,7 +230,7 @@ health.get("/", async (c) => {
       status = "degraded";
     else status = "ok";
 
-    const warnings = getStartupWarnings();
+    const warnings = [...getStartupWarnings()];
 
     // Per-source health from ConnectionRegistry
     let sourcesSection: Record<string, { status: string; latencyMs?: number; message?: string; checkedAt?: string; dbType: string }> | undefined;
@@ -311,27 +341,27 @@ health.get("/", async (c) => {
         datasource: dsNotConfigured
           ? { status: "not_configured" as const }
           : {
-              status: hasDsError ? "error" : "ok",
+              status: (hasDsError ? "error" : "ok") as "error" | "ok",
               ...(dsLatencyMs !== undefined && { latencyMs: dsLatencyMs }),
               ...(hasDsError && {
                 error: dsProbeError ?? dsDiagnostic?.code ?? "DB_UNREACHABLE",
               }),
             },
         provider: {
-          status: hasKeyError ? "error" : "ok",
+          status: (hasKeyError ? "error" : "ok") as "error" | "ok",
           provider,
           model: process.env.ATLAS_MODEL ?? "(default)",
           ...(hasKeyError && { error: "MISSING_API_KEY" }),
         },
         semanticLayer: {
-          status: hasSemanticError ? "error" : "ok",
+          status: (hasSemanticError ? "error" : "ok") as "error" | "ok",
           entityCount,
           ...(hasSemanticError && { error: "MISSING_SEMANTIC_LAYER" }),
         },
         internalDb: !process.env.DATABASE_URL
           ? { status: "not_configured" as const }
           : {
-              status: hasInternalDbError ? "error" : "ok",
+              status: (hasInternalDbError ? "error" : "ok") as "error" | "ok",
               ...(internalLatencyMs !== undefined && {
                 latencyMs: internalLatencyMs,
               }),
@@ -343,7 +373,10 @@ health.get("/", async (c) => {
           backend: exploreBackend,
           isolated: exploreBackend !== "just-bash",
           ...(exploreBackend === "plugin" && { isolationVerified: false }),
-          ...(exploreBackend === "plugin" && getActiveSandboxPluginId() ? { pluginId: getActiveSandboxPluginId() } : {}),
+          ...(() => {
+            const pluginId = exploreBackend === "plugin" ? getActiveSandboxPluginId() : null;
+            return pluginId ? { pluginId } : {};
+          })(),
         },
         auth: {
           mode: authMode,
@@ -362,13 +395,18 @@ health.get("/", async (c) => {
       ...(sourcesSection ? { sources: sourcesSection } : {}),
     };
 
-    return c.json(response, response.status === "error" ? 503 : 200);
+    // Health response is built dynamically with many conditional fields — TypeScript
+    // can't statically verify all literal string types against the Zod schema.
+    if (response.status === "error") {
+      return c.json(response as z.infer<typeof HealthResponseSchema>, 503);
+    }
+    return c.json(response as z.infer<typeof HealthResponseSchema>, 200);
   } catch (err) {
     log.error(
       { err: err instanceof Error ? err : new Error(String(err)) },
       "Health endpoint unexpected error",
     );
-    return c.json({ status: "error", error: "health_check_failed" }, 503);
+    return c.json({ status: "error" as const, error: "health_check_failed" }, 503);
   }
 });
 

@@ -10,7 +10,7 @@
  * fetch (when NEXT_PUBLIC_ATLAS_API_URL is set).
  */
 
-import { Hono } from "hono";
+import { OpenAPIHono } from "@hono/zod-openapi";
 import { cors } from "hono/cors";
 import {
   trace,
@@ -33,7 +33,7 @@ import { widgetLoader, widgetTypesLoader } from "./routes/widget-loader";
 
 const log = createLogger("api");
 const tracer = trace.getTracer("atlas");
-const app = new Hono();
+const app = new OpenAPIHono();
 
 // OTel tracing — root span per HTTP request. No-op when SDK is not initialized.
 // Must be the first middleware so all downstream operations are children.
@@ -246,6 +246,14 @@ app.onError((err, c) => {
     },
     500,
   );
+});
+
+// Auto-generated OpenAPI spec from route definitions (Phase 1).
+// Serves spec for routes converted to createRoute(). The manual spec at
+// /api/v1/openapi.json continues to serve unconverted routes.
+app.doc("/api/v1/openapi-auto.json", {
+  openapi: "3.1.0",
+  info: { title: "Atlas API", version: "0.9.0" },
 });
 
 export { app };

@@ -7,7 +7,7 @@
  */
 
 import * as path from "path";
-import { Hono } from "hono";
+import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import {
   getSemanticRoot,
@@ -20,20 +20,104 @@ import { authPreamble } from "./auth-preamble";
 
 const log = createLogger("semantic-routes");
 
-export const semantic = new Hono();
+// ---------------------------------------------------------------------------
+// Schemas
+// ---------------------------------------------------------------------------
+
+const EntitiesListResponseSchema = z.object({
+  entities: z.array(z.object({
+    table: z.string(),
+    description: z.string(),
+    columnCount: z.number(),
+    joinCount: z.number(),
+    type: z.string(),
+  })),
+  warnings: z.array(z.string()).optional(),
+});
+
+const EntityDetailResponseSchema = z.object({
+  entity: z.unknown(),
+});
+
+const ErrorSchema = z.object({
+  error: z.string(),
+  message: z.string(),
+});
 
 // ---------------------------------------------------------------------------
-// Routes
+// Route definitions
 // ---------------------------------------------------------------------------
+
+const listEntitiesRoute = createRoute({
+  method: "get",
+  path: "/entities",
+  tags: ["Semantic"],
+  summary: "List semantic entities",
+  description:
+    "Returns a summary of all entity definitions from the semantic layer YAML files. Each entity includes table name, description, column count, join count, and type.",
+  responses: {
+    200: {
+      description: "List of entity summaries",
+      content: { "application/json": { schema: EntitiesListResponseSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const getEntityRoute = createRoute({
+  method: "get",
+  path: "/entities/{name}",
+  tags: ["Semantic"],
+  summary: "Get entity details",
+  description:
+    "Returns the full parsed YAML content for a single semantic entity, including all dimensions, measures, joins, and query patterns.",
+  request: {
+    params: z.object({
+      name: z.string().openapi({ param: { name: "name", in: "path" }, example: "orders" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Full entity content",
+      content: { "application/json": { schema: EntityDetailResponseSchema } },
+    },
+    400: {
+      description: "Invalid entity name",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    403: {
+      description: "Access denied (path traversal attempt)",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    404: {
+      description: "Entity not found",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Router
+// ---------------------------------------------------------------------------
+
+export const semantic = new OpenAPIHono();
 
 // GET /entities — list all entities (public summary: drops measureCount, connection, source)
-semantic.get("/entities", async (c) => {
+semantic.openapi(listEntitiesRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await authPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    // Auth errors use dynamic status codes that can't be statically typed in createRoute
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -42,32 +126,33 @@ semantic.get("/entities", async (c) => {
     try {
       const result = discoverEntities(root);
       const entities = result.entities.map(({ table, description, columnCount, joinCount, type }) => ({
-        table, description, columnCount, joinCount, type,
+        table, description, columnCount, joinCount, type: type ?? "",
       }));
       return c.json({
         entities,
         ...(result.warnings.length > 0 && { warnings: result.warnings }),
-      });
+      }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), root }, "Failed to discover entities");
-      return c.json({ error: "internal_error", message: "Failed to load entity list.", requestId }, 500);
+      return c.json({ error: "internal_error", message: "Failed to load entity list." }, 500);
     }
   });
 });
 
 // GET /entities/:name — full entity detail
-semantic.get("/entities/:name", async (c) => {
+semantic.openapi(getEntityRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await authPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    // Auth errors use dynamic status codes that can't be statically typed in createRoute
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
   return withRequestContext({ requestId, user: authResult.user }, () => {
-    const name = c.req.param("name");
+    const { name } = c.req.valid("param");
 
     if (!isValidEntityName(name)) {
       log.warn({ requestId, name }, "Rejected invalid entity name");
@@ -84,15 +169,15 @@ semantic.get("/entities/:name", async (c) => {
     const resolved = path.resolve(filePath);
     if (!resolved.startsWith(path.resolve(root))) {
       log.error({ requestId, name, resolved, root }, "Resolved entity path escaped semantic root");
-      return c.json({ error: "forbidden", message: "Access denied.", requestId }, 403);
+      return c.json({ error: "forbidden", message: "Access denied." }, 403);
     }
 
     try {
       const raw = readYamlFile(filePath);
-      return c.json({ entity: raw });
+      return c.json({ entity: raw }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), filePath, entityName: name }, "Failed to parse entity YAML file");
-      return c.json({ error: "internal_error", message: `Failed to parse entity file for "${name}".`, requestId }, 500);
+      return c.json({ error: "internal_error", message: `Failed to parse entity file for "${name}".` }, 500);
     }
   });
 });

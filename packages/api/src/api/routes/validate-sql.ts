@@ -9,7 +9,7 @@
  * Does NOT execute the query against any database.
  */
 
-import { Hono } from "hono";
+import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { z } from "zod";
 import { Parser } from "node-sql-parser";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
@@ -20,7 +20,7 @@ import { connections, detectDBType } from "@atlas/api/lib/db/connection";
 const log = createLogger("validate-sql");
 const parser = new Parser();
 
-const ValidateSQLRequestSchema = z.object({
+export const ValidateSQLRequestSchema = z.object({
   sql: z.string().trim().min(1, "sql must not be empty"),
   connectionId: z.string().optional(),
 });
@@ -52,86 +52,122 @@ function inferLayer(error: string): ValidationLayer {
   return "ast_parse";
 }
 
-export const validateSqlRoute = new Hono();
+const ValidateSQLResponseSchema = z.object({
+  valid: z.boolean(),
+  errors: z.array(z.object({
+    layer: z.enum(["empty_check", "connection", "regex_guard", "ast_parse", "table_whitelist"]),
+    message: z.string(),
+  })),
+  tables: z.array(z.string()),
+});
 
-validateSqlRoute.post("/", async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+const ErrorSchema = z.object({
+  error: z.string(),
+  message: z.string(),
+});
 
-  const preamble = await authPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
-  }
-  const { authResult } = preamble;
+const validateRoute = createRoute({
+  method: "post",
+  path: "/",
+  tags: ["Validate SQL"],
+  summary: "Validate SQL without executing",
+  description:
+    "Runs the full 5-layer SQL validation pipeline (empty check, connection check, regex guard, AST parse, table whitelist) and returns structured results. Does NOT execute the query.",
+  request: {
+    body: {
+      content: { "application/json": { schema: ValidateSQLRequestSchema } },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      description: "Validation result",
+      content: { "application/json": { schema: ValidateSQLResponseSchema } },
+    },
+    422: {
+      description: "Validation error (invalid request body)",
+      content: {
+        "application/json": {
+          schema: ErrorSchema.extend({ details: z.array(z.unknown()).optional() }),
+        },
+      },
+    },
+  },
+});
 
-  // Parse body before entering request context
-  let body: unknown;
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json(
-      { error: "invalid_request", message: "Invalid JSON body." },
-      400,
-    );
-  }
+export const validateSqlRoute = new OpenAPIHono();
 
-  const parsed = ValidateSQLRequestSchema.safeParse(body);
-  if (!parsed.success) {
-    return c.json(
-      { error: "validation_error", message: "Invalid request body.", details: parsed.error.issues },
-      422,
-    );
-  }
+validateSqlRoute.openapi(
+  validateRoute,
+  async (c) => {
+    const req = c.req.raw;
+    const requestId = crypto.randomUUID();
 
-  const { sql, connectionId } = parsed.data;
-
-  return withRequestContext({ requestId, user: authResult.user }, () => {
-    const result = validateSQL(sql, connectionId);
-
-    if (!result.valid) {
-      return c.json({
-        valid: false,
-        errors: [{ layer: inferLayer(result.error!), message: result.error! }],
-        tables: [],
-      });
+    const preamble = await authPreamble(req, requestId);
+    if ("error" in preamble) {
+      // Auth errors use dynamic status codes that can't be statically typed in createRoute
+      return c.json(preamble.error, preamble.status, preamble.headers) as never;
     }
+    const { authResult } = preamble;
 
-    // Extract referenced tables from the valid query.
-    // getDBType/detectDBType are outside the catch — operational errors
-    // (missing connection, bad config) should propagate, not be swallowed.
-    let tables: string[] = [];
-    let dbType: string;
-    if (connectionId) {
-      dbType = connections.getDBType(connectionId);
-    } else {
-      dbType = detectDBType();
-    }
-    const trimmed = sql.trim().replace(/;\s*$/, "");
-    try {
-      const tableRefs = parser.tableList(trimmed, {
-        database: parserDatabase(dbType, connectionId),
-      });
-      tables = [
-        ...new Set(
-          tableRefs
-            .map((ref) => {
-              // tableList returns "action::schema::table" format
-              const parts = ref.split("::");
-              const table = parts[2]?.toLowerCase() ?? "";
-              const schema = parts[1]?.toLowerCase();
-              if (!table) return "";
-              return schema && schema !== "null" ? `${schema}.${table}` : table;
-            })
-            .filter(Boolean),
-        ),
-      ];
-    } catch (err) {
-      log.warn(
-        { err: err instanceof Error ? err : new Error(String(err)), sql: trimmed },
-        "Table extraction failed for valid query",
+    const { sql, connectionId } = c.req.valid("json");
+
+    return withRequestContext({ requestId, user: authResult.user }, () => {
+      const result = validateSQL(sql, connectionId);
+
+      if (!result.valid) {
+        return c.json({
+          valid: false,
+          errors: [{ layer: inferLayer(result.error!), message: result.error! }],
+          tables: [],
+        }, 200);
+      }
+
+      // Extract referenced tables from the valid query.
+      // getDBType/detectDBType are outside the catch — operational errors
+      // (missing connection, bad config) should propagate, not be swallowed.
+      let tables: string[] = [];
+      let dbType: string;
+      if (connectionId) {
+        dbType = connections.getDBType(connectionId);
+      } else {
+        dbType = detectDBType();
+      }
+      const trimmed = sql.trim().replace(/;\s*$/, "");
+      try {
+        const tableRefs = parser.tableList(trimmed, {
+          database: parserDatabase(dbType, connectionId),
+        });
+        tables = [
+          ...new Set(
+            tableRefs
+              .map((ref) => {
+                // tableList returns "action::schema::table" format
+                const parts = ref.split("::");
+                const table = parts[2]?.toLowerCase() ?? "";
+                const schema = parts[1]?.toLowerCase();
+                if (!table) return "";
+                return schema && schema !== "null" ? `${schema}.${table}` : table;
+              })
+              .filter(Boolean),
+          ),
+        ];
+      } catch (err) {
+        log.warn(
+          { err: err instanceof Error ? err : new Error(String(err)), sql: trimmed },
+          "Table extraction failed for valid query",
+        );
+      }
+
+      return c.json({ valid: true, errors: [], tables }, 200);
+    });
+  },
+  (result, c) => {
+    if (!result.success) {
+      return c.json(
+        { error: "validation_error", message: "Invalid request body.", details: result.error.issues },
+        422,
       );
     }
-
-    return c.json({ valid: true, errors: [], tables });
-  });
-});
+  },
+);

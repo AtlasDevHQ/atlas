@@ -16,7 +16,6 @@ import {
   ForkConversationBodySchema,
   NotebookStateBodySchema,
 } from "./conversations";
-import { HealthResponseSchema } from "./health";
 import { DemoStartSchema, DemoChatRequestSchema } from "./demo";
 
 const openapi = new Hono();
@@ -464,50 +463,6 @@ function buildSpec(): Record<string, unknown> {
             "400": errorResponse("Invalid conversation ID or notebook state body"),
             ...authErrors,
             "404": errorResponse("Conversation not found or not available"),
-          },
-        },
-      },
-
-      // -----------------------------------------------------------------
-      // GET /api/health — Health check
-      // -----------------------------------------------------------------
-      "/api/health": {
-        get: {
-          operationId: "healthCheck",
-          summary: "Health check",
-          description:
-            "Returns the health status of the Atlas API including checks for datasource connectivity, LLM provider, semantic layer, internal database, explore backend, auth mode, and Slack integration. " +
-            "Returns HTTP 200 for 'ok' or 'degraded' status, and 503 for 'error' status.",
-          tags: ["Health"],
-          security: [],
-          responses: {
-            "200": {
-              description:
-                "Service is healthy or degraded (some optional components unavailable)",
-              content: {
-                "application/json": {
-                  schema: toJsonSchema(HealthResponseSchema),
-                },
-              },
-            },
-            "503": {
-              description: "Service is unhealthy (critical component failure)",
-              content: {
-                "application/json": {
-                  schema: {
-                    oneOf: [
-                      toJsonSchema(HealthResponseSchema),
-                      toJsonSchema(
-                        z.object({
-                          status: z.literal("error"),
-                          error: z.string(),
-                        }),
-                      ),
-                    ],
-                  },
-                },
-              },
-            },
           },
         },
       },
@@ -3689,186 +3644,6 @@ function buildSpec(): Record<string, unknown> {
       },
 
       // -----------------------------------------------------------------
-      // Semantic — public read-only semantic layer API
-      // -----------------------------------------------------------------
-      "/api/v1/semantic/entities": {
-        get: {
-          operationId: "listEntities",
-          summary: "List semantic entities",
-          description:
-            "Returns a summary of all entity definitions from the semantic layer YAML files. Each entity includes table name, description, column count, join count, and type.",
-          tags: ["Semantic"],
-          security: [{ bearerAuth: [] }, {}],
-          responses: {
-            "200": {
-              description: "List of entity summaries",
-              content: {
-                "application/json": {
-                  schema: {
-                    type: "object",
-                    properties: {
-                      entities: {
-                        type: "array",
-                        items: {
-                          type: "object",
-                          properties: {
-                            table: { type: "string" },
-                            description: { type: "string" },
-                            columnCount: { type: "integer" },
-                            joinCount: { type: "integer" },
-                            type: { type: "string" },
-                          },
-                        },
-                      },
-                      warnings: {
-                        type: "array",
-                        items: { type: "string" },
-                        description: "Parse warnings (only present if any).",
-                      },
-                    },
-                  },
-                },
-              },
-            },
-            ...authErrors,
-          },
-        },
-      },
-
-      "/api/v1/semantic/entities/{name}": {
-        get: {
-          operationId: "getEntity",
-          summary: "Get entity details",
-          description:
-            "Returns the full parsed YAML content for a single semantic entity, including all dimensions, measures, joins, and query patterns.",
-          tags: ["Semantic"],
-          security: [{ bearerAuth: [] }, {}],
-          parameters: [
-            { name: "name", in: "path", required: true, schema: { type: "string" }, description: "Entity name (e.g. 'orders')." },
-          ],
-          responses: {
-            "200": {
-              description: "Full entity content",
-              content: {
-                "application/json": {
-                  schema: {
-                    type: "object",
-                    properties: {
-                      entity: { type: "object" },
-                    },
-                  },
-                },
-              },
-            },
-            "400": errorResponse("Invalid entity name"),
-            ...authErrors,
-            "403": errorResponse("Access denied (path traversal attempt)"),
-            "404": errorResponse("Entity not found"),
-          },
-        },
-      },
-
-      // -----------------------------------------------------------------
-      // Tables — public table discovery API
-      // -----------------------------------------------------------------
-      "/api/v1/tables": {
-        get: {
-          operationId: "listTables",
-          summary: "List queryable tables",
-          description:
-            "Returns a simplified view of semantic layer entities with column details, enabling SDK consumers to discover queryable tables.",
-          tags: ["Tables"],
-          security: [{ bearerAuth: [] }, {}],
-          responses: {
-            "200": {
-              description: "List of tables with columns",
-              content: {
-                "application/json": {
-                  schema: {
-                    type: "object",
-                    properties: {
-                      tables: { type: "array", items: { type: "object" } },
-                      warnings: {
-                        type: "array",
-                        items: { type: "string" },
-                        description: "Parse warnings (only present if any).",
-                      },
-                    },
-                  },
-                },
-              },
-            },
-            ...authErrors,
-          },
-        },
-      },
-
-      // -----------------------------------------------------------------
-      // Validate SQL — dry-run SQL validation
-      // -----------------------------------------------------------------
-      "/api/v1/validate-sql": {
-        post: {
-          operationId: "validateSQL",
-          summary: "Validate SQL without executing",
-          description:
-            "Runs the full 5-layer SQL validation pipeline (empty check, connection check, regex guard, AST parse, table whitelist) and returns structured results. Does NOT execute the query.",
-          tags: ["Validate SQL"],
-          security: [{ bearerAuth: [] }, {}],
-          requestBody: {
-            required: true,
-            content: {
-              "application/json": {
-                schema: {
-                  type: "object",
-                  required: ["sql"],
-                  properties: {
-                    sql: { type: "string", minLength: 1, description: "SQL query to validate." },
-                    connectionId: { type: "string", description: "Optional connection ID to validate against." },
-                  },
-                },
-              },
-            },
-          },
-          responses: {
-            "200": {
-              description: "Validation result",
-              content: {
-                "application/json": {
-                  schema: {
-                    type: "object",
-                    properties: {
-                      valid: { type: "boolean" },
-                      errors: {
-                        type: "array",
-                        items: {
-                          type: "object",
-                          properties: {
-                            layer: { type: "string", enum: ["empty_check", "connection", "regex_guard", "ast_parse", "table_whitelist"] },
-                            message: { type: "string" },
-                          },
-                        },
-                      },
-                      tables: {
-                        type: "array",
-                        items: { type: "string" },
-                        description: "Referenced tables (only populated when valid is true).",
-                      },
-                    },
-                  },
-                },
-              },
-            },
-            "400": errorResponse("Invalid JSON body"),
-            "422": errorResponse(
-              "Validation error (invalid request body)",
-              ValidationErrorSchema,
-            ),
-            ...authErrors,
-          },
-        },
-      },
-
-      // -----------------------------------------------------------------
       // Conversation sharing endpoints
       // -----------------------------------------------------------------
       "/api/v1/conversations/{id}/share": {
@@ -4760,10 +4535,6 @@ function buildSpec(): Record<string, unknown> {
       { name: "Suggestions", description: "User-facing query suggestions" },
       { name: "Prompts", description: "Prompt library collections and items" },
       { name: "Sessions", description: "User self-service session management (requires managed auth)" },
-      { name: "Semantic", description: "Public read-only semantic layer API" },
-      { name: "Tables", description: "Table discovery for SDK consumers" },
-      { name: "Validate SQL", description: "Dry-run SQL validation (no execution)" },
-      { name: "Health", description: "Service health checks" },
       { name: "Actions", description: "Approval-gated write operations (requires ATLAS_ACTIONS_ENABLED=true)" },
       { name: "Scheduled Tasks", description: "Recurring query tasks with cron scheduling (requires ATLAS_SCHEDULER_ENABLED=true)" },
       { name: "Auth", description: "Authentication routes (managed auth via Better Auth)" },

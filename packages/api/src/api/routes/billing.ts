@@ -8,7 +8,9 @@
  * at /api/auth/stripe/* — this file only adds Atlas-specific billing endpoints.
  */
 
-import { Hono } from "hono";
+import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { z } from "zod";
+import { HTTPException } from "hono/http-exception";
 import Stripe from "stripe";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
@@ -26,10 +28,9 @@ import {
 import { getCurrentPeriodUsage } from "@atlas/api/lib/metering";
 import { getPlanDefinition, getPlanLimits, isUnlimited } from "@atlas/api/lib/billing/plans";
 import { buildMetricStatus } from "@atlas/api/lib/billing/enforcement";
+import { ErrorSchema } from "./shared-schemas";
 
 const log = createLogger("billing");
-
-const billing = new Hono();
 
 // ---------------------------------------------------------------------------
 // Auth preamble (authenticated user, not admin-only)
@@ -66,16 +67,195 @@ async function billingAuthPreamble(req: Request, requestId: string) {
 }
 
 // ---------------------------------------------------------------------------
-// GET / — billing status for the active workspace
+// Schemas
 // ---------------------------------------------------------------------------
 
-billing.get("/", async (c) => {
+const PortalRequestSchema = z.object({
+  returnUrl: z.string().optional(),
+});
+
+const ByotRequestSchema = z.object({
+  enabled: z.boolean(),
+});
+
+// ---------------------------------------------------------------------------
+// Route definitions
+// ---------------------------------------------------------------------------
+
+const getBillingStatusRoute = createRoute({
+  method: "get",
+  path: "/",
+  tags: ["Billing"],
+  summary: "Get billing status",
+  description:
+    "Returns the billing status for the active workspace, including plan details, usage metrics, and subscription info.",
+  responses: {
+    200: {
+      description: "Billing status for the workspace",
+      content: {
+        "application/json": {
+          schema: z.record(z.string(), z.unknown()),
+        },
+      },
+    },
+    400: {
+      description: "No active organization",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    403: {
+      description: "Forbidden — insufficient permissions",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    404: {
+      description: "Billing not available or workspace not found",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const createPortalSessionRoute = createRoute({
+  method: "post",
+  path: "/portal",
+  tags: ["Billing"],
+  summary: "Create Stripe portal session",
+  description:
+    "Creates a Stripe Customer Portal session for the active workspace. Returns a URL to redirect the user to.",
+  request: {
+    body: {
+      required: false,
+      content: {
+        "application/json": {
+          schema: PortalRequestSchema,
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Portal session URL",
+      content: {
+        "application/json": {
+          schema: z.object({ url: z.string() }),
+        },
+      },
+    },
+    400: {
+      description: "No active organization or no Stripe customer",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    403: {
+      description: "Forbidden — insufficient permissions",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    404: {
+      description: "Billing not available",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const toggleByotRoute = createRoute({
+  method: "post",
+  path: "/byot",
+  tags: ["Billing"],
+  summary: "Toggle BYOT mode",
+  description:
+    "Enables or disables Bring Your Own Token (BYOT) mode for the active workspace. Requires admin or owner role.",
+  request: {
+    body: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: ByotRequestSchema,
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "BYOT mode updated",
+      content: {
+        "application/json": {
+          schema: z.object({
+            workspaceId: z.string(),
+            byot: z.boolean(),
+          }),
+        },
+      },
+    },
+    400: {
+      description: "Bad request — missing or invalid body, or no active organization",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    403: {
+      description: "Forbidden — admin or owner role required",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    404: {
+      description: "Billing not available or workspace not found",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Router
+// ---------------------------------------------------------------------------
+
+const billing = new OpenAPIHono({
+  defaultHook: (result, c) => {
+    if (!result.success) {
+      const detail = result.error.issues.map((i) => i.message).join("; ");
+      return c.json({ error: "invalid_request", message: detail || "Request validation failed." }, 400);
+    }
+  },
+});
+
+// GET / — billing status for the active workspace
+billing.openapi(getBillingStatusRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await billingAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status });
+    // Auth/rate-limit failure — return as-is with `as never` for type compatibility
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -164,7 +344,7 @@ billing.get("/", async (c) => {
           plan: subscription.plan,
           status: subscription.status,
         } : null,
-      });
+      }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to fetch billing status");
       return c.json({ error: "internal_error", message: "Failed to fetch billing status.", requestId }, 500);
@@ -175,17 +355,15 @@ billing.get("/", async (c) => {
 // GET /status is accessible via the root handler since billing is mounted
 // at /api/v1/billing — both /api/v1/billing and /api/v1/billing/status work.
 
-// ---------------------------------------------------------------------------
 // POST /portal — create Stripe Customer Portal session
-// ---------------------------------------------------------------------------
-
-billing.post("/portal", async (c) => {
+billing.openapi(createPortalSessionRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await billingAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status });
+    // Auth/rate-limit failure — return as-is with `as never` for type compatibility
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -207,11 +385,11 @@ billing.post("/portal", async (c) => {
 
       let returnUrl: string | undefined;
       try {
-        const raw = await req.json() as Record<string, unknown>;
-        if (typeof raw?.returnUrl === "string") returnUrl = raw.returnUrl;
+        const body = c.req.valid("json");
+        returnUrl = body.returnUrl;
       } catch (err) {
-        // No body is fine — returnUrl is optional
-        log.debug({ err: err instanceof Error ? err.message : String(err) }, "No returnUrl body in portal request");
+        // No body is fine — returnUrl is optional. Log if validation failed on a present body.
+        log.debug({ err: err instanceof Error ? err.message : String(err), requestId }, "Portal body parse/validation skipped — using default returnUrl");
       }
 
       const stripeClient = new Stripe(process.env.STRIPE_SECRET_KEY!);
@@ -220,7 +398,7 @@ billing.post("/portal", async (c) => {
         return_url: returnUrl || process.env.BETTER_AUTH_URL || "http://localhost:3000",
       });
 
-      return c.json({ url: session.url });
+      return c.json({ url: session.url }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to create portal session");
       return c.json({ error: "internal_error", message: "Failed to create billing portal session.", requestId }, 500);
@@ -228,17 +406,15 @@ billing.post("/portal", async (c) => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // POST /byot — toggle BYOT (Bring Your Own Token) mode
-// ---------------------------------------------------------------------------
-
-billing.post("/byot", async (c) => {
+billing.openapi(toggleByotRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await billingAuthPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status });
+    // Auth/rate-limit failure — return as-is with `as never` for type compatibility
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -257,16 +433,7 @@ billing.post("/byot", async (c) => {
       return c.json({ error: "org_required", message: "No active organization." }, 400);
     }
 
-    let enabled: boolean;
-    try {
-      const raw = await req.json() as Record<string, unknown>;
-      if (typeof raw?.enabled !== "boolean") {
-        return c.json({ error: "bad_request", message: "Missing or invalid 'enabled' field. Must be a boolean." }, 400);
-      }
-      enabled = raw.enabled;
-    } catch {
-      return c.json({ error: "bad_request", message: "Request body must be JSON with { enabled: boolean }." }, 400);
-    }
+    const { enabled } = c.req.valid("json");
 
     try {
       const updated = await updateWorkspaceByot(orgId, enabled);
@@ -275,12 +442,23 @@ billing.post("/byot", async (c) => {
       }
 
       log.info({ orgId, byot: enabled, userId: authResult.user?.id }, "BYOT mode toggled");
-      return c.json({ workspaceId: orgId, byot: enabled });
+      return c.json({ workspaceId: orgId, byot: enabled }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to update BYOT setting");
       return c.json({ error: "internal_error", message: "Failed to update BYOT setting.", requestId }, 500);
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// Error handler — catches malformed JSON on POST routes
+// ---------------------------------------------------------------------------
+
+billing.onError((err, c) => {
+  if (err instanceof HTTPException && err.status === 400) {
+    return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
+  }
+  throw err;
 });
 
 export { billing };

@@ -266,9 +266,9 @@ mock.module("@atlas/api/lib/profiler", () => ({
 // --- Import after mocks ---
 
 const { wizard } = await import("../routes/wizard");
-const { Hono } = await import("hono");
+const { OpenAPIHono } = await import("@hono/zod-openapi");
 
-const app = new Hono();
+const app = new OpenAPIHono();
 app.route("/api/v1/wizard", wizard);
 
 function request(path: string, init?: RequestInit) {
@@ -602,7 +602,9 @@ describe("POST /api/v1/wizard/save", () => {
     expect(res.status).toBe(400);
     const data = await json(res);
     expect(data.error).toBe("invalid_request");
-    expect(data.message).toContain("tableName");
+    // Zod validation catches missing required fields
+    expect(typeof data.message).toBe("string");
+    expect((data.message as string).length).toBeGreaterThan(0);
   });
 
   it("returns 400 for path-traversal table name with '..'", async () => {
@@ -667,18 +669,19 @@ describe("POST /api/v1/wizard/save", () => {
     expect(lastWriteContent).toBe("table: users\nversion: 2\n");
   });
 
-  it("skips invalid entities but saves valid ones", async () => {
+  it("returns 400 when entities contain invalid objects (Zod rejects non-conforming items)", async () => {
     const res = await postJson("/api/v1/wizard/save", {
       connectionId: "default",
       entities: [
         { tableName: "users", yaml: "table: users\n" },
-        { noTableName: true }, // invalid — filtered out
-        42, // invalid — filtered out
+        { noTableName: true }, // invalid — Zod rejects
+        42, // invalid — Zod rejects
       ],
     });
-    expect(res.status).toBe(201);
+    // Zod validation rejects the array because items don't conform to schema
+    expect(res.status).toBe(400);
     const data = await json(res);
-    expect(data.entityCount).toBe(1);
+    expect(data.error).toBe("invalid_request");
   });
 
   it("returns 500 with save_failed when filesystem write throws", async () => {

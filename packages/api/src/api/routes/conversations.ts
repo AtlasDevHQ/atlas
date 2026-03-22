@@ -6,13 +6,13 @@
  * (`publicConversations`) has its own in-memory rate limiter and no auth.
  */
 
-import { Hono } from "hono";
+import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { z } from "zod";
+import { HTTPException } from "hono/http-exception";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
 import {
   authenticateRequest,
-  checkRateLimit,
   getClientIP,
 } from "@atlas/api/lib/auth/middleware";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
@@ -33,6 +33,8 @@ import {
 } from "@atlas/api/lib/conversations";
 import type { ShareExpiryKey } from "@useatlas/types/share";
 import { SHARE_MODES, SHARE_EXPIRY_OPTIONS } from "@useatlas/types/share";
+import { authPreamble } from "./auth-preamble";
+import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 const log = createLogger("conversations");
 
@@ -121,48 +123,454 @@ function crudFailResponse(reason: CrudFailReason, requestId?: string) {
   }
 }
 
-const conversations = new Hono();
-
 // ---------------------------------------------------------------------------
-// Shared auth + rate-limit preamble
+// Shared path param schemas
 // ---------------------------------------------------------------------------
 
-async function authPreamble(req: Request, requestId: string) {
-  let authResult: AuthResult;
-  try {
-    authResult = await authenticateRequest(req);
-  } catch (err) {
-    log.error(
-      { err: err instanceof Error ? err : new Error(String(err)), requestId },
-      "Auth dispatch failed",
-    );
-    return { error: { error: "auth_error", message: "Authentication system error", requestId }, status: 500 as const };
-  }
-  if (!authResult.authenticated) {
-    log.warn({ requestId, status: authResult.status }, "Authentication failed");
-    return { error: { error: "auth_error", message: authResult.error, requestId }, status: authResult.status as 401 | 403 | 500 };
-  }
+const IdParamSchema = z.object({
+  id: z.string().openapi({ param: { name: "id", in: "path" }, example: "550e8400-e29b-41d4-a716-446655440000" }),
+});
 
-  const ip = getClientIP(req);
-  const rateLimitKey = authResult.user?.id ?? (ip ? `ip:${ip}` : "anon");
-  const rateCheck = checkRateLimit(rateLimitKey);
-  if (!rateCheck.allowed) {
-    const retryAfterSeconds = Math.ceil((rateCheck.retryAfterMs ?? 60000) / 1000);
-    return {
-      error: { error: "rate_limited", message: "Too many requests. Please wait before trying again.", retryAfterSeconds, requestId },
-      status: 429 as const,
-      headers: { "Retry-After": String(retryAfterSeconds) },
-    };
-  }
+// ---------------------------------------------------------------------------
+// Route definitions
+// ---------------------------------------------------------------------------
 
-  return { authResult };
-}
+const listConversationsRoute = createRoute({
+  method: "get",
+  path: "/",
+  tags: ["Conversations"],
+  summary: "List conversations",
+  description:
+    "Returns a paginated list of conversations for the authenticated user. Requires an internal database (DATABASE_URL).",
+  request: {
+    query: z.object({
+      limit: z.string().optional().openapi({ param: { name: "limit", in: "query" }, example: "20" }),
+      offset: z.string().optional().openapi({ param: { name: "offset", in: "query" }, example: "0" }),
+      starred: z.string().optional().openapi({ param: { name: "starred", in: "query" }, example: "true" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Paginated list of conversations",
+      content: { "application/json": { schema: ListConversationsResponseSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — insufficient permissions",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Not available (no internal database configured)",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const getConversationRoute = createRoute({
+  method: "get",
+  path: "/{id}",
+  tags: ["Conversations"],
+  summary: "Get conversation with messages",
+  description:
+    "Returns a single conversation with all its messages. Enforces ownership when auth is enabled.",
+  request: {
+    params: IdParamSchema,
+  },
+  responses: {
+    200: {
+      description: "Conversation with messages",
+      content: { "application/json": { schema: ConversationWithMessagesSchema } },
+    },
+    400: {
+      description: "Invalid conversation ID format",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — insufficient permissions",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Conversation not found or not available",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const starConversationRoute = createRoute({
+  method: "patch",
+  path: "/{id}/star",
+  tags: ["Conversations"],
+  summary: "Star or unstar a conversation",
+  description: "Sets the starred status of a conversation.",
+  request: {
+    params: IdParamSchema,
+    body: {
+      content: { "application/json": { schema: StarConversationBodySchema } },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      description: "Star status updated",
+      content: {
+        "application/json": {
+          schema: z.object({ id: z.string(), starred: z.boolean() }),
+        },
+      },
+    },
+    400: {
+      description: "Invalid conversation ID or request body",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — insufficient permissions",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Conversation not found or not available",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const notebookStateRoute = createRoute({
+  method: "patch",
+  path: "/{id}/notebook-state",
+  tags: ["Conversations"],
+  summary: "Update notebook state",
+  description:
+    "Updates the notebook state of a conversation, including cell order, cell properties, and branch metadata.",
+  request: {
+    params: IdParamSchema,
+    body: {
+      content: { "application/json": { schema: NotebookStateBodySchema } },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      description: "Notebook state updated",
+      content: {
+        "application/json": {
+          schema: z.object({ id: z.string(), notebookState: z.record(z.string(), z.unknown()) }),
+        },
+      },
+    },
+    400: {
+      description: "Invalid conversation ID or notebook state body",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — insufficient permissions",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Conversation not found or not available",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const forkConversationRoute = createRoute({
+  method: "post",
+  path: "/{id}/fork",
+  tags: ["Conversations"],
+  summary: "Fork a conversation at a specific message",
+  description:
+    "Creates a new conversation by forking an existing one at the specified message. " +
+    "Messages up to and including the fork point are copied to the new conversation. " +
+    "Branch metadata is saved to both the source and forked conversation's notebook state.",
+  request: {
+    params: IdParamSchema,
+    body: {
+      content: { "application/json": { schema: ForkConversationBodySchema } },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      description: "Fork created successfully",
+      content: {
+        "application/json": {
+          schema: z.record(z.string(), z.unknown()),
+        },
+      },
+    },
+    400: {
+      description: "Invalid conversation ID or request body",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — insufficient permissions",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Conversation not found or not available",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const getShareStatusRoute = createRoute({
+  method: "get",
+  path: "/{id}/share",
+  tags: ["Conversations"],
+  summary: "Get conversation share status",
+  description:
+    "Returns whether a conversation is currently shared and its share link details.",
+  request: {
+    params: IdParamSchema,
+  },
+  responses: {
+    200: {
+      description: "Share status",
+      content: {
+        "application/json": {
+          schema: z.record(z.string(), z.unknown()),
+        },
+      },
+    },
+    400: {
+      description: "Invalid conversation ID format",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — insufficient permissions",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Conversation not found or not available",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+// Body is optional and parsed manually in the handler via safeParse — not declared
+// in the route schema to avoid framework-level validation on empty/missing bodies.
+const shareConversationRoute = createRoute({
+  method: "post",
+  path: "/{id}/share",
+  tags: ["Conversations"],
+  summary: "Generate share link",
+  description:
+    "Creates a shareable link for a conversation. Optionally specify expiry duration and share mode (public or org-only).",
+  request: {
+    params: IdParamSchema,
+  },
+  responses: {
+    200: {
+      description: "Share link created",
+      content: {
+        "application/json": {
+          schema: z.record(z.string(), z.unknown()),
+        },
+      },
+    },
+    400: {
+      description: "Invalid conversation ID or share options",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — insufficient permissions",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Conversation not found or not available",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const unshareConversationRoute = createRoute({
+  method: "delete",
+  path: "/{id}/share",
+  tags: ["Conversations"],
+  summary: "Revoke share link",
+  description: "Revokes the share link for a conversation, making it private again.",
+  request: {
+    params: IdParamSchema,
+  },
+  responses: {
+    204: {
+      description: "Share link revoked",
+    },
+    400: {
+      description: "Invalid conversation ID format",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — insufficient permissions",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Conversation not found or not available",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const deleteConversationRoute = createRoute({
+  method: "delete",
+  path: "/{id}",
+  tags: ["Conversations"],
+  summary: "Delete a conversation",
+  description:
+    "Deletes a conversation and all its messages. Enforces ownership when auth is enabled.",
+  request: {
+    params: IdParamSchema,
+  },
+  responses: {
+    204: {
+      description: "Conversation deleted successfully",
+    },
+    400: {
+      description: "Invalid conversation ID format",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — insufficient permissions",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Conversation not found or not available",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Router
+// ---------------------------------------------------------------------------
+
+const conversations = new OpenAPIHono({
+  defaultHook: (result, c) => {
+    if (!result.success) {
+      const detail = result.error.issues.map((i) => i.message).join("; ");
+      return c.json({ error: "invalid_request", message: detail || "Request validation failed." }, 400);
+    }
+  },
+});
+
+// JSON parse error handler for routes that accept request bodies
+conversations.onError((err, c) => {
+  if (err instanceof HTTPException && err.status === 400) {
+    return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+  }
+  throw err;
+});
 
 // ---------------------------------------------------------------------------
 // GET / — list conversations
 // ---------------------------------------------------------------------------
 
-conversations.get("/", async (c) => {
+conversations.openapi(listConversationsRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
@@ -172,16 +580,17 @@ conversations.get("/", async (c) => {
 
   const preamble = await authPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    // Auth/rate-limit failure — status not in route schema, use `as never`
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const rawLimit = parseInt(c.req.query("limit") ?? "20", 10);
-    const rawOffset = parseInt(c.req.query("offset") ?? "0", 10);
+    const rawLimit = parseInt(c.req.valid("query").limit ?? "20", 10);
+    const rawOffset = parseInt(c.req.valid("query").offset ?? "0", 10);
     const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 100) : 20;
     const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
-    const starredParam = c.req.query("starred");
+    const starredParam = c.req.valid("query").starred;
     const starred = starredParam === "true" ? true : starredParam === "false" ? false : undefined;
     const result = await listConversations({
       userId: authResult.user?.id,
@@ -190,7 +599,7 @@ conversations.get("/", async (c) => {
       limit,
       offset,
     });
-    return c.json(result);
+    return c.json(result, 200);
   });
 });
 
@@ -198,7 +607,7 @@ conversations.get("/", async (c) => {
 // GET /:id — get conversation with messages
 // ---------------------------------------------------------------------------
 
-conversations.get("/:id", async (c) => {
+conversations.openapi(getConversationRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
@@ -208,11 +617,12 @@ conversations.get("/:id", async (c) => {
 
   const preamble = await authPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    // Auth/rate-limit failure — status not in route schema, use `as never`
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
-  const id = c.req.param("id");
+  const { id } = c.req.valid("param");
   if (!UUID_RE.test(id)) {
     return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
   }
@@ -223,7 +633,7 @@ conversations.get("/:id", async (c) => {
       const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);
     }
-    return c.json(result.data);
+    return c.json(result.data, 200);
   });
 });
 
@@ -231,7 +641,7 @@ conversations.get("/:id", async (c) => {
 // PATCH /:id/star — star or unstar a conversation
 // ---------------------------------------------------------------------------
 
-conversations.patch("/:id/star", async (c) => {
+conversations.openapi(starConversationRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
@@ -241,35 +651,25 @@ conversations.patch("/:id/star", async (c) => {
 
   const preamble = await authPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    // Auth/rate-limit failure — status not in route schema, use `as never`
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
-  const id = c.req.param("id");
+  const { id } = c.req.valid("param");
   if (!UUID_RE.test(id)) {
     return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
   }
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    let body: unknown;
-    try {
-      body = await req.json();
-    } catch (err) {
-      log.debug({ err: err instanceof Error ? err.message : String(err) }, "Invalid JSON body in PATCH star");
-      return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
-    }
+    const parsed = c.req.valid("json");
 
-    const parsed = StarConversationBodySchema.safeParse(body);
-    if (!parsed.success) {
-      return c.json({ error: "invalid_request", message: "Body must contain { starred: boolean }." }, 400);
-    }
-
-    const result = await starConversation(id, parsed.data.starred, authResult.user?.id);
+    const result = await starConversation(id, parsed.starred, authResult.user?.id);
     if (!result.ok) {
       const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);
     }
-    return c.json({ id, starred: parsed.data.starred });
+    return c.json({ id, starred: parsed.starred }, 200);
   });
 });
 
@@ -277,7 +677,7 @@ conversations.patch("/:id/star", async (c) => {
 // PATCH /:id/notebook-state — update notebook state
 // ---------------------------------------------------------------------------
 
-conversations.patch("/:id/notebook-state", async (c) => {
+conversations.openapi(notebookStateRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
@@ -287,35 +687,25 @@ conversations.patch("/:id/notebook-state", async (c) => {
 
   const preamble = await authPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    // Auth/rate-limit failure — status not in route schema, use `as never`
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
-  const id = c.req.param("id");
+  const { id } = c.req.valid("param");
   if (!UUID_RE.test(id)) {
     return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
   }
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    let body: unknown;
-    try {
-      body = await req.json();
-    } catch (err) {
-      log.debug({ err: err instanceof Error ? err.message : String(err) }, "Invalid JSON body in PATCH notebook-state");
-      return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
-    }
+    const parsed = c.req.valid("json");
 
-    const parsed = NotebookStateBodySchema.safeParse(body);
-    if (!parsed.success) {
-      return c.json({ error: "invalid_request", message: "Invalid notebook state body." }, 400);
-    }
-
-    const result = await updateNotebookState(id, parsed.data, authResult.user?.id);
+    const result = await updateNotebookState(id, parsed, authResult.user?.id);
     if (!result.ok) {
       const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);
     }
-    return c.json({ id, notebookState: parsed.data });
+    return c.json({ id, notebookState: parsed }, 200);
   });
 });
 
@@ -323,7 +713,7 @@ conversations.patch("/:id/notebook-state", async (c) => {
 // POST /:id/fork — fork a conversation at a specific message
 // ---------------------------------------------------------------------------
 
-conversations.post("/:id/fork", async (c) => {
+conversations.openapi(forkConversationRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
@@ -333,32 +723,22 @@ conversations.post("/:id/fork", async (c) => {
 
   const preamble = await authPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    // Auth/rate-limit failure — status not in route schema, use `as never`
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
-  const id = c.req.param("id");
+  const { id } = c.req.valid("param");
   if (!UUID_RE.test(id)) {
     return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
   }
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
-    let body: unknown;
-    try {
-      body = await req.json();
-    } catch (err) {
-      log.debug({ err: err instanceof Error ? err.message : String(err) }, "Invalid JSON body in POST fork");
-      return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
-    }
-
-    const parsed = ForkConversationBodySchema.safeParse(body);
-    if (!parsed.success) {
-      return c.json({ error: "invalid_request", message: "Body must contain { forkPointMessageId: string }." }, 400);
-    }
+    const parsed = c.req.valid("json");
 
     const result = await forkConversation({
       sourceId: id,
-      forkPointMessageId: parsed.data.forkPointMessageId,
+      forkPointMessageId: parsed.forkPointMessageId,
       userId: authResult.user?.id,
       orgId: authResult.user?.activeOrganizationId,
     });
@@ -368,10 +748,10 @@ conversations.post("/:id/fork", async (c) => {
     }
 
     // Update notebook_state on source and new conversation
-    const label = parsed.data.label ?? `Fork from cell`;
+    const label = parsed.label ?? `Fork from cell`;
     const branch = {
       conversationId: result.data.id,
-      forkPointCellId: parsed.data.forkPointMessageId,
+      forkPointCellId: parsed.forkPointMessageId,
       label,
       createdAt: new Date().toISOString(),
     };
@@ -385,7 +765,7 @@ conversations.post("/:id/fork", async (c) => {
         messageCount: result.data.messageCount,
         branches: [branch],
         warning: "Fork created but branch metadata could not be saved to source conversation.",
-      });
+      }, 200);
     }
 
     const existing = sourceConv.data.notebookState ?? { version: 3 };
@@ -401,7 +781,7 @@ conversations.post("/:id/fork", async (c) => {
     const forkChildState = {
       version: 3,
       forkRootId: sourceRoot ?? id,
-      forkPointCellId: parsed.data.forkPointMessageId,
+      forkPointCellId: parsed.forkPointMessageId,
     };
 
     // Write both notebook_state updates in parallel
@@ -425,7 +805,7 @@ conversations.post("/:id/fork", async (c) => {
       messageCount: result.data.messageCount,
       branches: [...existingBranches, branch],
       ...(metadataWarning ? { warning: metadataWarning } : {}),
-    });
+    }, 200);
   });
 });
 
@@ -433,7 +813,7 @@ conversations.post("/:id/fork", async (c) => {
 // GET /:id/share — get share status
 // ---------------------------------------------------------------------------
 
-conversations.get("/:id/share", async (c) => {
+conversations.openapi(getShareStatusRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
@@ -443,11 +823,12 @@ conversations.get("/:id/share", async (c) => {
 
   const preamble = await authPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    // Auth/rate-limit failure — status not in route schema, use `as never`
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
-  const id = c.req.param("id");
+  const { id } = c.req.valid("param");
   if (!UUID_RE.test(id)) {
     return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
   }
@@ -462,7 +843,7 @@ conversations.get("/:id/share", async (c) => {
       return c.json(fail.body, fail.status);
     }
     if (!result.data.shared) {
-      return c.json({ shared: false as const });
+      return c.json({ shared: false as const }, 200);
     }
     const baseUrl = new URL(req.url).origin;
     return c.json({
@@ -471,7 +852,7 @@ conversations.get("/:id/share", async (c) => {
       url: `${baseUrl}/shared/${result.data.token}`,
       expiresAt: result.data.expiresAt,
       shareMode: result.data.shareMode,
-    });
+    }, 200);
   });
 });
 
@@ -479,7 +860,7 @@ conversations.get("/:id/share", async (c) => {
 // POST /:id/share — generate share link
 // ---------------------------------------------------------------------------
 
-conversations.post("/:id/share", async (c) => {
+conversations.openapi(shareConversationRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
@@ -489,11 +870,12 @@ conversations.post("/:id/share", async (c) => {
 
   const preamble = await authPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    // Auth/rate-limit failure — status not in route schema, use `as never`
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
-  const id = c.req.param("id");
+  const { id } = c.req.valid("param");
   if (!UUID_RE.test(id)) {
     return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
   }
@@ -528,7 +910,7 @@ conversations.post("/:id/share", async (c) => {
       url: `${baseUrl}/shared/${result.data.token}`,
       expiresAt: result.data.expiresAt,
       shareMode: result.data.shareMode,
-    });
+    }, 200);
   });
 });
 
@@ -536,7 +918,7 @@ conversations.post("/:id/share", async (c) => {
 // DELETE /:id/share — revoke share link
 // ---------------------------------------------------------------------------
 
-conversations.delete("/:id/share", async (c) => {
+conversations.openapi(unshareConversationRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
@@ -546,11 +928,12 @@ conversations.delete("/:id/share", async (c) => {
 
   const preamble = await authPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    // Auth/rate-limit failure — status not in route schema, use `as never`
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
-  const id = c.req.param("id");
+  const { id } = c.req.valid("param");
   if (!UUID_RE.test(id)) {
     return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
   }
@@ -569,7 +952,7 @@ conversations.delete("/:id/share", async (c) => {
 // DELETE /:id — delete conversation
 // ---------------------------------------------------------------------------
 
-conversations.delete("/:id", async (c) => {
+conversations.openapi(deleteConversationRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
@@ -579,11 +962,12 @@ conversations.delete("/:id", async (c) => {
 
   const preamble = await authPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    // Auth/rate-limit failure — status not in route schema, use `as never`
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
-  const id = c.req.param("id");
+  const { id } = c.req.valid("param");
   if (!UUID_RE.test(id)) {
     return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
   }
@@ -660,7 +1044,55 @@ function checkPublicRateLimit(ip: string): boolean {
   return entry.count <= PUBLIC_RATE_MAX;
 }
 
-const publicConversations = new Hono();
+// ---------------------------------------------------------------------------
+// Public router + route definition
+// ---------------------------------------------------------------------------
+
+const getSharedConversationRoute = createRoute({
+  method: "get",
+  path: "/{token}",
+  tags: ["Conversations"],
+  summary: "View a shared conversation",
+  description:
+    "Returns the content of a shared conversation. No authentication required for public shares. Org-scoped shares require authentication. Rate limited per IP.",
+  request: {
+    params: z.object({
+      token: z.string().openapi({ param: { name: "token", in: "path" }, example: "abc123def456ghi789jk" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Shared conversation content",
+      content: {
+        "application/json": {
+          schema: z.record(z.string(), z.unknown()),
+        },
+      },
+    },
+    403: {
+      description: "Org-scoped share requires authentication",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    404: {
+      description: "Conversation not found",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    410: {
+      description: "Share link has expired",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const publicConversations = new OpenAPIHono();
 
 /** Map a SharedConversationFailReason to a JSON response. */
 function sharedConversationFailResponse(reason: SharedConversationFailReason) {
@@ -680,7 +1112,7 @@ function sharedConversationFailResponse(reason: SharedConversationFailReason) {
   }
 }
 
-publicConversations.get("/:token", async (c) => {
+publicConversations.openapi(getSharedConversationRoute, async (c) => {
   const requestId = crypto.randomUUID();
 
   if (!hasInternalDB()) {
@@ -697,7 +1129,7 @@ publicConversations.get("/:token", async (c) => {
     return c.json({ error: "rate_limited", message: "Too many requests. Please wait before trying again.", requestId }, 429);
   }
 
-  const token = c.req.param("token");
+  const { token } = c.req.valid("param");
   if (!SHARE_TOKEN_RE.test(token)) {
     return c.json({ error: "not_found", message: "Conversation not found." }, 404);
   }
@@ -740,7 +1172,7 @@ publicConversations.get("/:token", async (c) => {
       content: m.content,
       createdAt: m.createdAt,
     })),
-  });
+  }, 200);
 });
 
 export { conversations, publicConversations };

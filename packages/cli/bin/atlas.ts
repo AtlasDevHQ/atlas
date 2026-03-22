@@ -36,7 +36,7 @@
  * tables and views are profiled automatically.
  *
  * Requires ATLAS_DATASOURCE_URL in environment.
- * Supports PostgreSQL (postgresql://...) and MySQL (mysql://...).
+ * Supports PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, and Salesforce.
  */
 
 import { Pool } from "pg";
@@ -79,8 +79,14 @@ import {
 /** Adapts the profiler's structured logger to CLI console output. */
 const cliProfileLogger: ProfileLogger = {
   info(_obj, msg) { console.log(`  ${msg}`); },
-  warn(obj, msg) { console.warn(`  Warning: ${msg}${obj.err ? `: ${obj.err}` : ""}`); },
-  error(obj, msg) { console.error(`  ${msg}${obj.err ? `: ${obj.err}` : ""}`); },
+  warn(obj, msg) {
+    const ctx = [obj.table, obj.column].filter(Boolean).join(".");
+    console.warn(`  Warning: ${msg}${ctx ? ` (${ctx})` : ""}${obj.err ? `: ${obj.err}` : ""}`);
+  },
+  error(obj, msg) {
+    const ctx = [obj.table, obj.column].filter(Boolean).join(".");
+    console.error(`  ${msg}${ctx ? ` (${ctx})` : ""}${obj.err ? `: ${obj.err}` : ""}`);
+  },
 };
 
 // Re-export from shared profiler for test backward compatibility
@@ -134,7 +140,7 @@ async function loadDuckDB() {
 const SEMANTIC_DIR = path.resolve("semantic");
 const ENTITIES_DIR = path.join(SEMANTIC_DIR, "entities");
 
-/** Log a warning summary for profiling errors (first 5 + overflow). */
+/** Log a warning summary for profiling errors (first 5 + overflow). CLI-specific: uses console.warn formatting rather than the profiler's structured logger. */
 export function logProfilingErrors(errors: ProfileError[], total: number): void {
   const pct = Math.round((errors.length / total) * 100);
   console.warn(

@@ -1074,7 +1074,7 @@ export async function listPostgresObjects(connectionString: string, schema: stri
   }
 }
 
-export async function listMySQLObjects(connectionString: string, _log: ProfileLogger = defaultLog): Promise<DatabaseObject[]> {
+export async function listMySQLObjects(connectionString: string, log: ProfileLogger = defaultLog): Promise<DatabaseObject[]> {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const mysql = require("mysql2/promise");
   const pool = mysql.createPool({
@@ -1094,7 +1094,7 @@ export async function listMySQLObjects(connectionString: string, _log: ProfileLo
     }));
   } finally {
     await pool.end().catch((err: unknown) => {
-      _log.warn({ err: err instanceof Error ? err.message : String(err) }, "MySQL pool cleanup warning");
+      log.warn({ err: err instanceof Error ? err.message : String(err) }, "MySQL pool cleanup warning");
     });
   }
 }
@@ -1139,10 +1139,12 @@ async function queryForeignKeys(
     SELECT
       a.attname AS from_column,
       cl.relname AS to_table,
-      af.attname AS to_column
+      af.attname AS to_column,
+      ns.nspname AS to_schema
     FROM pg_constraint c
     JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey)
     JOIN pg_class cl ON cl.oid = c.confrelid
+    JOIN pg_namespace ns ON ns.oid = cl.relnamespace
     JOIN pg_attribute af ON af.attrelid = c.confrelid AND af.attnum = ANY(c.confkey)
     WHERE c.contype = 'f'
       AND c.conrelid = $1::regclass
@@ -1150,9 +1152,9 @@ async function queryForeignKeys(
     `,
     [pgTableRef(tableName, schema)]
   );
-  return result.rows.map((r: { from_column: string; to_table: string; to_column: string }) => ({
+  return result.rows.map((r: { from_column: string; to_table: string; to_column: string; to_schema: string }) => ({
     from_column: r.from_column,
-    to_table: r.to_table,
+    to_table: r.to_schema !== schema ? `${r.to_schema}.${r.to_table}` : r.to_table,
     to_column: r.to_column,
     source: "constraint" as const,
   }));
@@ -1404,7 +1406,10 @@ export async function profilePostgres(
     );
 
     for (const r of partResult.rows as { relname: string; strategy: string; partition_key: string }[]) {
-      if (r.strategy !== "range" && r.strategy !== "list" && r.strategy !== "hash") continue;
+      if (r.strategy !== "range" && r.strategy !== "list" && r.strategy !== "hash") {
+        log.warn({ table: r.relname, strategy: r.strategy }, "Unrecognized partition strategy — skipping");
+        continue;
+      }
       partitionMap.set(r.relname, { strategy: r.strategy, key: r.partition_key });
     }
   } catch (partErr) {

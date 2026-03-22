@@ -26,6 +26,9 @@ import { adminAuthPreamble } from "./admin-auth";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import {
   type ProfilingResult,
+  OBJECT_TYPES,
+  FK_SOURCES,
+  PARTITION_STRATEGIES,
   listPostgresObjects,
   listMySQLObjects,
   profilePostgres,
@@ -60,7 +63,58 @@ const GenerateRequestSchema = z.object({
   tables: z.array(z.string()).min(1),
 });
 
-const GenerateResponseSchema = z.record(z.string(), z.unknown());
+const WizardEntityColumnSchema = z.object({
+  name: z.string(),
+  type: z.string(),
+  mappedType: z.string().optional(),
+  nullable: z.boolean(),
+  isPrimaryKey: z.boolean(),
+  isForeignKey: z.boolean(),
+  isEnumLike: z.boolean(),
+  sampleValues: z.array(z.string()),
+  uniqueCount: z.number().nullable(),
+  nullCount: z.number().nullable(),
+});
+
+const WizardForeignKeySchema = z.object({
+  fromColumn: z.string(),
+  toTable: z.string(),
+  toColumn: z.string(),
+  source: z.enum(FK_SOURCES),
+});
+
+const WizardInferredForeignKeySchema = z.object({
+  fromColumn: z.string(),
+  toTable: z.string(),
+  toColumn: z.string(),
+});
+
+const WizardEntityResultSchema = z.object({
+  tableName: z.string(),
+  objectType: z.enum(OBJECT_TYPES),
+  rowCount: z.number(),
+  columnCount: z.number(),
+  yaml: z.string(),
+  profile: z.object({
+    columns: z.array(WizardEntityColumnSchema),
+    primaryKeys: z.array(z.string()),
+    foreignKeys: z.array(WizardForeignKeySchema),
+    inferredForeignKeys: z.array(WizardInferredForeignKeySchema),
+    flags: z.object({
+      possiblyAbandoned: z.boolean(),
+      possiblyDenormalized: z.boolean(),
+    }),
+    notes: z.array(z.string()),
+  }),
+});
+
+const GenerateResponseSchema = z.object({
+  connectionId: z.string(),
+  dbType: z.string(),
+  schema: z.string(),
+  entities: z.array(WizardEntityResultSchema),
+  errors: z.array(z.object({ table: z.string(), error: z.string() })),
+});
 
 const PreviewRequestSchema = z.object({
   question: z.string().min(1),
@@ -99,16 +153,16 @@ const ForeignKeySchema = z.object({
   from_column: z.string().min(1),
   to_table: z.string().min(1),
   to_column: z.string().min(1),
-  source: z.enum(["constraint", "inferred"]),
+  source: z.enum(FK_SOURCES),
 });
 
 /**
  * Zod schema for a table profile (snake_case wire format).
- * Keep in sync with TableProfile from @useatlas/types.
+ * Derived from const tuples in @useatlas/types — no manual enum sync needed.
  */
 const TableProfileSchema = z.object({
   table_name: z.string(),
-  object_type: z.enum(["table", "view", "materialized_view"]),
+  object_type: z.enum(OBJECT_TYPES),
   row_count: z.number(),
   columns: z.array(ColumnProfileSchema),
   primary_key_columns: z.array(z.string()),
@@ -121,7 +175,7 @@ const TableProfileSchema = z.object({
   }),
   matview_populated: z.boolean().optional(),
   partition_info: z.object({
-    strategy: z.enum(["range", "list", "hash"]),
+    strategy: z.enum(PARTITION_STRATEGIES),
     key: z.string(),
     children: z.array(z.string()),
   }).optional(),

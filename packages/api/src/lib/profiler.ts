@@ -12,17 +12,26 @@ import { createLogger } from "@atlas/api/lib/logger";
 
 // Re-export canonical types so existing consumers of @atlas/api/lib/profiler
 // continue to work without import path changes.
+export {
+  OBJECT_TYPES,
+  FK_SOURCES,
+  PARTITION_STRATEGIES,
+} from "@useatlas/types";
 export type {
   ObjectType,
   ColumnProfile,
   DatabaseObject,
   ForeignKey,
   ForeignKeySource,
+  PartitionStrategy,
+  PartitionInfo,
+  TableFlags,
   TableProfile,
   ProfileError,
   ProfilingResult,
 } from "@useatlas/types";
 
+// Also import locally for use within this module's function signatures.
 import type {
   ColumnProfile,
   DatabaseObject,
@@ -338,13 +347,18 @@ export function detectDenormalizedTables(profiles: TableProfile[]): void {
 }
 
 export function analyzeTableProfiles(profiles: readonly TableProfile[]): TableProfile[] {
-  // Create fresh copies with reset analysis fields (no mutation of input)
+  // Create fresh copies with reset analysis fields (no mutation of input).
+  // Deep-clone foreign_keys and partition_info to fully isolate from input.
   const analyzed: TableProfile[] = profiles.map((p) => ({
     ...p,
+    foreign_keys: p.foreign_keys.map((fk) => ({ ...fk })),
     inferred_foreign_keys: [],
     profiler_notes: [],
     table_flags: { possibly_abandoned: false, possibly_denormalized: false },
     columns: p.columns.map((col) => ({ ...col, profiler_notes: [] })),
+    partition_info: p.partition_info
+      ? { ...p.partition_info, children: [...p.partition_info.children] }
+      : undefined,
   }));
 
   inferForeignKeys(analyzed);

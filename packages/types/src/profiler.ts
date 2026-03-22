@@ -6,14 +6,20 @@
  */
 
 // ---------------------------------------------------------------------------
-// Core enums & primitives
+// Core enums & primitives — const tuples as single source of truth
 // ---------------------------------------------------------------------------
 
-/** Database object type returned by profiler discovery. */
-export type ObjectType = "table" | "view" | "materialized_view";
+/** Valid database object types returned by profiler discovery. */
+export const OBJECT_TYPES = ["table", "view", "materialized_view"] as const;
+export type ObjectType = (typeof OBJECT_TYPES)[number];
 
-/** Source of a foreign key relationship. */
-export type ForeignKeySource = "constraint" | "inferred";
+/** Valid foreign key relationship sources. */
+export const FK_SOURCES = ["constraint", "inferred"] as const;
+export type ForeignKeySource = (typeof FK_SOURCES)[number];
+
+/** Valid partition strategies. */
+export const PARTITION_STRATEGIES = ["range", "list", "hash"] as const;
+export type PartitionStrategy = (typeof PARTITION_STRATEGIES)[number];
 
 // ---------------------------------------------------------------------------
 // Foreign key
@@ -57,6 +63,19 @@ export interface ColumnProfile {
 // Table profile
 // ---------------------------------------------------------------------------
 
+/** Heuristic flags set by `analyzeTableProfiles`. */
+export interface TableFlags {
+  possibly_abandoned: boolean;
+  possibly_denormalized: boolean;
+}
+
+/** Partition metadata for partitioned Postgres tables. */
+export interface PartitionInfo {
+  strategy: PartitionStrategy;
+  key: string;
+  children: string[];
+}
+
 /**
  * Table profile from the database profiler.
  *
@@ -72,12 +91,9 @@ export interface TableProfile {
   foreign_keys: ForeignKey[];
   inferred_foreign_keys: ForeignKey[];
   profiler_notes: string[];
-  table_flags: {
-    possibly_abandoned: boolean;
-    possibly_denormalized: boolean;
-  };
+  table_flags: TableFlags;
   matview_populated?: boolean;
-  partition_info?: { strategy: "range" | "list" | "hash"; key: string; children: string[] };
+  partition_info?: PartitionInfo;
 }
 
 // ---------------------------------------------------------------------------
@@ -148,7 +164,7 @@ export interface WizardEntityResult {
     primaryKeys: string[];
     foreignKeys: WizardForeignKey[];
     inferredForeignKeys: WizardInferredForeignKey[];
-    flags: { possiblyAbandoned: boolean; possiblyDenormalized: boolean };
+    flags: TableFlags;
     notes: string[];
   };
 }

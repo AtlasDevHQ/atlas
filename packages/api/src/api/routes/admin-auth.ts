@@ -32,6 +32,7 @@ export function authErrorCode(error: string): "session_expired" | "auth_error" {
  * - `{ error, status, headers? }` on failure (401/403/429/500)
  * - `{ authResult }` on success (authenticated admin user)
  *
+ * All error objects include `requestId` for log correlation.
  * The `headers` field is only present for 429 rate-limit responses.
  */
 export async function adminAuthPreamble(req: Request, requestId: string) {
@@ -65,7 +66,7 @@ export async function adminAuthPreamble(req: Request, requestId: string) {
   if (!rateCheck.allowed) {
     const retryAfterSeconds = Math.ceil((rateCheck.retryAfterMs ?? 60000) / 1000);
     return {
-      error: { error: "rate_limited", message: "Too many requests. Please wait before trying again.", retryAfterSeconds },
+      error: { error: "rate_limited", message: "Too many requests. Please wait before trying again.", retryAfterSeconds, requestId },
       status: 429 as const,
       headers: { "Retry-After": String(retryAfterSeconds) },
     };

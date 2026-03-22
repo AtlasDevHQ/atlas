@@ -17,6 +17,7 @@ import {
 } from "@atlas/api/lib/metering";
 import { getPlanDefinition, getPlanLimits, isUnlimited } from "@atlas/api/lib/billing/plans";
 import { adminAuthPreamble } from "./admin-auth";
+import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 const log = createLogger("admin-usage");
 
@@ -29,13 +30,6 @@ function isValidDateParam(value: string): boolean {
 // Schemas
 // ---------------------------------------------------------------------------
 
-const ErrorSchema = z.object({
-  error: z.string(),
-  message: z.string(),
-  requestId: z.string().optional(),
-});
-
-const AuthErrorSchema = z.record(z.string(), z.unknown());
 
 const CurrentPeriodUsageResponseSchema = z.object({
   workspaceId: z.string(),

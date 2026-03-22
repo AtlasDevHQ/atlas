@@ -22,6 +22,7 @@ import {
 } from "@atlas/api/lib/db/internal";
 import { toQuerySuggestion } from "@atlas/api/lib/learn/suggestion-helpers";
 import { authPreamble } from "./auth-preamble";
+import { ErrorSchema } from "./shared-schemas";
 
 const log = createLogger("suggestions");
 
@@ -34,11 +35,6 @@ const SuggestionsResponseSchema = z.object({
   total: z.number().int(),
 });
 
-const ErrorSchema = z.object({
-  error: z.string(),
-  message: z.string(),
-  requestId: z.string().optional(),
-});
 
 // ---------------------------------------------------------------------------
 // Route definitions
@@ -184,7 +180,7 @@ suggestions.openapi(listSuggestionsRoute, async (c) => {
 
   const tables = c.req.queries("table") ?? [];
   if (tables.length === 0) {
-    return c.json({ error: "At least one 'table' query parameter is required" }, { status: 400 }) as never;
+    return c.json({ error: "At least one 'table' query parameter is required" }, { status: 400 });
   }
 
   const limitParam = c.req.query("limit");
@@ -255,5 +251,5 @@ suggestions.openapi(trackClickRoute, async (c) => {
     );
   }
 
-  return c.body(null, 204) as never;
+  return c.body(null, 204);
 });

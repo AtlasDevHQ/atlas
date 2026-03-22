@@ -22,6 +22,7 @@ import {
 import { ACTION_STATUSES, type ActionStatus } from "@atlas/api/lib/action-types";
 import { canApprove } from "@atlas/api/lib/auth/permissions";
 import { authPreamble } from "./auth-preamble";
+import { ErrorSchema } from "./shared-schemas";
 
 const log = createLogger("actions");
 
@@ -31,11 +32,6 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // Schemas
 // ---------------------------------------------------------------------------
 
-const ErrorSchema = z.object({
-  error: z.string(),
-  message: z.string(),
-  requestId: z.string().optional(),
-});
 
 // ---------------------------------------------------------------------------
 // Route definitions
@@ -319,7 +315,7 @@ actions.openapi(listActionsRoute, async (c) => {
   const requestId = crypto.randomUUID();
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured).", requestId }, 404) as never;
+    return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured).", requestId }, 404);
   }
 
   const preamble = await authPreamble(req, requestId);
@@ -359,7 +355,7 @@ actions.openapi(getActionRoute, async (c) => {
   const requestId = crypto.randomUUID();
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured).", requestId }, 404) as never;
+    return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured).", requestId }, 404);
   }
 
   const preamble = await authPreamble(req, requestId);
@@ -370,7 +366,7 @@ actions.openapi(getActionRoute, async (c) => {
 
   const { id } = c.req.valid("param");
   if (!UUID_RE.test(id)) {
-    return c.json({ error: "invalid_request", message: "Invalid action ID format." }, 400) as never;
+    return c.json({ error: "invalid_request", message: "Invalid action ID format." }, 400);
   }
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
@@ -396,7 +392,7 @@ actions.openapi(approveActionRoute, async (c) => {
   const requestId = crypto.randomUUID();
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured).", requestId }, 404) as never;
+    return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured).", requestId }, 404);
   }
 
   const preamble = await authPreamble(req, requestId);
@@ -407,7 +403,7 @@ actions.openapi(approveActionRoute, async (c) => {
 
   const { id } = c.req.valid("param");
   if (!UUID_RE.test(id)) {
-    return c.json({ error: "invalid_request", message: "Invalid action ID format." }, 400) as never;
+    return c.json({ error: "invalid_request", message: "Invalid action ID format." }, 400);
   }
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
@@ -456,7 +452,7 @@ actions.openapi(
     const requestId = crypto.randomUUID();
 
     if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured).", requestId }, 404) as never;
+      return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured).", requestId }, 404);
     }
 
     const preamble = await authPreamble(req, requestId);
@@ -467,7 +463,7 @@ actions.openapi(
 
     const { id } = c.req.valid("param");
     if (!UUID_RE.test(id)) {
-      return c.json({ error: "invalid_request", message: "Invalid action ID format." }, 400) as never;
+      return c.json({ error: "invalid_request", message: "Invalid action ID format." }, 400);
     }
 
     return withRequestContext({ requestId, user: authResult.user }, async () => {
@@ -537,7 +533,7 @@ actions.openapi(rollbackActionRoute, async (c) => {
   const requestId = crypto.randomUUID();
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured).", requestId }, 404) as never;
+    return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured).", requestId }, 404);
   }
 
   const preamble = await authPreamble(req, requestId);
@@ -548,7 +544,7 @@ actions.openapi(rollbackActionRoute, async (c) => {
 
   const { id } = c.req.valid("param");
   if (!UUID_RE.test(id)) {
-    return c.json({ error: "invalid_request", message: "Invalid action ID format." }, 400) as never;
+    return c.json({ error: "invalid_request", message: "Invalid action ID format." }, 400);
   }
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {

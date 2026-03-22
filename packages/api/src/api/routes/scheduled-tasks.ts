@@ -24,6 +24,7 @@ import {
 import { DELIVERY_CHANNELS, RUN_STATUSES, type RunStatus } from "@atlas/api/lib/scheduled-task-types";
 import { ACTION_APPROVAL_MODES } from "@atlas/api/lib/action-types";
 import { authPreamble } from "./auth-preamble";
+import { ErrorSchema } from "./shared-schemas";
 
 const log = createLogger("scheduled-tasks-routes");
 
@@ -60,11 +61,6 @@ const UpdateScheduledTaskSchema = z.object({
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const ErrorSchema = z.object({
-  error: z.string(),
-  message: z.string(),
-  requestId: z.string().optional(),
-});
 
 function crudFailResponse(reason: CrudFailReason, requestId?: string) {
   switch (reason) {
@@ -156,6 +152,7 @@ const tickRoute = createRoute({
   responses: {
     200: { description: "Tick completed", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     401: { description: "Invalid or missing cron secret", content: { "application/json": { schema: ErrorSchema } } },
+    404: { description: "Feature not available (no internal database configured)", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Tick execution failed", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -371,7 +368,7 @@ scheduledTasks.openapi(listTasksRoute, async (c) => {
   const requestId = crypto.randomUUID();
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404) as never;
+    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
   }
 
   const preamble = await authPreamble(req, requestId);
@@ -409,7 +406,7 @@ scheduledTasks.openapi(
     const requestId = crypto.randomUUID();
 
     if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404) as never;
+      return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
     }
 
     const preamble = await authPreamble(req, requestId);
@@ -465,7 +462,7 @@ scheduledTasks.openapi(tickRoute, async (c) => {
   const requestId = crypto.randomUUID();
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404) as never;
+    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
   }
 
   // Auth: check CRON_SECRET (Vercel-native) or ATLAS_SCHEDULER_SECRET (generic)
@@ -476,18 +473,18 @@ scheduledTasks.openapi(tickRoute, async (c) => {
   if (secret) {
     const authHeader = req.headers.get("authorization");
     if (authHeader !== `Bearer ${secret}`) {
-      return c.json({ error: "unauthorized", message: "Invalid or missing cron secret.", requestId }, 401) as never;
+      return c.json({ error: "unauthorized", message: "Invalid or missing cron secret.", requestId }, 401);
     }
   } else if (config?.scheduler?.backend === "vercel") {
     return c.json(
       { error: "misconfigured", message: "Vercel backend requires CRON_SECRET or ATLAS_SCHEDULER_SECRET to be set.", requestId },
       500,
-    ) as never;
+    );
   } else if (process.env.NODE_ENV === "production") {
     return c.json(
       { error: "misconfigured", message: "CRON_SECRET or ATLAS_SCHEDULER_SECRET must be set in production.", requestId },
       500,
-    ) as never;
+    );
   } else {
     log.warn("POST /tick called without secret — allowing because NODE_ENV is not 'production'");
   }
@@ -496,12 +493,12 @@ scheduledTasks.openapi(tickRoute, async (c) => {
     const { runTick } = await import("@atlas/api/lib/scheduler/engine");
     const result = await runTick();
     if (result.error) {
-      return c.json({ ...result, requestId }, 500) as never;
+      return c.json({ error: "tick_failed", message: result.error, requestId }, 500);
     }
     return c.json(result, 200);
   } catch (err) {
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Tick execution failed");
-    return c.json({ error: "internal_error", message: "Tick execution failed.", requestId }, 500) as never;
+    return c.json({ error: "internal_error", message: "Tick execution failed.", requestId }, 500);
   }
 });
 
@@ -514,7 +511,7 @@ scheduledTasks.openapi(listAllRunsRoute, async (c) => {
   const requestId = crypto.randomUUID();
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404) as never;
+    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
   }
 
   const preamble = await authPreamble(req, requestId);
@@ -555,7 +552,7 @@ scheduledTasks.openapi(getTaskRoute, async (c) => {
   const requestId = crypto.randomUUID();
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404) as never;
+    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
   }
 
   const preamble = await authPreamble(req, requestId);
@@ -566,7 +563,7 @@ scheduledTasks.openapi(getTaskRoute, async (c) => {
 
   const { id } = c.req.valid("param");
   if (!UUID_RE.test(id)) {
-    return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400) as never;
+    return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400);
   }
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
@@ -592,7 +589,7 @@ scheduledTasks.openapi(
     const requestId = crypto.randomUUID();
 
     if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404) as never;
+      return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
     }
 
     const preamble = await authPreamble(req, requestId);
@@ -603,7 +600,7 @@ scheduledTasks.openapi(
 
     const { id } = c.req.valid("param");
     if (!UUID_RE.test(id)) {
-      return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400) as never;
+      return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400);
     }
 
     return withRequestContext({ requestId, user: authResult.user }, async () => {
@@ -650,7 +647,7 @@ scheduledTasks.openapi(deleteTaskRoute, async (c) => {
   const requestId = crypto.randomUUID();
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404) as never;
+    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
   }
 
   const preamble = await authPreamble(req, requestId);
@@ -661,7 +658,7 @@ scheduledTasks.openapi(deleteTaskRoute, async (c) => {
 
   const { id } = c.req.valid("param");
   if (!UUID_RE.test(id)) {
-    return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400) as never;
+    return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400);
   }
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
@@ -683,7 +680,7 @@ scheduledTasks.openapi(triggerTaskRoute, async (c) => {
   const requestId = crypto.randomUUID();
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404) as never;
+    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
   }
 
   const preamble = await authPreamble(req, requestId);
@@ -694,7 +691,7 @@ scheduledTasks.openapi(triggerTaskRoute, async (c) => {
 
   const { id } = c.req.valid("param");
   if (!UUID_RE.test(id)) {
-    return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400) as never;
+    return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400);
   }
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
@@ -724,7 +721,7 @@ scheduledTasks.openapi(previewTaskRoute, async (c) => {
   const requestId = crypto.randomUUID();
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404) as never;
+    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
   }
 
   const preamble = await authPreamble(req, requestId);
@@ -735,7 +732,7 @@ scheduledTasks.openapi(previewTaskRoute, async (c) => {
 
   const { id } = c.req.valid("param");
   if (!UUID_RE.test(id)) {
-    return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400) as never;
+    return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400);
   }
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
@@ -765,7 +762,7 @@ scheduledTasks.openapi(listTaskRunsRoute, async (c) => {
   const requestId = crypto.randomUUID();
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404) as never;
+    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
   }
 
   const preamble = await authPreamble(req, requestId);
@@ -776,7 +773,7 @@ scheduledTasks.openapi(listTaskRunsRoute, async (c) => {
 
   const { id } = c.req.valid("param");
   if (!UUID_RE.test(id)) {
-    return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400) as never;
+    return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400);
   }
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {

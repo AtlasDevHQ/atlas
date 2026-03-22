@@ -12,6 +12,7 @@ import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { authPreamble } from "./auth-preamble";
+import { ErrorSchema } from "./shared-schemas";
 
 const log = createLogger("sessions-routes");
 
@@ -19,11 +20,6 @@ const log = createLogger("sessions-routes");
 // Schemas
 // ---------------------------------------------------------------------------
 
-const ErrorSchema = z.object({
-  error: z.string(),
-  message: z.string(),
-  requestId: z.string().optional(),
-});
 
 const SessionSchema = z.object({
   id: z.string(),
@@ -140,7 +136,7 @@ sessions.openapi(listSessionsRoute, async (c) => {
 
   const user = authResult.user;
   if (!hasInternalDB() || detectAuthMode() !== "managed" || !user) {
-    return c.json({ error: "not_available", message: "Session management requires managed auth mode.", requestId }, 404) as never;
+    return c.json({ error: "not_available", message: "Session management requires managed auth mode.", requestId }, 404);
   }
 
   return withRequestContext({ requestId, user }, async () => {
@@ -175,7 +171,7 @@ sessions.openapi(listSessionsRoute, async (c) => {
       }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to list user sessions");
-      return c.json({ error: "internal_error", message: "Failed to list sessions.", requestId }, 500) as never;
+      return c.json({ error: "internal_error", message: "Failed to list sessions.", requestId }, 500);
     }
   });
 });
@@ -193,7 +189,7 @@ sessions.openapi(revokeSessionRoute, async (c) => {
 
   const user = authResult.user;
   if (!hasInternalDB() || detectAuthMode() !== "managed" || !user) {
-    return c.json({ error: "not_available", message: "Session management requires managed auth mode.", requestId }, 404) as never;
+    return c.json({ error: "not_available", message: "Session management requires managed auth mode.", requestId }, 404);
   }
 
   return withRequestContext({ requestId, user }, async () => {
@@ -214,16 +210,16 @@ sessions.openapi(revokeSessionRoute, async (c) => {
           [sessionId],
         );
         if (exists.length === 0) {
-          return c.json({ error: "not_found", message: "Session not found." }, 404) as never;
+          return c.json({ error: "not_found", message: "Session not found." }, 404);
         }
-        return c.json({ error: "forbidden", message: "Cannot revoke another user's session.", requestId }, 403) as never;
+        return c.json({ error: "forbidden", message: "Cannot revoke another user's session.", requestId }, 403);
       }
 
       log.info({ requestId, sessionId, userId }, "User revoked own session");
       return c.json({ success: true }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), sessionId, userId }, "Failed to revoke session");
-      return c.json({ error: "internal_error", message: "Failed to revoke session.", requestId }, 500) as never;
+      return c.json({ error: "internal_error", message: "Failed to revoke session.", requestId }, 500);
     }
   });
 });

@@ -12,6 +12,7 @@ import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { LEARNED_PATTERN_STATUSES, type LearnedPattern } from "@useatlas/types";
 import { adminAuthPreamble } from "./admin-auth";
 import { invalidatePatternCache } from "@atlas/api/lib/learn/pattern-cache";
+import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 const log = createLogger("admin-learned-patterns");
 
@@ -62,7 +63,6 @@ function orgFilter(
 }
 
 const VALID_STATUSES = new Set<string>(LEARNED_PATTERN_STATUSES);
-const BULK_STATUSES = new Set(["approved", "rejected"]);
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -102,13 +102,6 @@ const DeletedSchema = z.object({
   deleted: z.boolean(),
 });
 
-const ErrorSchema = z.object({
-  error: z.string(),
-  message: z.string(),
-  requestId: z.string().optional(),
-});
-
-const AuthErrorSchema = z.record(z.string(), z.unknown());
 
 // ---------------------------------------------------------------------------
 // Route definitions
@@ -352,6 +345,13 @@ const adminLearnedPatterns = new OpenAPIHono();
 
 adminLearnedPatterns.onError((err, c) => {
   if (err instanceof HTTPException && err.status === 400) {
+    // Distinguish Zod validation errors (rich detail) from malformed JSON (generic)
+    const cause = err.cause;
+    if (cause && typeof cause === "object" && "issues" in cause) {
+      const issues = (cause as { issues: Array<{ message: string }> }).issues;
+      const detail = issues.map((i) => i.message).join("; ");
+      return c.json({ error: "validation_error", message: detail || "Request body validation failed." }, 400);
+    }
     return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
   }
   throw err;
@@ -539,23 +539,10 @@ adminLearnedPatterns.openapi(updatePatternRoute, async (c) => {
     try {
       const { id } = c.req.valid("param");
 
-      let body: Record<string, unknown>;
-      try {
-        body = await c.req.json();
-      } catch (err) {
-        log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body");
-        return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
-      }
-
-      const description = body.description as string | undefined;
-      const status = body.status as string | undefined;
+      const { description, status } = c.req.valid("json");
 
       if (description === undefined && status === undefined) {
         return c.json({ error: "bad_request", message: "No recognized fields to update. Supported: description, status." }, 400);
-      }
-
-      if (status !== undefined && !VALID_STATUSES.has(status)) {
-        return c.json({ error: "bad_request", message: `Invalid status. Must be one of: ${[...VALID_STATUSES].join(", ")}` }, 400);
       }
 
       const orgId = authResult.user?.activeOrganizationId;
@@ -684,27 +671,14 @@ adminLearnedPatterns.openapi(bulkStatusRoute, async (c) => {
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     try {
-      let body: Record<string, unknown>;
-      try {
-        body = await c.req.json();
-      } catch (err) {
-        log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body");
-        return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
-      }
+      const { ids, status } = c.req.valid("json");
 
-      const ids = body.ids as string[] | undefined;
-      const status = body.status as string | undefined;
-
-      if (!Array.isArray(ids) || ids.length === 0) {
+      if (ids.length === 0) {
         return c.json({ error: "bad_request", message: "ids must be a non-empty array." }, 400);
       }
 
       if (ids.length > 100) {
         return c.json({ error: "bad_request", message: "Maximum 100 ids per bulk operation." }, 400);
-      }
-
-      if (!status || !BULK_STATUSES.has(status)) {
-        return c.json({ error: "bad_request", message: `Invalid status. Must be one of: ${[...BULK_STATUSES].join(", ")}` }, 400);
       }
 
       const orgId = authResult.user?.activeOrganizationId;

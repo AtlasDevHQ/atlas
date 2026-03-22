@@ -48,6 +48,7 @@ import { adminSuggestions } from "./admin-suggestions";
 import { adminSso } from "./admin-sso";
 import { adminAuthPreamble, authErrorCode } from "./admin-auth";
 import { adminUsage } from "./admin-usage";
+import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 const log = createLogger("admin-routes");
 
@@ -55,13 +56,6 @@ const log = createLogger("admin-routes");
 // Schemas
 // ---------------------------------------------------------------------------
 
-const ErrorSchema = z.object({
-  error: z.string(),
-  message: z.string(),
-  requestId: z.string().optional(),
-});
-
-const AuthErrorSchema = z.record(z.string(), z.unknown());
 
 // ---------------------------------------------------------------------------
 // Router

@@ -29,6 +29,7 @@ import {
   generateTitle,
 } from "@atlas/api/lib/conversations";
 import { authPreamble } from "./auth-preamble";
+import { ErrorSchema } from "./shared-schemas";
 
 
 const log = createLogger("query");
@@ -65,11 +66,6 @@ export const QueryResponseSchema = z.object({
     .optional(),
 });
 
-const ErrorSchema = z.object({
-  error: z.string(),
-  message: z.string(),
-  requestId: z.string().optional(),
-});
 
 /**
  * Derive the public base URL for constructing action approve/deny URLs.
@@ -131,6 +127,10 @@ const queryRoute = createRoute({
         },
       },
     },
+    404: {
+      description: "Workspace not found",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
     429: {
       description: "Rate limit exceeded",
       content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
@@ -189,8 +189,10 @@ query.openapi(
     // Workspace status check — block suspended/deleted workspaces
     const wsCheck = await checkWorkspaceStatus(authResult.user?.activeOrganizationId);
     if (!wsCheck.allowed) {
+      const wsError = wsCheck.errorCode ?? "workspace_error";
+      const wsMessage = wsCheck.errorMessage ?? "Workspace access denied.";
       return c.json(
-        { error: wsCheck.errorCode, message: wsCheck.errorMessage, retryable: wsCheck.errorCode && isChatErrorCode(wsCheck.errorCode) ? isRetryableError(wsCheck.errorCode) : false, requestId },
+        { error: wsError, message: wsMessage, retryable: isChatErrorCode(wsError) ? isRetryableError(wsError) : false, requestId },
         wsCheck.httpStatus ?? 403,
       ) as never;
     }
@@ -207,7 +209,7 @@ query.openapi(
           ...(planCheck.errorCode === "plan_limit_exceeded" && { usage: planCheck.usage }),
         },
         planCheck.httpStatus,
-      ) as never;
+      );
     }
 
     // Capture plan warning for JSON response

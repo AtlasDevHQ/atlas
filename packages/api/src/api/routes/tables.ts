@@ -11,6 +11,7 @@ import { z } from "zod";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { getSemanticRoot, discoverTables } from "@atlas/api/lib/semantic-files";
 import { authPreamble } from "./auth-preamble";
+import { ErrorSchema } from "./shared-schemas";
 
 const log = createLogger("tables-route");
 
@@ -19,11 +20,6 @@ const TablesResponseSchema = z.object({
   warnings: z.array(z.string()).optional(),
 });
 
-const ErrorSchema = z.object({
-  error: z.string(),
-  message: z.string(),
-  requestId: z.string().optional(),
-});
 
 const tablesRoute = createRoute({
   method: "get",

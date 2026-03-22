@@ -619,7 +619,8 @@ describe("scheduled-tasks routes", () => {
       );
       expect(response.status).toBe(500);
       const body = (await response.json()) as Record<string, unknown>;
-      expect(body.error).toBe("db down");
+      expect(body.error).toBe("tick_failed");
+      expect(body.message).toBe("db down");
     });
   });
 

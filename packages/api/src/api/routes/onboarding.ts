@@ -16,6 +16,7 @@ import { authPreamble } from "./auth-preamble";
 import { hasInternalDB, internalQuery, encryptUrl } from "@atlas/api/lib/db/internal";
 import { maskConnectionUrl } from "@atlas/api/lib/security";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
+import { ErrorSchema } from "./shared-schemas";
 
 const log = createLogger("onboarding");
 
@@ -26,11 +27,6 @@ const CONNECTION_ID_PATTERN = /^[a-z][a-z0-9_-]{0,62}[a-z0-9]$/;
 // Schemas
 // ---------------------------------------------------------------------------
 
-const ErrorSchema = z.object({
-  error: z.string(),
-  message: z.string(),
-  requestId: z.string().optional(),
-});
 
 const TestConnectionRequestSchema = z.object({
   url: z.string().min(1, "Database URL is required."),
@@ -222,7 +218,7 @@ onboarding.openapi(
     const requestId = crypto.randomUUID();
 
     if (detectAuthMode() !== "managed") {
-      return c.json({ error: "not_available", message: "Onboarding requires managed auth mode.", requestId }, 404) as never;
+      return c.json({ error: "not_available", message: "Onboarding requires managed auth mode.", requestId }, 404);
     }
 
     const preamble = await authPreamble(c.req.raw, requestId);
@@ -290,11 +286,11 @@ onboarding.openapi(
     const requestId = crypto.randomUUID();
 
     if (detectAuthMode() !== "managed") {
-      return c.json({ error: "not_available", message: "Onboarding requires managed auth mode.", requestId }, 404) as never;
+      return c.json({ error: "not_available", message: "Onboarding requires managed auth mode.", requestId }, 404);
     }
 
     if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Onboarding requires an internal database (DATABASE_URL).", requestId }, 404) as never;
+      return c.json({ error: "not_available", message: "Onboarding requires an internal database (DATABASE_URL).", requestId }, 404);
     }
 
     const preamble = await authPreamble(c.req.raw, requestId);
@@ -305,7 +301,7 @@ onboarding.openapi(
 
     const orgId = authResult.user?.activeOrganizationId;
     if (!orgId) {
-      return c.json({ error: "no_organization", message: "No active organization. Create a workspace first." }, 400) as never;
+      return c.json({ error: "no_organization", message: "No active organization. Create a workspace first." }, 400);
     }
 
     return withRequestContext({ requestId, user: authResult.user }, async () => {

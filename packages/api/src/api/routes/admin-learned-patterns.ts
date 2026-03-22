@@ -345,6 +345,13 @@ const adminLearnedPatterns = new OpenAPIHono();
 
 adminLearnedPatterns.onError((err, c) => {
   if (err instanceof HTTPException && err.status === 400) {
+    // Distinguish Zod validation errors (rich detail) from malformed JSON (generic)
+    const cause = err.cause;
+    if (cause && typeof cause === "object" && "issues" in cause) {
+      const issues = (cause as { issues: Array<{ message: string }> }).issues;
+      const detail = issues.map((i) => i.message).join("; ");
+      return c.json({ error: "validation_error", message: detail || "Request body validation failed." }, 400);
+    }
     return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
   }
   throw err;

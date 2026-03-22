@@ -104,7 +104,7 @@ describe("migrateAuthTables", () => {
     // migrateInternalDB: org table check skips workspace ALTERs in mock
     // + loadSavedConnections SELECT + loadPluginSettings SELECT = 105 total
     // (includes SSO enforcement column ALTER TABLE + ip_allowlist table + index)
-    expect(queries.length).toBe(105);
+    expect(queries.length).toBe(109);
     expect(queries[0]).toContain("CREATE TABLE IF NOT EXISTS audit_log");
   });
 
@@ -148,7 +148,7 @@ describe("migrateAuthTables", () => {
     // Internal DB migration runs once (org table check skips workspace ALTERs)
     // + loadSavedConnections + loadPluginSettings + ALTER TABLE password_change_required = 106
     // (includes SSO enforcement column ALTER TABLE + ip_allowlist table + index)
-    expect(queries.length).toBe(106);
+    expect(queries.length).toBe(110);
     // Better Auth migration runs once
     expect(getMigrationCount()).toBe(1);
   });

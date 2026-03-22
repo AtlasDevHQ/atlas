@@ -11,6 +11,16 @@
 import * as fs from "fs";
 import * as path from "path";
 
+// Enable all conditional route groups so the spec includes every endpoint.
+// These are checked at import time; no real connections are opened because
+// database/auth modules use lazy initialization.
+process.env.ATLAS_ACTIONS_ENABLED ??= "true";
+process.env.ATLAS_SCHEDULER_ENABLED ??= "true";
+process.env.ATLAS_DEMO_ENABLED ??= "true";
+process.env.STRIPE_SECRET_KEY ??= "sk_extract_openapi_placeholder";
+process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_extract_openapi_placeholder";
+process.env.SLACK_SIGNING_SECRET ??= "extract_openapi_placeholder";
+
 // Import the full app — the merged OpenAPI endpoint lives on the app instance.
 // @ts-expect-error — Bun resolves .ts imports at runtime
 const { app } = await import("../src/api/index.ts");
@@ -41,7 +51,7 @@ try {
 } catch (err) {
   console.error(
     `Failed to write OpenAPI spec to ${outPath}:`,
-    err instanceof Error ? err.message : err,
+    err instanceof Error ? err.message : String(err),
   );
   process.exit(1);
 }

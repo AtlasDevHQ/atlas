@@ -112,8 +112,8 @@ function rowToRole(row: CustomRoleRow): CustomRole {
     rawPermissions = typeof row.permissions === "string"
       ? JSON.parse(row.permissions) as string[]
       : row.permissions;
-  } catch (err) {
-    log.error({ roleId: row.id, roleName: row.name, raw: row.permissions }, "Failed to parse permissions JSON for role — defaulting to empty");
+  } catch (parseErr) {
+    log.error({ roleId: row.id, roleName: row.name, raw: row.permissions, err: parseErr instanceof Error ? parseErr.message : String(parseErr) }, "Failed to parse permissions JSON for role — defaulting to empty");
     rawPermissions = [];
   }
 

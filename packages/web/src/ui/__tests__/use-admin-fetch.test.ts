@@ -151,7 +151,64 @@ describe("useAdminFetch", () => {
     expect(result.current.error!.requestId).toBeUndefined();
   });
 
-  test("sets error on network failure", async () => {
+  test("falls back to HTTP status when JSON body has no message field", async () => {
+    const body = JSON.stringify({ error: "something_broke" });
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response(body, { status: 502, headers: { "Content-Type": "application/json" } })),
+    ) as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useAdminFetch("/api/test"), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.error).not.toBeNull();
+    expect(result.current.error!.status).toBe(502);
+    expect(result.current.error!.message).toBe("HTTP 502");
+    expect(result.current.error!.requestId).toBeUndefined();
+  });
+
+  test("falls back to HTTP status when JSON body is a non-object value", async () => {
+    const body = JSON.stringify([1, 2, 3]);
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response(body, { status: 500, headers: { "Content-Type": "application/json" } })),
+    ) as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useAdminFetch("/api/test"), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.error).not.toBeNull();
+    expect(result.current.error!.status).toBe(500);
+    expect(result.current.error!.message).toBe("HTTP 500");
+    expect(result.current.error!.requestId).toBeUndefined();
+  });
+
+  test("extracts requestId even without message field", async () => {
+    const body = JSON.stringify({ error: "internal", requestId: "req-orphan" });
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response(body, { status: 500, headers: { "Content-Type": "application/json" } })),
+    ) as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useAdminFetch("/api/test"), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.error).not.toBeNull();
+    expect(result.current.error!.message).toBe("HTTP 500");
+    expect(result.current.error!.requestId).toBe("req-orphan");
+  });
+
+  test("sets error on network failure and logs warning", async () => {
+    const originalWarn = console.warn;
+    const warnings: unknown[][] = [];
+    console.warn = (...args: unknown[]) => { warnings.push(args); };
+
     globalThis.fetch = mock(() =>
       Promise.reject(new Error("Network error")),
     ) as unknown as typeof fetch;
@@ -164,6 +221,10 @@ describe("useAdminFetch", () => {
 
     expect(result.current.error).not.toBeNull();
     expect(result.current.error!.message).toBe("Network error");
+    expect(warnings.length).toBeGreaterThan(0);
+    expect(warnings[0]![0]).toContain("useAdminFetch");
+
+    console.warn = originalWarn;
   });
 
   test("applies transform function", async () => {

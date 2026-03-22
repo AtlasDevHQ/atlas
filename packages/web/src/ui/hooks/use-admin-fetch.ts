@@ -9,7 +9,7 @@ export interface FetchError {
   requestId?: string;
 }
 
-/** Map HTTP status codes to user-friendly messages for admin pages. */
+/** Map HTTP status codes to user-friendly messages for admin pages. Appends request ID for log correlation when available. */
 export function friendlyError(err: FetchError): string {
   let msg: string;
   if (err.status === 401) msg = "Not authenticated. Please sign in.";
@@ -24,7 +24,8 @@ export function friendlyError(err: FetchError): string {
 
 /**
  * Shared fetch hook for admin pages.
- * Handles loading/error state, cancellation on unmount, and credentials.
+ * Handles loading/error state, structured error body extraction (message + requestId),
+ * cancellation on unmount, and credentials.
  */
 export function useAdminFetch<T>(
   path: string,
@@ -65,7 +66,7 @@ export function useAdminFetch<T>(
         } catch {
           // intentionally ignored: body wasn't JSON — keep the status-only message
         }
-        const e: FetchError = { message, status: res.status, requestId };
+        const e: FetchError = { message, status: res.status, ...(requestId && { requestId }) };
         if (!signal?.aborted) setError(e);
         return;
       }
@@ -75,9 +76,9 @@ export function useAdminFetch<T>(
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
       if (!signal?.aborted) {
-        setError({
-          message: err instanceof Error ? err.message : "Request failed",
-        });
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`useAdminFetch ${path}:`, msg);
+        setError({ message: msg || "Request failed" });
       }
     } finally {
       if (!signal?.aborted) setLoading(false);

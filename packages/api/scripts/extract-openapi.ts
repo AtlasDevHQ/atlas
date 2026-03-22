@@ -1,24 +1,19 @@
 /**
- * Extract the OpenAPI spec from the API route module and write it to apps/docs/openapi.json.
+ * Extract the OpenAPI spec from the API and write it to apps/docs/openapi.json.
  *
- * Uses a minimal Hono fetch to invoke the route handler without starting a server
- * or loading any database drivers. Only the openapi route module is imported.
+ * Uses a minimal Hono fetch to invoke the merged spec endpoint without starting
+ * a server. Database/auth modules use lazy initialization, so no connections
+ * are opened at import time. Safe to run in CI.
  *
  * Run: bun packages/api/scripts/extract-openapi.ts
  */
 
 import * as fs from "fs";
 import * as path from "path";
-import { Hono } from "hono";
 
-// Import the openapi route — this transitively loads route modules and their
-// dependencies, but all database/auth modules use lazy initialization, so no
-// connections are opened at import time. Safe to run in CI.
+// Import the full app — the merged OpenAPI endpoint lives on the app instance.
 // @ts-expect-error — Bun resolves .ts imports at runtime
-const { openapi } = await import("../src/api/routes/openapi.ts");
-
-const app = new Hono();
-app.route("/api/v1/openapi.json", openapi);
+const { app } = await import("../src/api/index.ts");
 
 const req = new Request("http://localhost/api/v1/openapi.json");
 const res = await app.fetch(req);

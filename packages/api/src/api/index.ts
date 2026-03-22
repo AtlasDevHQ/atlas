@@ -23,7 +23,7 @@ import { chat } from "./routes/chat";
 import { health } from "./routes/health";
 import { auth } from "./routes/auth";
 import { query } from "./routes/query";
-import { openapi } from "./routes/openapi";
+import { staticPaths, staticTags, securitySchemes } from "./routes/openapi";
 import { conversations, publicConversations } from "./routes/conversations";
 import { semantic } from "./routes/semantic";
 import { tables } from "./routes/tables";
@@ -105,7 +105,7 @@ app.route("/api/v1/chat", chat);
 app.route("/api/health", health);
 app.route("/api/auth", auth);
 app.route("/api/v1/query", query);
-app.route("/api/v1/openapi.json", openapi);
+// OpenAPI spec served below via merged auto + static endpoint
 app.route("/api/v1/conversations", conversations);
 app.route("/api/public/conversations", publicConversations);
 app.route("/api/v1/semantic", semantic);
@@ -254,12 +254,49 @@ app.onError((err, c) => {
   );
 });
 
-// Auto-generated OpenAPI spec from route definitions.
-// Converted: health, validate-sql, tables, semantic (#715), admin (all sub-routers, #718).
-// The manual spec at /api/v1/openapi.json continues to serve unconverted routes.
-app.doc("/api/v1/openapi-auto.json", {
-  openapi: "3.1.0",
-  info: { title: "Atlas API", version: "0.9.0" },
+// ---------------------------------------------------------------------------
+// OpenAPI spec — merged auto-generated + static entries
+// ---------------------------------------------------------------------------
+// Auto-generated routes come from OpenAPIHono createRoute() definitions.
+// Static entries (auth proxy, widget assets) are defined in openapi.ts.
+
+let cachedSpec: Record<string, unknown> | null = null;
+
+app.get("/api/v1/openapi.json", (c) => {
+  if (!cachedSpec) {
+    const auto = app.getOpenAPI31Document({
+      openapi: "3.1.0",
+      info: {
+        title: "Atlas API",
+        version: "0.9.0",
+        description:
+          "Text-to-SQL data analyst agent. Ask natural-language questions about your data and receive structured answers.",
+      },
+      servers: [
+        { url: "http://localhost:3001", description: "Standalone API (development)" },
+        { url: "http://localhost:3000", description: "Same-origin via Next.js rewrites" },
+      ],
+    });
+
+    // Merge static paths (auth, widget) into the auto-generated spec
+    const autoPaths = (auto.paths ?? {}) as Record<string, unknown>;
+    const mergedPaths = { ...autoPaths, ...staticPaths };
+
+    // Merge static tags
+    const autoTags = (auto.tags ?? []) as Array<{ name: string; description?: string }>;
+    const autoTagNames = new Set(autoTags.map((t) => t.name));
+    const mergedTags = [...autoTags, ...staticTags.filter((t) => !autoTagNames.has(t.name))];
+
+    // Add security schemes
+    const autoComponents = (auto.components ?? {}) as Record<string, unknown>;
+    const mergedComponents = {
+      ...autoComponents,
+      securitySchemes: { ...((autoComponents.securitySchemes as Record<string, unknown>) ?? {}), ...securitySchemes },
+    };
+
+    cachedSpec = { ...auto, paths: mergedPaths, tags: mergedTags, components: mergedComponents };
+  }
+  return c.json(cachedSpec);
 });
 
 export { app };

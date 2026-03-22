@@ -684,13 +684,6 @@ function buildSpec(): Record<string, unknown> {
     },
     tags: [
       { name: "Chat", description: "Streaming chat with the Atlas agent" },
-      { name: "Query", description: "Synchronous JSON query endpoint" },
-      { name: "Conversations", description: "Conversation history CRUD and sharing" },
-      { name: "Suggestions", description: "User-facing query suggestions" },
-      { name: "Prompts", description: "Prompt library collections and items" },
-      { name: "Sessions", description: "User self-service session management (requires managed auth)" },
-      { name: "Actions", description: "Approval-gated write operations (requires ATLAS_ACTIONS_ENABLED=true)" },
-      { name: "Scheduled Tasks", description: "Recurring query tasks with cron scheduling (requires ATLAS_SCHEDULER_ENABLED=true)" },
       { name: "Auth", description: "Authentication routes (managed auth via Better Auth)" },
       { name: "Slack", description: "Slack integration (requires SLACK_SIGNING_SECRET)" },
       { name: "Widget", description: "Embeddable chat widget (host page, loader script, assets)" },

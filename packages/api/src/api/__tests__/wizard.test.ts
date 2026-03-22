@@ -604,7 +604,7 @@ describe("POST /api/v1/wizard/save", () => {
     expect(data.error).toBe("invalid_request");
     // Zod validation catches missing required fields
     expect(typeof data.message).toBe("string");
-    expect(data.message.length).toBeGreaterThan(0);
+    expect((data.message as string).length).toBeGreaterThan(0);
   });
 
   it("returns 400 for path-traversal table name with '..'", async () => {

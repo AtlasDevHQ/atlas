@@ -416,6 +416,8 @@ const getShareStatusRoute = createRoute({
   },
 });
 
+// Body is optional and parsed manually in the handler via safeParse — not declared
+// in the route schema to avoid framework-level validation on empty/missing bodies.
 const shareConversationRoute = createRoute({
   method: "post",
   path: "/{id}/share",

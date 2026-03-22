@@ -333,6 +333,8 @@ describe("isRetryableError", () => {
     "provider_error",
     "provider_rate_limit",
     "internal_error",
+    "billing_check_failed",
+    "workspace_check_failed",
   ];
 
   const nonRetryableCodes: ChatErrorCode[] = [
@@ -348,6 +350,10 @@ describe("isRetryableError", () => {
     "forbidden",
     "forbidden_role",
     "org_not_found",
+    "plan_limit_exceeded",
+    "trial_expired",
+    "workspace_suspended",
+    "workspace_deleted",
   ];
 
   test("marks transient codes as retryable", () => {
@@ -378,7 +384,7 @@ describe("parseChatError retryable", () => {
   const authMode: AuthMode = "none";
 
   test("retryable is true for all transient error codes", () => {
-    for (const code of ["rate_limited", "provider_timeout", "provider_unreachable", "provider_error", "provider_rate_limit", "internal_error"] as const) {
+    for (const code of ["rate_limited", "provider_timeout", "provider_unreachable", "provider_error", "provider_rate_limit", "internal_error", "billing_check_failed", "workspace_check_failed"] as const) {
       const err = new Error(JSON.stringify({ error: code, message: "fail" }));
       const info = parseChatError(err, authMode);
       expect(info.retryable).toBe(true);
@@ -386,7 +392,7 @@ describe("parseChatError retryable", () => {
   });
 
   test("retryable is false for all permanent error codes", () => {
-    for (const code of ["auth_error", "session_expired", "configuration_error", "no_datasource", "invalid_request", "provider_model_not_found", "provider_auth_error", "validation_error", "not_found", "forbidden", "forbidden_role", "org_not_found"] as const) {
+    for (const code of ["auth_error", "session_expired", "configuration_error", "no_datasource", "invalid_request", "provider_model_not_found", "provider_auth_error", "validation_error", "not_found", "forbidden", "forbidden_role", "org_not_found", "plan_limit_exceeded", "trial_expired", "workspace_suspended", "workspace_deleted"] as const) {
       const err = new Error(JSON.stringify({ error: code, message: "fail" }));
       const info = parseChatError(err, authMode);
       expect(info.retryable).toBe(false);

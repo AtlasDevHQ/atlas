@@ -72,5 +72,27 @@ export async function adminAuthPreamble(req: Request, requestId: string) {
     };
   }
 
+  // IP allowlist check — enterprise feature, after auth so we have org context
+  const orgId = authResult.user?.activeOrganizationId;
+  if (orgId) {
+    try {
+      const { checkIPAllowlist } = await import("../../../../../ee/src/auth/ip-allowlist");
+      const ipCheck = await checkIPAllowlist(orgId, ip);
+      if (!ipCheck.allowed) {
+        log.warn({ requestId, orgId, ip }, "IP not in workspace allowlist");
+        return {
+          error: { error: "ip_not_allowed", message: "Your IP address is not in the workspace's allowlist.", requestId },
+          status: 403 as const,
+        };
+      }
+    } catch (err) {
+      // IP allowlist check must not break the request if ee module is unavailable
+      log.debug(
+        { err: err instanceof Error ? err.message : String(err) },
+        "IP allowlist check skipped",
+      );
+    }
+  }
+
   return { authResult };
 }

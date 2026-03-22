@@ -177,6 +177,28 @@ chat.openapi(chatRoute, async (c) => {
     );
   }
 
+  // IP allowlist check — enterprise feature, after auth so we have org context
+  try {
+    const { checkIPAllowlist } = await import("../../../../../ee/src/auth/ip-allowlist");
+    const orgId = authResult.user?.activeOrganizationId;
+    if (orgId) {
+      const ipCheck = await checkIPAllowlist(orgId, ip);
+      if (!ipCheck.allowed) {
+        log.warn({ requestId, orgId, ip }, "IP not in workspace allowlist");
+        return c.json(
+          { error: "ip_not_allowed", message: "Your IP address is not in the workspace's allowlist.", retryable: false, requestId },
+          403,
+        );
+      }
+    }
+  } catch (err) {
+    // IP allowlist check must not break the request if ee module is unavailable
+    log.debug(
+      { err: err instanceof Error ? err.message : String(err) },
+      "IP allowlist check skipped",
+    );
+  }
+
   // Workspace status check — block suspended/deleted workspaces
   const wsCheck = await checkWorkspaceStatus(authResult.user?.activeOrganizationId);
   if (!wsCheck.allowed) {

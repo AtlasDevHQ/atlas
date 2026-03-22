@@ -68,8 +68,18 @@ wizard.post("/profile", async (c) => {
       return c.json({ error: "invalid_request", message: "connectionId is required." }, 400);
     }
 
-    // Look up the connection URL
-    const connUrl = await resolveConnectionUrl(connectionId, authResult.user?.activeOrganizationId);
+    // Look up the connection URL — resolveConnectionUrl throws on infrastructure errors
+    let connUrl: ResolvedConnection | null;
+    try {
+      connUrl = await resolveConnectionUrl(connectionId, authResult.user?.activeOrganizationId);
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, connectionId }, "Failed to resolve connection URL");
+      return c.json({
+        error: "connection_resolution_failed",
+        message: "Failed to resolve connection. Check server logs for details.",
+        requestId,
+      }, 500);
+    }
     if (!connUrl) {
       return c.json({ error: "not_found", message: `Connection "${connectionId}" not found.` }, 404);
     }
@@ -80,7 +90,7 @@ wizard.post("/profile", async (c) => {
       let objects;
       switch (dbType) {
         case "postgres":
-          objects = await listPostgresObjects(url, schema);
+          objects = await listPostgresObjects(url, schema, log);
           break;
         case "mysql":
           objects = await listMySQLObjects(url);
@@ -151,7 +161,17 @@ wizard.post("/generate", async (c) => {
       return c.json({ error: "invalid_request", message: "tables must contain string values." }, 400);
     }
 
-    const connUrl = await resolveConnectionUrl(connectionId, authResult.user?.activeOrganizationId);
+    let connUrl: ResolvedConnection | null;
+    try {
+      connUrl = await resolveConnectionUrl(connectionId, authResult.user?.activeOrganizationId);
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, connectionId }, "Failed to resolve connection URL");
+      return c.json({
+        error: "connection_resolution_failed",
+        message: "Failed to resolve connection. Check server logs for details.",
+        requestId,
+      }, 500);
+    }
     if (!connUrl) {
       return c.json({ error: "not_found", message: `Connection "${connectionId}" not found.` }, 404);
     }
@@ -162,10 +182,10 @@ wizard.post("/generate", async (c) => {
       let result: ProfilingResult;
       switch (dbType) {
         case "postgres":
-          result = await profilePostgres(url, tableNames, undefined, schema);
+          result = await profilePostgres(url, tableNames, undefined, schema, undefined, log);
           break;
         case "mysql":
-          result = await profileMySQL(url, tableNames);
+          result = await profileMySQL(url, tableNames, undefined, undefined, log);
           break;
         default:
           return c.json({
@@ -463,6 +483,11 @@ interface ResolvedConnection {
 /**
  * Resolve a connection URL from either the runtime ConnectionRegistry
  * or the internal database (encrypted connections table).
+ *
+ * Returns the resolved connection, or null if the connection does not exist.
+ * Throws on infrastructure errors (e.g. database unreachable, pool exhaustion,
+ * decryption failure, missing encryption key) so callers can distinguish
+ * "not found" from "lookup failed".
  */
 async function resolveConnectionUrl(
   connectionId: string,
@@ -476,18 +501,14 @@ async function resolveConnectionUrl(
       // The describe() method masks the URL, so we need the raw URL for profiling.
       // Check internal DB first (it has the encrypted URL).
       if (hasInternalDB()) {
-        try {
-          const rows = await internalQuery<{ url: string; schema_name: string | null }>(
-            "SELECT url, schema_name FROM connections WHERE id = $1",
-            [connectionId],
-          );
-          if (rows.length > 0) {
-            const url = decryptUrl(rows[0].url);
-            const dbType = detectDBType(url);
-            return { url, dbType, schema: rows[0].schema_name ?? "public" };
-          }
-        } catch (err) {
-          log.warn({ err: err instanceof Error ? err.message : String(err), connectionId }, "Failed to resolve connection from internal DB");
+        const rows = await internalQuery<{ url: string; schema_name: string | null }>(
+          "SELECT url, schema_name FROM connections WHERE id = $1",
+          [connectionId],
+        );
+        if (rows.length > 0) {
+          const url = decryptUrl(rows[0].url);
+          const dbType = detectDBType(url);
+          return { url, dbType, schema: rows[0].schema_name ?? "public" };
         }
       }
 
@@ -506,18 +527,14 @@ async function resolveConnectionUrl(
     const params: unknown[] = [connectionId];
     if (orgId) params.push(orgId);
 
-    try {
-      const rows = await internalQuery<{ url: string; schema_name: string | null }>(
-        `SELECT url, schema_name FROM connections WHERE id = $1${orgFilter}`,
-        params,
-      );
-      if (rows.length > 0) {
-        const url = decryptUrl(rows[0].url);
-        const dbType = detectDBType(url);
-        return { url, dbType, schema: rows[0].schema_name ?? "public" };
-      }
-    } catch (err) {
-      log.warn({ err: err instanceof Error ? err.message : String(err), connectionId }, "Failed to resolve connection from DB");
+    const rows = await internalQuery<{ url: string; schema_name: string | null }>(
+      `SELECT url, schema_name FROM connections WHERE id = $1${orgFilter}`,
+      params,
+    );
+    if (rows.length > 0) {
+      const url = decryptUrl(rows[0].url);
+      const dbType = detectDBType(url);
+      return { url, dbType, schema: rows[0].schema_name ?? "public" };
     }
   }
 

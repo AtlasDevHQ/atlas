@@ -1,16 +1,16 @@
 /**
  * Shared profiler library — extracted from CLI for reuse by the wizard API.
  *
- * Contains pure functions: type mapping, YAML generation, heuristics, and
- * DB-specific profiling. The CLI imports from here; the wizard API calls
- * these functions directly via HTTP endpoints.
+ * Contains type mapping, YAML generation, heuristics, and DB-specific
+ * profiling. The CLI imports from here; the wizard API calls these
+ * functions directly via HTTP endpoints.
  */
 
 import * as yaml from "js-yaml";
 import type { DBType } from "@atlas/api/lib/db/connection";
 import { createLogger } from "@atlas/api/lib/logger";
 
-/** Minimal logger interface for profiler functions — compatible with pino and console. */
+/** Minimal structured logger interface — compatible with pino's (obj, msg) calling convention. */
 export interface ProfileLogger {
   info(obj: Record<string, unknown>, msg: string): void;
   warn(obj: Record<string, unknown>, msg: string): void;
@@ -120,6 +120,7 @@ export function checkFailureThreshold(
 }
 
 export function logProfilingErrors(errors: ProfileError[], total: number, log: ProfileLogger = defaultLog): void {
+  if (total === 0) return;
   const pct = Math.round((errors.length / total) * 100);
   log.warn(
     { errorCount: errors.length, total, pct, tables: errors.slice(0, 5).map((e) => e.table) },
@@ -1067,11 +1068,13 @@ export async function listPostgresObjects(connectionString: string, schema: stri
 
     return objects.sort((a, b) => a.name.localeCompare(b.name));
   } finally {
-    await pool.end();
+    await pool.end().catch((err: unknown) => {
+      log.warn({ err: err instanceof Error ? err.message : String(err) }, "Postgres pool cleanup warning");
+    });
   }
 }
 
-export async function listMySQLObjects(connectionString: string): Promise<DatabaseObject[]> {
+export async function listMySQLObjects(connectionString: string, _log: ProfileLogger = defaultLog): Promise<DatabaseObject[]> {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const mysql = require("mysql2/promise");
   const pool = mysql.createPool({
@@ -1090,7 +1093,9 @@ export async function listMySQLObjects(connectionString: string): Promise<Databa
       type: r.TABLE_TYPE === "VIEW" ? "view" as const : "table" as const,
     }));
   } finally {
-    await pool.end();
+    await pool.end().catch((err: unknown) => {
+      _log.warn({ err: err instanceof Error ? err.message : String(err) }, "MySQL pool cleanup warning");
+    });
   }
 }
 
@@ -1442,7 +1447,9 @@ export async function profilePostgres(
 
   return { profiles, errors };
   } finally {
-    await pool.end();
+    await pool.end().catch((err: unknown) => {
+      log.warn({ err: err instanceof Error ? err.message : String(err) }, "Postgres pool cleanup warning");
+    });
   }
 }
 

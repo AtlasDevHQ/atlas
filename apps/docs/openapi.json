@@ -22630,7 +22630,15 @@
                     "errors": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "type": "object",
+                        "properties": {
+                          "table": {
+                            "type": "string"
+                          },
+                          "error": {
+                            "type": "string"
+                          }
+                        }
                       },
                       "description": "Errors encountered during profiling (non-fatal)."
                     }

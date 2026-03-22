@@ -22,6 +22,7 @@ const TablesResponseSchema = z.object({
 const ErrorSchema = z.object({
   error: z.string(),
   message: z.string(),
+  requestId: z.string().optional(),
 });
 
 const tablesRoute = createRoute({
@@ -35,6 +36,18 @@ const tablesRoute = createRoute({
     200: {
       description: "List of tables with columns",
       content: { "application/json": { schema: TablesResponseSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    403: {
+      description: "Forbidden — insufficient permissions",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
     },
     500: {
       description: "Internal server error",
@@ -52,7 +65,9 @@ tables.openapi(tablesRoute, async (c) => {
 
   const preamble = await authPreamble(req, requestId);
   if ("error" in preamble) {
-    // Auth errors use dynamic status codes that can't be statically typed in createRoute
+    // Auth errors return dynamic status codes (401/403/429/500). These are declared in the
+    // route responses for spec accuracy, but TypeScript can't narrow the union at the call
+    // site — `as never` is required until auth moves to middleware in Phase 2.
     return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
@@ -67,7 +82,7 @@ tables.openapi(tablesRoute, async (c) => {
       }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), root, requestId }, "Failed to discover tables");
-      return c.json({ error: "internal_error", message: "Failed to load table list." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to load table list.", requestId }, 500);
     }
   });
 });

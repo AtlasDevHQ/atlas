@@ -305,9 +305,10 @@ describe("POST /api/v1/validate-sql", () => {
         body: "not json",
       }),
     );
-    // @hono/zod-openapi returns 400 for unparseable JSON bodies.
-    // The response body format depends on the framework's error handling.
     expect(response.status).toBe(400);
+
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.error).toBe("invalid_request");
   });
 
   it("returns 422 for missing sql field", async () => {

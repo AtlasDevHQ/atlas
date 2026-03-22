@@ -10,6 +10,7 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { Parser } from "node-sql-parser";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
@@ -64,6 +65,7 @@ const ValidateSQLResponseSchema = z.object({
 const ErrorSchema = z.object({
   error: z.string(),
   message: z.string(),
+  requestId: z.string().optional(),
 });
 
 const validateRoute = createRoute({
@@ -72,7 +74,7 @@ const validateRoute = createRoute({
   tags: ["Validate SQL"],
   summary: "Validate SQL without executing",
   description:
-    "Runs the full 5-layer SQL validation pipeline (empty check, connection check, regex guard, AST parse, table whitelist) and returns structured results. Does NOT execute the query.",
+    "Runs the full SQL validation pipeline (empty check, regex guard, AST parse, table whitelist) and returns structured results. Does NOT execute the query.",
   request: {
     body: {
       content: { "application/json": { schema: ValidateSQLRequestSchema } },
@@ -84,6 +86,14 @@ const validateRoute = createRoute({
       description: "Validation result",
       content: { "application/json": { schema: ValidateSQLResponseSchema } },
     },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    403: {
+      description: "Forbidden — insufficient permissions",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
     422: {
       description: "Validation error (invalid request body)",
       content: {
@@ -92,10 +102,24 @@ const validateRoute = createRoute({
         },
       },
     },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
   },
 });
 
 export const validateSqlRoute = new OpenAPIHono();
+
+// Normalize JSON parse errors from @hono/zod-openapi into the standard API error format.
+// The framework throws HTTPException(400) for unparseable JSON bodies; this preserves
+// the original { error: "invalid_request", message: "Invalid JSON body." } contract.
+validateSqlRoute.onError((err, c) => {
+  if (err instanceof HTTPException && err.status === 400) {
+    return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+  }
+  throw err;
+});
 
 validateSqlRoute.openapi(
   validateRoute,
@@ -105,7 +129,9 @@ validateSqlRoute.openapi(
 
     const preamble = await authPreamble(req, requestId);
     if ("error" in preamble) {
-      // Auth errors use dynamic status codes that can't be statically typed in createRoute
+      // Auth errors return dynamic status codes (401/403/429/500). These are declared in the
+      // route responses for spec accuracy, but TypeScript can't narrow the union at the call
+      // site — `as never` is required until auth moves to middleware in Phase 2.
       return c.json(preamble.error, preamble.status, preamble.headers) as never;
     }
     const { authResult } = preamble;

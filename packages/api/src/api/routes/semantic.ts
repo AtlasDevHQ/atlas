@@ -42,6 +42,7 @@ const EntityDetailResponseSchema = z.object({
 const ErrorSchema = z.object({
   error: z.string(),
   message: z.string(),
+  requestId: z.string().optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -59,6 +60,18 @@ const listEntitiesRoute = createRoute({
     200: {
       description: "List of entity summaries",
       content: { "application/json": { schema: EntitiesListResponseSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    403: {
+      description: "Forbidden — insufficient permissions",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
     },
     500: {
       description: "Internal server error",
@@ -96,6 +109,14 @@ const getEntityRoute = createRoute({
       description: "Entity not found",
       content: { "application/json": { schema: ErrorSchema } },
     },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
     500: {
       description: "Internal server error",
       content: { "application/json": { schema: ErrorSchema } },
@@ -116,7 +137,9 @@ semantic.openapi(listEntitiesRoute, async (c) => {
 
   const preamble = await authPreamble(req, requestId);
   if ("error" in preamble) {
-    // Auth errors use dynamic status codes that can't be statically typed in createRoute
+    // Auth errors return dynamic status codes (401/403/429/500). These are declared in the
+    // route responses for spec accuracy, but TypeScript can't narrow the union at the call
+    // site — `as never` is required until auth moves to middleware in Phase 2.
     return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
@@ -134,19 +157,21 @@ semantic.openapi(listEntitiesRoute, async (c) => {
       }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), root }, "Failed to discover entities");
-      return c.json({ error: "internal_error", message: "Failed to load entity list." }, 500);
+      return c.json({ error: "internal_error", message: "Failed to load entity list.", requestId }, 500);
     }
   });
 });
 
-// GET /entities/:name — full entity detail
+// GET /entities/{name} — full entity detail
 semantic.openapi(getEntityRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await authPreamble(req, requestId);
   if ("error" in preamble) {
-    // Auth errors use dynamic status codes that can't be statically typed in createRoute
+    // Auth errors return dynamic status codes (401/403/429/500). These are declared in the
+    // route responses for spec accuracy, but TypeScript can't narrow the union at the call
+    // site — `as never` is required until auth moves to middleware in Phase 2.
     return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
@@ -169,7 +194,7 @@ semantic.openapi(getEntityRoute, async (c) => {
     const resolved = path.resolve(filePath);
     if (!resolved.startsWith(path.resolve(root))) {
       log.error({ requestId, name, resolved, root }, "Resolved entity path escaped semantic root");
-      return c.json({ error: "forbidden", message: "Access denied." }, 403);
+      return c.json({ error: "forbidden", message: "Access denied.", requestId }, 403);
     }
 
     try {
@@ -177,7 +202,7 @@ semantic.openapi(getEntityRoute, async (c) => {
       return c.json({ entity: raw }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), filePath, entityName: name }, "Failed to parse entity YAML file");
-      return c.json({ error: "internal_error", message: `Failed to parse entity file for "${name}".` }, 500);
+      return c.json({ error: "internal_error", message: `Failed to parse entity file for "${name}".`, requestId }, 500);
     }
   });
 });

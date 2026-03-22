@@ -1,18 +1,14 @@
 /**
- * Action approval REST routes — list, get, approve, deny.
+ * Action approval REST routes — list, get, approve, deny, rollback.
  *
  * Middleware stack follows the same auth → rate limit → withRequestContext
  * pattern as conversations.ts.
  */
 
-import { Hono } from "hono";
+import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { HTTPException } from "hono/http-exception";
+import { z } from "zod";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
-import type { AuthResult } from "@atlas/api/lib/auth/types";
-import {
-  authenticateRequest,
-  checkRateLimit,
-  getClientIP,
-} from "@atlas/api/lib/auth/middleware";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import {
   getAction,
@@ -25,63 +21,310 @@ import {
 } from "@atlas/api/lib/tools/actions/handler";
 import { ACTION_STATUSES, type ActionStatus } from "@atlas/api/lib/action-types";
 import { canApprove } from "@atlas/api/lib/auth/permissions";
+import { authPreamble } from "./auth-preamble";
 
 const log = createLogger("actions");
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const actions = new Hono();
-
 // ---------------------------------------------------------------------------
-// Shared auth + rate-limit preamble
+// Schemas
 // ---------------------------------------------------------------------------
 
-async function authPreamble(req: Request, requestId: string) {
-  let authResult: AuthResult;
-  try {
-    authResult = await authenticateRequest(req);
-  } catch (err) {
-    log.error(
-      { err: err instanceof Error ? err : new Error(String(err)), requestId },
-      "Auth dispatch failed",
-    );
-    return { error: { error: "auth_error", message: "Authentication system error", requestId }, status: 500 as const };
-  }
-  if (!authResult.authenticated) {
-    log.warn({ requestId, status: authResult.status }, "Authentication failed");
-    return { error: { error: "auth_error", message: authResult.error, requestId }, status: authResult.status as 401 | 403 | 500 };
-  }
+const ErrorSchema = z.object({
+  error: z.string(),
+  message: z.string(),
+  requestId: z.string().optional(),
+});
 
-  const ip = getClientIP(req);
-  const rateLimitKey = authResult.user?.id ?? (ip ? `ip:${ip}` : "anon");
-  const rateCheck = checkRateLimit(rateLimitKey);
-  if (!rateCheck.allowed) {
-    const retryAfterSeconds = Math.ceil((rateCheck.retryAfterMs ?? 60000) / 1000);
-    return {
-      error: { error: "rate_limited", message: "Too many requests. Please wait before trying again.", retryAfterSeconds, requestId },
-      status: 429 as const,
-      headers: { "Retry-After": String(retryAfterSeconds) },
-    };
-  }
+// ---------------------------------------------------------------------------
+// Route definitions
+// ---------------------------------------------------------------------------
 
-  return { authResult };
-}
+const listActionsRoute = createRoute({
+  method: "get",
+  path: "/",
+  tags: ["Actions"],
+  summary: "List actions",
+  description:
+    "Returns actions filtered by status. Requires ATLAS_ACTIONS_ENABLED=true and an internal database.",
+  request: {
+    query: z.object({
+      status: z.string().optional().openapi({
+        param: { name: "status", in: "query" },
+        description: "Filter by action status (default: pending).",
+        example: "pending",
+      }),
+      limit: z.string().optional().openapi({
+        param: { name: "limit", in: "query" },
+        description: "Maximum number of actions to return (1-100, default 50).",
+        example: "50",
+      }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "List of actions",
+      content: {
+        "application/json": {
+          schema: z.object({ actions: z.array(z.record(z.string(), z.unknown())) }),
+        },
+      },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    403: {
+      description: "Forbidden — insufficient permissions",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    404: {
+      description: "Actions not available (no internal database or feature disabled)",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const getActionRoute = createRoute({
+  method: "get",
+  path: "/{id}",
+  tags: ["Actions"],
+  summary: "Get action by ID",
+  description: "Returns a single action. Only returns actions requested by the authenticated user.",
+  request: {
+    params: z.object({
+      id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Action details",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    400: {
+      description: "Invalid action ID format",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    403: {
+      description: "Forbidden — insufficient permissions",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    404: {
+      description: "Action not found",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const approveActionRoute = createRoute({
+  method: "post",
+  path: "/{id}/approve",
+  tags: ["Actions"],
+  summary: "Approve a pending action",
+  description:
+    "Approves a pending action and triggers execution. Returns the updated action with results. " +
+    "For admin-only approval mode, the requester cannot approve their own action (separation of duties).",
+  request: {
+    params: z.object({
+      id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Action approved and execution result",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    400: {
+      description: "Invalid action ID format",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    403: {
+      description: "Forbidden — insufficient permissions",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    404: {
+      description: "Action not found",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    409: {
+      description: "Action has already been resolved",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const denyActionRoute = createRoute({
+  method: "post",
+  path: "/{id}/deny",
+  tags: ["Actions"],
+  summary: "Deny a pending action",
+  description:
+    "Denies a pending action. Optionally provide a reason in the request body. " +
+    "For admin-only approval mode, the requester cannot deny their own action.",
+  request: {
+    params: z.object({
+      id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
+    }),
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({ reason: z.string().optional() }),
+        },
+      },
+      required: false,
+    },
+  },
+  responses: {
+    200: {
+      description: "Action denied",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    400: {
+      description: "Invalid action ID or request body",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    403: {
+      description: "Forbidden — insufficient permissions",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    404: {
+      description: "Action not found",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    409: {
+      description: "Action has already been resolved",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const rollbackActionRoute = createRoute({
+  method: "post",
+  path: "/{id}/rollback",
+  tags: ["Actions"],
+  summary: "Rollback an executed action",
+  description:
+    "Rolls back an executed action using stored rollback information. Requires the same approval permissions as the original action.",
+  request: {
+    params: z.object({
+      id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Action rolled back",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    400: {
+      description: "Invalid action ID format",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    403: {
+      description: "Forbidden — insufficient permissions",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    404: {
+      description: "Action not found",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    409: {
+      description: "Action cannot be rolled back",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Router
+// ---------------------------------------------------------------------------
+
+const actions = new OpenAPIHono();
+
+// Normalize JSON parse errors. Only catch SyntaxError (malformed JSON); let
+// other 400s (e.g. Zod query/path param validation) propagate with their message.
+actions.onError((err, c) => {
+  if (err instanceof HTTPException && err.status === 400) {
+    if (err.cause instanceof SyntaxError) {
+      log.warn("Malformed JSON body in request");
+      return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+    }
+    return c.json({ error: "invalid_request", message: err.message || "Bad request." }, 400);
+  }
+  throw err;
+});
 
 // ---------------------------------------------------------------------------
 // GET / — list actions (default: pending)
 // ---------------------------------------------------------------------------
 
-actions.get("/", async (c) => {
+actions.openapi(listActionsRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured)." }, 404);
+    return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured).", requestId }, 404) as never;
   }
 
   const preamble = await authPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -99,7 +342,7 @@ actions.get("/", async (c) => {
         userId: authResult.user?.id,
         limit,
       });
-      return c.json({ actions: result });
+      return c.json({ actions: result }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err.message : String(err), requestId, op: "listActions" }, "Failed to list actions");
       return c.json({ error: "internal_error", message: "Failed to list actions.", requestId }, 500);
@@ -111,23 +354,23 @@ actions.get("/", async (c) => {
 // GET /:id — get single action
 // ---------------------------------------------------------------------------
 
-actions.get("/:id", async (c) => {
+actions.openapi(getActionRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured)." }, 404);
+    return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured).", requestId }, 404) as never;
   }
 
   const preamble = await authPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
-  const id = c.req.param("id");
+  const { id } = c.req.valid("param");
   if (!UUID_RE.test(id)) {
-    return c.json({ error: "invalid_request", message: "Invalid action ID format." }, 400);
+    return c.json({ error: "invalid_request", message: "Invalid action ID format." }, 400) as never;
   }
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
@@ -136,7 +379,7 @@ actions.get("/:id", async (c) => {
       if (!action || action.requested_by !== authResult.user?.id) {
         return c.json({ error: "not_found", message: "Action not found." }, 404);
       }
-      return c.json(action);
+      return c.json(action, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err.message : String(err), requestId, op: "getAction" }, "Failed to get action");
       return c.json({ error: "internal_error", message: "Failed to retrieve action.", requestId }, 500);
@@ -148,23 +391,23 @@ actions.get("/:id", async (c) => {
 // POST /:id/approve — approve a pending action
 // ---------------------------------------------------------------------------
 
-actions.post("/:id/approve", async (c) => {
+actions.openapi(approveActionRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured)." }, 404);
+    return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured).", requestId }, 404) as never;
   }
 
   const preamble = await authPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
-  const id = c.req.param("id");
+  const { id } = c.req.valid("param");
   if (!UUID_RE.test(id)) {
-    return c.json({ error: "invalid_request", message: "Invalid action ID format." }, 400);
+    return c.json({ error: "invalid_request", message: "Invalid action ID format." }, 400) as never;
   }
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
@@ -194,7 +437,7 @@ actions.post("/:id/approve", async (c) => {
       if (!result) {
         return c.json({ error: "conflict", message: "Action has already been resolved." }, 409);
       }
-      return c.json(result);
+      return c.json(result, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err.message : String(err), requestId, op: "approveAction" }, "Failed to approve action");
       return c.json({ error: "internal_error", message: "Failed to approve action.", requestId }, 500);
@@ -206,93 +449,106 @@ actions.post("/:id/approve", async (c) => {
 // POST /:id/deny — deny a pending action
 // ---------------------------------------------------------------------------
 
-actions.post("/:id/deny", async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+actions.openapi(
+  denyActionRoute,
+  async (c) => {
+    const req = c.req.raw;
+    const requestId = crypto.randomUUID();
 
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured)." }, 404);
-  }
-
-  const preamble = await authPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
-  }
-  const { authResult } = preamble;
-
-  const id = c.req.param("id");
-  if (!UUID_RE.test(id)) {
-    return c.json({ error: "invalid_request", message: "Invalid action ID format." }, 400);
-  }
-
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    try {
-      const denierId = authResult.user?.id ?? "anonymous";
-
-      // Look up action for permission enforcement
-      const action = await getAction(id);
-      if (!action) {
-        return c.json({ error: "not_found", message: "Action not found." }, 404);
-      }
-
-      const cfg = getActionConfig(action.action_type);
-
-      // Deny requires the same minimum role as approve — consistent permission model for all action operations.
-      if (!canApprove(authResult.user, cfg.approval, cfg.requiredRole)) {
-        return c.json({ error: "forbidden", message: "Insufficient role to deny this action.", requestId }, 403);
-      }
-
-      // Enforce admin-only separation of duties: requester cannot deny their own admin-only action
-      if (cfg.approval === "admin-only" && authResult.user?.id === action.requested_by) {
-        return c.json({ error: "forbidden", message: "admin-only actions cannot be denied by the requester", requestId }, 403);
-      }
-
-      let reason: string | undefined;
-      const contentType = c.req.header("content-type") ?? "";
-      if (contentType.includes("application/json")) {
-        try {
-          const body = await c.req.json();
-          if (body && typeof body.reason === "string") {
-            reason = body.reason;
-          }
-        } catch {
-          return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
-        }
-      }
-
-      const result = await denyAction(id, denierId, reason);
-      if (!result) {
-        return c.json({ error: "conflict", message: "Action has already been resolved." }, 409);
-      }
-      return c.json(result);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err.message : String(err), requestId, op: "denyAction" }, "Failed to deny action");
-      return c.json({ error: "internal_error", message: "Failed to deny action.", requestId }, 500);
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured).", requestId }, 404) as never;
     }
-  });
-});
+
+    const preamble = await authPreamble(req, requestId);
+    if ("error" in preamble) {
+      return c.json(preamble.error, preamble.status, preamble.headers) as never;
+    }
+    const { authResult } = preamble;
+
+    const { id } = c.req.valid("param");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "invalid_request", message: "Invalid action ID format." }, 400) as never;
+    }
+
+    return withRequestContext({ requestId, user: authResult.user }, async () => {
+      try {
+        const denierId = authResult.user?.id ?? "anonymous";
+
+        // Look up action for permission enforcement
+        const action = await getAction(id);
+        if (!action) {
+          return c.json({ error: "not_found", message: "Action not found." }, 404);
+        }
+
+        const cfg = getActionConfig(action.action_type);
+
+        // Deny requires the same minimum role as approve — consistent permission model for all action operations.
+        if (!canApprove(authResult.user, cfg.approval, cfg.requiredRole)) {
+          return c.json({ error: "forbidden", message: "Insufficient role to deny this action.", requestId }, 403);
+        }
+
+        // Enforce admin-only separation of duties: requester cannot deny their own admin-only action
+        if (cfg.approval === "admin-only" && authResult.user?.id === action.requested_by) {
+          return c.json({ error: "forbidden", message: "admin-only actions cannot be denied by the requester", requestId }, 403);
+        }
+
+        // Body is optional — extract reason if provided
+        let reason: string | undefined;
+        const contentType = c.req.header("content-type") ?? "";
+        if (contentType.includes("application/json")) {
+          try {
+            const body = await c.req.json();
+            if (body && typeof body.reason === "string") {
+              reason = body.reason;
+            }
+          } catch (err) {
+            log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse deny action request body");
+            return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+          }
+        }
+
+        const result = await denyAction(id, denierId, reason);
+        if (!result) {
+          return c.json({ error: "conflict", message: "Action has already been resolved." }, 409);
+        }
+        return c.json(result, 200);
+      } catch (err) {
+        log.error({ err: err instanceof Error ? err.message : String(err), requestId, op: "denyAction" }, "Failed to deny action");
+        return c.json({ error: "internal_error", message: "Failed to deny action.", requestId }, 500);
+      }
+    });
+  },
+  (result, c) => {
+    if (!result.success) {
+      return c.json(
+        { error: "validation_error", message: "Invalid request body.", details: result.error.issues },
+        400,
+      );
+    }
+  },
+);
 
 // ---------------------------------------------------------------------------
 // POST /:id/rollback — rollback an executed action
 // ---------------------------------------------------------------------------
 
-actions.post("/:id/rollback", async (c) => {
+actions.openapi(rollbackActionRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured)." }, 404);
+    return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured).", requestId }, 404) as never;
   }
 
   const preamble = await authPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
-  const id = c.req.param("id");
+  const { id } = c.req.valid("param");
   if (!UUID_RE.test(id)) {
-    return c.json({ error: "invalid_request", message: "Invalid action ID format." }, 400);
+    return c.json({ error: "invalid_request", message: "Invalid action ID format." }, 400) as never;
   }
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
@@ -318,9 +574,9 @@ actions.post("/:id/rollback", async (c) => {
         return c.json({ error: "conflict", message: "Action cannot be rolled back. It may have been rolled back already or changed state." }, 409);
       }
       if (result.error) {
-        return c.json({ ...result, warning: "Rollback status updated but the rollback handler reported an error. The side-effect may not have been reversed." });
+        return c.json({ ...result, warning: "Rollback status updated but the rollback handler reported an error. The side-effect may not have been reversed." }, 200);
       }
-      return c.json(result);
+      return c.json(result, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, op: "rollbackAction" }, "Failed to rollback action");
       return c.json({ error: "internal_error", message: "Failed to rollback action.", requestId }, 500);

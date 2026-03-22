@@ -6,51 +6,141 @@
  * handled separately in the admin routes.
  */
 
-import { Hono } from "hono";
+import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { z } from "zod";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
-import {
-  authenticateRequest,
-  checkRateLimit,
-  getClientIP,
-} from "@atlas/api/lib/auth/middleware";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
+import { authPreamble } from "./auth-preamble";
 
 const log = createLogger("sessions-routes");
 
-const sessions = new Hono();
+// ---------------------------------------------------------------------------
+// Schemas
+// ---------------------------------------------------------------------------
+
+const ErrorSchema = z.object({
+  error: z.string(),
+  message: z.string(),
+  requestId: z.string().optional(),
+});
+
+const SessionSchema = z.object({
+  id: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  expiresAt: z.string(),
+  ipAddress: z.string().nullable(),
+  userAgent: z.string().nullable(),
+});
+
+// ---------------------------------------------------------------------------
+// Route definitions
+// ---------------------------------------------------------------------------
+
+const listSessionsRoute = createRoute({
+  method: "get",
+  path: "/",
+  tags: ["Sessions"],
+  summary: "List current user's sessions",
+  description:
+    "Returns all sessions for the authenticated user. Requires managed auth mode and an internal database.",
+  responses: {
+    200: {
+      description: "List of user sessions",
+      content: {
+        "application/json": {
+          schema: z.object({ sessions: z.array(SessionSchema) }),
+        },
+      },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    403: {
+      description: "Forbidden — insufficient permissions",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    404: {
+      description: "Session management requires managed auth mode",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const revokeSessionRoute = createRoute({
+  method: "delete",
+  path: "/{id}",
+  tags: ["Sessions"],
+  summary: "Revoke a session",
+  description:
+    "Revokes one of the current user's sessions. Cannot revoke another user's session.",
+  request: {
+    params: z.object({
+      id: z.string().openapi({ param: { name: "id", in: "path" }, example: "session-id" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Session revoked",
+      content: {
+        "application/json": {
+          schema: z.object({ success: z.boolean() }),
+        },
+      },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    403: {
+      description: "Cannot revoke another user's session",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    404: {
+      description: "Session not found or not in managed auth mode",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Router
+// ---------------------------------------------------------------------------
+
+const sessions = new OpenAPIHono();
 
 // GET / — list the current user's sessions
-sessions.get("/", async (c) => {
+sessions.openapi(listSessionsRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
-  let authResult;
-  try {
-    authResult = await authenticateRequest(req);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Auth failed");
-    return c.json({ error: "auth_error", message: "Authentication system error", requestId }, 500);
+  const preamble = await authPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
-  if (!authResult.authenticated) {
-    return c.json({ error: "auth_error", message: authResult.error, requestId }, authResult.status);
-  }
-
-  // Rate limiting
-  const ip = getClientIP(req);
-  const rateLimitKey = authResult.user?.id ?? (ip ? `ip:${ip}` : "anon");
-  const rateCheck = checkRateLimit(rateLimitKey);
-  if (!rateCheck.allowed) {
-    const retryAfterSeconds = Math.ceil((rateCheck.retryAfterMs ?? 60000) / 1000);
-    return c.json(
-      { error: "rate_limited", message: "Too many requests.", retryAfterSeconds, requestId },
-      { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } },
-    );
-  }
+  const { authResult } = preamble;
 
   const user = authResult.user;
   if (!hasInternalDB() || detectAuthMode() !== "managed" || !user) {
-    return c.json({ error: "not_available", message: "Session management requires managed auth mode." }, 404);
+    return c.json({ error: "not_available", message: "Session management requires managed auth mode.", requestId }, 404) as never;
   }
 
   return withRequestContext({ requestId, user }, async () => {
@@ -82,49 +172,33 @@ sessions.get("/", async (c) => {
           ipAddress: r.ipAddress,
           userAgent: r.userAgent,
         })),
-      });
+      }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to list user sessions");
-      return c.json({ error: "internal_error", message: "Failed to list sessions.", requestId }, 500);
+      return c.json({ error: "internal_error", message: "Failed to list sessions.", requestId }, 500) as never;
     }
   });
 });
 
 // DELETE /:id — revoke one of the current user's sessions
-sessions.delete("/:id", async (c) => {
+sessions.openapi(revokeSessionRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
-  let authResult;
-  try {
-    authResult = await authenticateRequest(req);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Auth failed");
-    return c.json({ error: "auth_error", message: "Authentication system error", requestId }, 500);
+  const preamble = await authPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
-  if (!authResult.authenticated) {
-    return c.json({ error: "auth_error", message: authResult.error, requestId }, authResult.status);
-  }
-
-  const ip = getClientIP(req);
-  const rateLimitKey = authResult.user?.id ?? (ip ? `ip:${ip}` : "anon");
-  const rateCheck = checkRateLimit(rateLimitKey);
-  if (!rateCheck.allowed) {
-    const retryAfterSeconds = Math.ceil((rateCheck.retryAfterMs ?? 60000) / 1000);
-    return c.json(
-      { error: "rate_limited", message: "Too many requests.", retryAfterSeconds, requestId },
-      { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } },
-    );
-  }
+  const { authResult } = preamble;
 
   const user = authResult.user;
   if (!hasInternalDB() || detectAuthMode() !== "managed" || !user) {
-    return c.json({ error: "not_available", message: "Session management requires managed auth mode." }, 404);
+    return c.json({ error: "not_available", message: "Session management requires managed auth mode.", requestId }, 404) as never;
   }
 
   return withRequestContext({ requestId, user }, async () => {
     const userId = user.id;
-    const sessionId = c.req.param("id");
+    const { id: sessionId } = c.req.valid("param");
 
     try {
       // Atomic delete scoped to the current user — returns empty if
@@ -140,16 +214,16 @@ sessions.delete("/:id", async (c) => {
           [sessionId],
         );
         if (exists.length === 0) {
-          return c.json({ error: "not_found", message: "Session not found." }, 404);
+          return c.json({ error: "not_found", message: "Session not found." }, 404) as never;
         }
-        return c.json({ error: "forbidden", message: "Cannot revoke another user's session.", requestId }, 403);
+        return c.json({ error: "forbidden", message: "Cannot revoke another user's session.", requestId }, 403) as never;
       }
 
       log.info({ requestId, sessionId, userId }, "User revoked own session");
-      return c.json({ success: true });
+      return c.json({ success: true }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), sessionId, userId }, "Failed to revoke session");
-      return c.json({ error: "internal_error", message: "Failed to revoke session.", requestId }, 500);
+      return c.json({ error: "internal_error", message: "Failed to revoke session.", requestId }, 500) as never;
     }
   });
 });

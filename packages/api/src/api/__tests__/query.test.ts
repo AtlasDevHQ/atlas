@@ -883,14 +883,15 @@ describe("GET /api/v1/openapi.json", () => {
     expect(spec.paths).toBeDefined();
   });
 
-  it("includes the /api/v1/query path", async () => {
+  it("includes the /api/v1/chat path", async () => {
+    // /api/v1/query moved to inline createRoute (Phase 2b); check a path still in manual spec
     const response = await app.fetch(
       new Request("http://localhost/api/v1/openapi.json"),
     );
     const spec = (await response.json()) as {
       paths: Record<string, unknown>;
     };
-    expect(spec.paths["/api/v1/query"]).toBeDefined();
+    expect(spec.paths["/api/v1/chat"]).toBeDefined();
   });
 
   it("includes security schemes", async () => {

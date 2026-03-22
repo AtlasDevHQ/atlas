@@ -220,7 +220,23 @@ describe("POST /api/v1/onboarding/test-connection", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),
     });
+    // 422: Zod validation via OpenAPIHono createRoute rejects missing required field
+    expect(res.status).toBe(422);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+    const body = (await res.json()) as any;
+    expect(body.error).toBe("validation_error");
+  });
+
+  it("returns 400 for malformed JSON body", async () => {
+    const res = await request("/api/v1/onboarding/test-connection", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "not json",
+    });
     expect(res.status).toBe(400);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+    const body = (await res.json()) as any;
+    expect(body.error).toBe("invalid_request");
   });
 
   it("rejects unsupported URL schemes", async () => {

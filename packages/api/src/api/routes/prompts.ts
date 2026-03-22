@@ -7,7 +7,8 @@
  * user's organization.
  */
 
-import { Hono } from "hono";
+import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { z } from "zod";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import type { PromptCollection, PromptItem } from "@useatlas/types";
@@ -47,27 +48,123 @@ function toPromptItem(row: Record<string, unknown>): PromptItem {
 }
 
 // ---------------------------------------------------------------------------
+// Schemas
+// ---------------------------------------------------------------------------
+
+const ErrorSchema = z.object({
+  error: z.string(),
+  message: z.string(),
+  requestId: z.string().optional(),
+});
+
+// ---------------------------------------------------------------------------
+// Route definitions
+// ---------------------------------------------------------------------------
+
+const listCollectionsRoute = createRoute({
+  method: "get",
+  path: "/",
+  tags: ["Prompts"],
+  summary: "List prompt collections",
+  description:
+    "Returns prompt collections available to the current user: built-in collections plus any belonging to the user's organization.",
+  responses: {
+    200: {
+      description: "List of prompt collections",
+      content: {
+        "application/json": {
+          schema: z.object({ collections: z.array(z.record(z.string(), z.unknown())) }),
+        },
+      },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    403: {
+      description: "Forbidden — insufficient permissions",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const getCollectionRoute = createRoute({
+  method: "get",
+  path: "/{id}",
+  tags: ["Prompts"],
+  summary: "Get prompt collection with items",
+  description:
+    "Returns a single prompt collection with all its items, ordered by sort_order.",
+  request: {
+    params: z.object({
+      id: z.string().openapi({ param: { name: "id", in: "path" }, example: "collection-id" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Collection with items",
+      content: {
+        "application/json": {
+          schema: z.object({
+            collection: z.record(z.string(), z.unknown()),
+            items: z.array(z.record(z.string(), z.unknown())),
+          }),
+        },
+      },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    403: {
+      description: "Forbidden — insufficient permissions",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    404: {
+      description: "Prompt collection not found",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
-export const prompts = new Hono();
+export const prompts = new OpenAPIHono();
 
 // ---------------------------------------------------------------------------
 // GET / — list collections (built-in + user's org)
 // ---------------------------------------------------------------------------
 
-prompts.get("/", async (c) => {
+prompts.openapi(listCollectionsRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await authPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
   if (!hasInternalDB()) {
-    return c.json({ collections: [] });
+    return c.json({ collections: [] }, 200);
   }
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
@@ -86,7 +183,7 @@ prompts.get("/", async (c) => {
         );
       }
 
-      return c.json({ collections: rows.map(toPromptCollection) });
+      return c.json({ collections: rows.map(toPromptCollection) }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to list prompt collections");
       return c.json({ error: "internal_error", message: "Failed to list prompt collections.", requestId }, 500);
@@ -98,13 +195,13 @@ prompts.get("/", async (c) => {
 // GET /:id — collection detail with items
 // ---------------------------------------------------------------------------
 
-prompts.get("/:id", async (c) => {
+prompts.openapi(getCollectionRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
 
   const preamble = await authPreamble(req, requestId);
   if ("error" in preamble) {
-    return c.json(preamble.error, { status: preamble.status, headers: preamble.headers });
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
   }
   const { authResult } = preamble;
 
@@ -114,7 +211,7 @@ prompts.get("/:id", async (c) => {
 
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     try {
-      const id = c.req.param("id");
+      const { id } = c.req.valid("param");
       const orgId = authResult.user?.activeOrganizationId;
 
       let collectionRows: Record<string, unknown>[];
@@ -142,7 +239,7 @@ prompts.get("/:id", async (c) => {
       return c.json({
         collection: toPromptCollection(collectionRows[0]),
         items: items.map(toPromptItem),
-      });
+      }, 200);
     } catch (err) {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to get prompt collection");
       return c.json({ error: "internal_error", message: "Failed to get prompt collection.", requestId }, 500);

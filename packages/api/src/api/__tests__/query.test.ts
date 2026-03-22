@@ -883,16 +883,17 @@ describe("GET /api/v1/openapi.json", () => {
     expect(spec.paths).toBeDefined();
   });
 
-  it("includes an auto-generated route path", async () => {
-    // /api/v1/chat moved to OpenAPIHono auto-generation; check a path from the auto-generated spec
+  it("includes both auto-generated and static paths", async () => {
     const response = await app.fetch(
       new Request("http://localhost/api/v1/openapi.json"),
     );
     const spec = (await response.json()) as {
       paths: Record<string, unknown>;
     };
-    // At least one path should exist in the combined spec
-    expect(Object.keys(spec.paths).length).toBeGreaterThan(0);
+    // Auto-generated path (from OpenAPIHono createRoute)
+    expect(spec.paths["/api/v1/query"]).toBeDefined();
+    // Static path (from openapi.ts staticPaths — auth proxy)
+    expect(spec.paths["/api/auth/sign-up/email"]).toBeDefined();
   });
 
   it("includes security schemes", async () => {

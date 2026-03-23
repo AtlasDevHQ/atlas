@@ -1916,7 +1916,7 @@ const deleteSettingRoute = createRoute({
 // -- Overview ---------------------------------------------------------------
 
 admin.openapi(overviewRoute, async (c) => {
-  const { requestId } = await adminAuthAndContext(c);
+  await adminAuthAndContext(c);
   const root = getSemanticRoot();
   const { entities, warnings } = discoverEntities(root);
   const metrics = discoverMetrics(root);
@@ -1957,7 +1957,7 @@ admin.openapi(overviewRoute, async (c) => {
 // -- Semantic Layer ---------------------------------------------------------
 
 admin.openapi(listEntitiesRoute, async (c) => {
-  const { requestId } = await adminAuthAndContext(c);
+  await adminAuthAndContext(c);
   const root = getSemanticRoot();
   const result = discoverEntities(root);
   return c.json({
@@ -2000,14 +2000,14 @@ admin.openapi(getEntityRoute, async (c) => {
 });
 
 admin.openapi(listMetricsRoute, async (c) => {
-  const { requestId } = await adminAuthAndContext(c);
+  await adminAuthAndContext(c);
   const root = getSemanticRoot();
   const metrics = discoverMetrics(root);
   return c.json({ metrics }, 200);
 });
 
 admin.openapi(getGlossaryRoute, async (c) => {
-  const { requestId } = await adminAuthAndContext(c);
+  await adminAuthAndContext(c);
   const root = getSemanticRoot();
   const glossary = loadGlossary(root);
   return c.json({ glossary }, 200);
@@ -2044,7 +2044,7 @@ admin.openapi(getRawYamlFileRoute, async (c) => {
 });
 
 admin.openapi(getSemanticStatsRoute, async (c) => {
-  const { requestId } = await adminAuthAndContext(c);
+  await adminAuthAndContext(c);
   const root = getSemanticRoot();
   const { entities, warnings } = discoverEntities(root);
 
@@ -2307,13 +2307,13 @@ admin.openapi(importOrgEntitiesRoute, async (c) => {
 // -- Connections ------------------------------------------------------------
 
 admin.openapi(listConnectionsRoute, async (c) => {
-  const { requestId } = await adminAuthAndContext(c);
+  await adminAuthAndContext(c);
   const connList = connections.describe();
   return c.json({ connections: connList }, 200);
 });
 
 admin.openapi(getPoolMetricsRoute, async (c) => {
-  const { requestId } = await adminAuthAndContext(c);
+  await adminAuthAndContext(c);
   const metrics = connections.getAllPoolMetrics();
   return c.json({ metrics }, 200);
 });
@@ -2770,7 +2770,7 @@ admin.openapi(getConnectionRoute, async (c) => {
 
   const { id } = c.req.valid("param");
 
-  const { requestId } = await adminAuthAndContext(c);
+  await adminAuthAndContext(c);
   if (!connections.has(id)) {
     return c.json({ error: "not_found", message: `Connection "${id}" not found.` }, 404);
   }
@@ -3000,7 +3000,7 @@ admin.openapi(getAuditStatsRoute, async (c) => {
 });
 
 admin.openapi(getAuditFacetsRoute, async (c) => {
-  const { requestId } = await adminAuthAndContext(c);
+  await adminAuthAndContext(c);
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
   }
@@ -3236,7 +3236,7 @@ admin.openapi(auditUsersRoute, async (c) => {
 // -- Plugins ----------------------------------------------------------------
 
 admin.openapi(listPluginsRoute, async (c) => {
-  const { requestId } = await adminAuthAndContext(c);
+  await adminAuthAndContext(c);
   const pluginList = plugins.describe();
   return c.json({ plugins: pluginList, manageable: hasInternalDB() }, 200);
 });
@@ -3245,7 +3245,7 @@ admin.openapi(pluginHealthRoute, async (c) => {
 
   const { id } = c.req.valid("param");
 
-  const { requestId } = await adminAuthAndContext(c);
+  await adminAuthAndContext(c);
   const plugin = plugins.get(id);
   if (!plugin) {
     return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404);
@@ -3282,7 +3282,7 @@ admin.openapi(enablePluginRoute, async (c) => {
 
   const { id } = c.req.valid("param");
 
-  const { requestId } = await adminAuthAndContext(c);
+  await adminAuthAndContext(c);
   const plugin = plugins.get(id);
   if (!plugin) {
     return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404);
@@ -3311,7 +3311,7 @@ admin.openapi(disablePluginRoute, async (c) => {
 
   const { id } = c.req.valid("param");
 
-  const { requestId } = await adminAuthAndContext(c);
+  await adminAuthAndContext(c);
   const plugin = plugins.get(id);
   if (!plugin) {
     return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404);
@@ -3340,7 +3340,7 @@ admin.openapi(getPluginSchemaRoute, async (c) => {
 
   const { id } = c.req.valid("param");
 
-  const { requestId } = await adminAuthAndContext(c);
+  await adminAuthAndContext(c);
   const plugin = plugins.get(id);
   if (!plugin) {
     return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404);
@@ -4397,7 +4397,7 @@ admin.openapi(getTokenTrendsRoute, async (c) => {
 // -- Settings ---------------------------------------------------------------
 
 admin.openapi(getSettingsRoute, async (c) => {
-  const { requestId } = await adminAuthAndContext(c);
+  await adminAuthAndContext(c);
   const settings = getSettingsForAdmin();
   const manageable = hasInternalDB();
   return c.json({ settings, manageable }, 200);

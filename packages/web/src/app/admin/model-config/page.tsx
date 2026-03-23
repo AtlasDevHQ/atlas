@@ -95,7 +95,10 @@ export default function ModelConfigPage() {
       setBaseUrl("");
     }
     setTestResult(null);
-    setMutationError(null);
+    setValidationError(null);
+    clearSaveError();
+    clearDeleteError();
+    clearTestError();
   }
 
   // Sync form when data loads

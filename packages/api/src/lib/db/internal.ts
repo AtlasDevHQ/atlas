@@ -695,7 +695,23 @@ export async function migrateInternalDB(): Promise<void> {
 
   // Soft-delete support for audit log entries (retention purge)
   await pool.query(`ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_log_deleted_at ON audit_log(deleted_at) WHERE deleted_at IS NOT NULL;`)
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_log_deleted_at ON audit_log(deleted_at) WHERE deleted_at IS NOT NULL;`);
+
+  // Enterprise workspace model configuration (0.9.0 — tenant-level model routing #665)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS workspace_model_config (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      org_id TEXT NOT NULL UNIQUE,
+      provider TEXT NOT NULL,
+      model TEXT NOT NULL,
+      api_key_encrypted TEXT NOT NULL,
+      base_url TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(`DO $$ BEGIN ALTER TABLE workspace_model_config ADD CONSTRAINT chk_model_provider CHECK (provider IN ('anthropic', 'openai', 'azure-openai', 'custom')); EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_workspace_model_config_org ON workspace_model_config(org_id);`);
 
   log.info("Internal DB migration complete");
 }

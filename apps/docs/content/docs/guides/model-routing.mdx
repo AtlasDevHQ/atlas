@@ -1,0 +1,181 @@
+---
+title: Workspace Model Routing
+description: Configure per-workspace LLM providers so enterprise customers can bring their own API key.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas supports workspace-level model routing as an enterprise feature. Each workspace can configure its own LLM provider and API key, overriding the platform default. This enables enterprise customers to use their own Anthropic, OpenAI, Azure OpenAI, or custom OpenAI-compatible endpoints.
+
+<Callout title="Prerequisites">
+- [Managed auth](/deployment/authentication#managed-auth) enabled
+- Internal database configured (`DATABASE_URL`)
+- Enterprise license (the `/ee` module must be available)
+- Admin role required for all model config endpoints
+- Encryption key configured (`ATLAS_ENCRYPTION_KEY` or `BETTER_AUTH_SECRET`) for API key storage
+</Callout>
+
+---
+
+## How It Works
+
+Workspace model routing is **opt-in per workspace**. When no custom configuration exists, the workspace uses the platform default provider configured via `ATLAS_PROVIDER` and `ATLAS_MODEL` environment variables.
+
+### Resolution Order
+
+When the agent loop starts a new conversation:
+
+1. **Workspace config** (internal DB) — checked first if the user has an active organization
+2. **Platform env vars** (`ATLAS_PROVIDER` / `ATLAS_MODEL`) — fallback when no workspace config exists
+
+### Supported Providers
+
+| Provider | Value | Description |
+|----------|-------|-------------|
+| Anthropic | `anthropic` | Claude models via `api.anthropic.com` |
+| OpenAI | `openai` | GPT models via `api.openai.com` |
+| Azure OpenAI | `azure-openai` | Azure-hosted OpenAI models (requires base URL) |
+| Custom | `custom` | Any OpenAI-compatible endpoint (requires base URL) |
+
+### Security
+
+- API keys are encrypted at rest using AES-256-GCM (same pattern as connection URLs)
+- API keys are never returned in API responses — only a masked version (last 4 characters) is shown
+- The encryption key is derived from `ATLAS_ENCRYPTION_KEY` or `BETTER_AUTH_SECRET`
+
+---
+
+## Admin UI
+
+Navigate to **Admin > AI Provider** in the admin console. From here you can:
+
+- View the current configuration (custom or platform default)
+- Set a custom provider, model, and API key
+- Test the connection before saving
+- Reset to platform default
+
+### Configuration Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| Provider | Yes | One of: Anthropic, OpenAI, Azure OpenAI, Custom |
+| Model | Yes | Model identifier (e.g. `claude-opus-4-6`, `gpt-4o`) |
+| API Key | Yes | Provider API key (encrypted at rest) |
+| Base URL | For Azure/Custom | Endpoint URL for Azure OpenAI or custom providers |
+
+---
+
+## API Reference
+
+All endpoints require admin role and enterprise license. Mounted at `/api/v1/admin/model-config`.
+
+### Get Configuration
+
+```http
+GET /api/v1/admin/model-config
+```
+
+Returns the workspace's custom model configuration, or `null` if using platform defaults.
+
+**Response:**
+
+```json
+{
+  "config": {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "orgId": "org_abc123",
+    "provider": "anthropic",
+    "model": "claude-opus-4-6",
+    "baseUrl": null,
+    "apiKeyMasked": "***********api0",
+    "createdAt": "2026-03-22T00:00:00.000Z",
+    "updatedAt": "2026-03-22T00:00:00.000Z"
+  }
+}
+```
+
+### Set Configuration
+
+```http
+PUT /api/v1/admin/model-config
+Content-Type: application/json
+
+{
+  "provider": "anthropic",
+  "model": "claude-opus-4-6",
+  "apiKey": "sk-ant-...",
+  "baseUrl": null
+}
+```
+
+Creates or updates the workspace model configuration. The API key is encrypted before storage.
+
+### Delete Configuration
+
+```http
+DELETE /api/v1/admin/model-config
+```
+
+Removes the workspace's custom configuration. The workspace reverts to using the platform default.
+
+### Test Configuration
+
+```http
+POST /api/v1/admin/model-config/test
+Content-Type: application/json
+
+{
+  "provider": "anthropic",
+  "model": "claude-opus-4-6",
+  "apiKey": "sk-ant-...",
+}
+```
+
+Tests a model configuration by making a minimal API call to the provider. Does not save the configuration.
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "message": "Connection successful.",
+  "modelName": "claude-opus-4-6"
+}
+```
+
+---
+
+## Database Schema
+
+The `workspace_model_config` table stores one row per workspace:
+
+```sql
+CREATE TABLE workspace_model_config (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id TEXT NOT NULL UNIQUE,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  api_key_encrypted TEXT NOT NULL,
+  base_url TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+The `org_id` column has a unique constraint — each workspace can have at most one custom model configuration.
+
+---
+
+## Troubleshooting
+
+### "Enterprise features are not enabled"
+
+Model routing requires an enterprise license. Set `ATLAS_ENTERPRISE_ENABLED=true` and configure `ATLAS_ENTERPRISE_LICENSE_KEY`, or set `enterprise.enabled` and `enterprise.licenseKey` in `atlas.config.ts`.
+
+### API key decryption fails
+
+If you see "Failed to decrypt workspace API key" in logs, the encryption key may have changed since the key was stored. Re-save the configuration with the current encryption key.
+
+### Workspace still uses platform default
+
+Verify the user has an active organization set (the `activeOrganizationId` must be present in the session). The model routing only applies when the agent loop has org context.

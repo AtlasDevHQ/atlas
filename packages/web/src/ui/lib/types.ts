@@ -52,7 +52,12 @@ export type {
   WizardInferredForeignKey,
   WizardTableEntry,
 } from "@useatlas/types";
-export { SHARE_EXPIRY_OPTIONS, PROMPT_INDUSTRIES } from "@useatlas/types";
+export type {
+  ModelConfigProvider,
+  WorkspaceModelConfig,
+  TestModelConfigResponse,
+} from "@useatlas/types";
+export { SHARE_EXPIRY_OPTIONS, PROMPT_INDUSTRIES, MODEL_CONFIG_PROVIDERS } from "@useatlas/types";
 export { parseChatError } from "@useatlas/types/errors";
 
 // --- Web-only types (not in @useatlas/types) ---

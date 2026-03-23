@@ -4,14 +4,19 @@
  * Set ATLAS_PROVIDER and the corresponding API key in your .env.
  * Supports Anthropic, OpenAI, AWS Bedrock, Ollama, OpenAI-compatible
  * (vLLM, TGI, LiteLLM, etc.), and Vercel AI Gateway.
+ *
+ * Enterprise workspaces can override the platform default via
+ * workspace-level model configuration (see ee/src/platform/model-routing.ts).
  */
 
+import { createAnthropic } from "@ai-sdk/anthropic";
 import { anthropic } from "@ai-sdk/anthropic";
 import { createOpenAI, openai } from "@ai-sdk/openai";
 import { bedrock } from "@ai-sdk/amazon-bedrock";
 import { bedrockAnthropic } from "@ai-sdk/amazon-bedrock/anthropic";
 import { gateway } from "ai";
 import type { LanguageModel } from "ai";
+import type { ModelConfigProvider } from "@useatlas/types";
 
 /** Provider strings accepted in ATLAS_PROVIDER. */
 type ConfigProvider = "anthropic" | "openai" | "bedrock" | "ollama" | "openai-compatible" | "gateway";
@@ -133,4 +138,85 @@ export function getModel(): LanguageModel {
       throw new Error(`Unknown provider "${_exhaustive}"`);
     }
   }
+}
+
+// ── Workspace-level model resolution ────────────────────────────────
+
+/**
+ * Map a workspace ModelConfigProvider to a ProviderType for cache control
+ * and system prompt formatting. Workspace providers are a subset of the
+ * platform providers — we map them to the corresponding ProviderType.
+ */
+function workspaceProviderType(provider: ModelConfigProvider): ProviderType {
+  switch (provider) {
+    case "anthropic":
+      return "anthropic";
+    case "openai":
+      return "openai";
+    case "azure-openai":
+    case "custom":
+      return "openai-compatible";
+    default: {
+      const _exhaustive: never = provider;
+      throw new Error(`Unknown workspace provider: ${_exhaustive}`);
+    }
+  }
+}
+
+/**
+ * Create a LanguageModel from a workspace-level model configuration.
+ * Uses the provider's SDK with the workspace's own API key and settings.
+ */
+export function getModelFromWorkspaceConfig(config: {
+  provider: ModelConfigProvider;
+  model: string;
+  apiKey: string;
+  baseUrl: string | null;
+}): LanguageModel {
+  switch (config.provider) {
+    case "anthropic": {
+      const client = createAnthropic({ apiKey: config.apiKey });
+      return client(config.model);
+    }
+
+    case "openai": {
+      const client = createOpenAI({ apiKey: config.apiKey });
+      return client(config.model);
+    }
+
+    case "azure-openai": {
+      if (!config.baseUrl) {
+        throw new Error("Base URL is required for the azure-openai provider.");
+      }
+      const client = createOpenAI({
+        apiKey: config.apiKey,
+        baseURL: config.baseUrl,
+      });
+      return client(config.model);
+    }
+
+    case "custom": {
+      if (!config.baseUrl) {
+        throw new Error("Base URL is required for the custom provider.");
+      }
+      const client = createOpenAI({
+        apiKey: config.apiKey,
+        baseURL: config.baseUrl,
+      });
+      return client(config.model);
+    }
+
+    default: {
+      const _exhaustive: never = config.provider;
+      throw new Error(`Unknown workspace provider: ${_exhaustive}`);
+    }
+  }
+}
+
+/**
+ * Get the ProviderType for a workspace-level model configuration.
+ * Used for cache control and system prompt formatting decisions.
+ */
+export function getWorkspaceProviderType(provider: ModelConfigProvider): ProviderType {
+  return workspaceProviderType(provider);
 }

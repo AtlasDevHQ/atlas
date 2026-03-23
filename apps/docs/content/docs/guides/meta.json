@@ -27,6 +27,7 @@
     "schema-evolution",
     "multi-tenancy",
     "caching",
+    "model-routing",
     "self-hosted-models",
     "rate-limiting",
     "troubleshooting",

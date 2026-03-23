@@ -23,6 +23,7 @@ import {
   Settings,
   Shield,
   KeyRound,
+  Cpu,
   ArrowLeft,
 } from "lucide-react";
 import {
@@ -58,6 +59,7 @@ const navItems = [
   { href: "/admin/roles", label: "Roles", icon: KeyRound },
   { href: "/admin/ip-allowlist", label: "IP Allowlist", icon: Shield },
   { href: "/admin/actions", label: "Actions", icon: Zap },
+  { href: "/admin/model-config", label: "AI Provider", icon: Cpu },
   { href: "/admin/sso", label: "SSO", icon: ShieldCheck },
   { href: "/admin/settings", label: "Settings", icon: Settings },
 ];

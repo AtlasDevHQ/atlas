@@ -16,7 +16,7 @@ import {
   type ToolSet,
   type UIMessage,
 } from "ai";
-import { getModel, getProviderType, type ProviderType } from "./providers";
+import { getModel, getProviderType, getModelFromWorkspaceConfig, getWorkspaceProviderType, type ProviderType } from "./providers";
 import { defaultRegistry, type ToolRegistry } from "./tools/registry";
 import { getContextFragments, getDialectHints } from "./plugins/tools";
 import { connections, detectDBType, type ConnectionMetadata, type DBType } from "./db/connection";
@@ -484,12 +484,34 @@ export async function runAgent({
   /** Override the default agent step limit (e.g. for demo mode). */
   maxSteps?: number;
 }) {
-  const model = getModel();
-  const providerType = getProviderType();
   // Capture context eagerly — AsyncLocalStorage may have exited by the time onFinish fires
   const reqCtx = getRequestContext();
   const userId = reqCtx?.user?.id ?? null;
   const orgId = reqCtx?.user?.activeOrganizationId;
+
+  // Resolve model: workspace config (enterprise) > platform env vars
+  let model: ReturnType<typeof getModel>;
+  let providerType: ProviderType;
+
+  let workspaceConfig: { provider: import("@useatlas/types").ModelConfigProvider; model: string; apiKey: string; baseUrl: string | null } | null = null;
+  if (orgId && hasInternalDB()) {
+    try {
+      const { getWorkspaceModelConfigRaw } = await import("../../../../ee/src/platform/model-routing");
+      workspaceConfig = await getWorkspaceModelConfigRaw(orgId);
+    } catch (err) {
+      log.debug({ orgId, err: err instanceof Error ? err.message : String(err) }, "Workspace model config not available — using platform default");
+    }
+  }
+
+  if (workspaceConfig) {
+    model = getModelFromWorkspaceConfig(workspaceConfig);
+    providerType = getWorkspaceProviderType(workspaceConfig.provider);
+    log.info({ orgId, provider: workspaceConfig.provider, model: workspaceConfig.model }, "Using workspace model config");
+  } else {
+    model = getModel();
+    providerType = getProviderType();
+  }
+
   const resolvedModelId = typeof model === "string" ? model : model.modelId;
 
   // Pre-load org-scoped semantic data and learned patterns before the agent loop.

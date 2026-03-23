@@ -49,6 +49,7 @@ import { adminSuggestions } from "./admin-suggestions";
 import { adminSso } from "./admin-sso";
 import { adminIPAllowlist } from "./admin-ip-allowlist";
 import { adminRoles } from "./admin-roles";
+import { adminModelConfig } from "./admin-model-config";
 import { adminAuthPreamble, authErrorCode } from "./admin-auth";
 import { adminUsage } from "./admin-usage";
 import { adminAuditRetention } from "./admin-audit-retention";
@@ -92,6 +93,8 @@ admin.route("/roles", adminRoles);
 admin.route("/roles/", adminRoles);
 admin.route("/audit/retention", adminAuditRetention);
 admin.route("/audit/retention/", adminAuditRetention);
+admin.route("/model-config", adminModelConfig);
+admin.route("/model-config/", adminModelConfig);
 
 // Path traversal guard, YAML helpers, entity discovery, and file finding
 // are all imported from @atlas/api/lib/semantic-files above.

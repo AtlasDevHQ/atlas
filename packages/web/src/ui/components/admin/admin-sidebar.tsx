@@ -20,6 +20,7 @@ import {
   Brain,
   BookOpen,
   ShieldCheck,
+  RefreshCw,
   Settings,
   Shield,
   KeyRound,
@@ -61,6 +62,7 @@ const navItems = [
   { href: "/admin/actions", label: "Actions", icon: Zap },
   { href: "/admin/model-config", label: "AI Provider", icon: Cpu },
   { href: "/admin/sso", label: "SSO", icon: ShieldCheck },
+  { href: "/admin/scim", label: "SCIM", icon: RefreshCw },
   { href: "/admin/settings", label: "Settings", icon: Settings },
 ];
 

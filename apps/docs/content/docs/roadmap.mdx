@@ -106,7 +106,7 @@ The current milestone. Platform foundation for hosted Atlas at app.useatlas.dev.
 
 ### 0.9.1 — Docs & Polish
 
-Ongoing documentation and hardening pass as 0.9.0 features ship. Guide pages for self-serve signup, demo mode, enterprise SSO, IP allowlisting, SSO enforcement, usage metering, billing & plans, semantic layer setup wizard, and custom roles. SDK reference corrected (HTTP statuses, type exports, error codes). RLS config reference expanded with multi-condition `conditions` field. Validation error handling unified: shared hook returns context-aware messages with 422 status across all 23 API sub-routers. OpenAPI auto-generation migration complete: manual spec reduced from ~4,300 to ~230 lines. IP allowlist parsing upgraded from hand-rolled bigint math to `ipaddr.js` with IPv4-mapped IPv6 support. Grows as more features land.
+Ongoing documentation and hardening pass as 0.9.0 features ship. Guide pages for self-serve signup, demo mode, enterprise SSO, IP allowlisting, SSO enforcement, usage metering, billing & plans, semantic layer setup wizard, and custom roles. SDK reference corrected (HTTP statuses, type exports, error codes). RLS config reference expanded with multi-condition `conditions` field. Validation error handling unified: shared hook returns context-aware messages with 422 status across all 23 API sub-routers. OpenAPI auto-generation migration complete: manual spec reduced from ~4,300 to ~230 lines, docs spec regenerated with all 150 routes. IP allowlist parsing upgraded from hand-rolled bigint math to `ipaddr.js` with IPv4-mapped IPv6 support. CLI profiler deduplicated with shared library. Wizard types consolidated into `@useatlas/types` with Zod validation. Grows as more features land.
 
 ---
 

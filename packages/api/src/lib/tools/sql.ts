@@ -581,6 +581,16 @@ async function executeAndAudit(opts: {
     connections.recordQuery(connId, durationMs, orgId);
     connections.recordSuccess(connId, orgId);
 
+    // Record SLA metric (fire-and-forget, enterprise feature)
+    if (orgId) {
+      try {
+        const { recordQueryMetric } = await import("@atlas/ee/sla/index");
+        recordQueryMetric(orgId, durationMs, false);
+      } catch {
+        // ee/sla module not installed — SLA metrics unavailable, skip
+      }
+    }
+
     // Store in cache on success — fail open if cache backend is broken
     if (cacheKey) {
       try {
@@ -673,6 +683,16 @@ async function executeAndAudit(opts: {
 
     connections.recordQuery(connId, durationMs, orgId);
     connections.recordError(connId, orgId);
+
+    // Record SLA metric for failed query (fire-and-forget, enterprise feature)
+    if (orgId) {
+      try {
+        const { recordQueryMetric } = await import("@atlas/ee/sla/index");
+        recordQueryMetric(orgId, durationMs, true);
+      } catch {
+        // ee/sla module not installed — SLA metrics unavailable, skip
+      }
+    }
 
     try {
       logQueryAudit({

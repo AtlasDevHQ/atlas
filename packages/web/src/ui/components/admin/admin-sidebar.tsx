@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useAtlasConfig } from "@/ui/context";
 import { useBranding } from "@/ui/hooks/use-branding";
 import {
+  Activity,
   Ban,
   LayoutDashboard,
   Database,
@@ -76,6 +77,7 @@ const navItems = [
   { href: "/admin/branding", label: "Branding", icon: Paintbrush },
   { href: "/admin/settings", label: "Settings", icon: Settings },
   { href: "/admin/platform", label: "Platform Admin", icon: Globe, requiredRole: "platform_admin" as const },
+  { href: "/admin/platform/sla", label: "SLA Monitoring", icon: Activity, requiredRole: "platform_admin" as const },
 ];
 
 export function AdminSidebar() {

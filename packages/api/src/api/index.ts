@@ -226,6 +226,18 @@ try {
   );
 }
 
+// Platform SLA monitoring routes — enterprise-gated, platform_admin role.
+try {
+  const { platformSLA } = await import("./routes/platform-sla");
+  app.route("/api/v1/platform/sla", platformSLA);
+  log.info("Platform SLA monitoring routes enabled");
+} catch (err) {
+  log.error(
+    { err: err instanceof Error ? err : new Error(String(err)) },
+    "Failed to load platform SLA routes — SLA monitoring will be unavailable",
+  );
+}
+
 // Billing routes — lazy import, only loaded if STRIPE_SECRET_KEY is set (SaaS mode).
 if (process.env.STRIPE_SECRET_KEY) {
   try {

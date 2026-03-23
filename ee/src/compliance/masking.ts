@@ -25,6 +25,7 @@ import type {
   PIIConfidence,
   PIIColumnClassification,
   MaskingStrategy,
+  MaskingRole,
   UpdatePIIClassificationRequest,
 } from "@useatlas/types";
 import { PII_CATEGORIES, MASKING_STRATEGIES } from "@useatlas/types";
@@ -275,8 +276,8 @@ export interface MaskingContext {
   tablesAccessed: string[];
   /** Organization ID. */
   orgId: string;
-  /** User role (admin, analyst, viewer, member, owner). */
-  userRole: string | undefined;
+  /** User role — determines masking level. */
+  userRole: MaskingRole | string | undefined;
 }
 
 /**
@@ -447,11 +448,7 @@ function hashValue(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 16);
 }
 
-// Regex patterns used in partial masking (matching pii-detection.ts)
-const EMAIL_RE = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
-const SSN_RE = /^\d{3}-\d{2}-\d{4}$/;
-const CREDIT_CARD_RE = /^\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}$/;
-const PHONE_RE = /^[\s]*(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)?\d{3}[\s.-]?\d{4}[\s]*$/;
+import { EMAIL_RE, SSN_RE, CREDIT_CARD_RE, PHONE_RE } from "./patterns";
 
 // ── Validation helpers ──────────────────────────────────────────
 

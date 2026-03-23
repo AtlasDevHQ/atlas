@@ -13,18 +13,17 @@
  */
 
 import type { PIICategory, PIIDetection } from "@useatlas/types";
-
-// ── Regex patterns for sample value matching ────────────────────
-
-const EMAIL_RE = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
-const PHONE_RE = /^[\s]*(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)?\d{3}[\s.-]?\d{4}[\s]*$/;
-const SSN_RE = /^\d{3}-\d{2}-\d{4}$/;
-const CREDIT_CARD_RE = /^\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}$/;
-const IPV4_RE = /^(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)$/;
-const IPV6_RE = /^(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$/;
-const DOB_RE = /^(?:19|20)\d{2}[-/](?:0[1-9]|1[0-2])[-/](?:0[1-9]|[12]\d|3[01])$/;
-const PASSPORT_RE = /^[A-Z]{1,2}\d{6,9}$/;
-const DRIVER_LICENSE_RE = /^[A-Z]\d{3,}-\d{3,}-\d{3,}$/;
+import {
+  EMAIL_RE,
+  PHONE_RE,
+  SSN_RE,
+  CREDIT_CARD_RE,
+  IPV4_RE,
+  IPV6_RE,
+  DOB_RE,
+  PASSPORT_RE,
+  DRIVER_LICENSE_RE,
+} from "./patterns";
 
 interface ValuePattern {
   category: PIICategory;

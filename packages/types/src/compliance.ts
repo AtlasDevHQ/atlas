@@ -34,6 +34,11 @@ export type PIIConfidence = (typeof PII_CONFIDENCE_LEVELS)[number];
 export const MASKING_STRATEGIES = ["full", "partial", "hash", "redact"] as const;
 export type MaskingStrategy = (typeof MASKING_STRATEGIES)[number];
 
+// ── Detection methods ────────────────────────────────────────────
+
+export const PII_DETECTION_METHODS = ["regex", "column_name", "type_heuristic"] as const;
+export type PIIDetectionMethod = (typeof PII_DETECTION_METHODS)[number];
+
 // ── Detection result ────────────────────────────────────────────
 
 export interface PIIDetection {
@@ -42,10 +47,16 @@ export interface PIIDetection {
   /** Confidence level of the detection. */
   confidence: PIIConfidence;
   /** How the detection was made. */
-  method: "regex" | "column_name" | "type_heuristic";
+  method: PIIDetectionMethod;
   /** Human-readable reason for the detection. */
   reason: string;
 }
+
+// ── Masking role tiers ──────────────────────────────────────────
+
+/** Roles relevant to masking decisions. */
+export const MASKING_ROLES = ["admin", "owner", "analyst", "viewer", "member"] as const;
+export type MaskingRole = (typeof MASKING_ROLES)[number];
 
 // ── Column-level PII classification (stored in DB) ──────────────
 

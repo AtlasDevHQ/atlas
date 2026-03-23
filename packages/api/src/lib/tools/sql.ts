@@ -631,6 +631,7 @@ async function executeAndAudit(opts: {
     // Enterprise PII masking — mask sensitive columns based on user role.
     // Fails open: non-enterprise deployments or errors return unmasked results.
     let maskedRows = result.rows;
+    let maskingApplied = false;
     if (classification?.tablesAccessed.length && orgId) {
       try {
         const { applyMasking } = await import("@atlas/ee/compliance/masking");
@@ -642,6 +643,7 @@ async function executeAndAudit(opts: {
           orgId,
           userRole: maskCtx?.user?.role,
         });
+        maskingApplied = maskedRows !== result.rows;
       } catch (err) {
         // Masking unavailable (ee not installed, enterprise disabled, DB error).
         // Fail open — log and return unmasked results.
@@ -661,6 +663,7 @@ async function executeAndAudit(opts: {
       rows: maskedRows,
       truncated,
       cached: false,
+      maskingApplied,
       ...(hasHookMeta && { metadata: hookMetadata }),
     };
   } catch (err) {
@@ -879,6 +882,7 @@ Rules:
           });
           // Apply PII masking to cached results (same as live query path)
           let cachedRows = cached.rows;
+          let cachedMaskingApplied = false;
           if (classification?.tablesAccessed.length && orgId) {
             try {
               const { applyMasking } = await import("@atlas/ee/compliance/masking");
@@ -889,6 +893,7 @@ Rules:
                 orgId,
                 userRole: ctx?.user?.role,
               });
+              cachedMaskingApplied = cachedRows !== cached.rows;
             } catch (err) {
               log.warn(
                 { err: err instanceof Error ? err.message : String(err), connectionId: connId },
@@ -904,6 +909,7 @@ Rules:
             rows: cachedRows,
             truncated: cachedRows.length >= getRowLimit(),
             cached: true,
+            maskingApplied: cachedMaskingApplied,
           };
         }
       } catch (cacheErr) {

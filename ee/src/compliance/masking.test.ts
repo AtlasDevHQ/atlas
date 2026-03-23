@@ -28,8 +28,18 @@ mock.module("@atlas/api/lib/logger", () => ({
 }));
 
 // Import after mocks
-const { maskValue, partialMask, applyMasking, _resetComplianceState } =
-  await import("./masking");
+const {
+  maskValue,
+  partialMask,
+  applyMasking,
+  savePIIClassification,
+  updatePIIClassification,
+  deletePIIClassification,
+  listPIIClassifications,
+  invalidateClassificationCache,
+  ComplianceError,
+  _resetComplianceState,
+} = await import("./masking");
 
 // ── maskValue ───────────────────────────────────────────────────
 
@@ -326,5 +336,252 @@ describe("applyMasking", () => {
 
     // Undefined role defaults to viewer (full mask)
     expect(result[0].email).toBe("***");
+  });
+});
+
+// ── ComplianceError ─────────────────────────────────────────────
+
+describe("ComplianceError", () => {
+  it("has correct name and code", () => {
+    const err = new ComplianceError("test message", "validation");
+    expect(err.name).toBe("ComplianceError");
+    expect(err.code).toBe("validation");
+    expect(err.message).toBe("test message");
+    expect(err instanceof Error).toBe(true);
+    expect(err instanceof ComplianceError).toBe(true);
+  });
+
+  it("supports all error codes", () => {
+    for (const code of ["validation", "not_found", "conflict"] as const) {
+      const err = new ComplianceError(`test ${code}`, code);
+      expect(err.code).toBe(code);
+    }
+  });
+});
+
+// ── CRUD operations ─────────────────────────────────────────────
+
+describe("savePIIClassification", () => {
+  beforeEach(() => {
+    _resetComplianceState();
+    mockEnterpriseEnabled = true;
+    mockHasInternalDB = true;
+    mockQueryRows.length = 0;
+  });
+
+  it("saves a classification and returns it", async () => {
+    mockQueryRows.push([]); // CREATE TABLE
+    mockQueryRows.push([{
+      id: "cls-new",
+      org_id: "org-1",
+      table_name: "users",
+      column_name: "email",
+      connection_id: "default",
+      category: "email",
+      confidence: "high",
+      masking_strategy: "partial",
+      reviewed: false,
+      dismissed: false,
+      created_at: "2026-01-01",
+      updated_at: "2026-01-01",
+    }]);
+
+    const result = await savePIIClassification(
+      "org-1", "users", "email", "default", "email", "high", "partial",
+    );
+    expect(result.id).toBe("cls-new");
+    expect(result.category).toBe("email");
+    expect(result.maskingStrategy).toBe("partial");
+  });
+
+  it("throws on invalid category", async () => {
+    mockQueryRows.push([]); // CREATE TABLE
+    await expect(
+      savePIIClassification("org-1", "t", "c", "default", "invalid" as "email", "high"),
+    ).rejects.toThrow("Invalid PII category");
+  });
+
+  it("throws on invalid masking strategy", async () => {
+    mockQueryRows.push([]); // CREATE TABLE
+    await expect(
+      savePIIClassification("org-1", "t", "c", "default", "email", "high", "invalid" as "full"),
+    ).rejects.toThrow("Invalid masking strategy");
+  });
+
+  it("throws when enterprise is disabled", async () => {
+    mockEnterpriseEnabled = false;
+    await expect(
+      savePIIClassification("org-1", "t", "c", "default", "email", "high"),
+    ).rejects.toThrow("Enterprise features");
+  });
+
+  it("throws when internal DB is unavailable", async () => {
+    mockHasInternalDB = false;
+    await expect(
+      savePIIClassification("org-1", "t", "c", "default", "email", "high"),
+    ).rejects.toThrow("Internal database not available");
+  });
+});
+
+describe("updatePIIClassification", () => {
+  beforeEach(() => {
+    _resetComplianceState();
+    mockEnterpriseEnabled = true;
+    mockHasInternalDB = true;
+    mockQueryRows.length = 0;
+  });
+
+  it("updates and returns the classification", async () => {
+    mockQueryRows.push([]); // CREATE TABLE
+    mockQueryRows.push([{
+      id: "cls-1",
+      org_id: "org-1",
+      table_name: "users",
+      column_name: "email",
+      connection_id: "default",
+      category: "phone",
+      confidence: "high",
+      masking_strategy: "full",
+      reviewed: true,
+      dismissed: false,
+      created_at: "2026-01-01",
+      updated_at: "2026-01-02",
+    }]);
+
+    const result = await updatePIIClassification("org-1", "cls-1", {
+      category: "phone",
+      maskingStrategy: "full",
+      reviewed: true,
+    });
+    expect(result.category).toBe("phone");
+    expect(result.maskingStrategy).toBe("full");
+    expect(result.reviewed).toBe(true);
+  });
+
+  it("throws not_found when classification does not exist", async () => {
+    mockQueryRows.push([]); // CREATE TABLE
+    mockQueryRows.push([]); // empty result
+
+    try {
+      await updatePIIClassification("org-1", "nonexistent", { reviewed: true });
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err instanceof ComplianceError).toBe(true);
+      expect((err as InstanceType<typeof ComplianceError>).code).toBe("not_found");
+    }
+  });
+});
+
+describe("deletePIIClassification", () => {
+  beforeEach(() => {
+    _resetComplianceState();
+    mockEnterpriseEnabled = true;
+    mockHasInternalDB = true;
+    mockQueryRows.length = 0;
+  });
+
+  it("deletes a classification", async () => {
+    mockQueryRows.push([]); // CREATE TABLE
+    mockQueryRows.push([{ id: "cls-1" }]); // RETURNING id
+
+    await expect(deletePIIClassification("org-1", "cls-1")).resolves.toBeUndefined();
+  });
+
+  it("throws not_found when classification does not exist", async () => {
+    mockQueryRows.push([]); // CREATE TABLE
+    mockQueryRows.push([]); // empty result
+
+    try {
+      await deletePIIClassification("org-1", "nonexistent");
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err instanceof ComplianceError).toBe(true);
+      expect((err as InstanceType<typeof ComplianceError>).code).toBe("not_found");
+    }
+  });
+
+  it("throws when internal DB is unavailable", async () => {
+    mockHasInternalDB = false;
+    await expect(
+      deletePIIClassification("org-1", "cls-1"),
+    ).rejects.toThrow("Internal database not available");
+  });
+});
+
+describe("listPIIClassifications", () => {
+  beforeEach(() => {
+    _resetComplianceState();
+    mockEnterpriseEnabled = true;
+    mockHasInternalDB = true;
+    mockQueryRows.length = 0;
+  });
+
+  it("returns classifications for an org", async () => {
+    mockQueryRows.push([]); // CREATE TABLE
+    mockQueryRows.push([
+      {
+        id: "cls-1",
+        org_id: "org-1",
+        table_name: "users",
+        column_name: "email",
+        connection_id: "default",
+        category: "email",
+        confidence: "high",
+        masking_strategy: "partial",
+        reviewed: false,
+        dismissed: false,
+        created_at: "2026-01-01",
+        updated_at: "2026-01-01",
+      },
+    ]);
+
+    const results = await listPIIClassifications("org-1");
+    expect(results).toHaveLength(1);
+    expect(results[0].tableName).toBe("users");
+    expect(results[0].columnName).toBe("email");
+  });
+
+  it("returns empty array when DB is unavailable", async () => {
+    mockHasInternalDB = false;
+    const results = await listPIIClassifications("org-1");
+    expect(results).toEqual([]);
+  });
+});
+
+// ── Cache behavior ──────────────────────────────────────────────
+
+describe("invalidateClassificationCache", () => {
+  beforeEach(() => {
+    _resetComplianceState();
+    mockEnterpriseEnabled = true;
+    mockHasInternalDB = true;
+    mockQueryRows.length = 0;
+  });
+
+  it("forces re-fetch after invalidation", async () => {
+    // First call populates cache
+    mockQueryRows.push([]); // CREATE TABLE
+    mockQueryRows.push([{
+      id: "cls-1", org_id: "org-1", table_name: "users", column_name: "email",
+      connection_id: "default", category: "email", confidence: "high",
+      masking_strategy: "partial", reviewed: false, dismissed: false,
+      created_at: "2026-01-01", updated_at: "2026-01-01",
+    }]);
+
+    const result1 = await applyMasking({
+      columns: ["email"], rows: [{ email: "test@test.com" }],
+      tablesAccessed: ["users"], orgId: "org-1", userRole: "viewer",
+    });
+    expect(result1[0].email).toBe("***"); // Masked
+
+    // Invalidate cache and provide empty classifications
+    invalidateClassificationCache("org-1");
+    mockQueryRows.push([]); // Re-fetch returns empty (classification was deleted)
+
+    const result2 = await applyMasking({
+      columns: ["email"], rows: [{ email: "test@test.com" }],
+      tablesAccessed: ["users"], orgId: "org-1", userRole: "viewer",
+    });
+    expect(result2[0].email).toBe("test@test.com"); // No longer masked
   });
 });

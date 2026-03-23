@@ -75,6 +75,14 @@ export type { ChatBridge } from "./bridge";
 export { createStateAdapter } from "./state";
 export type { PluginDB } from "./state";
 
+// Card components for host customization
+export { buildQueryResultCard } from "./cards/query-result-card";
+export { buildErrorCard } from "./cards/error-card";
+export type { ErrorCardProps } from "./cards/error-card";
+export { buildApprovalCardJSX } from "./cards/approval-card";
+export { buildDataTableCard } from "./cards/data-table-card";
+export type { DataTableCardProps } from "./cards/data-table-card";
+
 // ---------------------------------------------------------------------------
 // Plugin builder
 // ---------------------------------------------------------------------------

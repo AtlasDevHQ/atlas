@@ -2,9 +2,10 @@
  * Tests for the Chat SDK ↔ Atlas bridge.
  *
  * Covers:
- * - Response formatting (markdown tables, SQL, metadata)
+ * - JSX card builders (query result, error, approval, data table)
+ * - Response formatting (markdown fallback, SQL, metadata)
  * - Error scrubbing (connection strings, stack traces, API keys, user scrubber faults)
- * - Card builders (approval cards, action result formatting)
+ * - Legacy card builders (approval cards, action result formatting)
  * - Config validation (adapter requirements, callback types, state config, actions, conversations)
  * - Plugin lifecycle (initialization, health checks, teardown, double-init guard)
  * - State adapter wiring (factory, PG requires db, redis stub)
@@ -17,6 +18,10 @@ import {
   buildApprovalCard,
   formatActionResult,
 } from "./bridge";
+import { buildQueryResultCard } from "./cards/query-result-card";
+import { buildErrorCard } from "./cards/error-card";
+import { buildApprovalCardJSX } from "./cards/approval-card";
+import { buildDataTableCard } from "./cards/data-table-card";
 import type { ChatQueryResult, PendingAction } from "./config";
 import { createStateAdapter } from "./state";
 import { createRedisAdapter } from "./state/redis-adapter";
@@ -141,12 +146,13 @@ describe("buildApprovalCard", () => {
 
   it("includes a section with the action summary", () => {
     const card = buildApprovalCard(action);
+    // Card title carries the "requires approval" heading
+    expect(card.title).toBe("Action requires approval");
     const section = card.children[0];
     expect(section.type).toBe("section");
-    // Drill into section to find text
-    const textChild = (section as { children: { text?: string }[] }).children[0];
-    expect(textChild.text).toContain("Action requires approval");
-    expect(textChild.text).toContain("Send notification to #revenue channel");
+    // TextElement uses `content`, not `text`
+    const textChild = (section as { children: { content?: string }[] }).children[0];
+    expect(textChild.content).toContain("Send notification to #revenue channel");
   });
 
   it("includes approve and deny buttons", () => {
@@ -174,8 +180,190 @@ describe("buildApprovalCard", () => {
       summary: "A".repeat(300),
     };
     const card = buildApprovalCard(longAction);
-    const section = card.children[0] as { children: { text?: string }[] };
-    expect((section.children[0].text ?? "").length).toBeLessThanOrEqual(250);
+    const section = card.children[0] as { children: { content?: string }[] };
+    expect((section.children[0].content ?? "").length).toBeLessThanOrEqual(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// JSX Card Builders
+// ---------------------------------------------------------------------------
+
+describe("buildQueryResultCard", () => {
+  it("returns card and fallbackText", () => {
+    const result: ChatQueryResult = {
+      answer: "There were 42 active users last month.",
+      sql: ["SELECT COUNT(*) FROM users WHERE active = true"],
+      data: [{ columns: ["count"], rows: [{ count: 42 }] }],
+      steps: 3,
+      usage: { totalTokens: 1500 },
+    };
+
+    const { card, fallbackText } = buildQueryResultCard(result);
+
+    // Card structure
+    expect(card.type).toBe("card");
+    expect(card.children.length).toBeGreaterThan(0);
+
+    // Fallback text contains all key elements
+    expect(fallbackText).toContain("42 active users");
+    expect(fallbackText).toContain("```sql");
+    expect(fallbackText).toContain("SELECT COUNT(*)");
+    expect(fallbackText).toContain("| count |");
+    expect(fallbackText).toContain("3 steps");
+    expect(fallbackText).toContain("1,500 tokens");
+  });
+
+  it("card contains table element for data", () => {
+    const result: ChatQueryResult = {
+      answer: "Results.",
+      sql: [],
+      data: [{ columns: ["id", "name"], rows: [{ id: 1, name: "Alice" }] }],
+      steps: 1,
+      usage: { totalTokens: 100 },
+    };
+
+    const { card } = buildQueryResultCard(result);
+    const tableChild = card.children.find((c) => c.type === "table");
+    expect(tableChild).toBeDefined();
+  });
+
+  it("card contains fields for metadata", () => {
+    const result: ChatQueryResult = {
+      answer: "Done.",
+      sql: [],
+      data: [],
+      steps: 5,
+      usage: { totalTokens: 2000 },
+    };
+
+    const { card } = buildQueryResultCard(result);
+    const fieldsChild = card.children.find((c) => c.type === "fields");
+    expect(fieldsChild).toBeDefined();
+  });
+
+  it("handles empty answer", () => {
+    const result: ChatQueryResult = {
+      answer: "",
+      sql: [],
+      data: [],
+      steps: 1,
+      usage: { totalTokens: 100 },
+    };
+
+    const { fallbackText } = buildQueryResultCard(result);
+    expect(fallbackText).toContain("No answer generated.");
+  });
+
+  it("truncates large data tables in fallback", () => {
+    const rows = Array.from({ length: 30 }, (_, i) => ({ id: i + 1, name: `User ${i + 1}` }));
+    const result: ChatQueryResult = {
+      answer: "Users.",
+      sql: [],
+      data: [{ columns: ["id", "name"], rows }],
+      steps: 1,
+      usage: { totalTokens: 100 },
+    };
+
+    const { fallbackText } = buildQueryResultCard(result);
+    expect(fallbackText).toContain("Showing first 20 of 30 rows");
+    expect(fallbackText).not.toContain("User 21");
+  });
+});
+
+describe("buildErrorCard", () => {
+  it("returns card with error message", () => {
+    const { card, fallbackText } = buildErrorCard({ message: "Query timed out after 30s" });
+
+    expect(card.type).toBe("card");
+    expect(card.title).toBe("Unable to complete request");
+    expect(fallbackText).toContain("Query timed out after 30s");
+    expect(fallbackText).toContain("transient issue");
+  });
+
+  it("uses custom retry hint", () => {
+    const { fallbackText } = buildErrorCard({
+      message: "Rate limit exceeded",
+      retryHint: "Wait 60 seconds before retrying.",
+    });
+
+    expect(fallbackText).toContain("Wait 60 seconds");
+    expect(fallbackText).not.toContain("transient issue");
+  });
+
+  it("card has text children for message and hint", () => {
+    const { card } = buildErrorCard({ message: "Error occurred" });
+    const textChildren = card.children.filter((c) => c.type === "text");
+    expect(textChildren.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("buildApprovalCardJSX", () => {
+  const action: PendingAction = {
+    id: "act-001",
+    type: "notification",
+    target: "#revenue",
+    summary: "Send notification to #revenue channel",
+  };
+
+  it("returns card and fallbackText", () => {
+    const { card, fallbackText } = buildApprovalCardJSX(action);
+
+    expect(card.type).toBe("card");
+    expect(card.title).toBe("Action requires approval");
+    expect(fallbackText).toContain("Action requires approval");
+    expect(fallbackText).toContain("Send notification to #revenue channel");
+  });
+
+  it("card has section and actions children", () => {
+    const { card } = buildApprovalCardJSX(action);
+    expect(card.children.some((c) => c.type === "section")).toBe(true);
+    expect(card.children.some((c) => c.type === "actions")).toBe(true);
+  });
+
+  it("actions contain approve and deny buttons", () => {
+    const { card } = buildApprovalCardJSX(action);
+    const actions = card.children.find((c) => c.type === "actions") as {
+      type: string;
+      children: { id: string; value?: string; style?: string }[];
+    };
+
+    expect(actions.children.length).toBe(2);
+    expect(actions.children[0].id).toBe("atlas_action_approve");
+    expect(actions.children[0].value).toBe("act-001");
+    expect(actions.children[0].style).toBe("primary");
+    expect(actions.children[1].id).toBe("atlas_action_deny");
+    expect(actions.children[1].style).toBe("danger");
+  });
+});
+
+describe("buildDataTableCard", () => {
+  it("returns card with table element", () => {
+    const { card, fallbackText } = buildDataTableCard({
+      columns: ["id", "name"],
+      rows: [
+        { id: 1, name: "Alice" },
+        { id: 2, name: "Bob" },
+      ],
+    });
+
+    expect(card.type).toBe("card");
+    const tableChild = card.children.find((c) => c.type === "table");
+    expect(tableChild).toBeDefined();
+
+    expect(fallbackText).toContain("| id | name |");
+    expect(fallbackText).toContain("| 1 | Alice |");
+  });
+
+  it("truncates rows and shows indicator", () => {
+    const rows = Array.from({ length: 25 }, (_, i) => ({ n: i + 1 }));
+    const { fallbackText } = buildDataTableCard({
+      columns: ["n"],
+      rows,
+      maxRows: 10,
+    });
+
+    expect(fallbackText).toContain("Showing first 10 of 25 rows");
   });
 });
 

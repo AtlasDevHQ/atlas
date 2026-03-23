@@ -9,6 +9,10 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./cards": {
+      "types": "./src/cards/index.ts",
+      "default": "./src/cards/index.ts"
     }
   },
   "files": [

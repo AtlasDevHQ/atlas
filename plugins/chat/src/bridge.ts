@@ -3,12 +3,16 @@
  *
  * Maps Chat SDK lifecycle and events to Atlas plugin callbacks:
  *
- * - `onNewMention` → lock + subscribe thread + `executeQuery` → `thread.post()`
- * - `onSubscribedMessage` → lock + `executeQuery` with thread history → `thread.post()`
- * - `onSlashCommand("/atlas")` → post thinking → subscribe → `executeQuery` → edit
+ * - `onNewMention` → lock + subscribe thread + `executeQuery` → post JSX card
+ * - `onSubscribedMessage` → lock + `executeQuery` with thread history → post JSX card
+ * - `onSlashCommand("/atlas")` → post thinking → subscribe → `executeQuery` → edit with card
  * - `onAction("atlas_action_approve"|"atlas_action_deny")` → approve/deny → edit message
  * - Error scrubbing prevents leaking connection strings, stack traces, or
  *   internal errors to chat platforms
+ *
+ * Query results, errors, and approval prompts render as platform-native
+ * JSX cards (Block Kit on Slack, Adaptive Cards on Teams, Discord Embeds)
+ * with automatic markdown fallback for text-only platforms.
  *
  * The bridge owns the Chat SDK `Chat` instance and exposes its webhook
  * handlers for route mounting. State is delegated to the injected
@@ -16,7 +20,7 @@
  */
 
 import { Chat } from "chat";
-import type { Adapter, StateAdapter, Lock, CardElement, CardChild } from "chat";
+import type { Adapter, StateAdapter, Lock, CardElement } from "chat";
 import type { PluginLogger } from "@useatlas/plugin-sdk";
 import type {
   ChatPluginConfig,
@@ -24,6 +28,9 @@ import type {
   ChatMessage,
   PendingAction,
 } from "./config";
+import { buildQueryResultCard } from "./cards/query-result-card";
+import { buildErrorCard } from "./cards/error-card";
+import { buildApprovalCardJSX } from "./cards/approval-card";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -51,105 +58,26 @@ const SENSITIVE_PATTERNS = [
 ];
 
 // ---------------------------------------------------------------------------
-// Response formatting
+// Response formatting (deprecated — use card builders from ./cards/)
 // ---------------------------------------------------------------------------
 
 /**
  * Format a ChatQueryResult as a markdown string suitable for chat platforms.
- * The Chat SDK handles markdown → platform-native conversion (Block Kit, etc).
+ * @deprecated Use `buildQueryResultCard()` from `./cards/` instead. Kept for
+ * backward compatibility with hosts that consume markdown directly.
  */
 export function formatQueryResponse(result: ChatQueryResult): string {
-  const parts: string[] = [];
-
-  // Answer
-  parts.push(result.answer || "No answer generated.");
-
-  // SQL
-  if (result.sql.length > 0) {
-    parts.push(`\n**SQL**\n\`\`\`sql\n${result.sql.join("\n\n")}\n\`\`\``);
-  }
-
-  // Data tables
-  for (const dataset of result.data) {
-    if (!dataset.columns.length || !dataset.rows.length) continue;
-
-    const table = formatDataTable(dataset.columns, dataset.rows);
-    if (table) parts.push(table);
-  }
-
-  // Metadata
-  parts.push(
-    `\n_${result.steps} steps | ${result.usage.totalTokens.toLocaleString()} tokens_`,
-  );
-
-  return parts.join("\n");
+  const { fallbackText } = buildQueryResultCard(result);
+  return fallbackText;
 }
-
-function formatDataTable(
-  columns: string[],
-  rows: Record<string, unknown>[],
-  maxRows = 20,
-): string | null {
-  if (columns.length === 0 || rows.length === 0) return null;
-
-  const displayRows = rows.slice(0, maxRows);
-  const header = `| ${columns.join(" | ")} |`;
-  const separator = `| ${columns.map(() => "---").join(" | ")} |`;
-  const dataLines = displayRows.map(
-    (row) => `| ${columns.map((col) => String(row[col] ?? "")).join(" | ")} |`,
-  );
-
-  let table = [header, separator, ...dataLines].join("\n");
-
-  if (rows.length > maxRows) {
-    table += `\n_Showing first ${maxRows} of ${rows.length} rows_`;
-  }
-
-  return table;
-}
-
-// ---------------------------------------------------------------------------
-// Card builders
-// ---------------------------------------------------------------------------
 
 /**
  * Build a Chat SDK card for an action approval prompt.
- * The adapter converts this to Block Kit (Slack), Adaptive Cards (Teams), etc.
+ * @deprecated Use `buildApprovalCardJSX()` from `./cards/` instead. Kept for
+ * backward compatibility.
  */
 export function buildApprovalCard(action: PendingAction): CardElement {
-  return {
-    type: "card",
-    children: [
-      {
-        type: "section",
-        children: [
-          {
-            type: "text",
-            text: `\u{1F512} **Action requires approval**\n${(action.summary || action.type).slice(0, 200)}`,
-          } as unknown as CardChild,
-        ],
-      },
-      {
-        type: "actions",
-        children: [
-          {
-            type: "button",
-            id: "atlas_action_approve",
-            label: "Approve",
-            style: "primary" as const,
-            value: action.id,
-          },
-          {
-            type: "button",
-            id: "atlas_action_deny",
-            label: "Deny",
-            style: "danger" as const,
-            value: action.id,
-          },
-        ],
-      },
-    ],
-  } as CardElement;
+  return buildApprovalCardJSX(action).card;
 }
 
 /**
@@ -209,8 +137,8 @@ export function scrubErrorMessage(
 
 /** Safely post an error message to a chat thread with double-fault protection. */
 async function safePostError(
-  thread: { post: (msg: string | { markdown: string }) => Promise<unknown> },
-  message: string,
+  thread: { post: (msg: string | { card: CardElement; fallbackText: string }) => Promise<unknown> },
+  message: string | { card: CardElement; fallbackText: string },
   log: PluginLogger,
   threadId: string,
 ): Promise<void> {
@@ -430,7 +358,7 @@ export function createChatBridge(
   async function handleQuery(
     threadId: string,
     question: string,
-    postResponse: (response: string) => Promise<unknown>,
+    postResponse: (response: { card: CardElement; fallbackText: string }) => Promise<unknown>,
     postApproval: ((action: PendingAction) => Promise<void>) | null,
     priorMessages?: ChatMessage[],
   ): Promise<void> {
@@ -440,7 +368,7 @@ export function createChatBridge(
     });
 
     // Post the response first — ensure the user gets the answer
-    const response = formatQueryResponse(result);
+    const response = buildQueryResultCard(result);
     await postResponse(response);
 
     // Post ephemeral approval prompts for pending actions
@@ -526,13 +454,15 @@ export function createChatBridge(
       await handleQuery(
         threadId,
         question,
-        (response) => thread.post({ markdown: response }),
-        (action) =>
-          thread.postEphemeral(
+        (response) => thread.post({ card: response.card, fallbackText: response.fallbackText }),
+        (action) => {
+          const approval = buildApprovalCardJSX(action);
+          return thread.postEphemeral(
             message.author,
-            { card: buildApprovalCard(action), fallbackText: `Action requires approval: ${action.summary}` },
+            { card: approval.card, fallbackText: approval.fallbackText },
             { fallbackToDM: false },
-          ).then(() => {}),
+          ).then(() => {});
+        },
       );
     } catch (err) {
       const rawMessage =
@@ -543,9 +473,10 @@ export function createChatBridge(
       );
 
       const errorMessage = scrubErrorMessage(rawMessage, config.scrubError);
+      const errorCard = buildErrorCard({ message: errorMessage });
       await safePostError(
         thread,
-        `I was unable to answer your question: ${errorMessage}. This may be a transient issue — please try again in a few seconds.`,
+        errorCard,
         log,
         threadId,
       );
@@ -613,13 +544,15 @@ export function createChatBridge(
       await handleQuery(
         threadId,
         question,
-        (response) => thread.post({ markdown: response }),
-        (action) =>
-          thread.postEphemeral(
+        (response) => thread.post({ card: response.card, fallbackText: response.fallbackText }),
+        (action) => {
+          const approval = buildApprovalCardJSX(action);
+          return thread.postEphemeral(
             message.author,
-            { card: buildApprovalCard(action), fallbackText: `Action requires approval: ${action.summary}` },
+            { card: approval.card, fallbackText: approval.fallbackText },
             { fallbackToDM: false },
-          ).then(() => {}),
+          ).then(() => {});
+        },
         priorMessages,
       );
     } catch (err) {
@@ -631,9 +564,10 @@ export function createChatBridge(
       );
 
       const errorMessage = scrubErrorMessage(rawMessage, config.scrubError);
+      const errorCard = buildErrorCard({ message: errorMessage });
       await safePostError(
         thread,
-        `I was unable to process your follow-up: ${errorMessage}. This may be a transient issue — please try again in a few seconds.`,
+        errorCard,
         log,
         threadId,
       );
@@ -758,14 +692,16 @@ export function createChatBridge(
       await handleQuery(
         threadId,
         question,
-        (response) => thinkingMsg.edit({ markdown: response }).then(() => {}),
+        (response) => thinkingMsg.edit({ card: response.card, fallbackText: response.fallbackText }).then(() => {}),
         event.adapter.postEphemeral
-          ? (action) =>
-              event.adapter.postEphemeral!(
+          ? (action) => {
+              const approval = buildApprovalCardJSX(action);
+              return event.adapter.postEphemeral!(
                 threadId,
                 event.user.userId,
-                { card: buildApprovalCard(action), fallbackText: `Action requires approval: ${action.summary}` },
-              ).then(() => {})
+                { card: approval.card, fallbackText: approval.fallbackText },
+              ).then(() => {});
+            }
           : null,
       );
     } catch (err) {
@@ -776,9 +712,11 @@ export function createChatBridge(
       );
 
       const errorMessage = scrubErrorMessage(rawMessage, config.scrubError);
+      const errorCard = buildErrorCard({ message: errorMessage });
       try {
         await thinkingMsg.edit({
-          markdown: `I was unable to answer your question: ${errorMessage}. This may be a transient issue — please try again in a few seconds.`,
+          card: errorCard.card,
+          fallbackText: errorCard.fallbackText,
         });
       } catch (editErr) {
         log.warn(

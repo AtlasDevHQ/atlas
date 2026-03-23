@@ -13,7 +13,7 @@
  *
  * **Org scoping:** When an orgId is active, the whitelist is loaded from
  * the internal DB (`semantic_entities` table). The semantic index is built
- * from persistent on-disk files at `semantic/.orgs/{orgId}/`, maintained
+ * from persistent on-disk files at `{semanticRoot}/.orgs/{orgId}/`, maintained
  * by the dual-write sync layer (`semantic-sync.ts`). When no orgId is
  * present (CLI, self-hosted without orgs), file-based YAML is used
  * (existing behavior).
@@ -515,7 +515,7 @@ export function invalidateOrgSemanticIndex(orgId: string): void {
 /**
  * Get or build the semantic index for an org.
  *
- * Reads from the persistent org directory at `semantic/.orgs/{orgId}/`
+ * Reads from the persistent org directory at `{semanticRoot}/.orgs/{orgId}/`
  * maintained by the dual-write sync layer (`semantic-sync.ts`). If the
  * directory is empty or missing, triggers a DB-to-disk sync first.
  *

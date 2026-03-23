@@ -28,7 +28,7 @@ const log = createLogger("semantic-sync");
 /**
  * Resolve the semantic root for a given org.
  *
- * - With orgId: `semantic/.orgs/{orgId}/`
+ * - With orgId: `{semanticRoot}/.orgs/{orgId}/`
  * - Without orgId: the base semantic root (defaults to `{cwd}/semantic`, overridable via `ATLAS_SEMANTIC_ROOT`)
  *
  * Validates orgId against path traversal — rejects values containing
@@ -315,7 +315,7 @@ interface ImportResult {
 /**
  * Import YAML files from an org's disk directory into the DB.
  *
- * Scans `semantic/.orgs/{orgId}/entities/*.yml`, `metrics/*.yml`, and
+ * Scans `{orgRoot}/entities/*.yml`, `metrics/*.yml`, and
  * `glossary.yml`. Each file is validated, then upserted via
  * `bulkUpsertEntities()`. Invalid files are skipped with per-file
  * error reporting.
@@ -524,7 +524,7 @@ export async function reconcileAllOrgs(): Promise<void> {
 }
 
 /**
- * First-boot auto-import: scan `semantic/.orgs/` for directories that
+ * First-boot auto-import: scan `{semanticRoot}/.orgs/` for directories that
  * have YAML files on disk but zero entities in the DB. Import them.
  *
  * Handles:

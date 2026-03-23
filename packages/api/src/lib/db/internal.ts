@@ -678,6 +678,25 @@ export async function migrateInternalDB(): Promise<void> {
     );
   `);
 
+  // Enterprise audit retention config (0.9.0 — configurable audit log retention)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS audit_retention_config (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      org_id TEXT NOT NULL UNIQUE,
+      retention_days INTEGER,
+      hard_delete_delay_days INTEGER NOT NULL DEFAULT 30,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_by TEXT,
+      last_purge_at TIMESTAMPTZ,
+      last_purge_count INTEGER
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_retention_config_org ON audit_retention_config(org_id);`);
+
+  // Soft-delete support for audit log entries (retention purge)
+  await pool.query(`ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_log_deleted_at ON audit_log(deleted_at) WHERE deleted_at IS NOT NULL;`)
+
   log.info("Internal DB migration complete");
 }
 

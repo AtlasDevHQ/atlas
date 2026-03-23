@@ -102,9 +102,9 @@ describe("migrateAuthTables", () => {
     await migrateAuthTables();
 
     // migrateInternalDB: org table check skips workspace ALTERs in mock
-    // + loadSavedConnections SELECT + loadPluginSettings SELECT = 106 total
-    // (includes SSO enforcement column ALTER TABLE + ip_allowlist table + index + user_onboarding table)
-    expect(queries.length).toBe(110);
+    // + loadSavedConnections SELECT + loadPluginSettings SELECT
+    // (includes SSO enforcement, ip_allowlist, custom_roles, user_onboarding, audit_retention_config)
+    expect(queries.length).toBe(114);
     expect(queries[0]).toContain("CREATE TABLE IF NOT EXISTS audit_log");
   });
 
@@ -146,9 +146,9 @@ describe("migrateAuthTables", () => {
     await migrateAuthTables();
 
     // Internal DB migration runs once (org table check skips workspace ALTERs)
-    // + loadSavedConnections + loadPluginSettings + ALTER TABLE password_change_required = 107
-    // (includes SSO enforcement column ALTER TABLE + ip_allowlist table + index + user_onboarding table)
-    expect(queries.length).toBe(111);
+    // + loadSavedConnections + loadPluginSettings + ALTER TABLE password_change_required
+    // (includes SSO enforcement, ip_allowlist, custom_roles, user_onboarding, audit_retention_config)
+    expect(queries.length).toBe(115);
     // Better Auth migration runs once
     expect(getMigrationCount()).toBe(1);
   });

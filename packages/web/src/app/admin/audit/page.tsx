@@ -25,7 +25,8 @@ import { EmptyState } from "@/ui/components/admin/empty-state";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
-import { ScrollText, Search, AlertTriangle, Database, BarChart3, Download, X } from "lucide-react";
+import { ScrollText, Search, AlertTriangle, Database, BarChart3, Download, X, Shield } from "lucide-react";
+import { RetentionPanel } from "./retention-panel";
 import { useAdminFetch, friendlyError, type FetchError } from "@/ui/hooks/use-admin-fetch";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 
@@ -268,7 +269,7 @@ export default function AuditPage() {
       <ErrorBoundary>
       <Tabs
         value={tab}
-        onValueChange={(v) => setParams({ tab: v as "log" | "analytics" })}
+        onValueChange={(v) => setParams({ tab: v as "log" | "analytics" | "retention" })}
       >
         {/* Header */}
         <div className="border-b px-6 py-4">
@@ -298,6 +299,10 @@ export default function AuditPage() {
                 <TabsTrigger value="analytics">
                   <BarChart3 className="mr-1.5 size-3.5" />
                   Analytics
+                </TabsTrigger>
+                <TabsTrigger value="retention">
+                  <Shield className="mr-1.5 size-3.5" />
+                  Retention
                 </TabsTrigger>
               </TabsList>
             </div>
@@ -524,6 +529,10 @@ export default function AuditPage() {
               </DataTableToolbar>
             </DataTable>
           )}
+        </TabsContent>
+
+        <TabsContent value="retention" className="flex-1 overflow-auto p-6">
+          <RetentionPanel />
         </TabsContent>
       </Tabs>
       </ErrorBoundary>

@@ -14,12 +14,14 @@ import {
   getInternalDB,
   encryptUrl,
   decryptUrl,
+  getEncryptionKey,
 } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import type {
   WorkspaceModelConfig,
   ModelConfigProvider,
   SetWorkspaceModelConfigRequest,
+  TestModelConfigRequest,
 } from "@useatlas/types";
 import { MODEL_CONFIG_PROVIDERS } from "@useatlas/types";
 
@@ -106,8 +108,9 @@ function validateConfig(config: SetWorkspaceModelConfigRequest): void {
     throw new ModelConfigError("Model name is required.", "validation");
   }
 
-  if (!config.apiKey || config.apiKey.trim().length === 0) {
-    throw new ModelConfigError("API key is required.", "validation");
+  // apiKey is optional on update (preserves existing key when omitted)
+  if (config.apiKey !== undefined && config.apiKey.trim().length === 0) {
+    throw new ModelConfigError("API key cannot be empty. Omit the field to keep the existing key.", "validation");
   }
 
   // Azure OpenAI and custom providers require a base URL
@@ -120,11 +123,18 @@ function validateConfig(config: SetWorkspaceModelConfigRequest): void {
 
   // Validate base URL format when provided
   if (config.baseUrl) {
+    let parsed: URL;
     try {
-      new URL(config.baseUrl);
+      parsed = new URL(config.baseUrl);
     } catch {
       throw new ModelConfigError(
         `Invalid base URL: "${config.baseUrl}". Must be a valid URL (e.g. https://api.example.com/v1).`,
+        "validation",
+      );
+    }
+    if (!["http:", "https:"].includes(parsed.protocol)) {
+      throw new ModelConfigError(
+        `Base URL must use http:// or https:// (got "${parsed.protocol}").`,
         "validation",
       );
     }
@@ -220,15 +230,22 @@ export async function setWorkspaceModelConfig(
 
   validateConfig(config);
 
-  const encryptedKey = encryptUrl(config.apiKey);
+  let encryptedKey: string | null = null;
+  if (config.apiKey) {
+    if (!getEncryptionKey()) {
+      throw new Error("Encryption key required for API key storage. Set ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET.");
+    }
+    encryptedKey = encryptUrl(config.apiKey);
+  }
 
+  // When apiKey is omitted, preserve the existing encrypted key via COALESCE
   const rows = await internalQuery<ModelConfigRow>(
     `INSERT INTO workspace_model_config (org_id, provider, model, api_key_encrypted, base_url)
-     VALUES ($1, $2, $3, $4, $5)
+     VALUES ($1, $2, $3, COALESCE($4, (SELECT api_key_encrypted FROM workspace_model_config WHERE org_id = $1)), $5)
      ON CONFLICT (org_id) DO UPDATE SET
        provider = EXCLUDED.provider,
        model = EXCLUDED.model,
-       api_key_encrypted = EXCLUDED.api_key_encrypted,
+       api_key_encrypted = COALESCE($4, workspace_model_config.api_key_encrypted),
        base_url = EXCLUDED.base_url,
        updated_at = now()
      RETURNING id, org_id, provider, model, api_key_encrypted, base_url, created_at, updated_at`,
@@ -266,7 +283,7 @@ export async function deleteWorkspaceModelConfig(orgId: string): Promise<boolean
  * Test a model configuration by making a minimal API call.
  * Uses a simple chat completion request with minimal tokens.
  */
-export async function testModelConfig(config: SetWorkspaceModelConfigRequest): Promise<{
+export async function testModelConfig(config: TestModelConfigRequest): Promise<{
   success: boolean;
   message: string;
   modelName?: string;
@@ -356,8 +373,10 @@ export async function testModelConfig(config: SetWorkspaceModelConfigRequest): P
       }
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    log.warn({ provider: config.provider, model: config.model, err: message }, "Model config test failed");
-    return { success: false, message: `Connection test failed: ${message}` };
+    const rawMessage = err instanceof Error ? err.message : String(err);
+    log.warn({ provider: config.provider, model: config.model, err: rawMessage }, "Model config test failed");
+    // Truncate provider error messages to avoid leaking sensitive info
+    const sanitized = rawMessage.length > 200 ? rawMessage.slice(0, 200) + "..." : rawMessage;
+    return { success: false, message: `Connection test failed: ${sanitized}` };
   }
 }

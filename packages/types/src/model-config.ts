@@ -31,7 +31,8 @@ export interface WorkspaceModelConfig {
 export interface SetWorkspaceModelConfigRequest {
   provider: ModelConfigProvider;
   model: string;
-  apiKey: string;
+  /** Omit to keep the existing key on update. Required on initial creation. */
+  apiKey?: string;
   /** Required for azure-openai and custom providers. */
   baseUrl?: string;
 }

@@ -60,8 +60,8 @@ const SetModelConfigBodySchema = z.object({
     description: "Model identifier (e.g. claude-opus-4-6, gpt-4o).",
     example: "claude-opus-4-6",
   }),
-  apiKey: z.string().min(1).openapi({
-    description: "Provider API key. Will be stored encrypted.",
+  apiKey: z.string().min(1).optional().openapi({
+    description: "Provider API key. Will be stored encrypted. Omit to keep existing key on update.",
     example: "sk-ant-...",
   }),
   baseUrl: z.string().optional().openapi({
@@ -341,6 +341,14 @@ adminModelConfig.openapi(setConfigRoute, async (c) => {
     }
 
     const body = c.req.valid("json");
+
+    // If apiKey is omitted, require an existing config to preserve the key
+    if (!body.apiKey) {
+      const existing = await getWorkspaceModelConfig(orgId);
+      if (!existing) {
+        return c.json({ error: "validation", message: "API key is required when no existing configuration exists." }, 400);
+      }
+    }
 
     try {
       const config = await setWorkspaceModelConfig(orgId, {

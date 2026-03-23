@@ -45,6 +45,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   internalExecute: () => {},
   encryptUrl: (v: string) => `encrypted:${v}`,
   decryptUrl: (v: string) => v.startsWith("encrypted:") ? v.slice(10) : v,
+  getEncryptionKey: () => Buffer.from("test-key-32-bytes-long-enough!!!"),
 }));
 
 mock.module("@atlas/api/lib/logger", () => ({
@@ -203,7 +204,7 @@ describe("setWorkspaceModelConfig", () => {
         model: "test",
         apiKey: "",
       }),
-    ).rejects.toThrow("API key is required");
+    ).rejects.toThrow("API key cannot be empty");
   });
 
   it("requires base URL for azure-openai", async () => {

@@ -20,31 +20,15 @@ import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { Cpu, Loader2, CheckCircle2, XCircle, RotateCcw, Eye, EyeOff } from "lucide-react";
+import type { ModelConfigProvider, WorkspaceModelConfig, TestModelConfigResponse } from "@/ui/lib/types";
 
 // ── Types ─────────────────────────────────────────────────────────
-
-type ModelConfigProvider = "anthropic" | "openai" | "azure-openai" | "custom";
-
-interface WorkspaceModelConfig {
-  id: string;
-  orgId: string;
-  provider: ModelConfigProvider;
-  model: string;
-  baseUrl: string | null;
-  apiKeyMasked: string;
-  createdAt: string;
-  updatedAt: string;
-}
 
 interface ModelConfigResponse {
   config: WorkspaceModelConfig | null;
 }
 
-interface TestResult {
-  success: boolean;
-  message: string;
-  modelName?: string;
-}
+type TestResult = TestModelConfigResponse;
 
 const PROVIDERS: { value: ModelConfigProvider; label: string; description: string }[] = [
   { value: "anthropic", label: "Anthropic", description: "Claude models via api.anthropic.com" },

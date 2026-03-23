@@ -21760,6 +21760,1145 @@
         }
       }
     },
+    "/api/v1/admin/compliance/classifications": {
+      "get": {
+        "tags": [
+          "Admin — Compliance"
+        ],
+        "summary": "List PII column classifications",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Filter by connection ID"
+            },
+            "required": false,
+            "description": "Filter by connection ID",
+            "name": "connectionId",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "PII classifications",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "classifications": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "orgId": {
+                            "type": "string"
+                          },
+                          "tableName": {
+                            "type": "string"
+                          },
+                          "columnName": {
+                            "type": "string"
+                          },
+                          "connectionId": {
+                            "type": "string"
+                          },
+                          "category": {
+                            "type": "string"
+                          },
+                          "confidence": {
+                            "type": "string"
+                          },
+                          "maskingStrategy": {
+                            "type": "string"
+                          },
+                          "reviewed": {
+                            "type": "boolean"
+                          },
+                          "dismissed": {
+                            "type": "boolean"
+                          },
+                          "createdAt": {
+                            "type": "string"
+                          },
+                          "updatedAt": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "orgId",
+                          "tableName",
+                          "columnName",
+                          "connectionId",
+                          "category",
+                          "confidence",
+                          "maskingStrategy",
+                          "reviewed",
+                          "dismissed",
+                          "createdAt",
+                          "updatedAt"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "classifications"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role or enterprise license required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/compliance/classifications/:id": {
+      "put": {
+        "tags": [
+          "Admin — Compliance"
+        ],
+        "summary": "Update a PII classification",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "category": {
+                    "type": "string",
+                    "enum": [
+                      "email",
+                      "phone",
+                      "ssn",
+                      "credit_card",
+                      "name",
+                      "ip_address",
+                      "date_of_birth",
+                      "address",
+                      "passport",
+                      "driver_license",
+                      "other"
+                    ],
+                    "description": "Override PII category",
+                    "example": "email"
+                  },
+                  "maskingStrategy": {
+                    "type": "string",
+                    "enum": [
+                      "full",
+                      "partial",
+                      "hash",
+                      "redact"
+                    ],
+                    "description": "Masking strategy for this column",
+                    "example": "partial"
+                  },
+                  "dismissed": {
+                    "type": "boolean",
+                    "description": "Dismiss as false positive",
+                    "example": false
+                  },
+                  "reviewed": {
+                    "type": "boolean",
+                    "description": "Mark as reviewed",
+                    "example": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated classification",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "classification": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "orgId": {
+                          "type": "string"
+                        },
+                        "tableName": {
+                          "type": "string"
+                        },
+                        "columnName": {
+                          "type": "string"
+                        },
+                        "connectionId": {
+                          "type": "string"
+                        },
+                        "category": {
+                          "type": "string"
+                        },
+                        "confidence": {
+                          "type": "string"
+                        },
+                        "maskingStrategy": {
+                          "type": "string"
+                        },
+                        "reviewed": {
+                          "type": "boolean"
+                        },
+                        "dismissed": {
+                          "type": "boolean"
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "updatedAt": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "orgId",
+                        "tableName",
+                        "columnName",
+                        "connectionId",
+                        "category",
+                        "confidence",
+                        "maskingStrategy",
+                        "reviewed",
+                        "dismissed",
+                        "createdAt",
+                        "updatedAt"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "classification"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input or no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Admin — Compliance"
+        ],
+        "summary": "Delete a PII classification",
+        "responses": {
+          "200": {
+            "description": "Deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "deleted"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/compliance/reports/data-access": {
+      "get": {
+        "tags": [
+          "Admin — Compliance"
+        ],
+        "summary": "Generate data access compliance report",
+        "description": "Returns a report of who queried what tables, when, and how often within the specified date range.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Start date (ISO 8601)",
+              "example": "2026-01-01"
+            },
+            "required": true,
+            "description": "Start date (ISO 8601)",
+            "name": "startDate",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "End date (ISO 8601)",
+              "example": "2026-03-01"
+            },
+            "required": true,
+            "description": "End date (ISO 8601)",
+            "name": "endDate",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Filter by user ID"
+            },
+            "required": false,
+            "description": "Filter by user ID",
+            "name": "userId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Filter by role"
+            },
+            "required": false,
+            "description": "Filter by role",
+            "name": "role",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Filter by table name"
+            },
+            "required": false,
+            "description": "Filter by table name",
+            "name": "table",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "json",
+                "csv"
+              ],
+              "default": "json",
+              "description": "Response format",
+              "example": "json"
+            },
+            "required": false,
+            "description": "Response format",
+            "name": "format",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Data access report",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "rows": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "tableName": {
+                            "type": "string"
+                          },
+                          "userId": {
+                            "type": "string"
+                          },
+                          "userEmail": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "userRole": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "queryCount": {
+                            "type": "number"
+                          },
+                          "uniqueColumns": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "hasPII": {
+                            "type": "boolean"
+                          },
+                          "firstAccess": {
+                            "type": "string"
+                          },
+                          "lastAccess": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "tableName",
+                          "userId",
+                          "userEmail",
+                          "userRole",
+                          "queryCount",
+                          "uniqueColumns",
+                          "hasPII",
+                          "firstAccess",
+                          "lastAccess"
+                        ]
+                      }
+                    },
+                    "summary": {
+                      "type": "object",
+                      "properties": {
+                        "totalQueries": {
+                          "type": "number"
+                        },
+                        "uniqueUsers": {
+                          "type": "number"
+                        },
+                        "uniqueTables": {
+                          "type": "number"
+                        },
+                        "piiTablesAccessed": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "totalQueries",
+                        "uniqueUsers",
+                        "uniqueTables",
+                        "piiTablesAccessed"
+                      ]
+                    },
+                    "filters": {
+                      "type": "object",
+                      "properties": {
+                        "startDate": {
+                          "type": "string"
+                        },
+                        "endDate": {
+                          "type": "string"
+                        },
+                        "userId": {
+                          "type": "string"
+                        },
+                        "role": {
+                          "type": "string"
+                        },
+                        "table": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "startDate",
+                        "endDate"
+                      ]
+                    },
+                    "generatedAt": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "rows",
+                    "summary",
+                    "filters",
+                    "generatedAt"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid parameters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role or enterprise license required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/compliance/reports/user-activity": {
+      "get": {
+        "tags": [
+          "Admin — Compliance"
+        ],
+        "summary": "Generate user activity compliance report",
+        "description": "Returns a report of user query activity, last login timestamp, and role information within the specified date range.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Start date (ISO 8601)",
+              "example": "2026-01-01"
+            },
+            "required": true,
+            "description": "Start date (ISO 8601)",
+            "name": "startDate",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "End date (ISO 8601)",
+              "example": "2026-03-01"
+            },
+            "required": true,
+            "description": "End date (ISO 8601)",
+            "name": "endDate",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Filter by user ID"
+            },
+            "required": false,
+            "description": "Filter by user ID",
+            "name": "userId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Filter by role"
+            },
+            "required": false,
+            "description": "Filter by role",
+            "name": "role",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Filter by table name"
+            },
+            "required": false,
+            "description": "Filter by table name",
+            "name": "table",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "json",
+                "csv"
+              ],
+              "default": "json",
+              "description": "Response format",
+              "example": "json"
+            },
+            "required": false,
+            "description": "Response format",
+            "name": "format",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "User activity report",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "rows": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "userId": {
+                            "type": "string"
+                          },
+                          "userEmail": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "role": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "totalQueries": {
+                            "type": "number"
+                          },
+                          "tablesAccessed": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "lastActiveAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "lastLoginAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "userId",
+                          "userEmail",
+                          "role",
+                          "totalQueries",
+                          "tablesAccessed",
+                          "lastActiveAt",
+                          "lastLoginAt"
+                        ]
+                      }
+                    },
+                    "summary": {
+                      "type": "object",
+                      "properties": {
+                        "totalUsers": {
+                          "type": "number"
+                        },
+                        "activeUsers": {
+                          "type": "number"
+                        },
+                        "totalQueries": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "totalUsers",
+                        "activeUsers",
+                        "totalQueries"
+                      ]
+                    },
+                    "filters": {
+                      "type": "object",
+                      "properties": {
+                        "startDate": {
+                          "type": "string"
+                        },
+                        "endDate": {
+                          "type": "string"
+                        },
+                        "userId": {
+                          "type": "string"
+                        },
+                        "role": {
+                          "type": "string"
+                        },
+                        "table": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "startDate",
+                        "endDate"
+                      ]
+                    },
+                    "generatedAt": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "rows",
+                    "summary",
+                    "filters",
+                    "generatedAt"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid parameters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role or enterprise license required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/admin/overview": {
       "get": {
         "tags": [

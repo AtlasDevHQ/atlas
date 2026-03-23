@@ -1,0 +1,147 @@
+---
+title: Compliance Reporting
+description: Generate SOC2/HIPAA-ready data access and user activity reports from Atlas audit trails.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas provides compliance reports built on top of audit log data, PII classifications, and user session history. Reports help answer audit questions like "who accessed what data, when, and how often" — a requirement for SOC2, HIPAA, and similar frameworks.
+
+<Callout title="Prerequisites">
+- [Managed auth](/deployment/authentication#managed-auth) enabled
+- Internal database configured (`DATABASE_URL`)
+- Enterprise license (the `/ee` module must be available)
+- Admin role required for compliance report endpoints
+- [Audit logging](/guides/audit-retention) active (queries must be logged)
+</Callout>
+
+---
+
+## Report Types
+
+### Data Access Report
+
+Answers: **Who queried what tables, when, and how often?**
+
+Each row represents a unique (table, user) pair within the selected date range:
+
+| Field | Description |
+|-------|-------------|
+| `tableName` | The database table that was queried |
+| `userId` | The user who ran the queries |
+| `userEmail` | User email (resolved from auth) |
+| `userRole` | Role within the organization (admin, owner, member) |
+| `queryCount` | Number of queries touching this table |
+| `uniqueColumns` | Columns accessed across all queries |
+| `hasPII` | Whether the table has PII classifications |
+| `firstAccess` | Earliest query timestamp in the range |
+| `lastAccess` | Latest query timestamp in the range |
+
+The report summary includes total queries, unique users, unique tables, and PII tables accessed.
+
+### User Activity Report
+
+Answers: **What has each user been doing?**
+
+Each row represents a single user:
+
+| Field | Description |
+|-------|-------------|
+| `userId` | The user ID |
+| `userEmail` | User email |
+| `role` | Organization role |
+| `totalQueries` | Total queries in the date range |
+| `tablesAccessed` | List of tables queried |
+| `lastActiveAt` | Most recent query timestamp |
+| `lastLoginAt` | Most recent login (from session table) |
+
+---
+
+## API Endpoints
+
+Both endpoints are mounted under `/api/v1/admin/compliance/reports/`.
+
+### GET /reports/data-access
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  "https://your-atlas.com/api/v1/admin/compliance/reports/data-access?startDate=2026-01-01&endDate=2026-03-01"
+```
+
+### GET /reports/user-activity
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  "https://your-atlas.com/api/v1/admin/compliance/reports/user-activity?startDate=2026-01-01&endDate=2026-03-01"
+```
+
+### Query Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `startDate` | string (ISO 8601) | Yes | Start of the reporting period |
+| `endDate` | string (ISO 8601) | Yes | End of the reporting period |
+| `userId` | string | No | Filter to a specific user |
+| `role` | string | No | Filter by role (admin, owner, member) |
+| `table` | string | No | Filter to a specific table |
+| `format` | `json` \| `csv` | No | Response format (default: `json`) |
+
+---
+
+## Export Formats
+
+### JSON (default)
+
+Returns a structured JSON object with `rows`, `summary`, `filters`, and `generatedAt` fields.
+
+### CSV
+
+Set `format=csv` to download as a CSV file. The response includes `Content-Disposition` headers for browser download. CSV follows RFC 4180 escaping rules.
+
+```bash
+# Download CSV
+curl -H "Authorization: Bearer $TOKEN" \
+  -o data-access-report.csv \
+  "https://your-atlas.com/api/v1/admin/compliance/reports/data-access?startDate=2026-01-01&endDate=2026-03-01&format=csv"
+```
+
+---
+
+## Admin Console
+
+The compliance page in the admin console (`/admin/compliance`) has two tabs:
+
+1. **PII Classifications** — Review and manage detected PII columns (see [PII Masking guide](/guides/pii-masking))
+2. **Reports** — Generate compliance reports with a visual interface
+
+The Reports tab provides:
+- Date range picker (defaults to last 30 days)
+- Report type selector (Data Access / User Activity)
+- Filter controls for user, role, and table
+- Results table with detailed breakdown
+- Export buttons for CSV and JSON download
+
+All filter state is persisted in the URL via query parameters, so reports are shareable and bookmarkable.
+
+---
+
+## How Reports Query Data
+
+Reports run pure SQL against the internal database. No external services are required.
+
+- **Data Access Report** queries `audit_log` with a `CROSS JOIN LATERAL` on `tables_accessed` (JSONB array), joined with the `user` table for email resolution. Role data is enriched from the `member` table, and PII status is enriched from `pii_column_classifications`, both via separate concurrent queries.
+- **User Activity Report** queries `audit_log` grouped by user, joined with the `user` table for email. Last login timestamp is enriched from the `session` table, and role information from the `member` table, both via separate concurrent queries.
+
+Both reports only include successful queries (`success = true`) and respect the org isolation boundary (`org_id`).
+
+<Callout title="Performance">
+Reports are bounded by a `LIMIT 10000` (data access) or `LIMIT 5000` (user activity) to prevent excessive memory usage. For very large audit logs, narrow the date range or apply filters.
+</Callout>
+
+---
+
+## Related
+
+- [PII Detection & Masking](/guides/pii-masking) — auto-detect and mask PII columns
+- [Audit Log Retention](/guides/audit-retention) — configure retention policies and export raw audit logs
+- [Custom Roles](/guides/custom-roles) — define roles for role-based report filtering

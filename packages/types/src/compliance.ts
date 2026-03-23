@@ -92,3 +92,66 @@ export interface UpdatePIIClassificationRequest {
   reviewed?: boolean;
 }
 
+// ── Compliance report types ─────────────────────────────────────
+
+export const COMPLIANCE_REPORT_TYPES = ["data-access", "user-activity"] as const;
+export type ComplianceReportType = (typeof COMPLIANCE_REPORT_TYPES)[number];
+
+export const COMPLIANCE_EXPORT_FORMATS = ["json", "csv"] as const;
+export type ComplianceExportFormat = (typeof COMPLIANCE_EXPORT_FORMATS)[number];
+
+export interface ComplianceReportFilters {
+  startDate: string;
+  endDate: string;
+  userId?: string;
+  role?: string;
+  table?: string;
+}
+
+/** A single row in the data access report. */
+export interface DataAccessRow {
+  tableName: string;
+  userId: string;
+  userEmail: string | null;
+  userRole: string | null;
+  queryCount: number;
+  uniqueColumns: string[];
+  hasPII: boolean;
+  firstAccess: string;
+  lastAccess: string;
+}
+
+export interface DataAccessReport {
+  rows: DataAccessRow[];
+  summary: {
+    totalQueries: number;
+    uniqueUsers: number;
+    uniqueTables: number;
+    piiTablesAccessed: number;
+  };
+  filters: ComplianceReportFilters;
+  generatedAt: string;
+}
+
+/** A single row in the user activity report. */
+export interface UserActivityRow {
+  userId: string;
+  userEmail: string | null;
+  role: string | null;
+  totalQueries: number;
+  tablesAccessed: string[];
+  lastActiveAt: string | null;
+  lastLoginAt: string | null;
+}
+
+export interface UserActivityReport {
+  rows: UserActivityRow[];
+  summary: {
+    totalUsers: number;
+    activeUsers: number;
+    totalQueries: number;
+  };
+  filters: ComplianceReportFilters;
+  generatedAt: string;
+}
+

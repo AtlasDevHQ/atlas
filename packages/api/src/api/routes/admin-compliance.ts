@@ -1,13 +1,15 @@
 /**
- * Admin PII compliance routes.
+ * Admin compliance routes (PII classifications + reporting).
  *
  * Mounted under /api/v1/admin/compliance. All routes require admin role AND
  * enterprise license (enforced within the compliance service layer).
  *
  * Provides:
- * - GET    /classifications       — list PII column classifications
- * - PUT    /classifications/:id   — update a classification (category, strategy, dismiss)
- * - DELETE /classifications/:id   — delete a classification
+ * - GET    /classifications             — list PII column classifications
+ * - PUT    /classifications/:id         — update a classification (category, strategy, dismiss)
+ * - DELETE /classifications/:id         — delete a classification
+ * - GET    /reports/data-access         — data access compliance report
+ * - GET    /reports/user-activity       — user activity compliance report
  */
 
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
@@ -23,12 +25,21 @@ import {
   invalidateClassificationCache,
   ComplianceError,
 } from "@atlas/ee/compliance/masking";
+import {
+  generateDataAccessReport,
+  generateUserActivityReport,
+  dataAccessReportToCSV,
+  userActivityReportToCSV,
+  ReportError,
+  type ReportErrorCode,
+} from "@atlas/ee/compliance/reports";
 import type { PIICategory, MaskingStrategy } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 const log = createLogger("admin-compliance");
 
 const COMPLIANCE_ERROR_STATUS = { validation: 400, not_found: 404, conflict: 409 } as const;
+const REPORT_ERROR_STATUS = { validation: 400, not_available: 404 } as const satisfies Record<ReportErrorCode, number>;
 
 function complianceErrorResponse(err: unknown): { body: Record<string, unknown>; status: 400 | 403 | 404 | 409 } | null {
   const message = err instanceof Error ? err.message : String(err);
@@ -37,6 +48,9 @@ function complianceErrorResponse(err: unknown): { body: Record<string, unknown>;
   }
   if (err instanceof ComplianceError) {
     return { body: { error: err.code, message: err.message }, status: COMPLIANCE_ERROR_STATUS[err.code] };
+  }
+  if (err instanceof ReportError) {
+    return { body: { error: err.code, message: err.message }, status: REPORT_ERROR_STATUS[err.code] };
   }
   return null;
 }
@@ -251,6 +265,220 @@ adminCompliance.openapi(deleteRoute, async (c) => {
       if (mapped) return c.json(mapped.body, mapped.status) as never;
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to delete PII classification");
       return c.json({ error: "internal_error", message: "Failed to delete PII classification.", requestId }, 500);
+    }
+  }) as never;
+});
+
+// ── Report schemas ──────────────────────────────────────────────
+
+const ReportQuerySchema = z.object({
+  startDate: z.string().openapi({ description: "Start date (ISO 8601)", example: "2026-01-01" }),
+  endDate: z.string().openapi({ description: "End date (ISO 8601)", example: "2026-03-01" }),
+  userId: z.string().optional().openapi({ description: "Filter by user ID" }),
+  role: z.string().optional().openapi({ description: "Filter by role" }),
+  table: z.string().optional().openapi({ description: "Filter by table name" }),
+  format: z.enum(["json", "csv"]).optional().default("json").openapi({ description: "Response format", example: "json" }),
+});
+
+const DataAccessRowSchema = z.object({
+  tableName: z.string(),
+  userId: z.string(),
+  userEmail: z.string().nullable(),
+  userRole: z.string().nullable(),
+  queryCount: z.number(),
+  uniqueColumns: z.array(z.string()),
+  hasPII: z.boolean(),
+  firstAccess: z.string(),
+  lastAccess: z.string(),
+});
+
+const DataAccessReportSchema = z.object({
+  rows: z.array(DataAccessRowSchema),
+  summary: z.object({
+    totalQueries: z.number(),
+    uniqueUsers: z.number(),
+    uniqueTables: z.number(),
+    piiTablesAccessed: z.number(),
+  }),
+  filters: z.object({
+    startDate: z.string(),
+    endDate: z.string(),
+    userId: z.string().optional(),
+    role: z.string().optional(),
+    table: z.string().optional(),
+  }),
+  generatedAt: z.string(),
+});
+
+const UserActivityRowSchema = z.object({
+  userId: z.string(),
+  userEmail: z.string().nullable(),
+  role: z.string().nullable(),
+  totalQueries: z.number(),
+  tablesAccessed: z.array(z.string()),
+  lastActiveAt: z.string().nullable(),
+  lastLoginAt: z.string().nullable(),
+});
+
+const UserActivityReportSchema = z.object({
+  rows: z.array(UserActivityRowSchema),
+  summary: z.object({
+    totalUsers: z.number(),
+    activeUsers: z.number(),
+    totalQueries: z.number(),
+  }),
+  filters: z.object({
+    startDate: z.string(),
+    endDate: z.string(),
+    userId: z.string().optional(),
+    role: z.string().optional(),
+    table: z.string().optional(),
+  }),
+  generatedAt: z.string(),
+});
+
+// ── Report route definitions ────────────────────────────────────
+
+const dataAccessReportRoute = createRoute({
+  method: "get",
+  path: "/reports/data-access",
+  tags: ["Admin — Compliance"],
+  summary: "Generate data access compliance report",
+  description: "Returns a report of who queried what tables, when, and how often within the specified date range.",
+  request: { query: ReportQuerySchema },
+  responses: {
+    200: { description: "Data access report", content: { "application/json": { schema: DataAccessReportSchema } } },
+    400: { description: "Invalid parameters", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role or enterprise license required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const userActivityReportRoute = createRoute({
+  method: "get",
+  path: "/reports/user-activity",
+  tags: ["Admin — Compliance"],
+  summary: "Generate user activity compliance report",
+  description: "Returns a report of user query activity, last login timestamp, and role information within the specified date range.",
+  request: { query: ReportQuerySchema },
+  responses: {
+    200: { description: "User activity report", content: { "application/json": { schema: UserActivityReportSchema } } },
+    400: { description: "Invalid parameters", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role or enterprise license required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+// ── Report handlers ─────────────────────────────────────────────
+
+// GET /reports/data-access
+adminCompliance.openapi(dataAccessReportRoute, async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  }
+  const { authResult } = preamble;
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
+    }
+
+    const orgId = authResult.user?.activeOrganizationId;
+    if (!orgId) {
+      return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+    }
+
+    const query = c.req.valid("query");
+
+    try {
+      const report = await generateDataAccessReport(orgId, {
+        startDate: query.startDate,
+        endDate: query.endDate,
+        userId: query.userId,
+        role: query.role,
+        table: query.table,
+      });
+
+      if (query.format === "csv") {
+        const csv = dataAccessReportToCSV(report);
+        const safeOrgId = orgId.replace(/[^a-zA-Z0-9_-]/g, "");
+        const filename = `data-access-report-${safeOrgId}-${new Date().toISOString().slice(0, 10)}.csv`;
+        return new Response(csv, {
+          headers: {
+            "Content-Type": "text/csv; charset=utf-8",
+            "Content-Disposition": `attachment; filename="${filename}"`,
+          },
+        }) as never;
+      }
+
+      return c.json(report, 200);
+    } catch (err) {
+      const mapped = complianceErrorResponse(err);
+      if (mapped) return c.json(mapped.body, mapped.status) as never;
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to generate data access report");
+      return c.json({ error: "internal_error", message: "Failed to generate data access report.", requestId }, 500);
+    }
+  }) as never;
+});
+
+// GET /reports/user-activity
+adminCompliance.openapi(userActivityReportRoute, async (c) => {
+  const req = c.req.raw;
+  const requestId = crypto.randomUUID();
+
+  const preamble = await adminAuthPreamble(req, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  }
+  const { authResult } = preamble;
+
+  return withRequestContext({ requestId, user: authResult.user }, async () => {
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
+    }
+
+    const orgId = authResult.user?.activeOrganizationId;
+    if (!orgId) {
+      return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+    }
+
+    const query = c.req.valid("query");
+
+    try {
+      const report = await generateUserActivityReport(orgId, {
+        startDate: query.startDate,
+        endDate: query.endDate,
+        userId: query.userId,
+        role: query.role,
+        table: query.table,
+      });
+
+      if (query.format === "csv") {
+        const csv = userActivityReportToCSV(report);
+        const safeOrgId = orgId.replace(/[^a-zA-Z0-9_-]/g, "");
+        const filename = `user-activity-report-${safeOrgId}-${new Date().toISOString().slice(0, 10)}.csv`;
+        return new Response(csv, {
+          headers: {
+            "Content-Type": "text/csv; charset=utf-8",
+            "Content-Disposition": `attachment; filename="${filename}"`,
+          },
+        }) as never;
+      }
+
+      return c.json(report, 200);
+    } catch (err) {
+      const mapped = complianceErrorResponse(err);
+      if (mapped) return c.json(mapped.body, mapped.status) as never;
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to generate user activity report");
+      return c.json({ error: "internal_error", message: "Failed to generate user activity report.", requestId }, 500);
     }
   }) as never;
 });

@@ -187,14 +187,16 @@ function CompliancePageContent() {
     setActionError(null);
     const unreviewed = classifications.filter((c) => !c.reviewed);
     try {
-      for (const cls of unreviewed) {
-        await fetch(`${apiUrl}/api/v1/admin/compliance/classifications/${cls.id}`, {
-          method: "PUT",
-          credentials,
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ reviewed: true }),
-        });
-      }
+      await Promise.all(
+        unreviewed.map((cls) =>
+          fetch(`${apiUrl}/api/v1/admin/compliance/classifications/${cls.id}`, {
+            method: "PUT",
+            credentials,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ reviewed: true }),
+          }),
+        ),
+      );
       refetch();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));

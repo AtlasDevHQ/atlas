@@ -223,7 +223,9 @@ export async function deletePIIClassification(
   id: string,
 ): Promise<void> {
   requireEnterprise("pii-detection");
-  if (!(await ready())) return;
+  if (!(await ready())) {
+    throw new ComplianceError("Internal database not available", "validation");
+  }
 
   const rows = await internalQuery<{ id: string }>(
     `DELETE FROM ${TABLE_NAME} WHERE org_id = $1 AND id = $2 RETURNING id`,
@@ -312,7 +314,7 @@ export async function applyMasking(
 
   if (classifications.length === 0) return ctx.rows;
 
-  // Build a lookup: "tableName.columnName" → masking strategy
+  // Build a lookup: columnName → masking strategy (filtered to tables accessed by this query)
   const maskLookup = new Map<string, MaskingStrategy>();
   for (const cls of classifications) {
     const tableNameLower = cls.table_name.toLowerCase();
@@ -347,8 +349,9 @@ export async function applyMasking(
 // ── Masking functions ───────────────────────────────────────────
 
 /**
- * Resolve the effective masking behavior for a role.
- * Returns null if no masking should be applied (admin/owner).
+ * Resolve the effective masking level for a given role.
+ * Admins/owners are filtered upstream (applyMasking exits early),
+ * so this handles analyst (partial) and all other roles (full).
  */
 function resolveStrategyForRole(role: string): "full" | "partial" {
   switch (role) {
@@ -405,7 +408,7 @@ export function maskValue(
  * Apply partial masking that preserves structure while hiding content.
  *
  * Examples:
- * - email: j***@example.com → j***@example.com
+ * - email: alice@example.com → a***@example.com
  * - phone: 555-123-4567 → 555-***-4567
  * - SSN: 123-45-6789 → ***-**-6789
  * - generic: abcdefgh → ab***gh

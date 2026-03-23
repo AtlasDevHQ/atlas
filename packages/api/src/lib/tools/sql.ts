@@ -889,8 +889,11 @@ Rules:
                 orgId,
                 userRole: ctx?.user?.role,
               });
-            } catch {
-              // Masking unavailable — fail open with unmasked cached results
+            } catch (err) {
+              log.warn(
+                { err: err instanceof Error ? err.message : String(err), connectionId: connId },
+                "PII masking failed on cached results — returning unmasked results",
+              );
             }
           }
           return {

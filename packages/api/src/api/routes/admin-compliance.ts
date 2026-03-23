@@ -59,7 +59,7 @@ const PIIClassificationSchema = z.object({
 });
 
 const UpdateClassificationBodySchema = z.object({
-  category: z.string().optional().openapi({
+  category: z.enum(["email", "phone", "ssn", "credit_card", "name", "ip_address", "date_of_birth", "address", "passport", "driver_license", "other"]).optional().openapi({
     description: "Override PII category",
     example: "email",
   }),
@@ -160,6 +160,9 @@ adminCompliance.openapi(listRoute, async (c) => {
     }
 
     const orgId = authResult.user?.activeOrganizationId;
+    if (!orgId) {
+      return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+    }
     const { connectionId } = c.req.valid("query");
 
     try {

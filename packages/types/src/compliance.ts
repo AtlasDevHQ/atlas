@@ -72,15 +72,6 @@ export interface PIIColumnClassification {
   updatedAt: string;
 }
 
-// ── Masking rule configuration ──────────────────────────────────
-
-export interface MaskingRuleConfig {
-  /** Role name (e.g. "admin", "analyst", "viewer") → masking behavior. */
-  roleMasks: Record<string, MaskingStrategy | "none">;
-  /** Default masking strategy for unlisted roles. */
-  defaultStrategy: MaskingStrategy;
-}
-
 // ── Request / response shapes ───────────────────────────────────
 
 export interface UpdatePIIClassificationRequest {
@@ -90,13 +81,3 @@ export interface UpdatePIIClassificationRequest {
   reviewed?: boolean;
 }
 
-export interface PIIColumnSummary {
-  tableName: string;
-  columnName: string;
-  connectionId: string;
-  category: PIICategory;
-  confidence: PIIConfidence;
-  maskingStrategy: MaskingStrategy;
-  reviewed: boolean;
-  dismissed: boolean;
-}

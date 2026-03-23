@@ -2,6 +2,7 @@
   "title": "Interactions",
   "pages": [
     "index",
+    "chat",
     "mcp",
     "obsidian",
     "slack",

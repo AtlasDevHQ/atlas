@@ -56,6 +56,7 @@ import { adminUsage } from "./admin-usage";
 import { adminAuditRetention } from "./admin-audit-retention";
 import { adminApproval } from "./admin-approval";
 import { adminCompliance } from "./admin-compliance";
+import { adminBranding } from "./admin-branding";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 const log = createLogger("admin-routes");
@@ -104,6 +105,8 @@ admin.route("/approval", adminApproval);
 admin.route("/approval/", adminApproval);
 admin.route("/compliance", adminCompliance);
 admin.route("/compliance/", adminCompliance);
+admin.route("/branding", adminBranding);
+admin.route("/branding/", adminBranding);
 
 // Path traversal guard, YAML helpers, entity discovery, and file finding
 // are all imported from @atlas/api/lib/semantic-files above.

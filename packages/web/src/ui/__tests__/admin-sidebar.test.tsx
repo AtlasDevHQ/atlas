@@ -19,6 +19,11 @@ mock.module("next/link", () => ({
   ),
 }));
 
+// Mock useBranding — no custom branding by default
+mock.module("@/ui/hooks/use-branding", () => ({
+  useBranding: () => ({ branding: null, loading: false }),
+}));
+
 import { render } from "@testing-library/react";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AtlasUIProvider, type AtlasAuthClient } from "../context";

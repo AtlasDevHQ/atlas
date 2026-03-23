@@ -34,6 +34,7 @@
     "multi-tenancy",
     "caching",
     "model-routing",
+    "white-labeling",
     "self-hosted-models",
     "rate-limiting",
     "troubleshooting",

@@ -15,10 +15,13 @@ import type { SlackAdapterConfig } from "../config";
  *
  * The Chat SDK adapter auto-verifies incoming webhook signatures using
  * the signing secret, so no additional verification layer is needed.
+ * OAuth credentials are passed through for multi-workspace support.
  */
 export function createSlackAdapter(config: SlackAdapterConfig) {
   return createChatSlackAdapter({
     botToken: config.botToken,
     signingSecret: config.signingSecret,
+    clientId: config.clientId,
+    clientSecret: config.clientSecret,
   });
 }

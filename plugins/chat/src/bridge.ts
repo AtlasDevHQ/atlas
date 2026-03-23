@@ -5,6 +5,8 @@
  *
  * - `onNewMention` → lock + subscribe thread + `executeQuery` → `thread.post()`
  * - `onSubscribedMessage` → lock + `executeQuery` with thread history → `thread.post()`
+ * - `onSlashCommand("/atlas")` → post thinking → subscribe → `executeQuery` → edit
+ * - `onAction("atlas_action_approve"|"atlas_action_deny")` → approve/deny → edit message
  * - Error scrubbing prevents leaking connection strings, stack traces, or
  *   internal errors to chat platforms
  *
@@ -14,10 +16,14 @@
  */
 
 import { Chat } from "chat";
-import type { StateAdapter, Lock } from "chat";
+import type { Adapter, StateAdapter, Lock, CardElement, CardChild } from "chat";
 import type { PluginLogger } from "@useatlas/plugin-sdk";
-import type { ChatPluginConfig, ChatQueryResult, ChatMessage } from "./config";
-import { createSlackAdapter } from "./adapters/slack";
+import type {
+  ChatPluginConfig,
+  ChatQueryResult,
+  ChatMessage,
+  PendingAction,
+} from "./config";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -103,6 +109,70 @@ function formatDataTable(
 }
 
 // ---------------------------------------------------------------------------
+// Card builders
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a Chat SDK card for an action approval prompt.
+ * The adapter converts this to Block Kit (Slack), Adaptive Cards (Teams), etc.
+ */
+export function buildApprovalCard(action: PendingAction): CardElement {
+  return {
+    type: "card",
+    children: [
+      {
+        type: "section",
+        children: [
+          {
+            type: "text",
+            text: `\u{1F512} **Action requires approval**\n${(action.summary || action.type).slice(0, 200)}`,
+          } as unknown as CardChild,
+        ],
+      },
+      {
+        type: "actions",
+        children: [
+          {
+            type: "button",
+            id: "atlas_action_approve",
+            label: "Approve",
+            style: "primary" as const,
+            value: action.id,
+          },
+          {
+            type: "button",
+            id: "atlas_action_deny",
+            label: "Deny",
+            style: "danger" as const,
+            value: action.id,
+          },
+        ],
+      },
+    ],
+  } as CardElement;
+}
+
+/**
+ * Build a markdown string for a resolved action status.
+ */
+export function formatActionResult(
+  action: PendingAction,
+  status: "approved" | "denied" | "executed" | "failed",
+  error?: string,
+): string {
+  const emoji =
+    status === "executed" || status === "approved"
+      ? "\u2705"
+      : status === "denied"
+        ? "\u26D4"
+        : "\u274C";
+
+  let text = `${emoji} **Action ${status}**: ${(action.summary || action.type).slice(0, 200)}`;
+  if (error) text += `\n_${error.slice(0, 200)}_`;
+  return text;
+}
+
+// ---------------------------------------------------------------------------
 // Error scrubbing
 // ---------------------------------------------------------------------------
 
@@ -139,7 +209,7 @@ export function scrubErrorMessage(
 
 /** Safely post an error message to a chat thread with double-fault protection. */
 async function safePostError(
-  thread: { post: (msg: string) => Promise<unknown> },
+  thread: { post: (msg: string | { markdown: string }) => Promise<unknown> },
   message: string,
   log: PluginLogger,
   threadId: string,
@@ -157,6 +227,11 @@ async function safePostError(
 /** State adapter key for conversation history. */
 function convKey(threadId: string): string {
   return `conv:${threadId}`;
+}
+
+/** State adapter key for conversation ID mapping. */
+function convIdKey(threadId: string): string {
+  return `conv-id:${threadId}`;
 }
 
 /**
@@ -224,6 +299,77 @@ async function retrieveHistory(
   }
 }
 
+/**
+ * Create or look up a conversation via the host's conversation callbacks.
+ * Non-fatal — failures are logged and return null.
+ */
+async function ensureConversation(
+  config: ChatPluginConfig,
+  stateAdapter: StateAdapter,
+  threadId: string,
+  question: string,
+  log: PluginLogger,
+): Promise<string | null> {
+  if (!config.conversations) return null;
+
+  try {
+    // Check if conversation already exists for this thread
+    const existing = await stateAdapter.get<string>(convIdKey(threadId));
+    if (existing) return existing;
+
+    // Create new conversation
+    const conversationId = crypto.randomUUID();
+    const result = await config.conversations.create({
+      id: conversationId,
+      title: config.conversations.generateTitle(question),
+      surface: "chat-sdk",
+    });
+
+    if (result) {
+      await stateAdapter.set(convIdKey(threadId), result.id, CONVERSATION_TTL_MS);
+      return result.id;
+    }
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err : new Error(String(err)), threadId },
+      "Failed to create conversation via callbacks",
+    );
+  }
+  return null;
+}
+
+/**
+ * Persist messages to the host's conversation system — non-fatal.
+ */
+function persistConversationMessages(
+  config: ChatPluginConfig,
+  conversationId: string | null,
+  question: string,
+  answer: string,
+  log: PluginLogger,
+  threadId: string,
+): void {
+  if (!config.conversations || !conversationId) return;
+
+  try {
+    config.conversations.addMessage({
+      conversationId,
+      role: "user",
+      content: question,
+    });
+    config.conversations.addMessage({
+      conversationId,
+      role: "assistant",
+      content: answer,
+    });
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err : new Error(String(err)), threadId },
+      "Failed to persist conversation messages via callbacks",
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Bridge
 // ---------------------------------------------------------------------------
@@ -239,25 +385,28 @@ export interface ChatBridge {
  * Create a Chat SDK bridge wired to Atlas callbacks.
  *
  * The bridge:
- * 1. Creates adapter instances from config
+ * 1. Creates the Chat SDK instance from pre-built adapters
  * 2. Sets up onNewMention → lock + subscribe + executeQuery → thread.post
  * 3. Sets up onSubscribedMessage → lock + executeQuery with history → thread.post
- * 4. Exposes webhook handlers for route mounting
+ * 4. Sets up onSlashCommand("/atlas") → post thinking → subscribe → executeQuery → edit
+ * 5. Sets up onAction for approval buttons → approve/deny → edit message
+ * 6. Exposes webhook handlers for route mounting
  *
  * @param config       - Chat plugin configuration
  * @param log          - Plugin-scoped logger
  * @param stateAdapter - Chat SDK state adapter (memory, PG, or future Redis)
+ * @param adapterInstances - Pre-built adapter instances (created by index.ts)
  */
 export function createChatBridge(
   config: ChatPluginConfig,
   log: PluginLogger,
   stateAdapter: StateAdapter,
+  adapterInstances: { slack?: Adapter | null },
 ): ChatBridge {
-  // Build adapters from config
-  const adapters: Record<string, ReturnType<typeof createSlackAdapter>> = {};
-
-  if (config.adapters.slack) {
-    adapters.slack = createSlackAdapter(config.adapters.slack);
+  // Build adapters dict from pre-built instances
+  const adapters: Record<string, Adapter> = {};
+  if (adapterInstances.slack) {
+    adapters.slack = adapterInstances.slack;
     log.info("Slack adapter configured");
   }
 
@@ -266,6 +415,53 @@ export function createChatBridge(
     adapters,
     state: stateAdapter,
   });
+
+  // --- Shared handler logic ---
+
+  async function handleQuery(
+    threadId: string,
+    question: string,
+    postResponse: (response: string) => Promise<unknown>,
+    postApproval: ((action: PendingAction) => Promise<void>) | null,
+    priorMessages?: ChatMessage[],
+  ): Promise<void> {
+    const result = await config.executeQuery(question, {
+      threadId,
+      priorMessages,
+    });
+
+    // Post the response first — ensure the user gets the answer
+    const response = formatQueryResponse(result);
+    await postResponse(response);
+
+    // Post ephemeral approval prompts for pending actions
+    if (config.actions && result.pendingActions?.length && postApproval) {
+      for (const action of result.pendingActions) {
+        try {
+          await postApproval(action);
+        } catch (err) {
+          log.warn(
+            { err: err instanceof Error ? err : new Error(String(err)), threadId, actionId: action.id },
+            "Failed to post action approval prompt",
+          );
+        }
+      }
+    }
+
+    // Persist conversation history (non-fatal)
+    await persistHistory(stateAdapter, threadId, [
+      { role: "user", content: question },
+      { role: "assistant", content: result.answer },
+    ], log);
+
+    // Persist to host conversation system (non-fatal)
+    const conversationId = await ensureConversation(
+      config, stateAdapter, threadId, question, log,
+    );
+    persistConversationMessages(
+      config, conversationId, question, result.answer, log, threadId,
+    );
+  }
 
   // --- onNewMention: first interaction in a thread ---
   chat.onNewMention(async (thread, message) => {
@@ -318,17 +514,17 @@ export function createChatBridge(
       // Subscribe for follow-up messages
       await thread.subscribe();
 
-      const result = await config.executeQuery(question, { threadId });
-
-      // Post the response first — ensure the user gets the answer
-      const response = formatQueryResponse(result);
-      await thread.post({ markdown: response });
-
-      // Persist conversation history (non-fatal)
-      await persistHistory(stateAdapter, threadId, [
-        { role: "user", content: question },
-        { role: "assistant", content: result.answer },
-      ], log);
+      await handleQuery(
+        threadId,
+        question,
+        (response) => thread.post({ markdown: response }),
+        (action) =>
+          thread.postEphemeral(
+            message.author,
+            { card: buildApprovalCard(action), fallbackText: `Action requires approval: ${action.summary}` },
+            { fallbackToDM: false },
+          ).then(() => {}),
+      );
     } catch (err) {
       const rawMessage =
         err instanceof Error ? err.message : String(err);
@@ -405,20 +601,18 @@ export function createChatBridge(
       // Retrieve prior conversation context (non-fatal — falls back to no context)
       const priorMessages = await retrieveHistory(stateAdapter, threadId, log);
 
-      const result = await config.executeQuery(question, {
+      await handleQuery(
         threadId,
+        question,
+        (response) => thread.post({ markdown: response }),
+        (action) =>
+          thread.postEphemeral(
+            message.author,
+            { card: buildApprovalCard(action), fallbackText: `Action requires approval: ${action.summary}` },
+            { fallbackToDM: false },
+          ).then(() => {}),
         priorMessages,
-      });
-
-      // Post the response first — ensure the user gets the answer
-      const response = formatQueryResponse(result);
-      await thread.post({ markdown: response });
-
-      // Persist conversation history (non-fatal)
-      await persistHistory(stateAdapter, threadId, [
-        { role: "user", content: question },
-        { role: "assistant", content: result.answer },
-      ], log);
+      );
     } catch (err) {
       const rawMessage =
         err instanceof Error ? err.message : String(err);
@@ -443,6 +637,202 @@ export function createChatBridge(
       });
     }
   });
+
+  // --- onSlashCommand: /atlas <question> ---
+  chat.onSlashCommand("/atlas", async (event) => {
+    const question = event.text?.trim();
+    const channelId = event.channel.id;
+
+    if (!question) {
+      await event.channel.postEphemeral(
+        event.user,
+        { markdown: "Usage: `/atlas <your question>`\nExample: `/atlas how many active users last month?`" },
+        { fallbackToDM: false },
+      );
+      return;
+    }
+
+    log.info(
+      { channelId, userId: event.user.userId, question: question.slice(0, 100) },
+      "Slash command received",
+    );
+
+    // Post thinking indicator
+    const thinkingMsg = await event.channel.post({
+      markdown: `\u231B Thinking about: _${question.slice(0, 150)}_...`,
+    });
+
+    // Construct the thread ID for subscription.
+    // Slack format: "slack:CHANNEL:THREAD_TS" — channel.id is "slack:CHANNEL",
+    // thinkingMsg.id is the message timestamp.
+    const threadId = `${channelId}:${thinkingMsg.id}`;
+
+    // Subscribe the thread for follow-up messages
+    try {
+      await stateAdapter.subscribe(threadId);
+    } catch (subErr) {
+      log.warn(
+        { err: subErr instanceof Error ? subErr : new Error(String(subErr)), threadId },
+        "Failed to subscribe thread — follow-ups may not work",
+      );
+    }
+
+    // Rate limiting
+    if (config.checkRateLimit) {
+      try {
+        const check = config.checkRateLimit(threadId);
+        if (!check.allowed) {
+          await thinkingMsg.edit({
+            markdown: "Rate limit exceeded. Please wait before trying again.",
+          });
+          return;
+        }
+      } catch (rateLimitErr) {
+        log.error(
+          { err: rateLimitErr instanceof Error ? rateLimitErr : new Error(String(rateLimitErr)), threadId },
+          "Rate limit check failed — denying request",
+        );
+        await thinkingMsg.edit({
+          markdown: "Unable to verify rate limits. Please try again shortly.",
+        });
+        return;
+      }
+    }
+
+    try {
+      await handleQuery(
+        threadId,
+        question,
+        (response) => thinkingMsg.edit({ markdown: response }).then(() => {}),
+        event.adapter.postEphemeral
+          ? (action) =>
+              event.adapter.postEphemeral!(
+                threadId,
+                event.user.userId,
+                { card: buildApprovalCard(action), fallbackText: `Action requires approval: ${action.summary}` },
+              ).then(() => {})
+          : null,
+      );
+    } catch (err) {
+      const rawMessage = err instanceof Error ? err.message : String(err);
+      log.error(
+        { err: err instanceof Error ? err : new Error(String(err)), threadId },
+        "Slash command query execution failed",
+      );
+
+      const errorMessage = scrubErrorMessage(rawMessage, config.scrubError);
+      try {
+        await thinkingMsg.edit({
+          markdown: `I was unable to answer your question: ${errorMessage}. This may be a transient issue — please try again in a few seconds.`,
+        });
+      } catch (editErr) {
+        log.warn(
+          { err: editErr instanceof Error ? editErr : new Error(String(editErr)), threadId },
+          "Failed to edit thinking message with error",
+        );
+      }
+    }
+  });
+
+  // --- onAction: approve/deny buttons ---
+  if (config.actions) {
+    chat.onAction(
+      ["atlas_action_approve", "atlas_action_deny"],
+      async (event) => {
+        const actionId = event.value;
+        const isApprove = event.actionId === "atlas_action_approve";
+        const userId = event.user.userId;
+
+        if (!actionId) {
+          log.warn({ actionId: event.actionId }, "Action event missing value");
+          return;
+        }
+
+        log.info(
+          { actionId, userId, action: isApprove ? "approve" : "deny" },
+          "Action button clicked",
+        );
+
+        try {
+          const actionEntry = await config.actions!.get(actionId);
+          if (!actionEntry) {
+            log.warn({ actionId, userId }, "Action not found");
+            return;
+          }
+
+          const pendingAction: PendingAction = {
+            id: actionEntry.id,
+            type: actionEntry.action_type,
+            target: actionEntry.target,
+            summary: actionEntry.summary,
+          };
+
+          if (isApprove) {
+            const result = await config.actions!.approve(
+              actionId,
+              `chat-sdk:${userId}`,
+            );
+
+            if (!result) {
+              // Already resolved
+              log.warn({ actionId, userId }, "Action already resolved");
+              await event.adapter.editMessage(event.threadId, event.messageId, {
+                markdown: `${pendingAction.summary || pendingAction.type} — this action has already been resolved.`,
+              });
+              return;
+            }
+
+            const status =
+              result.status === "executed"
+                ? "executed" as const
+                : result.status === "failed"
+                  ? "failed" as const
+                  : "approved" as const;
+            const resultText = formatActionResult(
+              pendingAction,
+              status,
+              result.error ?? undefined,
+            );
+            await event.adapter.editMessage(event.threadId, event.messageId, {
+              markdown: resultText,
+            });
+          } else {
+            const result = await config.actions!.deny(
+              actionId,
+              `chat-sdk:${userId}`,
+            );
+
+            if (!result) {
+              log.warn({ actionId }, "Action already resolved when deny attempted");
+              return;
+            }
+
+            const resultText = formatActionResult(pendingAction, "denied");
+            await event.adapter.editMessage(event.threadId, event.messageId, {
+              markdown: resultText,
+            });
+          }
+        } catch (err) {
+          log.error(
+            { err: err instanceof Error ? err : new Error(String(err)), actionId },
+            "Failed to process action",
+          );
+
+          // Try to update the original message with an error
+          try {
+            await event.adapter.editMessage(event.threadId, event.messageId, {
+              markdown: "\u26A0\uFE0F Failed to process action. Please try again or use the web UI.",
+            });
+          } catch (editErr) {
+            log.warn(
+              { err: editErr instanceof Error ? editErr : new Error(String(editErr)), actionId },
+              "Failed to edit message with action error",
+            );
+          }
+        }
+      },
+    );
+  }
 
   return {
     webhooks: chat.webhooks,

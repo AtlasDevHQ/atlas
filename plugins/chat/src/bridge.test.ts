@@ -4,7 +4,8 @@
  * Covers:
  * - Response formatting (markdown tables, SQL, metadata)
  * - Error scrubbing (connection strings, stack traces, API keys, user scrubber faults)
- * - Config validation (adapter requirements, callback types, state config)
+ * - Card builders (approval cards, action result formatting)
+ * - Config validation (adapter requirements, callback types, state config, actions, conversations)
  * - Plugin lifecycle (initialization, health checks, teardown, double-init guard)
  * - State adapter wiring (factory, PG requires db, redis stub)
  */
@@ -13,8 +14,10 @@ import { describe, expect, it } from "bun:test";
 import {
   formatQueryResponse,
   scrubErrorMessage,
+  buildApprovalCard,
+  formatActionResult,
 } from "./bridge";
-import type { ChatQueryResult } from "./config";
+import type { ChatQueryResult, PendingAction } from "./config";
 import { createStateAdapter } from "./state";
 import { createRedisAdapter } from "./state/redis-adapter";
 
@@ -115,6 +118,109 @@ describe("formatQueryResponse", () => {
     const output = formatQueryResponse(result);
     expect(output).toContain("SELECT 1");
     expect(output).toContain("SELECT 2");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildApprovalCard
+// ---------------------------------------------------------------------------
+
+describe("buildApprovalCard", () => {
+  const action: PendingAction = {
+    id: "act-001",
+    type: "notification",
+    target: "#revenue",
+    summary: "Send notification to #revenue channel",
+  };
+
+  it("returns a card element", () => {
+    const card = buildApprovalCard(action);
+    expect(card.type).toBe("card");
+    expect(card.children.length).toBe(2);
+  });
+
+  it("includes a section with the action summary", () => {
+    const card = buildApprovalCard(action);
+    const section = card.children[0];
+    expect(section.type).toBe("section");
+    // Drill into section to find text
+    const textChild = (section as { children: { text?: string }[] }).children[0];
+    expect(textChild.text).toContain("Action requires approval");
+    expect(textChild.text).toContain("Send notification to #revenue channel");
+  });
+
+  it("includes approve and deny buttons", () => {
+    const card = buildApprovalCard(action);
+    const actions = card.children[1] as { type: string; children: { id: string; value?: string; style?: string }[] };
+    expect(actions.type).toBe("actions");
+    expect(actions.children.length).toBe(2);
+
+    const approveBtn = actions.children[0];
+    expect(approveBtn.id).toBe("atlas_action_approve");
+    expect(approveBtn.value).toBe("act-001");
+    expect(approveBtn.style).toBe("primary");
+
+    const denyBtn = actions.children[1];
+    expect(denyBtn.id).toBe("atlas_action_deny");
+    expect(denyBtn.value).toBe("act-001");
+    expect(denyBtn.style).toBe("danger");
+  });
+
+  it("truncates long summaries", () => {
+    const longAction: PendingAction = {
+      id: "act-002",
+      type: "notification",
+      target: "#all",
+      summary: "A".repeat(300),
+    };
+    const card = buildApprovalCard(longAction);
+    const section = card.children[0] as { children: { text?: string }[] };
+    expect((section.children[0].text ?? "").length).toBeLessThanOrEqual(250);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// formatActionResult
+// ---------------------------------------------------------------------------
+
+describe("formatActionResult", () => {
+  const action: PendingAction = {
+    id: "act-001",
+    type: "notification",
+    target: "#revenue",
+    summary: "Send notification",
+  };
+
+  it("formats approved status", () => {
+    const result = formatActionResult(action, "approved");
+    expect(result).toContain("approved");
+    expect(result).toContain("Send notification");
+    expect(result).toContain("\u2705"); // checkmark
+  });
+
+  it("formats executed status", () => {
+    const result = formatActionResult(action, "executed");
+    expect(result).toContain("executed");
+    expect(result).toContain("\u2705");
+  });
+
+  it("formats denied status", () => {
+    const result = formatActionResult(action, "denied");
+    expect(result).toContain("denied");
+    expect(result).toContain("\u26D4"); // no entry
+  });
+
+  it("formats failed status with error", () => {
+    const result = formatActionResult(action, "failed", "Permission denied");
+    expect(result).toContain("failed");
+    expect(result).toContain("\u274C"); // cross
+    expect(result).toContain("Permission denied");
+  });
+
+  it("falls back to type when summary is empty", () => {
+    const noSummary: PendingAction = { ...action, summary: "" };
+    const result = formatActionResult(noSummary, "approved");
+    expect(result).toContain("notification");
   });
 });
 
@@ -271,8 +377,101 @@ describe("chatPlugin config validation", () => {
 
     expect(plugin.id).toBe("chat-interaction");
     expect(plugin.types).toEqual(["interaction"]);
-    expect(plugin.version).toBe("0.1.0");
+    expect(plugin.version).toBe("0.2.0");
     expect(plugin.name).toBe("Chat SDK Bridge");
+  });
+
+  it("accepts config with actions callbacks", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: {
+        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+      },
+      executeQuery: async () => ({
+        answer: "test",
+        sql: [],
+        data: [],
+        steps: 1,
+        usage: { totalTokens: 10 },
+      }),
+      actions: {
+        approve: async () => ({ status: "executed" }),
+        deny: async () => ({}),
+        get: async () => null,
+      },
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
+  });
+
+  it("accepts config with conversations callbacks", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: {
+        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+      },
+      executeQuery: async () => ({
+        answer: "test",
+        sql: [],
+        data: [],
+        steps: 1,
+        usage: { totalTokens: 10 },
+      }),
+      conversations: {
+        create: async () => ({ id: "conv-1" }),
+        addMessage: () => {},
+        get: async () => null,
+        generateTitle: (q) => q.slice(0, 80),
+      },
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
+  });
+
+  it("accepts config with OAuth credentials", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: {
+        slack: {
+          botToken: "xoxb-test-token",
+          signingSecret: "test-signing-secret",
+          clientId: "test-client-id",
+          clientSecret: "test-client-secret",
+        },
+      },
+      executeQuery: async () => ({
+        answer: "test",
+        sql: [],
+        data: [],
+        steps: 1,
+        usage: { totalTokens: 10 },
+      }),
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
+  });
+
+  it("rejects invalid actions callbacks", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        },
+        executeQuery: async () => ({
+          answer: "test",
+          sql: [],
+          data: [],
+          steps: 1,
+          usage: { totalTokens: 10 },
+        }),
+        actions: { approve: "not a function" } as never,
+      }),
+    ).toThrow(/actions/i);
   });
 });
 

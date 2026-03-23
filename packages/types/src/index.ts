@@ -21,3 +21,4 @@ export * from "./branding";
 export * from "./onboarding-email";
 export * from "./abuse";
 export * from "./sla";
+export * from "./backups";

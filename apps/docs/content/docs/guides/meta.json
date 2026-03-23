@@ -39,6 +39,7 @@
     "rate-limiting",
     "troubleshooting",
     "sla-monitoring",
+    "backups",
     "observability"
   ]
 }

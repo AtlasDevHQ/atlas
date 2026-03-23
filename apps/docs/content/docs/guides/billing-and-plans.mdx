@@ -38,7 +38,7 @@ Atlas uses a tiered billing model. Self-hosted deployments are free with no enfo
 
 BYOT lets workspaces supply their own LLM API keys instead of using Atlas-provided tokens. When enabled:
 
-- The workspace is billed at a lower Stripe price (configured via `STRIPE_TEAM_BYOT_PRICE_ID`)
+- The workspace is billed at a lower rate on the Team plan (BYOT is a configuration flag, not a separate Stripe product)
 - Token usage is still metered for analytics, but token limits are not enforced
 - Admin or owner role is required to toggle BYOT
 
@@ -63,7 +63,6 @@ Set these environment variables to enable billing:
 | `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret for verifying events |
 | `STRIPE_TEAM_PRICE_ID` | Price ID for the Team plan (monthly) |
 | `STRIPE_TEAM_ANNUAL_PRICE_ID` | Price ID for the Team plan (annual discount) |
-| `STRIPE_TEAM_BYOT_PRICE_ID` | Price ID for Team BYOT (lower price, customer supplies LLM keys) |
 | `STRIPE_ENTERPRISE_PRICE_ID` | Price ID for the Enterprise plan |
 
 When `STRIPE_SECRET_KEY` is set:

@@ -1,5 +1,5 @@
 /** @jsxImportSource chat */
-import { Card, CardText, Table, Divider } from "chat";
+import { Card, CardText, Table } from "chat";
 import type { CardElement } from "chat";
 import { toCardElement } from "chat/jsx-runtime";
 

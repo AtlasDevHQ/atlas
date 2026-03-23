@@ -69,6 +69,13 @@ export type {
   MaskingStrategy,
   PIIColumnClassification,
   UpdatePIIClassificationRequest,
+  ComplianceReportType,
+  ComplianceExportFormat,
+  ComplianceReportFilters,
+  DataAccessRow,
+  DataAccessReport,
+  UserActivityRow,
+  UserActivityReport,
 } from "@useatlas/types";
 export type {
   PlatformWorkspace,
@@ -80,7 +87,7 @@ export type {
   WorkspaceStatus,
   PlanTier,
 } from "@useatlas/types";
-export { PII_CATEGORIES, MASKING_STRATEGIES, PII_CONFIDENCE_LEVELS } from "@useatlas/types";
+export { PII_CATEGORIES, MASKING_STRATEGIES, PII_CONFIDENCE_LEVELS, COMPLIANCE_REPORT_TYPES, COMPLIANCE_EXPORT_FORMATS } from "@useatlas/types";
 export { SHARE_EXPIRY_OPTIONS, PROMPT_INDUSTRIES, MODEL_CONFIG_PROVIDERS, APPROVAL_RULE_TYPES, APPROVAL_STATUSES, WORKSPACE_STATUSES, PLAN_TIERS, NOISY_NEIGHBOR_METRICS } from "@useatlas/types";
 export { parseChatError } from "@useatlas/types/errors";
 

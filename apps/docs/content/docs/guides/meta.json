@@ -22,6 +22,7 @@
     "audit-retention",
     "approval-workflows",
     "pii-masking",
+    "compliance-reporting",
     "usage-metering",
     "billing-and-plans",
     "platform-admin",

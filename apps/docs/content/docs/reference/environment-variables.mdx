@@ -326,7 +326,7 @@ The semantic index pre-computes a summary of the semantic layer and injects it i
 |----------|---------|-------------|
 | `ATLAS_SEMANTIC_INDEX_ENABLED` | `true` | Set `false` to disable the pre-computed semantic index |
 
-For additional configuration (e.g. `maxEntitiesPerQuery`), use [`atlas.config.ts`](/reference/config#semantic-index).
+For additional configuration, use [`atlas.config.ts`](/reference/config#semantic-index).
 
 ---
 
@@ -560,6 +560,7 @@ stripe listen --forward-to localhost:3001/api/auth/stripe/webhook
 |----------|---------|-------------|
 | `ATLAS_ENTERPRISE_ENABLED` | `false` | Set `true` to enable enterprise features (SSO, SCIM, PII detection, custom roles). Requires a valid license key for production use |
 | `ATLAS_ENTERPRISE_LICENSE_KEY` | — | License key for enterprise features. Obtain from [useatlas.dev/enterprise](https://useatlas.dev/enterprise) |
+| `ATLAS_APPROVAL_EXPIRY_HOURS` | `24` | Hours before pending approval requests auto-expire. See [Approval Workflows](/guides/approval-workflows) |
 
 These can also be configured via [`atlas.config.ts`](/reference/config#enterprise).
 

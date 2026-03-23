@@ -4155,6 +4155,99 @@
         }
       }
     },
+    "/api/v1/branding": {
+      "get": {
+        "tags": [
+          "Branding"
+        ],
+        "summary": "Get workspace branding (public)",
+        "description": "Returns the workspace's custom branding for the current session. No admin role required. Returns null branding if no custom branding is set.",
+        "responses": {
+          "200": {
+            "description": "Workspace branding (null if using Atlas defaults)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "branding": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "logoUrl": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "logoText": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "primaryColor": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "faviconUrl": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "hideAtlasBranding": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "logoUrl",
+                        "logoText",
+                        "primaryColor",
+                        "faviconUrl",
+                        "hideAtlasBranding"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "branding"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/onboarding/social-providers": {
       "get": {
         "tags": [
@@ -22867,6 +22960,569 @@
                     "error",
                     "message"
                   ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/branding": {
+      "get": {
+        "tags": [
+          "Admin — Branding"
+        ],
+        "summary": "Get workspace branding",
+        "description": "Returns the workspace's custom branding configuration, or null if using Atlas defaults.",
+        "responses": {
+          "200": {
+            "description": "Workspace branding (null if using Atlas defaults)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "branding": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "orgId": {
+                          "type": "string"
+                        },
+                        "logoUrl": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "logoText": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "primaryColor": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "faviconUrl": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "hideAtlasBranding": {
+                          "type": "boolean"
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "updatedAt": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "orgId",
+                        "logoUrl",
+                        "logoText",
+                        "primaryColor",
+                        "faviconUrl",
+                        "hideAtlasBranding",
+                        "createdAt",
+                        "updatedAt"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "branding"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role or enterprise license required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Admin — Branding"
+        ],
+        "summary": "Update workspace branding",
+        "description": "Sets custom branding for the workspace. Overwrites all fields. Enterprise license required.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "logoUrl": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "URL to custom logo image. Set to null to clear.",
+                    "example": "https://example.com/logo.png"
+                  },
+                  "logoText": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "Text to show next to/instead of logo (e.g. company name). Set to null to clear.",
+                    "example": "Acme Corp"
+                  },
+                  "primaryColor": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "Hex color to replace Atlas brand color. Must be 6-digit hex (e.g. #FF5500). Set to null to clear.",
+                    "example": "#FF5500"
+                  },
+                  "faviconUrl": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "URL to custom favicon. Set to null to clear.",
+                    "example": "https://example.com/favicon.ico"
+                  },
+                  "hideAtlasBranding": {
+                    "type": "boolean",
+                    "description": "When true, remove 'Atlas' / 'Powered by Atlas' text from the UI.",
+                    "example": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Branding saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "branding": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "orgId": {
+                          "type": "string"
+                        },
+                        "logoUrl": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "logoText": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "primaryColor": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "faviconUrl": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "hideAtlasBranding": {
+                          "type": "boolean"
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "updatedAt": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "orgId",
+                        "logoUrl",
+                        "logoText",
+                        "primaryColor",
+                        "faviconUrl",
+                        "hideAtlasBranding",
+                        "createdAt",
+                        "updatedAt"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "branding"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid branding configuration or no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role or enterprise license required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Admin — Branding"
+        ],
+        "summary": "Reset workspace branding",
+        "description": "Removes custom branding for the workspace. Reverts to Atlas defaults.",
+        "responses": {
+          "200": {
+            "description": "Branding reset to Atlas defaults",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role or enterprise license required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No custom branding found or internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
                 }
               }
             }

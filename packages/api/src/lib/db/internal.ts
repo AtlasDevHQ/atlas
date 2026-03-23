@@ -669,6 +669,15 @@ export async function migrateInternalDB(): Promise<void> {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_custom_roles_org ON custom_roles(org_id);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_custom_roles_builtin ON custom_roles(is_builtin) WHERE is_builtin = true;`);
 
+  // User onboarding state (0.9.0 — guided tour completion tracking)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_onboarding (
+      user_id TEXT PRIMARY KEY,
+      tour_completed_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+
   log.info("Internal DB migration complete");
 }
 

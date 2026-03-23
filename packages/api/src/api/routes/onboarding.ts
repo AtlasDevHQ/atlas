@@ -406,4 +406,229 @@ onboarding.openapi(
   },
 );
 
+// ---------------------------------------------------------------------------
+// Tour status & completion
+// ---------------------------------------------------------------------------
+
+const TourStatusResponseSchema = z.object({
+  tourCompleted: z.boolean(),
+  tourCompletedAt: z.string().nullable(),
+});
+
+const tourStatusRoute = createRoute({
+  method: "get",
+  path: "/tour-status",
+  tags: ["Onboarding"],
+  summary: "Get guided tour completion status",
+  description:
+    "Returns whether the authenticated user has completed the guided tour. " +
+    "Used on app load to decide whether to auto-start the tour.",
+  responses: {
+    200: {
+      description: "Tour completion status",
+      content: { "application/json": { schema: TourStatusResponseSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    404: {
+      description: "Requires managed auth mode and internal database",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const tourCompleteRoute = createRoute({
+  method: "post",
+  path: "/tour-complete",
+  tags: ["Onboarding"],
+  summary: "Mark guided tour as completed",
+  description:
+    "Records that the authenticated user has completed (or dismissed) the guided tour. " +
+    "Idempotent — calling multiple times is safe.",
+  responses: {
+    200: {
+      description: "Tour marked as completed",
+      content: { "application/json": { schema: TourStatusResponseSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    404: {
+      description: "Requires managed auth mode and internal database",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const tourResetRoute = createRoute({
+  method: "post",
+  path: "/tour-reset",
+  tags: ["Onboarding"],
+  summary: "Reset guided tour so it can be replayed",
+  description:
+    "Clears the tour completion timestamp for the authenticated user, allowing " +
+    "the guided tour to be triggered again.",
+  responses: {
+    200: {
+      description: "Tour reset successfully",
+      content: { "application/json": { schema: TourStatusResponseSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    404: {
+      description: "Requires managed auth mode and internal database",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// GET /tour-status
+// ---------------------------------------------------------------------------
+
+onboarding.openapi(tourStatusRoute, async (c) => {
+  const requestId = crypto.randomUUID();
+
+  if (detectAuthMode() !== "managed") {
+    return c.json({ error: "not_available", message: "Tour tracking requires managed auth mode.", requestId }, 404);
+  }
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Tour tracking requires an internal database (DATABASE_URL).", requestId }, 404);
+  }
+
+  const preamble = await authPreamble(c.req.raw, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  }
+
+  const userId = preamble.authResult.user?.id;
+  if (!userId) {
+    return c.json({ error: "auth_error", message: "No user ID in session.", requestId }, 401);
+  }
+
+  return withRequestContext({ requestId, user: preamble.authResult.user }, async () => {
+    try {
+      const rows = await internalQuery<{ tour_completed_at: string | null }>(
+        `SELECT tour_completed_at FROM user_onboarding WHERE user_id = $1`,
+        [userId],
+      );
+      const row = rows[0];
+      return c.json({
+        tourCompleted: !!row?.tour_completed_at,
+        tourCompletedAt: row?.tour_completed_at ?? null,
+      }, 200);
+    } catch (err) {
+      log.error(
+        { err: err instanceof Error ? err : new Error(String(err)), requestId },
+        "Failed to fetch tour status",
+      );
+      return c.json({ error: "internal_error", message: "Failed to fetch tour status.", requestId }, 500);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /tour-complete
+// ---------------------------------------------------------------------------
+
+onboarding.openapi(tourCompleteRoute, async (c) => {
+  const requestId = crypto.randomUUID();
+
+  if (detectAuthMode() !== "managed") {
+    return c.json({ error: "not_available", message: "Tour tracking requires managed auth mode.", requestId }, 404);
+  }
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Tour tracking requires an internal database (DATABASE_URL).", requestId }, 404);
+  }
+
+  const preamble = await authPreamble(c.req.raw, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  }
+
+  const userId = preamble.authResult.user?.id;
+  if (!userId) {
+    return c.json({ error: "auth_error", message: "No user ID in session.", requestId }, 401);
+  }
+
+  return withRequestContext({ requestId, user: preamble.authResult.user }, async () => {
+    try {
+      const now = new Date().toISOString();
+      await internalQuery(
+        `INSERT INTO user_onboarding (user_id, tour_completed_at)
+         VALUES ($1, $2)
+         ON CONFLICT (user_id) DO UPDATE SET tour_completed_at = $2`,
+        [userId, now],
+      );
+      log.info({ requestId, userId }, "Tour marked as completed");
+      return c.json({ tourCompleted: true, tourCompletedAt: now }, 200);
+    } catch (err) {
+      log.error(
+        { err: err instanceof Error ? err : new Error(String(err)), requestId },
+        "Failed to mark tour as completed",
+      );
+      return c.json({ error: "internal_error", message: "Failed to save tour completion.", requestId }, 500);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /tour-reset
+// ---------------------------------------------------------------------------
+
+onboarding.openapi(tourResetRoute, async (c) => {
+  const requestId = crypto.randomUUID();
+
+  if (detectAuthMode() !== "managed") {
+    return c.json({ error: "not_available", message: "Tour tracking requires managed auth mode.", requestId }, 404);
+  }
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Tour tracking requires an internal database (DATABASE_URL).", requestId }, 404);
+  }
+
+  const preamble = await authPreamble(c.req.raw, requestId);
+  if ("error" in preamble) {
+    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  }
+
+  const userId = preamble.authResult.user?.id;
+  if (!userId) {
+    return c.json({ error: "auth_error", message: "No user ID in session.", requestId }, 401);
+  }
+
+  return withRequestContext({ requestId, user: preamble.authResult.user }, async () => {
+    try {
+      await internalQuery(
+        `UPDATE user_onboarding SET tour_completed_at = NULL WHERE user_id = $1`,
+        [userId],
+      );
+      log.info({ requestId, userId }, "Tour reset for replay");
+      return c.json({ tourCompleted: false, tourCompletedAt: null }, 200);
+    } catch (err) {
+      log.error(
+        { err: err instanceof Error ? err : new Error(String(err)), requestId },
+        "Failed to reset tour",
+      );
+      return c.json({ error: "internal_error", message: "Failed to reset tour.", requestId }, 500);
+    }
+  });
+});
+
 export { onboarding };

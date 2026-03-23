@@ -1,6 +1,7 @@
 "use client";
 
 import { Suspense, useState, useRef, useEffect, useCallback } from "react";
+import dynamic from "next/dynamic";
 import { useChat } from "@ai-sdk/react";
 import { useQueryStates } from "nuqs";
 import { notebookSearchParams } from "./search-params";
@@ -10,9 +11,16 @@ import { ConversationSidebar } from "@/ui/components/conversations/conversation-
 import { useConversations, transformMessages } from "@/ui/hooks/use-conversations";
 import { API_URL, IS_CROSS_ORIGIN } from "@/lib/api-url";
 import { useAtlasTransport } from "@/ui/hooks/use-atlas-transport";
+import { authClient } from "@/lib/auth/client";
+import { NavBar } from "@/ui/components/tour/nav-bar";
 import { Button } from "@/components/ui/button";
 import type { NotebookStateWire, ForkBranchWire } from "@/ui/lib/types";
 import type { ForkInfo } from "@/ui/components/notebook/types";
+
+const GuidedTour = dynamic(
+  () => import("@/ui/components/tour/guided-tour").then((m) => m.GuidedTour),
+  { ssr: false },
+);
 
 export default function NotebookPage() {
   return (
@@ -37,6 +45,14 @@ function NotebookContent() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [loadingConversation, setLoadingConversation] = useState(false);
   const tempIdRef = useRef(`temp:${Date.now()}`);
+
+  // Auth for tour
+  const session = authClient.useSession();
+  const user = session.data?.user as
+    | { email?: string; role?: string }
+    | undefined;
+  const isAdmin = user?.role === "admin" || user?.role === "owner";
+  const isSignedIn = !!user;
 
   // Server-side notebook state
   const [serverNotebookState, setServerNotebookState] = useState<NotebookStateWire | null>(null);
@@ -271,31 +287,41 @@ function NotebookContent() {
   }
 
   return (
-    <div className="flex h-screen">
-      {convos.available && (
-        <ConversationSidebar
-          conversations={convos.conversations}
-          selectedId={conversationId ?? null}
-          loading={convos.loading}
-          onSelect={handleSelectConversation}
-          onDelete={(id) => convos.deleteConversation(id)}
-          onStar={(id, starred) => convos.starConversation(id, starred)}
-          onNewChat={handleNewChat}
-          mobileOpen={mobileMenuOpen}
-          onMobileClose={() => setMobileMenuOpen(false)}
-        />
-      )}
-      <main id="main" className="flex-1 flex flex-col">
-        {(error || convos.fetchError) && (
-          <div className="mx-4 mt-4 flex items-center justify-between rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
-            <p>{error || convos.fetchError}</p>
-            <Button variant="ghost" size="sm" onClick={() => setError(null)} className="shrink-0 text-red-600 dark:text-red-400">
-              Dismiss
-            </Button>
-          </div>
-        )}
-        <NotebookShell notebook={notebook} focusCellId={focusCellId} />
-      </main>
-    </div>
+    <GuidedTour
+      apiUrl={API_URL}
+      isCrossOrigin={IS_CROSS_ORIGIN}
+      isAdmin={isAdmin}
+      serverTrackingEnabled={isSignedIn}
+    >
+      <div className="flex h-screen flex-col">
+        <NavBar isAdmin={isAdmin} />
+        <div className="flex flex-1 overflow-hidden">
+          {convos.available && (
+            <ConversationSidebar
+              conversations={convos.conversations}
+              selectedId={conversationId ?? null}
+              loading={convos.loading}
+              onSelect={handleSelectConversation}
+              onDelete={(id) => convos.deleteConversation(id)}
+              onStar={(id, starred) => convos.starConversation(id, starred)}
+              onNewChat={handleNewChat}
+              mobileOpen={mobileMenuOpen}
+              onMobileClose={() => setMobileMenuOpen(false)}
+            />
+          )}
+          <main id="main" className="flex-1 flex flex-col overflow-hidden">
+            {(error || convos.fetchError) && (
+              <div className="mx-4 mt-4 flex items-center justify-between rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
+                <p>{error || convos.fetchError}</p>
+                <Button variant="ghost" size="sm" onClick={() => setError(null)} className="shrink-0 text-red-600 dark:text-red-400">
+                  Dismiss
+                </Button>
+              </div>
+            )}
+            <NotebookShell notebook={notebook} focusCellId={focusCellId} />
+          </main>
+        </div>
+      </div>
+    </GuidedTour>
   );
 }

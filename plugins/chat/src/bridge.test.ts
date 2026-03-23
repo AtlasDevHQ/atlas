@@ -815,7 +815,7 @@ describe("chatPlugin Teams adapter config", () => {
     expect(() =>
       chatPlugin({
         adapters: {
-          discord: { token: "test" },
+          whatsapp: { token: "test" },
         } as never,
         executeQuery: mockExecuteQuery,
       }),
@@ -1035,5 +1035,319 @@ describe("chat plugin multi-adapter lifecycle", () => {
     expect(result.healthy).toBe(true);
     expect(result.message).toContain("slack");
     expect(result.message).toContain("teams");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Discord adapter config validation
+// ---------------------------------------------------------------------------
+
+describe("chatPlugin Discord adapter config", () => {
+  const mockExecuteQueryFn = async () => ({
+    answer: "test",
+    sql: [] as string[],
+    data: [] as { columns: string[]; rows: Record<string, unknown>[] }[],
+    steps: 1,
+    usage: { totalTokens: 10 },
+  });
+
+  it("accepts valid config with discord adapter", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: {
+        discord: {
+          botToken: "test-bot-token",
+          applicationId: "test-app-id",
+          publicKey: "test-public-key",
+        },
+      },
+      executeQuery: mockExecuteQueryFn,
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
+    expect(plugin.types).toEqual(["interaction"]);
+    expect(plugin.version).toBe("0.2.0");
+  });
+
+  it("accepts discord config with mentionRoleIds", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: {
+        discord: {
+          botToken: "test-bot-token",
+          applicationId: "test-app-id",
+          publicKey: "test-public-key",
+          mentionRoleIds: ["role-1", "role-2"],
+        },
+      },
+      executeQuery: mockExecuteQueryFn,
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
+  });
+
+  it("accepts config with all three adapters", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: {
+        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        teams: { appId: "test-app-id", appPassword: "test-app-password" },
+        discord: {
+          botToken: "test-bot-token",
+          applicationId: "test-app-id",
+          publicKey: "test-public-key",
+        },
+      },
+      executeQuery: mockExecuteQueryFn,
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
+  });
+
+  it("rejects discord adapter with empty botToken", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          discord: { botToken: "", applicationId: "test-app-id", publicKey: "test-pk" },
+        },
+        executeQuery: mockExecuteQueryFn,
+      }),
+    ).toThrow(/botToken/i);
+  });
+
+  it("rejects discord adapter with empty applicationId", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          discord: { botToken: "test-token", applicationId: "", publicKey: "test-pk" },
+        },
+        executeQuery: mockExecuteQueryFn,
+      }),
+    ).toThrow(/applicationId/i);
+  });
+
+  it("rejects discord adapter with empty publicKey", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          discord: { botToken: "test-token", applicationId: "test-app-id", publicKey: "" },
+        },
+        executeQuery: mockExecuteQueryFn,
+      }),
+    ).toThrow(/publicKey/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Discord adapter factory
+// ---------------------------------------------------------------------------
+
+describe("createDiscordAdapter", () => {
+  it("creates adapter with correct name", async () => {
+    const { createDiscordAdapter: createAdapter } = await import("./adapters/discord");
+
+    const adapter = createAdapter({
+      botToken: "test-token",
+      applicationId: "test-app-id",
+      publicKey: "test-public-key",
+    });
+    expect(adapter).toBeDefined();
+    expect(adapter.name).toBe("discord");
+  });
+
+  it("passes mentionRoleIds through", async () => {
+    const { createDiscordAdapter: createAdapter } = await import("./adapters/discord");
+
+    const adapter = createAdapter({
+      botToken: "test-token",
+      applicationId: "test-app-id",
+      publicKey: "test-public-key",
+      mentionRoleIds: ["role-1"],
+    });
+    expect(adapter).toBeDefined();
+    expect(adapter.name).toBe("discord");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Discord webhook route guard
+// ---------------------------------------------------------------------------
+
+describe("discord webhook route guard", () => {
+  it("discord webhook returns 503 before initialization", async () => {
+    const { buildChatPlugin } = require("./index");
+    const { Hono } = require("hono");
+
+    const plugin = buildChatPlugin({
+      adapters: {
+        discord: {
+          botToken: "test-bot-token",
+          applicationId: "test-app-id",
+          publicKey: "test-public-key",
+        },
+      },
+      executeQuery: async () => ({
+        answer: "test",
+        sql: [],
+        data: [],
+        steps: 1,
+        usage: { totalTokens: 10 },
+      }),
+    });
+
+    const app = new Hono();
+    plugin.routes!(app);
+
+    const resp = await app.request("/webhooks/discord", { method: "POST" });
+    expect(resp.status).toBe(503);
+    const body = await resp.json();
+    expect(body.error).toContain("not yet initialized");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Discord adapter lifecycle
+// ---------------------------------------------------------------------------
+
+describe("chat plugin Discord lifecycle", () => {
+  function createDiscordTestPlugin() {
+    const { buildChatPlugin } = require("./index");
+    return buildChatPlugin({
+      adapters: {
+        discord: {
+          botToken: "test-bot-token",
+          applicationId: "test-app-id",
+          publicKey: "test-public-key",
+        },
+      },
+      executeQuery: async () => ({
+        answer: "test answer",
+        sql: ["SELECT 1"],
+        data: [],
+        steps: 1,
+        usage: { totalTokens: 50 },
+      }),
+    });
+  }
+
+  it("healthCheck returns unhealthy before initialization", async () => {
+    const plugin = createDiscordTestPlugin();
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(false);
+    expect(result.message).toContain("not initialized");
+  });
+
+  it("initialize sets up the bridge with discord adapter", async () => {
+    const plugin = createDiscordTestPlugin();
+    const logs: string[] = [];
+
+    await plugin.initialize!({
+      db: null,
+      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      tools: { register: () => {} },
+      logger: {
+        info: (msg: unknown) => logs.push(typeof msg === "string" ? msg : JSON.stringify(msg)),
+        warn: () => {},
+        error: () => {},
+        debug: () => {},
+      },
+      config: {},
+    });
+
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(true);
+    expect(result.message).toContain("discord");
+  });
+
+  it("teardown cleans up discord adapter", async () => {
+    const plugin = createDiscordTestPlugin();
+
+    await plugin.initialize!({
+      db: null,
+      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      tools: { register: () => {} },
+      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+      config: {},
+    });
+
+    await plugin.teardown!();
+
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(false);
+  });
+
+  it("double initialize throws with discord adapter", async () => {
+    const plugin = createDiscordTestPlugin();
+    const ctx = {
+      db: null,
+      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      tools: { register: () => {} },
+      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+      config: {},
+    };
+
+    await plugin.initialize!(ctx);
+    await expect(plugin.initialize!(ctx)).rejects.toThrow(/already initialized/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Multi-adapter lifecycle (all three adapters)
+// ---------------------------------------------------------------------------
+
+describe("chat plugin three-adapter lifecycle", () => {
+  function createTripleAdapterPlugin() {
+    const { buildChatPlugin } = require("./index");
+    return buildChatPlugin({
+      adapters: {
+        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        teams: { appId: "test-app-id", appPassword: "test-app-password" },
+        discord: {
+          botToken: "test-bot-token",
+          applicationId: "test-app-id",
+          publicKey: "test-public-key",
+        },
+      },
+      executeQuery: async () => ({
+        answer: "test answer",
+        sql: ["SELECT 1"],
+        data: [],
+        steps: 1,
+        usage: { totalTokens: 50 },
+      }),
+    });
+  }
+
+  it("initializes with all three adapters", async () => {
+    const plugin = createTripleAdapterPlugin();
+    const logs: string[] = [];
+
+    await plugin.initialize!({
+      db: null,
+      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      tools: { register: () => {} },
+      logger: {
+        info: (msg: unknown) => logs.push(typeof msg === "string" ? msg : JSON.stringify(msg)),
+        warn: () => {},
+        error: () => {},
+        debug: () => {},
+      },
+      config: {},
+    });
+
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(true);
+    expect(result.message).toContain("slack");
+    expect(result.message).toContain("teams");
+    expect(result.message).toContain("discord");
   });
 });

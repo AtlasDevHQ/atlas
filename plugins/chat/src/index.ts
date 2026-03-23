@@ -2,8 +2,8 @@
  * Atlas Chat SDK Bridge Plugin.
  *
  * Bridges vercel/chat (Chat SDK) into the Atlas plugin system as a unified
- * interaction layer. Currently supports Slack and Teams; additional platforms
- * (Discord, etc.) will be added as Chat SDK adapters in follow-up issues.
+ * interaction layer. Supports Slack, Teams, and Discord; additional platforms
+ * will be added as Chat SDK adapters in follow-up issues.
  *
  * Replaces the standalone `@useatlas/slack` and `@useatlas/teams` plugins
  * with a unified Chat SDK adapter approach. See the migration guide in README.md.
@@ -25,6 +25,11 @@
  *           appId: process.env.TEAMS_APP_ID!,
  *           appPassword: process.env.TEAMS_APP_PASSWORD!,
  *         },
+ *         discord: {
+ *           botToken: process.env.DISCORD_BOT_TOKEN!,
+ *           applicationId: process.env.DISCORD_APPLICATION_ID!,
+ *           publicKey: process.env.DISCORD_PUBLIC_KEY!,
+ *         },
  *       },
  *       executeQuery: myQueryFunction,
  *     }),
@@ -36,6 +41,7 @@
 import type { StateAdapter } from "chat";
 import type { SlackAdapter } from "@chat-adapter/slack";
 import type { TeamsAdapter } from "@chat-adapter/teams";
+import type { DiscordAdapter } from "@chat-adapter/discord";
 import { createPlugin } from "@useatlas/plugin-sdk";
 import type {
   AtlasInteractionPlugin,
@@ -49,6 +55,7 @@ import { createChatBridge } from "./bridge";
 import type { ChatBridge } from "./bridge";
 import { createSlackAdapter } from "./adapters/slack";
 import { createTeamsAdapter } from "./adapters/teams";
+import { createDiscordAdapter } from "./adapters/discord";
 import { createStateAdapter } from "./state";
 
 // Re-export types for host wiring convenience
@@ -62,6 +69,7 @@ export type {
   ConversationCallbacks,
   SlackAdapterConfig,
   TeamsAdapterConfig,
+  DiscordAdapterConfig,
 } from "./config";
 export type { ChatBridge } from "./bridge";
 export { createStateAdapter } from "./state";
@@ -78,6 +86,7 @@ function buildChatPlugin(
   let stateAdapter: StateAdapter | null = null;
   let slackAdapterInstance: SlackAdapter | null = null;
   let teamsAdapterInstance: TeamsAdapter | null = null;
+  let discordAdapterInstance: DiscordAdapter | null = null;
   let log: PluginLogger | null = null;
   let initialized = false;
 
@@ -242,6 +251,39 @@ function buildChatPlugin(
           }
         });
       }
+
+      if (config.adapters.discord) {
+        app.post("/webhooks/discord", async (c) => {
+          if (!bridge) {
+            return c.json({ error: "Chat plugin not yet initialized" }, 503);
+          }
+
+          const handler = bridge.webhooks.discord;
+          if (!handler) {
+            return c.json({ error: "Discord adapter not configured" }, 404);
+          }
+
+          try {
+            const response = await handler(c.req.raw, {
+              waitUntil: (task: Promise<unknown>) => {
+                task.catch((err: unknown) => {
+                  (log ?? console).error(
+                    { err: err instanceof Error ? err : new Error(String(err)) },
+                    "Chat SDK Discord webhook background task failed",
+                  );
+                });
+              },
+            });
+            return response;
+          } catch (err) {
+            (log ?? console).error(
+              { err: err instanceof Error ? err : new Error(String(err)) },
+              "Discord webhook handler threw unexpectedly",
+            );
+            return c.json({ error: "Webhook processing failed" }, 500);
+          }
+        });
+      }
     },
 
     async initialize(ctx: AtlasPluginContext) {
@@ -265,6 +307,7 @@ function buildChatPlugin(
       const adapterInstances: {
         slack?: SlackAdapter | null;
         teams?: TeamsAdapter | null;
+        discord?: DiscordAdapter | null;
       } = {};
       try {
         if (config.adapters.slack) {
@@ -274,6 +317,10 @@ function buildChatPlugin(
         if (config.adapters.teams) {
           teamsAdapterInstance = createTeamsAdapter(config.adapters.teams) as TeamsAdapter;
           adapterInstances.teams = teamsAdapterInstance;
+        }
+        if (config.adapters.discord) {
+          discordAdapterInstance = createDiscordAdapter(config.adapters.discord) as DiscordAdapter;
+          adapterInstances.discord = discordAdapterInstance;
         }
 
         bridge = createChatBridge(config, ctx.logger, stateAdapter, adapterInstances);
@@ -290,6 +337,7 @@ function buildChatPlugin(
         stateAdapter = null;
         slackAdapterInstance = null;
         teamsAdapterInstance = null;
+        discordAdapterInstance = null;
         throw err;
       }
 
@@ -373,6 +421,7 @@ function buildChatPlugin(
       }
       slackAdapterInstance = null;
       teamsAdapterInstance = null;
+      discordAdapterInstance = null;
       log = null;
       initialized = false;
     },
@@ -392,6 +441,7 @@ function buildChatPlugin(
  *   adapters: {
  *     slack: { botToken: "xoxb-...", signingSecret: "..." },
  *     teams: { appId: "...", appPassword: "..." },
+ *     discord: { botToken: "...", applicationId: "...", publicKey: "..." },
  *   },
  *   executeQuery: myQueryFunction,
  * })]

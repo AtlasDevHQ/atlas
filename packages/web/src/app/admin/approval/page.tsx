@@ -93,8 +93,8 @@ function ApprovalPageContent() {
   const [creatingRule, setCreatingRule] = useState(false);
   const [showCreateForm, setShowCreateForm] = useState(false);
 
-  // Review state
-  const [reviewComment, setReviewComment] = useState("");
+  // Review state — per-request comments to avoid cross-contamination
+  const [reviewComments, setReviewComments] = useState<Record<string, string>>({});
   const [reviewingId, setReviewingId] = useState<string | null>(null);
 
   // Queue filter
@@ -204,13 +204,13 @@ function ApprovalPageContent() {
         method: "POST",
         credentials,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, comment: reviewComment || undefined }),
+        body: JSON.stringify({ action, comment: reviewComments[requestId] || undefined }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({})) as Record<string, unknown>;
         throw new Error(typeof body.message === "string" ? body.message : `HTTP ${res.status}`);
       }
-      setReviewComment("");
+      setReviewComments((prev) => { const next = { ...prev }; delete next[requestId]; return next; });
       refetchQueue();
     } catch (err) {
       setMutationError(err instanceof Error ? err.message : String(err));
@@ -221,6 +221,7 @@ function ApprovalPageContent() {
 
   const rules = rulesData?.rules ?? [];
   const requests = queueData?.requests ?? [];
+  const pendingCount = requests.filter((r) => r.status === "pending").length;
   const isLoading = rulesLoading || queueLoading;
 
   return (
@@ -241,9 +242,9 @@ function ApprovalPageContent() {
           <TabsTrigger value="rules">Rules</TabsTrigger>
           <TabsTrigger value="queue">
             Approval Queue
-            {requests.filter((r) => r.status === "pending").length > 0 && (
+            {pendingCount > 0 && (
               <Badge variant="destructive" className="ml-2 size-5 justify-center rounded-full p-0 text-xs">
-                {requests.filter((r) => r.status === "pending").length}
+                {pendingCount}
               </Badge>
             )}
           </TabsTrigger>
@@ -465,10 +466,9 @@ function ApprovalPageContent() {
                               id={`comment-${req.id}`}
                               placeholder="Add a comment..."
                               className="mt-1 h-16"
-                              value={reviewingId === req.id ? reviewComment : ""}
+                              value={reviewComments[req.id] ?? ""}
                               onChange={(e) => {
-                                setReviewingId(req.id);
-                                setReviewComment(e.target.value);
+                                setReviewComments((prev) => ({ ...prev, [req.id]: e.target.value }));
                               }}
                             />
                           </div>

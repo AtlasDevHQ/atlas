@@ -86,11 +86,14 @@ function isValidRuleType(type: string): type is ApprovalRuleType {
 }
 
 function rowToRule(row: ApprovalRuleRow): ApprovalRule {
+  if (!isValidRuleType(row.rule_type)) {
+    log.warn({ ruleId: row.id, ruleType: row.rule_type }, "Approval rule has unexpected rule_type in database — defaulting to 'table'");
+  }
   return {
     id: row.id,
     orgId: row.org_id,
     name: row.name,
-    ruleType: row.rule_type as ApprovalRuleType,
+    ruleType: isValidRuleType(row.rule_type) ? row.rule_type : "table",
     pattern: row.pattern,
     threshold: row.threshold,
     enabled: row.enabled,
@@ -104,8 +107,11 @@ function parseJsonArray(val: string | null): string[] {
   try {
     const parsed: unknown = JSON.parse(val);
     if (Array.isArray(parsed)) return parsed.filter((v): v is string => typeof v === "string");
-  } catch {
-    // intentionally ignored: malformed JSON — return empty array
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err), value: val.slice(0, 200) },
+      "parseJsonArray: malformed JSON in approval queue column — returning empty array",
+    );
   }
   return [];
 }
@@ -348,7 +354,11 @@ export async function checkApprovalRequired(
   // Check if enterprise is enabled without throwing
   try {
     requireEnterprise("approval-workflows");
-  } catch {
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.includes("Enterprise features")) {
+      log.warn({ err: msg }, "Unexpected error checking enterprise status in approval check");
+    }
     return { required: false, matchedRules: [] };
   }
 
@@ -452,6 +462,9 @@ export async function listApprovalRequests(
   requireEnterprise("approval-workflows");
   if (!hasInternalDB()) return [];
 
+  const safeLimit = Math.min(Math.max(1, limit), 1000);
+  const safeOffset = Math.max(0, offset);
+
   let sql = `SELECT id, org_id, rule_id, rule_name, requester_id, requester_email, query_sql,
        explanation, connection_id, tables_accessed, columns_accessed, status,
        reviewer_id, reviewer_email, review_comment, reviewed_at, created_at, expires_at
@@ -465,7 +478,7 @@ export async function listApprovalRequests(
   }
 
   sql += ` ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
-  params.push(limit, offset);
+  params.push(safeLimit, safeOffset);
 
   const rows = await internalQuery<ApprovalQueueRow>(sql, params);
   return rows.map(rowToRequest);
@@ -519,6 +532,14 @@ export async function reviewApprovalRequest(
     );
   }
 
+  // Prevent self-approval — the requester cannot approve their own request
+  if (existing.requesterId === reviewerId) {
+    throw new ApprovalError(
+      "Cannot review your own approval request. A different admin must approve or deny it.",
+      "conflict",
+    );
+  }
+
   // Check if expired
   if (new Date(existing.expiresAt) < new Date()) {
     // Auto-expire it
@@ -558,7 +579,11 @@ export async function expireStaleRequests(): Promise<number> {
 
   try {
     requireEnterprise("approval-workflows");
-  } catch {
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.includes("Enterprise features")) {
+      log.warn({ err: msg }, "Unexpected error checking enterprise status in expireStaleRequests");
+    }
     return 0;
   }
 
@@ -581,7 +606,11 @@ export async function getPendingCount(orgId: string): Promise<number> {
 
   try {
     requireEnterprise("approval-workflows");
-  } catch {
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.includes("Enterprise features")) {
+      log.warn({ err: msg }, "Unexpected error checking enterprise status in getPendingCount");
+    }
     return 0;
   }
 
@@ -592,4 +621,26 @@ export async function getPendingCount(orgId: string): Promise<number> {
   );
 
   return rows.length > 0 ? Number(rows[0].count) : 0;
+}
+
+/**
+ * Check whether a query already has an approved request for a given user.
+ * Used by the SQL interception to allow re-execution of approved queries.
+ * Returns true if an approved request exists for this exact query text.
+ */
+export async function hasApprovedRequest(
+  orgId: string,
+  requesterId: string,
+  querySql: string,
+): Promise<boolean> {
+  if (!hasInternalDB()) return false;
+
+  const rows = await internalQuery<{ id: string }>(
+    `SELECT id FROM approval_queue
+     WHERE org_id = $1 AND requester_id = $2 AND query_sql = $3 AND status = 'approved'
+     LIMIT 1`,
+    [orgId, requesterId, querySql],
+  );
+
+  return rows.length > 0;
 }

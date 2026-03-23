@@ -69,6 +69,7 @@ const {
   reviewApprovalRequest,
   expireStaleRequests,
   getPendingCount,
+  hasApprovedRequest,
   ApprovalError,
 } = await import("./approval");
 
@@ -409,6 +410,34 @@ describe("getPendingCount", () => {
     mockRows.push([{ count: "5" }]);
     const result = await getPendingCount("org-1");
     expect(result).toBe(5);
+  });
+});
+
+describe("reviewApprovalRequest — self-approval", () => {
+  beforeEach(resetMocks);
+
+  it("throws conflict when reviewer is the requester", async () => {
+    mockRows.push([makeQueueRow({ requester_id: "user-1" })]);
+    await expect(
+      reviewApprovalRequest("org-1", "req-1", "user-1", "user@example.com", "approve"),
+    ).rejects.toThrow("Cannot review your own approval request");
+  });
+});
+
+describe("hasApprovedRequest", () => {
+  beforeEach(resetMocks);
+
+  it("returns true when an approved request exists", async () => {
+    mockRows.push([{ id: "req-1" }]);
+    const result = await hasApprovedRequest("org-1", "user-1", "SELECT * FROM users");
+    expect(result).toBe(true);
+    expect(capturedQueries[0].sql).toContain("status = 'approved'");
+  });
+
+  it("returns false when no approved request exists", async () => {
+    mockRows.push([]);
+    const result = await hasApprovedRequest("org-1", "user-1", "SELECT * FROM users");
+    expect(result).toBe(false);
   });
 });
 

@@ -134,7 +134,10 @@ const SlackAdapterSchema = z.object({
   signingSecret: z.string().min(1, "slack signingSecret must not be empty"),
   clientId: z.string().min(1).optional(),
   clientSecret: z.string().min(1).optional(),
-});
+}).refine(
+  (s) => (s.clientId == null) === (s.clientSecret == null),
+  "clientId and clientSecret must both be provided for OAuth",
+);
 
 const StateConfigSchema = z
   .object({
@@ -198,7 +201,9 @@ export const ChatConfigSchema = z.object({
         (typeof v === "object" &&
           v !== null &&
           typeof v.create === "function" &&
-          typeof v.get === "function"),
+          typeof v.addMessage === "function" &&
+          typeof v.get === "function" &&
+          typeof v.generateTitle === "function"),
       "conversations must implement { create, addMessage, get, generateTitle }",
     )
     .optional(),

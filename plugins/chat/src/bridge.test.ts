@@ -473,6 +473,54 @@ describe("chatPlugin config validation", () => {
       }),
     ).toThrow(/actions/i);
   });
+
+  it("rejects conversations missing addMessage or generateTitle", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        },
+        executeQuery: async () => ({
+          answer: "test",
+          sql: [],
+          data: [],
+          steps: 1,
+          usage: { totalTokens: 10 },
+        }),
+        conversations: {
+          create: async () => ({ id: "conv-1" }),
+          get: async () => null,
+          // missing addMessage and generateTitle
+        } as never,
+      }),
+    ).toThrow(/conversations/i);
+  });
+
+  it("rejects clientId without clientSecret", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          slack: {
+            botToken: "xoxb-test-token",
+            signingSecret: "test-signing-secret",
+            clientId: "test-client-id",
+            // missing clientSecret
+          },
+        },
+        executeQuery: async () => ({
+          answer: "test",
+          sql: [],
+          data: [],
+          steps: 1,
+          usage: { totalTokens: 10 },
+        }),
+      }),
+    ).toThrow(/clientId.*clientSecret|config validation/i);
+  });
 });
 
 // ---------------------------------------------------------------------------

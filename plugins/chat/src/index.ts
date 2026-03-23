@@ -113,8 +113,8 @@ function buildChatPlugin(
 
         // OAuth routes — only if clientId is configured
         if (config.adapters.slack.clientId) {
-          app.get("/oauth/slack/install", (c) => {
-            if (!slackAdapterInstance) {
+          app.get("/oauth/slack/install", async (c) => {
+            if (!slackAdapterInstance || !stateAdapter) {
               return c.json({ error: "Chat plugin not yet initialized" }, 503);
             }
 
@@ -122,16 +122,16 @@ function buildChatPlugin(
             const scopes = "commands,chat:write,app_mentions:read";
             const state = crypto.randomUUID();
 
-            // Store CSRF state in state adapter (10 minute TTL)
-            if (stateAdapter) {
-              stateAdapter
-                .set(`oauth:slack:${state}`, true, 600_000)
-                .catch((err: unknown) => {
-                  (log ?? console).error(
-                    { err: err instanceof Error ? err : new Error(String(err)) },
-                    "Failed to store OAuth state",
-                  );
-                });
+            // Store CSRF state in state adapter (10 minute TTL).
+            // Must complete before redirecting — callback validates this token.
+            try {
+              await stateAdapter.set(`oauth:slack:${state}`, true, 600_000);
+            } catch (err) {
+              (log ?? console).error(
+                { err: err instanceof Error ? err : new Error(String(err)) },
+                "Failed to store OAuth CSRF state — cannot proceed with install",
+              );
+              return c.json({ error: "Unable to initiate OAuth flow. Please try again." }, 500);
             }
 
             const url = `https://slack.com/oauth/v2/authorize?client_id=${encodeURIComponent(clientId)}&scope=${encodeURIComponent(scopes)}&state=${encodeURIComponent(state)}`;
@@ -153,7 +153,16 @@ function buildChatPlugin(
             if (!valid) {
               return c.json({ error: "Invalid or expired state parameter" }, 400);
             }
-            await stateAdapter.delete(`oauth:slack:${state}`);
+
+            // Delete used state token — failure is non-fatal (TTL will expire it)
+            try {
+              await stateAdapter.delete(`oauth:slack:${state}`);
+            } catch (deleteErr) {
+              (log ?? console).warn(
+                { err: deleteErr instanceof Error ? deleteErr : new Error(String(deleteErr)), state },
+                "Failed to delete OAuth state — token will expire via TTL",
+              );
+            }
 
             const code = c.req.query("code");
             if (!code) {
@@ -165,13 +174,13 @@ function buildChatPlugin(
                 c.req.raw,
               );
 
-              log?.info({ teamId: result.teamId }, "Slack installation saved via OAuth");
+              (log ?? console).info({ teamId: result.teamId }, "Slack installation saved via OAuth");
 
               return c.html(
                 "<html><body><h1>Atlas installed!</h1><p>You can now use /atlas in your Slack workspace.</p></body></html>",
               );
             } catch (oauthErr) {
-              log?.error(
+              (log ?? console).error(
                 { err: oauthErr instanceof Error ? oauthErr : new Error(String(oauthErr)) },
                 "OAuth callback failed",
               );

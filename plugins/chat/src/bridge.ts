@@ -340,24 +340,25 @@ async function ensureConversation(
 
 /**
  * Persist messages to the host's conversation system — non-fatal.
+ * Async to handle implementations that return promises from addMessage.
  */
-function persistConversationMessages(
+async function persistConversationMessages(
   config: ChatPluginConfig,
   conversationId: string | null,
   question: string,
   answer: string,
   log: PluginLogger,
   threadId: string,
-): void {
+): Promise<void> {
   if (!config.conversations || !conversationId) return;
 
   try {
-    config.conversations.addMessage({
+    await config.conversations.addMessage({
       conversationId,
       role: "user",
       content: question,
     });
-    config.conversations.addMessage({
+    await config.conversations.addMessage({
       conversationId,
       role: "assistant",
       content: answer,
@@ -458,7 +459,7 @@ export function createChatBridge(
     const conversationId = await ensureConversation(
       config, stateAdapter, threadId, question, log,
     );
-    persistConversationMessages(
+    await persistConversationMessages(
       config, conversationId, question, result.answer, log, threadId,
     );
   }
@@ -644,11 +645,18 @@ export function createChatBridge(
     const channelId = event.channel.id;
 
     if (!question) {
-      await event.channel.postEphemeral(
-        event.user,
-        { markdown: "Usage: `/atlas <your question>`\nExample: `/atlas how many active users last month?`" },
-        { fallbackToDM: false },
-      );
+      try {
+        await event.channel.postEphemeral(
+          event.user,
+          { markdown: "Usage: `/atlas <your question>`\nExample: `/atlas how many active users last month?`" },
+          { fallbackToDM: false },
+        );
+      } catch (ephErr) {
+        log.warn(
+          { err: ephErr instanceof Error ? ephErr : new Error(String(ephErr)), channelId },
+          "Failed to post usage hint ephemeral",
+        );
+      }
       return;
     }
 
@@ -658,48 +666,87 @@ export function createChatBridge(
     );
 
     // Post thinking indicator
-    const thinkingMsg = await event.channel.post({
-      markdown: `\u231B Thinking about: _${question.slice(0, 150)}_...`,
-    });
+    let thinkingMsg;
+    try {
+      thinkingMsg = await event.channel.post({
+        markdown: `\u231B Thinking about: _${question.slice(0, 150)}_...`,
+      });
+    } catch (postErr) {
+      log.error(
+        { err: postErr instanceof Error ? postErr : new Error(String(postErr)), channelId },
+        "Failed to post thinking indicator for slash command",
+      );
+      try {
+        await event.channel.postEphemeral(
+          event.user,
+          { markdown: "Unable to start processing your question. Please try again." },
+          { fallbackToDM: false },
+        );
+      } catch {
+        // intentionally ignored: double-fault — both post and ephemeral failed
+      }
+      return;
+    }
 
     // Construct the thread ID for subscription.
     // Slack format: "slack:CHANNEL:THREAD_TS" — channel.id is "slack:CHANNEL",
     // thinkingMsg.id is the message timestamp.
     const threadId = `${channelId}:${thinkingMsg.id}`;
 
-    // Subscribe the thread for follow-up messages
-    try {
-      await stateAdapter.subscribe(threadId);
-    } catch (subErr) {
-      log.warn(
-        { err: subErr instanceof Error ? subErr : new Error(String(subErr)), threadId },
-        "Failed to subscribe thread — follow-ups may not work",
-      );
+    // Dedup lock — prevent duplicate processing on Slack retries
+    const lock = await tryAcquireLock(stateAdapter, `bridge:${threadId}`, DEDUP_LOCK_TTL_MS, log, threadId);
+    if (!lock) {
+      log.debug({ threadId }, "Slash command already being processed");
+      return;
     }
 
-    // Rate limiting
-    if (config.checkRateLimit) {
+    try {
+      // Subscribe the thread for follow-up messages
       try {
-        const check = config.checkRateLimit(threadId);
-        if (!check.allowed) {
-          await thinkingMsg.edit({
-            markdown: "Rate limit exceeded. Please wait before trying again.",
-          });
+        await stateAdapter.subscribe(threadId);
+      } catch (subErr) {
+        log.warn(
+          { err: subErr instanceof Error ? subErr : new Error(String(subErr)), threadId },
+          "Failed to subscribe thread — follow-ups may not work",
+        );
+      }
+
+      // Rate limiting
+      if (config.checkRateLimit) {
+        try {
+          const check = config.checkRateLimit(threadId);
+          if (!check.allowed) {
+            try {
+              await thinkingMsg.edit({
+                markdown: "Rate limit exceeded. Please wait before trying again.",
+              });
+            } catch (editErr) {
+              log.warn(
+                { err: editErr instanceof Error ? editErr : new Error(String(editErr)), threadId },
+                "Failed to edit thinking message with rate limit notice",
+              );
+            }
+            return;
+          }
+        } catch (rateLimitErr) {
+          log.error(
+            { err: rateLimitErr instanceof Error ? rateLimitErr : new Error(String(rateLimitErr)), threadId },
+            "Rate limit check failed — denying request",
+          );
+          try {
+            await thinkingMsg.edit({
+              markdown: "Unable to verify rate limits. Please try again shortly.",
+            });
+          } catch (editErr) {
+            log.warn(
+              { err: editErr instanceof Error ? editErr : new Error(String(editErr)), threadId },
+              "Failed to edit thinking message with rate limit error",
+            );
+          }
           return;
         }
-      } catch (rateLimitErr) {
-        log.error(
-          { err: rateLimitErr instanceof Error ? rateLimitErr : new Error(String(rateLimitErr)), threadId },
-          "Rate limit check failed — denying request",
-        );
-        await thinkingMsg.edit({
-          markdown: "Unable to verify rate limits. Please try again shortly.",
-        });
-        return;
       }
-    }
 
-    try {
       await handleQuery(
         threadId,
         question,
@@ -731,6 +778,13 @@ export function createChatBridge(
           "Failed to edit thinking message with error",
         );
       }
+    } finally {
+      await stateAdapter.releaseLock(lock).catch((releaseErr: unknown) => {
+        log.error(
+          { err: releaseErr instanceof Error ? releaseErr : new Error(String(releaseErr)), threadId },
+          "Failed to release slash command lock — thread may be blocked until TTL expires",
+        );
+      });
     }
   });
 
@@ -756,7 +810,17 @@ export function createChatBridge(
         try {
           const actionEntry = await config.actions!.get(actionId);
           if (!actionEntry) {
-            log.warn({ actionId, userId }, "Action not found");
+            log.warn({ actionId, userId }, "Action not found — may have expired");
+            try {
+              await event.adapter.editMessage(event.threadId, event.messageId, {
+                markdown: "This action is no longer available — it may have expired or already been resolved.",
+              });
+            } catch (editErr) {
+              log.warn(
+                { err: editErr instanceof Error ? editErr : new Error(String(editErr)), actionId },
+                "Failed to edit message for missing action",
+              );
+            }
             return;
           }
 
@@ -804,6 +868,9 @@ export function createChatBridge(
 
             if (!result) {
               log.warn({ actionId }, "Action already resolved when deny attempted");
+              await event.adapter.editMessage(event.threadId, event.messageId, {
+                markdown: `${pendingAction.summary || pendingAction.type} — this action has already been resolved.`,
+              });
               return;
             }
 

@@ -1,0 +1,102 @@
+---
+title: Guided Tour
+description: In-app walkthrough that introduces new users to chat, notebook, admin, and semantic layer features.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The guided tour is an interactive overlay that walks new users through Atlas's key features. It highlights four areas of the interface — chat, notebook, admin console, and semantic layer — with tooltips explaining each one.
+
+---
+
+## How It Works
+
+The tour auto-starts the first time a user visits Atlas. Returning users who have already completed (or skipped) the tour are not shown it again.
+
+Completion state is tracked in two layers:
+
+1. **Local storage** (`atlas-tour-completed`) — checked first for instant decisions without a network round-trip
+2. **Server-side** (`user_onboarding` table) — persists across browsers and devices when managed auth is enabled
+
+If the server is unreachable, the tour falls back to local storage only.
+
+---
+
+## Tour Steps
+
+| Step | Title | Description |
+|------|-------|-------------|
+| 1 | Chat with your data | Ask questions in natural language. Atlas translates them to SQL and returns results |
+| 2 | Notebook | Build multi-step analyses with cells you can re-run, reorder, and export |
+| 3 | Admin console | Manage connections, users, roles, and monitor usage (**admin-only** — skipped for non-admin users) |
+| 4 | Semantic layer | Entity definitions, metrics, and glossary terms that help Atlas understand your data |
+
+Non-admin users see 3 steps (the admin console step is filtered out automatically).
+
+---
+
+## Keyboard Navigation
+
+| Key | Action |
+|-----|--------|
+| `→` (Arrow Right) | Next step |
+| `←` (Arrow Left) | Previous step |
+| `Escape` | Skip and dismiss the tour |
+
+Each step also has clickable **Back**, **Next** (or **Done** on the last step), and **Skip** buttons.
+
+---
+
+## Replaying the Tour
+
+To re-trigger the tour after completing it, open the **help menu** (the `?` icon in the top navigation bar) and click **Replay guided tour**. This clears the completion state and restarts from step 1.
+
+---
+
+## API Endpoints
+
+Three endpoints under `/api/v1/onboarding` provide programmatic control over tour state. All require managed auth (`ATLAS_AUTH_MODE=managed`) and an authenticated session.
+
+### GET `/api/v1/onboarding/tour-status`
+
+Check whether the current user has completed the tour.
+
+```json
+{
+  "tourCompleted": false,
+  "tourCompletedAt": null
+}
+```
+
+### POST `/api/v1/onboarding/tour-complete`
+
+Mark the tour as completed. Idempotent — safe to call multiple times.
+
+```json
+{
+  "tourCompleted": true,
+  "tourCompletedAt": "2026-03-22T12:00:00.000Z"
+}
+```
+
+### POST `/api/v1/onboarding/tour-reset`
+
+Clear the completion flag so the tour can be replayed.
+
+```json
+{
+  "tourCompleted": false,
+  "tourCompletedAt": null
+}
+```
+
+<Callout type="info">
+These endpoints return `404` when managed auth is not configured or when no internal database is available. The frontend gracefully falls back to local storage in this case.
+</Callout>
+
+---
+
+## See Also
+
+- [Admin Console](/guides/admin-console) — The admin step highlighted during the tour
+- [Notebook View](/guides/notebook) — Cell-based analysis interface

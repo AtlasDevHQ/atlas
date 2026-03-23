@@ -511,6 +511,27 @@ See [Slack guide](/guides/slack) for the full setup.
 
 ---
 
+## JIRA Integration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `JIRA_BASE_URL` | — | Jira instance URL (e.g. `https://yourorg.atlassian.net`) |
+| `JIRA_EMAIL` | — | Jira account email for API authentication |
+| `JIRA_API_TOKEN` | — | Jira API token. Generate at [id.atlassian.com](https://id.atlassian.com/manage-profile/security/api-tokens) |
+| `JIRA_DEFAULT_PROJECT` | — | Default project key for issue creation (e.g. `PROJ`). Can be overridden per-action |
+
+Requires the [action framework](/guides/actions) to be enabled (`ATLAS_ACTIONS_ENABLED=true`).
+
+```bash
+# JIRA integration for the createJiraTicket action
+JIRA_BASE_URL=https://yourorg.atlassian.net
+JIRA_EMAIL=you@example.com
+JIRA_API_TOKEN=your-api-token
+JIRA_DEFAULT_PROJECT=PROJ
+```
+
+---
+
 ## Stripe Billing
 
 Stripe billing integration for SaaS deployments. Self-hosted deployments do not need these — the self-hosted experience has no billing or usage limits.
@@ -521,7 +542,6 @@ Stripe billing integration for SaaS deployments. Self-hosted deployments do not 
 | `STRIPE_WEBHOOK_SECRET` | — | Stripe webhook signing secret for verifying webhook events |
 | `STRIPE_TEAM_PRICE_ID` | — | Stripe Price ID for the Team plan (monthly) |
 | `STRIPE_TEAM_ANNUAL_PRICE_ID` | — | Stripe Price ID for the Team plan (annual discount) |
-| `STRIPE_TEAM_BYOT_PRICE_ID` | — | Stripe Price ID for Team BYOT (Bring Your Own Token — lower price, customer supplies LLM keys) |
 | `STRIPE_ENTERPRISE_PRICE_ID` | — | Stripe Price ID for the Enterprise plan |
 
 When `STRIPE_SECRET_KEY` is set, billing routes are mounted at `/api/v1/billing` and the Better Auth Stripe plugin handles checkout, webhooks, and subscription lifecycle at `/api/auth/stripe/*`.

@@ -1,0 +1,57 @@
+{
+  "name": "@useatlas/chat",
+  "version": "0.0.1",
+  "description": "Atlas Chat SDK bridge plugin — unified interaction layer for Slack, Teams, Discord, and more",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "files": [
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "bun test src/"
+  },
+  "keywords": [
+    "atlas",
+    "text-to-sql",
+    "plugin",
+    "interaction",
+    "chat",
+    "slack",
+    "teams",
+    "discord"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AtlasDevHQ/atlas",
+    "directory": "plugins/chat"
+  },
+  "homepage": "https://docs.useatlas.dev",
+  "bugs": {
+    "url": "https://github.com/AtlasDevHQ/atlas/issues"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "chat": "4.20.2",
+    "@chat-adapter/slack": "4.20.2",
+    "@chat-adapter/state-memory": "4.20.2"
+  },
+  "peerDependencies": {
+    "hono": "^4.0.0",
+    "zod": "^4.0.0",
+    "@useatlas/plugin-sdk": ">=0.0.1"
+  },
+  "devDependencies": {
+    "hono": "^4.12.3",
+    "zod": "^4.3.6",
+    "@useatlas/plugin-sdk": "workspace:*"
+  }
+}

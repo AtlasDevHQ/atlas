@@ -210,6 +210,18 @@ try {
   );
 }
 
+// Platform admin routes — cross-tenant management (gated to platform_admin role).
+try {
+  const { platformAdmin } = await import("./routes/platform-admin");
+  app.route("/api/v1/platform", platformAdmin);
+  log.info("Platform admin routes enabled");
+} catch (err) {
+  log.error(
+    { err: err instanceof Error ? err : new Error(String(err)) },
+    "Failed to load platform admin routes — platform console will be unavailable",
+  );
+}
+
 // Billing routes — lazy import, only loaded if STRIPE_SECRET_KEY is set (SaaS mode).
 if (process.env.STRIPE_SECRET_KEY) {
   try {

@@ -9,7 +9,7 @@
 export const AUTH_MODES = ["none", "simple-key", "managed", "byot"] as const;
 export type AuthMode = (typeof AUTH_MODES)[number];
 
-export const ATLAS_ROLES = ["member", "admin", "owner"] as const;
+export const ATLAS_ROLES = ["member", "admin", "owner", "platform_admin"] as const;
 export type AtlasRole = (typeof ATLAS_ROLES)[number];
 
 export interface AtlasUser {

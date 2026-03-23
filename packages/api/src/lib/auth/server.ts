@@ -73,7 +73,7 @@ function buildPlugins() {
   const plugins: any[] = [
     bearer(),
     apiKey(),
-    admin({ defaultRole: "member", adminRoles: ["admin"] }),
+    admin({ defaultRole: "member", adminRoles: ["admin", "platform_admin"] }),
     organization({
       ac,
       roles: { owner: ownerRole, admin: adminRole, member: memberRole },
@@ -101,7 +101,7 @@ function buildPlugins() {
           // Cast needed: the admin plugin adds `role` to the user object but the
           // SCIM plugin's hook type only includes base user fields.
           const user = data.user as Record<string, unknown> | undefined;
-          if (user?.role !== "admin") {
+          if (user?.role !== "admin" && user?.role !== "platform_admin") {
             throw new Error("Only admin users can generate SCIM tokens.");
           }
         },
@@ -294,23 +294,23 @@ export function getAuthInstance(): AuthInstance {
           before: async (user) => {
             try {
               if (adminEmail && user.email?.toLowerCase().trim() === adminEmail) {
-                log.info({ email: user.email }, "Bootstrap: promoting signup to admin (ATLAS_ADMIN_EMAIL match)");
-                return { data: { ...user, role: "admin" } };
+                log.info({ email: user.email }, "Bootstrap: promoting signup to platform_admin (ATLAS_ADMIN_EMAIL match)");
+                return { data: { ...user, role: "platform_admin" } };
               }
 
               if (!adminEmail) {
                 if (!hasInternalDB()) return;
                 const rows = await internalQuery<{ id: string }>(
-                  `SELECT id FROM "user" WHERE role = 'admin' LIMIT 1`,
+                  `SELECT id FROM "user" WHERE role IN ('admin', 'platform_admin') LIMIT 1`,
                 );
                 if (rows.length === 0) {
-                  log.info({ email: user.email }, "Bootstrap: no admin exists — promoting first signup to admin");
-                  return { data: { ...user, role: "admin" } };
+                  log.info({ email: user.email }, "Bootstrap: no admin exists — promoting first signup to platform_admin");
+                  return { data: { ...user, role: "platform_admin" } };
                 }
               }
 
             } catch (err) {
-              log.error({ err }, "Bootstrap admin check failed — defaulting to normal role assignment");
+              log.error({ err: err instanceof Error ? err.message : String(err) }, "Bootstrap admin check failed — defaulting to normal role assignment");
             }
           },
           after: async (user) => {

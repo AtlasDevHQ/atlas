@@ -59,7 +59,7 @@ export async function adminAuthPreamble(req: Request, requestId: string) {
   // Enforce admin role — when auth mode is "none" (no auth configured, e.g.
   // local dev), treat the request as an implicit admin since there is no
   // identity boundary to enforce.
-  if (authResult.mode !== "none" && (!authResult.user || (authResult.user.role !== "admin" && authResult.user.role !== "owner"))) {
+  if (authResult.mode !== "none" && (!authResult.user || (authResult.user.role !== "admin" && authResult.user.role !== "owner" && authResult.user.role !== "platform_admin"))) {
     log.warn({ requestId, userId: authResult.user?.id, role: authResult.user?.role }, "Non-admin access attempt");
     return { error: { error: "forbidden_role", message: "Admin role required.", requestId }, status: 403 as const };
   }

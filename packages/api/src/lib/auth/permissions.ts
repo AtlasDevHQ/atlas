@@ -5,13 +5,16 @@
  * and the action's approval mode. Roles are extracted from the authenticated
  * user, with defaults that vary by auth mode.
  *
- * Role hierarchy: owner > admin > member
+ * Role hierarchy: platform_admin > owner > admin > member
  *
- * | Approval mode | member | admin | owner |
- * |---------------|--------|-------|-------|
- * | auto          | yes*   | yes*  | yes*  |
- * | manual        | no     | yes   | yes   |
- * | admin-only    | no     | no    | yes   |
+ * platform_admin is a global (cross-tenant) role for platform operators.
+ * The other three roles are workspace-scoped via Better Auth's org plugin.
+ *
+ * | Approval mode | member | admin | owner | platform_admin |
+ * |---------------|--------|-------|-------|----------------|
+ * | auto          | yes*   | yes*  | yes*  | yes*           |
+ * | manual        | no     | yes   | yes   | yes            |
+ * | admin-only    | no     | no    | yes   | yes            |
  *
  * * Auto-approved actions are executed immediately in handleAction and never
  *   reach the approval endpoint. canApprove returns true for any authenticated
@@ -33,6 +36,7 @@ const ROLE_LEVEL: Record<AtlasRole, number> = {
   member: 0,
   admin: 1,
   owner: 2,
+  platform_admin: 3,
 };
 
 // ---------------------------------------------------------------------------

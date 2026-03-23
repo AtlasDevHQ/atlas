@@ -109,7 +109,7 @@ export function AdminSidebar() {
                   <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-muted">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
-                      src={branding.logoUrl!}
+                      src={showCustomLogo as string}
                       alt=""
                       className="size-5 object-contain"
                     />

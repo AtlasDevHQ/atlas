@@ -1,15 +1,19 @@
 "use client";
 
+import { useEffect } from "react";
 import { useBranding } from "@/ui/hooks/use-branding";
 
 /**
- * Client component that injects dynamic favicon and title from workspace branding.
- * Placed inside <head> won't work in Next.js App Router, so this uses DOM manipulation.
+ * Client component that dynamically updates the favicon and page title based
+ * on workspace branding. Uses direct DOM manipulation because branding data is
+ * fetched at runtime (session-dependent) and cannot use Next.js static metadata.
  */
 export function BrandingHead() {
   const { branding } = useBranding();
 
-  if (typeof document !== "undefined" && branding) {
+  useEffect(() => {
+    if (!branding) return;
+
     // Dynamic favicon
     if (branding.faviconUrl) {
       let link = document.querySelector<HTMLLinkElement>("link[data-branding-favicon]");
@@ -24,15 +28,14 @@ export function BrandingHead() {
       }
     }
 
-    // Dynamic title (replace "Atlas" with custom text)
+    // Dynamic title (replace all occurrences of "Atlas" with custom text)
     if (branding.hideAtlasBranding && branding.logoText) {
       const currentTitle = document.title;
       if (currentTitle.includes("Atlas")) {
-        document.title = currentTitle.replace("Atlas", branding.logoText);
+        document.title = currentTitle.replaceAll("Atlas", branding.logoText);
       }
     }
-  }
+  }, [branding]);
 
-  // This component renders nothing — side-effects only
   return null;
 }

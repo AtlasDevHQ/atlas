@@ -12,7 +12,8 @@ export interface WorkspaceBrandingPublic {
 }
 
 /**
- * Fetch workspace branding from the public endpoint and cache it.
+ * Fetch workspace branding from the public endpoint.
+ * Each component instance fetches independently on mount.
  * Returns null while loading or if no custom branding is set.
  */
 export function useBranding() {
@@ -31,6 +32,7 @@ export function useBranding() {
           signal: controller.signal,
         });
         if (!res.ok) {
+          console.warn(`useBranding: branding endpoint returned ${res.status} — falling back to defaults`);
           setLoading(false);
           return;
         }

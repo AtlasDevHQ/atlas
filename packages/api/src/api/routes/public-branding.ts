@@ -75,8 +75,9 @@ publicBranding.openapi(getBrandingRoute, async (c) => {
       if (authResult.authenticated) {
         orgId = authResult.user?.activeOrganizationId ?? undefined;
       }
-    } catch {
-      // intentionally ignored: auth failure is fine for public endpoint — return null branding
+    } catch (err) {
+      // intentionally ignored: auth failure is expected for unauthenticated visitors
+      log.debug({ err: err instanceof Error ? err.message : String(err) }, "Public branding: auth resolution failed, returning null branding");
     }
 
     if (!orgId) {

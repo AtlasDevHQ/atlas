@@ -129,11 +129,12 @@ function buildChatPlugin(
             });
             return response;
           } catch (err) {
+            const requestId = crypto.randomUUID();
             (log ?? console).error(
-              { err: err instanceof Error ? err : new Error(String(err)) },
+              { err: err instanceof Error ? err : new Error(String(err)), requestId },
               "Slack webhook handler threw unexpectedly",
             );
-            return c.json({ error: "Webhook processing failed" }, 500);
+            return c.json({ error: "Webhook processing failed", requestId }, 500);
           }
         });
 
@@ -243,11 +244,12 @@ function buildChatPlugin(
             });
             return response;
           } catch (err) {
+            const requestId = crypto.randomUUID();
             (log ?? console).error(
-              { err: err instanceof Error ? err : new Error(String(err)) },
+              { err: err instanceof Error ? err : new Error(String(err)), requestId },
               "Teams webhook handler threw unexpectedly",
             );
-            return c.json({ error: "Webhook processing failed" }, 500);
+            return c.json({ error: "Webhook processing failed", requestId }, 500);
           }
         });
       }
@@ -276,11 +278,12 @@ function buildChatPlugin(
             });
             return response;
           } catch (err) {
+            const requestId = crypto.randomUUID();
             (log ?? console).error(
-              { err: err instanceof Error ? err : new Error(String(err)) },
+              { err: err instanceof Error ? err : new Error(String(err)), requestId },
               "Discord webhook handler threw unexpectedly",
             );
-            return c.json({ error: "Webhook processing failed" }, 500);
+            return c.json({ error: "Webhook processing failed", requestId }, 500);
           }
         });
       }
@@ -325,6 +328,10 @@ function buildChatPlugin(
 
         bridge = createChatBridge(config, ctx.logger, stateAdapter, adapterInstances);
       } catch (err) {
+        ctx.logger.error(
+          { err: err instanceof Error ? err : new Error(String(err)) },
+          "Chat plugin initialization failed — cleaning up state adapter",
+        );
         // Clean up already-connected state adapter to prevent leaks
         try {
           await stateAdapter.disconnect();

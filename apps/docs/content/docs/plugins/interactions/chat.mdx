@@ -27,7 +27,9 @@ bun add @useatlas/chat
 |----------|-----------------|--------|
 | Slack | `@chat-adapter/slack` | Stable |
 | Microsoft Teams | `@chat-adapter/teams` | Stable |
-Stable adapters are bundled as dependencies of `@useatlas/chat` — no separate install needed. Additional platforms (Discord, Google Chat, Telegram, WhatsApp) are planned and will be supported as Chat SDK adapters are published.
+| Discord | `@chat-adapter/discord` | Stable |
+
+Stable adapters are bundled as dependencies of `@useatlas/chat` — no separate install needed. Additional platforms (Google Chat, Telegram, WhatsApp) are planned and will be supported as Chat SDK adapters are published.
 
 ## Configuration
 
@@ -90,7 +92,14 @@ export default defineConfig({
 | `adapters.teams.appId` | `string` | Yes* | Microsoft App ID from Azure Bot registration. |
 | `adapters.teams.appPassword` | `string` | Yes* | Microsoft App Password from Azure Bot registration. |
 | `adapters.teams.tenantId` | `string` | No | Restrict to a specific Microsoft Entra ID tenant. |
+| `adapters.discord.botToken` | `string` | Yes* | Discord bot token. |
+| `adapters.discord.applicationId` | `string` | Yes* | Discord application ID. |
+| `adapters.discord.publicKey` | `string` | Yes* | 64-character hex string (Ed25519 public key from Discord Developer Portal). |
+| `adapters.discord.mentionRoleIds` | `string[]` | No | Role IDs that trigger mention handlers (in addition to direct @mentions). |
 | `state` | `object` | No | State backend config (default: `{ backend: "memory" }`). |
+| `state.backend` | `"memory" \| "pg" \| "redis"` | No | State backend to use. Default: `"memory"`. |
+| `state.tablePrefix` | `string` | No | Table name prefix for PG backend. Must be a valid SQL identifier. Default: `"chat_"`. |
+| `state.redisUrl` | `string` | No | Redis connection URL (future — not yet implemented). |
 | `executeQuery` | `function` | Yes | Callback to run the Atlas agent on a question. |
 | `checkRateLimit` | `function` | No | Optional rate limiting callback. |
 | `scrubError` | `function` | No | Optional error scrubbing callback. |
@@ -145,6 +154,7 @@ The plugin bridges Chat SDK events to the Atlas agent:
 |--------|------|-------------|
 | `POST` | `/webhooks/slack` | Slack webhook (slash commands, events, interactions) |
 | `POST` | `/webhooks/teams` | Teams webhook (Bot Framework activities) |
+| `POST` | `/webhooks/discord` | Discord webhook (interactions, gateway events) |
 | `GET` | `/oauth/slack/install` | Slack OAuth install redirect (only when `clientId` configured) |
 | `GET` | `/oauth/slack/callback` | Slack OAuth callback (only when `clientId` configured) |
 
@@ -161,15 +171,19 @@ Routes are mounted under the plugin's base path (e.g., `/api/plugins/chat-intera
 | `TEAMS_APP_ID` | Microsoft App ID |
 | `TEAMS_APP_PASSWORD` | Microsoft App Password |
 | `TEAMS_TENANT_ID` | Microsoft Entra ID tenant ID (optional) |
+| `DISCORD_BOT_TOKEN` | Discord bot token |
+| `DISCORD_APPLICATION_ID` | Discord application ID |
+| `DISCORD_PUBLIC_KEY` | Discord application public key (64-char hex, Ed25519) |
 | `DATABASE_URL` | Required for `pg` state backend |
 
 ## Error Scrubbing
 
 All error messages are scrubbed before sending to chat platforms. Built-in patterns redact:
 
-- Connection strings (`postgres://`, `mysql://`, etc.)
-- Stack traces and file paths
-- API keys and tokens (Slack, GitHub, Bearer)
+- Connection strings — `postgres://`, `postgresql://`, `mysql://`, `mongodb://`, `redis://`, `clickhouse://`
+- Stack traces — `at Module.foo (/path:line:col)` patterns
+- File paths — `/home/...`, `/usr/...`, `/app/...`, `/src/...`
+- API keys and tokens — `sk-*`, `xoxb-*`, `xoxp-*` (Slack), `ghp_*`, `gho_*` (GitHub), `Bearer *`
 
 Provide a custom `scrubError` callback for additional scrubbing.
 

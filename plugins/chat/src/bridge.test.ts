@@ -1059,7 +1059,7 @@ describe("chatPlugin Discord adapter config", () => {
         discord: {
           botToken: "test-bot-token",
           applicationId: "test-app-id",
-          publicKey: "test-public-key",
+          publicKey: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
         },
       },
       executeQuery: mockExecuteQueryFn,
@@ -1078,7 +1078,7 @@ describe("chatPlugin Discord adapter config", () => {
         discord: {
           botToken: "test-bot-token",
           applicationId: "test-app-id",
-          publicKey: "test-public-key",
+          publicKey: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
           mentionRoleIds: ["role-1", "role-2"],
         },
       },
@@ -1098,7 +1098,7 @@ describe("chatPlugin Discord adapter config", () => {
         discord: {
           botToken: "test-bot-token",
           applicationId: "test-app-id",
-          publicKey: "test-public-key",
+          publicKey: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
         },
       },
       executeQuery: mockExecuteQueryFn,
@@ -1113,7 +1113,7 @@ describe("chatPlugin Discord adapter config", () => {
     expect(() =>
       chatPlugin({
         adapters: {
-          discord: { botToken: "", applicationId: "test-app-id", publicKey: "test-pk" },
+          discord: { botToken: "", applicationId: "test-app-id", publicKey: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2" },
         },
         executeQuery: mockExecuteQueryFn,
       }),
@@ -1126,7 +1126,7 @@ describe("chatPlugin Discord adapter config", () => {
     expect(() =>
       chatPlugin({
         adapters: {
-          discord: { botToken: "test-token", applicationId: "", publicKey: "test-pk" },
+          discord: { botToken: "test-token", applicationId: "", publicKey: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2" },
         },
         executeQuery: mockExecuteQueryFn,
       }),
@@ -1155,7 +1155,7 @@ describe("chatPlugin Discord adapter config", () => {
           discord: {
             botToken: "test-token",
             applicationId: "test-app-id",
-            publicKey: "test-pk",
+            publicKey: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
             mentionRoleIds: [""],
           },
         },
@@ -1176,7 +1176,7 @@ describe("createDiscordAdapter", () => {
     const adapter = createAdapter({
       botToken: "test-token",
       applicationId: "test-app-id",
-      publicKey: "test-public-key",
+      publicKey: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
     });
     expect(adapter).toBeDefined();
     expect(adapter.name).toBe("discord");
@@ -1188,7 +1188,7 @@ describe("createDiscordAdapter", () => {
     const adapter = createAdapter({
       botToken: "test-token",
       applicationId: "test-app-id",
-      publicKey: "test-public-key",
+      publicKey: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
       mentionRoleIds: ["role-1"],
     });
     expect(adapter).toBeDefined();
@@ -1210,7 +1210,7 @@ describe("discord webhook route guard", () => {
         discord: {
           botToken: "test-bot-token",
           applicationId: "test-app-id",
-          publicKey: "test-public-key",
+          publicKey: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
         },
       },
       executeQuery: async () => ({
@@ -1244,7 +1244,7 @@ describe("chat plugin Discord lifecycle", () => {
         discord: {
           botToken: "test-bot-token",
           applicationId: "test-app-id",
-          publicKey: "test-public-key",
+          publicKey: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
         },
       },
       executeQuery: async () => ({
@@ -1332,7 +1332,7 @@ describe("chat plugin three-adapter lifecycle", () => {
         discord: {
           botToken: "test-bot-token",
           applicationId: "test-app-id",
-          publicKey: "test-public-key",
+          publicKey: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
         },
       },
       executeQuery: async () => ({

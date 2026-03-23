@@ -174,7 +174,7 @@ const TeamsAdapterSchema = z.object({
 const DiscordAdapterSchema = z.object({
   botToken: z.string().min(1, "discord botToken must not be empty"),
   applicationId: z.string().min(1, "discord applicationId must not be empty"),
-  publicKey: z.string().min(1, "discord publicKey must not be empty"),
+  publicKey: z.string().regex(/^[0-9a-f]{64}$/i, "discord publicKey must be a 64-character hex string (Ed25519 public key from Discord Developer Portal)"),
   mentionRoleIds: z.array(z.string().min(1)).optional(),
 });
 

@@ -15,7 +15,7 @@ import type { DiscordAdapterConfig } from "../config";
  *
  * The Chat SDK adapter auto-verifies incoming webhook signatures using
  * Ed25519 (Discord public key), so no additional verification layer is needed.
- * Slash command registration and mention role IDs are passed through.
+ * Mention role IDs are passed through for extended mention handling.
  */
 export function createDiscordAdapter(config: DiscordAdapterConfig) {
   return createChatDiscordAdapter({

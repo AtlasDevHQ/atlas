@@ -1145,6 +1145,24 @@ describe("chatPlugin Discord adapter config", () => {
       }),
     ).toThrow(/publicKey/i);
   });
+
+  it("rejects discord adapter with empty mentionRoleIds element", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          discord: {
+            botToken: "test-token",
+            applicationId: "test-app-id",
+            publicKey: "test-pk",
+            mentionRoleIds: [""],
+          },
+        },
+        executeQuery: mockExecuteQueryFn,
+      }),
+    ).toThrow(/config validation/i);
+  });
 });
 
 // ---------------------------------------------------------------------------

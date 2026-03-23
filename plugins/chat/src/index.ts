@@ -2,8 +2,8 @@
  * Atlas Chat SDK Bridge Plugin.
  *
  * Bridges vercel/chat (Chat SDK) into the Atlas plugin system as a unified
- * interaction layer. Supports Slack, Teams, and Discord; additional platforms
- * will be added as Chat SDK adapters in follow-up issues.
+ * interaction layer. Supports Slack, Teams, Discord, and Google Chat;
+ * additional platforms will be added as Chat SDK adapters in follow-up issues.
  *
  * Replaces the standalone `@useatlas/slack` and `@useatlas/teams` plugins
  * with a unified Chat SDK adapter approach. See the migration guide in README.md.
@@ -30,6 +30,9 @@
  *           applicationId: process.env.DISCORD_APPLICATION_ID!,
  *           publicKey: process.env.DISCORD_PUBLIC_KEY!,
  *         },
+ *         gchat: {
+ *           credentials: JSON.parse(process.env.GOOGLE_CHAT_CREDENTIALS!),
+ *         },
  *       },
  *       executeQuery: myQueryFunction,
  *     }),
@@ -42,6 +45,7 @@ import type { StateAdapter } from "chat";
 import type { SlackAdapter } from "@chat-adapter/slack";
 import type { TeamsAdapter } from "@chat-adapter/teams";
 import type { DiscordAdapter } from "@chat-adapter/discord";
+import type { GoogleChatAdapter } from "@chat-adapter/gchat";
 import { createPlugin } from "@useatlas/plugin-sdk";
 import type {
   AtlasInteractionPlugin,
@@ -56,6 +60,7 @@ import type { ChatBridge } from "./bridge";
 import { createSlackAdapter } from "./adapters/slack";
 import { createTeamsAdapter } from "./adapters/teams";
 import { createDiscordAdapter } from "./adapters/discord";
+import { createGoogleChatAdapter } from "./adapters/gchat";
 import { createStateAdapter } from "./state";
 
 // Re-export types for host wiring convenience
@@ -70,6 +75,7 @@ export type {
   SlackAdapterConfig,
   TeamsAdapterConfig,
   DiscordAdapterConfig,
+  GoogleChatAdapterConfig,
 } from "./config";
 export type { ChatBridge } from "./bridge";
 export { createStateAdapter } from "./state";
@@ -95,6 +101,7 @@ function buildChatPlugin(
   let slackAdapterInstance: SlackAdapter | null = null;
   let teamsAdapterInstance: TeamsAdapter | null = null;
   let discordAdapterInstance: DiscordAdapter | null = null;
+  let gchatAdapterInstance: GoogleChatAdapter | null = null;
   let log: PluginLogger | null = null;
   let initialized = false;
 
@@ -295,6 +302,40 @@ function buildChatPlugin(
           }
         });
       }
+
+      if (config.adapters.gchat) {
+        app.post("/webhooks/gchat", async (c) => {
+          if (!bridge) {
+            return c.json({ error: "Chat plugin not yet initialized" }, 503);
+          }
+
+          const handler = bridge.webhooks.gchat;
+          if (!handler) {
+            return c.json({ error: "Google Chat adapter not configured" }, 404);
+          }
+
+          try {
+            const response = await handler(c.req.raw, {
+              waitUntil: (task: Promise<unknown>) => {
+                task.catch((err: unknown) => {
+                  (log ?? console).error(
+                    { err: err instanceof Error ? err : new Error(String(err)) },
+                    "Chat SDK Google Chat webhook background task failed",
+                  );
+                });
+              },
+            });
+            return response;
+          } catch (err) {
+            const requestId = crypto.randomUUID();
+            (log ?? console).error(
+              { err: err instanceof Error ? err : new Error(String(err)), requestId },
+              "Google Chat webhook handler threw unexpectedly",
+            );
+            return c.json({ error: "Webhook processing failed", requestId }, 500);
+          }
+        });
+      }
     },
 
     async initialize(ctx: AtlasPluginContext) {
@@ -319,6 +360,7 @@ function buildChatPlugin(
         slack?: SlackAdapter | null;
         teams?: TeamsAdapter | null;
         discord?: DiscordAdapter | null;
+        gchat?: GoogleChatAdapter | null;
       } = {};
       try {
         if (config.adapters.slack) {
@@ -332,6 +374,10 @@ function buildChatPlugin(
         if (config.adapters.discord) {
           discordAdapterInstance = createDiscordAdapter(config.adapters.discord) as DiscordAdapter;
           adapterInstances.discord = discordAdapterInstance;
+        }
+        if (config.adapters.gchat) {
+          gchatAdapterInstance = createGoogleChatAdapter(config.adapters.gchat) as GoogleChatAdapter;
+          adapterInstances.gchat = gchatAdapterInstance;
         }
 
         bridge = createChatBridge(config, ctx.logger, stateAdapter, adapterInstances);
@@ -353,6 +399,7 @@ function buildChatPlugin(
         slackAdapterInstance = null;
         teamsAdapterInstance = null;
         discordAdapterInstance = null;
+        gchatAdapterInstance = null;
         throw err;
       }
 
@@ -437,6 +484,7 @@ function buildChatPlugin(
       slackAdapterInstance = null;
       teamsAdapterInstance = null;
       discordAdapterInstance = null;
+      gchatAdapterInstance = null;
       log = null;
       initialized = false;
     },
@@ -457,6 +505,7 @@ function buildChatPlugin(
  *     slack: { botToken: "xoxb-...", signingSecret: "..." },
  *     teams: { appId: "...", appPassword: "..." },
  *     discord: { botToken: "...", applicationId: "...", publicKey: "..." },
+ *     gchat: { credentials: { client_email: "...", private_key: "..." } },
  *   },
  *   executeQuery: myQueryFunction,
  * })]

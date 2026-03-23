@@ -13,6 +13,7 @@
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { validationHook } from "./validation-hook";
+import { HTTPException } from "hono/http-exception";
 import { z } from "@hono/zod-openapi";
 import { type UIMessage, createUIMessageStream, createUIMessageStreamResponse } from "ai";
 import { APICallError, LoadAPIKeyError, NoSuchModelError } from "ai";
@@ -273,6 +274,16 @@ const getDemoConversationRoute = createRoute({
 
 const demo = new OpenAPIHono({ defaultHook: validationHook });
 
+demo.onError((err, c) => {
+  if (err instanceof HTTPException) {
+    if (err.res) return err.res;
+    if (err.status === 400) {
+      return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
+    }
+  }
+  throw err;
+});
+
 // POST /start — email gate, returns demo token
 demo.openapi(demoStartRoute, async (c) => {
   const requestId = crypto.randomUUID();
@@ -526,9 +537,12 @@ demo.openapi(demoChatRoute, async (c) => {
             });
         }
 
-        // Raw Response bypasses OpenAPIHono's typed return — `as never` required
-        return streamResponse as never;
+        // Streaming response bypasses OpenAPI typed returns via HTTPException + res
+        throw new HTTPException(200, { res: streamResponse });
       } catch (err) {
+        // Re-throw HTTPException (stream response) — handled by global onError
+        if (err instanceof HTTPException) throw err;
+
         // Error handling mirrors main chat route
         const errObj = err instanceof Error ? err : new Error(String(err));
         const message = errObj.message;

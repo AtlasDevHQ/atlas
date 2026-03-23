@@ -9,10 +9,10 @@
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { validationHook } from "./validation-hook";
 import { z } from "zod";
-import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
+import { createLogger } from "@atlas/api/lib/logger";
 import { getSemanticRoot, discoverTables } from "@atlas/api/lib/semantic-files";
-import { authPreamble } from "./auth-preamble";
 import { ErrorSchema } from "./shared-schemas";
+import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("tables-route");
 
@@ -53,33 +53,24 @@ const tablesRoute = createRoute({
   },
 });
 
-export const tables = new OpenAPIHono({ defaultHook: validationHook });
+export const tables = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
+
+tables.use(standardAuth);
+tables.use(requestContext);
 
 // GET / — list all tables with columns
 tables.openapi(tablesRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
 
-  const preamble = await authPreamble(req, requestId);
-  if ("error" in preamble) {
-    // Auth errors return dynamic status codes (401/403/429/500). These are declared in the
-    // route responses for spec accuracy, but TypeScript can't narrow the union at the call
-    // site — `as never` is required until auth moves to middleware in Phase 2.
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  const root = getSemanticRoot();
+  try {
+    const result = discoverTables(root);
+    return c.json({
+      tables: result.tables,
+      ...(result.warnings.length > 0 && { warnings: result.warnings }),
+    }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), root, requestId }, "Failed to discover tables");
+    return c.json({ error: "internal_error", message: "Failed to load table list.", requestId }, 500);
   }
-  const { authResult } = preamble;
-
-  return withRequestContext({ requestId, user: authResult.user }, () => {
-    const root = getSemanticRoot();
-    try {
-      const result = discoverTables(root);
-      return c.json({
-        tables: result.tables,
-        ...(result.warnings.length > 0 && { warnings: result.warnings }),
-      }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), root, requestId }, "Failed to discover tables");
-      return c.json({ error: "internal_error", message: "Failed to load table list.", requestId }, 500);
-    }
-  });
 });

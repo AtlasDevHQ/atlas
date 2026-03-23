@@ -30,7 +30,8 @@ import {
   getConversation,
   generateTitle,
 } from "@atlas/api/lib/conversations";
-import { authPreamble } from "./auth-preamble";
+import { authPreamble, requireAuth } from "./auth-preamble";
+import { withRequestId, type AuthEnv } from "./middleware";
 import { ErrorSchema } from "./shared-schemas";
 
 
@@ -160,17 +161,22 @@ const queryRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const query = new OpenAPIHono({ defaultHook: validationHook });
+const query = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
+
+query.use(withRequestId);
 
 // Normalize JSON parse errors. Only catch SyntaxError (malformed JSON); let
 // other 400s (e.g. Zod query/path param validation) propagate with their message.
 query.onError((err, c) => {
-  if (err instanceof HTTPException && err.status === 400) {
-    if (err.cause instanceof SyntaxError) {
-      log.warn("Malformed JSON body in request");
-      return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+  if (err instanceof HTTPException) {
+    if (err.res) return err.res;
+    if (err.status === 400) {
+      if (err.cause instanceof SyntaxError) {
+        log.warn("Malformed JSON body in request");
+        return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+      }
+      return c.json({ error: "invalid_request", message: err.message || "Bad request." }, 400);
     }
-    return c.json({ error: "invalid_request", message: err.message || "Bad request." }, 400);
   }
   throw err;
 });
@@ -179,24 +185,28 @@ query.openapi(
   queryRoute,
   async (c) => {
     const req = c.req.raw;
-    const requestId = crypto.randomUUID();
+    const requestId = c.get("requestId");
 
     // --- Auth + Rate limit ---
     const preamble = await authPreamble(req, requestId);
-    if ("error" in preamble) {
-      return c.json(preamble.error, preamble.status, preamble.headers) as never;
-    }
+    requireAuth(preamble);
     const { authResult } = preamble;
+
+    // Bind user identity into AsyncLocalStorage for downstream logging/audit
+    return withRequestContext({ requestId, user: authResult.user }, async () => {
 
     // Workspace status check — block suspended/deleted workspaces
     const wsCheck = await checkWorkspaceStatus(authResult.user?.activeOrganizationId);
     if (!wsCheck.allowed) {
       const wsError = wsCheck.errorCode ?? "workspace_error";
       const wsMessage = wsCheck.errorMessage ?? "Workspace access denied.";
-      return c.json(
-        { error: wsError, message: wsMessage, retryable: isChatErrorCode(wsError) ? isRetryableError(wsError) : false, requestId },
-        wsCheck.httpStatus ?? 403,
-      ) as never;
+      const wsStatus = wsCheck.httpStatus ?? 403;
+      throw new HTTPException(wsStatus as 403, {
+        res: Response.json(
+          { error: wsError, message: wsMessage, retryable: isChatErrorCode(wsError) ? isRetryableError(wsError) : false, requestId },
+          { status: wsStatus },
+        ),
+      });
     }
 
     // Abuse check — block suspended workspaces, delay throttled ones
@@ -205,10 +215,12 @@ query.openapi(
       const abuse = checkAbuseStatus(abuseOrgId);
       if (abuse.level === "suspended") {
         log.warn({ requestId, orgId: abuseOrgId }, "Workspace suspended due to abuse");
-        return c.json(
-          { error: "workspace_suspended", message: "Workspace suspended due to unusual activity. Contact your administrator.", retryable: false, requestId },
-          403,
-        ) as never;
+        throw new HTTPException(403, {
+          res: Response.json(
+            { error: "workspace_suspended", message: "Workspace suspended due to unusual activity. Contact your administrator.", retryable: false, requestId },
+            { status: 403 },
+          ),
+        });
       }
       if (abuse.level === "throttled" && abuse.throttleDelayMs) {
         log.debug({ requestId, orgId: abuseOrgId, delayMs: abuse.throttleDelayMs }, "Throttling workspace request");
@@ -234,160 +246,158 @@ query.openapi(
     // Capture plan warning for JSON response
     const planWarning = planCheck.allowed ? planCheck.warning : undefined;
 
-    return withRequestContext(
-      { requestId, user: authResult.user },
-      async () => {
-        // --- Startup diagnostics ---
-        const diagnostics = await validateEnvironment();
-        if (diagnostics.length > 0) {
-          return c.json(
-            {
-              error: "configuration_error",
-              message: diagnostics.map((d) => d.message).join("\n\n"),
-              diagnostics,
-            },
-            400,
-          );
-        }
+    // --- Startup diagnostics ---
+    const diagnostics = await validateEnvironment();
+    if (diagnostics.length > 0) {
+      return c.json(
+        {
+          error: "configuration_error",
+          message: diagnostics.map((d) => d.message).join("\n\n"),
+          diagnostics,
+        },
+        400,
+      );
+    }
 
-        const { resolveDatasourceUrl: resolveUrl } = await import("@atlas/api/lib/db/connection");
-        if (!resolveUrl()) {
-          return c.json(
-            {
-              error: "no_datasource",
-              message:
-                "No analytics datasource configured. Set ATLAS_DATASOURCE_URL to query your data.",
-            },
-            400,
-          );
-        }
+    const { resolveDatasourceUrl: resolveUrl } = await import("@atlas/api/lib/db/connection");
+    if (!resolveUrl()) {
+      return c.json(
+        {
+          error: "no_datasource",
+          message:
+            "No analytics datasource configured. Set ATLAS_DATASOURCE_URL to query your data.",
+        },
+        400,
+      );
+    }
 
-        const { question, conversationId: parsedConversationId } = c.req.valid("json");
-        let conversationId = parsedConversationId;
+    const { question, conversationId: parsedConversationId } = c.req.valid("json");
+    let conversationId = parsedConversationId;
 
+    try {
+      const queryResult = await executeAgentQuery(question, requestId);
+
+      // Persist conversation — best-effort. createConversation awaits an INSERT; addMessage calls are fire-and-forget.
+      if (hasInternalDB()) {
         try {
-          const queryResult = await executeAgentQuery(question, requestId);
-
-          // Persist conversation — best-effort. createConversation awaits an INSERT; addMessage calls are fire-and-forget.
-          if (hasInternalDB()) {
-            try {
-              if (conversationId) {
-                // Verify ownership before appending to existing conversation
-                const existing = await getConversation(conversationId, authResult.user?.id);
-                if (!existing.ok) {
-                  log.warn({ conversationId, userId: authResult.user?.id }, "Conversation not found or not owned — skipping persistence");
-                  conversationId = undefined;
-                }
-              }
-              if (!conversationId) {
-                const created = await createConversation({
-                  userId: authResult.user?.id,
-                  title: generateTitle(question),
-                  surface: "api",
-                  orgId: authResult.user?.activeOrganizationId,
-                });
-                if (created) conversationId = created.id;
-              }
-              if (conversationId) {
-                addMessage({ conversationId, role: "user", content: [{ type: "text", text: question }] });
-                addMessage({ conversationId, role: "assistant", content: [{ type: "text", text: queryResult.answer }] });
-              }
-            } catch (err) {
-              log.warn({ err: err instanceof Error ? err.message : String(err) }, "Conversation persistence failed");
+          if (conversationId) {
+            // Verify ownership before appending to existing conversation
+            const existing = await getConversation(conversationId, authResult.user?.id);
+            if (!existing.ok) {
+              log.warn({ conversationId, userId: authResult.user?.id }, "Conversation not found or not owned — skipping persistence");
+              conversationId = undefined;
             }
           }
-
-          // Enrich pending actions with approve/deny URLs
-          const { pendingActions: rawPendingActions, ...restResult } = queryResult;
-          let enrichedPendingActions: {
-            id: string;
-            type: string;
-            target: string;
-            summary: string;
-            approveUrl: string;
-            denyUrl: string;
-          }[] | undefined;
-
-          if (rawPendingActions?.length) {
-            const baseUrl = deriveBaseUrl(req);
-            enrichedPendingActions = rawPendingActions.map((a) => ({
-              ...a,
-              approveUrl: `${baseUrl}/api/v1/actions/${a.id}/approve`,
-              denyUrl: `${baseUrl}/api/v1/actions/${a.id}/deny`,
-            }));
+          if (!conversationId) {
+            const created = await createConversation({
+              userId: authResult.user?.id,
+              title: generateTitle(question),
+              surface: "api",
+              orgId: authResult.user?.activeOrganizationId,
+            });
+            if (created) conversationId = created.id;
           }
-
-          return c.json({
-            ...restResult,
-            ...(conversationId && { conversationId }),
-            ...(enrichedPendingActions && { pendingActions: enrichedPendingActions }),
-            ...(planWarning && { planWarning }),
-          }, 200);
+          if (conversationId) {
+            addMessage({ conversationId, role: "user", content: [{ type: "text", text: question }] });
+            addMessage({ conversationId, role: "assistant", content: [{ type: "text", text: queryResult.answer }] });
+          }
         } catch (err) {
-          const message = err instanceof Error ? err.message : "";
-
-          // --- Structured AI SDK error types ---
-
-          if (GatewayModelNotFoundError.isInstance(err)) {
-            log.error({ err: err instanceof Error ? err : new Error(String(err)), category: "provider_model_not_found" }, "Gateway model not found");
-            return c.json({ error: "provider_model_not_found", message: "Model not found on the AI Gateway. Check that your ATLAS_MODEL uses the correct provider/model format.", requestId }, 400);
-          }
-
-          if (NoSuchModelError.isInstance(err)) {
-            log.error({ err: err instanceof Error ? err : new Error(String(err)), category: "provider_model_not_found" }, "Model not found");
-            return c.json({ error: "provider_model_not_found", message: "The configured model was not found. Check ATLAS_MODEL and ATLAS_PROVIDER settings.", requestId }, 400);
-          }
-
-          if (LoadAPIKeyError.isInstance(err)) {
-            log.error({ err: err instanceof Error ? err : new Error(String(err)), category: "provider_auth_error" }, "API key not loaded");
-            return c.json({ error: "provider_auth_error", message: "LLM provider API key could not be loaded. Check that the required API key environment variable is set.", requestId }, 503);
-          }
-
-          if (APICallError.isInstance(err)) {
-            const status = err.statusCode;
-            if (status === 401 || status === 403) {
-              log.error({ err: err instanceof Error ? err : new Error(String(err)), category: "provider_auth_error", statusCode: status }, "Provider auth error");
-              return c.json({ error: "provider_auth_error", message: "LLM provider authentication failed. Check that your API key is valid and has not expired.", requestId }, 503);
-            }
-            if (status === 429) {
-              log.error({ err: err instanceof Error ? err : new Error(String(err)), category: "provider_rate_limit", statusCode: status }, "Provider rate limit");
-              return c.json({ error: "provider_rate_limit", message: "LLM provider rate limit reached. Wait a moment and try again.", requestId }, 503);
-            }
-            if (status === 408 || /timeout/i.test(message)) {
-              log.error({ err: err instanceof Error ? err : new Error(String(err)), category: "provider_timeout", statusCode: status }, "Request timed out");
-              return c.json({ error: "provider_timeout", message: "The request timed out. The LLM provider took too long to respond. Try again, or if using a local model, ensure it has sufficient resources.", requestId }, 504);
-            }
-            log.error({ err: err instanceof Error ? err : new Error(String(err)), category: "provider_error", statusCode: status }, "Provider error");
-            return c.json({ error: "provider_error", message: `The LLM provider returned an error (HTTP ${status}). This is usually a temporary issue. Try again in a moment.`, requestId }, 502);
-          }
-
-          // --- Regex fallbacks ---
-
-          if (/timeout|timed out|AbortError/i.test(message)) {
-            log.error({ err: err instanceof Error ? err : new Error(String(err)), category: "provider_timeout" }, "Request timed out");
-            return c.json({ error: "provider_timeout", message: "The request timed out. The LLM provider took too long to respond. Try again, or if using a local model, ensure it has sufficient resources.", requestId }, 504);
-          }
-
-          if (/fetch failed|ECONNREFUSED|ENOTFOUND/i.test(message)) {
-            log.error({ err: err instanceof Error ? err : new Error(String(err)), category: "provider_unreachable" }, "Provider unreachable");
-            return c.json({ error: "provider_unreachable", message: "Could not reach the LLM provider. Check your network connection and provider status.", requestId }, 503);
-          }
-
-          log.error(
-            { err: err instanceof Error ? err : new Error(String(err)), category: "internal_error" },
-            "Unexpected error",
-          );
-          return c.json(
-            {
-              error: "internal_error",
-              message: `An unexpected error occurred (ref: ${requestId.slice(0, 8)}). If this persists, check the server logs.`,
-              requestId,
-            },
-            500,
-          );
+          log.warn({ err: err instanceof Error ? err.message : String(err) }, "Conversation persistence failed");
         }
-      },
-    );
+      }
+
+      // Enrich pending actions with approve/deny URLs
+      const { pendingActions: rawPendingActions, ...restResult } = queryResult;
+      let enrichedPendingActions: {
+        id: string;
+        type: string;
+        target: string;
+        summary: string;
+        approveUrl: string;
+        denyUrl: string;
+      }[] | undefined;
+
+      if (rawPendingActions?.length) {
+        const baseUrl = deriveBaseUrl(req);
+        enrichedPendingActions = rawPendingActions.map((a) => ({
+          ...a,
+          approveUrl: `${baseUrl}/api/v1/actions/${a.id}/approve`,
+          denyUrl: `${baseUrl}/api/v1/actions/${a.id}/deny`,
+        }));
+      }
+
+      return c.json({
+        ...restResult,
+        ...(conversationId && { conversationId }),
+        ...(enrichedPendingActions && { pendingActions: enrichedPendingActions }),
+        ...(planWarning && { planWarning }),
+      }, 200);
+    } catch (err) {
+      if (err instanceof HTTPException) throw err;
+
+      const message = err instanceof Error ? err.message : "";
+
+      // --- Structured AI SDK error types ---
+
+      if (GatewayModelNotFoundError.isInstance(err)) {
+        log.error({ err: err instanceof Error ? err : new Error(String(err)), category: "provider_model_not_found" }, "Gateway model not found");
+        return c.json({ error: "provider_model_not_found", message: "Model not found on the AI Gateway. Check that your ATLAS_MODEL uses the correct provider/model format.", requestId }, 400);
+      }
+
+      if (NoSuchModelError.isInstance(err)) {
+        log.error({ err: err instanceof Error ? err : new Error(String(err)), category: "provider_model_not_found" }, "Model not found");
+        return c.json({ error: "provider_model_not_found", message: "The configured model was not found. Check ATLAS_MODEL and ATLAS_PROVIDER settings.", requestId }, 400);
+      }
+
+      if (LoadAPIKeyError.isInstance(err)) {
+        log.error({ err: err instanceof Error ? err : new Error(String(err)), category: "provider_auth_error" }, "API key not loaded");
+        return c.json({ error: "provider_auth_error", message: "LLM provider API key could not be loaded. Check that the required API key environment variable is set.", requestId }, 503);
+      }
+
+      if (APICallError.isInstance(err)) {
+        const status = err.statusCode;
+        if (status === 401 || status === 403) {
+          log.error({ err: err instanceof Error ? err : new Error(String(err)), category: "provider_auth_error", statusCode: status }, "Provider auth error");
+          return c.json({ error: "provider_auth_error", message: "LLM provider authentication failed. Check that your API key is valid and has not expired.", requestId }, 503);
+        }
+        if (status === 429) {
+          log.error({ err: err instanceof Error ? err : new Error(String(err)), category: "provider_rate_limit", statusCode: status }, "Provider rate limit");
+          return c.json({ error: "provider_rate_limit", message: "LLM provider rate limit reached. Wait a moment and try again.", requestId }, 503);
+        }
+        if (status === 408 || /timeout/i.test(message)) {
+          log.error({ err: err instanceof Error ? err : new Error(String(err)), category: "provider_timeout", statusCode: status }, "Request timed out");
+          return c.json({ error: "provider_timeout", message: "The request timed out. The LLM provider took too long to respond. Try again, or if using a local model, ensure it has sufficient resources.", requestId }, 504);
+        }
+        log.error({ err: err instanceof Error ? err : new Error(String(err)), category: "provider_error", statusCode: status }, "Provider error");
+        return c.json({ error: "provider_error", message: `The LLM provider returned an error (HTTP ${status}). This is usually a temporary issue. Try again in a moment.`, requestId }, 502);
+      }
+
+      // --- Regex fallbacks ---
+
+      if (/timeout|timed out|AbortError/i.test(message)) {
+        log.error({ err: err instanceof Error ? err : new Error(String(err)), category: "provider_timeout" }, "Request timed out");
+        return c.json({ error: "provider_timeout", message: "The request timed out. The LLM provider took too long to respond. Try again, or if using a local model, ensure it has sufficient resources.", requestId }, 504);
+      }
+
+      if (/fetch failed|ECONNREFUSED|ENOTFOUND/i.test(message)) {
+        log.error({ err: err instanceof Error ? err : new Error(String(err)), category: "provider_unreachable" }, "Provider unreachable");
+        return c.json({ error: "provider_unreachable", message: "Could not reach the LLM provider. Check your network connection and provider status.", requestId }, 503);
+      }
+
+      log.error(
+        { err: err instanceof Error ? err : new Error(String(err)), category: "internal_error" },
+        "Unexpected error",
+      );
+      return c.json(
+        {
+          error: "internal_error",
+          message: `An unexpected error occurred (ref: ${requestId.slice(0, 8)}). If this persists, check the server logs.`,
+          requestId,
+        },
+        500,
+      );
+    }
+    }); // withRequestContext
   },
   (result, c) => {
     if (!result.success) {

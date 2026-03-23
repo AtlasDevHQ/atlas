@@ -15,7 +15,8 @@ import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { validationHook } from "./validation-hook";
 import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
-import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
+import { createLogger, withRequestContext, getRequestContext } from "@atlas/api/lib/logger";
+import { withRequestId } from "./middleware";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
 import { authenticateRequest } from "@atlas/api/lib/auth/middleware";
 import { connections, detectDBType } from "@atlas/api/lib/db/connection";
@@ -51,7 +52,7 @@ import { adminScim } from "./admin-scim";
 import { adminIPAllowlist } from "./admin-ip-allowlist";
 import { adminRoles } from "./admin-roles";
 import { adminModelConfig } from "./admin-model-config";
-import { adminAuthPreamble, authErrorCode } from "./admin-auth";
+import { adminAuthPreamble, authErrorCode, requireAdminAuth } from "./admin-auth";
 import { adminUsage } from "./admin-usage";
 import { adminAuditRetention } from "./admin-audit-retention";
 import { adminApproval } from "./admin-approval";
@@ -67,19 +68,48 @@ const log = createLogger("admin-routes");
 // Schemas
 // ---------------------------------------------------------------------------
 
-
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
+// Note: admin.ts does NOT use AuthEnv to avoid @hono/zod-openapi type
+// inference issues with custom Env on z.record() response schemas.
+// Middleware sets requestId via withRequestId; handlers read it with reqId().
 const admin = new OpenAPIHono({ defaultHook: validationHook });
 
+/** Read requestId from middleware context. */
+const reqId = (c: { get(key: string): unknown }): string => c.get("requestId") as string;
+
+/**
+ * Run admin auth preamble and bind user identity into AsyncLocalStorage.
+ * Returns { authResult, requestId } for the handler to use.
+ * Throws HTTPException on auth failure.
+ */
+async function adminAuthAndContext(c: { req: { raw: Request }; get(key: string): unknown }): Promise<{ authResult: AuthResult & { authenticated: true }; requestId: string }> {
+  const requestId = reqId(c);
+  const preamble = await adminAuthPreamble(c.req.raw, requestId);
+  requireAdminAuth(preamble);
+  const { authResult } = preamble;
+  // Bind user identity into the existing AsyncLocalStorage context so
+  // downstream log lines include userId. The context was created by
+  // withRequestId middleware with { requestId } only — mutating is safe
+  // because each request has its own context object.
+  const ctx = getRequestContext();
+  if (ctx) {
+    (ctx as unknown as Record<string, unknown>).user = authResult.user;
+  }
+  return { authResult, requestId };
+}
+
 admin.onError((err, c) => {
-  if (err instanceof HTTPException && err.status === 400) {
-    return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
+  if (err instanceof HTTPException) {
+    if (err.res) return err.res;
+    if (err.status === 400) return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
   }
   throw err;
 });
+
+admin.use(withRequestId);
 
 // Mount organization management sub-router
 admin.route("/organizations", adminOrgs);
@@ -201,34 +231,54 @@ function loadGlossary(root: string): unknown[] {
   return glossaries;
 }
 
-function serveRawYaml(c: Context, requestId: string, filePath: string) {
+function serveRawYaml(_c: Context, requestId: string, filePath: string): never {
+  // All paths throw HTTPException to bypass OpenAPI typed-return constraints.
+  // The route definitions declare text/plain 200 and JSON error codes, but c.text()
+  // returns a plain Response that doesn't satisfy the typed response contract.
+
   // Validate: no traversal, must be .yml
   if (filePath.includes("..") || filePath.includes("\0") || filePath.includes("\\") || !filePath.endsWith(".yml")) {
-    return c.json({ error: "invalid_request", message: "Invalid file path." }, 400);
+    throw new HTTPException(400, {
+      res: Response.json({ error: "invalid_request", message: "Invalid file path." }, { status: 400 }),
+    });
   }
 
   const allowedPattern = /^(catalog|glossary)\.yml$|^(entities|metrics)\/[a-zA-Z0-9_-]+\.yml$/;
   if (!allowedPattern.test(filePath)) {
-    return c.json({ error: "invalid_request", message: "File path not allowed." }, 400);
+    throw new HTTPException(400, {
+      res: Response.json({ error: "invalid_request", message: "File path not allowed." }, { status: 400 }),
+    });
   }
 
   const root = getSemanticRoot();
   const resolved = path.resolve(root, filePath);
   if (!resolved.startsWith(path.resolve(root))) {
     log.error({ requestId, filePath, resolved, root }, "Raw YAML path escaped semantic root");
-    return c.json({ error: "forbidden", message: "Access denied." , requestId}, 403);
+    throw new HTTPException(403, {
+      res: Response.json({ error: "forbidden", message: "Access denied.", requestId }, { status: 403 }),
+    });
   }
 
   if (!fs.existsSync(resolved)) {
-    return c.json({ error: "not_found", message: `File "${filePath}" not found.` }, 404);
+    throw new HTTPException(404, {
+      res: Response.json({ error: "not_found", message: `File "${filePath}" not found.` }, { status: 404 }),
+    });
   }
 
   try {
     const content = fs.readFileSync(resolved, "utf-8");
-    return c.text(content);
+    throw new HTTPException(200, {
+      res: new Response(content, {
+        status: 200,
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+      }),
+    });
   } catch (err) {
+    if (err instanceof HTTPException) throw err;
     log.error({ err: err instanceof Error ? err : new Error(String(err)), filePath }, "Failed to read raw YAML file");
-    return c.json({ error: "internal_error", message: "Failed to read file." , requestId}, 500);
+    throw new HTTPException(500, {
+      res: Response.json({ error: "internal_error", message: "Failed to read file.", requestId }, { status: 500 }),
+    });
   }
 }
 
@@ -1234,6 +1284,14 @@ const listPluginsRoute = createRoute({
   },
 });
 
+const PluginHealthResponseSchema = z.object({
+  healthy: z.boolean(),
+  message: z.string().nullable().optional(),
+  latencyMs: z.number().nullable().optional(),
+  status: z.string().nullable().optional(),
+  error: z.string().optional(),
+});
+
 const pluginHealthRoute = createRoute({
   method: "post",
   path: "/plugins/{id}/health",
@@ -1248,7 +1306,7 @@ const pluginHealthRoute = createRoute({
   responses: {
     200: {
       description: "Health check result",
-      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+      content: { "application/json": { schema: PluginHealthResponseSchema } },
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
@@ -1256,6 +1314,14 @@ const pluginHealthRoute = createRoute({
     429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
+});
+
+const PluginToggleResponseSchema = z.object({
+  id: z.string(),
+  enabled: z.boolean(),
+  status: z.string().nullable(),
+  persisted: z.boolean(),
+  warning: z.string().optional(),
 });
 
 const enablePluginRoute = createRoute({
@@ -1272,7 +1338,7 @@ const enablePluginRoute = createRoute({
   responses: {
     200: {
       description: "Plugin enabled",
-      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+      content: { "application/json": { schema: PluginToggleResponseSchema } },
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
@@ -1296,7 +1362,7 @@ const disablePluginRoute = createRoute({
   responses: {
     200: {
       description: "Plugin disabled",
-      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+      content: { "application/json": { schema: PluginToggleResponseSchema } },
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
@@ -1850,1941 +1916,1581 @@ const deleteSettingRoute = createRoute({
 // -- Overview ---------------------------------------------------------------
 
 admin.openapi(overviewRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const { requestId } = await adminAuthAndContext(c);
+  const root = getSemanticRoot();
+  const { entities, warnings } = discoverEntities(root);
+  const metrics = discoverMetrics(root);
+  const glossary = loadGlossary(root);
+  const connList = connections.describe();
+  const pluginList = plugins.describe();
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
-
-  return withRequestContext({ requestId, user: authResult.user }, () => {
-    const root = getSemanticRoot();
-    const { entities, warnings } = discoverEntities(root);
-    const metrics = discoverMetrics(root);
-    const glossary = loadGlossary(root);
-    const connList = connections.describe();
-    const pluginList = plugins.describe();
-
-    // Count glossary terms
-    let glossaryTermCount = 0;
-    for (const g of glossary) {
-      const data = (g as { data: unknown }).data;
-      if (Array.isArray(data)) glossaryTermCount += data.length;
-      else if (data && typeof data === "object") {
-        const terms = (data as Record<string, unknown>).terms;
-        if (Array.isArray(terms)) glossaryTermCount += terms.length;
-      }
+  // Count glossary terms
+  let glossaryTermCount = 0;
+  for (const g of glossary) {
+    const data = (g as { data: unknown }).data;
+    if (Array.isArray(data)) glossaryTermCount += data.length;
+    else if (data && typeof data === "object") {
+      const terms = (data as Record<string, unknown>).terms;
+      if (Array.isArray(terms)) glossaryTermCount += terms.length;
     }
+  }
 
-    const poolWarnings = connections.getPoolWarnings();
+  const poolWarnings = connections.getPoolWarnings();
 
-    return c.json({
-      connections: connList.length,
-      entities: entities.length,
-      metrics: metrics.length,
-      glossaryTerms: glossaryTermCount,
-      plugins: pluginList.length,
-      pluginHealth: pluginList.map((p) => ({
-        id: p.id,
-        name: p.name,
-        types: p.types,
-        status: p.status,
-      })),
-      ...(warnings.length > 0 && { warnings }),
-      ...(poolWarnings.length > 0 && { poolWarnings }),
-    }, 200);
-  });
+  return c.json({
+    connections: connList.length,
+    entities: entities.length,
+    metrics: metrics.length,
+    glossaryTerms: glossaryTermCount,
+    plugins: pluginList.length,
+    pluginHealth: pluginList.map((p) => ({
+      id: p.id,
+      name: p.name,
+      types: p.types,
+      status: p.status,
+    })),
+    ...(warnings.length > 0 && { warnings }),
+    ...(poolWarnings.length > 0 && { poolWarnings }),
+  }, 200);
 });
 
 // -- Semantic Layer ---------------------------------------------------------
 
 admin.openapi(listEntitiesRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
-
-  return withRequestContext({ requestId, user: authResult.user }, () => {
-    const root = getSemanticRoot();
-    const result = discoverEntities(root);
-    return c.json({
-      entities: result.entities,
-      ...(result.warnings.length > 0 && { warnings: result.warnings }),
-    }, 200);
-  });
+  const { requestId } = await adminAuthAndContext(c);
+  const root = getSemanticRoot();
+  const result = discoverEntities(root);
+  return c.json({
+    entities: result.entities,
+    ...(result.warnings.length > 0 && { warnings: result.warnings }),
+  }, 200);
 });
 
 admin.openapi(getEntityRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+
   const { name } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  const { requestId } = await adminAuthAndContext(c);
+  // Path traversal protection
+  if (!isValidEntityName(name)) {
+    log.warn({ requestId, name }, "Rejected invalid entity name");
+    return c.json({ error: "invalid_request", message: "Invalid entity name." }, 400);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, () => {
-    // Path traversal protection
-    if (!isValidEntityName(name)) {
-      log.warn({ requestId, name }, "Rejected invalid entity name");
-      return c.json({ error: "invalid_request", message: "Invalid entity name." }, 400);
-    }
+  const root = getSemanticRoot();
+  const filePath = findEntityFile(root, name);
+  if (!filePath) {
+    return c.json({ error: "not_found", message: `Entity "${name}" not found.` }, 404);
+  }
 
-    const root = getSemanticRoot();
-    const filePath = findEntityFile(root, name);
-    if (!filePath) {
-      return c.json({ error: "not_found", message: `Entity "${name}" not found.` }, 404);
-    }
+  // Defense-in-depth: verify resolved path is within semantic root
+  const resolved = path.resolve(filePath);
+  if (!resolved.startsWith(path.resolve(root))) {
+    log.error({ requestId, name, resolved, root }, "Resolved entity path escaped semantic root");
+    return c.json({ error: "forbidden", message: "Access denied." , requestId}, 403);
+  }
 
-    // Defense-in-depth: verify resolved path is within semantic root
-    const resolved = path.resolve(filePath);
-    if (!resolved.startsWith(path.resolve(root))) {
-      log.error({ requestId, name, resolved, root }, "Resolved entity path escaped semantic root");
-      return c.json({ error: "forbidden", message: "Access denied." , requestId}, 403);
-    }
-
-    try {
-      const raw = readYamlFile(filePath);
-      return c.json({ entity: raw }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), filePath, entityName: name }, "Failed to parse entity YAML file");
-      return c.json({ error: "internal_error", message: `Failed to parse entity file for "${name}".` , requestId}, 500);
-    }
-  });
+  try {
+    const raw = readYamlFile(filePath);
+    return c.json({ entity: raw }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), filePath, entityName: name }, "Failed to parse entity YAML file");
+    return c.json({ error: "internal_error", message: `Failed to parse entity file for "${name}".` , requestId}, 500);
+  }
 });
 
 admin.openapi(listMetricsRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
-
-  return withRequestContext({ requestId, user: authResult.user }, () => {
-    const root = getSemanticRoot();
-    const metrics = discoverMetrics(root);
-    return c.json({ metrics }, 200);
-  });
+  const { requestId } = await adminAuthAndContext(c);
+  const root = getSemanticRoot();
+  const metrics = discoverMetrics(root);
+  return c.json({ metrics }, 200);
 });
 
 admin.openapi(getGlossaryRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
-
-  return withRequestContext({ requestId, user: authResult.user }, () => {
-    const root = getSemanticRoot();
-    const glossary = loadGlossary(root);
-    return c.json({ glossary }, 200);
-  });
+  const { requestId } = await adminAuthAndContext(c);
+  const root = getSemanticRoot();
+  const glossary = loadGlossary(root);
+  return c.json({ glossary }, 200);
 });
 
 admin.openapi(getCatalogRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  const { requestId } = await adminAuthAndContext(c);
+  const root = getSemanticRoot();
+  const catalogFile = path.join(root, "catalog.yml");
+  if (!fs.existsSync(catalogFile)) {
+    return c.json({ catalog: null }, 200);
   }
-  const { authResult } = preamble;
-
-  return withRequestContext({ requestId, user: authResult.user }, () => {
-    const root = getSemanticRoot();
-    const catalogFile = path.join(root, "catalog.yml");
-    if (!fs.existsSync(catalogFile)) {
-      return c.json({ catalog: null }, 200);
-    }
-    try {
-      const raw = readYamlFile(catalogFile);
-      return c.json({ catalog: raw }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), file: catalogFile }, "Failed to parse catalog YAML");
-      return c.json({ error: "internal_error", message: "Failed to parse catalog file." , requestId}, 500);
-    }
-  });
+  try {
+    const raw = readYamlFile(catalogFile);
+    return c.json({ catalog: raw }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), file: catalogFile }, "Failed to parse catalog YAML");
+    return c.json({ error: "internal_error", message: "Failed to parse catalog file." , requestId}, 500);
+  }
 });
 
 admin.openapi(getRawYamlDirFileRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+
   const { dir, file } = c.req.valid("param");
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  const { authResult } = preamble;
-  return withRequestContext({ requestId, user: authResult.user }, () => {
-    return serveRawYaml(c as unknown as Context, requestId, `${dir}/${file}`) as never;
-  });
+  const { requestId } = await adminAuthAndContext(c);
+  serveRawYaml(c, requestId, `${dir}/${file}`);
 });
 
 admin.openapi(getRawYamlFileRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+
   const { file } = c.req.valid("param");
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  const { authResult } = preamble;
-  return withRequestContext({ requestId, user: authResult.user }, () => {
-    return serveRawYaml(c as unknown as Context, requestId, file) as never;
-  });
+  const { requestId } = await adminAuthAndContext(c);
+  serveRawYaml(c, requestId, file);
 });
 
 admin.openapi(getSemanticStatsRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const { requestId } = await adminAuthAndContext(c);
+  const root = getSemanticRoot();
+  const { entities, warnings } = discoverEntities(root);
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
+  const totalColumns = entities.reduce((sum, e) => sum + e.columnCount, 0);
+  const totalJoins = entities.reduce((sum, e) => sum + e.joinCount, 0);
+  const totalMeasures = entities.reduce((sum, e) => sum + e.measureCount, 0);
 
-  return withRequestContext({ requestId, user: authResult.user }, () => {
-    const root = getSemanticRoot();
-    const { entities, warnings } = discoverEntities(root);
+  const noDescription = entities.filter((e) => !e.description.trim()).length;
+  const noColumns = entities.filter((e) => e.columnCount === 0).length;
+  const noJoins = entities.filter((e) => e.joinCount === 0).length;
 
-    const totalColumns = entities.reduce((sum, e) => sum + e.columnCount, 0);
-    const totalJoins = entities.reduce((sum, e) => sum + e.joinCount, 0);
-    const totalMeasures = entities.reduce((sum, e) => sum + e.measureCount, 0);
-
-    const noDescription = entities.filter((e) => !e.description.trim()).length;
-    const noColumns = entities.filter((e) => e.columnCount === 0).length;
-    const noJoins = entities.filter((e) => e.joinCount === 0).length;
-
-    return c.json({
-      totalEntities: entities.length,
-      totalColumns,
-      totalJoins,
-      totalMeasures,
-      coverageGaps: {
-        noDescription,
-        noColumns,
-        noJoins,
-      },
-      ...(warnings.length > 0 && { warnings }),
-    }, 200);
-  });
+  return c.json({
+    totalEntities: entities.length,
+    totalColumns,
+    totalJoins,
+    totalMeasures,
+    coverageGaps: {
+      noDescription,
+      noColumns,
+      noJoins,
+    },
+    ...(warnings.length > 0 && { warnings }),
+  }, 200);
 });
 
 admin.openapi(getSemanticDiffRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const { requestId } = await adminAuthAndContext(c);
+  const connectionId = c.req.query("connection") ?? "default";
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  // Validate connection exists
+  const registered = connections.list();
+  if (!registered.includes(connectionId)) {
+    return c.json({ error: "not_found", message: `Connection "${connectionId}" not found.` }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const connectionId = c.req.query("connection") ?? "default";
-
-    // Validate connection exists
-    const registered = connections.list();
-    if (!registered.includes(connectionId)) {
-      return c.json({ error: "not_found", message: `Connection "${connectionId}" not found.` }, 404);
-    }
-
-    try {
-      const result = await runDiff(connectionId);
-      return c.json(result, 200);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unknown error";
-      log.error(
-        { err: err instanceof Error ? err : new Error(String(err)), connectionId, requestId },
-        "Schema diff failed",
-      );
-      return c.json({ error: "internal_error", message: `Schema diff failed: ${message}` , requestId}, 500);
-    }
-  });
+  try {
+    const result = await runDiff(connectionId);
+    return c.json(result, 200);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    log.error(
+      { err: err instanceof Error ? err : new Error(String(err)), connectionId, requestId },
+      "Schema diff failed",
+    );
+    return c.json({ error: "internal_error", message: `Schema diff failed: ${message}` , requestId}, 500);
+  }
 });
 
 // -- Org-scoped semantic CRUD -----------------------------------------------
 
 admin.openapi(listOrgEntitiesRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  const { authResult, requestId } = await adminAuthAndContext(c);
+
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
-    }
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Org-scoped semantic entities require an internal database (DATABASE_URL)." , requestId}, 501);
+  }
 
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Org-scoped semantic entities require an internal database (DATABASE_URL)." , requestId}, 501);
+  try {
+    const { listEntities } = await import("@atlas/api/lib/db/semantic-entities");
+    const rawType = c.req.query("type");
+    if (rawType && !VALID_ENTITY_TYPES.has(rawType)) {
+      return c.json({ error: "bad_request", message: `Invalid type. Must be one of: ${[...VALID_ENTITY_TYPES].join(", ")}` }, 400);
     }
-
-    try {
-      const { listEntities } = await import("@atlas/api/lib/db/semantic-entities");
-      const rawType = c.req.query("type");
-      if (rawType && !VALID_ENTITY_TYPES.has(rawType)) {
-        return c.json({ error: "bad_request", message: `Invalid type. Must be one of: ${[...VALID_ENTITY_TYPES].join(", ")}` }, 400);
-      }
-      const entityType = rawType as "entity" | "metric" | "glossary" | "catalog" | undefined;
-      const rows = await listEntities(orgId, entityType);
-      return c.json({
-        entities: rows.map((r) => ({
-          name: r.name,
-          entityType: r.entity_type,
-          connectionId: r.connection_id,
-          updatedAt: r.updated_at,
-        })),
-        total: rows.length,
-      }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to list org semantic entities");
-      return c.json({ error: "internal_error", message: "Failed to list entities." , requestId}, 500);
-    }
-  });
+    const entityType = rawType as "entity" | "metric" | "glossary" | "catalog" | undefined;
+    const rows = await listEntities(orgId, entityType);
+    return c.json({
+      entities: rows.map((r) => ({
+        name: r.name,
+        entityType: r.entity_type,
+        connectionId: r.connection_id,
+        updatedAt: r.updated_at,
+      })),
+      total: rows.length,
+    }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to list org semantic entities");
+    return c.json({ error: "internal_error", message: "Failed to list entities." , requestId}, 500);
+  }
 });
 
 admin.openapi(getOrgEntityRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+
   const { name } = c.req.valid("param");
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  const { authResult, requestId } = await adminAuthAndContext(c);
+
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
-    }
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Org-scoped semantic entities require an internal database (DATABASE_URL)." , requestId}, 501);
+  }
 
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Org-scoped semantic entities require an internal database (DATABASE_URL)." , requestId}, 501);
+  const entityType = validateEntityType(c.req.query("type"));
+  if (!entityType) {
+    return c.json({ error: "bad_request", message: `Invalid type. Must be one of: ${[...VALID_ENTITY_TYPES].join(", ")}` }, 400);
+  }
+  try {
+    const { getEntity } = await import("@atlas/api/lib/db/semantic-entities");
+    const row = await getEntity(orgId, entityType, name);
+    if (!row) {
+      return c.json({ error: "not_found", message: `Entity "${name}" not found.` }, 404);
     }
-
-    const entityType = validateEntityType(c.req.query("type"));
-    if (!entityType) {
-      return c.json({ error: "bad_request", message: `Invalid type. Must be one of: ${[...VALID_ENTITY_TYPES].join(", ")}` }, 400);
-    }
-    try {
-      const { getEntity } = await import("@atlas/api/lib/db/semantic-entities");
-      const row = await getEntity(orgId, entityType, name);
-      if (!row) {
-        return c.json({ error: "not_found", message: `Entity "${name}" not found.` }, 404);
-      }
-      return c.json({
-        name: row.name,
-        entityType: row.entity_type,
-        connectionId: row.connection_id,
-        yamlContent: row.yaml_content,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-      }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, name }, "Failed to get org semantic entity");
-      return c.json({ error: "internal_error", message: "Failed to get entity." , requestId}, 500);
-    }
-  });
+    return c.json({
+      name: row.name,
+      entityType: row.entity_type,
+      connectionId: row.connection_id,
+      yamlContent: row.yaml_content,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, name }, "Failed to get org semantic entity");
+    return c.json({ error: "internal_error", message: "Failed to get entity." , requestId}, 500);
+  }
 });
 
 admin.openapi(putOrgEntityRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+
   const { name } = c.req.valid("param");
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  const { authResult, requestId } = await adminAuthAndContext(c);
+
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
-    }
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Org-scoped semantic entities require an internal database (DATABASE_URL)." , requestId}, 501);
+  }
 
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Org-scoped semantic entities require an internal database (DATABASE_URL)." , requestId}, 501);
-    }
+  let body: { yamlContent: string; entityType?: string; connectionId?: string };
+  try {
+    body = await c.req.json();
+  } catch (err) {
+    log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in YAML upload request");
+    return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
+  }
 
-    let body: { yamlContent: string; entityType?: string; connectionId?: string };
-    try {
-      body = await c.req.json();
-    } catch (err) {
-      log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in YAML upload request");
-      return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
-    }
+  if (!body.yamlContent || typeof body.yamlContent !== "string") {
+    return c.json({ error: "bad_request", message: "yamlContent (string) is required." }, 400);
+  }
 
-    if (!body.yamlContent || typeof body.yamlContent !== "string") {
-      return c.json({ error: "bad_request", message: "yamlContent (string) is required." }, 400);
-    }
+  const entityType = validateEntityType(body.entityType);
+  if (!entityType) {
+    return c.json({ error: "bad_request", message: `Invalid entityType. Must be one of: ${[...VALID_ENTITY_TYPES].join(", ")}` }, 400);
+  }
 
-    const entityType = validateEntityType(body.entityType);
-    if (!entityType) {
-      return c.json({ error: "bad_request", message: `Invalid entityType. Must be one of: ${[...VALID_ENTITY_TYPES].join(", ")}` }, 400);
-    }
-
-    // Validate YAML is parseable and (for entities) has a table field
-    try {
-      const yamlMod = await import("js-yaml");
-      const parsed = yamlMod.load(body.yamlContent);
-      if (entityType === "entity") {
-        if (!parsed || typeof parsed !== "object" || !("table" in (parsed as Record<string, unknown>))) {
-          return c.json({ error: "bad_request", message: "Entity YAML must contain a 'table' field." }, 400);
-        }
+  // Validate YAML is parseable and (for entities) has a table field
+  try {
+    const yamlMod = await import("js-yaml");
+    const parsed = yamlMod.load(body.yamlContent);
+    if (entityType === "entity") {
+      if (!parsed || typeof parsed !== "object" || !("table" in (parsed as Record<string, unknown>))) {
+        return c.json({ error: "bad_request", message: "Entity YAML must contain a 'table' field." }, 400);
       }
-    } catch (err) {
-      return c.json({ error: "bad_request", message: `Invalid YAML: ${err instanceof Error ? err.message : String(err)}` }, 400);
     }
+  } catch (err) {
+    return c.json({ error: "bad_request", message: `Invalid YAML: ${err instanceof Error ? err.message : String(err)}` }, 400);
+  }
 
-    try {
-      const { upsertEntity } = await import("@atlas/api/lib/db/semantic-entities");
-      const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
-      const { syncEntityToDisk } = await import("@atlas/api/lib/semantic-sync");
-      await upsertEntity(orgId, entityType, name, body.yamlContent, body.connectionId);
-      invalidateOrgWhitelist(orgId);
-      await syncEntityToDisk(orgId, name, entityType, body.yamlContent);
+  try {
+    const { upsertEntity } = await import("@atlas/api/lib/db/semantic-entities");
+    const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
+    const { syncEntityToDisk } = await import("@atlas/api/lib/semantic-sync");
+    await upsertEntity(orgId, entityType, name, body.yamlContent, body.connectionId);
+    invalidateOrgWhitelist(orgId);
+    await syncEntityToDisk(orgId, name, entityType, body.yamlContent);
 
-      log.info({ requestId, orgId, name, entityType }, "Org semantic entity upserted");
-      return c.json({ ok: true, name, entityType }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, name }, "Failed to upsert org semantic entity");
-      return c.json({ error: "internal_error", message: "Failed to save entity." , requestId}, 500);
-    }
-  });
+    log.info({ requestId, orgId, name, entityType }, "Org semantic entity upserted");
+    return c.json({ ok: true, name, entityType }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, name }, "Failed to upsert org semantic entity");
+    return c.json({ error: "internal_error", message: "Failed to save entity." , requestId}, 500);
+  }
 });
 
 admin.openapi(deleteOrgEntityRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+
   const { name } = c.req.valid("param");
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  const { authResult, requestId } = await adminAuthAndContext(c);
+
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
-    }
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Org-scoped semantic entities require an internal database (DATABASE_URL)." , requestId}, 501);
+  }
 
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Org-scoped semantic entities require an internal database (DATABASE_URL)." , requestId}, 501);
+  const entityType = validateEntityType(c.req.query("type"));
+  if (!entityType) {
+    return c.json({ error: "bad_request", message: `Invalid type. Must be one of: ${[...VALID_ENTITY_TYPES].join(", ")}` }, 400);
+  }
+  try {
+    const { deleteEntity } = await import("@atlas/api/lib/db/semantic-entities");
+    const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
+    const { syncEntityDeleteFromDisk } = await import("@atlas/api/lib/semantic-sync");
+    const deleted = await deleteEntity(orgId, entityType, name);
+    if (!deleted) {
+      return c.json({ error: "not_found", message: `Entity "${name}" not found.` }, 404);
     }
+    invalidateOrgWhitelist(orgId);
+    await syncEntityDeleteFromDisk(orgId, name, entityType);
 
-    const entityType = validateEntityType(c.req.query("type"));
-    if (!entityType) {
-      return c.json({ error: "bad_request", message: `Invalid type. Must be one of: ${[...VALID_ENTITY_TYPES].join(", ")}` }, 400);
-    }
-    try {
-      const { deleteEntity } = await import("@atlas/api/lib/db/semantic-entities");
-      const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
-      const { syncEntityDeleteFromDisk } = await import("@atlas/api/lib/semantic-sync");
-      const deleted = await deleteEntity(orgId, entityType, name);
-      if (!deleted) {
-        return c.json({ error: "not_found", message: `Entity "${name}" not found.` }, 404);
-      }
-      invalidateOrgWhitelist(orgId);
-      await syncEntityDeleteFromDisk(orgId, name, entityType);
-
-      log.info({ requestId, orgId, name, entityType }, "Org semantic entity deleted");
-      return c.json({ ok: true, name, entityType }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, name }, "Failed to delete org semantic entity");
-      return c.json({ error: "internal_error", message: "Failed to delete entity." , requestId}, 500);
-    }
-  });
+    log.info({ requestId, orgId, name, entityType }, "Org semantic entity deleted");
+    return c.json({ ok: true, name, entityType }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, name }, "Failed to delete org semantic entity");
+    return c.json({ error: "internal_error", message: "Failed to delete entity." , requestId}, 500);
+  }
 });
 
 admin.openapi(importOrgEntitiesRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  const { authResult, requestId } = await adminAuthAndContext(c);
+
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
-    }
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Org-scoped semantic entities require an internal database (DATABASE_URL)." , requestId}, 501);
+  }
 
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Org-scoped semantic entities require an internal database (DATABASE_URL)." , requestId}, 501);
-    }
-
-    let body: { connectionId?: string } = {};
-    const contentType = c.req.header("content-type") ?? "";
-    if (contentType.includes("application/json")) {
-      try {
-        body = await c.req.json();
-      } catch (err) {
-        return c.json({ error: "bad_request", message: `Invalid JSON body: ${err instanceof Error ? err.message : String(err)}` }, 400);
-      }
-    }
-
+  let body: { connectionId?: string } = {};
+  const contentType = c.req.header("content-type") ?? "";
+  if (contentType.includes("application/json")) {
     try {
-      const { importFromDisk } = await import("@atlas/api/lib/semantic-sync");
-      const result = await importFromDisk(orgId, {
-        connectionId: body.connectionId,
-      });
-
-      log.info(
-        { requestId, orgId, imported: result.imported, skipped: result.skipped, total: result.total },
-        "Org semantic import completed",
-      );
-      return c.json(result, 200);
+      body = await c.req.json();
     } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to import org semantic entities");
-      return c.json({ error: "internal_error", message: "Failed to import entities." , requestId}, 500);
+      return c.json({ error: "bad_request", message: `Invalid JSON body: ${err instanceof Error ? err.message : String(err)}` }, 400);
     }
-  });
+  }
+
+  try {
+    const { importFromDisk } = await import("@atlas/api/lib/semantic-sync");
+    const result = await importFromDisk(orgId, {
+      connectionId: body.connectionId,
+    });
+
+    log.info(
+      { requestId, orgId, imported: result.imported, skipped: result.skipped, total: result.total },
+      "Org semantic import completed",
+    );
+    return c.json(result, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to import org semantic entities");
+    return c.json({ error: "internal_error", message: "Failed to import entities." , requestId}, 500);
+  }
 });
 
 // -- Connections ------------------------------------------------------------
 
 admin.openapi(listConnectionsRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
-
-  return withRequestContext({ requestId, user: authResult.user }, () => {
-    const connList = connections.describe();
-    return c.json({ connections: connList }, 200);
-  });
+  const { requestId } = await adminAuthAndContext(c);
+  const connList = connections.describe();
+  return c.json({ connections: connList }, 200);
 });
 
 admin.openapi(getPoolMetricsRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
-
-  return withRequestContext({ requestId, user: authResult.user }, () => {
-    const metrics = connections.getAllPoolMetrics();
-    return c.json({ metrics }, 200);
-  });
+  const { requestId } = await adminAuthAndContext(c);
+  const metrics = connections.getAllPoolMetrics();
+  return c.json({ metrics }, 200);
 });
 
 admin.openapi(getOrgPoolMetricsRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  const { requestId } = await adminAuthAndContext(c);
+  try {
+    const orgId = c.req.query("orgId");
+    const metrics = connections.getOrgPoolMetrics(orgId || undefined);
+    const config = connections.getOrgPoolConfig();
+    return c.json({ metrics, config, orgCount: connections.listOrgs().length }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to retrieve org pool metrics");
+    return c.json({ error: "metrics_failed", message: err instanceof Error ? err.message : "Failed to retrieve metrics" , requestId}, 500);
   }
-  const { authResult } = preamble;
-
-  return withRequestContext({ requestId, user: authResult.user }, () => {
-    try {
-      const orgId = c.req.query("orgId");
-      const metrics = connections.getOrgPoolMetrics(orgId || undefined);
-      const config = connections.getOrgPoolConfig();
-      return c.json({ metrics, config, orgCount: connections.listOrgs().length }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to retrieve org pool metrics");
-      return c.json({ error: "metrics_failed", message: err instanceof Error ? err.message : "Failed to retrieve metrics" , requestId}, 500);
-    }
-  });
 });
 
 admin.openapi(drainOrgPoolRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+
   const { orgId } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    try {
-      const result = await connections.drainOrg(orgId);
-      log.info({ orgId, drained: result.drained, requestId, userId: authResult.user?.id }, "Org pools drained via admin API");
-      return c.json(result, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), orgId, requestId }, "Org pool drain failed");
-      return c.json({ error: "drain_failed", message: err instanceof Error ? err.message : "Org drain failed" , requestId}, 500);
-    }
-  });
+  try {
+    const result = await connections.drainOrg(orgId);
+    log.info({ orgId, drained: result.drained, requestId, userId: authResult.user?.id }, "Org pools drained via admin API");
+    return c.json(result, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), orgId, requestId }, "Org pool drain failed");
+    return c.json({ error: "drain_failed", message: err instanceof Error ? err.message : "Org drain failed" , requestId}, 500);
+  }
 });
 
 admin.openapi(drainConnectionPoolRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+
   const { id } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!connections.has(id)) {
-      return c.json({ error: "not_found", message: `Connection "${id}" not found` }, 404);
+  if (!connections.has(id)) {
+    return c.json({ error: "not_found", message: `Connection "${id}" not found` }, 404);
+  }
+  try {
+    const result = await connections.drain(id);
+    if (!result.drained) {
+      return c.json({ drained: false, message: result.message }, 409);
     }
-    try {
-      const result = await connections.drain(id);
-      if (!result.drained) {
-        return c.json({ drained: false, message: result.message }, 409);
-      }
-      log.info({ connectionId: id, requestId, userId: authResult.user?.id }, "Pool drained via admin API");
-      return c.json({ drained: true, message: result.message }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id, requestId }, "Pool drain failed");
-      return c.json({ error: "drain_failed", message: err instanceof Error ? err.message : "Drain failed" , requestId}, 500);
-    }
-  });
+    log.info({ connectionId: id, requestId, userId: authResult.user?.id }, "Pool drained via admin API");
+    return c.json({ drained: true, message: result.message }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id, requestId }, "Pool drain failed");
+    return c.json({ error: "drain_failed", message: err instanceof Error ? err.message : "Drain failed" , requestId}, 500);
+  }
 });
 
 admin.openapi(getCacheStatsRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
-
+  const { requestId } = await adminAuthAndContext(c);
   const { getCache, cacheEnabled } = await import("@atlas/api/lib/cache/index");
-  return withRequestContext({ requestId, user: authResult.user }, () => {
-    if (!cacheEnabled()) {
-      return c.json({ enabled: false, hits: 0, misses: 0, hitRate: 0, missRate: 0, entryCount: 0, maxSize: 0, ttl: 0 }, 200);
-    }
-    try {
-      const stats = getCache().stats();
-      const total = stats.hits + stats.misses;
-      const hitRate = total > 0 ? stats.hits / total : 0;
-      const missRate = total > 0 ? stats.misses / total : 0;
-      return c.json({ enabled: true, ...stats, hitRate, missRate }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to retrieve cache stats");
-      return c.json({ error: "internal_error", message: "Failed to retrieve cache statistics." , requestId}, 500);
-    }
-  });
+  if (!cacheEnabled()) {
+    return c.json({ enabled: false, hits: 0, misses: 0, hitRate: 0, missRate: 0, entryCount: 0, maxSize: 0, ttl: 0 }, 200);
+  }
+  try {
+    const stats = getCache().stats();
+    const total = stats.hits + stats.misses;
+    const hitRate = total > 0 ? stats.hits / total : 0;
+    const missRate = total > 0 ? stats.misses / total : 0;
+    return c.json({ enabled: true, ...stats, hitRate, missRate }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to retrieve cache stats");
+    return c.json({ error: "internal_error", message: "Failed to retrieve cache statistics." , requestId}, 500);
+  }
 });
 
 admin.openapi(flushCacheRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   const { getCache, flushCache, cacheEnabled } = await import("@atlas/api/lib/cache/index");
-  return withRequestContext({ requestId, user: authResult.user }, () => {
-    if (!cacheEnabled()) {
-      return c.json({ ok: false, flushed: 0, message: "Cache is disabled" }, 200);
-    }
-    try {
-      const count = getCache().stats().entryCount;
-      flushCache();
-      log.info({ requestId, userId: authResult.user?.id, flushed: count }, "Cache flushed via admin API");
-      return c.json({ ok: true, flushed: count, message: "Cache flushed" }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to flush cache");
-      return c.json({ error: "internal_error", message: "Failed to flush cache." , requestId}, 500);
-    }
-  });
+  if (!cacheEnabled()) {
+    return c.json({ ok: false, flushed: 0, message: "Cache is disabled" }, 200);
+  }
+  try {
+    const count = getCache().stats().entryCount;
+    flushCache();
+    log.info({ requestId, userId: authResult.user?.id, flushed: count }, "Cache flushed via admin API");
+    return c.json({ ok: true, flushed: count, message: "Cache flushed" }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to flush cache");
+    return c.json({ error: "internal_error", message: "Failed to flush cache." , requestId}, 500);
+  }
 });
 
 admin.openapi(testConnectionRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
-
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const body = await c.req.json().catch((err: unknown) => {
-      log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in test connection request");
-      return null;
-    });
-    if (!body || typeof body !== "object") {
-      return c.json({ error: "invalid_request", message: "Request body is required." }, 400);
-    }
-
-    const { url, schema } = body as Record<string, unknown>;
-    if (!url || typeof url !== "string") {
-      return c.json({ error: "invalid_request", message: "Connection URL is required." }, 400);
-    }
-
-    let dbType: string;
-    try {
-      dbType = detectDBType(url);
-    } catch (err) {
-      return c.json({ error: "invalid_request", message: err instanceof Error ? err.message : "Unsupported database URL scheme." }, 400);
-    }
-
-    // Register a temporary connection, test it, then always clean up
-    const tempId = `_test_${Date.now()}`;
-    try {
-      connections.register(tempId, {
-        url,
-        description: undefined,
-        schema: typeof schema === "string" ? schema : undefined,
-      });
-      const result = await connections.healthCheck(tempId);
-      return c.json({ status: result.status, latencyMs: result.latencyMs, dbType }, 200);
-    } catch (err) {
-      return c.json({
-        error: "connection_failed",
-        message: `Connection test failed: ${err instanceof Error ? err.message : "Unknown error"}`,
-      }, 400);
-    } finally {
-      // _test_ prefix won't match the "default" guard — safe to force-delete
-      const entry = connections.has(tempId);
-      if (entry) {
-        // Use internal delete to bypass the default-connection guard (which won't trigger anyway for _test_ IDs)
-        connections.unregister(tempId);
-      }
-    }
+  const { requestId } = await adminAuthAndContext(c);
+  const body = await c.req.json().catch((err: unknown) => {
+    log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in test connection request");
+    return null;
   });
+  if (!body || typeof body !== "object") {
+    return c.json({ error: "invalid_request", message: "Request body is required." }, 400);
+  }
+
+  const { url, schema } = body as Record<string, unknown>;
+  if (!url || typeof url !== "string") {
+    return c.json({ error: "invalid_request", message: "Connection URL is required." }, 400);
+  }
+
+  let dbType: string;
+  try {
+    dbType = detectDBType(url);
+  } catch (err) {
+    return c.json({ error: "invalid_request", message: err instanceof Error ? err.message : "Unsupported database URL scheme." }, 400);
+  }
+
+  // Register a temporary connection, test it, then always clean up
+  const tempId = `_test_${Date.now()}`;
+  try {
+    connections.register(tempId, {
+      url,
+      description: undefined,
+      schema: typeof schema === "string" ? schema : undefined,
+    });
+    const result = await connections.healthCheck(tempId);
+    return c.json({ status: result.status, latencyMs: result.latencyMs, dbType }, 200);
+  } catch (err) {
+    return c.json({
+      error: "connection_failed",
+      message: `Connection test failed: ${err instanceof Error ? err.message : "Unknown error"}`,
+    }, 400);
+  } finally {
+    // _test_ prefix won't match the "default" guard — safe to force-delete
+    const entry = connections.has(tempId);
+    if (entry) {
+      // Use internal delete to bypass the default-connection guard (which won't trigger anyway for _test_ IDs)
+      connections.unregister(tempId);
+    }
+  }
 });
 
 admin.openapi(testExistingConnectionRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+
   const { id } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  const { requestId } = await adminAuthAndContext(c);
+  const registered = connections.list();
+  if (!registered.includes(id)) {
+    return c.json({ error: "not_found", message: `Connection "${id}" not found.` }, 404);
   }
-  const { authResult } = preamble;
-
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const registered = connections.list();
-    if (!registered.includes(id)) {
-      return c.json({ error: "not_found", message: `Connection "${id}" not found.` }, 404);
-    }
-    try {
-      const result = await connections.healthCheck(id);
-      return c.json(result, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Health check failed");
-      return c.json({ error: "internal_error", message: "Health check failed." , requestId}, 500);
-    }
-  });
+  try {
+    const result = await connections.healthCheck(id);
+    return c.json(result, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Health check failed");
+    return c.json({ error: "internal_error", message: "Health check failed." , requestId}, 500);
+  }
 });
 
 admin.openapi(createConnectionRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Connection management requires an internal database (DATABASE_URL)." }, 404);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const body = await c.req.json().catch((err) => {
-      log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in create connection request");
-      return null;
+  const body = await c.req.json().catch((err) => {
+    log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in create connection request");
+    return null;
+  });
+
+  if (!body || typeof body !== "object") {
+    return c.json({ error: "invalid_request", message: "Request body is required." }, 400);
+  }
+
+  const { id, url, description, schema } = body as Record<string, unknown>;
+
+  if (!id || typeof id !== "string" || !/^[a-z][a-z0-9_-]*$/.test(id)) {
+    return c.json({ error: "invalid_request", message: "Connection ID must be lowercase alphanumeric with hyphens/underscores (e.g. 'warehouse')." }, 400);
+  }
+  if (id === "default") {
+    return c.json({ error: "invalid_request", message: "Cannot create a connection with ID 'default'. The default connection is managed via ATLAS_DATASOURCE_URL." }, 400);
+  }
+  if (!url || typeof url !== "string") {
+    return c.json({ error: "invalid_request", message: "Connection URL is required." }, 400);
+  }
+
+  // Detect database type (validates URL scheme)
+  let dbType: string;
+  try {
+    dbType = detectDBType(url as string);
+  } catch (err) {
+    return c.json({ error: "invalid_request", message: err instanceof Error ? err.message : "Unsupported database URL scheme." }, 400);
+  }
+
+  // Check for duplicate
+  if (connections.has(id as string)) {
+    return c.json({ error: "conflict", message: `Connection "${id}" already exists.` }, 409);
+  }
+
+  // Test the connection before saving
+  try {
+    connections.register(id as string, {
+      url: url as string,
+      description: typeof description === "string" ? description : undefined,
+      schema: typeof schema === "string" ? schema : undefined,
     });
+    await connections.healthCheck(id as string);
+  } catch (err) {
+    // Rollback the registration if the health check fails
+    connections.unregister(id as string);
+    return c.json({
+      error: "connection_failed",
+      message: `Connection test failed: ${err instanceof Error ? err.message : "Unknown error"}. Fix the URL and try again.`,
+    }, 400);
+  }
 
-    if (!body || typeof body !== "object") {
-      return c.json({ error: "invalid_request", message: "Request body is required." }, 400);
-    }
+  // Encrypt and persist to internal DB
+  let encryptedUrl: string;
+  try {
+    encryptedUrl = encryptUrl(url as string);
+  } catch (err) {
+    connections.unregister(id as string);
+    log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to encrypt connection URL");
+    return c.json({ error: "encryption_failed", message: "Failed to encrypt connection URL. Check ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET." , requestId}, 500);
+  }
 
-    const { id, url, description, schema } = body as Record<string, unknown>;
+  try {
+    await internalQuery(
+      `INSERT INTO connections (id, url, type, description, schema_name) VALUES ($1, $2, $3, $4, $5)`,
+      [id, encryptedUrl, dbType, typeof description === "string" ? description : null, typeof schema === "string" ? schema : null],
+    );
+  } catch (err) {
+    connections.unregister(id as string);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Failed to persist connection");
+    return c.json({ error: "internal_error", message: "Failed to save connection." , requestId}, 500);
+  }
 
-    if (!id || typeof id !== "string" || !/^[a-z][a-z0-9_-]*$/.test(id)) {
-      return c.json({ error: "invalid_request", message: "Connection ID must be lowercase alphanumeric with hyphens/underscores (e.g. 'warehouse')." }, 400);
-    }
-    if (id === "default") {
-      return c.json({ error: "invalid_request", message: "Cannot create a connection with ID 'default'. The default connection is managed via ATLAS_DATASOURCE_URL." }, 400);
-    }
-    if (!url || typeof url !== "string") {
-      return c.json({ error: "invalid_request", message: "Connection URL is required." }, 400);
-    }
+  // Rebuild whitelist for new connection
+  _resetWhitelists();
 
-    // Detect database type (validates URL scheme)
-    let dbType: string;
+  log.info({ requestId, connectionId: id, dbType, actorId: authResult.user?.id }, "Connection created");
+  return c.json({
+    id,
+    dbType,
+    description: typeof description === "string" ? description : null,
+    maskedUrl: maskConnectionUrl(url as string),
+  }, 201);
+});
+
+admin.openapi(updateConnectionRoute, async (c) => {
+
+  const { id } = c.req.valid("param");
+
+  const { authResult, requestId } = await adminAuthAndContext(c);
+
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Connection management requires an internal database (DATABASE_URL)." }, 404);
+  }
+
+  if (id === "default") {
+    return c.json({ error: "forbidden", message: "Cannot modify the default connection. Update ATLAS_DATASOURCE_URL instead." , requestId}, 403);
+  }
+
+  // Check it exists in the DB (admin-managed), not just in the registry
+  const existing = await internalQuery<{ id: string; url: string; type: string; description: string | null; schema_name: string | null }>(
+    "SELECT id, url, type, description, schema_name FROM connections WHERE id = $1",
+    [id],
+  );
+  if (existing.length === 0) {
+    return c.json({ error: "not_found", message: `Connection "${id}" not found or is not admin-managed.` }, 404);
+  }
+
+  const body = await c.req.json().catch((err) => {
+    log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in update connection request");
+    return null;
+  });
+
+  if (!body || typeof body !== "object") {
+    return c.json({ error: "invalid_request", message: "Request body is required." }, 400);
+  }
+
+  const { url, description, schema } = body as Record<string, unknown>;
+  const current = existing[0];
+
+  let currentUrl: string;
+  try {
+    currentUrl = decryptUrl(current.url);
+  } catch (err) {
+    log.error({ connectionId: id, err: err instanceof Error ? err.message : String(err) }, "Failed to decrypt stored connection URL");
+    return c.json({ error: "decryption_failed", message: "Stored connection URL could not be decrypted. The encryption key may have changed." , requestId}, 500);
+  }
+
+  const newUrl = typeof url === "string" ? url : currentUrl;
+  const newDescription = typeof description === "string" ? description : current.description;
+  const newSchema = typeof schema === "string" ? (schema || null) : current.schema_name;
+  const urlChanged = typeof url === "string" && url !== currentUrl;
+
+  // Validate new URL scheme if changed
+  let dbType = current.type;
+  if (urlChanged) {
     try {
-      dbType = detectDBType(url as string);
+      dbType = detectDBType(newUrl);
     } catch (err) {
       return c.json({ error: "invalid_request", message: err instanceof Error ? err.message : "Unsupported database URL scheme." }, 400);
     }
+  }
 
-    // Check for duplicate
-    if (connections.has(id as string)) {
-      return c.json({ error: "conflict", message: `Connection "${id}" already exists.` }, 409);
-    }
-
-    // Test the connection before saving
+  // Re-test if URL changed
+  if (urlChanged) {
     try {
-      connections.register(id as string, {
-        url: url as string,
-        description: typeof description === "string" ? description : undefined,
-        schema: typeof schema === "string" ? schema : undefined,
+      connections.register(id, {
+        url: newUrl,
+        description: newDescription ?? undefined,
+        schema: newSchema ?? undefined,
       });
-      await connections.healthCheck(id as string);
+      await connections.healthCheck(id);
     } catch (err) {
-      // Rollback the registration if the health check fails
-      connections.unregister(id as string);
+      // Restore old connection
+      try {
+        connections.register(id, {
+          url: currentUrl,
+          description: current.description ?? undefined,
+          schema: current.schema_name ?? undefined,
+        });
+      } catch (restoreErr) {
+        log.error({ connectionId: id, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) }, "Failed to restore previous connection after update failure — connection unregistered");
+        connections.unregister(id);
+      }
       return c.json({
         error: "connection_failed",
         message: `Connection test failed: ${err instanceof Error ? err.message : "Unknown error"}. Fix the URL and try again.`,
       }, 400);
     }
-
-    // Encrypt and persist to internal DB
-    let encryptedUrl: string;
+  } else {
+    // Re-register with updated metadata (no URL change — no need to test)
     try {
-      encryptedUrl = encryptUrl(url as string);
+      connections.register(id, {
+        url: newUrl,
+        description: newDescription ?? undefined,
+        schema: newSchema ?? undefined,
+      });
     } catch (err) {
-      connections.unregister(id as string);
-      log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to encrypt connection URL");
-      return c.json({ error: "encryption_failed", message: "Failed to encrypt connection URL. Check ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET." , requestId}, 500);
-    }
-
-    try {
-      await internalQuery(
-        `INSERT INTO connections (id, url, type, description, schema_name) VALUES ($1, $2, $3, $4, $5)`,
-        [id, encryptedUrl, dbType, typeof description === "string" ? description : null, typeof schema === "string" ? schema : null],
-      );
-    } catch (err) {
-      connections.unregister(id as string);
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Failed to persist connection");
-      return c.json({ error: "internal_error", message: "Failed to save connection." , requestId}, 500);
-    }
-
-    // Rebuild whitelist for new connection
-    _resetWhitelists();
-
-    log.info({ requestId, connectionId: id, dbType, actorId: authResult.user?.id }, "Connection created");
-    return c.json({
-      id,
-      dbType,
-      description: typeof description === "string" ? description : null,
-      maskedUrl: maskConnectionUrl(url as string),
-    }, 201);
-  });
-});
-
-admin.openapi(updateConnectionRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-  const { id } = c.req.valid("param");
-
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Connection management requires an internal database (DATABASE_URL)." }, 404);
-  }
-
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (id === "default") {
-      return c.json({ error: "forbidden", message: "Cannot modify the default connection. Update ATLAS_DATASOURCE_URL instead." , requestId}, 403);
-    }
-
-    // Check it exists in the DB (admin-managed), not just in the registry
-    const existing = await internalQuery<{ id: string; url: string; type: string; description: string | null; schema_name: string | null }>(
-      "SELECT id, url, type, description, schema_name FROM connections WHERE id = $1",
-      [id],
-    );
-    if (existing.length === 0) {
-      return c.json({ error: "not_found", message: `Connection "${id}" not found or is not admin-managed.` }, 404);
-    }
-
-    const body = await c.req.json().catch((err) => {
-      log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in update connection request");
-      return null;
-    });
-
-    if (!body || typeof body !== "object") {
-      return c.json({ error: "invalid_request", message: "Request body is required." }, 400);
-    }
-
-    const { url, description, schema } = body as Record<string, unknown>;
-    const current = existing[0];
-
-    let currentUrl: string;
-    try {
-      currentUrl = decryptUrl(current.url);
-    } catch (err) {
-      log.error({ connectionId: id, err: err instanceof Error ? err.message : String(err) }, "Failed to decrypt stored connection URL");
-      return c.json({ error: "decryption_failed", message: "Stored connection URL could not be decrypted. The encryption key may have changed." , requestId}, 500);
-    }
-
-    const newUrl = typeof url === "string" ? url : currentUrl;
-    const newDescription = typeof description === "string" ? description : current.description;
-    const newSchema = typeof schema === "string" ? (schema || null) : current.schema_name;
-    const urlChanged = typeof url === "string" && url !== currentUrl;
-
-    // Validate new URL scheme if changed
-    let dbType = current.type;
-    if (urlChanged) {
-      try {
-        dbType = detectDBType(newUrl);
-      } catch (err) {
-        return c.json({ error: "invalid_request", message: err instanceof Error ? err.message : "Unsupported database URL scheme." }, 400);
-      }
-    }
-
-    // Re-test if URL changed
-    if (urlChanged) {
-      try {
-        connections.register(id, {
-          url: newUrl,
-          description: newDescription ?? undefined,
-          schema: newSchema ?? undefined,
-        });
-        await connections.healthCheck(id);
-      } catch (err) {
-        // Restore old connection
-        try {
-          connections.register(id, {
-            url: currentUrl,
-            description: current.description ?? undefined,
-            schema: current.schema_name ?? undefined,
-          });
-        } catch (restoreErr) {
-          log.error({ connectionId: id, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) }, "Failed to restore previous connection after update failure — connection unregistered");
-          connections.unregister(id);
-        }
-        return c.json({
-          error: "connection_failed",
-          message: `Connection test failed: ${err instanceof Error ? err.message : "Unknown error"}. Fix the URL and try again.`,
-        }, 400);
-      }
-    } else {
-      // Re-register with updated metadata (no URL change — no need to test)
-      try {
-        connections.register(id, {
-          url: newUrl,
-          description: newDescription ?? undefined,
-          schema: newSchema ?? undefined,
-        });
-      } catch (err) {
-        log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Failed to re-register connection with updated metadata");
-        return c.json({ error: "internal_error", message: "Failed to update connection." , requestId}, 500);
-      }
-    }
-
-    // Encrypt and update in DB — rollback registry on failure
-    let encryptedNewUrl: string;
-    try {
-      encryptedNewUrl = encryptUrl(newUrl);
-    } catch (err) {
-      // Restore previous connection in registry
-      try {
-        connections.register(id, {
-          url: currentUrl,
-          description: current.description ?? undefined,
-          schema: current.schema_name ?? undefined,
-        });
-      } catch (restoreErr) {
-        log.error({ connectionId: id, requestId, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) }, "Failed to restore previous connection after encryption failure — connection unregistered");
-        connections.unregister(id);
-      }
-      log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to encrypt connection URL");
-      return c.json({ error: "encryption_failed", message: "Failed to encrypt connection URL. Check ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET." , requestId}, 500);
-    }
-
-    try {
-      await internalQuery(
-        `UPDATE connections SET url = $1, type = $2, description = $3, schema_name = $4, updated_at = NOW() WHERE id = $5`,
-        [encryptedNewUrl, dbType, newDescription, newSchema, id],
-      );
-    } catch (err) {
-      // Restore old connection in registry to stay in sync with DB
-      try {
-        connections.register(id, {
-          url: currentUrl,
-          description: current.description ?? undefined,
-          schema: current.schema_name ?? undefined,
-        });
-      } catch (restoreErr) {
-        log.error({ connectionId: id, requestId, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) }, "Failed to restore previous connection after DB update failure — connection unregistered");
-        connections.unregister(id);
-      }
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Failed to update connection in DB");
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Failed to re-register connection with updated metadata");
       return c.json({ error: "internal_error", message: "Failed to update connection." , requestId}, 500);
     }
+  }
 
-    _resetWhitelists();
+  // Encrypt and update in DB — rollback registry on failure
+  let encryptedNewUrl: string;
+  try {
+    encryptedNewUrl = encryptUrl(newUrl);
+  } catch (err) {
+    // Restore previous connection in registry
+    try {
+      connections.register(id, {
+        url: currentUrl,
+        description: current.description ?? undefined,
+        schema: current.schema_name ?? undefined,
+      });
+    } catch (restoreErr) {
+      log.error({ connectionId: id, requestId, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) }, "Failed to restore previous connection after encryption failure — connection unregistered");
+      connections.unregister(id);
+    }
+    log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to encrypt connection URL");
+    return c.json({ error: "encryption_failed", message: "Failed to encrypt connection URL. Check ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET." , requestId}, 500);
+  }
 
-    log.info({ requestId, connectionId: id, urlChanged, actorId: authResult.user?.id }, "Connection updated");
-    return c.json({
-      id,
-      dbType,
-      description: newDescription,
-      maskedUrl: maskConnectionUrl(newUrl),
-    }, 200);
-  });
+  try {
+    await internalQuery(
+      `UPDATE connections SET url = $1, type = $2, description = $3, schema_name = $4, updated_at = NOW() WHERE id = $5`,
+      [encryptedNewUrl, dbType, newDescription, newSchema, id],
+    );
+  } catch (err) {
+    // Restore old connection in registry to stay in sync with DB
+    try {
+      connections.register(id, {
+        url: currentUrl,
+        description: current.description ?? undefined,
+        schema: current.schema_name ?? undefined,
+      });
+    } catch (restoreErr) {
+      log.error({ connectionId: id, requestId, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) }, "Failed to restore previous connection after DB update failure — connection unregistered");
+      connections.unregister(id);
+    }
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Failed to update connection in DB");
+    return c.json({ error: "internal_error", message: "Failed to update connection." , requestId}, 500);
+  }
+
+  _resetWhitelists();
+
+  log.info({ requestId, connectionId: id, urlChanged, actorId: authResult.user?.id }, "Connection updated");
+  return c.json({
+    id,
+    dbType,
+    description: newDescription,
+    maskedUrl: maskConnectionUrl(newUrl),
+  }, 200);
 });
 
 admin.openapi(deleteConnectionRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+
   const { id } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Connection management requires an internal database (DATABASE_URL)." }, 404);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (id === "default") {
-      return c.json({ error: "forbidden", message: "Cannot delete the default connection." , requestId}, 403);
-    }
+  if (id === "default") {
+    return c.json({ error: "forbidden", message: "Cannot delete the default connection." , requestId}, 403);
+  }
 
-    // Must exist in the DB (admin-managed)
-    const existing = await internalQuery<{ id: string }>(
-      "SELECT id FROM connections WHERE id = $1",
+  // Must exist in the DB (admin-managed)
+  const existing = await internalQuery<{ id: string }>(
+    "SELECT id FROM connections WHERE id = $1",
+    [id],
+  );
+  if (existing.length === 0) {
+    return c.json({ error: "not_found", message: `Connection "${id}" not found or is not admin-managed.` }, 404);
+  }
+
+  // Check for scheduled tasks referencing this connection
+  try {
+    const refs = await internalQuery<{ count: string }>(
+      "SELECT COUNT(*) as count FROM scheduled_tasks WHERE connection_id = $1",
       [id],
     );
-    if (existing.length === 0) {
-      return c.json({ error: "not_found", message: `Connection "${id}" not found or is not admin-managed.` }, 404);
+    const refCount = parseInt(String(refs[0]?.count ?? "0"), 10);
+    if (refCount > 0) {
+      return c.json({
+        error: "conflict",
+        message: `Cannot delete connection "${id}" — it is referenced by ${refCount} scheduled task(s). Remove or update those tasks first.`,
+      }, 409);
     }
+  } catch (err) {
+    // scheduled_tasks table might not exist — not a blocker for delete
+    log.debug({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Could not check scheduled task references (table may not exist)");
+  }
 
-    // Check for scheduled tasks referencing this connection
-    try {
-      const refs = await internalQuery<{ count: string }>(
-        "SELECT COUNT(*) as count FROM scheduled_tasks WHERE connection_id = $1",
-        [id],
-      );
-      const refCount = parseInt(String(refs[0]?.count ?? "0"), 10);
-      if (refCount > 0) {
-        return c.json({
-          error: "conflict",
-          message: `Cannot delete connection "${id}" — it is referenced by ${refCount} scheduled task(s). Remove or update those tasks first.`,
-        }, 409);
-      }
-    } catch (err) {
-      // scheduled_tasks table might not exist — not a blocker for delete
-      log.debug({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Could not check scheduled task references (table may not exist)");
-    }
+  // Remove from DB and registry
+  try {
+    await internalQuery("DELETE FROM connections WHERE id = $1", [id]);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Failed to delete connection from DB");
+    return c.json({ error: "internal_error", message: "Failed to delete connection." , requestId}, 500);
+  }
 
-    // Remove from DB and registry
-    try {
-      await internalQuery("DELETE FROM connections WHERE id = $1", [id]);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Failed to delete connection from DB");
-      return c.json({ error: "internal_error", message: "Failed to delete connection." , requestId}, 500);
-    }
+  connections.unregister(id);
 
-    connections.unregister(id);
-
-    log.info({ requestId, connectionId: id, actorId: authResult.user?.id }, "Connection deleted");
-    return c.json({ success: true }, 200);
-  });
+  log.info({ requestId, connectionId: id, actorId: authResult.user?.id }, "Connection deleted");
+  return c.json({ success: true }, 200);
 });
 
 admin.openapi(getConnectionRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+
   const { id } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  const { requestId } = await adminAuthAndContext(c);
+  if (!connections.has(id)) {
+    return c.json({ error: "not_found", message: `Connection "${id}" not found.` }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!connections.has(id)) {
-      return c.json({ error: "not_found", message: `Connection "${id}" not found.` }, 404);
-    }
+  const meta = connections.describe().find((m) => m.id === id);
 
-    const meta = connections.describe().find((m) => m.id === id);
-
-    // If admin-managed, include masked URL and schema from DB
-    let maskedUrl: string | null = null;
-    let schema: string | null = null;
-    let managed = false;
-    if (hasInternalDB()) {
-      try {
-        const rows = await internalQuery<{ url: string; schema_name: string | null }>(
-          "SELECT url, schema_name FROM connections WHERE id = $1",
-          [id],
-        );
-        if (rows.length > 0) {
-          managed = true;
-          schema = rows[0].schema_name;
-          try {
-            maskedUrl = maskConnectionUrl(decryptUrl(rows[0].url));
-          } catch (decryptErr) {
-            log.error({ connectionId: id, err: decryptErr instanceof Error ? decryptErr.message : String(decryptErr) }, "Failed to decrypt stored connection URL");
-            maskedUrl = "[encrypted — decryption failed]";
-          }
+  // If admin-managed, include masked URL and schema from DB
+  let maskedUrl: string | null = null;
+  let schema: string | null = null;
+  let managed = false;
+  if (hasInternalDB()) {
+    try {
+      const rows = await internalQuery<{ url: string; schema_name: string | null }>(
+        "SELECT url, schema_name FROM connections WHERE id = $1",
+        [id],
+      );
+      if (rows.length > 0) {
+        managed = true;
+        schema = rows[0].schema_name;
+        try {
+          maskedUrl = maskConnectionUrl(decryptUrl(rows[0].url));
+        } catch (decryptErr) {
+          log.error({ connectionId: id, err: decryptErr instanceof Error ? decryptErr.message : String(decryptErr) }, "Failed to decrypt stored connection URL");
+          maskedUrl = "[encrypted — decryption failed]";
         }
-      } catch (err) {
-        log.warn({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to fetch connection details from internal DB");
       }
+    } catch (err) {
+      log.warn({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to fetch connection details from internal DB");
     }
+  }
 
-    return c.json({
-      id,
-      dbType: meta?.dbType ?? "unknown",
-      description: meta?.description ?? null,
-      health: meta?.health ?? null,
-      maskedUrl,
-      schema,
-      managed,
-    }, 200);
-  });
+  return c.json({
+    id,
+    dbType: meta?.dbType ?? "unknown",
+    description: meta?.description ?? null,
+    health: meta?.health ?? null,
+    maskedUrl,
+    schema,
+    managed,
+  }, 200);
 });
 
 // -- Audit ------------------------------------------------------------------
 
 admin.openapi(listAuditRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
 
   // Auth before feature-availability check to avoid info disclosure
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
-
+  const { requestId } = await adminAuthAndContext(c);
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const rawLimit = parseInt(c.req.query("limit") ?? "50", 10);
-    const rawOffset = parseInt(c.req.query("offset") ?? "0", 10);
-    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 200) : 50;
-    const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
+  const rawLimit = parseInt(c.req.query("limit") ?? "50", 10);
+  const rawOffset = parseInt(c.req.query("offset") ?? "0", 10);
+  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 200) : 50;
+  const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
 
-    // Queries the internal DB directly (not the analytics datasource),
-    // so no validateSQL pipeline needed. Parameterized queries prevent injection.
-    const filters = buildAuditFilters((k) => c.req.query(k));
-    if (!filters.ok) {
-      return c.json({ error: filters.error, message: filters.message }, filters.status);
-    }
-    const { conditions, params } = filters;
-    let { paramIdx } = filters;
+  // Queries the internal DB directly (not the analytics datasource),
+  // so no validateSQL pipeline needed. Parameterized queries prevent injection.
+  const filters = buildAuditFilters((k) => c.req.query(k));
+  if (!filters.ok) {
+    return c.json({ error: filters.error, message: filters.message }, filters.status);
+  }
+  const { conditions, params } = filters;
+  let { paramIdx } = filters;
 
-    // The JOIN is always needed because the search filter references u.email
-    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  // The JOIN is always needed because the search filter references u.email
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
-    try {
-      const countResult = await internalQuery<{ count: string }>(
-        `SELECT COUNT(*) as count FROM audit_log a LEFT JOIN "user" u ON a.user_id = u.id ${whereClause}`,
-        params,
-      );
-      const total = parseInt(String(countResult[0]?.count ?? "0"), 10);
+  try {
+    const countResult = await internalQuery<{ count: string }>(
+      `SELECT COUNT(*) as count FROM audit_log a LEFT JOIN "user" u ON a.user_id = u.id ${whereClause}`,
+      params,
+    );
+    const total = parseInt(String(countResult[0]?.count ?? "0"), 10);
 
-      const rows = await internalQuery<{
-        id: string;
-        timestamp: string;
-        user_id: string | null;
-        sql: string;
-        duration_ms: number;
-        row_count: number | null;
-        success: boolean;
-        error: string | null;
-        source_id: string | null;
-        source_type: string | null;
-        target_host: string | null;
-        user_label: string | null;
-        auth_mode: string;
-        user_email: string | null;
-        tables_accessed: string[] | null;
-        columns_accessed: string[] | null;
-      }>(
-        `SELECT a.*, u.email AS user_email
-         FROM audit_log a
-         LEFT JOIN "user" u ON a.user_id = u.id
-         ${whereClause} ORDER BY a.timestamp DESC LIMIT $${paramIdx++} OFFSET $${paramIdx++}`,
-        [...params, limit, offset],
-      );
+    const rows = await internalQuery<{
+      id: string;
+      timestamp: string;
+      user_id: string | null;
+      sql: string;
+      duration_ms: number;
+      row_count: number | null;
+      success: boolean;
+      error: string | null;
+      source_id: string | null;
+      source_type: string | null;
+      target_host: string | null;
+      user_label: string | null;
+      auth_mode: string;
+      user_email: string | null;
+      tables_accessed: string[] | null;
+      columns_accessed: string[] | null;
+    }>(
+      `SELECT a.*, u.email AS user_email
+       FROM audit_log a
+       LEFT JOIN "user" u ON a.user_id = u.id
+       ${whereClause} ORDER BY a.timestamp DESC LIMIT $${paramIdx++} OFFSET $${paramIdx++}`,
+      [...params, limit, offset],
+    );
 
-      return c.json({ rows, total, limit, offset }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Audit query failed");
-      return c.json({ error: "internal_error", message: "Failed to query audit log." , requestId}, 500);
-    }
-  });
+    return c.json({ rows, total, limit, offset }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Audit query failed");
+    return c.json({ error: "internal_error", message: "Failed to query audit log." , requestId}, 500);
+  }
 });
 
 admin.openapi(exportAuditRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
-
+  const { requestId } = await adminAuthAndContext(c);
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const filters = buildAuditFilters((k) => c.req.query(k));
-    if (!filters.ok) {
-      return c.json({ error: filters.error, message: filters.message }, filters.status);
-    }
-    const { conditions, params } = filters;
-    let { paramIdx } = filters;
+  const filters = buildAuditFilters((k) => c.req.query(k));
+  if (!filters.ok) {
+    return c.json({ error: filters.error, message: filters.message }, filters.status);
+  }
+  const { conditions, params } = filters;
+  let { paramIdx } = filters;
 
-    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-    const exportLimit = 10000;
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const exportLimit = 10000;
 
-    try {
-      // Count total matching rows to detect truncation
-      const countResult = await internalQuery<{ count: string }>(
-        `SELECT COUNT(*) as count FROM audit_log a LEFT JOIN "user" u ON a.user_id = u.id ${whereClause}`,
-        params,
-      );
-      const totalAvailable = parseInt(String(countResult[0]?.count ?? "0"), 10);
+  try {
+    // Count total matching rows to detect truncation
+    const countResult = await internalQuery<{ count: string }>(
+      `SELECT COUNT(*) as count FROM audit_log a LEFT JOIN "user" u ON a.user_id = u.id ${whereClause}`,
+      params,
+    );
+    const totalAvailable = parseInt(String(countResult[0]?.count ?? "0"), 10);
 
-      const rows = await internalQuery<{
-        id: string;
-        timestamp: string;
-        user_id: string | null;
-        sql: string;
-        duration_ms: number;
-        row_count: number | null;
-        success: boolean;
-        error: string | null;
-        source_id: string | null;
-        user_email: string | null;
-        tables_accessed: string[] | null;
-        columns_accessed: string[] | null;
-      }>(
-        `SELECT a.id, a.timestamp, a.user_id, a.sql, a.duration_ms, a.row_count, a.success, a.error, a.source_id, a.tables_accessed, a.columns_accessed, u.email AS user_email
-         FROM audit_log a
-         LEFT JOIN "user" u ON a.user_id = u.id
-         ${whereClause} ORDER BY a.timestamp DESC LIMIT $${paramIdx++}`,
-        [...params, exportLimit],
-      );
+    const rows = await internalQuery<{
+      id: string;
+      timestamp: string;
+      user_id: string | null;
+      sql: string;
+      duration_ms: number;
+      row_count: number | null;
+      success: boolean;
+      error: string | null;
+      source_id: string | null;
+      user_email: string | null;
+      tables_accessed: string[] | null;
+      columns_accessed: string[] | null;
+    }>(
+      `SELECT a.id, a.timestamp, a.user_id, a.sql, a.duration_ms, a.row_count, a.success, a.error, a.source_id, a.tables_accessed, a.columns_accessed, u.email AS user_email
+       FROM audit_log a
+       LEFT JOIN "user" u ON a.user_id = u.id
+       ${whereClause} ORDER BY a.timestamp DESC LIMIT $${paramIdx++}`,
+      [...params, exportLimit],
+    );
 
-      const csvHeader = "id,timestamp,user,sql,duration_ms,row_count,success,error,connection,tables_accessed,columns_accessed\n";
-      const csvRows = rows.map((r) => {
-        const fields = [
-          csvField(r.id),
-          csvField(r.timestamp),
-          csvField(r.user_email ?? r.user_id ?? ""),
-          csvField(r.sql),
-          String(r.duration_ms),
-          String(r.row_count ?? ""),
-          String(r.success),
-          csvField(r.error),
-          csvField(r.source_id),
-          csvField(r.tables_accessed ? r.tables_accessed.join("; ") : null),
-          csvField(r.columns_accessed ? r.columns_accessed.join("; ") : null),
-        ];
-        return fields.join(",");
-      });
+    const csvHeader = "id,timestamp,user,sql,duration_ms,row_count,success,error,connection,tables_accessed,columns_accessed\n";
+    const csvRows = rows.map((r) => {
+      const fields = [
+        csvField(r.id),
+        csvField(r.timestamp),
+        csvField(r.user_email ?? r.user_id ?? ""),
+        csvField(r.sql),
+        String(r.duration_ms),
+        String(r.row_count ?? ""),
+        String(r.success),
+        csvField(r.error),
+        csvField(r.source_id),
+        csvField(r.tables_accessed ? r.tables_accessed.join("; ") : null),
+        csvField(r.columns_accessed ? r.columns_accessed.join("; ") : null),
+      ];
+      return fields.join(",");
+    });
 
-      const csv = csvHeader + csvRows.join("\n");
-      const filename = `audit-log-${new Date().toISOString().slice(0, 10)}.csv`;
-      const truncated = totalAvailable > exportLimit;
+    const csv = csvHeader + csvRows.join("\n");
+    const filename = `audit-log-${new Date().toISOString().slice(0, 10)}.csv`;
+    const truncated = totalAvailable > exportLimit;
 
-      return new Response(csv, {
-        headers: {
-          "Content-Type": "text/csv; charset=utf-8",
-          "Content-Disposition": `attachment; filename="${filename}"`,
-          ...(truncated && {
-            "X-Export-Truncated": "true",
-            "X-Export-Total": String(totalAvailable),
-            "X-Export-Limit": String(exportLimit),
-          }),
-        },
-      });
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Audit export failed");
-      return c.json({ error: "internal_error", message: "Failed to export audit log." , requestId}, 500);
-    }
-  });
+    return new Response(csv, {
+      headers: {
+        "Content-Type": "text/csv; charset=utf-8",
+        "Content-Disposition": `attachment; filename="${filename}"`,
+        ...(truncated && {
+          "X-Export-Truncated": "true",
+          "X-Export-Total": String(totalAvailable),
+          "X-Export-Limit": String(exportLimit),
+        }),
+      },
+    });
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Audit export failed");
+    return c.json({ error: "internal_error", message: "Failed to export audit log." , requestId}, 500);
+  }
 });
 
 admin.openapi(getAuditStatsRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
 
   // Auth before feature-availability check to avoid info disclosure
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
-
+  const { requestId } = await adminAuthAndContext(c);
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    try {
-      const totalResult = await internalQuery<{ total: string; errors: string }>(
-        `SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE NOT success) as errors FROM audit_log WHERE deleted_at IS NULL`,
-      );
+  try {
+    const totalResult = await internalQuery<{ total: string; errors: string }>(
+      `SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE NOT success) as errors FROM audit_log WHERE deleted_at IS NULL`,
+    );
 
-      const total = parseInt(String(totalResult[0]?.total ?? "0"), 10);
-      const errors = parseInt(String(totalResult[0]?.errors ?? "0"), 10);
-      const errorRate = total > 0 ? (errors / total) * 100 : 0;
+    const total = parseInt(String(totalResult[0]?.total ?? "0"), 10);
+    const errors = parseInt(String(totalResult[0]?.errors ?? "0"), 10);
+    const errorRate = total > 0 ? (errors / total) * 100 : 0;
 
-      const dailyResult = await internalQuery<{ day: string; count: string }>(
-        `SELECT DATE(timestamp) as day, COUNT(*) as count FROM audit_log WHERE deleted_at IS NULL AND timestamp >= NOW() - INTERVAL '7 days' GROUP BY DATE(timestamp) ORDER BY day DESC`,
-      );
+    const dailyResult = await internalQuery<{ day: string; count: string }>(
+      `SELECT DATE(timestamp) as day, COUNT(*) as count FROM audit_log WHERE deleted_at IS NULL AND timestamp >= NOW() - INTERVAL '7 days' GROUP BY DATE(timestamp) ORDER BY day DESC`,
+    );
 
-      return c.json({
-        totalQueries: total,
-        totalErrors: errors,
-        errorRate,
-        queriesPerDay: dailyResult.map((r) => ({
-          day: r.day,
-          count: parseInt(String(r.count), 10),
-        })),
-      }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Audit stats query failed");
-      return c.json({ error: "internal_error", message: "Failed to query audit stats." , requestId}, 500);
-    }
-  });
+    return c.json({
+      totalQueries: total,
+      totalErrors: errors,
+      errorRate,
+      queriesPerDay: dailyResult.map((r) => ({
+        day: r.day,
+        count: parseInt(String(r.count), 10),
+      })),
+    }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Audit stats query failed");
+    return c.json({ error: "internal_error", message: "Failed to query audit stats." , requestId}, 500);
+  }
 });
 
 admin.openapi(getAuditFacetsRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
-
+  const { requestId } = await adminAuthAndContext(c);
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    // Use allSettled so one failing query doesn't block the other
-    const [tableResult, columnResult] = await Promise.allSettled([
-      internalQuery<{ val: string }>(
-        `SELECT DISTINCT jsonb_array_elements_text(tables_accessed) AS val FROM audit_log WHERE deleted_at IS NULL AND tables_accessed IS NOT NULL AND jsonb_typeof(tables_accessed) = 'array' ORDER BY val LIMIT 200`,
-      ),
-      internalQuery<{ val: string }>(
-        `SELECT DISTINCT jsonb_array_elements_text(columns_accessed) AS val FROM audit_log WHERE deleted_at IS NULL AND columns_accessed IS NOT NULL AND jsonb_typeof(columns_accessed) = 'array' ORDER BY val LIMIT 200`,
-      ),
-    ]);
+  // Use allSettled so one failing query doesn't block the other
+  const [tableResult, columnResult] = await Promise.allSettled([
+    internalQuery<{ val: string }>(
+      `SELECT DISTINCT jsonb_array_elements_text(tables_accessed) AS val FROM audit_log WHERE deleted_at IS NULL AND tables_accessed IS NOT NULL AND jsonb_typeof(tables_accessed) = 'array' ORDER BY val LIMIT 200`,
+    ),
+    internalQuery<{ val: string }>(
+      `SELECT DISTINCT jsonb_array_elements_text(columns_accessed) AS val FROM audit_log WHERE deleted_at IS NULL AND columns_accessed IS NOT NULL AND jsonb_typeof(columns_accessed) = 'array' ORDER BY val LIMIT 200`,
+    ),
+  ]);
 
-    if (tableResult.status === "rejected") {
-      log.warn({ err: tableResult.reason }, "Failed to load table facets");
-    }
-    if (columnResult.status === "rejected") {
-      log.warn({ err: columnResult.reason }, "Failed to load column facets");
-    }
+  if (tableResult.status === "rejected") {
+    log.warn({ err: tableResult.reason }, "Failed to load table facets");
+  }
+  if (columnResult.status === "rejected") {
+    log.warn({ err: columnResult.reason }, "Failed to load column facets");
+  }
 
-    return c.json({
-      tables: tableResult.status === "fulfilled" ? tableResult.value.map((r) => r.val) : [],
-      columns: columnResult.status === "fulfilled" ? columnResult.value.map((r) => r.val) : [],
-    }, 200);
-  });
+  return c.json({
+    tables: tableResult.status === "fulfilled" ? tableResult.value.map((r) => r.val) : [],
+    columns: columnResult.status === "fulfilled" ? columnResult.value.map((r) => r.val) : [],
+  }, 200);
 });
 
 // -- Audit Analytics --------------------------------------------------------
 
 admin.openapi(auditVolumeRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
-
+  const { requestId } = await adminAuthAndContext(c);
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const range = analyticsDateRange(c);
-    if ("error" in range) return c.json({ error: "invalid_request", message: range.error }, 400) as never;
+  const range = analyticsDateRange(c);
+  if ("error" in range) {
+    throw new HTTPException(400, { res: Response.json({ error: "invalid_request", message: range.error }, { status: 400 }) });
+  }
 
-    try {
-      const rows = await internalQuery<{ day: string; count: string; errors: string }>(
-        `SELECT DATE(timestamp) as day, COUNT(*) as count, COUNT(*) FILTER (WHERE NOT success) as errors
-         FROM audit_log ${range.where}
-         GROUP BY DATE(timestamp) ORDER BY day`,
-        range.params,
-      );
-      return c.json({
-        volume: rows.map((r) => ({
-          day: r.day,
-          count: parseInt(String(r.count), 10),
-          errors: parseInt(String(r.errors), 10),
-        })),
-      }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Audit analytics volume query failed");
-      return c.json({ error: "internal_error", message: "Failed to query volume analytics." , requestId}, 500);
-    }
-  }) as never;
+  try {
+    const rows = await internalQuery<{ day: string; count: string; errors: string }>(
+      `SELECT DATE(timestamp) as day, COUNT(*) as count, COUNT(*) FILTER (WHERE NOT success) as errors
+       FROM audit_log ${range.where}
+       GROUP BY DATE(timestamp) ORDER BY day`,
+      range.params,
+    );
+    return c.json({
+      volume: rows.map((r) => ({
+        day: r.day,
+        count: parseInt(String(r.count), 10),
+        errors: parseInt(String(r.errors), 10),
+      })),
+    }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Audit analytics volume query failed");
+    return c.json({ error: "internal_error", message: "Failed to query volume analytics." , requestId}, 500);
+  }
 });
 
 admin.openapi(auditSlowRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
-
+  const { requestId } = await adminAuthAndContext(c);
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const range = analyticsDateRange(c);
-    if ("error" in range) return c.json({ error: "invalid_request", message: range.error }, 400) as never;
+  const range = analyticsDateRange(c);
+  if ("error" in range) {
+    throw new HTTPException(400, { res: Response.json({ error: "invalid_request", message: range.error }, { status: 400 }) });
+  }
 
-    try {
-      const rows = await internalQuery<{
-        query: string;
-        avg_duration: string;
-        max_duration: string;
-        count: string;
-      }>(
-        `SELECT LEFT(sql, 200) as query,
-                ROUND(AVG(duration_ms)) as avg_duration,
-                MAX(duration_ms) as max_duration,
-                COUNT(*) as count
-         FROM audit_log ${range.where}
-         GROUP BY LEFT(sql, 200)
-         ORDER BY AVG(duration_ms) DESC
-         LIMIT 20`,
-        range.params,
-      );
-      return c.json({
-        queries: rows.map((r) => ({
-          query: r.query,
-          avgDuration: parseInt(String(r.avg_duration), 10),
-          maxDuration: parseInt(String(r.max_duration), 10),
-          count: parseInt(String(r.count), 10),
-        })),
-      }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Audit analytics slow query failed");
-      return c.json({ error: "internal_error", message: "Failed to query slow analytics." , requestId}, 500);
-    }
-  }) as never;
+  try {
+    const rows = await internalQuery<{
+      query: string;
+      avg_duration: string;
+      max_duration: string;
+      count: string;
+    }>(
+      `SELECT LEFT(sql, 200) as query,
+              ROUND(AVG(duration_ms)) as avg_duration,
+              MAX(duration_ms) as max_duration,
+              COUNT(*) as count
+       FROM audit_log ${range.where}
+       GROUP BY LEFT(sql, 200)
+       ORDER BY AVG(duration_ms) DESC
+       LIMIT 20`,
+      range.params,
+    );
+    return c.json({
+      queries: rows.map((r) => ({
+        query: r.query,
+        avgDuration: parseInt(String(r.avg_duration), 10),
+        maxDuration: parseInt(String(r.max_duration), 10),
+        count: parseInt(String(r.count), 10),
+      })),
+    }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Audit analytics slow query failed");
+    return c.json({ error: "internal_error", message: "Failed to query slow analytics." , requestId}, 500);
+  }
 });
 
 admin.openapi(auditFrequentRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
-
+  const { requestId } = await adminAuthAndContext(c);
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const range = analyticsDateRange(c);
-    if ("error" in range) return c.json({ error: "invalid_request", message: range.error }, 400) as never;
+  const range = analyticsDateRange(c);
+  if ("error" in range) {
+    throw new HTTPException(400, { res: Response.json({ error: "invalid_request", message: range.error }, { status: 400 }) });
+  }
 
-    try {
-      const rows = await internalQuery<{
-        query: string;
-        count: string;
-        avg_duration: string;
-        error_count: string;
-      }>(
-        `SELECT LEFT(sql, 200) as query,
-                COUNT(*) as count,
-                ROUND(AVG(duration_ms)) as avg_duration,
-                COUNT(*) FILTER (WHERE NOT success) as error_count
-         FROM audit_log ${range.where}
-         GROUP BY LEFT(sql, 200)
-         ORDER BY COUNT(*) DESC
-         LIMIT 20`,
-        range.params,
-      );
-      return c.json({
-        queries: rows.map((r) => ({
-          query: r.query,
-          count: parseInt(String(r.count), 10),
-          avgDuration: parseInt(String(r.avg_duration), 10),
-          errorCount: parseInt(String(r.error_count), 10),
-        })),
-      }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Audit analytics frequent query failed");
-      return c.json({ error: "internal_error", message: "Failed to query frequency analytics." , requestId}, 500);
-    }
-  }) as never;
+  try {
+    const rows = await internalQuery<{
+      query: string;
+      count: string;
+      avg_duration: string;
+      error_count: string;
+    }>(
+      `SELECT LEFT(sql, 200) as query,
+              COUNT(*) as count,
+              ROUND(AVG(duration_ms)) as avg_duration,
+              COUNT(*) FILTER (WHERE NOT success) as error_count
+       FROM audit_log ${range.where}
+       GROUP BY LEFT(sql, 200)
+       ORDER BY COUNT(*) DESC
+       LIMIT 20`,
+      range.params,
+    );
+    return c.json({
+      queries: rows.map((r) => ({
+        query: r.query,
+        count: parseInt(String(r.count), 10),
+        avgDuration: parseInt(String(r.avg_duration), 10),
+        errorCount: parseInt(String(r.error_count), 10),
+      })),
+    }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Audit analytics frequent query failed");
+    return c.json({ error: "internal_error", message: "Failed to query frequency analytics." , requestId}, 500);
+  }
 });
 
 admin.openapi(auditErrorsRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
-
+  const { requestId } = await adminAuthAndContext(c);
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const range = analyticsDateRange(c);
-    if ("error" in range) return c.json({ error: "invalid_request", message: range.error }, 400) as never;
+  const range = analyticsDateRange(c);
+  if ("error" in range) {
+    throw new HTTPException(400, { res: Response.json({ error: "invalid_request", message: range.error }, { status: 400 }) });
+  }
 
-    // range.where always includes at least "WHERE deleted_at IS NULL"
-    const errorCondition = `${range.where} AND NOT success`;
+  // range.where always includes at least "WHERE deleted_at IS NULL"
+  const errorCondition = `${range.where} AND NOT success`;
 
-    try {
-      const rows = await internalQuery<{ error: string; count: string }>(
-        `SELECT COALESCE(LEFT(error, 150), 'Unknown error') as error,
-                COUNT(*) as count
-         FROM audit_log ${errorCondition}
-         GROUP BY COALESCE(LEFT(error, 150), 'Unknown error')
-         ORDER BY COUNT(*) DESC
-         LIMIT 20`,
-        range.params,
-      );
-      return c.json({
-        errors: rows.map((r) => ({
-          error: r.error,
-          count: parseInt(String(r.count), 10),
-        })),
-      }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Audit analytics errors query failed");
-      return c.json({ error: "internal_error", message: "Failed to query error analytics." , requestId}, 500);
-    }
-  }) as never;
+  try {
+    const rows = await internalQuery<{ error: string; count: string }>(
+      `SELECT COALESCE(LEFT(error, 150), 'Unknown error') as error,
+              COUNT(*) as count
+       FROM audit_log ${errorCondition}
+       GROUP BY COALESCE(LEFT(error, 150), 'Unknown error')
+       ORDER BY COUNT(*) DESC
+       LIMIT 20`,
+      range.params,
+    );
+    return c.json({
+      errors: rows.map((r) => ({
+        error: r.error,
+        count: parseInt(String(r.count), 10),
+      })),
+    }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Audit analytics errors query failed");
+    return c.json({ error: "internal_error", message: "Failed to query error analytics." , requestId}, 500);
+  }
 });
 
 admin.openapi(auditUsersRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
-
+  const { requestId } = await adminAuthAndContext(c);
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const range = analyticsDateRange(c);
-    if ("error" in range) return c.json({ error: "invalid_request", message: range.error }, 400) as never;
+  const range = analyticsDateRange(c);
+  if ("error" in range) {
+    throw new HTTPException(400, { res: Response.json({ error: "invalid_request", message: range.error }, { status: 400 }) });
+  }
 
-    try {
-      const rows = await internalQuery<{
-        user_id: string;
-        user_email: string | null;
-        count: string;
-        avg_duration: string;
-        error_count: string;
-      }>(
-        `SELECT COALESCE(a.user_id, 'anonymous') as user_id,
-                u.email as user_email,
-                COUNT(*) as count,
-                ROUND(AVG(a.duration_ms)) as avg_duration,
-                COUNT(*) FILTER (WHERE NOT a.success) as error_count
-         FROM audit_log a
-         LEFT JOIN "user" u ON a.user_id = u.id
-         ${range.where}
-         GROUP BY COALESCE(a.user_id, 'anonymous'), u.email
-         ORDER BY COUNT(*) DESC
-         LIMIT 50`,
-        range.params,
-      );
-      return c.json({
-        users: rows.map((r) => {
-          const count = parseInt(String(r.count), 10);
-          const errorCount = parseInt(String(r.error_count), 10);
-          return {
-            userId: r.user_id,
-            userEmail: r.user_email,
-            count,
-            avgDuration: parseInt(String(r.avg_duration), 10),
-            errorCount,
-            errorRate: count > 0 ? errorCount / count : 0,
-          };
-        }),
-      }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Audit analytics users query failed");
-      return c.json({ error: "internal_error", message: "Failed to query user analytics." , requestId}, 500);
-    }
-  }) as never;
+  try {
+    const rows = await internalQuery<{
+      user_id: string;
+      user_email: string | null;
+      count: string;
+      avg_duration: string;
+      error_count: string;
+    }>(
+      `SELECT COALESCE(a.user_id, 'anonymous') as user_id,
+              u.email as user_email,
+              COUNT(*) as count,
+              ROUND(AVG(a.duration_ms)) as avg_duration,
+              COUNT(*) FILTER (WHERE NOT a.success) as error_count
+       FROM audit_log a
+       LEFT JOIN "user" u ON a.user_id = u.id
+       ${range.where}
+       GROUP BY COALESCE(a.user_id, 'anonymous'), u.email
+       ORDER BY COUNT(*) DESC
+       LIMIT 50`,
+      range.params,
+    );
+    return c.json({
+      users: rows.map((r) => {
+        const count = parseInt(String(r.count), 10);
+        const errorCount = parseInt(String(r.error_count), 10);
+        return {
+          userId: r.user_id,
+          userEmail: r.user_email,
+          count,
+          avgDuration: parseInt(String(r.avg_duration), 10),
+          errorCount,
+          errorRate: count > 0 ? errorCount / count : 0,
+        };
+      }),
+    }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Audit analytics users query failed");
+    return c.json({ error: "internal_error", message: "Failed to query user analytics." , requestId}, 500);
+  }
 });
 
 // -- Plugins ----------------------------------------------------------------
 
 admin.openapi(listPluginsRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
-
-  return withRequestContext({ requestId, user: authResult.user }, () => {
-    const pluginList = plugins.describe();
-    return c.json({ plugins: pluginList, manageable: hasInternalDB() }, 200);
-  });
+  const { requestId } = await adminAuthAndContext(c);
+  const pluginList = plugins.describe();
+  return c.json({ plugins: pluginList, manageable: hasInternalDB() }, 200);
 });
 
 admin.openapi(pluginHealthRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+
   const { id } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  const { requestId } = await adminAuthAndContext(c);
+  const plugin = plugins.get(id);
+  if (!plugin) {
+    return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const plugin = plugins.get(id);
-    if (!plugin) {
-      return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404) as never;
-    }
+  if (!plugin.healthCheck) {
+    return c.json({
+      healthy: true,
+      message: "Plugin does not implement healthCheck.",
+      status: plugins.getStatus(id) ?? null,
+    }, 200);
+  }
 
-    if (!plugin.healthCheck) {
-      return c.json({
-        healthy: true,
-        message: "Plugin does not implement healthCheck.",
-        status: plugins.getStatus(id),
-      }, 200);
-    }
-
-    try {
-      const result = await plugin.healthCheck();
-      return c.json({ ...result, status: plugins.getStatus(id) }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), pluginId: id }, "Plugin health check threw an exception");
-      return c.json({
-        error: "internal_error",
-        healthy: false,
-        message: "Plugin health check failed unexpectedly.",
-        status: plugins.getStatus(id),
-      }, 500);
-    }
-  }) as never;
+  try {
+    const result = await plugin.healthCheck();
+    return c.json({
+      healthy: result.healthy,
+      message: result.message ?? null,
+      latencyMs: result.latencyMs ?? null,
+      status: plugins.getStatus(id) ?? null,
+    }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), pluginId: id }, "Plugin health check threw an exception");
+    return c.json({
+      error: "internal_error",
+      healthy: false,
+      message: "Plugin health check failed unexpectedly.",
+      status: plugins.getStatus(id) ?? null,
+    }, 500);
+  }
 });
 
 admin.openapi(enablePluginRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+
   const { id } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  const { requestId } = await adminAuthAndContext(c);
+  const plugin = plugins.get(id);
+  if (!plugin) {
+    return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const plugin = plugins.get(id);
-    if (!plugin) {
-      return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404);
+  plugins.enable(id);
+
+  let persisted = false;
+  let warning: string | undefined;
+  if (hasInternalDB()) {
+    try {
+      await savePluginEnabled(id, true);
+      persisted = true;
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), pluginId: id }, "Failed to persist plugin enabled state");
+      warning = "Plugin enabled in memory but could not be persisted. State will reset on restart.";
     }
+  } else {
+    warning = "No internal database — state will reset on restart.";
+  }
 
-    plugins.enable(id);
-
-    let persisted = false;
-    let warning: string | undefined;
-    if (hasInternalDB()) {
-      try {
-        await savePluginEnabled(id, true);
-        persisted = true;
-      } catch (err) {
-        log.error({ err: err instanceof Error ? err : new Error(String(err)), pluginId: id }, "Failed to persist plugin enabled state");
-        warning = "Plugin enabled in memory but could not be persisted. State will reset on restart.";
-      }
-    } else {
-      warning = "No internal database — state will reset on restart.";
-    }
-
-    return c.json({ id, enabled: true, status: plugins.getStatus(id), persisted, warning }, 200);
-  }) as never;
+  return c.json({ id, enabled: true, status: plugins.getStatus(id) ?? null, persisted, warning }, 200);
 });
 
 admin.openapi(disablePluginRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+
   const { id } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  const { requestId } = await adminAuthAndContext(c);
+  const plugin = plugins.get(id);
+  if (!plugin) {
+    return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const plugin = plugins.get(id);
-    if (!plugin) {
-      return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404);
+  plugins.disable(id);
+
+  let persisted = false;
+  let warning: string | undefined;
+  if (hasInternalDB()) {
+    try {
+      await savePluginEnabled(id, false);
+      persisted = true;
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), pluginId: id }, "Failed to persist plugin disabled state");
+      warning = "Plugin disabled in memory but could not be persisted. State will reset on restart.";
     }
+  } else {
+    warning = "No internal database — state will reset on restart.";
+  }
 
-    plugins.disable(id);
-
-    let persisted = false;
-    let warning: string | undefined;
-    if (hasInternalDB()) {
-      try {
-        await savePluginEnabled(id, false);
-        persisted = true;
-      } catch (err) {
-        log.error({ err: err instanceof Error ? err : new Error(String(err)), pluginId: id }, "Failed to persist plugin disabled state");
-        warning = "Plugin disabled in memory but could not be persisted. State will reset on restart.";
-      }
-    } else {
-      warning = "No internal database — state will reset on restart.";
-    }
-
-    return c.json({ id, enabled: false, status: plugins.getStatus(id), persisted, warning }, 200);
-  }) as never;
+  return c.json({ id, enabled: false, status: plugins.getStatus(id) ?? null, persisted, warning }, 200);
 });
 
 admin.openapi(getPluginSchemaRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+
   const { id } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  const { requestId } = await adminAuthAndContext(c);
+  const plugin = plugins.get(id);
+  if (!plugin) {
+    return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const plugin = plugins.get(id);
-    if (!plugin) {
-      return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404);
+  const schema: ConfigSchemaField[] = typeof plugin.getConfigSchema === "function"
+    ? plugin.getConfigSchema()
+    : [];
+
+  // Build current values from plugin config + DB overrides
+  const pluginConfig = plugin.config != null && typeof plugin.config === "object"
+    ? (plugin.config as Record<string, unknown>)
+    : {};
+  const dbOverrides = await getPluginConfig(id);
+  const merged = { ...pluginConfig, ...dbOverrides };
+
+  // Mask secret values — use fixed placeholder to avoid leaking prefixes
+  const MASKED_PLACEHOLDER = "••••••••";
+  const maskedValues: Record<string, unknown> = {};
+  const secretKeys = new Set(schema.filter((f) => f.secret).map((f) => f.key));
+  for (const [key, value] of Object.entries(merged)) {
+    if (secretKeys.has(key) && typeof value === "string" && value.length > 0) {
+      maskedValues[key] = MASKED_PLACEHOLDER;
+    } else {
+      maskedValues[key] = value;
     }
+  }
 
-    const schema: ConfigSchemaField[] = typeof plugin.getConfigSchema === "function"
-      ? plugin.getConfigSchema()
-      : [];
+  return c.json({
+    id,
+    schema,
+    values: maskedValues,
+    hasSchema: schema.length > 0,
+    manageable: hasInternalDB(),
+  }, 200);
+});
 
-    // Build current values from plugin config + DB overrides
+admin.openapi(updatePluginConfigRoute, async (c) => {
+
+  const { id } = c.req.valid("param");
+
+  const { requestId } = await adminAuthAndContext(c);
+  const plugin = plugins.get(id);
+  if (!plugin) {
+    return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404);
+  }
+
+  if (!hasInternalDB()) {
+    return c.json({
+      error: "no_internal_db",
+      message: "Internal database required to save plugin configuration. Config is read-only.",
+    }, 409);
+  }
+
+  let body: Record<string, unknown>;
+  try {
+    body = await c.req.json();
+  } catch (err) {
+    log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in invite request");
+    return c.json({ error: "invalid_request", message: "Request body must be valid JSON." }, 400);
+  }
+
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return c.json({ error: "invalid_request", message: "Request body must be a JSON object." }, 400);
+  }
+
+  // Validate against schema if plugin provides one
+  const MASKED_PLACEHOLDER = "••••••••";
+  if (typeof plugin.getConfigSchema === "function") {
+    const schema = plugin.getConfigSchema();
+    const schemaKeys = new Set(schema.map((f) => f.key));
+    const errors: string[] = [];
+
+    // Restore masked secret values from original config
     const pluginConfig = plugin.config != null && typeof plugin.config === "object"
       ? (plugin.config as Record<string, unknown>)
       : {};
     const dbOverrides = await getPluginConfig(id);
-    const merged = { ...pluginConfig, ...dbOverrides };
+    const originals = { ...pluginConfig, ...dbOverrides };
 
-    // Mask secret values — use fixed placeholder to avoid leaking prefixes
-    const MASKED_PLACEHOLDER = "••••••••";
-    const maskedValues: Record<string, unknown> = {};
-    const secretKeys = new Set(schema.filter((f) => f.secret).map((f) => f.key));
-    for (const [key, value] of Object.entries(merged)) {
-      if (secretKeys.has(key) && typeof value === "string" && value.length > 0) {
-        maskedValues[key] = MASKED_PLACEHOLDER;
-      } else {
-        maskedValues[key] = value;
+    for (const field of schema) {
+      const value = body[field.key];
+
+      // If a secret field has the masked placeholder, restore the original value
+      if (field.secret && value === MASKED_PLACEHOLDER) {
+        if (originals[field.key] !== undefined) {
+          body[field.key] = originals[field.key];
+        }
+        continue;
+      }
+
+      if (field.required && (value === undefined || value === null || value === "")) {
+        errors.push(`"${field.key}" is required.`);
+        continue;
+      }
+
+      if (value === undefined || value === null) continue;
+
+      switch (field.type) {
+        case "string":
+          if (typeof value !== "string") errors.push(`"${field.key}" must be a string.`);
+          break;
+        case "number":
+          if (typeof value !== "number") errors.push(`"${field.key}" must be a number.`);
+          break;
+        case "boolean":
+          if (typeof value !== "boolean") errors.push(`"${field.key}" must be a boolean.`);
+          break;
+        case "select":
+          if (field.options && !field.options.includes(String(value))) {
+            errors.push(`"${field.key}" must be one of: ${field.options.join(", ")}.`);
+          }
+          break;
       }
     }
 
+    if (errors.length > 0) {
+      return c.json({
+        error: "validation_error",
+        message: "Config validation failed.",
+        details: errors,
+      }, 400);
+    }
+
+    // Strip keys not in the schema to prevent saving unvalidated data
+    for (const key of Object.keys(body)) {
+      if (!schemaKeys.has(key)) {
+        delete body[key];
+      }
+    }
+  }
+
+  try {
+    await savePluginConfig(id, body);
+    log.info({ pluginId: id, requestId }, "Plugin config updated");
     return c.json({
       id,
-      schema,
-      values: maskedValues,
-      hasSchema: schema.length > 0,
-      manageable: hasInternalDB(),
+      message: "Configuration saved. Changes take effect on next restart.",
     }, 200);
-  });
-});
-
-admin.openapi(updatePluginConfigRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-  const { id } = c.req.valid("param");
-
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), pluginId: id }, "Failed to save plugin config");
+    return c.json({ error: "internal_error", message: "Failed to save plugin configuration." , requestId}, 500);
   }
-  const { authResult } = preamble;
-
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const plugin = plugins.get(id);
-    if (!plugin) {
-      return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404);
-    }
-
-    if (!hasInternalDB()) {
-      return c.json({
-        error: "no_internal_db",
-        message: "Internal database required to save plugin configuration. Config is read-only.",
-      }, 409);
-    }
-
-    let body: Record<string, unknown>;
-    try {
-      body = await c.req.json();
-    } catch (err) {
-      log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in invite request");
-      return c.json({ error: "invalid_request", message: "Request body must be valid JSON." }, 400);
-    }
-
-    if (typeof body !== "object" || body === null || Array.isArray(body)) {
-      return c.json({ error: "invalid_request", message: "Request body must be a JSON object." }, 400);
-    }
-
-    // Validate against schema if plugin provides one
-    const MASKED_PLACEHOLDER = "••••••••";
-    if (typeof plugin.getConfigSchema === "function") {
-      const schema = plugin.getConfigSchema();
-      const schemaKeys = new Set(schema.map((f) => f.key));
-      const errors: string[] = [];
-
-      // Restore masked secret values from original config
-      const pluginConfig = plugin.config != null && typeof plugin.config === "object"
-        ? (plugin.config as Record<string, unknown>)
-        : {};
-      const dbOverrides = await getPluginConfig(id);
-      const originals = { ...pluginConfig, ...dbOverrides };
-
-      for (const field of schema) {
-        const value = body[field.key];
-
-        // If a secret field has the masked placeholder, restore the original value
-        if (field.secret && value === MASKED_PLACEHOLDER) {
-          if (originals[field.key] !== undefined) {
-            body[field.key] = originals[field.key];
-          }
-          continue;
-        }
-
-        if (field.required && (value === undefined || value === null || value === "")) {
-          errors.push(`"${field.key}" is required.`);
-          continue;
-        }
-
-        if (value === undefined || value === null) continue;
-
-        switch (field.type) {
-          case "string":
-            if (typeof value !== "string") errors.push(`"${field.key}" must be a string.`);
-            break;
-          case "number":
-            if (typeof value !== "number") errors.push(`"${field.key}" must be a number.`);
-            break;
-          case "boolean":
-            if (typeof value !== "boolean") errors.push(`"${field.key}" must be a boolean.`);
-            break;
-          case "select":
-            if (field.options && !field.options.includes(String(value))) {
-              errors.push(`"${field.key}" must be one of: ${field.options.join(", ")}.`);
-            }
-            break;
-        }
-      }
-
-      if (errors.length > 0) {
-        return c.json({
-          error: "validation_error",
-          message: "Config validation failed.",
-          details: errors,
-        }, 400);
-      }
-
-      // Strip keys not in the schema to prevent saving unvalidated data
-      for (const key of Object.keys(body)) {
-        if (!schemaKeys.has(key)) {
-          delete body[key];
-        }
-      }
-    }
-
-    try {
-      await savePluginConfig(id, body);
-      log.info({ pluginId: id, requestId }, "Plugin config updated");
-      return c.json({
-        id,
-        message: "Configuration saved. Changes take effect on next restart.",
-      }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), pluginId: id }, "Failed to save plugin config");
-      return c.json({ error: "internal_error", message: "Failed to save plugin configuration." , requestId}, 500);
-    }
-  });
 });
 
 // -- Password ---------------------------------------------------------------
 
 admin.openapi(getPasswordStatusRoute, async (c) => {
   const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = reqId(c);
 
   // Light auth: authenticate but don't require admin role
   let authResult: AuthResult;
@@ -3821,7 +3527,7 @@ admin.openapi(getPasswordStatusRoute, async (c) => {
 
 admin.openapi(changePasswordRoute, async (c) => {
   const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = reqId(c);
 
   let authResult: AuthResult;
   try {
@@ -3889,769 +3595,648 @@ admin.openapi(changePasswordRoute, async (c) => {
 // -- Sessions ---------------------------------------------------------------
 
 admin.openapi(listSessionsRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
-
+  const { requestId } = await adminAuthAndContext(c);
   if (!hasInternalDB() || detectAuthMode() !== "managed") {
     return c.json({ error: "not_available", message: "Session management requires managed auth mode." }, 404);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const rawLimit = parseInt(c.req.query("limit") ?? "50", 10);
-    const rawOffset = parseInt(c.req.query("offset") ?? "0", 10);
-    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 200) : 50;
-    const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
-    const search = c.req.query("search");
+  const rawLimit = parseInt(c.req.query("limit") ?? "50", 10);
+  const rawOffset = parseInt(c.req.query("offset") ?? "0", 10);
+  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 200) : 50;
+  const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
+  const search = c.req.query("search");
 
-    try {
-      const conditions: string[] = [];
-      const params: unknown[] = [];
-      let paramIdx = 1;
+  try {
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    let paramIdx = 1;
 
-      if (search) {
-        conditions.push(`(u.email ILIKE $${paramIdx} OR s."ipAddress" ILIKE $${paramIdx})`);
-        params.push(`%${escapeIlike(search)}%`);
-        paramIdx++;
-      }
-
-      const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-
-      const [rows, countResult] = await Promise.all([
-        internalQuery<{
-          id: string;
-          userId: string;
-          userEmail: string | null;
-          createdAt: string;
-          updatedAt: string;
-          expiresAt: string;
-          ipAddress: string | null;
-          userAgent: string | null;
-        }>(
-          `SELECT s.id, s."userId" AS "userId", u.email AS "userEmail",
-                  s."createdAt" AS "createdAt", s."updatedAt" AS "updatedAt",
-                  s."expiresAt" AS "expiresAt",
-                  s."ipAddress" AS "ipAddress", s."userAgent" AS "userAgent"
-           FROM session s
-           LEFT JOIN "user" u ON s."userId" = u.id
-           ${where}
-           ORDER BY s."updatedAt" DESC
-           LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
-          [...params, limit, offset],
-        ),
-        internalQuery<{ count: string }>(
-          `SELECT COUNT(*) AS count FROM session s LEFT JOIN "user" u ON s."userId" = u.id ${where}`,
-          params,
-        ),
-      ]);
-
-      return c.json({
-        sessions: rows.map((r) => ({
-          id: r.id,
-          userId: r.userId,
-          userEmail: r.userEmail,
-          createdAt: r.createdAt,
-          updatedAt: r.updatedAt,
-          expiresAt: r.expiresAt,
-          ipAddress: r.ipAddress,
-          userAgent: r.userAgent,
-        })),
-        total: parseInt(String(countResult[0]?.count ?? "0"), 10),
-        limit,
-        offset,
-      }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to list sessions");
-      return c.json({ error: "internal_error", message: "Failed to list sessions." , requestId}, 500);
+    if (search) {
+      conditions.push(`(u.email ILIKE $${paramIdx} OR s."ipAddress" ILIKE $${paramIdx})`);
+      params.push(`%${escapeIlike(search)}%`);
+      paramIdx++;
     }
-  });
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+    const [rows, countResult] = await Promise.all([
+      internalQuery<{
+        id: string;
+        userId: string;
+        userEmail: string | null;
+        createdAt: string;
+        updatedAt: string;
+        expiresAt: string;
+        ipAddress: string | null;
+        userAgent: string | null;
+      }>(
+        `SELECT s.id, s."userId" AS "userId", u.email AS "userEmail",
+                s."createdAt" AS "createdAt", s."updatedAt" AS "updatedAt",
+                s."expiresAt" AS "expiresAt",
+                s."ipAddress" AS "ipAddress", s."userAgent" AS "userAgent"
+         FROM session s
+         LEFT JOIN "user" u ON s."userId" = u.id
+         ${where}
+         ORDER BY s."updatedAt" DESC
+         LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
+        [...params, limit, offset],
+      ),
+      internalQuery<{ count: string }>(
+        `SELECT COUNT(*) AS count FROM session s LEFT JOIN "user" u ON s."userId" = u.id ${where}`,
+        params,
+      ),
+    ]);
+
+    return c.json({
+      sessions: rows.map((r) => ({
+        id: r.id,
+        userId: r.userId,
+        userEmail: r.userEmail,
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt,
+        expiresAt: r.expiresAt,
+        ipAddress: r.ipAddress,
+        userAgent: r.userAgent,
+      })),
+      total: parseInt(String(countResult[0]?.count ?? "0"), 10),
+      limit,
+      offset,
+    }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to list sessions");
+    return c.json({ error: "internal_error", message: "Failed to list sessions." , requestId}, 500);
+  }
 });
 
 admin.openapi(getSessionStatsRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
-
+  const { requestId } = await adminAuthAndContext(c);
   if (!hasInternalDB() || detectAuthMode() !== "managed") {
     return c.json({ error: "not_available", message: "Session management requires managed auth mode." }, 404);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    try {
-      const [totalResult, activeResult, uniqueUsersResult] = await Promise.all([
-        internalQuery<{ count: string }>(`SELECT COUNT(*) AS count FROM session`),
-        internalQuery<{ count: string }>(`SELECT COUNT(*) AS count FROM session WHERE "expiresAt" > NOW()`),
-        internalQuery<{ count: string }>(`SELECT COUNT(DISTINCT "userId") AS count FROM session WHERE "expiresAt" > NOW()`),
-      ]);
+  try {
+    const [totalResult, activeResult, uniqueUsersResult] = await Promise.all([
+      internalQuery<{ count: string }>(`SELECT COUNT(*) AS count FROM session`),
+      internalQuery<{ count: string }>(`SELECT COUNT(*) AS count FROM session WHERE "expiresAt" > NOW()`),
+      internalQuery<{ count: string }>(`SELECT COUNT(DISTINCT "userId") AS count FROM session WHERE "expiresAt" > NOW()`),
+    ]);
 
-      return c.json({
-        total: parseInt(String(totalResult[0]?.count ?? "0"), 10),
-        active: parseInt(String(activeResult[0]?.count ?? "0"), 10),
-        uniqueUsers: parseInt(String(uniqueUsersResult[0]?.count ?? "0"), 10),
-      }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to get session stats");
-      return c.json({ error: "internal_error", message: "Failed to get session stats." , requestId}, 500);
-    }
-  });
+    return c.json({
+      total: parseInt(String(totalResult[0]?.count ?? "0"), 10),
+      active: parseInt(String(activeResult[0]?.count ?? "0"), 10),
+      uniqueUsers: parseInt(String(uniqueUsersResult[0]?.count ?? "0"), 10),
+    }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to get session stats");
+    return c.json({ error: "internal_error", message: "Failed to get session stats." , requestId}, 500);
+  }
 });
 
 admin.openapi(deleteSessionRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+
   const { id: sessionId } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   if (!hasInternalDB() || detectAuthMode() !== "managed") {
     return c.json({ error: "not_available", message: "Session management requires managed auth mode." }, 404);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    try {
-      const deleted = await internalQuery<{ id: string }>(
-        `DELETE FROM session WHERE id = $1 RETURNING id`,
-        [sessionId],
-      );
-      if (deleted.length === 0) {
-        return c.json({ error: "not_found", message: "Session not found." }, 404);
-      }
-
-      log.info({ requestId, sessionId, actorId: authResult.user?.id }, "Session revoked");
-      return c.json({ success: true }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), sessionId }, "Failed to revoke session");
-      return c.json({ error: "internal_error", message: "Failed to revoke session." , requestId}, 500);
+  try {
+    const deleted = await internalQuery<{ id: string }>(
+      `DELETE FROM session WHERE id = $1 RETURNING id`,
+      [sessionId],
+    );
+    if (deleted.length === 0) {
+      return c.json({ error: "not_found", message: "Session not found." }, 404);
     }
-  });
+
+    log.info({ requestId, sessionId, actorId: authResult.user?.id }, "Session revoked");
+    return c.json({ success: true }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), sessionId }, "Failed to revoke session");
+    return c.json({ error: "internal_error", message: "Failed to revoke session." , requestId}, 500);
+  }
 });
 
 admin.openapi(deleteUserSessionsRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+
   const { userId } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   if (!hasInternalDB() || detectAuthMode() !== "managed") {
     return c.json({ error: "not_available", message: "Session management requires managed auth mode." }, 404);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    try {
-      const deleted = await internalQuery<{ id: string }>(
-        `DELETE FROM session WHERE "userId" = $1 RETURNING id`,
-        [userId],
-      );
-      if (deleted.length === 0) {
-        return c.json({ error: "not_found", message: "No sessions found for this user." }, 404);
-      }
-
-      const count = deleted.length;
-      log.info({ requestId, targetUserId: userId, count, actorId: authResult.user?.id }, "All user sessions revoked");
-      return c.json({ success: true, count }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to revoke user sessions");
-      return c.json({ error: "internal_error", message: "Failed to revoke user sessions." , requestId}, 500);
+  try {
+    const deleted = await internalQuery<{ id: string }>(
+      `DELETE FROM session WHERE "userId" = $1 RETURNING id`,
+      [userId],
+    );
+    if (deleted.length === 0) {
+      return c.json({ error: "not_found", message: "No sessions found for this user." }, 404);
     }
-  });
+
+    const count = deleted.length;
+    log.info({ requestId, targetUserId: userId, count, actorId: authResult.user?.id }, "All user sessions revoked");
+    return c.json({ success: true, count }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to revoke user sessions");
+    return c.json({ error: "internal_error", message: "Failed to revoke user sessions." , requestId}, 500);
+  }
 });
 
 // -- Users ------------------------------------------------------------------
 
 admin.openapi(listUsersRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
-
+  const { requestId } = await adminAuthAndContext(c);
   const adminApi = await getAdminApi();
   if (!adminApi) {
     return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const rawLimit = parseInt(c.req.query("limit") ?? "50", 10);
-    const rawOffset = parseInt(c.req.query("offset") ?? "0", 10);
-    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 200) : 50;
-    const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
-    const search = c.req.query("search");
-    const role = c.req.query("role");
+  const rawLimit = parseInt(c.req.query("limit") ?? "50", 10);
+  const rawOffset = parseInt(c.req.query("offset") ?? "0", 10);
+  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 200) : 50;
+  const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
+  const search = c.req.query("search");
+  const role = c.req.query("role");
 
-    try {
-      const result = await adminApi.listUsers({
-        query: {
-          limit,
-          offset,
-          ...(search ? { searchField: "email", searchValue: search, searchOperator: "contains" } : {}),
-          ...(role && isValidRole(role) ? { filterField: "role", filterValue: role, filterOperator: "eq" } : {}),
-          sortBy: "createdAt",
-          sortDirection: "desc",
-        },
-        headers: req.headers,
-      });
-
-      return c.json({
-        users: result.users.map((u: Record<string, unknown>) => ({
-          id: u.id,
-          email: u.email,
-          name: u.name,
-          role: u.role ?? "member",
-          banned: u.banned ?? false,
-          banReason: u.banReason ?? null,
-          banExpires: u.banExpires ?? null,
-          createdAt: u.createdAt,
-        })),
-        total: result.total,
+  try {
+    const result = await adminApi.listUsers({
+      query: {
         limit,
         offset,
-      }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to list users");
-      return c.json({ error: "internal_error", message: "Failed to list users." , requestId}, 500);
-    }
-  });
+        ...(search ? { searchField: "email", searchValue: search, searchOperator: "contains" } : {}),
+        ...(role && isValidRole(role) ? { filterField: "role", filterValue: role, filterOperator: "eq" } : {}),
+        sortBy: "createdAt",
+        sortDirection: "desc",
+      },
+      headers: c.req.raw.headers,
+    });
+
+    return c.json({
+      users: result.users.map((u: Record<string, unknown>) => ({
+        id: u.id,
+        email: u.email,
+        name: u.name,
+        role: u.role ?? "member",
+        banned: u.banned ?? false,
+        banReason: u.banReason ?? null,
+        banExpires: u.banExpires ?? null,
+        createdAt: u.createdAt,
+      })),
+      total: result.total,
+      limit,
+      offset,
+    }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to list users");
+    return c.json({ error: "internal_error", message: "Failed to list users." , requestId}, 500);
+  }
 });
 
 admin.openapi(getUserStatsRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
-
+  const { requestId } = await adminAuthAndContext(c);
   if (!hasInternalDB() || detectAuthMode() !== "managed") {
     return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    try {
-      const totalResult = await internalQuery<{ count: string }>(
-        `SELECT COUNT(*) as count FROM "user"`,
-      );
-      const roleResult = await internalQuery<{ role: string; count: string }>(
-        `SELECT COALESCE(role, 'member') as role, COUNT(*) as count FROM "user" GROUP BY COALESCE(role, 'member')`,
-      );
-      const bannedResult = await internalQuery<{ count: string }>(
-        `SELECT COUNT(*) as count FROM "user" WHERE banned = true`,
-      );
+  try {
+    const totalResult = await internalQuery<{ count: string }>(
+      `SELECT COUNT(*) as count FROM "user"`,
+    );
+    const roleResult = await internalQuery<{ role: string; count: string }>(
+      `SELECT COALESCE(role, 'member') as role, COUNT(*) as count FROM "user" GROUP BY COALESCE(role, 'member')`,
+    );
+    const bannedResult = await internalQuery<{ count: string }>(
+      `SELECT COUNT(*) as count FROM "user" WHERE banned = true`,
+    );
 
-      const total = parseInt(String(totalResult[0]?.count ?? "0"), 10);
-      const banned = parseInt(String(bannedResult[0]?.count ?? "0"), 10);
-      const byRole: Record<string, number> = {};
-      for (const r of roleResult) {
-        byRole[r.role] = parseInt(String(r.count), 10);
-      }
-
-      return c.json({ total, banned, byRole }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "User stats query failed");
-      return c.json({ error: "internal_error", message: "Failed to query user stats." , requestId}, 500);
+    const total = parseInt(String(totalResult[0]?.count ?? "0"), 10);
+    const banned = parseInt(String(bannedResult[0]?.count ?? "0"), 10);
+    const byRole: Record<string, number> = {};
+    for (const r of roleResult) {
+      byRole[r.role] = parseInt(String(r.count), 10);
     }
-  });
+
+    return c.json({ total, banned, byRole }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "User stats query failed");
+    return c.json({ error: "internal_error", message: "Failed to query user stats." , requestId}, 500);
+  }
 });
 
 admin.openapi(changeUserRoleRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+
   const { id: userId } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   const adminApi = await getAdminApi();
   if (!adminApi) {
     return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const body = await c.req.json().catch((err) => {
-      log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in role change request");
-      return null;
-    });
-    const newRole = body?.role;
-
-    if (!isValidRole(newRole)) {
-      return c.json({ error: "invalid_request", message: `Invalid role. Must be one of: ${ATLAS_ROLES.join(", ")}` }, 400);
-    }
-
-    // Self-protection: cannot change own role
-    if (authResult.user?.id === userId) {
-      return c.json({ error: "forbidden", message: "Cannot change your own role." , requestId}, 403);
-    }
-
-    // Last admin guard: if demoting an admin, ensure at least one admin remains
-    if (newRole !== "admin" && hasInternalDB()) {
-      try {
-        const currentUser = await internalQuery<{ role: string }>(
-          `SELECT role FROM "user" WHERE id = $1`,
-          [userId],
-        );
-        if (currentUser[0]?.role === "admin") {
-          const adminCount = await internalQuery<{ count: string }>(
-            `SELECT COUNT(*) as count FROM "user" WHERE role = 'admin'`,
-          );
-          if (parseInt(String(adminCount[0]?.count ?? "0"), 10) <= 1) {
-            return c.json({ error: "forbidden", message: "Cannot demote the last admin." , requestId}, 403);
-          }
-        }
-      } catch (err) {
-        log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Last admin guard check failed");
-        return c.json({ error: "internal_error", message: "Failed to verify admin count." , requestId}, 500);
-      }
-    }
-
-    try {
-      await adminApi.setRole({
-        body: { userId, role: newRole },
-        headers: req.headers,
-      });
-      log.info({ requestId, targetUserId: userId, newRole, actorId: authResult.user?.id }, "User role changed");
-      return c.json({ success: true }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to set user role");
-      return c.json({ error: "internal_error", message: "Failed to update user role." , requestId}, 500);
-    }
+  const body = await c.req.json().catch((err) => {
+    log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in role change request");
+    return null;
   });
+  const newRole = body?.role;
+
+  if (!isValidRole(newRole)) {
+    return c.json({ error: "invalid_request", message: `Invalid role. Must be one of: ${ATLAS_ROLES.join(", ")}` }, 400);
+  }
+
+  // Self-protection: cannot change own role
+  if (authResult.user?.id === userId) {
+    return c.json({ error: "forbidden", message: "Cannot change your own role." , requestId}, 403);
+  }
+
+  // Last admin guard: if demoting an admin, ensure at least one admin remains
+  if (newRole !== "admin" && hasInternalDB()) {
+    try {
+      const currentUser = await internalQuery<{ role: string }>(
+        `SELECT role FROM "user" WHERE id = $1`,
+        [userId],
+      );
+      if (currentUser[0]?.role === "admin") {
+        const adminCount = await internalQuery<{ count: string }>(
+          `SELECT COUNT(*) as count FROM "user" WHERE role = 'admin'`,
+        );
+        if (parseInt(String(adminCount[0]?.count ?? "0"), 10) <= 1) {
+          return c.json({ error: "forbidden", message: "Cannot demote the last admin." , requestId}, 403);
+        }
+      }
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Last admin guard check failed");
+      return c.json({ error: "internal_error", message: "Failed to verify admin count." , requestId}, 500);
+    }
+  }
+
+  try {
+    await adminApi.setRole({
+      body: { userId, role: newRole },
+      headers: c.req.raw.headers,
+    });
+    log.info({ requestId, targetUserId: userId, newRole, actorId: authResult.user?.id }, "User role changed");
+    return c.json({ success: true }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to set user role");
+    return c.json({ error: "internal_error", message: "Failed to update user role." , requestId}, 500);
+  }
 });
 
 admin.openapi(banUserRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+
   const { id: userId } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   const adminApi = await getAdminApi();
   if (!adminApi) {
     return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (authResult.user?.id === userId) {
-      return c.json({ error: "forbidden", message: "Cannot ban yourself." , requestId}, 403);
-    }
+  if (authResult.user?.id === userId) {
+    return c.json({ error: "forbidden", message: "Cannot ban yourself." , requestId}, 403);
+  }
 
-    const body = await c.req.json().catch((err) => {
-      log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in ban user request");
-      return {};
-    });
-
-    try {
-      await adminApi.banUser({
-        body: {
-          userId,
-          ...(body.reason ? { banReason: body.reason } : {}),
-          ...(body.expiresIn ? { banExpiresIn: body.expiresIn } : {}),
-        },
-        headers: req.headers,
-      });
-      log.info({ requestId, targetUserId: userId, reason: body.reason, actorId: authResult.user?.id }, "User banned");
-      return c.json({ success: true }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to ban user");
-      return c.json({ error: "internal_error", message: "Failed to ban user." , requestId}, 500);
-    }
+  const body = await c.req.json().catch((err) => {
+    log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in ban user request");
+    return {};
   });
+
+  try {
+    await adminApi.banUser({
+      body: {
+        userId,
+        ...(body.reason ? { banReason: body.reason } : {}),
+        ...(body.expiresIn ? { banExpiresIn: body.expiresIn } : {}),
+      },
+      headers: c.req.raw.headers,
+    });
+    log.info({ requestId, targetUserId: userId, reason: body.reason, actorId: authResult.user?.id }, "User banned");
+    return c.json({ success: true }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to ban user");
+    return c.json({ error: "internal_error", message: "Failed to ban user." , requestId}, 500);
+  }
 });
 
 admin.openapi(unbanUserRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+
   const { id: userId } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   const adminApi = await getAdminApi();
   if (!adminApi) {
     return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    try {
-      await adminApi.unbanUser({
-        body: { userId },
-        headers: req.headers,
-      });
-      log.info({ requestId, targetUserId: userId, actorId: authResult.user?.id }, "User unbanned");
-      return c.json({ success: true }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to unban user");
-      return c.json({ error: "internal_error", message: "Failed to unban user." , requestId}, 500);
-    }
-  });
+  try {
+    await adminApi.unbanUser({
+      body: { userId },
+      headers: c.req.raw.headers,
+    });
+    log.info({ requestId, targetUserId: userId, actorId: authResult.user?.id }, "User unbanned");
+    return c.json({ success: true }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to unban user");
+    return c.json({ error: "internal_error", message: "Failed to unban user." , requestId}, 500);
+  }
 });
 
 admin.openapi(deleteUserRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+
   const { id: userId } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   const adminApi = await getAdminApi();
   if (!adminApi) {
     return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (authResult.user?.id === userId) {
-      return c.json({ error: "forbidden", message: "Cannot delete yourself." , requestId}, 403);
-    }
+  if (authResult.user?.id === userId) {
+    return c.json({ error: "forbidden", message: "Cannot delete yourself." , requestId}, 403);
+  }
 
-    // Last admin guard
-    if (hasInternalDB()) {
-      try {
-        const currentUser = await internalQuery<{ role: string }>(
-          `SELECT role FROM "user" WHERE id = $1`,
-          [userId],
-        );
-        if (currentUser[0]?.role === "admin") {
-          const adminCount = await internalQuery<{ count: string }>(
-            `SELECT COUNT(*) as count FROM "user" WHERE role = 'admin'`,
-          );
-          if (parseInt(String(adminCount[0]?.count ?? "0"), 10) <= 1) {
-            return c.json({ error: "forbidden", message: "Cannot delete the last admin." , requestId}, 403);
-          }
-        }
-      } catch (err) {
-        log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Last admin guard check failed");
-        return c.json({ error: "internal_error", message: "Failed to verify admin count." , requestId}, 500);
-      }
-    }
-
+  // Last admin guard
+  if (hasInternalDB()) {
     try {
-      await adminApi.removeUser({
-        body: { userId },
-        headers: req.headers,
-      });
-      log.info({ requestId, targetUserId: userId, actorId: authResult.user?.id }, "User deleted");
-      return c.json({ success: true }, 200);
+      const currentUser = await internalQuery<{ role: string }>(
+        `SELECT role FROM "user" WHERE id = $1`,
+        [userId],
+      );
+      if (currentUser[0]?.role === "admin") {
+        const adminCount = await internalQuery<{ count: string }>(
+          `SELECT COUNT(*) as count FROM "user" WHERE role = 'admin'`,
+        );
+        if (parseInt(String(adminCount[0]?.count ?? "0"), 10) <= 1) {
+          return c.json({ error: "forbidden", message: "Cannot delete the last admin." , requestId}, 403);
+        }
+      }
     } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to delete user");
-      return c.json({ error: "internal_error", message: "Failed to delete user." , requestId}, 500);
+      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Last admin guard check failed");
+      return c.json({ error: "internal_error", message: "Failed to verify admin count." , requestId}, 500);
     }
-  });
+  }
+
+  try {
+    await adminApi.removeUser({
+      body: { userId },
+      headers: c.req.raw.headers,
+    });
+    log.info({ requestId, targetUserId: userId, actorId: authResult.user?.id }, "User deleted");
+    return c.json({ success: true }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to delete user");
+    return c.json({ error: "internal_error", message: "Failed to delete user." , requestId}, 500);
+  }
 });
 
 admin.openapi(revokeUserSessionsRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+
   const { id: userId } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   const adminApi = await getAdminApi();
   if (!adminApi) {
     return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    try {
-      await adminApi.revokeSessions({
-        body: { userId },
-        headers: req.headers,
-      });
-      log.info({ requestId, targetUserId: userId, actorId: authResult.user?.id }, "User sessions revoked");
-      return c.json({ success: true }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to revoke sessions");
-      return c.json({ error: "internal_error", message: "Failed to revoke sessions." , requestId}, 500);
-    }
-  });
+  try {
+    await adminApi.revokeSessions({
+      body: { userId },
+      headers: c.req.raw.headers,
+    });
+    log.info({ requestId, targetUserId: userId, actorId: authResult.user?.id }, "User sessions revoked");
+    return c.json({ success: true }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to revoke sessions");
+    return c.json({ error: "internal_error", message: "Failed to revoke sessions." , requestId}, 500);
+  }
 });
 
 // -- Invitations ------------------------------------------------------------
 
 admin.openapi(inviteUserRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   if (!hasInternalDB() || detectAuthMode() !== "managed") {
     return c.json({ error: "not_available", message: "User invitations require managed auth mode." }, 404);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const body = await c.req.json().catch((err) => {
-      log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in invite request");
-      return null;
-    });
+  const body = await c.req.json().catch((err) => {
+    log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in invite request");
+    return null;
+  });
 
-    const email = typeof body?.email === "string" ? body.email.toLowerCase().trim() : "";
-    const role = body?.role;
+  const email = typeof body?.email === "string" ? body.email.toLowerCase().trim() : "";
+  const role = body?.role;
 
-    if (!email || !isValidEmail(email)) {
-      return c.json({ error: "invalid_request", message: "A valid email address is required." }, 400);
+  if (!email || !isValidEmail(email)) {
+    return c.json({ error: "invalid_request", message: "A valid email address is required." }, 400);
+  }
+
+  if (!isValidRole(role)) {
+    return c.json({ error: "invalid_request", message: `Invalid role. Must be one of: ${ATLAS_ROLES.join(", ")}` }, 400);
+  }
+
+  // Check for existing user and pending invitation in parallel
+  let existing: { id: string }[];
+  let pending: { id: string }[];
+  try {
+    [existing, pending] = await Promise.all([
+      internalQuery<{ id: string }>(
+        `SELECT id FROM "user" WHERE email = $1 LIMIT 1`,
+        [email],
+      ),
+      internalQuery<{ id: string }>(
+        `SELECT id FROM invitations WHERE email = $1 AND status = 'pending' AND expires_at > now() LIMIT 1`,
+        [email],
+      ),
+    ]);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to check existing user/invitation");
+    return c.json({ error: "internal_error", message: "Failed to validate invitation." , requestId}, 500);
+  }
+
+  if (existing.length > 0) {
+    return c.json({ error: "conflict", message: "A user with this email already exists." }, 409);
+  }
+  if (pending.length > 0) {
+    return c.json({ error: "conflict", message: "A pending invitation for this email already exists." }, 409);
+  }
+
+  // Create invitation
+  const token = crypto.randomUUID();
+  const expiresAt = new Date(Date.now() + INVITE_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
+
+  try {
+    const rows = await internalQuery<{ id: string; created_at: string }>(
+      `INSERT INTO invitations (email, role, token, invited_by, expires_at)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id, created_at`,
+      [email, role, token, authResult.user?.id ?? null, expiresAt.toISOString()],
+    );
+
+    const invitation = rows[0];
+    if (!invitation) {
+      log.error({ email, role, requestId }, "INSERT RETURNING returned no rows");
+      return c.json({ error: "internal_error", message: "Failed to create invitation." , requestId}, 500);
     }
+    const baseUrl = resolveBaseUrl(c.req.raw);
+    const inviteUrl = `${baseUrl}/?invite=${token}`;
 
-    if (!isValidRole(role)) {
-      return c.json({ error: "invalid_request", message: `Invalid role. Must be one of: ${ATLAS_ROLES.join(", ")}` }, 400);
-    }
-
-    // Check for existing user and pending invitation in parallel
-    let existing: { id: string }[];
-    let pending: { id: string }[];
-    try {
-      [existing, pending] = await Promise.all([
-        internalQuery<{ id: string }>(
-          `SELECT id FROM "user" WHERE email = $1 LIMIT 1`,
-          [email],
-        ),
-        internalQuery<{ id: string }>(
-          `SELECT id FROM invitations WHERE email = $1 AND status = 'pending' AND expires_at > now() LIMIT 1`,
-          [email],
-        ),
-      ]);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to check existing user/invitation");
-      return c.json({ error: "internal_error", message: "Failed to validate invitation." , requestId}, 500);
-    }
-
-    if (existing.length > 0) {
-      return c.json({ error: "conflict", message: "A user with this email already exists." }, 409);
-    }
-    if (pending.length > 0) {
-      return c.json({ error: "conflict", message: "A pending invitation for this email already exists." }, 409);
-    }
-
-    // Create invitation
-    const token = crypto.randomUUID();
-    const expiresAt = new Date(Date.now() + INVITE_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
-
-    try {
-      const rows = await internalQuery<{ id: string; created_at: string }>(
-        `INSERT INTO invitations (email, role, token, invited_by, expires_at)
-         VALUES ($1, $2, $3, $4, $5)
-         RETURNING id, created_at`,
-        [email, role, token, authResult.user?.id ?? null, expiresAt.toISOString()],
-      );
-
-      const invitation = rows[0];
-      if (!invitation) {
-        log.error({ email, role, requestId }, "INSERT RETURNING returned no rows");
-        return c.json({ error: "internal_error", message: "Failed to create invitation." , requestId}, 500);
-      }
-      const baseUrl = resolveBaseUrl(req);
-      const inviteUrl = `${baseUrl}/?invite=${token}`;
-
-      // Attempt email delivery via Resend if configured
-      let emailSent = false;
-      let emailError: string | undefined;
-      const resendKey = process.env.RESEND_API_KEY;
-      if (resendKey) {
-        try {
-          const fromAddr = process.env.ATLAS_EMAIL_FROM ?? "Atlas <noreply@useatlas.dev>";
-          const res = await fetch("https://api.resend.com/emails", {
-            method: "POST",
-            headers: { Authorization: `Bearer ${resendKey}`, "Content-Type": "application/json" },
-            body: JSON.stringify({
-              from: fromAddr,
-              to: [email],
-              subject: "You've been invited to Atlas",
-              html: `<p>You've been invited to join Atlas as <strong>${role}</strong>.</p>
+    // Attempt email delivery via Resend if configured
+    let emailSent = false;
+    let emailError: string | undefined;
+    const resendKey = process.env.RESEND_API_KEY;
+    if (resendKey) {
+      try {
+        const fromAddr = process.env.ATLAS_EMAIL_FROM ?? "Atlas <noreply@useatlas.dev>";
+        const res = await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${resendKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            from: fromAddr,
+            to: [email],
+            subject: "You've been invited to Atlas",
+            html: `<p>You've been invited to join Atlas as <strong>${role}</strong>.</p>
 <p><a href="${inviteUrl}">Accept invitation</a></p>
 <p>This invitation expires on ${expiresAt.toLocaleDateString()}.</p>
 <p>If you didn't expect this invitation, you can safely ignore this email.</p>`,
-            }),
-          });
-          emailSent = res.ok;
-          if (!res.ok) {
-            // intentionally ignored: best-effort error body extraction for logging
-            const errorBody = await res.text().catch(() => "");
-            emailError = `Delivery failed (HTTP ${res.status})`;
-            log.error({ status: res.status, email, responseBody: errorBody }, "Failed to send invite email via Resend");
-          }
-        } catch (err) {
-          emailError = err instanceof Error ? err.message : "Network error";
-          log.error({ err: err instanceof Error ? err.message : String(err), email }, "Resend email delivery failed");
+          }),
+        });
+        emailSent = res.ok;
+        if (!res.ok) {
+          // intentionally ignored: best-effort error body extraction for logging
+          const errorBody = await res.text().catch(() => "");
+          emailError = `Delivery failed (HTTP ${res.status})`;
+          log.error({ status: res.status, email, responseBody: errorBody }, "Failed to send invite email via Resend");
         }
+      } catch (err) {
+        emailError = err instanceof Error ? err.message : "Network error";
+        log.error({ err: err instanceof Error ? err.message : String(err), email }, "Resend email delivery failed");
       }
-
-      log.info({
-        requestId,
-        invitationId: invitation.id,
-        email,
-        role,
-        emailSent,
-        actorId: authResult.user?.id,
-      }, "User invited");
-
-      return c.json({
-        id: invitation.id,
-        email,
-        role,
-        token,
-        inviteUrl,
-        emailSent,
-        ...(emailError ? { emailError } : {}),
-        expiresAt: expiresAt.toISOString(),
-        createdAt: invitation.created_at,
-      }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to create invitation");
-      return c.json({ error: "internal_error", message: "Failed to create invitation." , requestId}, 500);
     }
-  });
+
+    log.info({
+      requestId,
+      invitationId: invitation.id,
+      email,
+      role,
+      emailSent,
+      actorId: authResult.user?.id,
+    }, "User invited");
+
+    return c.json({
+      id: invitation.id,
+      email,
+      role,
+      token,
+      inviteUrl,
+      emailSent,
+      ...(emailError ? { emailError } : {}),
+      expiresAt: expiresAt.toISOString(),
+      createdAt: invitation.created_at,
+    }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to create invitation");
+    return c.json({ error: "internal_error", message: "Failed to create invitation." , requestId}, 500);
+  }
 });
 
 admin.openapi(listInvitationsRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
-
+  const { requestId } = await adminAuthAndContext(c);
   if (!hasInternalDB() || detectAuthMode() !== "managed") {
     return c.json({ error: "not_available", message: "User invitations require managed auth mode." }, 404);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const status = c.req.query("status");
-    const validStatuses = ["pending", "accepted", "revoked", "expired"];
+  const status = c.req.query("status");
+  const validStatuses = ["pending", "accepted", "revoked", "expired"];
 
-    try {
-      let sql = `SELECT i.id, i.email, i.role, i.status, i.invited_by, u.email AS invited_by_email, i.expires_at, i.accepted_at, i.created_at
-                 FROM invitations i
-                 LEFT JOIN "user" u ON i.invited_by = u.id`;
-      const params: unknown[] = [];
+  try {
+    let sql = `SELECT i.id, i.email, i.role, i.status, i.invited_by, u.email AS invited_by_email, i.expires_at, i.accepted_at, i.created_at
+               FROM invitations i
+               LEFT JOIN "user" u ON i.invited_by = u.id`;
+    const params: unknown[] = [];
 
-      if (status && validStatuses.includes(status)) {
-        if (status === "expired") {
-          // "expired" is a virtual status — pending invitations past their expiry
-          sql += ` WHERE i.status = 'pending' AND i.expires_at <= now()`;
-        } else {
-          sql += ` WHERE i.status = $1`;
-          params.push(status);
-        }
+    if (status && validStatuses.includes(status)) {
+      if (status === "expired") {
+        // "expired" is a virtual status — pending invitations past their expiry
+        sql += ` WHERE i.status = 'pending' AND i.expires_at <= now()`;
+      } else {
+        sql += ` WHERE i.status = $1`;
+        params.push(status);
       }
-
-      sql += ` ORDER BY i.created_at DESC LIMIT 100`;
-
-      const rows = await internalQuery<{
-        id: string;
-        email: string;
-        role: string;
-        status: string;
-        invited_by: string | null;
-        invited_by_email: string | null;
-        expires_at: string;
-        accepted_at: string | null;
-        created_at: string;
-      }>(sql, params);
-
-      // Mark expired invitations as expired in the response
-      const now = new Date();
-      const invitations = rows.map((inv) => ({
-        ...inv,
-        status: inv.status === "pending" && new Date(inv.expires_at) < now ? "expired" : inv.status,
-      }));
-
-      return c.json({ invitations }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to list invitations");
-      return c.json({ error: "internal_error", message: "Failed to list invitations." , requestId}, 500);
     }
-  });
+
+    sql += ` ORDER BY i.created_at DESC LIMIT 100`;
+
+    const rows = await internalQuery<{
+      id: string;
+      email: string;
+      role: string;
+      status: string;
+      invited_by: string | null;
+      invited_by_email: string | null;
+      expires_at: string;
+      accepted_at: string | null;
+      created_at: string;
+    }>(sql, params);
+
+    // Mark expired invitations as expired in the response
+    const now = new Date();
+    const invitations = rows.map((inv) => ({
+      ...inv,
+      status: inv.status === "pending" && new Date(inv.expires_at) < now ? "expired" : inv.status,
+    }));
+
+    return c.json({ invitations }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to list invitations");
+    return c.json({ error: "internal_error", message: "Failed to list invitations." , requestId}, 500);
+  }
 });
 
 admin.openapi(revokeInvitationRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+
   const { id: invitationId } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   if (!hasInternalDB() || detectAuthMode() !== "managed") {
     return c.json({ error: "not_available", message: "User invitations require managed auth mode." }, 404);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    try {
-      const result = await internalQuery<{ id: string }>(
-        `UPDATE invitations SET status = 'revoked' WHERE id = $1 AND status = 'pending' RETURNING id`,
-        [invitationId],
-      );
+  try {
+    const result = await internalQuery<{ id: string }>(
+      `UPDATE invitations SET status = 'revoked' WHERE id = $1 AND status = 'pending' RETURNING id`,
+      [invitationId],
+    );
 
-      if (result.length === 0) {
-        return c.json({ error: "not_found", message: "Invitation not found or already resolved." }, 404);
-      }
-
-      log.info({ requestId, invitationId, actorId: authResult.user?.id }, "Invitation revoked");
-      return c.json({ success: true }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), invitationId }, "Failed to revoke invitation");
-      return c.json({ error: "internal_error", message: "Failed to revoke invitation." , requestId}, 500);
+    if (result.length === 0) {
+      return c.json({ error: "not_found", message: "Invitation not found or already resolved." }, 404);
     }
-  });
+
+    log.info({ requestId, invitationId, actorId: authResult.user?.id }, "Invitation revoked");
+    return c.json({ success: true }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), invitationId }, "Failed to revoke invitation");
+    return c.json({ error: "internal_error", message: "Failed to revoke invitation." , requestId}, 500);
+  }
 });
 
 // -- Tokens -----------------------------------------------------------------
 
 admin.openapi(getTokenSummaryRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
+  const { requestId } = await adminAuthAndContext(c);
 
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Token usage tracking requires an internal database (DATABASE_URL)." }, 404);
@@ -4697,13 +4282,7 @@ admin.openapi(getTokenSummaryRoute, async (c) => {
 });
 
 admin.openapi(getTokensByUserRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
+  const { requestId } = await adminAuthAndContext(c);
 
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Token usage tracking requires an internal database (DATABASE_URL)." }, 404);
@@ -4764,13 +4343,7 @@ admin.openapi(getTokensByUserRoute, async (c) => {
 });
 
 admin.openapi(getTokenTrendsRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
+  const { requestId } = await adminAuthAndContext(c);
 
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Token usage tracking requires an internal database (DATABASE_URL)." }, 404);
@@ -4824,32 +4397,17 @@ admin.openapi(getTokenTrendsRoute, async (c) => {
 // -- Settings ---------------------------------------------------------------
 
 admin.openapi(getSettingsRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
-
-  return withRequestContext({ requestId, user: authResult.user }, () => {
-    const settings = getSettingsForAdmin();
-    const manageable = hasInternalDB();
-    return c.json({ settings, manageable }, 200);
-  });
+  const { requestId } = await adminAuthAndContext(c);
+  const settings = getSettingsForAdmin();
+  const manageable = hasInternalDB();
+  return c.json({ settings, manageable }, 200);
 });
 
 admin.openapi(updateSettingRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+
   const { key } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   if (!hasInternalDB()) {
     return c.json(
@@ -4858,75 +4416,68 @@ admin.openapi(updateSettingRoute, async (c) => {
     );
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    // Validate that the key is in the registry
-    const registry = getSettingsRegistry();
-    const def = registry.find((s) => s.key === key);
-    if (!def) {
-      return c.json({ error: "invalid_request", message: `Unknown setting: "${key}".` }, 400);
-    }
+  // Validate that the key is in the registry
+  const registry = getSettingsRegistry();
+  const def = registry.find((s) => s.key === key);
+  if (!def) {
+    return c.json({ error: "invalid_request", message: `Unknown setting: "${key}".` }, 400);
+  }
 
-    // Secret settings are read-only
-    if (def.secret) {
-      return c.json({ error: "forbidden", message: "Secret settings cannot be modified from the UI." , requestId}, 403);
-    }
+  // Secret settings are read-only
+  if (def.secret) {
+    return c.json({ error: "forbidden", message: "Secret settings cannot be modified from the UI." , requestId}, 403);
+  }
 
-    let body: { value?: unknown };
-    try {
-      body = (await c.req.json()) as { value?: unknown };
-    } catch (err) {
-      log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in settings update request");
-      return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
-    }
+  let body: { value?: unknown };
+  try {
+    body = (await c.req.json()) as { value?: unknown };
+  } catch (err) {
+    log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in settings update request");
+    return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+  }
 
-    if (body.value === undefined || body.value === null) {
-      return c.json({ error: "invalid_request", message: "Missing 'value' in request body." }, 400);
-    }
+  if (body.value === undefined || body.value === null) {
+    return c.json({ error: "invalid_request", message: "Missing 'value' in request body." }, 400);
+  }
 
-    const value = String(body.value);
+  const value = String(body.value);
 
-    // Type-specific validation
-    if (def.type === "number") {
-      if (value === "") {
-        return c.json({ error: "invalid_request", message: `"${key}" cannot be empty. Use DELETE to revert to default.` }, 400);
-      }
-      const num = Number(value);
-      if (!Number.isFinite(num) || num < 0) {
-        return c.json({ error: "invalid_request", message: `"${key}" must be a non-negative number.` }, 400);
-      }
+  // Type-specific validation
+  if (def.type === "number") {
+    if (value === "") {
+      return c.json({ error: "invalid_request", message: `"${key}" cannot be empty. Use DELETE to revert to default.` }, 400);
     }
-    if (def.type === "boolean") {
-      if (!["true", "false"].includes(value)) {
-        return c.json({ error: "invalid_request", message: `"${key}" must be "true" or "false".` }, 400);
-      }
+    const num = Number(value);
+    if (!Number.isFinite(num) || num < 0) {
+      return c.json({ error: "invalid_request", message: `"${key}" must be a non-negative number.` }, 400);
     }
-    if (def.type === "select" && def.options) {
-      if (value !== "" && !def.options.includes(value)) {
-        return c.json({ error: "invalid_request", message: `"${key}" must be one of: ${def.options.join(", ")}.` }, 400);
-      }
+  }
+  if (def.type === "boolean") {
+    if (!["true", "false"].includes(value)) {
+      return c.json({ error: "invalid_request", message: `"${key}" must be "true" or "false".` }, 400);
     }
+  }
+  if (def.type === "select" && def.options) {
+    if (value !== "" && !def.options.includes(value)) {
+      return c.json({ error: "invalid_request", message: `"${key}" must be one of: ${def.options.join(", ")}.` }, 400);
+    }
+  }
 
-    try {
-      await setSetting(key, value, authResult.user?.id);
-      log.info({ requestId, key, actorId: authResult.user?.id }, "Setting override saved via admin API");
-      return c.json({ success: true, key, value }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), key }, "Failed to save setting");
-      return c.json({ error: "internal_error", message: "Failed to save setting." , requestId}, 500);
-    }
-  });
+  try {
+    await setSetting(key, value, authResult.user?.id);
+    log.info({ requestId, key, actorId: authResult.user?.id }, "Setting override saved via admin API");
+    return c.json({ success: true, key, value }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), key }, "Failed to save setting");
+    return c.json({ error: "internal_error", message: "Failed to save setting." , requestId}, 500);
+  }
 });
 
 admin.openapi(deleteSettingRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+
   const { key } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   if (!hasInternalDB()) {
     return c.json(
@@ -4935,27 +4486,25 @@ admin.openapi(deleteSettingRoute, async (c) => {
     );
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    // Validate that the key is in the registry
-    const registry = getSettingsRegistry();
-    const def = registry.find((s) => s.key === key);
-    if (!def) {
-      return c.json({ error: "invalid_request", message: `Unknown setting: "${key}".` }, 400);
-    }
+  // Validate that the key is in the registry
+  const registry = getSettingsRegistry();
+  const def = registry.find((s) => s.key === key);
+  if (!def) {
+    return c.json({ error: "invalid_request", message: `Unknown setting: "${key}".` }, 400);
+  }
 
-    if (def.secret) {
-      return c.json({ error: "forbidden", message: "Secret settings cannot be modified from the UI." , requestId}, 403);
-    }
+  if (def.secret) {
+    return c.json({ error: "forbidden", message: "Secret settings cannot be modified from the UI." , requestId}, 403);
+  }
 
-    try {
-      await deleteSetting(key, authResult.user?.id);
-      log.info({ requestId, key, actorId: authResult.user?.id }, "Setting override removed via admin API");
-      return c.json({ success: true, key }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), key }, "Failed to delete setting");
-      return c.json({ error: "internal_error", message: "Failed to delete setting." , requestId}, 500);
-    }
-  });
+  try {
+    await deleteSetting(key, authResult.user?.id);
+    log.info({ requestId, key, actorId: authResult.user?.id }, "Setting override removed via admin API");
+    return c.json({ success: true, key }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), key }, "Failed to delete setting");
+    return c.json({ error: "internal_error", message: "Failed to delete setting." , requestId}, 500);
+  }
 });
 
 export { admin };

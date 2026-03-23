@@ -8,9 +8,8 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
-import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
+import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
-import { adminAuthPreamble } from "./admin-auth";
 import {
   getWorkspaceBranding,
   setWorkspaceBranding,
@@ -18,23 +17,29 @@ import {
   BrandingError,
 } from "@atlas/ee/branding/white-label";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
+import { adminAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("admin-branding");
 
 const BRANDING_ERROR_STATUS = { validation: 400, not_found: 404 } as const;
 
-/** Map branding-related errors to HTTP responses. Handles both BrandingError instances
- *  and enterprise license errors (detected via error message substring match).
- *  Returns null for unrecognized errors (caller falls through to generic 500). */
-function brandingErrorResponse(err: unknown): { body: Record<string, unknown>; status: 400 | 403 | 404 } | null {
+/**
+ * Throw HTTPException for known branding errors. Enterprise license
+ * errors → 403; BrandingError → 400/404. Unknown errors fall through.
+ */
+function throwIfBrandingError(err: unknown): void {
   const message = err instanceof Error ? err.message : String(err);
   if (message.includes("Enterprise features")) {
-    return { body: { error: "enterprise_required", message }, status: 403 };
+    throw new HTTPException(403, {
+      res: Response.json({ error: "enterprise_required", message }, { status: 403 }),
+    });
   }
   if (err instanceof BrandingError) {
-    return { body: { error: err.code, message: err.message }, status: BRANDING_ERROR_STATUS[err.code] };
+    const status = BRANDING_ERROR_STATUS[err.code];
+    throw new HTTPException(status, {
+      res: Response.json({ error: err.code, message: err.message }, { status }),
+    });
   }
-  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -221,123 +226,104 @@ const deleteBrandingRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const adminBranding = new OpenAPIHono({ defaultHook: validationHook });
+const adminBranding = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
+
+adminBranding.use(adminAuth);
+adminBranding.use(requestContext);
 
 adminBranding.onError((err, c) => {
-  if (err instanceof HTTPException && err.status === 400) {
-    return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
+  if (err instanceof HTTPException) {
+    // Our thrown HTTPExceptions carry a JSON Response
+    if (err.res) return err.res;
+    // Framework 400 for malformed JSON
+    if (err.status === 400) {
+      return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
+    }
   }
   throw err;
 });
 
 // GET / — get workspace branding
 adminBranding.openapi(getBrandingRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-    }
-
-    try {
-      const branding = await getWorkspaceBranding(orgId);
-      return c.json({ branding }, 200);
-    } catch (err) {
-      const mapped = brandingErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get workspace branding");
-      return c.json({ error: "internal_error", message: "Failed to get workspace branding.", requestId }, 500);
-    }
-  }) as never;
+  try {
+    const branding = await getWorkspaceBranding(orgId);
+    return c.json({ branding }, 200);
+  } catch (err) {
+    throwIfBrandingError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get workspace branding");
+    return c.json({ error: "internal_error", message: "Failed to get workspace branding.", requestId }, 500);
+  }
 });
 
 // PUT / — set workspace branding
 adminBranding.openapi(setBrandingRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-    }
+  const body = c.req.valid("json");
 
-    const body = c.req.valid("json");
-
-    try {
-      const branding = await setWorkspaceBranding(orgId, {
-        logoUrl: body.logoUrl,
-        logoText: body.logoText,
-        primaryColor: body.primaryColor,
-        faviconUrl: body.faviconUrl,
-        hideAtlasBranding: body.hideAtlasBranding,
-      });
-      return c.json({ branding }, 200);
-    } catch (err) {
-      const mapped = brandingErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to save workspace branding");
-      return c.json({ error: "internal_error", message: "Failed to save workspace branding.", requestId }, 500);
-    }
-  }) as never;
+  try {
+    const branding = await setWorkspaceBranding(orgId, {
+      logoUrl: body.logoUrl,
+      logoText: body.logoText,
+      primaryColor: body.primaryColor,
+      faviconUrl: body.faviconUrl,
+      hideAtlasBranding: body.hideAtlasBranding,
+    });
+    return c.json({ branding }, 200);
+  } catch (err) {
+    throwIfBrandingError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to save workspace branding");
+    return c.json({ error: "internal_error", message: "Failed to save workspace branding.", requestId }, 500);
+  }
 });
 
 // DELETE / — reset workspace branding
 adminBranding.openapi(deleteBrandingRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+  try {
+    const deleted = await deleteWorkspaceBranding(orgId);
+    if (!deleted) {
+      return c.json({ error: "not_found", message: "No custom branding found." }, 404);
     }
-
-    try {
-      const deleted = await deleteWorkspaceBranding(orgId);
-      if (!deleted) {
-        return c.json({ error: "not_found", message: "No custom branding found." }, 404);
-      }
-      return c.json({ message: "Branding reset to Atlas defaults." }, 200);
-    } catch (err) {
-      const mapped = brandingErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to reset workspace branding");
-      return c.json({ error: "internal_error", message: "Failed to reset workspace branding.", requestId }, 500);
-    }
-  }) as never;
+    return c.json({ message: "Branding reset to Atlas defaults." }, 200);
+  } catch (err) {
+    throwIfBrandingError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to reset workspace branding");
+    return c.json({ error: "internal_error", message: "Failed to reset workspace branding.", requestId }, 500);
+  }
 });
 
 export { adminBranding };

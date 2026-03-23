@@ -14,11 +14,11 @@ import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { Parser } from "node-sql-parser";
-import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
-import { authPreamble } from "./auth-preamble";
+import { createLogger } from "@atlas/api/lib/logger";
 import { validateSQL, parserDatabase } from "@atlas/api/lib/tools/sql";
 import { connections, detectDBType } from "@atlas/api/lib/db/connection";
 import { ErrorSchema } from "./shared-schemas";
+import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("validate-sql");
 const parser = new Parser();
@@ -106,14 +106,20 @@ const validateRoute = createRoute({
   },
 });
 
-export const validateSqlRoute = new OpenAPIHono({ defaultHook: validationHook });
+export const validateSqlRoute = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
+
+validateSqlRoute.use(standardAuth);
+validateSqlRoute.use(requestContext);
 
 // Normalize JSON parse errors from @hono/zod-openapi into the standard API error format.
 // The framework throws HTTPException(400) for unparseable JSON bodies; this preserves
 // the original { error: "invalid_request", message: "Invalid JSON body." } contract.
 validateSqlRoute.onError((err, c) => {
-  if (err instanceof HTTPException && err.status === 400) {
-    return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+  if (err instanceof HTTPException) {
+    if (err.res) return err.res;
+    if (err.status === 400) {
+      return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+    }
   }
   throw err;
 });
@@ -121,69 +127,55 @@ validateSqlRoute.onError((err, c) => {
 validateSqlRoute.openapi(
   validateRoute,
   async (c) => {
-    const req = c.req.raw;
-    const requestId = crypto.randomUUID();
-
-    const preamble = await authPreamble(req, requestId);
-    if ("error" in preamble) {
-      // Auth errors return dynamic status codes (401/403/429/500). These are declared in the
-      // route responses for spec accuracy, but TypeScript can't narrow the union at the call
-      // site — `as never` is required until auth moves to middleware in Phase 2.
-      return c.json(preamble.error, preamble.status, preamble.headers) as never;
-    }
-    const { authResult } = preamble;
-
     const { sql, connectionId } = c.req.valid("json");
 
-    return withRequestContext({ requestId, user: authResult.user }, () => {
-      const result = validateSQL(sql, connectionId);
+    const result = validateSQL(sql, connectionId);
 
-      if (!result.valid) {
-        return c.json({
-          valid: false,
-          errors: [{ layer: inferLayer(result.error!), message: result.error! }],
-          tables: [],
-        }, 200);
-      }
+    if (!result.valid) {
+      return c.json({
+        valid: false,
+        errors: [{ layer: inferLayer(result.error!), message: result.error! }],
+        tables: [],
+      }, 200);
+    }
 
-      // Extract referenced tables from the valid query.
-      // getDBType/detectDBType are outside the catch — operational errors
-      // (missing connection, bad config) should propagate, not be swallowed.
-      let tables: string[] = [];
-      let dbType: string;
-      if (connectionId) {
-        dbType = connections.getDBType(connectionId);
-      } else {
-        dbType = detectDBType();
-      }
-      const trimmed = sql.trim().replace(/;\s*$/, "");
-      try {
-        const tableRefs = parser.tableList(trimmed, {
-          database: parserDatabase(dbType, connectionId),
-        });
-        tables = [
-          ...new Set(
-            tableRefs
-              .map((ref) => {
-                // tableList returns "action::schema::table" format
-                const parts = ref.split("::");
-                const table = parts[2]?.toLowerCase() ?? "";
-                const schema = parts[1]?.toLowerCase();
-                if (!table) return "";
-                return schema && schema !== "null" ? `${schema}.${table}` : table;
-              })
-              .filter(Boolean),
-          ),
-        ];
-      } catch (err) {
-        log.warn(
-          { err: err instanceof Error ? err : new Error(String(err)), sql: trimmed },
-          "Table extraction failed for valid query",
-        );
-      }
+    // Extract referenced tables from the valid query.
+    // getDBType/detectDBType are outside the catch — operational errors
+    // (missing connection, bad config) should propagate, not be swallowed.
+    let tables: string[] = [];
+    let dbType: string;
+    if (connectionId) {
+      dbType = connections.getDBType(connectionId);
+    } else {
+      dbType = detectDBType();
+    }
+    const trimmed = sql.trim().replace(/;\s*$/, "");
+    try {
+      const tableRefs = parser.tableList(trimmed, {
+        database: parserDatabase(dbType, connectionId),
+      });
+      tables = [
+        ...new Set(
+          tableRefs
+            .map((ref) => {
+              // tableList returns "action::schema::table" format
+              const parts = ref.split("::");
+              const table = parts[2]?.toLowerCase() ?? "";
+              const schema = parts[1]?.toLowerCase();
+              if (!table) return "";
+              return schema && schema !== "null" ? `${schema}.${table}` : table;
+            })
+            .filter(Boolean),
+        ),
+      ];
+    } catch (err) {
+      log.warn(
+        { err: err instanceof Error ? err : new Error(String(err)), sql: trimmed },
+        "Table extraction failed for valid query",
+      );
+    }
 
-      return c.json({ valid: true, errors: [], tables }, 200);
-    });
+    return c.json({ valid: true, errors: [], tables }, 200);
   },
   (result, c) => {
     if (!result.success) {

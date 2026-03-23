@@ -14,7 +14,7 @@
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { validationHook } from "./validation-hook";
 import { z } from "zod";
-import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
+import { createLogger } from "@atlas/api/lib/logger";
 import {
   hasInternalDB,
   getSuggestionsByTables,
@@ -22,8 +22,8 @@ import {
   incrementSuggestionClick,
 } from "@atlas/api/lib/db/internal";
 import { toQuerySuggestion } from "@atlas/api/lib/learn/suggestion-helpers";
-import { authPreamble } from "./auth-preamble";
 import { ErrorSchema } from "./shared-schemas";
+import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("suggestions");
 
@@ -162,18 +162,15 @@ const trackClickRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-export const suggestions = new OpenAPIHono({ defaultHook: validationHook });
+export const suggestions = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
+
+suggestions.use(standardAuth);
+suggestions.use(requestContext);
 
 // GET / — contextual suggestions by table
 suggestions.openapi(listSuggestionsRoute, async (c) => {
-  const requestId = crypto.randomUUID();
-  const req = c.req.raw;
-
-  const preamble = await authPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
   if (!hasInternalDB()) {
     return c.json({ suggestions: [], total: 0 }, 200);
@@ -188,27 +185,19 @@ suggestions.openapi(listSuggestionsRoute, async (c) => {
   const limit = Math.min(Math.max(parseInt(limitParam ?? "10", 10) || 10, 1), 50);
   const orgId = authResult.user?.activeOrganizationId ?? null;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    try {
-      const rows = await getSuggestionsByTables(orgId, tables, limit);
-      return c.json({ suggestions: rows.map(toQuerySuggestion), total: rows.length }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to fetch suggestions");
-      return c.json({ error: "internal_error", message: "Failed to fetch suggestions.", requestId }, 500);
-    }
-  });
+  try {
+    const rows = await getSuggestionsByTables(orgId, tables, limit);
+    return c.json({ suggestions: rows.map(toQuerySuggestion), total: rows.length }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to fetch suggestions");
+    return c.json({ error: "internal_error", message: "Failed to fetch suggestions.", requestId }, 500);
+  }
 });
 
 // GET /popular — top suggestions across all tables
 suggestions.openapi(listPopularRoute, async (c) => {
-  const requestId = crypto.randomUUID();
-  const req = c.req.raw;
-
-  const preamble = await authPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
   if (!hasInternalDB()) {
     return c.json({ suggestions: [], total: 0 }, 200);
@@ -218,28 +207,21 @@ suggestions.openapi(listPopularRoute, async (c) => {
   const limit = Math.min(Math.max(parseInt(limitParam ?? "10", 10) || 10, 1), 50);
   const orgId = authResult.user?.activeOrganizationId ?? null;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    try {
-      const rows = await getPopularSuggestions(orgId, limit);
-      return c.json({ suggestions: rows.map(toQuerySuggestion), total: rows.length }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to fetch popular suggestions");
-      return c.json({ error: "internal_error", message: "Failed to fetch suggestions.", requestId }, 500);
-    }
-  });
+  try {
+    const rows = await getPopularSuggestions(orgId, limit);
+    return c.json({ suggestions: rows.map(toQuerySuggestion), total: rows.length }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to fetch popular suggestions");
+    return c.json({ error: "internal_error", message: "Failed to fetch suggestions.", requestId }, 500);
+  }
 });
 
 // POST /:id/click — track engagement
 suggestions.openapi(trackClickRoute, async (c) => {
-  const requestId = crypto.randomUUID();
-  const req = c.req.raw;
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await authPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-
-  const orgId = preamble.authResult.user?.activeOrganizationId ?? null;
+  const orgId = authResult.user?.activeOrganizationId ?? null;
   const { id } = c.req.valid("param");
 
   // Fire-and-forget: always return 204

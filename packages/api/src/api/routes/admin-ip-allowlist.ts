@@ -8,10 +8,9 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
-import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
+import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { getClientIP } from "@atlas/api/lib/auth/middleware";
-import { adminAuthPreamble } from "./admin-auth";
 import {
   listIPAllowlistEntries,
   addIPAllowlistEntry,
@@ -19,6 +18,7 @@ import {
   IPAllowlistError,
 } from "@atlas/ee/auth/ip-allowlist";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
+import { adminAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("admin-ip-allowlist");
 
@@ -30,16 +30,23 @@ function isValidId(id: string | undefined): id is string {
 
 const IP_ALLOWLIST_ERROR_STATUS = { validation: 400, conflict: 409, not_found: 404 } as const;
 
-/** Map IP allowlist errors to HTTP responses. Returns null if not a known error. */
-function ipAllowlistErrorResponse(err: unknown): { body: Record<string, unknown>; status: 400 | 403 | 404 | 409 } | null {
+/**
+ * Throw HTTPException for known IP allowlist errors. Enterprise license
+ * errors → 403; IPAllowlistError → 400/404/409. Unknown errors fall through.
+ */
+function throwIfIPAllowlistError(err: unknown): void {
   const message = err instanceof Error ? err.message : String(err);
   if (message.includes("Enterprise features")) {
-    return { body: { error: "enterprise_required", message }, status: 403 };
+    throw new HTTPException(403, {
+      res: Response.json({ error: "enterprise_required", message }, { status: 403 }),
+    });
   }
   if (err instanceof IPAllowlistError) {
-    return { body: { error: err.code, message: err.message }, status: IP_ALLOWLIST_ERROR_STATUS[err.code] };
+    const status = IP_ALLOWLIST_ERROR_STATUS[err.code];
+    throw new HTTPException(status, {
+      res: Response.json({ error: err.code, message: err.message }, { status }),
+    });
   }
-  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -229,133 +236,114 @@ const deleteEntryRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const adminIPAllowlist = new OpenAPIHono({ defaultHook: validationHook });
+const adminIPAllowlist = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
+
+adminIPAllowlist.use(adminAuth);
+adminIPAllowlist.use(requestContext);
 
 adminIPAllowlist.onError((err, c) => {
-  if (err instanceof HTTPException && err.status === 400) {
-    return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
+  if (err instanceof HTTPException) {
+    // Our thrown HTTPExceptions carry a JSON Response
+    if (err.res) return err.res;
+    // Framework 400 for malformed JSON
+    if (err.status === 400) {
+      return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
+    }
   }
   throw err;
 });
 
 // GET / — list IP allowlist entries for the active org
 adminIPAllowlist.openapi(listEntriesRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-    }
+  const callerIP = getClientIP(c.req.raw);
 
-    const callerIP = getClientIP(req);
-
-    try {
-      const entries = await listIPAllowlistEntries(orgId);
-      return c.json({ entries, total: entries.length, callerIP }, 200);
-    } catch (err) {
-      const mapped = ipAllowlistErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to list IP allowlist entries");
-      return c.json({ error: "internal_error", message: "Failed to list IP allowlist entries.", requestId }, 500);
-    }
-  }) as never;
+  try {
+    const entries = await listIPAllowlistEntries(orgId);
+    return c.json({ entries, total: entries.length, callerIP }, 200);
+  } catch (err) {
+    throwIfIPAllowlistError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to list IP allowlist entries");
+    return c.json({ error: "internal_error", message: "Failed to list IP allowlist entries.", requestId }, 500);
+  }
 });
 
 // POST / — add a CIDR range to the allowlist
 adminIPAllowlist.openapi(addEntryRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-    }
+  const body = c.req.valid("json");
 
-    const body = c.req.valid("json");
+  if (!body.cidr) {
+    return c.json({ error: "bad_request", message: "Missing required field: cidr." }, 400);
+  }
 
-    if (!body.cidr) {
-      return c.json({ error: "bad_request", message: "Missing required field: cidr." }, 400);
-    }
-
-    try {
-      const entry = await addIPAllowlistEntry(
-        orgId,
-        body.cidr,
-        body.description ?? null,
-        authResult.user?.id ?? null,
-      );
-      return c.json({ entry }, 201);
-    } catch (err) {
-      const mapped = ipAllowlistErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to add IP allowlist entry");
-      return c.json({ error: "internal_error", message: "Failed to add IP allowlist entry.", requestId }, 500);
-    }
-  }) as never;
+  try {
+    const entry = await addIPAllowlistEntry(
+      orgId,
+      body.cidr,
+      body.description ?? null,
+      authResult.user?.id ?? null,
+    );
+    return c.json({ entry }, 201);
+  } catch (err) {
+    throwIfIPAllowlistError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to add IP allowlist entry");
+    return c.json({ error: "internal_error", message: "Failed to add IP allowlist entry.", requestId }, 500);
+  }
 });
 
 // DELETE /:id — remove an IP allowlist entry
 adminIPAllowlist.openapi(deleteEntryRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
   const { id: entryId } = c.req.valid("param");
 
   if (!isValidId(entryId)) {
     return c.json({ error: "bad_request", message: "Invalid entry ID." }, 400);
   }
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+  try {
+    const deleted = await removeIPAllowlistEntry(orgId, entryId);
+    if (!deleted) {
+      return c.json({ error: "not_found", message: "IP allowlist entry not found." }, 404);
     }
-
-    try {
-      const deleted = await removeIPAllowlistEntry(orgId, entryId);
-      if (!deleted) {
-        return c.json({ error: "not_found", message: "IP allowlist entry not found." }, 404);
-      }
-      return c.json({ message: "IP allowlist entry removed." }, 200);
-    } catch (err) {
-      const mapped = ipAllowlistErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, entryId }, "Failed to remove IP allowlist entry");
-      return c.json({ error: "internal_error", message: "Failed to remove IP allowlist entry.", requestId }, 500);
-    }
-  }) as never;
+    return c.json({ message: "IP allowlist entry removed." }, 200);
+  } catch (err) {
+    throwIfIPAllowlistError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, entryId }, "Failed to remove IP allowlist entry");
+    return c.json({ error: "internal_error", message: "Failed to remove IP allowlist entry.", requestId }, 500);
+  }
 });
 
 export { adminIPAllowlist };

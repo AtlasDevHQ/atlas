@@ -15,18 +15,23 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
-import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
+import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
-import { adminAuthPreamble } from "./admin-auth";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
+import { adminAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("admin-audit-retention");
 
-/** Map retention errors to HTTP responses. Returns null if not a known error. */
-function retentionErrorResponse(err: unknown): { body: Record<string, unknown>; status: 400 | 403 | 404 } | null {
+/**
+ * Throw HTTPException for known retention errors. Enterprise license
+ * errors → 403; RetentionError → 400/404. Unknown errors fall through.
+ */
+function throwIfRetentionError(err: unknown): void {
   const message = err instanceof Error ? err.message : String(err);
   if (message.includes("Enterprise features")) {
-    return { body: { error: "enterprise_required", message }, status: 403 };
+    throw new HTTPException(403, {
+      res: Response.json({ error: "enterprise_required", message }, { status: 403 }),
+    });
   }
   // Dynamically import to check error type
   if (err && typeof err === "object" && "code" in err && "name" in err) {
@@ -34,10 +39,11 @@ function retentionErrorResponse(err: unknown): { body: Record<string, unknown>; 
     if (typedErr.name === "RetentionError") {
       const statusMap = { validation: 400, not_found: 404 } as const;
       const status = statusMap[typedErr.code as keyof typeof statusMap] ?? 400;
-      return { body: { error: typedErr.code, message: typedErr.message }, status };
+      throw new HTTPException(status, {
+        res: Response.json({ error: typedErr.code, message: typedErr.message }, { status }),
+      });
     }
   }
-  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -319,225 +325,188 @@ const hardDeleteRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const adminAuditRetention = new OpenAPIHono({ defaultHook: validationHook });
+const adminAuditRetention = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
+
+adminAuditRetention.use(adminAuth);
+adminAuditRetention.use(requestContext);
 
 adminAuditRetention.onError((err, c) => {
-  if (err instanceof HTTPException && err.status === 400) {
-    return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
+  if (err instanceof HTTPException) {
+    // Our thrown HTTPExceptions carry a JSON Response
+    if (err.res) return err.res;
+    // Framework 400 for malformed JSON
+    if (err.status === 400) {
+      return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
+    }
   }
   throw err;
 });
 
 // GET / — get current retention policy
 adminAuditRetention.openapi(getRetentionRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-    }
-
-    try {
-      const { getRetentionPolicy } = await import("@atlas/ee/audit/retention");
-      const policy = await getRetentionPolicy(orgId);
-      return c.json({ policy }, 200);
-    } catch (err) {
-      const mapped = retentionErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get retention policy");
-      return c.json({ error: "internal_error", message: "Failed to get retention policy.", requestId }, 500);
-    }
-  }) as never;
+  try {
+    const { getRetentionPolicy } = await import("@atlas/ee/audit/retention");
+    const policy = await getRetentionPolicy(orgId);
+    return c.json({ policy }, 200);
+  } catch (err) {
+    throwIfRetentionError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get retention policy");
+    return c.json({ error: "internal_error", message: "Failed to get retention policy.", requestId }, 500);
+  }
 });
 
 // PUT / — update retention policy
 adminAuditRetention.openapi(updateRetentionRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-    }
+  const body = c.req.valid("json");
 
-    const body = c.req.valid("json");
-
-    try {
-      const { setRetentionPolicy } = await import("@atlas/ee/audit/retention");
-      const policy = await setRetentionPolicy(
-        orgId,
-        {
-          retentionDays: body.retentionDays,
-          hardDeleteDelayDays: body.hardDeleteDelayDays,
-        },
-        authResult.user?.id ?? null,
-      );
-      return c.json({ policy }, 200);
-    } catch (err) {
-      const mapped = retentionErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to update retention policy");
-      return c.json({ error: "internal_error", message: "Failed to update retention policy.", requestId }, 500);
-    }
-  }) as never;
+  try {
+    const { setRetentionPolicy } = await import("@atlas/ee/audit/retention");
+    const policy = await setRetentionPolicy(
+      orgId,
+      {
+        retentionDays: body.retentionDays,
+        hardDeleteDelayDays: body.hardDeleteDelayDays,
+      },
+      authResult.user?.id ?? null,
+    );
+    return c.json({ policy }, 200);
+  } catch (err) {
+    throwIfRetentionError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to update retention policy");
+    return c.json({ error: "internal_error", message: "Failed to update retention policy.", requestId }, 500);
+  }
 });
 
 // POST /export — compliance export
 adminAuditRetention.openapi(exportRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-    }
+  const body = c.req.valid("json");
 
-    const body = c.req.valid("json");
+  try {
+    const { exportAuditLog } = await import("@atlas/ee/audit/retention");
+    const result = await exportAuditLog({
+      orgId,
+      format: body.format,
+      startDate: body.startDate,
+      endDate: body.endDate,
+    });
 
-    try {
-      const { exportAuditLog } = await import("@atlas/ee/audit/retention");
-      const result = await exportAuditLog({
-        orgId,
-        format: body.format,
-        startDate: body.startDate,
-        endDate: body.endDate,
-      });
-
-      if (result.format === "csv") {
-        const filename = `audit-log-${orgId}-${new Date().toISOString().slice(0, 10)}.csv`;
-        return new Response(result.content, {
-          headers: {
-            "Content-Type": "text/csv; charset=utf-8",
-            "Content-Disposition": `attachment; filename="${filename}"`,
-            ...(result.truncated && {
-              "X-Export-Truncated": "true",
-              "X-Export-Total": String(result.totalAvailable),
-            }),
-          },
-        }) as never;
-      }
-
-      // JSON format
-      const filename = `audit-log-${orgId}-${new Date().toISOString().slice(0, 10)}.json`;
+    if (result.format === "csv") {
+      const filename = `audit-log-${orgId}-${new Date().toISOString().slice(0, 10)}.csv`;
       return new Response(result.content, {
         headers: {
-          "Content-Type": "application/json; charset=utf-8",
+          "Content-Type": "text/csv; charset=utf-8",
           "Content-Disposition": `attachment; filename="${filename}"`,
           ...(result.truncated && {
             "X-Export-Truncated": "true",
             "X-Export-Total": String(result.totalAvailable),
           }),
         },
-      }) as never;
-    } catch (err) {
-      const mapped = retentionErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to export audit log");
-      return c.json({ error: "internal_error", message: "Failed to export audit log.", requestId }, 500);
+      });
     }
-  }) as never;
+
+    // JSON format
+    const filename = `audit-log-${orgId}-${new Date().toISOString().slice(0, 10)}.json`;
+    return new Response(result.content, {
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        "Content-Disposition": `attachment; filename="${filename}"`,
+        ...(result.truncated && {
+          "X-Export-Truncated": "true",
+          "X-Export-Total": String(result.totalAvailable),
+        }),
+      },
+    });
+  } catch (err) {
+    throwIfRetentionError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to export audit log");
+    return c.json({ error: "internal_error", message: "Failed to export audit log.", requestId }, 500);
+  }
 });
 
 // POST /purge — manual soft-delete purge
 adminAuditRetention.openapi(purgeRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-    }
-
-    try {
-      const { purgeExpiredEntries } = await import("@atlas/ee/audit/retention");
-      const results = await purgeExpiredEntries(orgId);
-      return c.json({ results }, 200);
-    } catch (err) {
-      const mapped = retentionErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to purge audit log");
-      return c.json({ error: "internal_error", message: "Failed to purge audit log entries.", requestId }, 500);
-    }
-  }) as never;
+  try {
+    const { purgeExpiredEntries } = await import("@atlas/ee/audit/retention");
+    const results = await purgeExpiredEntries(orgId);
+    return c.json({ results }, 200);
+  } catch (err) {
+    throwIfRetentionError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to purge audit log");
+    return c.json({ error: "internal_error", message: "Failed to purge audit log entries.", requestId }, 500);
+  }
 });
 
 // POST /hard-delete — manual hard-delete cleanup
 adminAuditRetention.openapi(hardDeleteRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "no_organization", message: "No active organization.", requestId }, 404);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "no_organization", message: "No active organization.", requestId }, 404);
-    }
-
-    try {
-      const { hardDeleteExpired } = await import("@atlas/ee/audit/retention");
-      const result = await hardDeleteExpired(orgId);
-      return c.json(result, 200);
-    } catch (err) {
-      const mapped = retentionErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to hard-delete audit log entries");
-      return c.json({ error: "internal_error", message: "Failed to hard-delete audit log entries.", requestId }, 500);
-    }
-  }) as never;
+  try {
+    const { hardDeleteExpired } = await import("@atlas/ee/audit/retention");
+    const result = await hardDeleteExpired(orgId);
+    return c.json(result, 200);
+  } catch (err) {
+    throwIfRetentionError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to hard-delete audit log entries");
+    return c.json({ error: "internal_error", message: "Failed to hard-delete audit log entries.", requestId }, 500);
+  }
 });
 
 export { adminAuditRetention };

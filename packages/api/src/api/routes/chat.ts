@@ -2,11 +2,13 @@
  * Chat route — accepts a conversation and streams agent responses.
  *
  * Middleware stack:
- * auth → rate limit → withRequestContext → validateEnvironment → conversation persistence → runAgent → stream.
+ * withRequestId → auth → rate limit → withRequestContext(user) → validateEnvironment → conversation persistence → runAgent → stream.
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { HTTPException } from "hono/http-exception";
 import { validationHook } from "./validation-hook";
+import { withRequestId, type AuthEnv } from "./middleware";
 import { z } from "zod";
 import { type UIMessage, createUIMessageStream, createUIMessageStreamResponse } from "ai";
 import { APICallError, LoadAPIKeyError, NoSuchModelError } from "ai";
@@ -124,11 +126,13 @@ const chatRoute = createRoute({
   },
 });
 
-const chat = new OpenAPIHono({ defaultHook: validationHook });
+const chat = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
+
+chat.use(withRequestId);
 
 chat.openapi(chatRoute, async (c) => {
   const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
 
   // Auth check — before context so user identity is available to all downstream logs
   let authResult: AuthResult;
@@ -248,8 +252,9 @@ chat.openapi(chatRoute, async (c) => {
   // Capture plan warning for response headers (set after stream is created)
   const planWarning = planCheck.allowed ? planCheck.warning : undefined;
 
-  // withRequestContext binds requestId + user to AsyncLocalStorage for the
-  // entire async call chain (including logQueryAudit deep inside executeSQL).
+  // Bind user to AsyncLocalStorage so downstream code (logQueryAudit, etc.)
+  // has access to user identity. The middleware already set up requestId context;
+  // this nested call adds the user after inline auth completes.
   return withRequestContext(
     { requestId, user: authResult.user },
     async () => {
@@ -484,11 +489,15 @@ chat.openapi(chatRoute, async (c) => {
             });
         }
 
-        // The streaming response is a raw Response object from createUIMessageStreamResponse.
-        // OpenAPIHono expects c.json() return types, but SSE streams bypass that — use `as never`
-        // to satisfy the type system without changing runtime behavior.
-        return streamResponse as never;
+        // The streaming response is a raw Response from createUIMessageStreamResponse.
+        // OpenAPIHono expects typed c.json() returns, but SSE streams bypass that.
+        // Throw as HTTPException so the global onError handler returns the raw response
+        // via getResponse(), bypassing the OpenAPI typed return requirement.
+        throw new HTTPException(200, { res: streamResponse });
       } catch (err) {
+        // Re-throw HTTPException (stream response) — handled by global onError
+        if (err instanceof HTTPException) throw err;
+
         const errObj = err instanceof Error ? err : new Error(String(err));
         const message = errObj.message;
 
@@ -649,7 +658,7 @@ chat.openapi(chatRoute, async (c) => {
           log.error({ err: errObj, category: code }, "Matched error: %s", code);
           return c.json(
             { error: code, message: userMessage, retryable: isRetryableError(code), requestId },
-            httpStatus as 500,
+            httpStatus as 429 | 500 | 503 | 504,
           );
         }
 

@@ -8,9 +8,8 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
-import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
+import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
-import { adminAuthPreamble } from "./admin-auth";
 import {
   listSSOProviders,
   getSSOProvider,
@@ -29,6 +28,7 @@ import type {
   UpdateSSOProviderRequest,
 } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
+import { adminAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("admin-sso");
 
@@ -40,19 +40,27 @@ function isValidId(id: string | undefined): id is string {
 
 const SSO_ERROR_STATUS = { not_found: 404, conflict: 409, validation: 400 } as const;
 
-/** Map SSO errors to HTTP responses. Returns null if not an SSO/enterprise error. */
-function ssoErrorResponse(err: unknown): { body: Record<string, unknown>; status: 400 | 403 | 404 | 409 } | null {
+/**
+ * Throw HTTPException for known SSO/enterprise errors. Unknown errors fall through.
+ */
+function throwIfSSOError(err: unknown): void {
   const message = err instanceof Error ? err.message : String(err);
   if (message.includes("Enterprise features")) {
-    return { body: { error: "enterprise_required", message }, status: 403 };
+    throw new HTTPException(403, {
+      res: Response.json({ error: "enterprise_required", message }, { status: 403 }),
+    });
   }
   if (err instanceof SSOEnforcementError) {
-    return { body: { error: err.code, message: err.message }, status: 400 };
+    throw new HTTPException(400, {
+      res: Response.json({ error: err.code, message: err.message }, { status: 400 }),
+    });
   }
   if (err instanceof SSOError) {
-    return { body: { error: err.code, message: err.message }, status: SSO_ERROR_STATUS[err.code] };
+    const status = SSO_ERROR_STATUS[err.code];
+    throw new HTTPException(status, {
+      res: Response.json({ error: err.code, message: err.message }, { status }),
+    });
   }
-  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -465,276 +473,221 @@ const setEnforcementRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const adminSso = new OpenAPIHono({ defaultHook: validationHook });
+const adminSso = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
+
+adminSso.use(adminAuth);
+adminSso.use(requestContext);
 
 adminSso.onError((err, c) => {
-  if (err instanceof HTTPException && err.status === 400) {
-    return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
+  if (err instanceof HTTPException) {
+    // Our thrown HTTPExceptions carry a JSON Response
+    if (err.res) return err.res;
+    // Framework 400 for malformed JSON
+    if (err.status === 400) {
+      return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
+    }
   }
   throw err;
 });
 
 // GET /providers — list SSO providers for the active org
 adminSso.openapi(listProvidersRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-    }
-
-    try {
-      const providers = await listSSOProviders(orgId);
-      return c.json({ providers: providers.map(summarizeProvider), total: providers.length }, 200);
-    } catch (err) {
-      const mapped = ssoErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to list SSO providers");
-      return c.json({ error: "internal_error", message: "Failed to list SSO providers.", requestId }, 500);
-    }
-  }) as never;
+  try {
+    const providers = await listSSOProviders(orgId);
+    return c.json({ providers: providers.map(summarizeProvider), total: providers.length }, 200);
+  } catch (err) {
+    throwIfSSOError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to list SSO providers");
+    return c.json({ error: "internal_error", message: "Failed to list SSO providers.", requestId }, 500);
+  }
 });
 
 // GET /providers/:id — get a single SSO provider
 adminSso.openapi(getProviderRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
   const { id: providerId } = c.req.valid("param");
 
   if (!isValidId(providerId)) {
     return c.json({ error: "bad_request", message: "Invalid provider ID." }, 400);
   }
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization." }, 400);
+  try {
+    const provider = await getSSOProvider(orgId, providerId);
+    if (!provider) {
+      return c.json({ error: "not_found", message: "SSO provider not found." }, 404);
     }
-
-    try {
-      const provider = await getSSOProvider(orgId, providerId);
-      if (!provider) {
-        return c.json({ error: "not_found", message: "SSO provider not found." }, 404);
-      }
-      return c.json({ provider: redactProvider(provider) }, 200);
-    } catch (err) {
-      const mapped = ssoErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get SSO provider");
-      return c.json({ error: "internal_error", message: "Failed to get SSO provider.", requestId }, 500);
-    }
-  }) as never;
+    return c.json({ provider: redactProvider(provider) }, 200);
+  } catch (err) {
+    throwIfSSOError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get SSO provider");
+    return c.json({ error: "internal_error", message: "Failed to get SSO provider.", requestId }, 500);
+  }
 });
 
 // POST /providers — create a new SSO provider
 adminSso.openapi(createProviderRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization." }, 400);
-    }
+  const body = c.req.valid("json");
 
-    const body = c.req.valid("json");
+  // Structural check only — business validation is in createSSOProvider
+  if (!body.type || !body.issuer || !body.domain || !body.config) {
+    return c.json({ error: "bad_request", message: "Missing required fields: type, issuer, domain, config." }, 400);
+  }
 
-    // Structural check only — business validation is in createSSOProvider
-    if (!body.type || !body.issuer || !body.domain || !body.config) {
-      return c.json({ error: "bad_request", message: "Missing required fields: type, issuer, domain, config." }, 400);
-    }
-
-    try {
-      const provider = await createSSOProvider(orgId, body as unknown as CreateSSOProviderRequest);
-      return c.json({ provider: redactProvider(provider) }, 201);
-    } catch (err) {
-      const mapped = ssoErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to create SSO provider");
-      return c.json({ error: "internal_error", message: "Failed to create SSO provider.", requestId }, 500);
-    }
-  }) as never;
+  try {
+    const provider = await createSSOProvider(orgId, body as unknown as CreateSSOProviderRequest);
+    return c.json({ provider: redactProvider(provider) }, 201);
+  } catch (err) {
+    throwIfSSOError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to create SSO provider");
+    return c.json({ error: "internal_error", message: "Failed to create SSO provider.", requestId }, 500);
+  }
 });
 
 // PATCH /providers/:id — update an SSO provider
 adminSso.openapi(updateProviderRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
   const { id: providerId } = c.req.valid("param");
 
   if (!isValidId(providerId)) {
     return c.json({ error: "bad_request", message: "Invalid provider ID." }, 400);
   }
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization." }, 400);
-    }
+  const body = c.req.valid("json") as UpdateSSOProviderRequest;
 
-    const body = c.req.valid("json") as UpdateSSOProviderRequest;
-
-    try {
-      const provider = await updateSSOProvider(orgId, providerId, body);
-      return c.json({ provider: redactProvider(provider) }, 200);
-    } catch (err) {
-      const mapped = ssoErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, providerId }, "Failed to update SSO provider");
-      return c.json({ error: "internal_error", message: "Failed to update SSO provider.", requestId }, 500);
-    }
-  }) as never;
+  try {
+    const provider = await updateSSOProvider(orgId, providerId, body);
+    return c.json({ provider: redactProvider(provider) }, 200);
+  } catch (err) {
+    throwIfSSOError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, providerId }, "Failed to update SSO provider");
+    return c.json({ error: "internal_error", message: "Failed to update SSO provider.", requestId }, 500);
+  }
 });
 
 // DELETE /providers/:id — delete an SSO provider
 adminSso.openapi(deleteProviderRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
   const { id: providerId } = c.req.valid("param");
 
   if (!isValidId(providerId)) {
     return c.json({ error: "bad_request", message: "Invalid provider ID." }, 400);
   }
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization." }, 400);
+  try {
+    const deleted = await deleteSSOProvider(orgId, providerId);
+    if (!deleted) {
+      return c.json({ error: "not_found", message: "SSO provider not found." }, 404);
     }
-
-    try {
-      const deleted = await deleteSSOProvider(orgId, providerId);
-      if (!deleted) {
-        return c.json({ error: "not_found", message: "SSO provider not found." }, 404);
-      }
-      return c.json({ message: "SSO provider deleted." }, 200);
-    } catch (err) {
-      const mapped = ssoErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, providerId }, "Failed to delete SSO provider");
-      return c.json({ error: "internal_error", message: "Failed to delete SSO provider.", requestId }, 500);
-    }
-  }) as never;
+    return c.json({ message: "SSO provider deleted." }, 200);
+  } catch (err) {
+    throwIfSSOError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, providerId }, "Failed to delete SSO provider");
+    return c.json({ error: "internal_error", message: "Failed to delete SSO provider.", requestId }, 500);
+  }
 });
 
 // GET /enforcement — get SSO enforcement status
 adminSso.openapi(getEnforcementRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization." }, 400);
-    }
-
-    try {
-      const result = await isSSOEnforced(orgId);
-      return c.json({ enforced: result?.enforced ?? false, orgId }, 200);
-    } catch (err) {
-      const mapped = ssoErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get SSO enforcement status");
-      return c.json({ error: "internal_error", message: "Failed to get SSO enforcement status.", requestId }, 500);
-    }
-  }) as never;
+  try {
+    const result = await isSSOEnforced(orgId);
+    return c.json({ enforced: result?.enforced ?? false, orgId }, 200);
+  } catch (err) {
+    throwIfSSOError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get SSO enforcement status");
+    return c.json({ error: "internal_error", message: "Failed to get SSO enforcement status.", requestId }, 500);
+  }
 });
 
 // PUT /enforcement — set SSO enforcement
 adminSso.openapi(setEnforcementRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization." }, 400);
-    }
+  const { enforced } = c.req.valid("json");
 
-    const { enforced } = c.req.valid("json");
-
-    try {
-      const result = await setSSOEnforcement(orgId, enforced);
-      return c.json(result, 200);
-    } catch (err) {
-      const mapped = ssoErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to set SSO enforcement");
-      return c.json({ error: "internal_error", message: "Failed to set SSO enforcement.", requestId }, 500);
-    }
-  }) as never;
+  try {
+    const result = await setSSOEnforcement(orgId, enforced);
+    return c.json(result, 200);
+  } catch (err) {
+    throwIfSSOError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to set SSO enforcement");
+    return c.json({ error: "internal_error", message: "Failed to set SSO enforcement.", requestId }, 500);
+  }
 });
 
 export { adminSso };

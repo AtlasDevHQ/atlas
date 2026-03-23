@@ -17,7 +17,7 @@ import {
   addIPAllowlistEntry,
   removeIPAllowlistEntry,
   IPAllowlistError,
-} from "../../../../../ee/src/auth/ip-allowlist";
+} from "@atlas/ee/auth/ip-allowlist";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 const log = createLogger("admin-ip-allowlist");

@@ -1,18 +1,12 @@
 {
   "name": "@atlas/ee",
-  "version": "0.0.1",
+  "version": "0.0.0",
   "private": true,
-  "license": "SEE LICENSE IN LICENSE",
-  "description": "Enterprise features for Atlas (commercial license)",
-  "type": "module",
-  "main": "src/index.ts",
-  "types": "src/index.ts",
-  "scripts": {
-    "test": "bun test src/ --preload ./src/test-setup.ts"
+  "exports": {
+    "./*": "./src/*.ts"
   },
   "dependencies": {
     "@atlas/api": "workspace:*",
-    "@useatlas/types": "workspace:*",
-    "ipaddr.js": "^2.3.0"
+    "@useatlas/types": "workspace:*"
   }
 }

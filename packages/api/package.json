@@ -19,6 +19,7 @@
     "openapi:extract": "bun run scripts/extract-openapi.ts"
   },
   "dependencies": {
+    "@atlas/ee": "workspace:*",
     "@ai-sdk/amazon-bedrock": "^4.0.63",
     "@ai-sdk/anthropic": "^3.0.46",
     "@ai-sdk/gateway": "^3.0.53",

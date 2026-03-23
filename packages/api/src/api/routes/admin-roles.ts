@@ -19,7 +19,7 @@ import {
   assignRole,
   RoleError,
   PERMISSIONS,
-} from "../../../../../ee/src/auth/roles";
+} from "@atlas/ee/auth/roles";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 const log = createLogger("admin-roles");

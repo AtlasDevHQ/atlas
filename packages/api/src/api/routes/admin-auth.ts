@@ -81,7 +81,7 @@ export async function adminAuthPreamble(req: Request, requestId: string) {
   if (orgId) {
     let checkIPAllowlist: ((orgId: string, clientIP: string | null) => Promise<{ allowed: boolean }>) | undefined;
     try {
-      ({ checkIPAllowlist } = await import("../../../../../ee/src/auth/ip-allowlist"));
+      ({ checkIPAllowlist } = await import("@atlas/ee/auth/ip-allowlist"));
     } catch {
       // ee module not installed — IP allowlist feature unavailable, skip
     }

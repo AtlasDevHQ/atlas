@@ -23,7 +23,7 @@ import {
   createGroupMapping,
   deleteGroupMapping,
   SCIMError,
-} from "../../../../../ee/src/auth/scim";
+} from "@atlas/ee/auth/scim";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 const log = createLogger("admin-scim");

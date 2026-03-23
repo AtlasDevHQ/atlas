@@ -755,7 +755,7 @@ Rules:
     if (classification) {
       let approvalMatch: { required: boolean; matchedRules: { id: string; name: string }[] } | null = null;
       try {
-        const { checkApprovalRequired } = await import("../../../../../ee/src/governance/approval");
+        const { checkApprovalRequired } = await import("@atlas/ee/governance/approval");
         const reqCtxForCheck = getRequestContext();
         const checkOrgId = reqCtxForCheck?.user?.activeOrganizationId;
         approvalMatch = await checkApprovalRequired(
@@ -776,7 +776,7 @@ Rules:
       // Errors here propagate up and block the query — a governance bypass is worse
       // than a failed query.
       if (approvalMatch?.required) {
-        const { createApprovalRequest, hasApprovedRequest } = await import("../../../../../ee/src/governance/approval");
+        const { createApprovalRequest, hasApprovedRequest } = await import("@atlas/ee/governance/approval");
         const reqCtxForApproval = getRequestContext();
         const approvalOrgId = reqCtxForApproval?.user?.activeOrganizationId;
         const userId = reqCtxForApproval?.user?.id;

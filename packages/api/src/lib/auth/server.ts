@@ -21,7 +21,7 @@ import { stripe as stripePlugin } from "@better-auth/stripe";
 import Stripe from "stripe";
 import { getInternalDB, hasInternalDB, internalQuery, updateWorkspacePlanTier, type PlanTier } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
-import { isEnterpriseEnabled } from "../../../../../ee/src/index";
+import { isEnterpriseEnabled } from "@atlas/ee/index";
 import { ac, owner as ownerRole, admin as adminRole, member as memberRole } from "@atlas/api/lib/auth/org-permissions";
 import { getStripePlans } from "@atlas/api/lib/billing/plans";
 import { invalidatePlanCache } from "@atlas/api/lib/billing/enforcement";

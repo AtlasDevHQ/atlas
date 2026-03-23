@@ -33,7 +33,7 @@ import {
   expireStaleRequests,
   getPendingCount,
   ApprovalError,
-} from "../../../../../ee/src/governance/approval";
+} from "@atlas/ee/governance/approval";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 const log = createLogger("admin-approval");

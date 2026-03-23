@@ -350,7 +350,7 @@ adminAuditRetention.openapi(getRetentionRoute, async (c) => {
     }
 
     try {
-      const { getRetentionPolicy } = await import("../../../../../ee/src/audit/retention");
+      const { getRetentionPolicy } = await import("@atlas/ee/audit/retention");
       const policy = await getRetentionPolicy(orgId);
       return c.json({ policy }, 200);
     } catch (err) {
@@ -386,7 +386,7 @@ adminAuditRetention.openapi(updateRetentionRoute, async (c) => {
     const body = c.req.valid("json");
 
     try {
-      const { setRetentionPolicy } = await import("../../../../../ee/src/audit/retention");
+      const { setRetentionPolicy } = await import("@atlas/ee/audit/retention");
       const policy = await setRetentionPolicy(
         orgId,
         {
@@ -429,7 +429,7 @@ adminAuditRetention.openapi(exportRoute, async (c) => {
     const body = c.req.valid("json");
 
     try {
-      const { exportAuditLog } = await import("../../../../../ee/src/audit/retention");
+      const { exportAuditLog } = await import("@atlas/ee/audit/retention");
       const result = await exportAuditLog({
         orgId,
         format: body.format,
@@ -494,7 +494,7 @@ adminAuditRetention.openapi(purgeRoute, async (c) => {
     }
 
     try {
-      const { purgeExpiredEntries } = await import("../../../../../ee/src/audit/retention");
+      const { purgeExpiredEntries } = await import("@atlas/ee/audit/retention");
       const results = await purgeExpiredEntries(orgId);
       return c.json({ results }, 200);
     } catch (err) {
@@ -528,7 +528,7 @@ adminAuditRetention.openapi(hardDeleteRoute, async (c) => {
     }
 
     try {
-      const { hardDeleteExpired } = await import("../../../../../ee/src/audit/retention");
+      const { hardDeleteExpired } = await import("@atlas/ee/audit/retention");
       const result = await hardDeleteExpired(orgId);
       return c.json(result, 200);
     } catch (err) {

@@ -496,7 +496,7 @@ export async function runAgent({
   let workspaceConfig: { provider: import("@useatlas/types").ModelConfigProvider; model: string; apiKey: string; baseUrl: string | null } | null = null;
   if (orgId && hasInternalDB()) {
     try {
-      const { getWorkspaceModelConfigRaw } = await import("../../../../ee/src/platform/model-routing");
+      const { getWorkspaceModelConfigRaw } = await import("@atlas/ee/platform/model-routing");
       workspaceConfig = await getWorkspaceModelConfigRaw(orgId);
     } catch (err) {
       log.debug({ orgId, err: err instanceof Error ? err.message : String(err) }, "Workspace model config not available — using platform default");

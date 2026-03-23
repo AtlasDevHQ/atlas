@@ -23,7 +23,7 @@ import {
   isSSOEnforced,
   SSOError,
   SSOEnforcementError,
-} from "../../../../../ee/src/auth/sso";
+} from "@atlas/ee/auth/sso";
 import type {
   CreateSSOProviderRequest,
   UpdateSSOProviderRequest,

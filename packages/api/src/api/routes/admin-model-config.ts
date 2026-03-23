@@ -17,7 +17,7 @@ import {
   deleteWorkspaceModelConfig,
   testModelConfig,
   ModelConfigError,
-} from "../../../../../ee/src/platform/model-routing";
+} from "@atlas/ee/platform/model-routing";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 const log = createLogger("admin-model-config");

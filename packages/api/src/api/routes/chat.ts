@@ -185,7 +185,7 @@ chat.openapi(chatRoute, async (c) => {
   // IP allowlist check — enterprise feature, after auth so we have org context
   let checkIPAllowlist: ((orgId: string, clientIP: string | null) => Promise<{ allowed: boolean }>) | undefined;
   try {
-    ({ checkIPAllowlist } = await import("../../../../../ee/src/auth/ip-allowlist"));
+    ({ checkIPAllowlist } = await import("@atlas/ee/auth/ip-allowlist"));
   } catch {
     // ee module not installed — IP allowlist feature unavailable, skip
   }

@@ -252,7 +252,7 @@ if (config.scheduler?.backend === "bun") {
 
 // Start audit log purge scheduler (enterprise feature — no-op when disabled)
 try {
-  const { startAuditPurgeScheduler } = await import("../../../../ee/src/audit/purge-scheduler");
+  const { startAuditPurgeScheduler } = await import("@atlas/ee/audit/purge-scheduler");
   startAuditPurgeScheduler();
 } catch {
   // intentionally ignored: ee module not installed — audit purge scheduler unavailable

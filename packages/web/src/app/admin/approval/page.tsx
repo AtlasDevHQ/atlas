@@ -233,7 +233,7 @@ function ApprovalPageContent() {
         </p>
       </div>
 
-      {mutationError && <ErrorBanner message={mutationError} onDismiss={() => setMutationError(null)} />}
+      {mutationError && <ErrorBanner message={mutationError} onRetry={() => setMutationError(null)} />}
       {rulesError && !gateError && <ErrorBanner message={friendlyError(rulesError)} />}
       {queueError && !gateError && <ErrorBanner message={friendlyError(queueError)} />}
 

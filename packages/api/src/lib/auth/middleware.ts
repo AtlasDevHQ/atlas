@@ -15,7 +15,7 @@ import { validateManaged } from "@atlas/api/lib/auth/managed";
 import { validateBYOT } from "@atlas/api/lib/auth/byot";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getSetting } from "@atlas/api/lib/settings";
-import { isSSOEnforcedForDomain, extractEmailDomain } from "../../../../../ee/src/auth/sso";
+import { isSSOEnforcedForDomain, extractEmailDomain } from "@atlas/ee/auth/sso";
 
 const log = createLogger("auth");
 

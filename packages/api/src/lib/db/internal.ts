@@ -775,6 +775,29 @@ export async function migrateInternalDB(): Promise<void> {
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_workspace_branding_org ON workspace_branding(org_id);`);
 
+  // Onboarding email tracking (0.9.0 — onboarding email sequence #670)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS onboarding_emails (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id TEXT NOT NULL,
+      org_id TEXT NOT NULL,
+      step TEXT NOT NULL,
+      triggered_by TEXT NOT NULL,
+      sent_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_onboarding_emails_user_step ON onboarding_emails(user_id, step);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_onboarding_emails_org ON onboarding_emails(org_id);`);
+
+  // Email preferences — unsubscribe tracking (0.9.0 — onboarding email sequence #670)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS email_preferences (
+      user_id TEXT PRIMARY KEY,
+      onboarding_emails BOOLEAN NOT NULL DEFAULT true,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+
   log.info("Internal DB migration complete");
 }
 

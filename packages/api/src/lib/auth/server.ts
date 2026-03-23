@@ -16,6 +16,7 @@ import { bearer, admin, organization } from "better-auth/plugins";
 // @better-auth/api-key must match the better-auth core version.
 // Both are pinned to ^1.5.1 in package.json — update together.
 import { apiKey } from "@better-auth/api-key";
+import { scim } from "@better-auth/scim";
 import { stripe as stripePlugin } from "@better-auth/stripe";
 import Stripe from "stripe";
 import { getInternalDB, hasInternalDB, internalQuery, updateWorkspacePlanTier, type PlanTier } from "@atlas/api/lib/db/internal";
@@ -84,6 +85,30 @@ function buildPlugins() {
       },
     }),
   ];
+
+  // SCIM directory sync — enterprise only.
+  // No try/catch: if the plugin fails to initialize (missing dep, bad config),
+  // the auth server must fail to start rather than silently running without
+  // SCIM while the admin UI suggests it is available.
+  if (isEnterpriseEnabled()) {
+    plugins.push(
+      scim({
+        storeSCIMToken: "encrypted",
+        async beforeSCIMTokenGenerated(data) {
+          // Only admins can generate SCIM tokens — enforced via Better Auth hook.
+          // The admin check is done upstream by the admin route preamble;
+          // this hook acts as a defense-in-depth guard.
+          // Cast needed: the admin plugin adds `role` to the user object but the
+          // SCIM plugin's hook type only includes base user fields.
+          const user = data.user as Record<string, unknown> | undefined;
+          if (user?.role !== "admin") {
+            throw new Error("Only admin users can generate SCIM tokens.");
+          }
+        },
+      }),
+    );
+    log.info("SCIM directory sync plugin enabled (enterprise)");
+  }
 
   // Stripe billing — only when STRIPE_SECRET_KEY is set (SaaS mode)
   if (process.env.STRIPE_SECRET_KEY) {

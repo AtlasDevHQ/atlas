@@ -1,0 +1,227 @@
+---
+title: SCIM Directory Sync
+description: Automate user provisioning from enterprise identity providers via SCIM 2.0.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas supports SCIM 2.0 (RFC 7643/7644) for automated user provisioning from enterprise identity providers like Okta, Azure AD (Entra ID), and OneLogin. When users are added, updated, or deactivated in your corporate directory, changes are automatically synced to Atlas. SCIM is part of the Atlas Enterprise (`/ee`) module and is powered by the Better Auth SCIM plugin.
+
+<Callout title="Prerequisites">
+- [Managed auth](/deployment/authentication#managed-auth) enabled
+- Internal database configured (`DATABASE_URL`)
+- Enterprise license (the `/ee` module must be available)
+- [SSO configured](/guides/enterprise-sso) (recommended but not required)
+- [Custom roles](/guides/custom-roles) configured (for group mapping)
+</Callout>
+
+---
+
+## How It Works
+
+1. An admin generates a SCIM bearer token via the Atlas API
+2. The token is configured in your identity provider's SCIM provisioning settings
+3. When users change in the IdP (create, update, deactivate), the IdP calls Atlas SCIM endpoints
+4. Atlas automatically creates, updates, or suspends user accounts
+5. SCIM groups from the IdP can be mapped to Atlas custom roles
+
+The SCIM 2.0 endpoints are served by the Better Auth SCIM plugin at `/api/auth/scim/v2/*`.
+
+---
+
+## Setup
+
+### 1. Generate a SCIM Token
+
+Generate a SCIM bearer token for your organization. The token is used by your IdP to authenticate SCIM requests.
+
+```bash
+curl -X POST https://your-atlas.example.com/api/auth/scim/generate-token \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <admin-session-token>" \
+  -d '{
+    "providerId": "okta-prod",
+    "organizationId": "org_abc123"
+  }'
+```
+
+The response includes the SCIM token. **Store it securely** — it is only shown once.
+
+### 2. Configure Your IdP
+
+Point your IdP's SCIM provisioning to your Atlas instance:
+
+| Setting | Value |
+|---------|-------|
+| **SCIM Base URL** | `https://your-atlas.example.com/api/auth/scim/v2` |
+| **Authentication** | Bearer Token (use the token from step 1) |
+| **Unique identifier** | `userName` (maps to email) |
+
+### 3. Configure Group Mappings (Optional)
+
+Map SCIM groups from your IdP to Atlas custom roles so provisioned users get the correct permissions.
+
+```bash
+curl -X POST https://your-atlas.example.com/api/v1/admin/scim/group-mappings \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <admin-token>" \
+  -d '{
+    "scimGroupName": "Engineers",
+    "roleName": "analyst"
+  }'
+```
+
+---
+
+## SCIM 2.0 Endpoints
+
+The following RFC 7644 endpoints are available at `/api/auth/scim/v2`:
+
+### Discovery
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/ServiceProviderConfig` | SCIM server capabilities |
+| `GET` | `/Schemas` | Supported SCIM schemas |
+| `GET` | `/Schemas/:id` | Specific schema definition |
+| `GET` | `/ResourceTypes` | Supported resource types |
+
+### User Management
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/Users` | List users (supports SCIM filtering) |
+| `GET` | `/Users/:id` | Get a specific user |
+| `POST` | `/Users` | Create (provision) a user |
+| `PUT` | `/Users/:id` | Replace a user |
+| `PATCH` | `/Users/:id` | Partial update a user |
+| `DELETE` | `/Users/:id` | Deactivate a user |
+
+### Token Management
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/auth/scim/generate-token` | Generate SCIM bearer token |
+| `GET` | `/api/auth/scim/list-provider-connections` | List SCIM connections |
+| `GET` | `/api/auth/scim/get-provider-connection` | Get connection by provider ID |
+| `POST` | `/api/auth/scim/delete-provider-connection` | Delete a connection |
+
+---
+
+## Admin API Endpoints
+
+Administrative endpoints for managing SCIM connections and group mappings. All require admin role and enterprise license. Mounted at `/api/v1/admin/scim`.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/` | List connections and sync status |
+| `DELETE` | `/connections/:id` | Revoke a SCIM connection |
+| `GET` | `/group-mappings` | List group → role mappings |
+| `POST` | `/group-mappings` | Create a group → role mapping |
+| `DELETE` | `/group-mappings/:id` | Delete a group → role mapping |
+
+### Error Responses
+
+| Status | Code | When |
+|--------|------|------|
+| 400 | `validation` | Invalid group name or role name |
+| 403 | `enterprise_required` | Enterprise license not active |
+| 404 | `not_found` | Connection/mapping/role not found |
+| 409 | `conflict` | Duplicate group mapping |
+
+---
+
+## User Attribute Mapping
+
+The Better Auth SCIM plugin maps IdP user attributes to Atlas:
+
+| SCIM Attribute | Atlas Field |
+|----------------|-------------|
+| `userName` | User email (primary identifier) |
+| `name.givenName` + `name.familyName` | Display name |
+| `emails[primary]` | Email address |
+| `active` | Account status (false = suspended) |
+| `externalId` | Linked account ID in Better Auth |
+
+### User Deactivation
+
+When a user is deactivated in your IdP (`active: false`), the SCIM PATCH/PUT updates the user's status in Atlas. The user's account is suspended but **not deleted** — this preserves the audit trail and allows reactivation.
+
+---
+
+## IdP-Specific Setup
+
+### Okta
+
+1. In Okta Admin Console, go to **Applications → Add Application**
+2. Search for "SCIM 2.0 Test App (Header Auth)" or create a custom app
+3. Under **Provisioning → Integration**, set:
+   - SCIM connector base URL: `https://your-atlas.example.com/api/auth/scim/v2`
+   - Unique identifier field: `userName`
+   - Authentication Mode: HTTP Header
+   - Authorization: `Bearer <your-scim-token>`
+4. Enable **Push New Users**, **Push Profile Updates**, and **Push Groups**
+
+### Azure AD (Entra ID)
+
+1. In Azure Portal, go to **Enterprise Applications → New Application**
+2. Create a non-gallery application
+3. Under **Provisioning**, set mode to **Automatic**
+4. Set:
+   - Tenant URL: `https://your-atlas.example.com/api/auth/scim/v2`
+   - Secret Token: `<your-scim-token>`
+5. Test the connection, then enable provisioning
+
+### OneLogin
+
+1. In OneLogin Admin, go to **Applications → Add App**
+2. Search for "SCIM Provisioner with SAML (SCIM v2 Enterprise)"
+3. Under **Configuration**, set:
+   - SCIM Base URL: `https://your-atlas.example.com/api/auth/scim/v2`
+   - SCIM Bearer Token: `<your-scim-token>`
+4. Under **Provisioning**, enable Create, Update, and Deactivate
+
+---
+
+## Admin Console
+
+The SCIM settings page in the Admin Console (`/admin/scim`) provides:
+
+- **Sync Status** — Active connections, provisioned user count, last sync time
+- **SCIM Connections** — View and revoke active IdP connections
+- **Group Mappings** — Create and manage SCIM group → Atlas role mappings
+
+---
+
+## Troubleshooting
+
+### Token generation fails
+
+Ensure the authenticated user has the `admin` role. Only admins can generate SCIM tokens.
+
+### IdP cannot connect
+
+1. Verify the SCIM base URL ends with `/api/auth/scim/v2` (not `/scim/v2`)
+2. Check that the bearer token was copied correctly (no leading/trailing whitespace)
+3. Ensure the Atlas API is accessible from your IdP's network
+
+### Users not being provisioned
+
+1. Check that the SCIM connection is active in `/admin/scim`
+2. Verify the IdP is sending `userName` as the email address
+3. Check Atlas server logs for SCIM-related errors
+
+### Group mappings not applied
+
+1. Ensure custom roles exist in `/admin/roles` before creating mappings
+2. Verify the SCIM group name in the mapping matches the IdP exactly (case-sensitive)
+3. Group mapping applies at provisioning time — existing users need manual role reassignment
+
+---
+
+## See Also
+
+- [Enterprise SSO](/guides/enterprise-sso) — Configure SAML/OIDC identity providers
+- [Custom Roles](/guides/custom-roles) — Define granular permission-based roles
+- [IP Allowlisting](/guides/ip-allowlisting) — Restrict access by IP range
+- [Admin Console](/guides/admin-console) — Manage users and workspace settings

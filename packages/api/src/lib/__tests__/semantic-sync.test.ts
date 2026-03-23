@@ -17,6 +17,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 
 // ---------------------------------------------------------------------------
@@ -174,6 +175,30 @@ describe("getSemanticRoot", () => {
 
   it("accepts normal UUID-like orgId", () => {
     expect(() => getSemanticRoot("a1b2c3d4-e5f6-7890-abcd-ef1234567890")).not.toThrow();
+  });
+
+  it("respects ATLAS_SEMANTIC_ROOT env var for base root", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "atlas-semantic-root-"));
+    try {
+      process.env.ATLAS_SEMANTIC_ROOT = tmpDir;
+      const root = getSemanticRoot();
+      expect(root).toBe(tmpDir);
+    } finally {
+      delete process.env.ATLAS_SEMANTIC_ROOT;
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("respects ATLAS_SEMANTIC_ROOT env var for org-scoped root", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "atlas-semantic-root-"));
+    try {
+      process.env.ATLAS_SEMANTIC_ROOT = tmpDir;
+      const root = getSemanticRoot("org-test");
+      expect(root).toBe(path.join(tmpDir, ".orgs", "org-test"));
+    } finally {
+      delete process.env.ATLAS_SEMANTIC_ROOT;
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });
 

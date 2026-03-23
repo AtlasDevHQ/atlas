@@ -13,6 +13,7 @@ import { maskConnectionUrl } from "./security";
 import { getDefaultProvider } from "./providers";
 import { detectAuthMode, getAuthModeSource } from "./auth/detect";
 import { createLogger } from "./logger";
+import { getSemanticRoot as getDefaultSemanticRoot } from "./semantic-files";
 
 const log = createLogger("startup");
 
@@ -762,7 +763,7 @@ async function checkExplicitNsjail(): Promise<void> {
     );
     const nsjailPath = findNsjailBinary();
     if (nsjailPath) {
-      const semanticRoot = path.resolve(process.cwd(), "semantic");
+      const semanticRoot = getDefaultSemanticRoot();
       const capResult = await testNsjailCapabilities(nsjailPath, semanticRoot);
       if (capResult.ok) {
         log.info("Explore tool: nsjail sandbox active");
@@ -829,7 +830,7 @@ async function autoDetectNsjail(): Promise<void> {
     );
     const nsjailPath = findNsjailBinary();
     if (nsjailPath) {
-      const semanticRoot = path.resolve(process.cwd(), "semantic");
+      const semanticRoot = getDefaultSemanticRoot();
       const capResult = await testNsjailCapabilities(nsjailPath, semanticRoot);
       if (capResult.ok) {
         log.info("Explore tool: nsjail sandbox active");

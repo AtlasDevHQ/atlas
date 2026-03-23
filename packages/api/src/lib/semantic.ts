@@ -23,6 +23,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as yaml from "js-yaml";
 import { z } from "zod";
+import { getSemanticRoot as getDefaultSemanticRoot } from "@atlas/api/lib/semantic-files";
 import { createLogger } from "@atlas/api/lib/logger";
 import { invalidateSemanticIndex } from "@atlas/api/lib/semantic-index";
 
@@ -181,7 +182,7 @@ function loadTablesByConnection(
     return byConnection;
   }
 
-  const root = semanticRoot ?? path.resolve(process.cwd(), "semantic");
+  const root = semanticRoot ?? getDefaultSemanticRoot();
 
   // 1. Default entities (backward compat — semantic/entities/*.yml)
   loadEntitiesFromDir(path.join(root, "entities"), "default", byConnection, crossJoins);

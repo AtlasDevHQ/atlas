@@ -17,8 +17,9 @@ import * as path from "path";
 import { ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ReadResourceResult } from "@modelcontextprotocol/sdk/types.js";
+import { getSemanticRoot } from "@atlas/api/lib/semantic-files";
 
-const SEMANTIC_ROOT = path.resolve(process.cwd(), "semantic");
+const SEMANTIC_ROOT = getSemanticRoot();
 
 /**
  * Resolve a path within the semantic directory, rejecting path traversal.

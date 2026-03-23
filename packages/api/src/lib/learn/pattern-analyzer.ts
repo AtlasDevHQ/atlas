@@ -13,6 +13,7 @@ import * as path from "path";
 import * as yaml from "js-yaml";
 import { Parser } from "node-sql-parser";
 import { createLogger } from "@atlas/api/lib/logger";
+import { getSemanticRoot as getDefaultSemanticRoot } from "@atlas/api/lib/semantic-files";
 
 const log = createLogger("pattern-analyzer");
 
@@ -128,7 +129,7 @@ export function extractPatternInfo(sql: string, dialect: string = "PostgresQL"):
  * Returns a Set of normalized SQL strings.
  */
 export function loadYamlQueryPatterns(semanticRoot?: string): Set<string> {
-  const root = semanticRoot ?? path.resolve(process.cwd(), "semantic");
+  const root = semanticRoot ?? getDefaultSemanticRoot();
   const patterns = new Set<string>();
 
   loadPatternsFromDir(path.join(root, "entities"), patterns);

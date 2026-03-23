@@ -17,15 +17,13 @@
 import * as fs from "fs";
 import * as path from "path";
 import { createLogger } from "@atlas/api/lib/logger";
+import { getSemanticRoot as getBaseSemanticRoot } from "@atlas/api/lib/semantic-files";
 
 const log = createLogger("semantic-sync");
 
 // ---------------------------------------------------------------------------
 // Path resolution
 // ---------------------------------------------------------------------------
-
-/** Base semantic root (process-level, never changes). */
-const SEMANTIC_BASE = path.resolve(process.cwd(), "semantic");
 
 /**
  * Resolve the semantic root for a given org.
@@ -37,12 +35,13 @@ const SEMANTIC_BASE = path.resolve(process.cwd(), "semantic");
  * path separators or `..` components.
  */
 export function getSemanticRoot(orgId?: string): string {
-  if (!orgId) return SEMANTIC_BASE;
+  const base = getBaseSemanticRoot();
+  if (!orgId) return base;
   const safe = path.basename(orgId);
   if (safe !== orgId || orgId === "." || orgId === "..") {
     throw new Error(`Invalid orgId for semantic root: "${orgId}"`);
   }
-  return path.join(SEMANTIC_BASE, ".orgs", safe);
+  return path.join(base, ".orgs", safe);
 }
 
 // ---------------------------------------------------------------------------
@@ -533,7 +532,7 @@ export async function reconcileAllOrgs(): Promise<void> {
  * - Self-hosted → managed migration (files copied to .orgs/ manually)
  */
 async function _autoImportOrgsFromDisk(): Promise<void> {
-  const orgsDir = path.join(SEMANTIC_BASE, ".orgs");
+  const orgsDir = path.join(getBaseSemanticRoot(), ".orgs");
   let orgDirs: string[];
   try {
     orgDirs = (await fs.promises.readdir(orgsDir, { withFileTypes: true }))

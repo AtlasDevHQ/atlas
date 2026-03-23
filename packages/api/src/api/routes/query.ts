@@ -19,7 +19,7 @@ import { GatewayModelNotFoundError } from "@ai-sdk/gateway";
 import { isRetryableError, isChatErrorCode } from "@useatlas/types";
 import { executeAgentQuery } from "@atlas/api/lib/agent-query";
 import { validateEnvironment } from "@atlas/api/lib/startup";
-import { createLogger } from "@atlas/api/lib/logger";
+import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { checkWorkspaceStatus } from "@atlas/api/lib/workspace";
 import { checkPlanLimits } from "@atlas/api/lib/billing/enforcement";
@@ -191,6 +191,9 @@ query.openapi(
     const preamble = await authPreamble(req, requestId);
     requireAuth(preamble);
     const { authResult } = preamble;
+
+    // Bind user identity into AsyncLocalStorage for downstream logging/audit
+    return withRequestContext({ requestId, user: authResult.user }, async () => {
 
     // Workspace status check — block suspended/deleted workspaces
     const wsCheck = await checkWorkspaceStatus(authResult.user?.activeOrganizationId);
@@ -394,6 +397,7 @@ query.openapi(
         500,
       );
     }
+    }); // withRequestContext
   },
   (result, c) => {
     if (!result.success) {

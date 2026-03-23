@@ -15,7 +15,7 @@ import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { validationHook } from "./validation-hook";
 import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
-import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
+import { createLogger, withRequestContext, getRequestContext } from "@atlas/api/lib/logger";
 import { withRequestId } from "./middleware";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
 import { authenticateRequest } from "@atlas/api/lib/auth/middleware";
@@ -79,6 +79,27 @@ const admin = new OpenAPIHono({ defaultHook: validationHook });
 
 /** Read requestId from middleware context. */
 const reqId = (c: { get(key: string): unknown }): string => c.get("requestId") as string;
+
+/**
+ * Run admin auth preamble and bind user identity into AsyncLocalStorage.
+ * Returns { authResult, requestId } for the handler to use.
+ * Throws HTTPException on auth failure.
+ */
+async function adminAuthAndContext(c: { req: { raw: Request }; get(key: string): unknown }): Promise<{ authResult: AuthResult & { authenticated: true }; requestId: string }> {
+  const requestId = reqId(c);
+  const preamble = await adminAuthPreamble(c.req.raw, requestId);
+  requireAdminAuth(preamble);
+  const { authResult } = preamble;
+  // Bind user identity into the existing AsyncLocalStorage context so
+  // downstream log lines include userId. The context was created by
+  // withRequestId middleware with { requestId } only — mutating is safe
+  // because each request has its own context object.
+  const ctx = getRequestContext();
+  if (ctx) {
+    (ctx as unknown as Record<string, unknown>).user = authResult.user;
+  }
+  return { authResult, requestId };
+}
 
 admin.onError((err, c) => {
   if (err instanceof HTTPException) {
@@ -1895,10 +1916,7 @@ const deleteSettingRoute = createRoute({
 // -- Overview ---------------------------------------------------------------
 
 admin.openapi(overviewRoute, async (c) => {
-  const requestId = reqId(c);
-
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   const root = getSemanticRoot();
   const { entities, warnings } = discoverEntities(root);
   const metrics = discoverMetrics(root);
@@ -1939,10 +1957,7 @@ admin.openapi(overviewRoute, async (c) => {
 // -- Semantic Layer ---------------------------------------------------------
 
 admin.openapi(listEntitiesRoute, async (c) => {
-  const requestId = reqId(c);
-
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   const root = getSemanticRoot();
   const result = discoverEntities(root);
   return c.json({
@@ -1952,11 +1967,10 @@ admin.openapi(listEntitiesRoute, async (c) => {
 });
 
 admin.openapi(getEntityRoute, async (c) => {
-  const requestId = reqId(c);
+
   const { name } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   // Path traversal protection
   if (!isValidEntityName(name)) {
     log.warn({ requestId, name }, "Rejected invalid entity name");
@@ -1986,30 +2000,21 @@ admin.openapi(getEntityRoute, async (c) => {
 });
 
 admin.openapi(listMetricsRoute, async (c) => {
-  const requestId = reqId(c);
-
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   const root = getSemanticRoot();
   const metrics = discoverMetrics(root);
   return c.json({ metrics }, 200);
 });
 
 admin.openapi(getGlossaryRoute, async (c) => {
-  const requestId = reqId(c);
-
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   const root = getSemanticRoot();
   const glossary = loadGlossary(root);
   return c.json({ glossary }, 200);
 });
 
 admin.openapi(getCatalogRoute, async (c) => {
-  const requestId = reqId(c);
-
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   const root = getSemanticRoot();
   const catalogFile = path.join(root, "catalog.yml");
   if (!fs.existsSync(catalogFile)) {
@@ -2025,26 +2030,21 @@ admin.openapi(getCatalogRoute, async (c) => {
 });
 
 admin.openapi(getRawYamlDirFileRoute, async (c) => {
-  const requestId = reqId(c);
+
   const { dir, file } = c.req.valid("param");
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   serveRawYaml(c, requestId, `${dir}/${file}`);
 });
 
 admin.openapi(getRawYamlFileRoute, async (c) => {
-  const requestId = reqId(c);
+
   const { file } = c.req.valid("param");
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   serveRawYaml(c, requestId, file);
 });
 
 admin.openapi(getSemanticStatsRoute, async (c) => {
-  const requestId = reqId(c);
-
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   const root = getSemanticRoot();
   const { entities, warnings } = discoverEntities(root);
 
@@ -2071,10 +2071,7 @@ admin.openapi(getSemanticStatsRoute, async (c) => {
 });
 
 admin.openapi(getSemanticDiffRoute, async (c) => {
-  const requestId = reqId(c);
-
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   const connectionId = c.req.query("connection") ?? "default";
 
   // Validate connection exists
@@ -2099,10 +2096,7 @@ admin.openapi(getSemanticDiffRoute, async (c) => {
 // -- Org-scoped semantic CRUD -----------------------------------------------
 
 admin.openapi(listOrgEntitiesRoute, async (c) => {
-  const requestId = reqId(c);
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   const orgId = authResult.user?.activeOrganizationId;
   if (!orgId) {
@@ -2137,11 +2131,9 @@ admin.openapi(listOrgEntitiesRoute, async (c) => {
 });
 
 admin.openapi(getOrgEntityRoute, async (c) => {
-  const requestId = reqId(c);
+
   const { name } = c.req.valid("param");
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   const orgId = authResult.user?.activeOrganizationId;
   if (!orgId) {
@@ -2177,11 +2169,9 @@ admin.openapi(getOrgEntityRoute, async (c) => {
 });
 
 admin.openapi(putOrgEntityRoute, async (c) => {
-  const requestId = reqId(c);
+
   const { name } = c.req.valid("param");
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   const orgId = authResult.user?.activeOrganizationId;
   if (!orgId) {
@@ -2239,11 +2229,9 @@ admin.openapi(putOrgEntityRoute, async (c) => {
 });
 
 admin.openapi(deleteOrgEntityRoute, async (c) => {
-  const requestId = reqId(c);
+
   const { name } = c.req.valid("param");
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   const orgId = authResult.user?.activeOrganizationId;
   if (!orgId) {
@@ -2278,10 +2266,7 @@ admin.openapi(deleteOrgEntityRoute, async (c) => {
 });
 
 admin.openapi(importOrgEntitiesRoute, async (c) => {
-  const requestId = reqId(c);
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   const orgId = authResult.user?.activeOrganizationId;
   if (!orgId) {
@@ -2322,28 +2307,19 @@ admin.openapi(importOrgEntitiesRoute, async (c) => {
 // -- Connections ------------------------------------------------------------
 
 admin.openapi(listConnectionsRoute, async (c) => {
-  const requestId = reqId(c);
-
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   const connList = connections.describe();
   return c.json({ connections: connList }, 200);
 });
 
 admin.openapi(getPoolMetricsRoute, async (c) => {
-  const requestId = reqId(c);
-
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   const metrics = connections.getAllPoolMetrics();
   return c.json({ metrics }, 200);
 });
 
 admin.openapi(getOrgPoolMetricsRoute, async (c) => {
-  const requestId = reqId(c);
-
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   try {
     const orgId = c.req.query("orgId");
     const metrics = connections.getOrgPoolMetrics(orgId || undefined);
@@ -2356,12 +2332,10 @@ admin.openapi(getOrgPoolMetricsRoute, async (c) => {
 });
 
 admin.openapi(drainOrgPoolRoute, async (c) => {
-  const requestId = reqId(c);
+
   const { orgId } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   try {
     const result = await connections.drainOrg(orgId);
@@ -2374,12 +2348,10 @@ admin.openapi(drainOrgPoolRoute, async (c) => {
 });
 
 admin.openapi(drainConnectionPoolRoute, async (c) => {
-  const requestId = reqId(c);
+
   const { id } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   if (!connections.has(id)) {
     return c.json({ error: "not_found", message: `Connection "${id}" not found` }, 404);
@@ -2398,10 +2370,7 @@ admin.openapi(drainConnectionPoolRoute, async (c) => {
 });
 
 admin.openapi(getCacheStatsRoute, async (c) => {
-  const requestId = reqId(c);
-
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   const { getCache, cacheEnabled } = await import("@atlas/api/lib/cache/index");
   if (!cacheEnabled()) {
     return c.json({ enabled: false, hits: 0, misses: 0, hitRate: 0, missRate: 0, entryCount: 0, maxSize: 0, ttl: 0 }, 200);
@@ -2419,11 +2388,7 @@ admin.openapi(getCacheStatsRoute, async (c) => {
 });
 
 admin.openapi(flushCacheRoute, async (c) => {
-  const requestId = reqId(c);
-
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   const { getCache, flushCache, cacheEnabled } = await import("@atlas/api/lib/cache/index");
   if (!cacheEnabled()) {
@@ -2441,10 +2406,7 @@ admin.openapi(flushCacheRoute, async (c) => {
 });
 
 admin.openapi(testConnectionRoute, async (c) => {
-  const requestId = reqId(c);
-
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   const body = await c.req.json().catch((err: unknown) => {
     log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in test connection request");
     return null;
@@ -2491,11 +2453,10 @@ admin.openapi(testConnectionRoute, async (c) => {
 });
 
 admin.openapi(testExistingConnectionRoute, async (c) => {
-  const requestId = reqId(c);
+
   const { id } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   const registered = connections.list();
   if (!registered.includes(id)) {
     return c.json({ error: "not_found", message: `Connection "${id}" not found.` }, 404);
@@ -2510,11 +2471,7 @@ admin.openapi(testExistingConnectionRoute, async (c) => {
 });
 
 admin.openapi(createConnectionRoute, async (c) => {
-  const requestId = reqId(c);
-
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Connection management requires an internal database (DATABASE_URL)." }, 404);
@@ -2605,12 +2562,10 @@ admin.openapi(createConnectionRoute, async (c) => {
 });
 
 admin.openapi(updateConnectionRoute, async (c) => {
-  const requestId = reqId(c);
+
   const { id } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Connection management requires an internal database (DATABASE_URL)." }, 404);
@@ -2757,12 +2712,10 @@ admin.openapi(updateConnectionRoute, async (c) => {
 });
 
 admin.openapi(deleteConnectionRoute, async (c) => {
-  const requestId = reqId(c);
+
   const { id } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Connection management requires an internal database (DATABASE_URL)." }, 404);
@@ -2814,11 +2767,10 @@ admin.openapi(deleteConnectionRoute, async (c) => {
 });
 
 admin.openapi(getConnectionRoute, async (c) => {
-  const requestId = reqId(c);
+
   const { id } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   if (!connections.has(id)) {
     return c.json({ error: "not_found", message: `Connection "${id}" not found.` }, 404);
   }
@@ -2864,11 +2816,9 @@ admin.openapi(getConnectionRoute, async (c) => {
 // -- Audit ------------------------------------------------------------------
 
 admin.openapi(listAuditRoute, async (c) => {
-  const requestId = reqId(c);
 
   // Auth before feature-availability check to avoid info disclosure
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
   }
@@ -2930,10 +2880,7 @@ admin.openapi(listAuditRoute, async (c) => {
 });
 
 admin.openapi(exportAuditRoute, async (c) => {
-  const requestId = reqId(c);
-
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
   }
@@ -3017,11 +2964,9 @@ admin.openapi(exportAuditRoute, async (c) => {
 });
 
 admin.openapi(getAuditStatsRoute, async (c) => {
-  const requestId = reqId(c);
 
   // Auth before feature-availability check to avoid info disclosure
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
   }
@@ -3055,10 +3000,7 @@ admin.openapi(getAuditStatsRoute, async (c) => {
 });
 
 admin.openapi(getAuditFacetsRoute, async (c) => {
-  const requestId = reqId(c);
-
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
   }
@@ -3089,10 +3031,7 @@ admin.openapi(getAuditFacetsRoute, async (c) => {
 // -- Audit Analytics --------------------------------------------------------
 
 admin.openapi(auditVolumeRoute, async (c) => {
-  const requestId = reqId(c);
-
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
   }
@@ -3123,10 +3062,7 @@ admin.openapi(auditVolumeRoute, async (c) => {
 });
 
 admin.openapi(auditSlowRoute, async (c) => {
-  const requestId = reqId(c);
-
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
   }
@@ -3168,10 +3104,7 @@ admin.openapi(auditSlowRoute, async (c) => {
 });
 
 admin.openapi(auditFrequentRoute, async (c) => {
-  const requestId = reqId(c);
-
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
   }
@@ -3213,10 +3146,7 @@ admin.openapi(auditFrequentRoute, async (c) => {
 });
 
 admin.openapi(auditErrorsRoute, async (c) => {
-  const requestId = reqId(c);
-
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
   }
@@ -3252,10 +3182,7 @@ admin.openapi(auditErrorsRoute, async (c) => {
 });
 
 admin.openapi(auditUsersRoute, async (c) => {
-  const requestId = reqId(c);
-
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
   }
@@ -3309,20 +3236,16 @@ admin.openapi(auditUsersRoute, async (c) => {
 // -- Plugins ----------------------------------------------------------------
 
 admin.openapi(listPluginsRoute, async (c) => {
-  const requestId = reqId(c);
-
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   const pluginList = plugins.describe();
   return c.json({ plugins: pluginList, manageable: hasInternalDB() }, 200);
 });
 
 admin.openapi(pluginHealthRoute, async (c) => {
-  const requestId = reqId(c);
+
   const { id } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   const plugin = plugins.get(id);
   if (!plugin) {
     return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404);
@@ -3356,11 +3279,10 @@ admin.openapi(pluginHealthRoute, async (c) => {
 });
 
 admin.openapi(enablePluginRoute, async (c) => {
-  const requestId = reqId(c);
+
   const { id } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   const plugin = plugins.get(id);
   if (!plugin) {
     return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404);
@@ -3386,11 +3308,10 @@ admin.openapi(enablePluginRoute, async (c) => {
 });
 
 admin.openapi(disablePluginRoute, async (c) => {
-  const requestId = reqId(c);
+
   const { id } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   const plugin = plugins.get(id);
   if (!plugin) {
     return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404);
@@ -3416,11 +3337,10 @@ admin.openapi(disablePluginRoute, async (c) => {
 });
 
 admin.openapi(getPluginSchemaRoute, async (c) => {
-  const requestId = reqId(c);
+
   const { id } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   const plugin = plugins.get(id);
   if (!plugin) {
     return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404);
@@ -3459,11 +3379,10 @@ admin.openapi(getPluginSchemaRoute, async (c) => {
 });
 
 admin.openapi(updatePluginConfigRoute, async (c) => {
-  const requestId = reqId(c);
+
   const { id } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   const plugin = plugins.get(id);
   if (!plugin) {
     return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404);
@@ -3676,10 +3595,7 @@ admin.openapi(changePasswordRoute, async (c) => {
 // -- Sessions ---------------------------------------------------------------
 
 admin.openapi(listSessionsRoute, async (c) => {
-  const requestId = reqId(c);
-
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   if (!hasInternalDB() || detectAuthMode() !== "managed") {
     return c.json({ error: "not_available", message: "Session management requires managed auth mode." }, 404);
   }
@@ -3753,10 +3669,7 @@ admin.openapi(listSessionsRoute, async (c) => {
 });
 
 admin.openapi(getSessionStatsRoute, async (c) => {
-  const requestId = reqId(c);
-
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   if (!hasInternalDB() || detectAuthMode() !== "managed") {
     return c.json({ error: "not_available", message: "Session management requires managed auth mode." }, 404);
   }
@@ -3780,12 +3693,10 @@ admin.openapi(getSessionStatsRoute, async (c) => {
 });
 
 admin.openapi(deleteSessionRoute, async (c) => {
-  const requestId = reqId(c);
+
   const { id: sessionId } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   if (!hasInternalDB() || detectAuthMode() !== "managed") {
     return c.json({ error: "not_available", message: "Session management requires managed auth mode." }, 404);
@@ -3809,12 +3720,10 @@ admin.openapi(deleteSessionRoute, async (c) => {
 });
 
 admin.openapi(deleteUserSessionsRoute, async (c) => {
-  const requestId = reqId(c);
+
   const { userId } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   if (!hasInternalDB() || detectAuthMode() !== "managed") {
     return c.json({ error: "not_available", message: "Session management requires managed auth mode." }, 404);
@@ -3841,10 +3750,7 @@ admin.openapi(deleteUserSessionsRoute, async (c) => {
 // -- Users ------------------------------------------------------------------
 
 admin.openapi(listUsersRoute, async (c) => {
-  const requestId = reqId(c);
-
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   const adminApi = await getAdminApi();
   if (!adminApi) {
     return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
@@ -3892,10 +3798,7 @@ admin.openapi(listUsersRoute, async (c) => {
 });
 
 admin.openapi(getUserStatsRoute, async (c) => {
-  const requestId = reqId(c);
-
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   if (!hasInternalDB() || detectAuthMode() !== "managed") {
     return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
   }
@@ -3926,12 +3829,10 @@ admin.openapi(getUserStatsRoute, async (c) => {
 });
 
 admin.openapi(changeUserRoleRoute, async (c) => {
-  const requestId = reqId(c);
+
   const { id: userId } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   const adminApi = await getAdminApi();
   if (!adminApi) {
@@ -3988,12 +3889,10 @@ admin.openapi(changeUserRoleRoute, async (c) => {
 });
 
 admin.openapi(banUserRoute, async (c) => {
-  const requestId = reqId(c);
+
   const { id: userId } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   const adminApi = await getAdminApi();
   if (!adminApi) {
@@ -4027,12 +3926,10 @@ admin.openapi(banUserRoute, async (c) => {
 });
 
 admin.openapi(unbanUserRoute, async (c) => {
-  const requestId = reqId(c);
+
   const { id: userId } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   const adminApi = await getAdminApi();
   if (!adminApi) {
@@ -4053,12 +3950,10 @@ admin.openapi(unbanUserRoute, async (c) => {
 });
 
 admin.openapi(deleteUserRoute, async (c) => {
-  const requestId = reqId(c);
+
   const { id: userId } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   const adminApi = await getAdminApi();
   if (!adminApi) {
@@ -4104,12 +3999,10 @@ admin.openapi(deleteUserRoute, async (c) => {
 });
 
 admin.openapi(revokeUserSessionsRoute, async (c) => {
-  const requestId = reqId(c);
+
   const { id: userId } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   const adminApi = await getAdminApi();
   if (!adminApi) {
@@ -4132,11 +4025,7 @@ admin.openapi(revokeUserSessionsRoute, async (c) => {
 // -- Invitations ------------------------------------------------------------
 
 admin.openapi(inviteUserRoute, async (c) => {
-  const requestId = reqId(c);
-
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   if (!hasInternalDB() || detectAuthMode() !== "managed") {
     return c.json({ error: "not_available", message: "User invitations require managed auth mode." }, 404);
@@ -4264,10 +4153,7 @@ admin.openapi(inviteUserRoute, async (c) => {
 });
 
 admin.openapi(listInvitationsRoute, async (c) => {
-  const requestId = reqId(c);
-
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   if (!hasInternalDB() || detectAuthMode() !== "managed") {
     return c.json({ error: "not_available", message: "User invitations require managed auth mode." }, 404);
   }
@@ -4320,12 +4206,10 @@ admin.openapi(listInvitationsRoute, async (c) => {
 });
 
 admin.openapi(revokeInvitationRoute, async (c) => {
-  const requestId = reqId(c);
+
   const { id: invitationId } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   if (!hasInternalDB() || detectAuthMode() !== "managed") {
     return c.json({ error: "not_available", message: "User invitations require managed auth mode." }, 404);
@@ -4352,10 +4236,7 @@ admin.openapi(revokeInvitationRoute, async (c) => {
 // -- Tokens -----------------------------------------------------------------
 
 admin.openapi(getTokenSummaryRoute, async (c) => {
-  const requestId = reqId(c);
-
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
 
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Token usage tracking requires an internal database (DATABASE_URL)." }, 404);
@@ -4401,10 +4282,7 @@ admin.openapi(getTokenSummaryRoute, async (c) => {
 });
 
 admin.openapi(getTokensByUserRoute, async (c) => {
-  const requestId = reqId(c);
-
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
 
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Token usage tracking requires an internal database (DATABASE_URL)." }, 404);
@@ -4465,10 +4343,7 @@ admin.openapi(getTokensByUserRoute, async (c) => {
 });
 
 admin.openapi(getTokenTrendsRoute, async (c) => {
-  const requestId = reqId(c);
-
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
 
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Token usage tracking requires an internal database (DATABASE_URL)." }, 404);
@@ -4522,22 +4397,17 @@ admin.openapi(getTokenTrendsRoute, async (c) => {
 // -- Settings ---------------------------------------------------------------
 
 admin.openapi(getSettingsRoute, async (c) => {
-  const requestId = reqId(c);
-
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
+  const { requestId } = await adminAuthAndContext(c);
   const settings = getSettingsForAdmin();
   const manageable = hasInternalDB();
   return c.json({ settings, manageable }, 200);
 });
 
 admin.openapi(updateSettingRoute, async (c) => {
-  const requestId = reqId(c);
+
   const { key } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   if (!hasInternalDB()) {
     return c.json(
@@ -4604,12 +4474,10 @@ admin.openapi(updateSettingRoute, async (c) => {
 });
 
 admin.openapi(deleteSettingRoute, async (c) => {
-  const requestId = reqId(c);
+
   const { key } = c.req.valid("param");
 
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  requireAdminAuth(preamble);
-  const { authResult } = preamble;
+  const { authResult, requestId } = await adminAuthAndContext(c);
 
   if (!hasInternalDB()) {
     return c.json(

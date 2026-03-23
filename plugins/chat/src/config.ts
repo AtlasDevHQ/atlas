@@ -56,6 +56,18 @@ export interface TeamsAdapterConfig {
   tenantId?: string;
 }
 
+/** Discord adapter credential configuration. */
+export interface DiscordAdapterConfig {
+  /** Discord bot token. */
+  botToken: string;
+  /** Discord application ID. */
+  applicationId: string;
+  /** Discord application public key for webhook signature verification. */
+  publicKey: string;
+  /** Role IDs that trigger mention handlers (in addition to direct @mentions). */
+  mentionRoleIds?: string[];
+}
+
 /** State backend configuration. */
 export interface StateConfig {
   /** Which state backend to use. Default: "memory" */
@@ -111,6 +123,7 @@ export interface ChatPluginConfig {
   adapters: {
     slack?: SlackAdapterConfig;
     teams?: TeamsAdapterConfig;
+    discord?: DiscordAdapterConfig;
   };
 
   /** State backend configuration. Default: { backend: "memory" } */
@@ -158,6 +171,13 @@ const TeamsAdapterSchema = z.object({
   tenantId: z.string().min(1).optional(),
 });
 
+const DiscordAdapterSchema = z.object({
+  botToken: z.string().min(1, "discord botToken must not be empty"),
+  applicationId: z.string().min(1, "discord applicationId must not be empty"),
+  publicKey: z.string().min(1, "discord publicKey must not be empty"),
+  mentionRoleIds: z.array(z.string().min(1)).optional(),
+});
+
 const StateConfigSchema = z
   .object({
     backend: z.enum(["memory", "pg", "redis"]).default("memory"),
@@ -174,6 +194,7 @@ export const ChatConfigSchema = z.object({
     .object({
       slack: SlackAdapterSchema.optional(),
       teams: TeamsAdapterSchema.optional(),
+      discord: DiscordAdapterSchema.optional(),
     })
     .strict()
     .refine(

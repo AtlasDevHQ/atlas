@@ -1,0 +1,203 @@
+---
+title: Discord Bot
+description: Integrate Discord as an interaction surface for Atlas with slash commands, @mentions, threads, and rich Embed cards.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The Discord interaction is provided via the [`@useatlas/chat`](/plugins/interactions/chat) Chat SDK bridge plugin. Users can @mention the bot in channels, send direct messages, or use slash commands (`/atlas`) to query data. The bot replies with Discord Embed cards containing formatted query results, SQL, and data tables.
+
+The Chat SDK adapter uses Discord's HTTP Interactions API for serverless compatibility. Webhook signature verification uses Ed25519.
+
+## Prerequisites
+
+- A Discord application registered in the [Discord Developer Portal](https://discord.com/developers/applications)
+- A bot user added to the application with a bot token
+- The application's public key (for webhook signature verification)
+- The bot invited to your Discord server with appropriate permissions
+
+## Discord Developer Portal Setup
+
+### 1. Create an Application
+
+1. Go to the [Discord Developer Portal](https://discord.com/developers/applications)
+2. Click **New Application** and give it a name (e.g., "Atlas")
+3. Note the **Application ID** and **Public Key** from the General Information page
+
+### 2. Create a Bot User
+
+1. Go to the **Bot** section in the left sidebar
+2. Click **Reset Token** to generate a new bot token
+3. Copy the token immediately - this is your `botToken`
+
+<Callout type="warn">
+The bot token is only shown once. Copy it immediately and store it securely. If lost, you must reset it to generate a new one.
+</Callout>
+
+4. Under **Privileged Gateway Intents**, enable:
+   - **Message Content Intent** (required for reading message text in @mentions)
+
+### 3. Configure the Interactions Endpoint
+
+1. Go to the **General Information** page
+2. Set the **Interactions Endpoint URL** to:
+
+```
+https://your-atlas-api.example.com/api/plugins/chat-interaction/webhooks/discord
+```
+
+3. Discord will send a verification ping when you save. The Chat SDK adapter handles this automatically.
+
+### 4. Register Slash Commands
+
+Register the `/atlas` slash command using the Discord API. You can do this with a one-time script:
+
+```bash
+curl -X POST "https://discord.com/api/v10/applications/$DISCORD_APPLICATION_ID/commands" \
+  -H "Authorization: Bot $DISCORD_BOT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "atlas",
+    "description": "Ask Atlas a data question",
+    "type": 1,
+    "options": [
+      {
+        "name": "question",
+        "description": "Your data question",
+        "type": 3,
+        "required": true
+      }
+    ]
+  }'
+```
+
+### 5. Invite the Bot to Your Server
+
+Generate an invite URL with the required permissions:
+
+1. Go to the **OAuth2** section, then **URL Generator**
+2. Select scopes: `bot`, `applications.commands`
+3. Select bot permissions: `Send Messages`, `Send Messages in Threads`, `Embed Links`, `Read Message History`, `Use Slash Commands`
+4. Copy the generated URL and open it to invite the bot to your server
+
+## Configuration
+
+```typescript
+import { defineConfig } from "@atlas/api/lib/config";
+import { executeAgentQuery } from "@atlas/api/lib/agent-query";
+import { chatPlugin } from "@useatlas/chat";
+
+export default defineConfig({
+  plugins: [
+    chatPlugin({
+      adapters: {
+        discord: {
+          botToken: process.env.DISCORD_BOT_TOKEN!,
+          applicationId: process.env.DISCORD_APPLICATION_ID!,
+          publicKey: process.env.DISCORD_PUBLIC_KEY!,
+        },
+      },
+      executeQuery: executeAgentQuery,
+    }),
+  ],
+});
+```
+
+With optional mention role IDs (to trigger on role mentions, not just direct @mentions):
+
+```typescript
+chatPlugin({
+  adapters: {
+    discord: {
+      botToken: process.env.DISCORD_BOT_TOKEN!,
+      applicationId: process.env.DISCORD_APPLICATION_ID!,
+      publicKey: process.env.DISCORD_PUBLIC_KEY!,
+      mentionRoleIds: ["1234567890"],
+    },
+  },
+  executeQuery: executeAgentQuery,
+})
+```
+
+### Options
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `botToken` | `string` | Yes | Discord bot token from the Developer Portal Bot page. |
+| `applicationId` | `string` | Yes | Discord application ID from the General Information page. |
+| `publicKey` | `string` | Yes | Application public key for Ed25519 webhook signature verification. |
+| `mentionRoleIds` | `string[]` | No | Role IDs that trigger mention handlers in addition to direct @mentions. |
+
+## Mounted Routes
+
+The Chat SDK bridge mounts the following route for Discord:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/webhooks/discord` | Discord Interactions endpoint - receives slash commands, @mentions (via forwarded Gateway events), and button clicks |
+
+## How It Works
+
+### @Mentions
+1. A user @mentions the bot in a Discord channel
+2. The mention is received via the Interactions endpoint (or forwarded Gateway event)
+3. The Chat SDK subscribes the thread for follow-up messages
+4. The `executeQuery` callback runs the Atlas agent
+5. Results are posted as a reply with formatted markdown (Embed cards for approval prompts)
+
+### Slash Commands
+1. A user types `/atlas <question>` in any channel
+2. Discord sends an APPLICATION_COMMAND interaction to the webhook
+3. The bot posts a "thinking" message, then edits it with the full response
+4. The thread is subscribed for follow-up conversation
+
+### Threaded Follow-ups
+1. After an initial response, the thread is subscribed via the Chat SDK state adapter
+2. Any follow-up message in the thread triggers a new query with conversation history
+3. The agent has context from prior messages for multi-turn analysis
+
+### AI Streaming
+Discord doesn't support true message streaming. The adapter uses a post-then-edit pattern: an initial message is posted immediately, then progressively edited with new content as the response streams in.
+
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `DISCORD_BOT_TOKEN` | Discord bot token |
+| `DISCORD_APPLICATION_ID` | Discord application ID |
+| `DISCORD_PUBLIC_KEY` | Application public key for signature verification |
+
+## Troubleshooting
+
+### Interactions endpoint verification failing
+
+When you set the Interactions Endpoint URL in the Developer Portal, Discord sends a PING interaction to verify. Ensure your Atlas API is publicly accessible and the route is correct. The Chat SDK adapter handles PING verification automatically.
+
+### Bot not responding to @mentions
+
+1. Verify the **Message Content Intent** is enabled in the Bot settings
+2. Ensure the bot has `Read Message History` and `Send Messages` permissions in the channel
+3. Check that the Interactions Endpoint URL is set and verified
+
+### Slash commands not appearing
+
+Slash commands can take up to an hour to propagate globally. For immediate testing, register guild-specific commands by adding the guild ID to the registration URL:
+
+```
+https://discord.com/api/v10/applications/{app_id}/guilds/{guild_id}/commands
+```
+
+### Signature verification failures
+
+Ensure the `publicKey` in your config matches the Public Key shown in the Discord Developer Portal's General Information page. The key must be the full hex string.
+
+### Permission errors when posting replies
+
+The bot needs the following permissions in each channel where it operates:
+- Send Messages
+- Send Messages in Threads
+- Embed Links
+- Read Message History
+- Use Slash Commands
+
+Check the bot's role permissions in your Discord server settings.

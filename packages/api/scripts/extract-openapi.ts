@@ -45,6 +45,23 @@ if (!spec || spec.openapi !== "3.1.0" || !spec.paths) {
   process.exit(1);
 }
 
+// Deduplicate trailing-slash paths (e.g. "/api/v1/admin/roles" and "/api/v1/admin/roles/").
+// Some Hono route registrations produce both variants with identical content.
+const paths = spec.paths as Record<string, unknown>;
+let deduped = 0;
+for (const key of Object.keys(paths)) {
+  if (key.endsWith("/") && key.length > 1) {
+    const canonical = key.slice(0, -1);
+    if (canonical in paths) {
+      delete paths[key];
+      deduped++;
+    }
+  }
+}
+if (deduped > 0) {
+  console.log(`Removed ${deduped} duplicate trailing-slash path(s)`);
+}
+
 const outPath = path.resolve(import.meta.dirname, "..", "..", "..", "apps", "docs", "openapi.json");
 try {
   fs.writeFileSync(outPath, JSON.stringify(spec, null, 2) + "\n");

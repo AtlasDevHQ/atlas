@@ -128,7 +128,7 @@ function CompliancePageContent() {
   const [actionError, setActionError] = useState<string | null>(null);
 
   if (error?.status === 401 || error?.status === 403 || error?.status === 404) {
-    return <FeatureGate status={error.status} />;
+    return <FeatureGate status={error.status} feature="PII Compliance" />;
   }
 
   const classifications = data?.classifications ?? [];
@@ -225,7 +225,7 @@ function CompliancePageContent() {
         )}
       </div>
 
-      {actionError && <ErrorBanner error={{ message: actionError }} />}
+      {actionError && <ErrorBanner message={actionError} />}
 
       {/* Stats */}
       <div className="grid gap-4 md:grid-cols-4">

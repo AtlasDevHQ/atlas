@@ -27,7 +27,8 @@ import { AdminSidebar } from "../components/admin/admin-sidebar";
 const stubAuthClient: AtlasAuthClient = {
   signIn: { email: async () => ({}) },
   signOut: async () => {},
-  useSession: () => ({ data: { user: { role: "admin" } }, isPending: false }),
+  // The sidebar reads user.role via a cast — the base type only has email
+  useSession: () => ({ data: { user: { email: "admin@test.com" } }, isPending: false }),
 };
 
 function Wrapper({ children }: { children: ReactNode }) {

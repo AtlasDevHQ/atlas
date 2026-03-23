@@ -10,6 +10,10 @@ export interface Dimension {
   sample_values?: string[];
   primary_key?: boolean;
   foreign_key?: boolean;
+  /** PII category detected during profiling. Enterprise feature. */
+  pii?: string;
+  /** PII detection confidence level. */
+  pii_confidence?: string;
 }
 
 export interface Join {

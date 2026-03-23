@@ -1,0 +1,155 @@
+---
+title: PII Detection & Masking
+description: Auto-detect PII columns during profiling and mask sensitive values in query results based on user role.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas can auto-detect personally identifiable information (PII) in your database columns and mask sensitive values in query results. Detection runs during profiling, and masking is applied at query time based on user role. This is an enterprise feature gated behind the `/ee` module.
+
+<Callout title="Prerequisites">
+- [Managed auth](/deployment/authentication#managed-auth) enabled
+- Internal database configured (`DATABASE_URL`)
+- Enterprise license (the `/ee` module must be available)
+- Admin role required for compliance management endpoints
+</Callout>
+
+---
+
+## How It Works
+
+### Detection
+
+PII detection runs during database profiling (`atlas init` or the semantic layer wizard). For each column, the detector checks:
+
+1. **Sample values** (high confidence) — regex patterns match common PII formats (email, phone, SSN, credit card, IP address, date of birth)
+2. **Column names** (medium confidence) — heuristic name matching (e.g., `email`, `phone_number`, `ssn`, `first_name`)
+3. **Column types** (low confidence) — type-based guesses (e.g., `inet` → IP address)
+
+Detected PII is stored as column classifications in the internal database.
+
+### Masking
+
+When a query is executed, Atlas checks the result columns against PII classifications and applies masking based on the user's role:
+
+| Role | Behavior |
+|------|----------|
+| **Admin / Owner** | See raw (unmasked) values |
+| **Analyst** | See partial masks (e.g., `a***@example.com`) |
+| **Viewer / Member** | See full masks (`***`) |
+
+Masking happens after query execution and before results are returned — the underlying SQL is never modified.
+
+---
+
+## PII Categories
+
+| Category | Example Pattern | Detection Method |
+|----------|----------------|------------------|
+| `email` | `user@example.com` | Regex + column name |
+| `phone` | `555-123-4567` | Regex + column name |
+| `ssn` | `123-45-6789` | Regex + column name |
+| `credit_card` | `4111-1111-1111-1111` | Regex + column name |
+| `name` | First/last/full name | Column name only |
+| `ip_address` | `192.168.1.1` | Regex + column name + type |
+| `date_of_birth` | `1990-01-15` | Regex + column name |
+| `address` | Street/postal/zip | Column name only |
+| `passport` | `AB1234567` | Regex + column name |
+| `driver_license` | `D123-456-789` | Regex + column name |
+
+---
+
+## Masking Strategies
+
+Each PII column can be configured with a masking strategy:
+
+| Strategy | Example Output | Use Case |
+|----------|---------------|----------|
+| `full` | `***` | Maximum privacy — no visible data |
+| `partial` | `a***@example.com` | Preserve structure for debugging |
+| `hash` | `a1b2c3d4e5f67890` | Consistent pseudonymization |
+| `redact` | `[REDACTED]` | Explicit redaction marker |
+
+### Partial Masking Examples
+
+- **Email**: `alice@example.com` → `a***@example.com`
+- **SSN**: `123-45-6789` → `***-**-6789`
+- **Credit card**: `4111-1111-1111-1111` → `****-****-****-1111`
+- **Phone**: `555-123-4567` → `555-***-4567`
+- **Generic**: `John Smith` → `Jo***th`
+
+---
+
+## Admin UI
+
+Navigate to **Admin → PII Compliance** to manage classifications:
+
+- **Review detections** — see all detected PII columns with confidence levels
+- **Edit classifications** — change the PII category or masking strategy
+- **Dismiss false positives** — mark incorrect detections as dismissed
+- **Bulk review** — mark all pending detections as reviewed
+
+---
+
+## Semantic Layer Integration
+
+When PII is detected during profiling, the column's entity YAML is tagged:
+
+```yaml
+dimensions:
+  - name: email
+    sql: email
+    type: string
+    description: Customer email address
+    pii: email
+    pii_confidence: high
+```
+
+These tags are informational — masking rules are stored in the internal database and managed via the admin UI.
+
+---
+
+## API Reference
+
+### List Classifications
+
+```
+GET /api/v1/admin/compliance/classifications
+```
+
+Query parameters:
+- `connectionId` (optional) — filter by datasource connection
+
+### Update Classification
+
+```
+PUT /api/v1/admin/compliance/classifications/:id
+```
+
+Body:
+```json
+{
+  "category": "email",
+  "maskingStrategy": "partial",
+  "reviewed": true,
+  "dismissed": false
+}
+```
+
+### Delete Classification
+
+```
+DELETE /api/v1/admin/compliance/classifications/:id
+```
+
+---
+
+## Configuration
+
+PII detection and masking is enabled automatically when enterprise features are active. No additional configuration is required.
+
+The masking applies to all query results returned by the `executeSQL` tool, including cached results.
+
+<Callout title="Fail-Open Behavior">
+If the enterprise module is unavailable, PII masking is silently skipped and unmasked results are returned. This ensures non-enterprise deployments are unaffected.
+</Callout>

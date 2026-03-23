@@ -1,0 +1,257 @@
+---
+title: Chat SDK Bridge
+description: Unified chat interaction plugin bridging Slack, Teams, Discord, and more into Atlas via Chat SDK adapters.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The Chat SDK bridge plugin (`@useatlas/chat`) is the unified interaction layer for Atlas chat platforms. It bridges [Chat SDK](https://chat-sdk.dev) (vercel/chat) adapters into the Atlas plugin system, replacing the standalone `@useatlas/slack` and `@useatlas/teams` plugins with a single, multi-platform plugin.
+
+Instead of maintaining separate plugins per platform, `@useatlas/chat` wraps Chat SDK adapters and provides built-in state management, error scrubbing, and conversation threading — all configured from a single `chatPlugin()` call.
+
+## Installation
+
+```bash
+bun add @useatlas/chat
+```
+
+### Peer Dependencies
+
+- `hono` (^4.0.0)
+- `zod` (^4.0.0)
+- `@useatlas/plugin-sdk` (>=0.0.1)
+
+### Available Adapters
+
+| Platform | Chat SDK Adapter | Status |
+|----------|-----------------|--------|
+| Slack | `@chat-adapter/slack` | Stable |
+| Microsoft Teams | `@chat-adapter/teams` | Stable |
+Stable adapters are bundled as dependencies of `@useatlas/chat` — no separate install needed. Additional platforms (Discord, Google Chat, Telegram, WhatsApp) are planned and will be supported as Chat SDK adapters are published.
+
+## Configuration
+
+```typescript
+import { defineConfig } from "@atlas/api/lib/config";
+import { chatPlugin } from "@useatlas/chat";
+
+export default defineConfig({
+  plugins: [
+    chatPlugin({
+      adapters: {
+        slack: {
+          botToken: process.env.SLACK_BOT_TOKEN!,
+          signingSecret: process.env.SLACK_SIGNING_SECRET!,
+        },
+      },
+      executeQuery: myQueryFunction,
+    }),
+  ],
+});
+```
+
+### Multi-Platform with State Persistence
+
+```typescript
+export default defineConfig({
+  plugins: [
+    chatPlugin({
+      adapters: {
+        slack: {
+          botToken: process.env.SLACK_BOT_TOKEN!,
+          signingSecret: process.env.SLACK_SIGNING_SECRET!,
+          clientId: process.env.SLACK_CLIENT_ID,
+          clientSecret: process.env.SLACK_CLIENT_SECRET,
+        },
+        teams: {
+          appId: process.env.TEAMS_APP_ID!,
+          appPassword: process.env.TEAMS_APP_PASSWORD!,
+          tenantId: process.env.TEAMS_TENANT_ID,
+        },
+      },
+      state: { backend: "pg" },
+      executeQuery: myQueryFunction,
+      actions: myActionCallbacks,
+      conversations: myConversationCallbacks,
+    }),
+  ],
+});
+```
+
+### Options
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `adapters` | `object` | Yes | Platform adapter credentials (at least one required). |
+| `adapters.slack.botToken` | `string` | Yes* | Slack bot token (`xoxb-...`). |
+| `adapters.slack.signingSecret` | `string` | Yes* | Slack signing secret for request verification. |
+| `adapters.slack.clientId` | `string` | No | Client ID for multi-workspace OAuth. |
+| `adapters.slack.clientSecret` | `string` | No | Client secret for multi-workspace OAuth. |
+| `adapters.teams.appId` | `string` | Yes* | Microsoft App ID from Azure Bot registration. |
+| `adapters.teams.appPassword` | `string` | Yes* | Microsoft App Password from Azure Bot registration. |
+| `adapters.teams.tenantId` | `string` | No | Restrict to a specific Microsoft Entra ID tenant. |
+| `state` | `object` | No | State backend config (default: `{ backend: "memory" }`). |
+| `executeQuery` | `function` | Yes | Callback to run the Atlas agent on a question. |
+| `checkRateLimit` | `function` | No | Optional rate limiting callback. |
+| `scrubError` | `function` | No | Optional error scrubbing callback. |
+| `actions` | `ActionCallbacks` | No | Optional action framework callbacks (`approve`, `deny`, `get`). |
+| `conversations` | `ConversationCallbacks` | No | Optional conversation persistence callbacks (`create`, `addMessage`, `get`, `generateTitle`). |
+
+<Callout type="info">
+\* Required when that adapter is configured. At least one adapter must be present.
+
+For Slack OAuth, `clientId` and `clientSecret` must both be provided together.
+</Callout>
+
+## State Adapters
+
+The state backend controls how thread subscriptions, conversation history, and distributed locks are persisted.
+
+| Backend | Description | Persistence | Production Ready |
+|---------|-------------|-------------|-----------------|
+| `memory` | In-memory store. State lost on restart. | None | No |
+| `pg` | PostgreSQL via Atlas internal DB (`DATABASE_URL`). | Full | Yes |
+| `redis` | Redis (stub — not yet implemented). | — | No |
+
+```typescript
+chatPlugin({
+  adapters: { slack: { /* ... */ } },
+  state: {
+    backend: "pg",
+    tablePrefix: "chat_", // default — customize to avoid conflicts
+  },
+  executeQuery: myQueryFunction,
+})
+```
+
+<Callout type="warn">
+The `pg` backend requires `DATABASE_URL` to be configured. It auto-creates three tables (`chat_subscriptions`, `chat_locks`, `chat_cache`) using `CREATE TABLE IF NOT EXISTS` on first connection.
+</Callout>
+
+For production deployments, use the `pg` backend. The `memory` backend is suitable for development and testing only — state is lost when the process restarts.
+
+## How It Works
+
+The plugin bridges Chat SDK events to the Atlas agent:
+
+1. **Slash commands** (`/atlas <question>`) — Posts a "Thinking about: \<question\>..." indicator, subscribes the thread, runs `executeQuery`, edits the response with results
+2. **@mentions** — Subscribes to the thread, runs `executeQuery`, posts the result as markdown
+3. **Thread follow-ups** — Messages in subscribed threads are routed through `executeQuery` with conversation history
+4. **Actions** — Approval button clicks call `actions.approve()` or `actions.deny()`, then update the original message
+
+## Mounted Routes
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/webhooks/slack` | Slack webhook (slash commands, events, interactions) |
+| `POST` | `/webhooks/teams` | Teams webhook (Bot Framework activities) |
+| `GET` | `/oauth/slack/install` | Slack OAuth install redirect (only when `clientId` configured) |
+| `GET` | `/oauth/slack/callback` | Slack OAuth callback (only when `clientId` configured) |
+
+Routes are mounted under the plugin's base path (e.g., `/api/plugins/chat-interaction/webhooks/slack`).
+
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `SLACK_BOT_TOKEN` | Slack bot token (`xoxb-...`) |
+| `SLACK_SIGNING_SECRET` | Slack signing secret |
+| `SLACK_CLIENT_ID` | Slack OAuth client ID (multi-workspace) |
+| `SLACK_CLIENT_SECRET` | Slack OAuth client secret (multi-workspace) |
+| `TEAMS_APP_ID` | Microsoft App ID |
+| `TEAMS_APP_PASSWORD` | Microsoft App Password |
+| `TEAMS_TENANT_ID` | Microsoft Entra ID tenant ID (optional) |
+| `DATABASE_URL` | Required for `pg` state backend |
+
+## Error Scrubbing
+
+All error messages are scrubbed before sending to chat platforms. Built-in patterns redact:
+
+- Connection strings (`postgres://`, `mysql://`, etc.)
+- Stack traces and file paths
+- API keys and tokens (Slack, GitHub, Bearer)
+
+Provide a custom `scrubError` callback for additional scrubbing.
+
+## Migrating from @useatlas/slack
+
+```typescript
+// Before:
+import { slackPlugin } from "@useatlas/slack";
+slackPlugin({ signingSecret: "...", botToken: "xoxb-...", executeQuery })
+
+// After:
+import { chatPlugin } from "@useatlas/chat";
+chatPlugin({
+  adapters: {
+    slack: { botToken: "xoxb-...", signingSecret: "..." },
+  },
+  executeQuery,
+})
+```
+
+Update your Slack app webhook URLs:
+
+| Route | @useatlas/slack | @useatlas/chat |
+|-------|----------------|----------------|
+| Slash commands | `/commands` | `/webhooks/slack` |
+| Events | `/events` | `/webhooks/slack` |
+| Interactions | `/interactions` | `/webhooks/slack` |
+| OAuth install | `/install` | `/oauth/slack/install` |
+| OAuth callback | `/callback` | `/oauth/slack/callback` |
+
+## Migrating from @useatlas/teams
+
+```typescript
+// Before:
+import { teamsPlugin } from "@useatlas/teams";
+teamsPlugin({ appId: "...", appPassword: "...", executeQuery })
+
+// After:
+import { chatPlugin } from "@useatlas/chat";
+chatPlugin({
+  adapters: {
+    teams: { appId: "...", appPassword: "..." },
+  },
+  executeQuery,
+})
+```
+
+Update the **messaging endpoint** in your Azure Bot Configuration:
+
+```
+https://your-atlas-api.example.com/api/plugins/chat-interaction/webhooks/teams
+```
+
+| Feature | @useatlas/teams | @useatlas/chat |
+|---------|----------------|----------------|
+| Webhook | `/messages` | `/webhooks/teams` |
+| Adaptive Cards | Hand-rolled builders | Automatic via Chat SDK |
+| State | None | State adapter (memory/PG/Redis) |
+| Follow-ups | Single query per activity | Chat SDK subscription model |
+| Multi-platform | Teams only | Slack, Teams, Discord, etc. |
+
+## Troubleshooting
+
+### Slack signature verification failures
+
+Ensure `SLACK_SIGNING_SECRET` matches the signing secret from your Slack app's Basic Information page. Clock skew between your server and Slack can also cause verification failures.
+
+### Teams authorization failures
+
+Ensure `TEAMS_APP_ID` and `TEAMS_APP_PASSWORD` match the Azure Bot registration credentials. If using tenant restriction, verify the tenant ID matches the Microsoft Entra ID tenant where Teams is configured.
+
+### State adapter connection errors
+
+For the `pg` backend, verify `DATABASE_URL` is set and the database is accessible. The adapter will fail at plugin initialization if it cannot connect. The `redis` backend is not yet implemented and will throw at startup — use `pg` or `memory` instead.
+
+### Plugin returns 503
+
+Routes return 503 if the plugin hasn't finished initializing. This is normal during startup — wait for the `Chat interaction plugin initialized` log message before sending webhooks.
+
+## Reference
+
+- [Chat SDK documentation](https://chat-sdk.dev/docs)
+- [Plugin authoring guide](/plugins/authoring-guide)
+- [Slack plugin (deprecated)](/plugins/interactions/slack)
+- [Teams plugin (deprecated)](/plugins/interactions/teams)

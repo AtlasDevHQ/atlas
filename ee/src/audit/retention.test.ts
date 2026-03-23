@@ -221,9 +221,9 @@ describe("purgeExpiredEntries", () => {
     queryResults = [
       [{ org_id: "org-1", retention_days: 30 }],
     ];
-    // Mock pool.query for the UPDATE and metadata update
+    // Mock pool.query for the UPDATE CTE and metadata update
     mockPool.query.mockImplementation(async () => {
-      return { rows: [{ id: "entry-1" }, { id: "entry-2" }] };
+      return { rows: [{ cnt: 2 }] };
     });
 
     const result = await purgeExpiredEntries("org-1");
@@ -255,9 +255,9 @@ describe("hardDeleteExpired", () => {
     queryResults = [
       [{ org_id: "org-1", hard_delete_delay_days: 30 }],
     ];
-    // pool.query for DELETE
+    // pool.query for DELETE — CTE returns count
     mockPool.query.mockImplementation(async () => {
-      return { rows: [{ id: "entry-1" }] };
+      return { rows: [{ cnt: 1 }] };
     });
 
     const result = await hardDeleteExpired();

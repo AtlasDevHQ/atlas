@@ -255,7 +255,7 @@ try {
   const { startAuditPurgeScheduler } = await import("../../../../ee/src/audit/purge-scheduler");
   startAuditPurgeScheduler();
 } catch {
-  // ee module not installed — audit purge scheduler unavailable, skip
+  // intentionally ignored: ee module not installed — audit purge scheduler unavailable
 }
 
 const server = Bun.serve({

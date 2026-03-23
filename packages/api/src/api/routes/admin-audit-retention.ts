@@ -522,9 +522,14 @@ adminAuditRetention.openapi(hardDeleteRoute, async (c) => {
       return c.json({ error: "not_available", message: "No internal database configured." }, 404);
     }
 
+    const orgId = authResult.user?.activeOrganizationId;
+    if (!orgId) {
+      return c.json({ error: "no_organization", message: "No active organization.", requestId }, 404);
+    }
+
     try {
       const { hardDeleteExpired } = await import("../../../../../ee/src/audit/retention");
-      const result = await hardDeleteExpired();
+      const result = await hardDeleteExpired(orgId);
       return c.json(result, 200);
     } catch (err) {
       const mapped = retentionErrorResponse(err);

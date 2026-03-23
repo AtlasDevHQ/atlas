@@ -238,16 +238,18 @@ export async function purgeExpiredEntries(orgId?: string): Promise<PurgeResult[]
     if (config.retention_days === null) continue;
 
     const result = await pool.query(
-      `UPDATE audit_log
-       SET deleted_at = now()
-       WHERE org_id = $1
-         AND deleted_at IS NULL
-         AND timestamp < now() - ($2 || ' days')::interval
-       RETURNING id`,
+      `WITH updated AS (
+         UPDATE audit_log
+         SET deleted_at = now()
+         WHERE org_id = $1
+           AND deleted_at IS NULL
+           AND timestamp < now() - ($2 || ' days')::interval
+         RETURNING 1
+       ) SELECT COUNT(*)::int AS cnt FROM updated`,
       [config.org_id, config.retention_days],
     );
 
-    const count = result.rows.length;
+    const count = Number((result.rows[0] as Record<string, unknown>)?.cnt ?? 0);
     results.push({ orgId: config.org_id, softDeletedCount: count });
 
     // Update last purge metadata
@@ -273,30 +275,37 @@ export async function purgeExpiredEntries(orgId?: string): Promise<PurgeResult[]
  *
  * Processes all orgs with retention configs.
  */
-export async function hardDeleteExpired(): Promise<HardDeleteResult> {
+export async function hardDeleteExpired(orgId?: string): Promise<HardDeleteResult> {
   requireEnterprise("audit-retention");
   if (!hasInternalDB()) return { deletedCount: 0 };
 
   const pool = getInternalDB();
 
-  // Get all retention configs with hard delete delays
-  const configs = await internalQuery<RetentionConfigRow>(
-    `SELECT org_id, hard_delete_delay_days FROM audit_retention_config`,
-  );
+  // Get retention configs — scoped to orgId when provided, all orgs for scheduler
+  const configs = orgId
+    ? await internalQuery<RetentionConfigRow>(
+        `SELECT org_id, hard_delete_delay_days FROM audit_retention_config WHERE org_id = $1`,
+        [orgId],
+      )
+    : await internalQuery<RetentionConfigRow>(
+        `SELECT org_id, hard_delete_delay_days FROM audit_retention_config`,
+      );
 
   let totalDeleted = 0;
 
   for (const config of configs) {
     const result = await pool.query(
-      `DELETE FROM audit_log
-       WHERE org_id = $1
-         AND deleted_at IS NOT NULL
-         AND deleted_at < now() - ($2 || ' days')::interval
-       RETURNING id`,
+      `WITH deleted AS (
+         DELETE FROM audit_log
+         WHERE org_id = $1
+           AND deleted_at IS NOT NULL
+           AND deleted_at < now() - ($2 || ' days')::interval
+         RETURNING 1
+       ) SELECT COUNT(*)::int AS cnt FROM deleted`,
       [config.org_id, config.hard_delete_delay_days],
     );
 
-    const count = result.rows.length;
+    const count = Number((result.rows[0] as Record<string, unknown>)?.cnt ?? 0);
     totalDeleted += count;
 
     if (count > 0) {

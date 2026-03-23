@@ -200,10 +200,10 @@ describe("internal DB module", () => {
       _resetPool(pool);
 
       await migrateInternalDB();
-      // 130 base queries + 1 org table existence check (workspace ALTER TABLEs
+      // 133 base queries + 1 org table existence check (workspace ALTER TABLEs
       // are skipped because mock pool returns empty rows for the check)
-      // Includes: SSO enforcement, ip_allowlist, custom_roles, user_onboarding, audit_retention_config, workspace_model_config, approval_rules, approval_queue, workspace_branding, onboarding_emails, email_preferences tables + indexes
-      expect(calls.queries.length).toBe(130);
+      // Includes: SSO enforcement, ip_allowlist, custom_roles, user_onboarding, audit_retention_config, workspace_model_config, approval_rules, approval_queue, workspace_branding, onboarding_emails, email_preferences, abuse_events tables + indexes
+      expect(calls.queries.length).toBe(133);
       expect(calls.queries[0].sql).toContain("CREATE TABLE IF NOT EXISTS audit_log");
       expect(calls.queries[1].sql).toContain("idx_audit_log_timestamp");
       expect(calls.queries[2].sql).toContain("idx_audit_log_user_id");

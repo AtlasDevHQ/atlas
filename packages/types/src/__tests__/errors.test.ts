@@ -335,6 +335,7 @@ describe("isRetryableError", () => {
     "internal_error",
     "billing_check_failed",
     "workspace_check_failed",
+    "workspace_throttled",
   ];
 
   const nonRetryableCodes: ChatErrorCode[] = [

@@ -57,6 +57,14 @@ export async function migrateAuthTables(): Promise<void> {
     } catch (err) {
       log.error({ err }, "Failed to load plugin settings at startup — all plugins default to enabled");
     }
+
+    // Restore abuse prevention state from DB
+    try {
+      const { restoreAbuseState } = await import("@atlas/api/lib/security/abuse");
+      await restoreAbuseState();
+    } catch (err) {
+      log.error({ err }, "Failed to restore abuse state at startup — starting with empty state");
+    }
   }
 
   // Better Auth migration — only in managed mode

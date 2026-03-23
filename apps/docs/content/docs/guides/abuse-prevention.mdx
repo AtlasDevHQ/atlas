@@ -1,0 +1,102 @@
+---
+title: Abuse Prevention
+description: Configure anomaly detection, graduated response, and auto-suspend for abusive query patterns.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas includes built-in abuse prevention that detects anomalous query patterns per workspace and applies a graduated response: **warn**, **throttle**, then **suspend**. This protects your analytics datasource from runaway queries, credential stuffing, and resource exhaustion.
+
+<Callout title="Prerequisites">
+- Atlas server running with `DATABASE_URL` configured (internal DB required for persistence)
+- Admin access for the admin console abuse management page
+</Callout>
+
+## How It Works
+
+Atlas monitors three anomaly signals per workspace using sliding window counters:
+
+| Signal | Default Threshold | Description |
+|--------|------------------|-------------|
+| **Query rate** | 200 queries / 5 min | Excessive request volume |
+| **Error rate** | 50% | High ratio of failed queries |
+| **Unique tables** | 50 tables / window | Unusual breadth of table access |
+
+When a threshold is exceeded, the workspace escalates through three levels:
+
+1. **Warning** — Event logged, visible in admin console. No user impact.
+2. **Throttled** — Configurable delay (default 2s) injected before each request. Users experience slower responses.
+3. **Suspended** — All requests blocked with `403 workspace_suspended`. Requires admin reinstatement.
+
+Each additional threshold breach while already flagged escalates to the next level.
+
+## Configuration
+
+All thresholds are configurable via environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_ABUSE_QUERY_RATE` | `200` | Max queries per workspace per sliding window |
+| `ATLAS_ABUSE_WINDOW_SECONDS` | `300` | Sliding window duration in seconds |
+| `ATLAS_ABUSE_ERROR_RATE` | `0.5` | Max error rate (0–1) before escalation |
+| `ATLAS_ABUSE_UNIQUE_TABLES` | `50` | Max unique tables accessed per window |
+| `ATLAS_ABUSE_THROTTLE_DELAY_MS` | `2000` | Delay injected for throttled workspaces (ms) |
+
+## Admin Console
+
+The **Abuse Prevention** page in the admin console (`/admin/abuse`) shows:
+
+- **Detection Thresholds** — Current configuration values
+- **Flagged Workspaces** — Table of workspaces with active flags (warning, throttled, or suspended)
+- **Reinstate** — Button to clear abuse flags and restore normal access
+
+### Reinstatement
+
+When you reinstate a workspace:
+- All abuse counters are reset to zero
+- The workspace immediately returns to normal operation
+- If the abusive pattern continues, the workspace will be flagged again
+
+## Audit Trail
+
+All abuse events are recorded in the audit trail:
+- Level changes (warn, throttle, suspend)
+- Manual reinstatements (includes the admin who performed the action)
+- Metadata includes query count, error count, unique tables, and escalation count
+
+Events are persisted to the `abuse_events` table in the internal database and are accessible via the admin API.
+
+## API Reference
+
+### List flagged workspaces
+
+```
+GET /api/v1/admin/abuse
+```
+
+Returns all workspaces with active abuse flags, including recent events.
+
+### Reinstate a workspace
+
+```
+POST /api/v1/admin/abuse/:workspaceId/reinstate
+```
+
+Clears abuse flags and restores normal access for the specified workspace.
+
+### Get threshold configuration
+
+```
+GET /api/v1/admin/abuse/config
+```
+
+Returns the current abuse detection threshold configuration.
+
+## Relationship to Rate Limiting
+
+Abuse prevention is separate from [rate limiting](/docs/guides/rate-limiting):
+
+- **Rate limiting** (ATLAS_RATE_LIMIT_RPM) is per-user, per-minute, and returns 429 immediately
+- **Abuse prevention** is per-workspace, uses a longer sliding window, and applies graduated response
+
+Both can be active simultaneously. Rate limiting catches individual users making too many requests; abuse prevention catches workspace-level patterns that may involve multiple users or automated access.

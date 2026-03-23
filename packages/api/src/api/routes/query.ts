@@ -23,6 +23,7 @@ import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { checkWorkspaceStatus } from "@atlas/api/lib/workspace";
 import { checkPlanLimits } from "@atlas/api/lib/billing/enforcement";
+import { checkAbuseStatus } from "@atlas/api/lib/security/abuse";
 import {
   createConversation,
   addMessage,
@@ -196,6 +197,23 @@ query.openapi(
         { error: wsError, message: wsMessage, retryable: isChatErrorCode(wsError) ? isRetryableError(wsError) : false, requestId },
         wsCheck.httpStatus ?? 403,
       ) as never;
+    }
+
+    // Abuse check — block suspended workspaces, delay throttled ones
+    const abuseOrgId = authResult.user?.activeOrganizationId;
+    if (abuseOrgId) {
+      const abuse = checkAbuseStatus(abuseOrgId);
+      if (abuse.level === "suspended") {
+        log.warn({ requestId, orgId: abuseOrgId }, "Workspace suspended due to abuse");
+        return c.json(
+          { error: "workspace_suspended", message: "Workspace suspended due to unusual activity. Contact your administrator.", retryable: false, requestId },
+          403,
+        ) as never;
+      }
+      if (abuse.level === "throttled" && abuse.throttleDelayMs) {
+        log.debug({ requestId, orgId: abuseOrgId, delayMs: abuse.throttleDelayMs }, "Throttling workspace request");
+        await new Promise((resolve) => setTimeout(resolve, abuse.throttleDelayMs));
+      }
     }
 
     // Plan limit check — block or warn when usage approaches/exceeds plan limits

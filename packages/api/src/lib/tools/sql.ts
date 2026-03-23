@@ -749,6 +749,90 @@ Rules:
     // stays undefined — their audit entries store NULL for tables/columns_accessed.
     const classification = initial.classification;
 
+    // Enterprise approval check — if the query touches tables/columns that require
+    // sign-off, queue the request and return early with an "approval_required" response.
+    // Phase 1 (check) can fail open; Phase 2 (create request) must block on failure.
+    if (classification) {
+      let approvalMatch: { required: boolean; matchedRules: { id: string; name: string }[] } | null = null;
+      try {
+        const { checkApprovalRequired } = await import("../../../../../ee/src/governance/approval");
+        const reqCtxForCheck = getRequestContext();
+        const checkOrgId = reqCtxForCheck?.user?.activeOrganizationId;
+        approvalMatch = await checkApprovalRequired(
+          checkOrgId,
+          classification.tablesAccessed,
+          classification.columnsAccessed,
+        );
+      } catch (err) {
+        // Approval check unavailable (ee not installed, enterprise disabled, DB error).
+        // Fail open — log and continue without approval gating.
+        log.warn(
+          { err: err instanceof Error ? err.message : String(err), connectionId: connId },
+          "Approval check failed — proceeding without approval gate",
+        );
+      }
+
+      // If approval IS required, creating the request must NOT fail silently.
+      // Errors here propagate up and block the query — a governance bypass is worse
+      // than a failed query.
+      if (approvalMatch?.required) {
+        const { createApprovalRequest, hasApprovedRequest } = await import("../../../../../ee/src/governance/approval");
+        const reqCtxForApproval = getRequestContext();
+        const approvalOrgId = reqCtxForApproval?.user?.activeOrganizationId;
+        const userId = reqCtxForApproval?.user?.id;
+        const userEmail = reqCtxForApproval?.user?.label ?? null;
+
+        if (!userId || !approvalOrgId) {
+          log.warn(
+            { connectionId: connId, orgId: approvalOrgId },
+            "Approval required but user identity unavailable — blocking query",
+          );
+          return {
+            success: false,
+            error: "This query requires approval but the requester identity could not be determined. Please sign in and try again.",
+          };
+        }
+
+        // Check if this query already has an approved request for this user
+        const alreadyApproved = await hasApprovedRequest(approvalOrgId, userId, normalizedSql);
+        if (!alreadyApproved) {
+          const firstRule = approvalMatch.matchedRules[0];
+          const approvalReq = await createApprovalRequest({
+            orgId: approvalOrgId,
+            ruleId: firstRule.id,
+            ruleName: firstRule.name,
+            requesterId: userId,
+            requesterEmail: userEmail,
+            querySql: normalizedSql,
+            explanation,
+            connectionId: connId,
+            tablesAccessed: classification.tablesAccessed,
+            columnsAccessed: classification.columnsAccessed,
+          });
+          logQueryAudit({
+            sql: normalizedSql.slice(0, 2000),
+            durationMs: 0,
+            rowCount: null,
+            success: false,
+            error: `Approval required: ${firstRule.name}`,
+            sourceId: connId,
+            sourceType: dbType,
+            targetHost,
+          });
+          return {
+            success: false,
+            approval_required: true,
+            approval_request_id: approvalReq.id,
+            matched_rules: approvalMatch.matchedRules.map((r: { name: string }) => r.name),
+            message: `This query requires approval before execution. Rule: "${firstRule.name}". ` +
+              `An approval request has been submitted (ID: ${approvalReq.id}). ` +
+              `An admin must approve it before the query can run.`,
+          };
+        }
+        // Query has an existing approved request — proceed to execution
+      }
+    }
+
     // Check cache before acquiring a concurrency slot — cache hits need no DB connection.
     // Wrapped in try-catch so a broken cache backend (plugin Redis down) fails open.
     let cacheKey: string | null = null;

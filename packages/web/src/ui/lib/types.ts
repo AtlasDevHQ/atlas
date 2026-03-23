@@ -57,7 +57,13 @@ export type {
   WorkspaceModelConfig,
   TestModelConfigResponse,
 } from "@useatlas/types";
-export { SHARE_EXPIRY_OPTIONS, PROMPT_INDUSTRIES, MODEL_CONFIG_PROVIDERS } from "@useatlas/types";
+export type {
+  ApprovalRule,
+  ApprovalRuleType,
+  ApprovalRequest,
+  ApprovalStatus,
+} from "@useatlas/types";
+export { SHARE_EXPIRY_OPTIONS, PROMPT_INDUSTRIES, MODEL_CONFIG_PROVIDERS, APPROVAL_RULE_TYPES, APPROVAL_STATUSES } from "@useatlas/types";
 export { parseChatError } from "@useatlas/types/errors";
 
 // --- Web-only types (not in @useatlas/types) ---

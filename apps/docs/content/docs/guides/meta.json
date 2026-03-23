@@ -20,6 +20,7 @@
     "ip-allowlisting",
     "custom-roles",
     "audit-retention",
+    "approval-workflows",
     "usage-metering",
     "billing-and-plans",
     "admin-console",

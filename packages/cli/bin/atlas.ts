@@ -2706,7 +2706,7 @@ async function handleDiff(args: string[]): Promise<void> {
   }
 
   // Run FK inference so inferred FKs are comparable
-  analyzeTableProfiles(profiles);
+  profiles = analyzeTableProfiles(profiles);
 
   // Build DB snapshots
   const dbSnapshots = new Map<string, EntitySnapshot>();
@@ -3015,7 +3015,8 @@ async function profileDatasource(opts: ProfileDatasourceOpts): Promise<void> {
     }
   }
 
-  const { profiles, errors: profilingErrors } = result;
+  let { profiles } = result;
+  const { errors: profilingErrors } = result;
   const profilingElapsed = Date.now() - profilingStart;
   progress.onComplete(profiles.length, profilingElapsed);
 
@@ -3042,7 +3043,7 @@ async function profileDatasource(opts: ProfileDatasourceOpts): Promise<void> {
   }
 
   // Run profiler heuristics
-  analyzeTableProfiles(profiles);
+  profiles = analyzeTableProfiles(profiles);
 
   const tableCount = profiles.filter((p) => !isViewLike(p)).length;
   const viewCount = profiles.filter((p) => isView(p)).length;
@@ -3854,7 +3855,7 @@ async function main() {
     const duckProgress = createProgressTracker();
     const duckStart = Date.now();
     const duckResult = await profileDuckDB(dbPath, duckFilterTables, undefined, duckProgress);
-    const { profiles } = duckResult;
+    let { profiles } = duckResult;
     duckProgress.onComplete(profiles.length, Date.now() - duckStart);
 
     if (profiles.length === 0) {
@@ -3875,7 +3876,7 @@ async function main() {
     }
 
     // Run profiler heuristics
-    analyzeTableProfiles(profiles);
+    profiles = analyzeTableProfiles(profiles);
 
     console.log(`\nFound ${profiles.length} table(s):\n`);
     for (const p of profiles) {

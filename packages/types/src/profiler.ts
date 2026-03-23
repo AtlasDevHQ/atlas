@@ -152,6 +152,12 @@ export interface WizardInferredForeignKey {
   toColumn: string;
 }
 
+/** camelCase heuristic flags in the wizard generate response. */
+export interface WizardTableFlags {
+  possiblyAbandoned: boolean;
+  possiblyDenormalized: boolean;
+}
+
 /** Single entity result from the wizard generate endpoint. */
 export interface WizardEntityResult {
   tableName: string;
@@ -164,7 +170,7 @@ export interface WizardEntityResult {
     primaryKeys: string[];
     foreignKeys: WizardForeignKey[];
     inferredForeignKeys: WizardInferredForeignKey[];
-    flags: TableFlags;
+    flags: WizardTableFlags;
     notes: string[];
   };
 }

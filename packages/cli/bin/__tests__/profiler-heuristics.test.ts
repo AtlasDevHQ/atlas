@@ -595,14 +595,14 @@ describe("analyzeTableProfiles", () => {
       primary_key_columns: ["id"],
     });
 
-    analyzeTableProfiles([agents, heartbeats, legacy]);
+    const [analyzedAgents, analyzedHeartbeats, analyzedLegacy] = analyzeTableProfiles([agents, heartbeats, legacy]);
 
     // FK inference worked
-    expect(heartbeats.inferred_foreign_keys).toHaveLength(1);
+    expect(analyzedHeartbeats.inferred_foreign_keys).toHaveLength(1);
     // Abandoned detection worked
-    expect(legacy.table_flags.possibly_abandoned).toBe(true);
+    expect(analyzedLegacy.table_flags.possibly_abandoned).toBe(true);
     // Arrays initialized
-    expect(agents.profiler_notes).toEqual([]);
-    expect(agents.table_flags).toBeDefined();
+    expect(analyzedAgents.profiler_notes).toEqual([]);
+    expect(analyzedAgents.table_flags).toBeDefined();
   });
 });

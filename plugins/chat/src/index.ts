@@ -3,8 +3,10 @@
  *
  * Bridges vercel/chat (Chat SDK) into the Atlas plugin system as a unified
  * interaction layer. Currently supports Slack; additional platforms (Teams,
- * Discord, etc.) will be added as Chat SDK adapters in follow-up issues
- * (#759–#766).
+ * Discord, etc.) will be added as Chat SDK adapters in follow-up issues.
+ *
+ * Replaces the standalone `@useatlas/slack` plugin with a unified Chat SDK
+ * adapter approach. See the migration guide in README.md.
  *
  * @example
  * ```typescript
@@ -28,6 +30,7 @@
  */
 
 import type { StateAdapter } from "chat";
+import type { SlackAdapter } from "@chat-adapter/slack";
 import { createPlugin } from "@useatlas/plugin-sdk";
 import type {
   AtlasInteractionPlugin,
@@ -39,10 +42,19 @@ import { ChatConfigSchema } from "./config";
 import type { ChatPluginConfig } from "./config";
 import { createChatBridge } from "./bridge";
 import type { ChatBridge } from "./bridge";
+import { createSlackAdapter } from "./adapters/slack";
 import { createStateAdapter } from "./state";
 
 // Re-export types for host wiring convenience
-export type { ChatPluginConfig, ChatQueryResult, ChatMessage, StateConfig } from "./config";
+export type {
+  ChatPluginConfig,
+  ChatQueryResult,
+  ChatMessage,
+  StateConfig,
+  PendingAction,
+  ActionCallbacks,
+  ConversationCallbacks,
+} from "./config";
 export type { ChatBridge } from "./bridge";
 export { createStateAdapter } from "./state";
 export type { PluginDB } from "./state";
@@ -56,6 +68,7 @@ function buildChatPlugin(
 ): AtlasInteractionPlugin<ChatPluginConfig> {
   let bridge: ChatBridge | null = null;
   let stateAdapter: StateAdapter | null = null;
+  let slackAdapterInstance: SlackAdapter | null = null;
   let log: PluginLogger | null = null;
   let initialized = false;
 
@@ -66,7 +79,7 @@ function buildChatPlugin(
   return {
     id: "chat-interaction",
     types: ["interaction"] as const,
-    version: "0.1.0",
+    version: "0.2.0",
     name: "Chat SDK Bridge",
     config,
 
@@ -97,6 +110,87 @@ function buildChatPlugin(
           });
           return response;
         });
+
+        // OAuth routes — only if clientId is configured
+        if (config.adapters.slack.clientId) {
+          app.get("/oauth/slack/install", async (c) => {
+            if (!slackAdapterInstance || !stateAdapter) {
+              return c.json({ error: "Chat plugin not yet initialized" }, 503);
+            }
+
+            const clientId = config.adapters.slack!.clientId!;
+            const scopes = "commands,chat:write,app_mentions:read";
+            const state = crypto.randomUUID();
+
+            // Store CSRF state in state adapter (10 minute TTL).
+            // Must complete before redirecting — callback validates this token.
+            try {
+              await stateAdapter.set(`oauth:slack:${state}`, true, 600_000);
+            } catch (err) {
+              (log ?? console).error(
+                { err: err instanceof Error ? err : new Error(String(err)) },
+                "Failed to store OAuth CSRF state — cannot proceed with install",
+              );
+              return c.json({ error: "Unable to initiate OAuth flow. Please try again." }, 500);
+            }
+
+            const url = `https://slack.com/oauth/v2/authorize?client_id=${encodeURIComponent(clientId)}&scope=${encodeURIComponent(scopes)}&state=${encodeURIComponent(state)}`;
+            return c.redirect(url);
+          });
+
+          app.get("/oauth/slack/callback", async (c) => {
+            if (!slackAdapterInstance || !stateAdapter) {
+              return c.json({ error: "Chat plugin not yet initialized" }, 503);
+            }
+
+            const state = c.req.query("state");
+            if (!state) {
+              return c.json({ error: "Missing state parameter" }, 400);
+            }
+
+            // Validate CSRF state
+            const valid = await stateAdapter.get(`oauth:slack:${state}`);
+            if (!valid) {
+              return c.json({ error: "Invalid or expired state parameter" }, 400);
+            }
+
+            // Delete used state token — failure is non-fatal (TTL will expire it)
+            try {
+              await stateAdapter.delete(`oauth:slack:${state}`);
+            } catch (deleteErr) {
+              (log ?? console).warn(
+                { err: deleteErr instanceof Error ? deleteErr : new Error(String(deleteErr)), state },
+                "Failed to delete OAuth state — token will expire via TTL",
+              );
+            }
+
+            const code = c.req.query("code");
+            if (!code) {
+              return c.json({ error: "Missing code parameter" }, 400);
+            }
+
+            try {
+              const result = await slackAdapterInstance.handleOAuthCallback(
+                c.req.raw,
+              );
+
+              (log ?? console).info({ teamId: result.teamId }, "Slack installation saved via OAuth");
+
+              return c.html(
+                "<html><body><h1>Atlas installed!</h1><p>You can now use /atlas in your Slack workspace.</p></body></html>",
+              );
+            } catch (oauthErr) {
+              (log ?? console).error(
+                { err: oauthErr instanceof Error ? oauthErr : new Error(String(oauthErr)) },
+                "OAuth callback failed",
+              );
+              return c.html(
+                "<html><body><h1>Installation Failed</h1><p>Could not complete the OAuth flow. Please try again.</p></body></html>",
+                500,
+              );
+            }
+          });
+        }
       }
     },
 
@@ -116,7 +210,14 @@ function buildChatPlugin(
       await adapter.connect();
       stateAdapter = adapter;
 
-      bridge = createChatBridge(config, ctx.logger, stateAdapter);
+      // Create platform adapters
+      const adapterInstances: { slack?: SlackAdapter | null } = {};
+      if (config.adapters.slack) {
+        slackAdapterInstance = createSlackAdapter(config.adapters.slack) as SlackAdapter;
+        adapterInstances.slack = slackAdapterInstance;
+      }
+
+      bridge = createChatBridge(config, ctx.logger, stateAdapter, adapterInstances);
 
       const enabledAdapters = Object.entries(config.adapters)
         .filter(([, v]) => v !== undefined)
@@ -182,6 +283,7 @@ function buildChatPlugin(
         await stateAdapter.disconnect();
         stateAdapter = null;
       }
+      slackAdapterInstance = null;
       log = null;
       initialized = false;
     },

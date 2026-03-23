@@ -15,6 +15,14 @@ import { z } from "zod";
 /** A single message in a conversation thread. */
 export type ChatMessage = { role: "user" | "assistant"; content: string };
 
+/** A pending action that requires user approval. */
+export interface PendingAction {
+  id: string;
+  type: string;
+  target: string;
+  summary: string;
+}
+
 /** Structured query result returned by the Atlas agent. */
 export interface ChatQueryResult {
   answer: string;
@@ -22,12 +30,18 @@ export interface ChatQueryResult {
   data: { columns: string[]; rows: Record<string, unknown>[] }[];
   steps: number;
   usage: { totalTokens: number };
+  /** Actions awaiting user approval (e.g., write operations). */
+  pendingActions?: PendingAction[];
 }
 
 /** Adapter-specific credential configuration. */
 export interface SlackAdapterConfig {
   botToken: string;
   signingSecret: string;
+  /** Client ID for multi-workspace OAuth. */
+  clientId?: string;
+  /** Client secret for multi-workspace OAuth. */
+  clientSecret?: string;
 }
 
 /** State backend configuration. */
@@ -38,6 +52,46 @@ export interface StateConfig {
   tablePrefix?: string;
   /** Redis connection URL (future — not yet implemented). */
   redisUrl?: string;
+}
+
+/** Action framework callbacks for approve/deny flows. */
+export interface ActionCallbacks {
+  approve(
+    actionId: string,
+    approverId: string,
+  ): Promise<{ status: string; error?: string | null } | null>;
+  deny(
+    actionId: string,
+    denierId: string,
+  ): Promise<Record<string, unknown> | null>;
+  get(
+    actionId: string,
+  ): Promise<{
+    id: string;
+    action_type: string;
+    target: string;
+    summary: string;
+  } | null>;
+}
+
+/** Conversation persistence callbacks for host integration. */
+export interface ConversationCallbacks {
+  create(opts: {
+    id?: string;
+    title?: string | null;
+    surface?: string;
+  }): Promise<{ id: string } | null>;
+  addMessage(opts: {
+    conversationId: string;
+    role: "user" | "assistant";
+    content: string;
+  }): void;
+  get(
+    id: string,
+  ): Promise<{
+    messages: Array<{ role: string; content: unknown }>;
+  } | null>;
+  generateTitle(question: string): string;
 }
 
 export interface ChatPluginConfig {
@@ -63,6 +117,12 @@ export interface ChatPluginConfig {
 
   /** Optional error scrubbing callback. */
   scrubError?: (message: string) => string;
+
+  /** Optional action framework callbacks for approve/deny flows. */
+  actions?: ActionCallbacks;
+
+  /** Optional conversation persistence callbacks for host integration. */
+  conversations?: ConversationCallbacks;
 }
 
 // ---------------------------------------------------------------------------
@@ -72,7 +132,12 @@ export interface ChatPluginConfig {
 const SlackAdapterSchema = z.object({
   botToken: z.string().min(1, "slack botToken must not be empty"),
   signingSecret: z.string().min(1, "slack signingSecret must not be empty"),
-});
+  clientId: z.string().min(1).optional(),
+  clientSecret: z.string().min(1).optional(),
+}).refine(
+  (s) => (s.clientId == null) === (s.clientSecret == null),
+  "clientId and clientSecret must both be provided for OAuth",
+);
 
 const StateConfigSchema = z
   .object({
@@ -113,6 +178,33 @@ export const ChatConfigSchema = z.object({
     .refine(
       (v) => v === undefined || typeof v === "function",
       "scrubError must be a function",
+    )
+    .optional(),
+  actions: z
+    .any()
+    .refine(
+      (v) =>
+        v === undefined ||
+        (typeof v === "object" &&
+          v !== null &&
+          typeof v.approve === "function" &&
+          typeof v.deny === "function" &&
+          typeof v.get === "function"),
+      "actions must implement { approve, deny, get }",
+    )
+    .optional(),
+  conversations: z
+    .any()
+    .refine(
+      (v) =>
+        v === undefined ||
+        (typeof v === "object" &&
+          v !== null &&
+          typeof v.create === "function" &&
+          typeof v.addMessage === "function" &&
+          typeof v.get === "function" &&
+          typeof v.generateTitle === "function"),
+      "conversations must implement { create, addMessage, get, generateTitle }",
     )
     .optional(),
 });

@@ -1,34 +1,45 @@
 /**
  * Slack Interaction Plugin — reference implementation for AtlasInteractionPlugin.
  *
- * Integrates Slack as an interaction surface for Atlas: slash commands,
- * threaded conversations, Block Kit formatting, OAuth multi-workspace
- * installs, and action approval buttons.
+ * @deprecated Use `@useatlas/chat` with the Slack adapter instead.
+ * The Chat SDK bridge plugin (`@useatlas/chat`) provides the same Slack
+ * functionality plus support for Teams, Discord, and other platforms.
  *
- * This is the first InteractionPlugin to use the `routes()` interface,
- * validating the plugin SDK's route-mounting design.
- *
- * Runtime dependencies (agent executor, conversations, actions, rate
- * limiting) are injected via config callbacks rather than imported from
- * `@atlas/api`. This surfaces the AtlasPluginContext gaps that need to
- * be addressed in v1.1 for full host-level decoupling.
- *
- * @example
+ * Migration:
  * ```typescript
- * import { defineConfig } from "@atlas/api/lib/config";
- * import { executeAgentQuery } from "@atlas/api/lib/agent-query";
+ * // Before (@useatlas/slack):
  * import { slackPlugin } from "@useatlas/slack";
+ * slackPlugin({
+ *   signingSecret: process.env.SLACK_SIGNING_SECRET!,
+ *   botToken: process.env.SLACK_BOT_TOKEN,
+ *   executeQuery,
+ * })
  *
- * export default defineConfig({
- *   plugins: [
- *     slackPlugin({
+ * // After (@useatlas/chat):
+ * import { chatPlugin } from "@useatlas/chat";
+ * chatPlugin({
+ *   adapters: {
+ *     slack: {
+ *       botToken: process.env.SLACK_BOT_TOKEN!,
  *       signingSecret: process.env.SLACK_SIGNING_SECRET!,
- *       botToken: process.env.SLACK_BOT_TOKEN,
- *       executeQuery: executeAgentQuery,
- *     }),
- *   ],
- * });
+ *       clientId: process.env.SLACK_CLIENT_ID,       // optional, for OAuth
+ *       clientSecret: process.env.SLACK_CLIENT_SECRET, // optional, for OAuth
+ *     },
+ *   },
+ *   executeQuery,
+ *   actions,        // optional — approve/deny flows
+ *   conversations,  // optional — host conversation persistence
+ * })
  * ```
+ *
+ * Key changes:
+ * - Webhook endpoint: `/webhooks/slack` (was `/commands`, `/events`, `/interactions`)
+ * - OAuth routes: `/oauth/slack/install` + `/oauth/slack/callback` (was `/install` + `/callback`)
+ * - Slash command `/atlas` and threaded follow-ups work the same way
+ * - Block Kit formatting is automatic via Chat SDK's Slack adapter
+ * - State persistence uses Chat SDK's state adapter (memory, PG, or Redis)
+ *
+ * @see https://docs.useatlas.dev/guides/slack-migration
  */
 
 import { z } from "zod";
@@ -273,6 +284,8 @@ function buildSlackPlugin(
 
 /**
  * Factory function for use in atlas.config.ts plugins array.
+ *
+ * @deprecated Use `chatPlugin` from `@useatlas/chat` instead.
  *
  * @example
  * ```typescript

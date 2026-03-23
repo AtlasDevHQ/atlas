@@ -5,6 +5,11 @@ description: Integrate Slack as a full interaction surface for Atlas with slash 
 
 import { Callout } from "fumadocs-ui/components/callout";
 
+<Callout type="warn">
+**`@useatlas/slack` is deprecated.** Use [`@useatlas/chat`](/plugins/interactions/chat) with the Slack adapter instead.
+The Chat SDK bridge plugin provides the same Slack functionality plus multi-platform support (Teams, Discord, etc.) and built-in state management. See the [migration guide](#migrating-to-useatlas-chat) below.
+</Callout>
+
 The Slack interaction plugin integrates Slack as a full interaction surface for Atlas. Users can ask questions via slash commands (`/atlas`), continue conversations in threads, approve or deny actions via Block Kit buttons, and install the bot across multiple workspaces via OAuth.
 
 This plugin uses the `routes()` interface to mount Hono routes directly into the Atlas API server, and receives runtime dependencies (agent execution, conversation persistence, action approval) via config callbacks rather than importing from `@atlas/api`.
@@ -111,3 +116,30 @@ Verify the slash command URL in your Slack app configuration points to your Atla
 ### OAuth callback errors
 
 For multi-workspace OAuth, the callback URL must be registered in your Slack app's OAuth & Permissions page. Ensure it matches the route where the plugin is mounted.
+
+## Migrating to @useatlas/chat
+
+Replace `@useatlas/slack` with the Chat SDK bridge plugin:
+
+```typescript
+// Before:
+import { slackPlugin } from "@useatlas/slack";
+slackPlugin({ signingSecret: "...", botToken: "xoxb-...", executeQuery })
+
+// After:
+import { chatPlugin } from "@useatlas/chat";
+chatPlugin({
+  adapters: {
+    slack: { botToken: "xoxb-...", signingSecret: "..." },
+  },
+  executeQuery,
+})
+```
+
+| Feature | @useatlas/slack | @useatlas/chat |
+|---------|----------------|----------------|
+| Webhook | `/commands`, `/events`, `/interactions` | `/webhooks/slack` |
+| OAuth | `/install`, `/callback` | `/oauth/slack/install`, `/oauth/slack/callback` |
+| Block Kit | Hand-rolled builders | Automatic via Chat SDK |
+| State | Custom DB tables | State adapter (memory/PG/Redis) |
+| Multi-platform | Slack only | Slack, Teams, Discord, etc. |

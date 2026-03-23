@@ -51,6 +51,7 @@ import { adminIPAllowlist } from "./admin-ip-allowlist";
 import { adminRoles } from "./admin-roles";
 import { adminAuthPreamble, authErrorCode } from "./admin-auth";
 import { adminUsage } from "./admin-usage";
+import { adminAuditRetention } from "./admin-audit-retention";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 const log = createLogger("admin-routes");
@@ -89,6 +90,8 @@ admin.route("/ip-allowlist", adminIPAllowlist);
 admin.route("/ip-allowlist/", adminIPAllowlist);
 admin.route("/roles", adminRoles);
 admin.route("/roles/", adminRoles);
+admin.route("/audit/retention", adminAuditRetention);
+admin.route("/audit/retention/", adminAuditRetention);
 
 // Path traversal guard, YAML helpers, entity discovery, and file finding
 // are all imported from @atlas/api/lib/semantic-files above.
@@ -228,7 +231,8 @@ type AuditFilterResult =
 
 /** Shared filter builder for audit list + export endpoints. */
 function buildAuditFilters(query: (key: string) => string | undefined): AuditFilterResult {
-  const conditions: string[] = [];
+  // Always exclude soft-deleted entries from normal audit views
+  const conditions: string[] = ["a.deleted_at IS NULL"];
   const params: unknown[] = [];
   let paramIdx = 1;
 
@@ -293,7 +297,8 @@ function buildAuditFilters(query: (key: string) => string | undefined): AuditFil
 
 /** Build WHERE clause from optional `from` and `to` query params. */
 function analyticsDateRange(c: { req: { query(name: string): string | undefined } }) {
-  const conditions: string[] = [];
+  // Always exclude soft-deleted entries from analytics
+  const conditions: string[] = ["deleted_at IS NULL"];
   const params: unknown[] = [];
   let idx = 1;
 
@@ -3145,7 +3150,7 @@ admin.openapi(getAuditStatsRoute, async (c) => {
   return withRequestContext({ requestId, user: authResult.user }, async () => {
     try {
       const totalResult = await internalQuery<{ total: string; errors: string }>(
-        `SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE NOT success) as errors FROM audit_log`,
+        `SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE NOT success) as errors FROM audit_log WHERE deleted_at IS NULL`,
       );
 
       const total = parseInt(String(totalResult[0]?.total ?? "0"), 10);
@@ -3153,7 +3158,7 @@ admin.openapi(getAuditStatsRoute, async (c) => {
       const errorRate = total > 0 ? (errors / total) * 100 : 0;
 
       const dailyResult = await internalQuery<{ day: string; count: string }>(
-        `SELECT DATE(timestamp) as day, COUNT(*) as count FROM audit_log WHERE timestamp >= NOW() - INTERVAL '7 days' GROUP BY DATE(timestamp) ORDER BY day DESC`,
+        `SELECT DATE(timestamp) as day, COUNT(*) as count FROM audit_log WHERE deleted_at IS NULL AND timestamp >= NOW() - INTERVAL '7 days' GROUP BY DATE(timestamp) ORDER BY day DESC`,
       );
 
       return c.json({
@@ -3190,10 +3195,10 @@ admin.openapi(getAuditFacetsRoute, async (c) => {
     // Use allSettled so one failing query doesn't block the other
     const [tableResult, columnResult] = await Promise.allSettled([
       internalQuery<{ val: string }>(
-        `SELECT DISTINCT jsonb_array_elements_text(tables_accessed) AS val FROM audit_log WHERE tables_accessed IS NOT NULL AND jsonb_typeof(tables_accessed) = 'array' ORDER BY val LIMIT 200`,
+        `SELECT DISTINCT jsonb_array_elements_text(tables_accessed) AS val FROM audit_log WHERE deleted_at IS NULL AND tables_accessed IS NOT NULL AND jsonb_typeof(tables_accessed) = 'array' ORDER BY val LIMIT 200`,
       ),
       internalQuery<{ val: string }>(
-        `SELECT DISTINCT jsonb_array_elements_text(columns_accessed) AS val FROM audit_log WHERE columns_accessed IS NOT NULL AND jsonb_typeof(columns_accessed) = 'array' ORDER BY val LIMIT 200`,
+        `SELECT DISTINCT jsonb_array_elements_text(columns_accessed) AS val FROM audit_log WHERE deleted_at IS NULL AND columns_accessed IS NOT NULL AND jsonb_typeof(columns_accessed) = 'array' ORDER BY val LIMIT 200`,
       ),
     ]);
 
@@ -3370,9 +3375,8 @@ admin.openapi(auditErrorsRoute, async (c) => {
     const range = analyticsDateRange(c);
     if ("error" in range) return c.json({ error: "invalid_request", message: range.error }, 400) as never;
 
-    const errorCondition = range.where
-      ? `${range.where} AND NOT success`
-      : "WHERE NOT success";
+    // range.where always includes at least "WHERE deleted_at IS NULL"
+    const errorCondition = `${range.where} AND NOT success`;
 
     try {
       const rows = await internalQuery<{ error: string; count: string }>(

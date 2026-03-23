@@ -1,6 +1,6 @@
 import { parseAsString, parseAsStringLiteral } from "nuqs"
 
-const auditTabs = ["log", "analytics"] as const
+const auditTabs = ["log", "analytics", "retention"] as const
 
 export const auditSearchParams = {
   tab: parseAsStringLiteral(auditTabs).withDefault("log"),

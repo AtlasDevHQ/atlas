@@ -250,6 +250,14 @@ if (config.scheduler?.backend === "bun") {
   log.info("Scheduler backend is 'vercel' — tick endpoint active, no in-process loop");
 }
 
+// Start audit log purge scheduler (enterprise feature — no-op when disabled)
+try {
+  const { startAuditPurgeScheduler } = await import("../../../../ee/src/audit/purge-scheduler");
+  startAuditPurgeScheduler();
+} catch {
+  // intentionally ignored: ee module not installed — audit purge scheduler unavailable
+}
+
 const server = Bun.serve({
   port,
   fetch: app.fetch,

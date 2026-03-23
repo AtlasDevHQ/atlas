@@ -1,0 +1,143 @@
+---
+title: Audit Log Retention
+description: Configure audit log retention policies, automatic purging, and compliance exports.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas Enterprise includes configurable audit log retention with automatic purging and compliance-ready export formats. Workspace admins can set retention periods, configure soft-delete with delayed hard-delete, and export audit data in CSV or JSON for SOC2 compliance.
+
+<Callout title="Prerequisites">
+- Internal database configured (`DATABASE_URL`)
+- Enterprise license (the `/ee` module must be available)
+- Admin role required for all retention management endpoints
+</Callout>
+
+---
+
+## How It Works
+
+1. An admin sets a retention policy (30 days, 90 days, 1 year, custom, or unlimited)
+2. A daily purge scheduler soft-deletes audit entries older than the retention window
+3. Soft-deleted entries are permanently removed after a configurable hard-delete delay (default 30 days)
+4. Soft-deleted entries are hidden from normal audit views but recoverable during the delay period
+5. Compliance exports exclude soft-deleted entries and support date range filtering
+
+---
+
+## Retention Policy
+
+### Setting a Policy
+
+```bash
+# Set 90-day retention with 30-day hard-delete delay
+curl -X PUT /api/v1/admin/audit/retention \
+  -H "Content-Type: application/json" \
+  -d '{"retentionDays": 90, "hardDeleteDelayDays": 30}'
+```
+
+### Policy Options
+
+| Setting | Values | Default |
+|---------|--------|---------|
+| `retentionDays` | 7+ or `null` (unlimited) | `null` (unlimited) |
+| `hardDeleteDelayDays` | 0+ | 30 |
+
+- Minimum retention period is **7 days** (enforced by validation)
+- Setting `retentionDays` to `null` disables automatic purging (unlimited retention)
+- `hardDeleteDelayDays` controls how long soft-deleted entries remain recoverable
+
+### Viewing Current Policy
+
+```bash
+curl /api/v1/admin/audit/retention
+```
+
+Returns the current policy including last purge timestamp and count.
+
+---
+
+## Purge Behavior
+
+### Automatic Purge
+
+When enterprise features are enabled and an internal database is configured, Atlas automatically runs a purge cycle every 24 hours:
+
+1. **Soft-delete**: Entries older than the retention window get a `deleted_at` timestamp
+2. **Hard-delete**: Entries where `deleted_at` is older than the hard-delete delay are permanently removed
+
+### Manual Purge
+
+Admins can trigger purge cycles manually:
+
+```bash
+# Soft-delete expired entries
+curl -X POST /api/v1/admin/audit/retention/purge
+
+# Permanently delete soft-deleted entries past the delay
+curl -X POST /api/v1/admin/audit/retention/hard-delete
+```
+
+### Observability
+
+Every purge cycle logs entry counts:
+
+```
+Audit log entries soft-deleted { orgId: "org-1", softDeletedCount: 142, retentionDays: 90 }
+Audit log entries permanently deleted { orgId: "org-1", hardDeletedCount: 85, delayDays: 30 }
+```
+
+---
+
+## Compliance Export
+
+Export audit logs in SOC2-ready format with optional date range filtering:
+
+```bash
+# Export as CSV
+curl -X POST /api/v1/admin/audit/retention/export \
+  -H "Content-Type: application/json" \
+  -d '{"format": "csv", "startDate": "2026-01-01", "endDate": "2026-03-31"}'
+
+# Export as JSON
+curl -X POST /api/v1/admin/audit/retention/export \
+  -H "Content-Type: application/json" \
+  -d '{"format": "json"}'
+```
+
+### Export Fields
+
+Both formats include: `id`, `timestamp`, `userId`, `userEmail`, `userLabel`, `authMode`, `sql`, `durationMs`, `rowCount`, `success`, `error`, `sourceId`, `sourceType`, `targetHost`, `tablesAccessed`, `columnsAccessed`, `orgId`.
+
+### Limits
+
+- Maximum 50,000 rows per export
+- Response includes `X-Export-Truncated` and `X-Export-Total` headers when truncated
+- Use date range filters to export larger datasets in chunks
+
+---
+
+## Admin UI
+
+The retention settings are available in the admin console under **Audit Log > Retention** tab:
+
+- **Retention period dropdown**: 30 days, 90 days, 1 year, custom, unlimited
+- **Custom days input**: Shown when "custom" is selected (minimum 7)
+- **Hard delete delay**: Days before permanent removal (default 30)
+- **Last purge info**: Timestamp and count from most recent purge
+- **Run Purge Now**: Manual trigger for immediate purge
+- **Compliance Export**: Format selection (CSV/JSON) with date range picker
+
+---
+
+## API Reference
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/admin/audit/retention` | Get current retention policy |
+| `PUT` | `/api/v1/admin/audit/retention` | Update retention policy |
+| `POST` | `/api/v1/admin/audit/retention/export` | Export audit log (CSV/JSON) |
+| `POST` | `/api/v1/admin/audit/retention/purge` | Trigger soft-delete purge |
+| `POST` | `/api/v1/admin/audit/retention/hard-delete` | Trigger permanent deletion |
+
+All endpoints require admin role and enterprise license.

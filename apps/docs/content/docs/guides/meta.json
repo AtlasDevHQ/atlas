@@ -17,6 +17,7 @@
     "enterprise-sso",
     "ip-allowlisting",
     "custom-roles",
+    "audit-retention",
     "usage-metering",
     "billing-and-plans",
     "admin-console",

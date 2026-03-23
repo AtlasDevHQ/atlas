@@ -399,8 +399,7 @@ export default function UsersPage() {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      // intentionally ignored: clipboard API not available — show manual copy hint via invite error
-      invite.clearError();
+      // intentionally ignored: clipboard API not available — user can select and copy manually
     }
   }
 

@@ -308,26 +308,26 @@ export default function PluginsPage() {
 
   async function handleHealthCheck(id: string) {
     setMutationError(null);
-    await checkMutation.mutate({
+    const result = await checkMutation.mutate({
       path: `/api/v1/admin/plugins/${encodeURIComponent(id)}/health`,
       itemId: id,
       onSuccess: () => refetch(),
     });
-    if (checkMutation.error) {
-      setMutationError(`Health check failed for "${id}": ${checkMutation.error}`);
+    if (result === undefined) {
+      setMutationError(`Health check failed for "${id}"`);
     }
   }
 
   async function handleToggle(id: string, enable: boolean) {
     setMutationError(null);
     const action = enable ? "enable" : "disable";
-    await toggleMutation.mutate({
+    const result = await toggleMutation.mutate({
       path: `/api/v1/admin/plugins/${encodeURIComponent(id)}/${action}`,
       itemId: id,
       onSuccess: () => refetch(),
     });
-    if (toggleMutation.error) {
-      setMutationError(toggleMutation.error);
+    if (result === undefined) {
+      setMutationError(`Failed to ${action} plugin "${id}"`);
     }
   }
 

@@ -215,13 +215,14 @@ function ClassificationsTab() {
 
   async function handleBulkReview() {
     const unreviewed = classifications.filter((c) => !c.reviewed);
-    for (const cls of unreviewed) {
-      const result = await mutate({
-        path: `/api/v1/admin/compliance/classifications/${cls.id}`,
-        body: { reviewed: true },
-      });
-      if (result === undefined) break; // stop on first error
-    }
+    await Promise.all(
+      unreviewed.map((cls) =>
+        mutate({
+          path: `/api/v1/admin/compliance/classifications/${cls.id}`,
+          body: { reviewed: true },
+        }),
+      ),
+    );
   }
 
   const unreviewedCount = classifications.filter((c) => !c.reviewed).length;

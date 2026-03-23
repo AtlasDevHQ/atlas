@@ -79,6 +79,7 @@ function ConnectionFormDialog({
   const [description, setDescription] = useState("");
   const [showUrl, setShowUrl] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [validationError, setValidationError] = useState<string | null>(null);
 
   const testMutation = useAdminMutation<{ status: string; latencyMs?: number; message?: string }>({
     path: "/api/v1/admin/connections/test",
@@ -107,6 +108,7 @@ function ConnectionFormDialog({
       }
       setShowUrl(false);
       setTestResult(null);
+      setValidationError(null);
       testMutation.reset();
       saveMutation.reset();
     }
@@ -130,21 +132,22 @@ function ConnectionFormDialog({
         });
       },
     });
-    if (!data && testMutation.error) {
-      setTestResult({ ok: false, message: testMutation.error });
+    if (data === undefined) {
+      setTestResult({ ok: false, message: "Connection test failed" });
     }
   }
 
   async function handleSave() {
     if (!isEdit && !id) {
-      saveMutation.reset();
+      setValidationError("Connection ID is required.");
       return;
     }
     if (!isEdit && !url) {
-      saveMutation.reset();
+      setValidationError("Connection URL is required.");
       return;
     }
 
+    setValidationError(null);
     const path = isEdit
       ? `/api/v1/admin/connections/${encodeURIComponent(editId!)}`
       : `/api/v1/admin/connections`;
@@ -285,9 +288,9 @@ function ConnectionFormDialog({
           )}
         </div>
 
-        {saveMutation.error && (
+        {(validationError ?? saveMutation.error) && (
           <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {saveMutation.error}
+            {validationError ?? saveMutation.error}
           </div>
         )}
 
@@ -420,7 +423,7 @@ function PoolStatsSection({ onError }: { onError: (msg: string) => void }) {
   }, [apiUrl, credentials]);
 
   async function handleDrain(id: string) {
-    await drainMutation.mutate({
+    const result = await drainMutation.mutate({
       path: `/api/v1/admin/connections/${encodeURIComponent(id)}/drain`,
       onSuccess: (data) => {
         if (!data?.drained) {
@@ -429,8 +432,9 @@ function PoolStatsSection({ onError }: { onError: (msg: string) => void }) {
         fetchMetrics();
       },
     });
-    if (drainMutation.error) {
-      onError(drainMutation.error);
+    if (result === undefined) {
+      // Error already set in hook — surface it via onError
+      onError("Drain request failed");
     }
     setDrainTarget(null);
   }
@@ -651,19 +655,19 @@ export default function ConnectionsPage() {
 
   async function testConnection(id: string) {
     setMutationError(null);
-    await testMutation.mutate({
+    const result = await testMutation.mutate({
       path: `/api/v1/admin/connections/${encodeURIComponent(id)}/test`,
       itemId: id,
-      onSuccess: (result) => {
+      onSuccess: (data) => {
         setLocalConnections((prev) =>
           (prev ?? displayConnections).map((c) =>
-            c.id === id ? { ...c, health: result } : c
+            c.id === id ? { ...c, health: data } : c
           )
         );
       },
     });
-    if (testMutation.error) {
-      setMutationError(`Connection test failed for "${id}": ${testMutation.error}`);
+    if (result === undefined) {
+      setMutationError(`Connection test failed for "${id}"`);
     }
   }
 

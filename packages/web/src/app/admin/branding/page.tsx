@@ -71,14 +71,13 @@ export default function BrandingPage() {
   }
 
   async function handleReset() {
-    const result = await mutate({ method: "DELETE" });
-    if (result !== undefined) {
-      setLogoUrl("");
-      setLogoText("");
-      setPrimaryColor("");
-      setFaviconUrl("");
-      setHideAtlasBranding(false);
-    }
+    await mutate({ method: "DELETE" });
+    // Always reset form — 404 means no branding exists (already default)
+    setLogoUrl("");
+    setLogoText("");
+    setPrimaryColor("");
+    setFaviconUrl("");
+    setHideAtlasBranding(false);
   }
 
   return (

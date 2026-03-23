@@ -88,6 +88,7 @@ export function useAdminMutation<TResponse = unknown>(
   const optionsRef = useRef(options);
   optionsRef.current = options;
 
+  // useCallback for stable references — hook API contract, not performance
   const clearError = useCallback(() => setError(null), []);
 
   const reset = useCallback(() => {

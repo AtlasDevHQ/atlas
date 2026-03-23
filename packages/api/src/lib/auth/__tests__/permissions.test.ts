@@ -197,7 +197,7 @@ describe("canApprove()", () => {
 
 describe("full permission matrix", () => {
   const modes = ["simple-key", "managed", "byot"] as const;
-  const roles: AtlasRole[] = ["member", "admin", "owner"];
+  const roles: AtlasRole[] = ["member", "admin", "owner", "platform_admin"];
   const approvalModes: ActionApprovalMode[] = ["auto", "manual", "admin-only"];
 
   // Expected results: [role][approvalMode] => boolean
@@ -205,6 +205,7 @@ describe("full permission matrix", () => {
     member: { auto: true, manual: false, "admin-only": false },
     admin: { auto: true, manual: true, "admin-only": false },
     owner: { auto: true, manual: true, "admin-only": true },
+    platform_admin: { auto: true, manual: true, "admin-only": true },
   };
 
   for (const mode of modes) {

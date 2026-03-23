@@ -1,0 +1,87 @@
+---
+title: Platform Admin Console
+description: Cross-tenant workspace management, resource monitoring, and noisy neighbor detection for platform operators.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The platform admin console provides operators with a unified view across all workspaces. Monitor resource usage, manage workspace lifecycles, detect noisy neighbors, and enforce plan changes — all from a single dashboard.
+
+<Callout title="Prerequisites">
+- [Managed auth](/deployment/authentication#managed-auth) enabled
+- Internal database configured (`DATABASE_URL`)
+- `platform_admin` user role (assigned via `ATLAS_ADMIN_EMAIL` at first signup or directly in the database)
+</Callout>
+
+## Platform Admin Role
+
+The `platform_admin` role is a user-level role distinct from workspace admin. It uses Better Auth's admin plugin `user.role` field — the same mechanism as the existing `admin` role but with elevated privileges.
+
+| Role | Scope | Purpose |
+|------|-------|---------|
+| `member` | Workspace | Query data, view conversations |
+| `admin` | Workspace | Manage connections, users, settings |
+| `owner` | Workspace | Full workspace control, delete org |
+| `platform_admin` | Platform | Cross-tenant management, all workspaces |
+
+Platform admins can also access workspace-level admin routes (they inherit admin capabilities).
+
+### Assigning the Role
+
+The first user to sign up (when `ATLAS_ADMIN_EMAIL` matches or no admin exists) is automatically assigned `platform_admin`. To promote an existing user:
+
+```sql
+UPDATE "user" SET role = 'platform_admin' WHERE email = 'operator@example.com';
+```
+
+## Dashboard
+
+Navigate to **Admin > Platform Admin** in the sidebar. The dashboard tab shows aggregate statistics:
+
+- **Workspaces** — total count with active/suspended breakdown
+- **Active Users** — total registered users across all workspaces
+- **Queries (24h)** — platform-wide query volume
+- **MRR** — monthly recurring revenue estimate based on plan tiers
+
+A bar chart shows the top 10 workspaces by query volume.
+
+## Workspace Management
+
+The workspaces tab lists all organizations with sortable columns and filters for status and plan tier.
+
+### Actions
+
+| Action | Endpoint | Description |
+|--------|----------|-------------|
+| View | `GET /api/v1/platform/workspaces/:id` | Resource breakdown, user list |
+| Suspend | `POST /api/v1/platform/workspaces/:id/suspend` | Block all access |
+| Unsuspend | `POST /api/v1/platform/workspaces/:id/unsuspend` | Restore access |
+| Delete | `DELETE /api/v1/platform/workspaces/:id` | Soft-delete + cascade cleanup |
+| Change plan | `PATCH /api/v1/platform/workspaces/:id/plan` | Update plan tier |
+
+All actions require confirmation dialogs in the UI. Delete cascades to conversations, semantic entities, learned patterns, suggestions, and scheduled tasks.
+
+## Noisy Neighbor Detection
+
+The noisy neighbors tab compares each workspace's resource usage against the platform median. Workspaces consuming more than **3x the median** in queries, tokens, or storage are flagged.
+
+Each alert card shows:
+- The workspace name and plan tier
+- Which metric exceeded the threshold
+- The actual value vs. median
+- The ratio (e.g., `5.2x`)
+
+## API Reference
+
+All endpoints are gated on `user.role === "platform_admin"`. In no-auth mode (local dev), all requests pass.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/platform/workspaces` | List all workspaces |
+| `GET` | `/api/v1/platform/workspaces/:id` | Workspace detail + users |
+| `POST` | `/api/v1/platform/workspaces/:id/suspend` | Suspend workspace |
+| `POST` | `/api/v1/platform/workspaces/:id/unsuspend` | Unsuspend workspace |
+| `DELETE` | `/api/v1/platform/workspaces/:id` | Delete workspace |
+| `PATCH` | `/api/v1/platform/workspaces/:id/plan` | Change plan tier |
+| `GET` | `/api/v1/platform/stats` | Platform-wide statistics |
+| `GET` | `/api/v1/platform/noisy-neighbors` | Noisy neighbor detection |

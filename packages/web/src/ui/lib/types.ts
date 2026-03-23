@@ -63,7 +63,16 @@ export type {
   ApprovalRequest,
   ApprovalStatus,
 } from "@useatlas/types";
-export { SHARE_EXPIRY_OPTIONS, PROMPT_INDUSTRIES, MODEL_CONFIG_PROVIDERS, APPROVAL_RULE_TYPES, APPROVAL_STATUSES } from "@useatlas/types";
+export type {
+  PlatformWorkspace,
+  PlatformWorkspaceDetail,
+  PlatformWorkspaceUser,
+  PlatformStats,
+  NoisyNeighbor,
+  WorkspaceStatus,
+  PlanTier,
+} from "@useatlas/types";
+export { SHARE_EXPIRY_OPTIONS, PROMPT_INDUSTRIES, MODEL_CONFIG_PROVIDERS, APPROVAL_RULE_TYPES, APPROVAL_STATUSES, WORKSPACE_STATUSES, PLAN_TIERS } from "@useatlas/types";
 export { parseChatError } from "@useatlas/types/errors";
 
 // --- Web-only types (not in @useatlas/types) ---

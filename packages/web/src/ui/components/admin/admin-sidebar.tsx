@@ -26,6 +26,7 @@ import {
   Shield,
   KeyRound,
   Cpu,
+  Globe,
   ArrowLeft,
 } from "lucide-react";
 import {
@@ -66,6 +67,7 @@ const navItems = [
   { href: "/admin/sso", label: "SSO", icon: ShieldCheck },
   { href: "/admin/scim", label: "SCIM", icon: RefreshCw },
   { href: "/admin/settings", label: "Settings", icon: Settings },
+  { href: "/admin/platform", label: "Platform Admin", icon: Globe },
 ];
 
 export function AdminSidebar() {

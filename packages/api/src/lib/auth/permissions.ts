@@ -5,7 +5,7 @@
  * and the action's approval mode. Roles are extracted from the authenticated
  * user, with defaults that vary by auth mode.
  *
- * Role hierarchy: owner > admin > member
+ * Role hierarchy: platform_admin > owner > admin > member
  *
  * | Approval mode | member | admin | owner |
  * |---------------|--------|-------|-------|
@@ -33,6 +33,7 @@ const ROLE_LEVEL: Record<AtlasRole, number> = {
   member: 0,
   admin: 1,
   owner: 2,
+  platform_admin: 3,
 };
 
 // ---------------------------------------------------------------------------

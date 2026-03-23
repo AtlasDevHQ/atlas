@@ -89,7 +89,7 @@ describe("org-permissions access control", () => {
 
 describe("ATLAS_ROLES", () => {
   it("contains member, admin, owner (not viewer/analyst)", () => {
-    expect(ATLAS_ROLES).toEqual(["member", "admin", "owner"]);
+    expect(ATLAS_ROLES).toEqual(["member", "admin", "owner", "platform_admin"]);
   });
 
   it("OrgRole is derived from AtlasRole (same values)", async () => {

@@ -30,7 +30,10 @@ export function buildApprovalCardJSX(action: PendingAction): {
     </Card>
   );
 
-  const card = toCardElement(jsx)!;
+  const card = toCardElement(jsx);
+  if (!card) {
+    throw new Error("Failed to build approval card — toCardElement returned null");
+  }
 
   const fallbackText = `Action requires approval: ${summary}`;
 

@@ -3,12 +3,16 @@
  *
  * Maps Chat SDK lifecycle and events to Atlas plugin callbacks:
  *
- * - `onNewMention` → lock + subscribe thread + `executeQuery` → `thread.post()`
- * - `onSubscribedMessage` → lock + `executeQuery` with thread history → `thread.post()`
- * - `onSlashCommand("/atlas")` → post thinking → subscribe → `executeQuery` → edit
+ * - `onNewMention` → lock + subscribe thread + `executeQuery` → post JSX card
+ * - `onSubscribedMessage` → lock + `executeQuery` with thread history → post JSX card
+ * - `onSlashCommand("/atlas")` → post thinking → subscribe → `executeQuery` → edit with card
  * - `onAction("atlas_action_approve"|"atlas_action_deny")` → approve/deny → edit message
  * - Error scrubbing prevents leaking connection strings, stack traces, or
  *   internal errors to chat platforms
+ *
+ * Query results, errors, and approval prompts render as platform-native
+ * JSX cards (Block Kit on Slack, Adaptive Cards on Teams, Discord Embeds)
+ * with automatic markdown fallback for text-only platforms.
  *
  * The bridge owns the Chat SDK `Chat` instance and exposes its webhook
  * handlers for route mounting. State is delegated to the injected

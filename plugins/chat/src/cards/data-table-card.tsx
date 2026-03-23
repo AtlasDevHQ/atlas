@@ -40,7 +40,10 @@ export function buildDataTableCard(props: DataTableCardProps): {
     </Card>
   );
 
-  const card = toCardElement(jsx)!;
+  const card = toCardElement(jsx);
+  if (!card) {
+    throw new Error("Failed to build data table card — toCardElement returned null");
+  }
 
   // Markdown fallback
   const header = `| ${columns.join(" | ")} |`;

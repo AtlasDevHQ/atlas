@@ -68,7 +68,10 @@ export function buildQueryResultCard(result: ChatQueryResult): {
   );
 
   const jsx = <Card>{children}</Card>;
-  const card = toCardElement(jsx)!;
+  const card = toCardElement(jsx);
+  if (!card) {
+    throw new Error("Failed to build query result card — toCardElement returned null");
+  }
 
   // Build markdown fallback
   const fallbackText = buildFallbackText(result, datasets);

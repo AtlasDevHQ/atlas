@@ -31,7 +31,10 @@ export function buildErrorCard(props: ErrorCardProps): {
     </Card>
   );
 
-  const card = toCardElement(jsx)!;
+  const card = toCardElement(jsx);
+  if (!card) {
+    throw new Error("Failed to build error card — toCardElement returned null");
+  }
 
   const fallbackText = `I was unable to answer your question: ${message}. ${retryHint}`;
 

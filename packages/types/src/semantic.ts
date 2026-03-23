@@ -1,5 +1,7 @@
 /** Semantic layer entity types — dimensions, joins, measures, query patterns, and entity shapes. */
 
+import type { PIICategory, PIIConfidence } from "./compliance";
+
 /** Valid dimension types per the semantic layer YAML spec. */
 export type DimensionType = "string" | "number" | "date" | "boolean" | "timestamp";
 
@@ -10,6 +12,10 @@ export interface Dimension {
   sample_values?: string[];
   primary_key?: boolean;
   foreign_key?: boolean;
+  /** PII category detected during profiling. Enterprise feature. Must be set together with pii_confidence. */
+  pii?: PIICategory | (string & {});
+  /** PII detection confidence level. Must be set together with pii. */
+  pii_confidence?: PIIConfidence | (string & {});
 }
 
 export interface Join {

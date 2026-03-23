@@ -21,6 +21,7 @@
     "custom-roles",
     "audit-retention",
     "approval-workflows",
+    "pii-masking",
     "usage-metering",
     "billing-and-plans",
     "platform-admin",

@@ -4,6 +4,7 @@ export * from "./connection";
 export * from "./action";
 export * from "./scheduled-task";
 export * from "./errors";
+export * from "./compliance";
 export * from "./semantic";
 export * from "./share";
 export * from "./organization";

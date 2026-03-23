@@ -628,15 +628,42 @@ async function executeAndAudit(opts: {
       connectionId: connId,
     });
 
+    // Enterprise PII masking — mask sensitive columns based on user role.
+    // Fails open: non-enterprise deployments or errors return unmasked results.
+    let maskedRows = result.rows;
+    let maskingApplied = false;
+    if (classification?.tablesAccessed.length && orgId) {
+      try {
+        const { applyMasking } = await import("@atlas/ee/compliance/masking");
+        const maskCtx = getRequestContext();
+        maskedRows = await applyMasking({
+          columns: result.columns,
+          rows: result.rows,
+          tablesAccessed: classification.tablesAccessed,
+          orgId,
+          userRole: maskCtx?.user?.role,
+        });
+        maskingApplied = maskedRows !== result.rows;
+      } catch (err) {
+        // Masking unavailable (ee not installed, enterprise disabled, DB error).
+        // Fail open — log and return unmasked results.
+        log.warn(
+          { err: err instanceof Error ? err.message : String(err), connectionId: connId },
+          "PII masking failed — returning unmasked results",
+        );
+      }
+    }
+
     const hasHookMeta = Object.keys(hookMetadata).length > 0;
     return {
       success: true,
       explanation,
-      row_count: result.rows.length,
+      row_count: maskedRows.length,
       columns: result.columns,
-      rows: result.rows,
+      rows: maskedRows,
       truncated,
       cached: false,
+      maskingApplied,
       ...(hasHookMeta && { metadata: hookMetadata }),
     };
   } catch (err) {
@@ -853,14 +880,36 @@ Rules:
             sourceType: dbType,
             targetHost,
           });
+          // Apply PII masking to cached results (same as live query path)
+          let cachedRows = cached.rows;
+          let cachedMaskingApplied = false;
+          if (classification?.tablesAccessed.length && orgId) {
+            try {
+              const { applyMasking } = await import("@atlas/ee/compliance/masking");
+              cachedRows = await applyMasking({
+                columns: cached.columns,
+                rows: cached.rows,
+                tablesAccessed: classification.tablesAccessed,
+                orgId,
+                userRole: ctx?.user?.role,
+              });
+              cachedMaskingApplied = cachedRows !== cached.rows;
+            } catch (err) {
+              log.warn(
+                { err: err instanceof Error ? err.message : String(err), connectionId: connId },
+                "PII masking failed on cached results — returning unmasked results",
+              );
+            }
+          }
           return {
             success: true,
             explanation,
-            row_count: cached.rows.length,
+            row_count: cachedRows.length,
             columns: cached.columns,
-            rows: cached.rows,
-            truncated: cached.rows.length >= getRowLimit(),
+            rows: cachedRows,
+            truncated: cachedRows.length >= getRowLimit(),
             cached: true,
+            maskingApplied: cachedMaskingApplied,
           };
         }
       } catch (cacheErr) {

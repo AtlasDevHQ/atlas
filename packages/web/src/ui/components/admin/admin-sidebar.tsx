@@ -28,6 +28,7 @@ import {
   KeyRound,
   Cpu,
   Globe,
+  Fingerprint,
   ArrowLeft,
 } from "lucide-react";
 import {
@@ -64,6 +65,7 @@ const navItems = [
   { href: "/admin/ip-allowlist", label: "IP Allowlist", icon: Shield },
   { href: "/admin/actions", label: "Actions", icon: Zap },
   { href: "/admin/approval", label: "Approval Workflows", icon: ShieldAlert },
+  { href: "/admin/compliance", label: "PII Compliance", icon: Fingerprint },
   { href: "/admin/model-config", label: "AI Provider", icon: Cpu },
   { href: "/admin/sso", label: "SSO", icon: ShieldCheck },
   { href: "/admin/scim", label: "SCIM", icon: RefreshCw },

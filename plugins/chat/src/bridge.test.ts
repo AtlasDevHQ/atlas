@@ -710,3 +710,217 @@ describe("chatPlugin state config validation", () => {
     expect(plugin.id).toBe("chat-interaction");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Teams adapter config validation
+// ---------------------------------------------------------------------------
+
+describe("chatPlugin Teams adapter config", () => {
+  const mockExecuteQuery = async () => ({
+    answer: "test",
+    sql: [] as string[],
+    data: [] as { columns: string[]; rows: Record<string, unknown>[] }[],
+    steps: 1,
+    usage: { totalTokens: 10 },
+  });
+
+  it("accepts valid config with teams adapter", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: {
+        teams: { appId: "test-app-id", appPassword: "test-app-password" },
+      },
+      executeQuery: mockExecuteQuery,
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
+    expect(plugin.types).toEqual(["interaction"]);
+    expect(plugin.version).toBe("0.2.0");
+  });
+
+  it("accepts teams config with tenant restriction", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: {
+        teams: {
+          appId: "test-app-id",
+          appPassword: "test-app-password",
+          tenantId: "tenant-123",
+        },
+      },
+      executeQuery: mockExecuteQuery,
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
+  });
+
+  it("accepts config with both slack and teams adapters", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: {
+        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        teams: { appId: "test-app-id", appPassword: "test-app-password" },
+      },
+      executeQuery: mockExecuteQuery,
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
+  });
+
+  it("rejects teams adapter with empty appId", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          teams: { appId: "", appPassword: "test-app-password" },
+        },
+        executeQuery: mockExecuteQuery,
+      }),
+    ).toThrow(/appId/i);
+  });
+
+  it("rejects teams adapter with empty appPassword", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          teams: { appId: "test-app-id", appPassword: "" },
+        },
+        executeQuery: mockExecuteQuery,
+      }),
+    ).toThrow(/appPassword/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Teams adapter lifecycle
+// ---------------------------------------------------------------------------
+
+describe("chat plugin Teams lifecycle", () => {
+  function createTeamsTestPlugin() {
+    const { buildChatPlugin } = require("./index");
+    return buildChatPlugin({
+      adapters: {
+        teams: { appId: "test-app-id", appPassword: "test-app-password" },
+      },
+      executeQuery: async () => ({
+        answer: "test answer",
+        sql: ["SELECT 1"],
+        data: [],
+        steps: 1,
+        usage: { totalTokens: 50 },
+      }),
+    });
+  }
+
+  it("healthCheck returns unhealthy before initialization", async () => {
+    const plugin = createTeamsTestPlugin();
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(false);
+    expect(result.message).toContain("not initialized");
+  });
+
+  it("initialize sets up the bridge with teams adapter", async () => {
+    const plugin = createTeamsTestPlugin();
+    const logs: string[] = [];
+
+    await plugin.initialize!({
+      db: null,
+      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      tools: { register: () => {} },
+      logger: {
+        info: (msg: unknown) => logs.push(typeof msg === "string" ? msg : JSON.stringify(msg)),
+        warn: () => {},
+        error: () => {},
+        debug: () => {},
+      },
+      config: {},
+    });
+
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(true);
+    expect(result.message).toContain("teams");
+  });
+
+  it("teardown cleans up teams adapter", async () => {
+    const plugin = createTeamsTestPlugin();
+
+    await plugin.initialize!({
+      db: null,
+      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      tools: { register: () => {} },
+      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+      config: {},
+    });
+
+    await plugin.teardown!();
+
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(false);
+  });
+
+  it("double initialize throws with teams adapter", async () => {
+    const plugin = createTeamsTestPlugin();
+    const ctx = {
+      db: null,
+      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      tools: { register: () => {} },
+      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+      config: {},
+    };
+
+    await plugin.initialize!(ctx);
+    await expect(plugin.initialize!(ctx)).rejects.toThrow(/already initialized/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Multi-adapter lifecycle (Slack + Teams)
+// ---------------------------------------------------------------------------
+
+describe("chat plugin multi-adapter lifecycle", () => {
+  function createMultiAdapterPlugin() {
+    const { buildChatPlugin } = require("./index");
+    return buildChatPlugin({
+      adapters: {
+        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        teams: { appId: "test-app-id", appPassword: "test-app-password" },
+      },
+      executeQuery: async () => ({
+        answer: "test answer",
+        sql: ["SELECT 1"],
+        data: [],
+        steps: 1,
+        usage: { totalTokens: 50 },
+      }),
+    });
+  }
+
+  it("initializes with both adapters", async () => {
+    const plugin = createMultiAdapterPlugin();
+    const logs: string[] = [];
+
+    await plugin.initialize!({
+      db: null,
+      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      tools: { register: () => {} },
+      logger: {
+        info: (msg: unknown) => logs.push(typeof msg === "string" ? msg : JSON.stringify(msg)),
+        warn: () => {},
+        error: () => {},
+        debug: () => {},
+      },
+      config: {},
+    });
+
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(true);
+    expect(result.message).toContain("slack");
+    expect(result.message).toContain("teams");
+  });
+});

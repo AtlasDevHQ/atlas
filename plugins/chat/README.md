@@ -1,6 +1,6 @@
 # @useatlas/chat
 
-Unified chat interaction plugin bridging [Chat SDK](https://github.com/vercel/chat) (vercel/chat) into the Atlas plugin system. Instead of maintaining separate per-platform plugins, this single plugin provides a bridge for Chat SDK adapters. Replaces `@useatlas/slack` for Slack support; additional platforms (Teams, Discord, etc.) will be added in follow-up issues.
+Unified chat interaction plugin bridging [Chat SDK](https://github.com/vercel/chat) (vercel/chat) into the Atlas plugin system. Instead of maintaining separate per-platform plugins, this single plugin provides a bridge for Chat SDK adapters. Replaces `@useatlas/slack` and `@useatlas/teams` for Slack and Teams support; additional platforms (Discord, etc.) will be added in follow-up issues.
 
 ## Install
 
@@ -24,6 +24,11 @@ export default defineConfig({
           clientId: process.env.SLACK_CLIENT_ID,       // optional, for OAuth
           clientSecret: process.env.SLACK_CLIENT_SECRET, // optional, for OAuth
         },
+        teams: {
+          appId: process.env.TEAMS_APP_ID!,
+          appPassword: process.env.TEAMS_APP_PASSWORD!,
+          tenantId: process.env.TEAMS_TENANT_ID,       // optional, for tenant restriction
+        },
       },
       executeQuery: myQueryFunction,
       actions: myActionCallbacks,        // optional — approve/deny flows
@@ -41,6 +46,9 @@ export default defineConfig({
 | `adapters.slack.signingSecret` | `string` | — | Slack signing secret for request verification |
 | `adapters.slack.clientId` | `string?` | — | Client ID for multi-workspace OAuth |
 | `adapters.slack.clientSecret` | `string?` | — | Client secret for multi-workspace OAuth |
+| `adapters.teams.appId` | `string` | — | Microsoft App ID from Azure Bot registration |
+| `adapters.teams.appPassword` | `string` | — | Microsoft App Password from Azure Bot registration |
+| `adapters.teams.tenantId` | `string?` | — | Optional: restrict to a specific Microsoft Entra ID tenant |
 | `state` | `object?` | `{ backend: "memory" }` | State backend configuration (see below) |
 | `executeQuery` | `function` | — | Callback to run the Atlas agent on a question |
 | `checkRateLimit` | `function?` | — | Optional rate limiting callback |
@@ -86,13 +94,14 @@ The plugin bridges Chat SDK events to Atlas:
 
 | Route | Method | Description |
 |-------|--------|-------------|
-| `/webhooks/slack` | POST | Chat SDK webhook (handles slash commands, events, and interactions) |
-| `/oauth/slack/install` | GET | OAuth install redirect (only when `clientId` configured) |
-| `/oauth/slack/callback` | GET | OAuth callback (only when `clientId` configured) |
+| `/webhooks/slack` | POST | Slack Chat SDK webhook (handles slash commands, events, and interactions) |
+| `/webhooks/teams` | POST | Teams Chat SDK webhook (handles Bot Framework activities) |
+| `/oauth/slack/install` | GET | Slack OAuth install redirect (only when `clientId` configured) |
+| `/oauth/slack/callback` | GET | Slack OAuth callback (only when `clientId` configured) |
 
-## Migrating from @useatlas/slack
+## Migrating from @useatlas/slack or @useatlas/teams
 
-See the [`@useatlas/slack` README](../slack/README.md) for a migration guide with a comparison table.
+See the [`@useatlas/slack` README](../slack/README.md) or [`@useatlas/teams` README](../teams/README.md) for migration guides with comparison tables.
 
 ## Error Scrubbing
 
@@ -105,8 +114,8 @@ Provide a custom `scrubError` callback for additional scrubbing.
 
 ## Architecture
 
-This is the foundation plugin for the Chat SDK adoption (#757). It replaces `@useatlas/slack` (#759) and will support additional platforms:
-- Teams (#760), Discord (#761), Google Chat (#762), Telegram (#763), and more
+This is the foundation plugin for the Chat SDK adoption (#757). It replaces `@useatlas/slack` (#759) and `@useatlas/teams` (#760), and will support additional platforms:
+- Discord (#761), Google Chat (#762), Telegram (#763), and more
 
 ## Reference
 

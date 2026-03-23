@@ -44,6 +44,16 @@ export interface SlackAdapterConfig {
   clientSecret?: string;
 }
 
+/** Teams adapter credential configuration. */
+export interface TeamsAdapterConfig {
+  /** Microsoft App ID from Azure Bot registration. */
+  appId: string;
+  /** Microsoft App Password from Azure Bot registration. */
+  appPassword: string;
+  /** Optional: restrict to a specific Microsoft Entra ID tenant. */
+  tenantId?: string;
+}
+
 /** State backend configuration. */
 export interface StateConfig {
   /** Which state backend to use. Default: "memory" */
@@ -98,6 +108,7 @@ export interface ChatPluginConfig {
   /** Adapter credentials keyed by platform name. */
   adapters: {
     slack?: SlackAdapterConfig;
+    teams?: TeamsAdapterConfig;
   };
 
   /** State backend configuration. Default: { backend: "memory" } */
@@ -139,6 +150,12 @@ const SlackAdapterSchema = z.object({
   "clientId and clientSecret must both be provided for OAuth",
 );
 
+const TeamsAdapterSchema = z.object({
+  appId: z.string().min(1, "teams appId must not be empty"),
+  appPassword: z.string().min(1, "teams appPassword must not be empty"),
+  tenantId: z.string().min(1).optional(),
+});
+
 const StateConfigSchema = z
   .object({
     backend: z.enum(["memory", "pg", "redis"]).default("memory"),
@@ -154,6 +171,7 @@ export const ChatConfigSchema = z.object({
   adapters: z
     .object({
       slack: SlackAdapterSchema.optional(),
+      teams: TeamsAdapterSchema.optional(),
     })
     .refine(
       (a) => Object.values(a).some((v) => v !== undefined),

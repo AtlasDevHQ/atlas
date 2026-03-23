@@ -5,6 +5,11 @@ description: Integrate Microsoft Teams as an interaction surface for Atlas with 
 
 import { Callout } from "fumadocs-ui/components/callout";
 
+<Callout type="warn">
+**`@useatlas/teams` is deprecated.** Use [`@useatlas/chat`](/plugins/interactions/chat) with the Teams adapter instead.
+The Chat SDK bridge plugin provides the same Teams functionality plus multi-platform support (Slack, Discord, etc.) and built-in state management. See the [migration guide](#migrating-to-useatlas-chat) below.
+</Callout>
+
 The Teams interaction plugin integrates Microsoft Teams as an interaction surface for Atlas. Users can @mention the bot in channels or send direct messages, and the bot replies with Adaptive Cards containing formatted query results, SQL, and data tables.
 
 This plugin uses the `routes()` interface to mount Hono routes directly into the Atlas API server, and receives runtime dependencies (agent execution, rate limiting) via config callbacks rather than importing from `@atlas/api`.
@@ -144,3 +149,36 @@ Ensure `TEAMS_APP_ID` and `TEAMS_APP_PASSWORD` match the Azure Bot registration 
 ### Adaptive Cards not rendering
 
 Teams requires Adaptive Card schema version 1.5 or lower. The plugin uses version 1.5 which is supported by all current Teams clients.
+
+## Migrating to @useatlas/chat
+
+Replace `@useatlas/teams` with the Chat SDK bridge plugin:
+
+```typescript
+// Before:
+import { teamsPlugin } from "@useatlas/teams";
+teamsPlugin({ appId: "...", appPassword: "...", executeQuery })
+
+// After:
+import { chatPlugin } from "@useatlas/chat";
+chatPlugin({
+  adapters: {
+    teams: { appId: "...", appPassword: "...", tenantId: "..." },
+  },
+  executeQuery,
+})
+```
+
+When using the Chat SDK bridge, update the **messaging endpoint** in your Azure Bot Configuration to:
+
+```
+https://your-atlas-api.example.com/api/plugins/chat-interaction/webhooks/teams
+```
+
+| Feature | @useatlas/teams | @useatlas/chat |
+|---------|----------------|----------------|
+| Webhook | `/messages` | `/webhooks/teams` |
+| Adaptive Cards | Hand-rolled builders | Automatic via Chat SDK |
+| State | None | State adapter (memory/PG/Redis) |
+| Follow-ups | Single query per activity | Chat SDK subscription model |
+| Multi-platform | Teams only | Teams, Slack, Discord, etc. |

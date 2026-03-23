@@ -19,11 +19,20 @@ const log = createLogger("semantic-files");
 /**
  * Resolve the semantic layer root directory.
  *
- * ATLAS_SEMANTIC_ROOT is a test-only env var; in production the semantic
- * root is always resolved from cwd.
+ * Defaults to `{cwd}/semantic`. Override with `ATLAS_SEMANTIC_ROOT` for
+ * development, testing, or non-standard directory layouts.
  */
 export function getSemanticRoot(): string {
-  return process.env.ATLAS_SEMANTIC_ROOT ?? path.resolve(process.cwd(), "semantic");
+  const envRoot = process.env.ATLAS_SEMANTIC_ROOT;
+  if (envRoot !== undefined) {
+    if (!envRoot) {
+      throw new Error(
+        "ATLAS_SEMANTIC_ROOT is set but empty — remove it to use the default, or provide a path",
+      );
+    }
+    return path.resolve(envRoot);
+  }
+  return path.resolve(process.cwd(), "semantic");
 }
 
 // ---------------------------------------------------------------------------

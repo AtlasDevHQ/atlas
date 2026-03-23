@@ -14,6 +14,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as yaml from "js-yaml";
 import { createLogger } from "@atlas/api/lib/logger";
+import { getSemanticRoot as getDefaultSemanticRoot } from "@atlas/api/lib/semantic-files";
 
 const log = createLogger("semantic-index");
 
@@ -111,7 +112,7 @@ let _cachedEntityCount = 0;
 export function getSemanticIndex(semanticRoot?: string): string {
   if (_cachedIndex !== null) return _cachedIndex;
 
-  const root = semanticRoot ?? path.resolve(process.cwd(), "semantic");
+  const root = semanticRoot ?? getDefaultSemanticRoot();
   _cachedIndex = buildSemanticIndex(root);
   return _cachedIndex;
 }

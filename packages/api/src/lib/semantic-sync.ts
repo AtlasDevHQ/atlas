@@ -1,7 +1,7 @@
 /**
  * Dual-write sync layer for org-scoped semantic layers.
  *
- * Maintains persistent per-org directories at `semantic/.orgs/{orgId}/`
+ * Maintains persistent per-org directories at `{semanticRoot}/.orgs/{orgId}/`
  * that mirror the `semantic_entities` DB table. The DB is the source of
  * truth; the disk is a persistent cache consumed by the explore tool
  * (the agent navigates the semantic layer via filesystem commands like
@@ -17,6 +17,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { createLogger } from "@atlas/api/lib/logger";
+import { getSemanticRoot as getBaseSemanticRoot } from "@atlas/api/lib/semantic-files";
 
 const log = createLogger("semantic-sync");
 
@@ -24,25 +25,23 @@ const log = createLogger("semantic-sync");
 // Path resolution
 // ---------------------------------------------------------------------------
 
-/** Base semantic root (process-level, never changes). */
-const SEMANTIC_BASE = path.resolve(process.cwd(), "semantic");
-
 /**
  * Resolve the semantic root for a given org.
  *
- * - With orgId: `semantic/.orgs/{orgId}/`
- * - Without orgId: `semantic/` (self-hosted fallback)
+ * - With orgId: `{semanticRoot}/.orgs/{orgId}/`
+ * - Without orgId: the base semantic root (defaults to `{cwd}/semantic`, overridable via `ATLAS_SEMANTIC_ROOT`)
  *
  * Validates orgId against path traversal — rejects values containing
  * path separators or `..` components.
  */
 export function getSemanticRoot(orgId?: string): string {
-  if (!orgId) return SEMANTIC_BASE;
+  const base = getBaseSemanticRoot();
+  if (!orgId) return base;
   const safe = path.basename(orgId);
   if (safe !== orgId || orgId === "." || orgId === "..") {
     throw new Error(`Invalid orgId for semantic root: "${orgId}"`);
   }
-  return path.join(SEMANTIC_BASE, ".orgs", safe);
+  return path.join(base, ".orgs", safe);
 }
 
 // ---------------------------------------------------------------------------
@@ -316,7 +315,7 @@ interface ImportResult {
 /**
  * Import YAML files from an org's disk directory into the DB.
  *
- * Scans `semantic/.orgs/{orgId}/entities/*.yml`, `metrics/*.yml`, and
+ * Scans `{orgRoot}/entities/*.yml`, `metrics/*.yml`, and
  * `glossary.yml`. Each file is validated, then upserted via
  * `bulkUpsertEntities()`. Invalid files are skipped with per-file
  * error reporting.
@@ -525,7 +524,7 @@ export async function reconcileAllOrgs(): Promise<void> {
 }
 
 /**
- * First-boot auto-import: scan `semantic/.orgs/` for directories that
+ * First-boot auto-import: scan `{semanticRoot}/.orgs/` for directories that
  * have YAML files on disk but zero entities in the DB. Import them.
  *
  * Handles:
@@ -533,7 +532,7 @@ export async function reconcileAllOrgs(): Promise<void> {
  * - Self-hosted → managed migration (files copied to .orgs/ manually)
  */
 async function _autoImportOrgsFromDisk(): Promise<void> {
-  const orgsDir = path.join(SEMANTIC_BASE, ".orgs");
+  const orgsDir = path.join(getBaseSemanticRoot(), ".orgs");
   let orgDirs: string[];
   try {
     orgDirs = (await fs.promises.readdir(orgsDir, { withFileTypes: true }))

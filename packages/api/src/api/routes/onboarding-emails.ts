@@ -72,19 +72,26 @@ const resubscribeRoute = createRoute({
 export const onboardingEmails = new OpenAPIHono({ defaultHook: validationHook });
 
 onboardingEmails.openapi(unsubscribeRoute, async (c) => {
+  const requestId = crypto.randomUUID();
   const userId = c.req.query("userId");
   if (!userId) {
-    return c.json({ error: "bad_request", message: "Missing userId parameter." }, 400);
+    return c.json({ error: "bad_request", message: "Missing userId parameter.", requestId }, 400);
   }
 
   if (!hasInternalDB()) {
+    // If onboarding emails cannot be sent without an internal DB, the unsubscribe
+    // link would never have been generated. Show a neutral acknowledgement.
     return c.html(unsubscribeHtml("Unsubscribed", "You have been unsubscribed from onboarding emails."), 200);
   }
 
   try {
     await unsubscribeUser(userId);
   } catch (err) {
-    log.warn({ userId, err: err instanceof Error ? err.message : String(err) }, "Unsubscribe failed — showing success page anyway");
+    log.error({ userId, err: err instanceof Error ? err.message : String(err), requestId }, "Unsubscribe failed");
+    return c.html(
+      unsubscribeHtml("Unsubscribe Failed", "We could not process your request. Please try again or contact support."),
+      500,
+    );
   }
 
   return c.html(unsubscribeHtml("Unsubscribed", "You have been unsubscribed from onboarding emails. You will no longer receive onboarding tips."), 200);
@@ -107,14 +114,20 @@ onboardingEmails.openapi(resubscribeRoute, async (c) => {
   }
 });
 
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 function unsubscribeHtml(title: string, message: string): string {
+  const safeTitle = escapeHtml(title);
+  const safeMessage = escapeHtml(message);
   return `<!DOCTYPE html>
 <html>
-<head><meta charset="utf-8" /><title>${title}</title></head>
+<head><meta charset="utf-8" /><title>${safeTitle}</title></head>
 <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5;">
   <div style="text-align:center;padding:48px;background:white;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,0.1);max-width:400px;">
-    <h1 style="font-size:24px;color:#171717;margin:0 0 12px;">${title}</h1>
-    <p style="font-size:15px;color:#525252;margin:0;line-height:1.5;">${message}</p>
+    <h1 style="font-size:24px;color:#171717;margin:0 0 12px;">${safeTitle}</h1>
+    <p style="font-size:15px;color:#525252;margin:0;line-height:1.5;">${safeMessage}</p>
   </div>
 </body>
 </html>`;

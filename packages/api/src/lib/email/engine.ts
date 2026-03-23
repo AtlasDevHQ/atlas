@@ -7,8 +7,8 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
-import { hasInternalDB, internalQuery, internalExecute } from "@atlas/api/lib/db/internal";
-import type { OnboardingEmailStep, OnboardingMilestone, OnboardingEmailStatus } from "@useatlas/types";
+import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import type { OnboardingEmailStep, OnboardingMilestone, OnboardingEmailTrigger, OnboardingEmailStatus } from "@useatlas/types";
 import { ONBOARDING_SEQUENCE, MILESTONE_TO_STEP } from "./sequence";
 import { renderOnboardingEmail } from "./templates";
 import { sendEmail } from "./delivery";
@@ -73,9 +73,9 @@ async function recordSentEmail(
   userId: string,
   orgId: string,
   step: OnboardingEmailStep,
-  triggeredBy: OnboardingMilestone | "time_based",
+  triggeredBy: OnboardingEmailTrigger,
 ): Promise<void> {
-  internalExecute(
+  await internalQuery(
     `INSERT INTO onboarding_emails (user_id, org_id, step, triggered_by, sent_at)
      VALUES ($1, $2, $3, $4, now())
      ON CONFLICT (user_id, step) DO NOTHING`,
@@ -106,7 +106,7 @@ export async function sendOnboardingEmail(
   email: string,
   orgId: string,
   step: OnboardingEmailStep,
-  triggeredBy: OnboardingMilestone | "time_based",
+  triggeredBy: OnboardingEmailTrigger,
 ): Promise<boolean> {
   if (!isOnboardingEmailEnabled()) {
     log.debug({ userId, step }, "Onboarding emails disabled — skipping");
@@ -259,7 +259,7 @@ export async function checkFallbackEmails(): Promise<{ checked: number; sent: nu
 // ── Unsubscribe ─────────────────────────────────────────────────────
 
 export async function unsubscribeUser(userId: string): Promise<void> {
-  internalExecute(
+  await internalQuery(
     `INSERT INTO email_preferences (user_id, onboarding_emails, updated_at)
      VALUES ($1, false, now())
      ON CONFLICT (user_id)
@@ -270,7 +270,7 @@ export async function unsubscribeUser(userId: string): Promise<void> {
 }
 
 export async function resubscribeUser(userId: string): Promise<void> {
-  internalExecute(
+  await internalQuery(
     `INSERT INTO email_preferences (user_id, onboarding_emails, updated_at)
      VALUES ($1, true, now())
      ON CONFLICT (user_id)
@@ -314,22 +314,36 @@ export async function getOnboardingStatuses(
     [orgId, limit, offset],
   );
 
-  const statuses: OnboardingEmailStatus[] = [];
-
-  for (const user of users) {
-    const sentSteps = await getSentSteps(user.user_id);
-    const unsub = await isUnsubscribed(user.user_id);
-
-    statuses.push({
-      userId: user.user_id,
-      email: user.email,
-      orgId,
-      sentSteps,
-      pendingSteps: ALL_STEPS.filter((s) => !sentSteps.includes(s)),
-      unsubscribed: unsub,
-      createdAt: user.created_at,
-    });
-  }
+  const statuses = await Promise.all(
+    users.map(async (user) => {
+      try {
+        const [sentSteps, unsub] = await Promise.all([
+          getSentSteps(user.user_id),
+          isUnsubscribed(user.user_id),
+        ]);
+        return {
+          userId: user.user_id,
+          email: user.email,
+          orgId,
+          sentSteps,
+          pendingSteps: ALL_STEPS.filter((s) => !sentSteps.includes(s)),
+          unsubscribed: unsub,
+          createdAt: user.created_at,
+        };
+      } catch (err) {
+        log.warn({ userId: user.user_id, err: err instanceof Error ? err.message : String(err) }, "Failed to fetch onboarding status for user — returning defaults");
+        return {
+          userId: user.user_id,
+          email: user.email,
+          orgId,
+          sentSteps: [] as OnboardingEmailStep[],
+          pendingSteps: ALL_STEPS,
+          unsubscribed: false,
+          createdAt: user.created_at,
+        };
+      }
+    }),
+  );
 
   return { statuses, total };
 }

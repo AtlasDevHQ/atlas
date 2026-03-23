@@ -445,8 +445,8 @@ chat.openapi(chatRoute, async (c) => {
             .then(({ onFirstQueryExecuted }) => {
               onFirstQueryExecuted({ userId: uid, email: uemail, orgId: uorg });
             })
-            .catch(() => {
-              // Onboarding email module not available — non-blocking
+            .catch((err: unknown) => {
+              log.debug({ err: err instanceof Error ? err.message : String(err) }, "Onboarding email hook not available — non-blocking");
             });
         }
 

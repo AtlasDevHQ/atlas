@@ -15,9 +15,13 @@ import {
   isOnboardingEmailEnabled,
 } from "@atlas/api/lib/email/engine";
 import { ONBOARDING_SEQUENCE } from "@atlas/api/lib/email/sequence";
+import { ONBOARDING_EMAIL_STEPS, ONBOARDING_MILESTONES } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 const log = createLogger("admin-onboarding-emails");
+
+const stepEnum = z.enum(ONBOARDING_EMAIL_STEPS);
+const milestoneEnum = z.enum(ONBOARDING_MILESTONES);
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -27,15 +31,15 @@ const OnboardingEmailStatusSchema = z.object({
   userId: z.string(),
   email: z.string(),
   orgId: z.string(),
-  sentSteps: z.array(z.string()),
-  pendingSteps: z.array(z.string()),
+  sentSteps: z.array(stepEnum),
+  pendingSteps: z.array(stepEnum),
   unsubscribed: z.boolean(),
   createdAt: z.string(),
 });
 
 const SequenceStepSchema = z.object({
-  step: z.string(),
-  trigger: z.string(),
+  step: stepEnum,
+  trigger: milestoneEnum,
   fallbackHours: z.number(),
   subject: z.string(),
   description: z.string(),

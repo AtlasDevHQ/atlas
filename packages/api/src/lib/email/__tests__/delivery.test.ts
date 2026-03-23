@@ -21,8 +21,9 @@ describe("sendEmail", () => {
       html: "<p>Hello</p>",
     });
 
-    expect(result.success).toBe(true);
+    expect(result.success).toBe(false);
     expect(result.provider).toBe("log");
+    expect(result.error).toContain("No email delivery backend configured");
   });
 
   it("uses Resend when RESEND_API_KEY is set", async () => {

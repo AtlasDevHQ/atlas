@@ -332,6 +332,7 @@ export function getAuthInstance(): AuthInstance {
             // Onboarding welcome email — fire-and-forget after signup.
             // Deferred with setTimeout to allow Better Auth to create the org/membership first.
             if (user.email) {
+              const userEmail = user.email;
               setTimeout(async () => {
                 try {
                   const { onUserSignup } = await import("@atlas/api/lib/email/hooks");
@@ -340,8 +341,12 @@ export function getAuthInstance(): AuthInstance {
                     `SELECT "organizationId" FROM member WHERE "userId" = $1 LIMIT 1`,
                     [user.id],
                   );
-                  const orgId = memberships[0]?.organizationId ?? "default";
-                  onUserSignup({ userId: user.id, email: user.email!, orgId });
+                  const orgId = memberships[0]?.organizationId;
+                  if (!orgId) {
+                    log.warn({ userId: user.id }, "No org membership found after signup — welcome email deferred to fallback scheduler");
+                    return;
+                  }
+                  onUserSignup({ userId: user.id, email: userEmail, orgId });
                 } catch (err) {
                   log.warn(
                     { userId: user.id, err: err instanceof Error ? err.message : String(err) },

@@ -42,12 +42,13 @@ export async function sendEmail(message: EmailMessage): Promise<DeliveryResult> 
     return deliverResend(message, fromAddress);
   }
 
-  // Dev fallback — log instead of sending
-  log.info(
+  // Dev fallback — log instead of sending. Returns success: false so the email
+  // is not recorded as sent, allowing retry when a provider is configured.
+  log.warn(
     { to: message.to, subject: message.subject },
     "Email delivery skipped — no ATLAS_SMTP_URL or RESEND_API_KEY configured",
   );
-  return { success: true, provider: "log" };
+  return { success: false, provider: "log", error: "No email delivery backend configured (set ATLAS_SMTP_URL or RESEND_API_KEY)" };
 }
 
 /**

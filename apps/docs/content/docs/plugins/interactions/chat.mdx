@@ -27,12 +27,7 @@ bun add @useatlas/chat
 |----------|-----------------|--------|
 | Slack | `@chat-adapter/slack` | Stable |
 | Microsoft Teams | `@chat-adapter/teams` | Stable |
-| Discord | `@chat-adapter/discord` | Coming soon |
-| Google Chat | `@chat-adapter/google-chat` | Coming soon |
-| Telegram | `@chat-adapter/telegram` | Coming soon |
-| WhatsApp | `@chat-adapter/whatsapp` | Coming soon |
-
-Adapters are bundled with `@useatlas/chat` — you don't need to install them separately.
+Stable adapters are bundled as dependencies of `@useatlas/chat` — no separate install needed. Additional platforms (Discord, Google Chat, Telegram, WhatsApp) are planned and will be supported as Chat SDK adapters are published.
 
 ## Configuration
 
@@ -100,7 +95,7 @@ export default defineConfig({
 | `checkRateLimit` | `function` | No | Optional rate limiting callback. |
 | `scrubError` | `function` | No | Optional error scrubbing callback. |
 | `actions` | `ActionCallbacks` | No | Optional action framework callbacks (`approve`, `deny`, `get`). |
-| `conversations` | `ConversationCallbacks` | No | Optional conversation persistence callbacks. |
+| `conversations` | `ConversationCallbacks` | No | Optional conversation persistence callbacks (`create`, `addMessage`, `get`, `generateTitle`). |
 
 <Callout type="info">
 \* Required when that adapter is configured. At least one adapter must be present.
@@ -139,7 +134,7 @@ For production deployments, use the `pg` backend. The `memory` backend is suitab
 
 The plugin bridges Chat SDK events to the Atlas agent:
 
-1. **Slash commands** (`/atlas <question>`) — Posts "Thinking...", subscribes the thread, runs `executeQuery`, edits the response with results
+1. **Slash commands** (`/atlas <question>`) — Posts a "Thinking about: \<question\>..." indicator, subscribes the thread, runs `executeQuery`, edits the response with results
 2. **@mentions** — Subscribes to the thread, runs `executeQuery`, posts the result as markdown
 3. **Thread follow-ups** — Messages in subscribed threads are routed through `executeQuery` with conversation history
 4. **Actions** — Approval button clicks call `actions.approve()` or `actions.deny()`, then update the original message
@@ -248,7 +243,7 @@ Ensure `TEAMS_APP_ID` and `TEAMS_APP_PASSWORD` match the Azure Bot registration 
 
 ### State adapter connection errors
 
-For the `pg` backend, verify `DATABASE_URL` is set and the database is accessible. The adapter will fail at plugin initialization if it cannot connect.
+For the `pg` backend, verify `DATABASE_URL` is set and the database is accessible. The adapter will fail at plugin initialization if it cannot connect. The `redis` backend is not yet implemented and will throw at startup — use `pg` or `memory` instead.
 
 ### Plugin returns 503
 
@@ -257,7 +252,6 @@ Routes return 503 if the plugin hasn't finished initializing. This is normal dur
 ## Reference
 
 - [Chat SDK documentation](https://chat-sdk.dev/docs)
-- [Plugin SDK reference](/plugins/sdk)
 - [Plugin authoring guide](/plugins/authoring-guide)
 - [Slack plugin (deprecated)](/plugins/interactions/slack)
 - [Teams plugin (deprecated)](/plugins/interactions/teams)

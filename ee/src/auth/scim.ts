@@ -7,8 +7,10 @@
  * `@better-auth/scim` plugin registered in server.ts — this module only
  * wraps the enterprise gate and the custom group-mapping layer.
  *
- * Every CRUD function calls `requireEnterprise("scim")` — unlicensed
- * deployments get a clear error.
+ * Every admin-facing CRUD function calls `requireEnterprise("scim")` —
+ * unlicensed deployments get a clear error. The `resolveGroupToRole`
+ * helper is designed for the provisioning hot path and intentionally
+ * skips the gate, returning null when no mapping exists.
  */
 
 import { requireEnterprise } from "../index";
@@ -122,6 +124,9 @@ function rowToGroupMapping(row: SCIMGroupMappingRow): SCIMGroupMapping {
 
 // ── Validation ──────────────────────────────────────────────────────
 
+// SCIM group display names: alphanumeric start, up to 255 chars.
+// Allows spaces, underscores, hyphens, dots — restrictive enough to prevent
+// injection while permitting common IdP group name formats.
 const SCIM_GROUP_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9 _.-]{0,254}$/;
 
 export function isValidScimGroupName(name: string): boolean {
@@ -180,31 +185,34 @@ export async function getSyncStatus(orgId: string): Promise<SCIMSyncStatus> {
     return { connections: 0, provisionedUsers: 0, lastSyncAt: null };
   }
 
-  // Count connections
-  const connRows = await internalQuery<{ count: string; [key: string]: unknown }>(
-    `SELECT COUNT(*)::text AS count FROM "scimProvider" WHERE "organizationId" = $1`,
-    [orgId],
-  );
-  const connections = parseInt(connRows[0]?.count ?? "0", 10);
+  // All three queries are independent — run in parallel per CLAUDE.md
+  const [connRows, userRows, lastSyncRows] = await Promise.all([
+    internalQuery<{ count: string; [key: string]: unknown }>(
+      `SELECT COUNT(*)::text AS count FROM "scimProvider" WHERE "organizationId" = $1`,
+      [orgId],
+    ),
+    // Count users provisioned via SCIM — Better Auth stores each external identity
+    // in the `account` table with a `providerId` matching the SCIM provider's ID.
+    internalQuery<{ count: string; [key: string]: unknown }>(
+      `SELECT COUNT(DISTINCT a."userId")::text AS count
+       FROM account a
+       JOIN "scimProvider" sp ON a."providerId" = sp."providerId"
+       WHERE sp."organizationId" = $1`,
+      [orgId],
+    ),
+    // Last sync approximation: most recent SCIM-provisioned user creation.
+    // Misses sync events that only update/deactivate existing users.
+    internalQuery<{ last_sync: string | null; [key: string]: unknown }>(
+      `SELECT MAX(a."createdAt")::text AS last_sync
+       FROM account a
+       JOIN "scimProvider" sp ON a."providerId" = sp."providerId"
+       WHERE sp."organizationId" = $1`,
+      [orgId],
+    ),
+  ]);
 
-  // Count users provisioned via SCIM (they have an account with providerId matching a SCIM provider)
-  const userRows = await internalQuery<{ count: string; [key: string]: unknown }>(
-    `SELECT COUNT(DISTINCT a."userId")::text AS count
-     FROM account a
-     JOIN "scimProvider" sp ON a."providerId" = sp."providerId"
-     WHERE sp."organizationId" = $1`,
-    [orgId],
-  );
-  const provisionedUsers = parseInt(userRows[0]?.count ?? "0", 10);
-
-  // Last sync approximation: most recent SCIM-provisioned user creation
-  const lastSyncRows = await internalQuery<{ last_sync: string | null; [key: string]: unknown }>(
-    `SELECT MAX(a."createdAt")::text AS last_sync
-     FROM account a
-     JOIN "scimProvider" sp ON a."providerId" = sp."providerId"
-     WHERE sp."organizationId" = $1`,
-    [orgId],
-  );
+  const connections = parseInt(connRows[0]?.count ?? "0", 10) || 0;
+  const provisionedUsers = parseInt(userRows[0]?.count ?? "0", 10) || 0;
   const lastSyncAt = lastSyncRows[0]?.last_sync ?? null;
 
   return { connections, provisionedUsers, lastSyncAt };
@@ -331,7 +339,8 @@ export async function resolveGroupToRole(orgId: string, scimGroupName: string): 
       // Table not yet created — no mappings configured
       return null;
     }
-    log.warn({ err: msg, orgId, scimGroupName }, "Failed to resolve SCIM group to role");
-    return null;
+    // All other errors must propagate — silently returning null
+    // would skip role assignment and is a security-relevant failure.
+    throw err;
   }
 }

@@ -122,10 +122,24 @@ describe("isValidScimGroupName", () => {
     expect(isValidScimGroupName("A")).toBe(true);
   });
 
+  it("accepts exactly 255 characters", () => {
+    expect(isValidScimGroupName("A" + "b".repeat(254))).toBe(true);
+  });
+
   it("rejects invalid group names", () => {
     expect(isValidScimGroupName("")).toBe(false);
     expect(isValidScimGroupName(" leading-space")).toBe(false);
     expect(isValidScimGroupName("a".repeat(256))).toBe(false);
+    expect(isValidScimGroupName("_underscore-start")).toBe(false);
+    expect(isValidScimGroupName(".dot-start")).toBe(false);
+    expect(isValidScimGroupName("-hyphen-start")).toBe(false);
+  });
+
+  it("rejects special characters outside allowed set", () => {
+    expect(isValidScimGroupName("Engineers/Team-1")).toBe(false);
+    expect(isValidScimGroupName("Team@Corp")).toBe(false);
+    expect(isValidScimGroupName("Group#1")).toBe(false);
+    expect(isValidScimGroupName("Name!")).toBe(false);
   });
 });
 
@@ -296,5 +310,53 @@ describe("resolveGroupToRole", () => {
     mockRows.push([]); // no match
     const result = await resolveGroupToRole(ORG_ID, "Unknown Group");
     expect(result).toBeNull();
+  });
+
+  it("does not require enterprise gate (skips requireEnterprise)", async () => {
+    mockEnterpriseEnabled = false; // would throw if requireEnterprise were called
+    mockRows.push([]); // ensureGroupMappingsTable
+    mockRows.push([{ role_name: "analyst" }]);
+    const result = await resolveGroupToRole(ORG_ID, "Engineers");
+    expect(result).toBe("analyst");
+  });
+});
+
+describe("SCIMError codes", () => {
+  beforeEach(resetMocks);
+
+  it("throws validation code for invalid group name", async () => {
+    mockRows.push([]); // ensureGroupMappingsTable
+    try {
+      await createGroupMapping(ORG_ID, "", "analyst");
+      expect(true).toBe(false); // should not reach
+    } catch (err) {
+      expect(err).toBeInstanceOf(SCIMError);
+      expect((err as InstanceType<typeof SCIMError>).code).toBe("validation");
+    }
+  });
+
+  it("throws not_found code for missing role", async () => {
+    mockRows.push([]); // ensureGroupMappingsTable
+    mockRows.push([]); // role not found
+    try {
+      await createGroupMapping(ORG_ID, "Engineers", "nonexistent");
+      expect(true).toBe(false);
+    } catch (err) {
+      expect(err).toBeInstanceOf(SCIMError);
+      expect((err as InstanceType<typeof SCIMError>).code).toBe("not_found");
+    }
+  });
+
+  it("throws conflict code for duplicate mapping", async () => {
+    mockRows.push([]); // ensureGroupMappingsTable
+    mockRows.push([{ id: "role-1" }]); // role exists
+    mockRows.push([{ id: "existing-map" }]); // duplicate found
+    try {
+      await createGroupMapping(ORG_ID, "Engineers", "analyst");
+      expect(true).toBe(false);
+    } catch (err) {
+      expect(err).toBeInstanceOf(SCIMError);
+      expect((err as InstanceType<typeof SCIMError>).code).toBe("conflict");
+    }
   });
 });

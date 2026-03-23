@@ -126,11 +126,12 @@ export default function SCIMPage() {
       }
       refetchStatus();
       refetchMappings();
+      setDeleteTarget(null);
     } catch (err) {
       setMutationError(err instanceof Error ? err.message : String(err));
+      setDeleteTarget(null);
     } finally {
       setDeleting(false);
-      setDeleteTarget(null);
     }
   }
 

@@ -86,32 +86,28 @@ function buildPlugins() {
     }),
   ];
 
-  // SCIM directory sync — enterprise only
+  // SCIM directory sync — enterprise only.
+  // No try/catch: if the plugin fails to initialize (missing dep, bad config),
+  // the auth server must fail to start rather than silently running without
+  // SCIM while the admin UI suggests it is available.
   if (isEnterpriseEnabled()) {
-    try {
-      plugins.push(
-        scim({
-          storeSCIMToken: "encrypted",
-          async beforeSCIMTokenGenerated(data) {
-            // Only admins can generate SCIM tokens — enforced via Better Auth hook.
-            // The admin check is done upstream by the admin route preamble;
-            // this hook acts as a defense-in-depth guard.
-            // Cast needed: the admin plugin adds `role` to the user object but the
-            // SCIM plugin's hook type only includes base user fields.
-            const user = data.user as Record<string, unknown> | undefined;
-            if (user?.role !== "admin") {
-              throw new Error("Only admin users can generate SCIM tokens.");
-            }
-          },
-        }),
-      );
-      log.info("SCIM directory sync plugin enabled (enterprise)");
-    } catch (err) {
-      log.error(
-        { err: err instanceof Error ? err.message : String(err) },
-        "Failed to initialize SCIM plugin — directory sync will be unavailable",
-      );
-    }
+    plugins.push(
+      scim({
+        storeSCIMToken: "encrypted",
+        async beforeSCIMTokenGenerated(data) {
+          // Only admins can generate SCIM tokens — enforced via Better Auth hook.
+          // The admin check is done upstream by the admin route preamble;
+          // this hook acts as a defense-in-depth guard.
+          // Cast needed: the admin plugin adds `role` to the user object but the
+          // SCIM plugin's hook type only includes base user fields.
+          const user = data.user as Record<string, unknown> | undefined;
+          if (user?.role !== "admin") {
+            throw new Error("Only admin users can generate SCIM tokens.");
+          }
+        },
+      }),
+    );
+    log.info("SCIM directory sync plugin enabled (enterprise)");
   }
 
   // Stripe billing — only when STRIPE_SECRET_KEY is set (SaaS mode)

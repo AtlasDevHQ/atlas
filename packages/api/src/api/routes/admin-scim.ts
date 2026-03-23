@@ -36,14 +36,14 @@ function isValidId(id: string | undefined): id is string {
 
 const SCIM_ERROR_STATUS = { not_found: 404, conflict: 409, validation: 400 } as const;
 
-/** Map SCIM/enterprise errors to HTTP responses. */
+/** Map SCIM/enterprise errors to HTTP responses. Check specific types first. */
 function scimErrorResponse(err: unknown): { body: Record<string, unknown>; status: 400 | 403 | 404 | 409 } | null {
+  if (err instanceof SCIMError) {
+    return { body: { error: err.code, message: err.message }, status: SCIM_ERROR_STATUS[err.code] };
+  }
   const message = err instanceof Error ? err.message : String(err);
   if (message.includes("Enterprise features")) {
     return { body: { error: "enterprise_required", message }, status: 403 };
-  }
-  if (err instanceof SCIMError) {
-    return { body: { error: err.code, message: err.message }, status: SCIM_ERROR_STATUS[err.code] };
   }
   return null;
 }
@@ -57,11 +57,11 @@ const SCIMConnectionSchema = z.object({
   providerId: z.string(),
   organizationId: z.string().nullable(),
   createdAt: z.string(),
-}).passthrough();
+});
 
 const SCIMSyncStatusSchema = z.object({
-  connections: z.number(),
-  provisionedUsers: z.number(),
+  connections: z.number().int().nonnegative(),
+  provisionedUsers: z.number().int().nonnegative(),
   lastSyncAt: z.string().nullable(),
 });
 
@@ -71,7 +71,7 @@ const SCIMGroupMappingSchema = z.object({
   scimGroupName: z.string(),
   roleName: z.string(),
   createdAt: z.string(),
-}).passthrough();
+});
 
 const ConnectionIdParamSchema = z.object({
   id: z.string().min(1).max(MAX_ID_LENGTH).openapi({
@@ -88,7 +88,10 @@ const MappingIdParamSchema = z.object({
 });
 
 const CreateGroupMappingBodySchema = z.object({
-  scimGroupName: z.string().min(1).max(255),
+  scimGroupName: z.string().min(1).max(255).regex(
+    /^[a-zA-Z0-9]/,
+    "Must start with an alphanumeric character",
+  ),
   roleName: z.string().min(1).max(63),
 });
 
@@ -358,7 +361,10 @@ adminScim.openapi(getStatusRoute, async (c) => {
       return c.json({ connections, syncStatus }, 200);
     } catch (err) {
       const mapped = scimErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
+      if (mapped) {
+        log.warn({ requestId, orgId, err: err instanceof Error ? err.message : String(err) }, "SCIM status request failed");
+        return c.json({ ...mapped.body, requestId }, mapped.status) as never;
+      }
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get SCIM status");
       return c.json({ error: "internal_error", message: "Failed to get SCIM status.", requestId }, 500);
     }
@@ -399,7 +405,10 @@ adminScim.openapi(deleteConnectionRoute, async (c) => {
       return c.json({ message: "SCIM connection deleted." }, 200);
     } catch (err) {
       const mapped = scimErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
+      if (mapped) {
+        log.warn({ requestId, orgId, connectionId, err: err instanceof Error ? err.message : String(err) }, "SCIM delete connection failed");
+        return c.json({ ...mapped.body, requestId }, mapped.status) as never;
+      }
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, connectionId }, "Failed to delete SCIM connection");
       return c.json({ error: "internal_error", message: "Failed to delete SCIM connection.", requestId }, 500);
     }
@@ -432,7 +441,10 @@ adminScim.openapi(listGroupMappingsRoute, async (c) => {
       return c.json({ mappings, total: mappings.length }, 200);
     } catch (err) {
       const mapped = scimErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
+      if (mapped) {
+        log.warn({ requestId, orgId, err: err instanceof Error ? err.message : String(err) }, "SCIM list group mappings failed");
+        return c.json({ ...mapped.body, requestId }, mapped.status) as never;
+      }
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to list SCIM group mappings");
       return c.json({ error: "internal_error", message: "Failed to list SCIM group mappings.", requestId }, 500);
     }
@@ -470,7 +482,10 @@ adminScim.openapi(createGroupMappingRoute, async (c) => {
       return c.json({ mapping }, 201);
     } catch (err) {
       const mapped = scimErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
+      if (mapped) {
+        log.warn({ requestId, orgId, err: err instanceof Error ? err.message : String(err) }, "SCIM create group mapping failed");
+        return c.json({ ...mapped.body, requestId }, mapped.status) as never;
+      }
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to create SCIM group mapping");
       return c.json({ error: "internal_error", message: "Failed to create SCIM group mapping.", requestId }, 500);
     }
@@ -511,7 +526,10 @@ adminScim.openapi(deleteGroupMappingRoute, async (c) => {
       return c.json({ message: "SCIM group mapping deleted." }, 200);
     } catch (err) {
       const mapped = scimErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
+      if (mapped) {
+        log.warn({ requestId, orgId, mappingId, err: err instanceof Error ? err.message : String(err) }, "SCIM delete group mapping failed");
+        return c.json({ ...mapped.body, requestId }, mapped.status) as never;
+      }
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, mappingId }, "Failed to delete SCIM group mapping");
       return c.json({ error: "internal_error", message: "Failed to delete SCIM group mapping.", requestId }, 500);
     }

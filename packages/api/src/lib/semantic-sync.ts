@@ -1,7 +1,7 @@
 /**
  * Dual-write sync layer for org-scoped semantic layers.
  *
- * Maintains persistent per-org directories at `semantic/.orgs/{orgId}/`
+ * Maintains persistent per-org directories at `{semanticRoot}/.orgs/{orgId}/`
  * that mirror the `semantic_entities` DB table. The DB is the source of
  * truth; the disk is a persistent cache consumed by the explore tool
  * (the agent navigates the semantic layer via filesystem commands like
@@ -29,7 +29,7 @@ const log = createLogger("semantic-sync");
  * Resolve the semantic root for a given org.
  *
  * - With orgId: `semantic/.orgs/{orgId}/`
- * - Without orgId: `semantic/` (self-hosted fallback)
+ * - Without orgId: the base semantic root (defaults to `{cwd}/semantic`, overridable via `ATLAS_SEMANTIC_ROOT`)
  *
  * Validates orgId against path traversal — rejects values containing
  * path separators or `..` components.

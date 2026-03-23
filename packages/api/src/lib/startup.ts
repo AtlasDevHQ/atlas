@@ -186,7 +186,7 @@ function checkProviderApiKey(errors: DiagnosticError[]): void {
 }
 
 function checkSemanticLayerPresence(errors: DiagnosticError[]): void {
-  const semanticDir = path.resolve(process.cwd(), "semantic", "entities");
+  const semanticDir = path.join(getDefaultSemanticRoot(), "entities");
   let hasEntities = false;
   try {
     const files = fs.readdirSync(semanticDir);

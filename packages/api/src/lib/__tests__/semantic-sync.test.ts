@@ -8,9 +8,10 @@
  * - syncAllEntitiesToDisk() — full rebuild from DB mock, verifies disk output
  * - cleanupOrgDirectory() — directory removal
  *
- * The tests call the real production functions. Since getSemanticRoot uses
- * a process-level base path, syncEntityToDisk/syncAllEntitiesToDisk write
- * to the real semantic/.orgs/ directory. Tests clean up after themselves.
+ * The tests call the real production functions. Since getSemanticRoot
+ * delegates to getBaseSemanticRoot() (which defaults to cwd/semantic
+ * unless ATLAS_SEMANTIC_ROOT is set), syncEntityToDisk/syncAllEntitiesToDisk
+ * write to the real semantic/.orgs/ directory. Tests clean up after themselves.
  *
  * Uses mock.module() to mock the DB layer.
  */

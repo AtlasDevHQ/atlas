@@ -5,6 +5,9 @@
  * - POST /api/v1/onboarding/test-connection
  * - POST /api/v1/onboarding/complete
  * - GET /api/v1/onboarding/social-providers
+ * - GET /api/v1/onboarding/tour-status
+ * - POST /api/v1/onboarding/tour-complete
+ * - POST /api/v1/onboarding/tour-reset
  */
 
 import { describe, it, expect, beforeEach, afterEach, mock, type Mock } from "bun:test";
@@ -405,6 +408,151 @@ describe("POST /api/v1/onboarding/complete", () => {
     expect(res.status).toBe(400);
     const data = await json(res);
     expect(data.error).toBe("connection_failed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tour status / completion / reset
+// ---------------------------------------------------------------------------
+
+describe("GET /api/v1/onboarding/tour-status", () => {
+  beforeEach(() => {
+    mockAuthMode = "managed";
+    mockAuthenticate.mockImplementation(() =>
+      Promise.resolve({
+        authenticated: true,
+        mode: "managed",
+        user: { id: "user-1", mode: "managed", label: "test@example.com", role: "member" },
+      }),
+    );
+    mockHasInternalDB.mockImplementation(() => true);
+    mockInternalQuery.mockImplementation(async () => []);
+  });
+
+  it("returns tourCompleted=false when no onboarding row exists", async () => {
+    const res = await request("/api/v1/onboarding/tour-status");
+    expect(res.status).toBe(200);
+    const data = await json(res);
+    expect(data.tourCompleted).toBe(false);
+    expect(data.tourCompletedAt).toBeNull();
+  });
+
+  it("returns tourCompleted=true when tour_completed_at is set", async () => {
+    const ts = "2026-03-22T10:00:00.000Z";
+    mockInternalQuery.mockImplementation(async () => [{ tour_completed_at: ts }]);
+    const res = await request("/api/v1/onboarding/tour-status");
+    expect(res.status).toBe(200);
+    const data = await json(res);
+    expect(data.tourCompleted).toBe(true);
+    expect(data.tourCompletedAt).toBe(ts);
+  });
+
+  it("returns 404 when auth mode is not managed", async () => {
+    mockAuthMode = "none";
+    const res = await request("/api/v1/onboarding/tour-status");
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when no internal DB", async () => {
+    mockHasInternalDB.mockImplementation(() => false);
+    const res = await request("/api/v1/onboarding/tour-status");
+    expect(res.status).toBe(404);
+    mockHasInternalDB.mockImplementation(() => true);
+  });
+
+  it("returns 401 when not authenticated", async () => {
+    mockAuthenticate.mockImplementation(() =>
+      Promise.resolve({ authenticated: false, mode: "managed", status: 401, error: "No session" }),
+    );
+    const res = await request("/api/v1/onboarding/tour-status");
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 500 with requestId when query fails", async () => {
+    mockInternalQuery.mockImplementation(async () => { throw new Error("db timeout"); });
+    const res = await request("/api/v1/onboarding/tour-status");
+    expect(res.status).toBe(500);
+    const data = await json(res);
+    expect(data.error).toBe("internal_error");
+    expect(data.requestId).toBeDefined();
+    mockInternalQuery.mockImplementation(async () => []);
+  });
+});
+
+describe("POST /api/v1/onboarding/tour-complete", () => {
+  beforeEach(() => {
+    mockAuthMode = "managed";
+    mockAuthenticate.mockImplementation(() =>
+      Promise.resolve({
+        authenticated: true,
+        mode: "managed",
+        user: { id: "user-1", mode: "managed", label: "test@example.com", role: "member" },
+      }),
+    );
+    mockHasInternalDB.mockImplementation(() => true);
+    mockInternalQuery.mockImplementation(async () => []);
+  });
+
+  it("marks tour as completed", async () => {
+    const res = await request("/api/v1/onboarding/tour-complete", {
+      method: "POST",
+    });
+    expect(res.status).toBe(200);
+    const data = await json(res);
+    expect(data.tourCompleted).toBe(true);
+    expect(data.tourCompletedAt).toBeDefined();
+  });
+
+  it("returns 404 when auth mode is not managed", async () => {
+    mockAuthMode = "none";
+    const res = await request("/api/v1/onboarding/tour-complete", {
+      method: "POST",
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 500 with requestId when query fails", async () => {
+    mockInternalQuery.mockImplementation(async () => { throw new Error("db timeout"); });
+    const res = await request("/api/v1/onboarding/tour-complete", {
+      method: "POST",
+    });
+    expect(res.status).toBe(500);
+    const data = await json(res);
+    expect(data.error).toBe("internal_error");
+    expect(data.requestId).toBeDefined();
+    mockInternalQuery.mockImplementation(async () => []);
+  });
+});
+
+describe("POST /api/v1/onboarding/tour-reset", () => {
+  beforeEach(() => {
+    mockAuthMode = "managed";
+    mockAuthenticate.mockImplementation(() =>
+      Promise.resolve({
+        authenticated: true,
+        mode: "managed",
+        user: { id: "user-1", mode: "managed", label: "test@example.com", role: "member" },
+      }),
+    );
+    mockHasInternalDB.mockImplementation(() => true);
+  });
+
+  it("resets tour completion", async () => {
+    const res = await request("/api/v1/onboarding/tour-reset", {
+      method: "POST",
+    });
+    expect(res.status).toBe(200);
+    const data = await json(res);
+    expect(data.tourCompleted).toBe(false);
+    expect(data.tourCompletedAt).toBeNull();
+  });
+
+  it("returns 404 when auth mode is not managed", async () => {
+    mockAuthMode = "none";
+    const res = await request("/api/v1/onboarding/tour-reset", {
+      method: "POST",
+    });
+    expect(res.status).toBe(404);
   });
 });
 

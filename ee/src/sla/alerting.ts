@@ -2,7 +2,7 @@
  * SLA alerting — threshold evaluation and alert state management.
  *
  * Evaluates workspace metrics against configurable thresholds, creates
- * and resolves alerts, and delivers notifications via webhook/email.
+ * and resolves alerts, and delivers notifications via webhook.
  *
  * Enterprise-gated via requireEnterprise("sla").
  */
@@ -20,7 +20,9 @@ const log = createLogger("ee:sla-alerting");
 
 /**
  * Get the effective thresholds for a workspace. Falls back to the
- * `_default` row if no workspace-specific overrides exist.
+ * `_default` row if no workspace-specific overrides exist, then to
+ * env vars (`ATLAS_SLA_LATENCY_P99_MS`, `ATLAS_SLA_ERROR_RATE_PCT`)
+ * with hardcoded defaults.
  */
 export async function getThresholds(workspaceId?: string): Promise<SLAThresholds> {
   requireEnterprise("sla");
@@ -33,9 +35,8 @@ export async function getThresholds(workspaceId?: string): Promise<SLAThresholds
     const rows = await internalQuery<{
       latency_p99_ms: number;
       error_rate_pct: number;
-      downtime_minutes: number;
     }>(
-      `SELECT latency_p99_ms, error_rate_pct, downtime_minutes
+      `SELECT latency_p99_ms, error_rate_pct
        FROM sla_thresholds WHERE workspace_id = $1`,
       [workspaceId],
     );
@@ -43,23 +44,19 @@ export async function getThresholds(workspaceId?: string): Promise<SLAThresholds
       return {
         latencyP99Ms: rows[0].latency_p99_ms,
         errorRatePct: rows[0].error_rate_pct,
-        downtimeMinutes: rows[0].downtime_minutes,
       };
     }
   }
 
-  // Fall back to defaults
   const defaults = await internalQuery<{
     latency_p99_ms: number;
     error_rate_pct: number;
-    downtime_minutes: number;
-  }>(`SELECT latency_p99_ms, error_rate_pct, downtime_minutes FROM sla_thresholds WHERE workspace_id = '_default'`);
+  }>(`SELECT latency_p99_ms, error_rate_pct FROM sla_thresholds WHERE workspace_id = '_default'`);
 
   if (defaults.length > 0) {
     return {
       latencyP99Ms: defaults[0].latency_p99_ms,
       errorRatePct: defaults[0].error_rate_pct,
-      downtimeMinutes: defaults[0].downtime_minutes,
     };
   }
 
@@ -67,10 +64,11 @@ export async function getThresholds(workspaceId?: string): Promise<SLAThresholds
 }
 
 function defaultThresholds(): SLAThresholds {
+  const latency = parseFloat(process.env.ATLAS_SLA_LATENCY_P99_MS ?? "");
+  const errorRate = parseFloat(process.env.ATLAS_SLA_ERROR_RATE_PCT ?? "");
   return {
-    latencyP99Ms: parseFloat(process.env.ATLAS_SLA_LATENCY_P99_MS ?? "5000"),
-    errorRatePct: parseFloat(process.env.ATLAS_SLA_ERROR_RATE_PCT ?? "5"),
-    downtimeMinutes: parseFloat(process.env.ATLAS_SLA_DOWNTIME_MINUTES ?? "15"),
+    latencyP99Ms: isNaN(latency) ? 5000 : latency,
+    errorRatePct: isNaN(errorRate) ? 5 : errorRate,
   };
 }
 
@@ -85,14 +83,13 @@ export async function updateThresholds(thresholds: SLAThresholds): Promise<void>
   }
 
   await internalQuery(
-    `INSERT INTO sla_thresholds (workspace_id, latency_p99_ms, error_rate_pct, downtime_minutes, updated_at)
-     VALUES ('_default', $1, $2, $3, now())
+    `INSERT INTO sla_thresholds (workspace_id, latency_p99_ms, error_rate_pct, updated_at)
+     VALUES ('_default', $1, $2, now())
      ON CONFLICT (workspace_id) DO UPDATE SET
        latency_p99_ms = $1,
        error_rate_pct = $2,
-       downtime_minutes = $3,
        updated_at = now()`,
-    [thresholds.latencyP99Ms, thresholds.errorRatePct, thresholds.downtimeMinutes],
+    [thresholds.latencyP99Ms, thresholds.errorRatePct],
   );
 }
 
@@ -151,7 +148,9 @@ export async function getAlerts(
 export async function acknowledgeAlert(alertId: string, actorId: string): Promise<boolean> {
   requireEnterprise("sla");
 
-  if (!hasInternalDB()) return false;
+  if (!hasInternalDB()) {
+    throw new Error("Internal database not configured — cannot acknowledge SLA alerts");
+  }
 
   const rows = await internalQuery<{ id: string }>(
     `UPDATE sla_alerts
@@ -170,7 +169,8 @@ export async function acknowledgeAlert(alertId: string, actorId: string): Promis
 
 /**
  * Evaluate all workspaces against thresholds and create/resolve alerts.
- * Returns newly fired alerts for notification dispatch.
+ * Returns newly fired alerts. Notifications are dispatched internally
+ * via webhook (if configured).
  */
 export async function evaluateAlerts(): Promise<SLAAlert[]> {
   requireEnterprise("sla");
@@ -240,7 +240,7 @@ export async function evaluateAlerts(): Promise<SLAAlert[]> {
 
   if (newAlerts.length > 0) {
     log.info({ count: newAlerts.length }, "New SLA alerts fired");
-    // Attempt webhook/email delivery (non-critical)
+    // Attempt webhook delivery (non-critical)
     for (const alert of newAlerts) {
       try {
         await deliverAlert(alert);
@@ -346,7 +346,7 @@ function toAlert(row: {
 
 /**
  * Deliver alert notification via webhook or email (best-effort).
- * Uses the same webhook pattern as @useatlas/webhook.
+ * Sends an HTTP POST with a JSON payload to the configured webhook URL.
  */
 async function deliverAlert(alert: SLAAlert): Promise<void> {
   const webhookUrl = process.env.ATLAS_SLA_WEBHOOK_URL;

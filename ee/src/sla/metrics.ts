@@ -3,6 +3,8 @@
  *
  * Records per-workspace query latency and error counts, then aggregates
  * them into SLA summary views (p50/p95/p99 latency, error rate, uptime).
+ * Uptime is derived as the inverse of the error rate (successful queries /
+ * total queries), not measured via health checks.
  *
  * Storage: internal DB `sla_metrics` table. Data is recorded on each query
  * execution and queried by the platform admin API.
@@ -69,20 +71,20 @@ async function ensureTable(): Promise<void> {
        workspace_id       TEXT PRIMARY KEY,
        latency_p99_ms     DOUBLE PRECISION NOT NULL DEFAULT 5000,
        error_rate_pct     DOUBLE PRECISION NOT NULL DEFAULT 5,
-       downtime_minutes   DOUBLE PRECISION NOT NULL DEFAULT 15,
        updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
      )`,
   );
 
   // Insert default thresholds row if missing
-  const defaultLatency = parseFloat(process.env.ATLAS_SLA_LATENCY_P99_MS ?? "5000");
-  const defaultErrorRate = parseFloat(process.env.ATLAS_SLA_ERROR_RATE_PCT ?? "5");
-  const defaultDowntime = parseFloat(process.env.ATLAS_SLA_DOWNTIME_MINUTES ?? "15");
+  const rawLatency = parseFloat(process.env.ATLAS_SLA_LATENCY_P99_MS ?? "");
+  const rawErrorRate = parseFloat(process.env.ATLAS_SLA_ERROR_RATE_PCT ?? "");
+  const defaultLatency = isNaN(rawLatency) ? 5000 : rawLatency;
+  const defaultErrorRate = isNaN(rawErrorRate) ? 5 : rawErrorRate;
   await internalQuery(
-    `INSERT INTO sla_thresholds (workspace_id, latency_p99_ms, error_rate_pct, downtime_minutes)
-     VALUES ('_default', $1, $2, $3)
+    `INSERT INTO sla_thresholds (workspace_id, latency_p99_ms, error_rate_pct)
+     VALUES ('_default', $1, $2)
      ON CONFLICT (workspace_id) DO NOTHING`,
-    [defaultLatency, defaultErrorRate, defaultDowntime],
+    [defaultLatency, defaultErrorRate],
   );
 
   _tableReady = true;
@@ -235,32 +237,32 @@ export async function getWorkspaceSLADetail(
     lastQueryAt: r?.last_query_at ?? null,
   };
 
-  // Time-series: bucket by hour for latency p99
-  const latencyRows = await internalQuery<{ bucket: string; value: number }>(
-    `SELECT
-       date_trunc('hour', recorded_at)::text AS bucket,
-       PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY latency_ms) AS value
-     FROM sla_metrics
-     WHERE workspace_id = $1 AND recorded_at > now() - make_interval(hours => $2)
-     GROUP BY bucket
-     ORDER BY bucket`,
-    [workspaceId, hoursBack],
-  );
-
-  // Time-series: error rate per hour
-  const errorRows = await internalQuery<{ bucket: string; value: number }>(
-    `SELECT
-       date_trunc('hour', recorded_at)::text AS bucket,
-       CASE WHEN COUNT(*) > 0
-            THEN (COUNT(*) FILTER (WHERE is_error)::float / COUNT(*)::float) * 100
-            ELSE 0
-       END AS value
-     FROM sla_metrics
-     WHERE workspace_id = $1 AND recorded_at > now() - make_interval(hours => $2)
-     GROUP BY bucket
-     ORDER BY bucket`,
-    [workspaceId, hoursBack],
-  );
+  // Time-series: latency p99 and error rate per hour (independent queries)
+  const [latencyRows, errorRows] = await Promise.all([
+    internalQuery<{ bucket: string; value: number }>(
+      `SELECT
+         date_trunc('hour', recorded_at)::text AS bucket,
+         PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY latency_ms) AS value
+       FROM sla_metrics
+       WHERE workspace_id = $1 AND recorded_at > now() - make_interval(hours => $2)
+       GROUP BY bucket
+       ORDER BY bucket`,
+      [workspaceId, hoursBack],
+    ),
+    internalQuery<{ bucket: string; value: number }>(
+      `SELECT
+         date_trunc('hour', recorded_at)::text AS bucket,
+         CASE WHEN COUNT(*) > 0
+              THEN (COUNT(*) FILTER (WHERE is_error)::float / COUNT(*)::float) * 100
+              ELSE 0
+         END AS value
+       FROM sla_metrics
+       WHERE workspace_id = $1 AND recorded_at > now() - make_interval(hours => $2)
+       GROUP BY bucket
+       ORDER BY bucket`,
+      [workspaceId, hoursBack],
+    ),
+  ]);
 
   const toPoints = (rows: Array<{ bucket: string; value: number }>): SLAMetricPoint[] =>
     rows.map((row) => ({ timestamp: row.bucket, value: Math.round(row.value * 100) / 100 }));

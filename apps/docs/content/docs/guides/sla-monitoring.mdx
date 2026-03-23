@@ -29,17 +29,16 @@ These are stored in the internal database and aggregated on-demand into:
 | **Uptime** | Percentage of successful queries (inverse of error rate) |
 | **Total queries** | Query volume per workspace |
 
-Metrics are computed over a configurable time window (default: 24 hours).
+Metrics are computed over a configurable time window (default: 24 hours). Pass `?hours=N` (1–720) to the API endpoints to adjust the window.
 
 ## Alerting
 
-SLA alerts fire when workspace metrics exceed configured thresholds. Three alert types are supported:
+SLA alerts fire when workspace metrics exceed configured thresholds. Two alert types are supported:
 
 | Alert Type | Default Threshold | Description |
 |-----------|------------------|-------------|
 | **P99 Latency** | 5000ms | P99 query latency exceeds threshold |
 | **Error Rate** | 5% | Error rate exceeds threshold |
-| **Downtime** | 15 minutes | Consecutive downtime exceeds threshold |
 
 ### Alert Lifecycle
 
@@ -80,7 +79,6 @@ Set `ATLAS_SLA_WEBHOOK_URL` to receive alert notifications via HTTP POST:
 | `ATLAS_ENTERPRISE_LICENSE_KEY` | — | Enterprise license key |
 | `ATLAS_SLA_LATENCY_P99_MS` | `5000` | Default P99 latency alert threshold (ms) |
 | `ATLAS_SLA_ERROR_RATE_PCT` | `5` | Default error rate alert threshold (%) |
-| `ATLAS_SLA_DOWNTIME_MINUTES` | `15` | Default downtime alert threshold (minutes) |
 | `ATLAS_SLA_WEBHOOK_URL` | — | Webhook URL for alert delivery |
 
 Thresholds can also be configured through the admin UI, which takes precedence over env vars.
@@ -110,9 +108,9 @@ All endpoints require `platform_admin` role and are mounted at `/api/v1/platform
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/` | All workspaces SLA summary |
-| `GET` | `/:workspaceId` | Per-workspace detail with time-series |
-| `GET` | `/alerts` | List alerts (optional `?status=firing`) |
+| `GET` | `/?hours=24` | All workspaces SLA summary (hours: 1–720) |
+| `GET` | `/:workspaceId?hours=24` | Per-workspace detail with time-series |
+| `GET` | `/alerts?status=&limit=100` | List alerts (status: firing, resolved, acknowledged) |
 | `GET` | `/thresholds` | Current alert thresholds |
 | `PUT` | `/thresholds` | Update alert thresholds |
 | `POST` | `/alerts/:alertId/acknowledge` | Acknowledge a firing alert |

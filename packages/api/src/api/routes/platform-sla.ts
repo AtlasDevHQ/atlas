@@ -4,9 +4,10 @@
  * Mounted at /api/v1/platform/sla. All routes require `platform_admin` role.
  *
  * Provides:
- * - GET    /              — all workspaces SLA summary
- * - GET    /:workspaceId  — per-workspace detail with latency/error timelines
- * - GET    /alerts        — active and recent alerts
+ * - GET    /              — all workspaces SLA summary (?hours=N)
+ * - GET    /:workspaceId  — per-workspace detail with timelines (?hours=N)
+ * - GET    /alerts        — active and recent alerts (?status=, ?limit=)
+ * - GET    /thresholds    — current alert thresholds
  * - PUT    /thresholds    — configure alert thresholds
  * - POST   /alerts/:alertId/acknowledge — acknowledge a firing alert
  * - POST   /evaluate      — trigger alert evaluation on demand
@@ -36,13 +37,13 @@ const SLAMetricPointSchema = z.object({
 const WorkspaceSLASummarySchema = z.object({
   workspaceId: z.string(),
   workspaceName: z.string(),
-  latencyP50Ms: z.number(),
-  latencyP95Ms: z.number(),
-  latencyP99Ms: z.number(),
-  errorRatePct: z.number(),
-  uptimePct: z.number(),
-  totalQueries: z.number(),
-  failedQueries: z.number(),
+  latencyP50Ms: z.number().min(0),
+  latencyP95Ms: z.number().min(0),
+  latencyP99Ms: z.number().min(0),
+  errorRatePct: z.number().min(0).max(100),
+  uptimePct: z.number().min(0).max(100),
+  totalQueries: z.number().min(0),
+  failedQueries: z.number().min(0),
   lastQueryAt: z.string().nullable(),
 });
 
@@ -70,7 +71,6 @@ const SLAAlertSchema = z.object({
 const SLAThresholdsSchema = z.object({
   latencyP99Ms: z.number().min(0).openapi({ description: "P99 latency threshold in ms", example: 5000 }),
   errorRatePct: z.number().min(0).max(100).openapi({ description: "Error rate threshold in percent", example: 5 }),
-  downtimeMinutes: z.number().min(0).openapi({ description: "Downtime threshold in minutes", example: 15 }),
 });
 
 // ---------------------------------------------------------------------------

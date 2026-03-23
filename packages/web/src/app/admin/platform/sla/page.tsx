@@ -126,6 +126,7 @@ export default function SLAMonitoringPage() {
 }
 
 function SLAPageContent() {
+  // ── All hooks must be called before any conditional returns ──
   const [tab, setTab] = useQueryState("tab", parseAsStringEnum(["overview", "alerts"]).withDefault("overview"));
 
   // Data
@@ -139,36 +140,9 @@ function SLAPageContent() {
     "/api/v1/platform/sla/thresholds",
   );
 
-  // Feature gate
-  if (slaError?.status === 404) return <FeatureGate status={404} feature="SLA Monitoring" />;
-  if (slaError?.status === 403) return <FeatureGate status={403} feature="SLA Monitoring" />;
-  if (slaError?.status === 401) return <FeatureGate status={401} feature="SLA Monitoring" />;
-
   // Sorting
   const [sortField, setSortField] = useState<SortField>("totalQueries");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
-
-  function toggleSort(field: SortField) {
-    if (sortField === field) {
-      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    } else {
-      setSortField(field);
-      setSortDir("desc");
-    }
-  }
-
-  const workspaces = slaData?.workspaces ?? [];
-  const sorted = workspaces.toSorted((a, b) => {
-    const dir = sortDir === "asc" ? 1 : -1;
-    switch (sortField) {
-      case "workspaceName": return dir * a.workspaceName.localeCompare(b.workspaceName);
-      case "latencyP99Ms": return dir * (a.latencyP99Ms - b.latencyP99Ms);
-      case "errorRatePct": return dir * (a.errorRatePct - b.errorRatePct);
-      case "uptimePct": return dir * (a.uptimePct - b.uptimePct);
-      case "totalQueries": return dir * (a.totalQueries - b.totalQueries);
-      default: return 0;
-    }
-  });
 
   // Workspace detail dialog
   const [detailId, setDetailId] = useState<string | null>(null);
@@ -192,8 +166,35 @@ function SLAPageContent() {
   // Evaluate mutation
   const { mutate: evalMutate, saving: evalSaving } = useAdminMutation({ invalidates: refetchAlerts });
 
+  // ── Feature gate (after all hooks) ──
+  if (slaError?.status === 404) return <FeatureGate status={404} feature="SLA Monitoring" />;
+  if (slaError?.status === 403) return <FeatureGate status={403} feature="SLA Monitoring" />;
+  if (slaError?.status === 401) return <FeatureGate status={401} feature="SLA Monitoring" />;
+
+  function toggleSort(field: SortField) {
+    if (sortField === field) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortField(field);
+      setSortDir("desc");
+    }
+  }
+
+  const workspaces = slaData?.workspaces ?? [];
+  const sorted = workspaces.toSorted((a, b) => {
+    const dir = sortDir === "asc" ? 1 : -1;
+    switch (sortField) {
+      case "workspaceName": return dir * a.workspaceName.localeCompare(b.workspaceName);
+      case "latencyP99Ms": return dir * (a.latencyP99Ms - b.latencyP99Ms);
+      case "errorRatePct": return dir * (a.errorRatePct - b.errorRatePct);
+      case "uptimePct": return dir * (a.uptimePct - b.uptimePct);
+      case "totalQueries": return dir * (a.totalQueries - b.totalQueries);
+      default: return 0;
+    }
+  });
+
   function openThresholdDialog() {
-    setEditThresholds(thresholdsData ?? { latencyP99Ms: 5000, errorRatePct: 5, downtimeMinutes: 15 });
+    setEditThresholds(thresholdsData ?? { latencyP99Ms: 5000, errorRatePct: 5 });
     clearThresholdError();
     setThresholdDialogOpen(true);
   }
@@ -527,16 +528,6 @@ function SLAPageContent() {
                   step={0.1}
                   value={editThresholds.errorRatePct}
                   onChange={(e) => setEditThresholds({ ...editThresholds, errorRatePct: parseFloat(e.target.value) || 0 })}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="downtime">Downtime Threshold (minutes)</Label>
-                <Input
-                  id="downtime"
-                  type="number"
-                  min={0}
-                  value={editThresholds.downtimeMinutes}
-                  onChange={(e) => setEditThresholds({ ...editThresholds, downtimeMinutes: parseFloat(e.target.value) || 0 })}
                 />
               </div>
             </div>

@@ -9,9 +9,6 @@
 // Metric types
 // ---------------------------------------------------------------------------
 
-export const SLA_METRIC_TYPES = ["latency_p50", "latency_p95", "latency_p99", "error_rate", "uptime"] as const;
-export type SLAMetricType = (typeof SLA_METRIC_TYPES)[number];
-
 /** Aggregated SLA metrics for a single workspace. */
 export interface WorkspaceSLASummary {
   workspaceId: string;
@@ -19,7 +16,9 @@ export interface WorkspaceSLASummary {
   latencyP50Ms: number;
   latencyP95Ms: number;
   latencyP99Ms: number;
+  /** Error rate as a percentage (0–100). */
   errorRatePct: number;
+  /** Uptime as a percentage (0–100), derived from successful query ratio. */
   uptimePct: number;
   totalQueries: number;
   failedQueries: number;
@@ -46,7 +45,7 @@ export interface WorkspaceSLADetail {
 export const SLA_ALERT_STATUSES = ["firing", "resolved", "acknowledged"] as const;
 export type SLAAlertStatus = (typeof SLA_ALERT_STATUSES)[number];
 
-export const SLA_ALERT_TYPES = ["latency_p99", "error_rate", "downtime"] as const;
+export const SLA_ALERT_TYPES = ["latency_p99", "error_rate"] as const;
 export type SLAAlertType = (typeof SLA_ALERT_TYPES)[number];
 
 export interface SLAAlert {
@@ -55,7 +54,9 @@ export interface SLAAlert {
   workspaceName: string;
   type: SLAAlertType;
   status: SLAAlertStatus;
+  /** Current metric value that triggered the alert (ms for latency, % for error rate). */
   currentValue: number;
+  /** Threshold that was exceeded (same unit as currentValue). */
   threshold: number;
   message: string;
   firedAt: string;
@@ -69,7 +70,8 @@ export interface SLAAlert {
 // ---------------------------------------------------------------------------
 
 export interface SLAThresholds {
+  /** P99 latency threshold in milliseconds. */
   latencyP99Ms: number;
+  /** Error rate threshold as a percentage (0–100). */
   errorRatePct: number;
-  downtimeMinutes: number;
 }

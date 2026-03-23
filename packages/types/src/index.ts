@@ -17,3 +17,4 @@ export * from "./profiler";
 export * from "./model-config";
 export * from "./approval";
 export * from "./platform";
+export * from "./branding";

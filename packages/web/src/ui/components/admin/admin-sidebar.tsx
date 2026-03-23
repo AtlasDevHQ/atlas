@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAtlasConfig } from "@/ui/context";
+import { useBranding } from "@/ui/hooks/use-branding";
 import {
   LayoutDashboard,
   Database,
@@ -29,6 +30,7 @@ import {
   Cpu,
   Globe,
   Fingerprint,
+  Paintbrush,
   ArrowLeft,
 } from "lucide-react";
 import {
@@ -69,6 +71,7 @@ const navItems = [
   { href: "/admin/model-config", label: "AI Provider", icon: Cpu },
   { href: "/admin/sso", label: "SSO", icon: ShieldCheck },
   { href: "/admin/scim", label: "SCIM", icon: RefreshCw },
+  { href: "/admin/branding", label: "Branding", icon: Paintbrush },
   { href: "/admin/settings", label: "Settings", icon: Settings },
   { href: "/admin/platform", label: "Platform Admin", icon: Globe, requiredRole: "platform_admin" as const },
 ];
@@ -78,6 +81,7 @@ export function AdminSidebar() {
   const { authClient } = useAtlasConfig();
   const session = authClient.useSession();
   const userRole = (session.data?.user as Record<string, unknown> | undefined)?.role as string | undefined;
+  const { branding } = useBranding();
 
   function isActive(item: (typeof navItems)[number]) {
     if (item.exact) return pathname === item.href;
@@ -88,6 +92,12 @@ export function AdminSidebar() {
     !item.requiredRole || item.requiredRole === userRole,
   );
 
+  const showCustomLogo = branding?.logoUrl;
+  const headerTitle = branding?.hideAtlasBranding
+    ? (branding.logoText || "Admin")
+    : (branding?.logoText || "Atlas");
+  const headerSubtitle = branding?.hideAtlasBranding ? "" : "Admin Console";
+
   return (
     <Sidebar collapsible="icon">
       <SidebarHeader>
@@ -95,14 +105,25 @@ export function AdminSidebar() {
           <SidebarMenuItem>
             <SidebarMenuButton size="lg" asChild>
               <Link href="/admin">
-                <div className="bg-sidebar-primary text-sidebar-primary-foreground flex aspect-square size-8 items-center justify-center rounded-lg">
-                  <svg viewBox="0 0 256 256" fill="none" className="size-4" aria-hidden="true">
-                    <path d="M128 24 L232 208 L24 208 Z" stroke="currentColor" strokeWidth="20" fill="none" strokeLinejoin="round" />
-                  </svg>
-                </div>
+                {showCustomLogo ? (
+                  <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-muted">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={showCustomLogo as string}
+                      alt=""
+                      className="size-5 object-contain"
+                    />
+                  </div>
+                ) : (
+                  <div className="bg-sidebar-primary text-sidebar-primary-foreground flex aspect-square size-8 items-center justify-center rounded-lg">
+                    <svg viewBox="0 0 256 256" fill="none" className="size-4" aria-hidden="true">
+                      <path d="M128 24 L232 208 L24 208 Z" stroke="currentColor" strokeWidth="20" fill="none" strokeLinejoin="round" />
+                    </svg>
+                  </div>
+                )}
                 <div className="grid flex-1 text-left text-sm leading-tight">
-                  <span className="truncate font-semibold">Atlas</span>
-                  <span className="truncate text-xs">Admin Console</span>
+                  <span className="truncate font-semibold">{headerTitle}</span>
+                  {headerSubtitle && <span className="truncate text-xs">{headerSubtitle}</span>}
                 </div>
               </Link>
             </SidebarMenuButton>

@@ -759,6 +759,22 @@ export async function migrateInternalDB(): Promise<void> {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_approval_queue_expires ON approval_queue(expires_at) WHERE status = 'pending';`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_approval_queue_requester ON approval_queue(requester_id);`);
 
+  // Enterprise workspace branding / white-labeling (0.9.0 — white-labeling #666)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS workspace_branding (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      org_id TEXT NOT NULL UNIQUE,
+      logo_url TEXT,
+      logo_text TEXT,
+      primary_color TEXT,
+      favicon_url TEXT,
+      hide_atlas_branding BOOLEAN NOT NULL DEFAULT false,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_workspace_branding_org ON workspace_branding(org_id);`);
+
   log.info("Internal DB migration complete");
 }
 

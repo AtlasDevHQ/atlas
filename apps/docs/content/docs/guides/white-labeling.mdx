@@ -1,0 +1,107 @@
+---
+title: White-Labeling
+description: Replace Atlas branding with your own logo, colors, and favicon.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+White-labeling lets enterprise customers remove Atlas branding and replace it with their own identity — custom logo, colors, favicon, and text — in the admin console.
+
+<Callout title="Prerequisites">
+- Atlas deployed with an [internal database](/docs/deployment/internal-database) (`DATABASE_URL`)
+- Enterprise license enabled (`ATLAS_ENTERPRISE_ENABLED=true` + `ATLAS_ENTERPRISE_LICENSE_KEY`)
+- Admin role (`admin`, `owner`, or `platform_admin`)
+</Callout>
+
+---
+
+## What gets branded
+
+When white-labeling is active in the admin console:
+
+| Element | Default | White-labeled |
+|---------|---------|---------------|
+| Sidebar logo | Atlas triangle SVG | Your logo URL |
+| Sidebar title | "Atlas" | Your logo text |
+| Sidebar subtitle | "Admin Console" | Hidden (or custom) |
+| Favicon | Atlas default | Your favicon URL |
+| Page title | "Atlas" | Your logo text |
+
+<Callout type="info">
+Chat UI and embedded widget branding integration is planned. The public branding endpoint (`GET /api/v1/branding`) is already available for custom integrations.
+</Callout>
+
+## Configuring branding
+
+### Admin UI
+
+1. Navigate to **Admin Console → Branding**
+2. Fill in the fields:
+   - **Logo URL** — URL to your logo image (PNG, SVG, or JPEG)
+   - **Logo Text** — Text next to the logo (e.g. your company name)
+   - **Primary Color** — 6-digit hex color (e.g. `#FF5500`)
+   - **Favicon URL** — URL to your custom favicon
+   - **Hide Atlas Branding** — Toggle to remove "Atlas" text
+3. Preview changes in the live preview section
+4. Click **Save**
+
+<Callout type="info">
+The PUT endpoint performs a full replacement. Any field not included in the request is reset to its default (null or false). To preserve existing values, send all fields.
+</Callout>
+
+### API
+
+```bash
+# Get current branding
+curl -s "$ATLAS_API_URL/api/v1/admin/branding" \
+  -H "Cookie: $SESSION_COOKIE" | jq .
+
+# Set branding
+curl -s -X PUT "$ATLAS_API_URL/api/v1/admin/branding" \
+  -H "Cookie: $SESSION_COOKIE" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "logoUrl": "https://example.com/logo.png",
+    "logoText": "Acme Analytics",
+    "primaryColor": "#FF5500",
+    "faviconUrl": "https://example.com/favicon.ico",
+    "hideAtlasBranding": true
+  }' | jq .
+
+# Reset to Atlas defaults
+curl -s -X DELETE "$ATLAS_API_URL/api/v1/admin/branding" \
+  -H "Cookie: $SESSION_COOKIE" | jq .
+```
+
+### Public endpoint
+
+The frontend fetches branding from a public endpoint that does not require admin auth:
+
+```bash
+curl -s "$ATLAS_API_URL/api/v1/branding" \
+  -H "Cookie: $SESSION_COOKIE" | jq .
+```
+
+This endpoint resolves the workspace from the session and returns only public-safe branding fields (no internal IDs or timestamps).
+
+## Configuration reference
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `logoUrl` | `string \| null` | URL to custom logo image |
+| `logoText` | `string \| null` | Text displayed next to or instead of logo |
+| `primaryColor` | `string \| null` | 6-digit hex color (e.g. `#FF5500`) |
+| `faviconUrl` | `string \| null` | URL to custom favicon |
+| `hideAtlasBranding` | `boolean` | Remove "Atlas" text from the admin sidebar |
+
+<Callout type="info">
+Branding is stored per-organization in the internal database. Each workspace can have its own branding configuration. Setting a field to `null` clears it and reverts to the Atlas default for that element.
+</Callout>
+
+## Resetting branding
+
+To revert to Atlas defaults, either:
+- Click **Reset to defaults** in the admin branding page
+- Send `DELETE /api/v1/admin/branding`
+
+This removes all custom branding for the workspace.

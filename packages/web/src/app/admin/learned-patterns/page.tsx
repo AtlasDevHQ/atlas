@@ -55,6 +55,7 @@ import {
   friendlyError,
   type FetchError,
 } from "@/ui/hooks/use-admin-fetch";
+import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
   Brain,
@@ -116,6 +117,9 @@ export default function LearnedPatternsPage() {
   const [sourceEntities, setSourceEntities] = useState<string[]>([]);
 
   const inProgress = useInProgressSet();
+  const { mutate: statusMutate } = useAdminMutation({ method: "PATCH" });
+  const { mutate: deleteMutate } = useAdminMutation({ method: "DELETE" });
+  const { mutate: bulkMutate } = useAdminMutation({ path: "/api/v1/admin/learned-patterns/bulk", method: "POST" });
 
   // ── Fetch patterns ──────────────────────────────────────────────
 
@@ -241,59 +245,42 @@ export default function LearnedPatternsPage() {
       prev?.id === id ? { ...prev, status, updatedAt: new Date().toISOString() } : prev,
     );
 
-    try {
-      const res = await fetch(`${apiUrl}/api/v1/admin/learned-patterns/${id}`, {
-        method: "PATCH",
-        credentials,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status }),
-      });
-      if (!res.ok) {
-        let msg = `HTTP ${res.status}`;
-        try { msg = (await res.json()).message ?? msg; } catch { /* intentionally ignored: response may not be JSON */ }
-        setError({ message: msg, status: res.status });
-        // Revert optimistic update
-        setFetchKey((k) => k + 1);
-        return;
-      }
-      // Update with server response
-      const updated = await res.json();
-      setPatterns((prev) => prev.map((p) => (p.id === id ? updated : p)));
-      setDetailPattern((prev) => (prev?.id === id ? updated : prev));
-      // Refresh stats
-      setFetchKey((k) => k + 1);
-    } catch (err) {
-      setError({ message: err instanceof Error ? err.message : "Failed to update pattern" });
-      setFetchKey((k) => k + 1);
-    } finally {
-      inProgress.stop(id);
+    const result = await statusMutate({
+      path: `/api/v1/admin/learned-patterns/${id}`,
+      body: { status },
+      onSuccess: (updated) => {
+        // Update with server response
+        const data = updated as LearnedPattern;
+        setPatterns((prev) => prev.map((p) => (p.id === id ? data : p)));
+        setDetailPattern((prev) => (prev?.id === id ? data : prev));
+      },
+    });
+
+    if (result === undefined) {
+      // Revert optimistic update
+      setError({ message: "Failed to update pattern" });
     }
+    // Refresh stats
+    setFetchKey((k) => k + 1);
+    inProgress.stop(id);
   }
 
   async function deletePattern(id: string) {
     setError(null);
     inProgress.start(id);
-    try {
-      const res = await fetch(`${apiUrl}/api/v1/admin/learned-patterns/${id}`, {
-        method: "DELETE",
-        credentials,
-      });
-      if (!res.ok) {
-        let msg = `HTTP ${res.status}`;
-        try { msg = (await res.json()).message ?? msg; } catch { /* intentionally ignored: response may not be JSON */ }
-        setError({ message: msg, status: res.status });
-        setDeleteTarget(null);
-        return;
-      }
-      setDeleteTarget(null);
+
+    const result = await deleteMutate({
+      path: `/api/v1/admin/learned-patterns/${id}`,
+    });
+
+    if (result !== undefined) {
       if (detailPattern?.id === id) setDetailPattern(null);
       setFetchKey((k) => k + 1);
-    } catch (err) {
-      setError({ message: err instanceof Error ? err.message : "Failed to delete pattern" });
-      setDeleteTarget(null);
-    } finally {
-      inProgress.stop(id);
+    } else {
+      setError({ message: "Failed to delete pattern" });
     }
+    setDeleteTarget(null);
+    inProgress.stop(id);
   }
 
   async function bulkUpdateStatus(status: LearnedPatternStatus) {
@@ -307,24 +294,14 @@ export default function LearnedPatternsPage() {
       prev.map((p) => (ids.has(p.id) ? { ...p, status, updatedAt: new Date().toISOString() } : p)),
     );
 
-    try {
-      const res = await fetch(`${apiUrl}/api/v1/admin/learned-patterns/bulk`, {
-        method: "POST",
-        credentials,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids: selected, status }),
-      });
-      if (!res.ok) {
-        let msg = `HTTP ${res.status}`;
-        try { msg = (await res.json()).message ?? msg; } catch { /* intentionally ignored: response may not be JSON */ }
-        setError({ message: msg, status: res.status });
-      }
-    } catch (err) {
-      setError({ message: err instanceof Error ? err.message : "Failed to bulk update" });
-    } finally {
-      table.resetRowSelection();
-      setFetchKey((k) => k + 1);
+    const result = await bulkMutate({
+      body: { ids: selected, status },
+    });
+    if (result === undefined) {
+      setError({ message: "Failed to bulk update" });
     }
+    table.resetRowSelection();
+    setFetchKey((k) => k + 1);
   }
 
   // ── Column definitions with actions ─────────────────────────────

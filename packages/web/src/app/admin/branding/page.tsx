@@ -2,8 +2,8 @@
 
 import { useState } from "react";
 import { Paintbrush, Loader2, RotateCcw, Eye } from "lucide-react";
-import { useAtlasConfig } from "@/ui/context";
 import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,21 +21,20 @@ import type { WorkspaceBranding } from "@/ui/lib/types";
 const HEX_RE = /^#[0-9a-fA-F]{6}$/;
 
 export default function BrandingPage() {
-  const { apiUrl, isCrossOrigin } = useAtlasConfig();
-  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
-
   const { data, loading, error, refetch } = useAdminFetch<WorkspaceBranding | null>(
     "/api/v1/admin/branding",
     { transform: (json) => (json as { branding: WorkspaceBranding | null }).branding },
   );
+  const { mutate, saving, error: saveError } = useAdminMutation({
+    path: "/api/v1/admin/branding",
+    invalidates: refetch,
+  });
 
   const [logoUrl, setLogoUrl] = useState("");
   const [logoText, setLogoText] = useState("");
   const [primaryColor, setPrimaryColor] = useState("");
   const [faviconUrl, setFaviconUrl] = useState("");
   const [hideAtlasBranding, setHideAtlasBranding] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
   const [synced, setSynced] = useState(false);
 
   // Sync form state when data loads
@@ -59,59 +58,26 @@ export default function BrandingPage() {
   const colorValid = !primaryColor || HEX_RE.test(primaryColor);
 
   async function handleSave() {
-    setSaving(true);
-    setSaveError(null);
-    try {
-      const res = await fetch(`${apiUrl}/api/v1/admin/branding`, {
-        method: "PUT",
-        credentials,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          logoUrl: logoUrl || null,
-          logoText: logoText || null,
-          primaryColor: primaryColor || null,
-          faviconUrl: faviconUrl || null,
-          hideAtlasBranding,
-        }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => null) as Record<string, unknown> | null;
-        throw new Error(
-          (typeof body?.message === "string" ? body.message : null) ?? `HTTP ${res.status}`,
-        );
-      }
-      refetch();
-    } catch (err) {
-      setSaveError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSaving(false);
-    }
+    await mutate({
+      method: "PUT",
+      body: {
+        logoUrl: logoUrl || null,
+        logoText: logoText || null,
+        primaryColor: primaryColor || null,
+        faviconUrl: faviconUrl || null,
+        hideAtlasBranding,
+      },
+    });
   }
 
   async function handleReset() {
-    setSaving(true);
-    setSaveError(null);
-    try {
-      const res = await fetch(`${apiUrl}/api/v1/admin/branding`, {
-        method: "DELETE",
-        credentials,
-      });
-      if (!res.ok && res.status !== 404) {
-        const body = await res.json().catch(() => null) as Record<string, unknown> | null;
-        throw new Error(
-          (typeof body?.message === "string" ? body.message : null) ?? `HTTP ${res.status}`,
-        );
-      }
+    const result = await mutate({ method: "DELETE" });
+    if (result !== undefined) {
       setLogoUrl("");
       setLogoText("");
       setPrimaryColor("");
       setFaviconUrl("");
       setHideAtlasBranding(false);
-      refetch();
-    } catch (err) {
-      setSaveError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSaving(false);
     }
   }
 

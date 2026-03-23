@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import dynamic from "next/dynamic";
-import { useAtlasConfig } from "@/ui/context";
 import { parseAsString, parseAsStringEnum, useQueryState } from "nuqs";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -36,6 +35,7 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { StatCard } from "@/ui/components/admin/stat-card";
 import { useAdminFetch, friendlyError, useInProgressSet } from "@/ui/hooks/use-admin-fetch";
+import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
   Building2,
@@ -130,9 +130,6 @@ export default function PlatformAdminPage() {
 }
 
 function PlatformPageContent() {
-  const { apiUrl, isCrossOrigin } = useAtlasConfig();
-  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
-
   // URL state
   const [search, setSearch] = useQueryState("q", parseAsString.withDefault(""));
   const [statusFilter, setStatusFilter] = useQueryState("status", parseAsStringEnum(["all", ...WORKSPACE_STATUSES]).withDefault("all"));
@@ -164,7 +161,13 @@ function PlatformPageContent() {
   // Confirmation dialog
   const [confirmAction, setConfirmAction] = useState<{ type: "suspend" | "unsuspend" | "delete"; workspace: PlatformWorkspace } | null>(null);
   const inProgress = useInProgressSet();
-  const [actionError, setActionError] = useState<string | null>(null);
+  const { mutate: actionMutate, error: actionError, clearError: clearActionError } = useAdminMutation({
+    invalidates: refetchWorkspaces,
+  });
+  const { mutate: planMutate, error: planError, clearError: clearPlanError } = useAdminMutation({
+    method: "PATCH",
+    invalidates: refetchWorkspaces,
+  });
 
   // Plan change dialog
   const [planChange, setPlanChange] = useState<{ workspace: PlatformWorkspace; newTier: PlanTier } | null>(null);
@@ -204,56 +207,33 @@ function PlatformPageContent() {
   // ── Actions ──────────────────────────────────────────────────────
 
   async function executeAction(type: "suspend" | "unsuspend" | "delete", workspaceId: string) {
-    setActionError(null);
+    clearActionError();
     inProgress.start(workspaceId);
-    try {
-      const method = type === "delete" ? "DELETE" : "POST";
-      const path = type === "delete"
-        ? `/api/v1/platform/workspaces/${workspaceId}`
-        : `/api/v1/platform/workspaces/${workspaceId}/${type}`;
-      const res = await fetch(`${apiUrl}${path}`, { method, credentials });
-      if (!res.ok) {
-        const body: unknown = await res.json().catch(() => ({}));
-        const msg = typeof body === "object" && body !== null && "message" in body
-          ? String((body as Record<string, unknown>).message)
-          : `HTTP ${res.status}`;
-        setActionError(msg);
-        return;
-      }
+
+    const method = type === "delete" ? "DELETE" : "POST";
+    const path = type === "delete"
+      ? `/api/v1/platform/workspaces/${workspaceId}`
+      : `/api/v1/platform/workspaces/${workspaceId}/${type}`;
+
+    const result = await actionMutate({ path, method });
+    if (result !== undefined) {
       setConfirmAction(null);
-      refetchWorkspaces();
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err));
-    } finally {
-      inProgress.stop(workspaceId);
     }
+    inProgress.stop(workspaceId);
   }
 
   async function executePlanChange(workspaceId: string, planTier: PlanTier) {
-    setActionError(null);
+    clearPlanError();
     inProgress.start(workspaceId);
-    try {
-      const res = await fetch(`${apiUrl}/api/v1/platform/workspaces/${workspaceId}/plan`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ planTier }),
-        credentials,
-      });
-      if (!res.ok) {
-        const body: unknown = await res.json().catch(() => ({}));
-        const msg = typeof body === "object" && body !== null && "message" in body
-          ? String((body as Record<string, unknown>).message)
-          : `HTTP ${res.status}`;
-        setActionError(msg);
-        return;
-      }
+
+    const result = await planMutate({
+      path: `/api/v1/platform/workspaces/${workspaceId}/plan`,
+      body: { planTier },
+    });
+    if (result !== undefined) {
       setPlanChange(null);
-      refetchWorkspaces();
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err));
-    } finally {
-      inProgress.stop(workspaceId);
     }
+    inProgress.stop(workspaceId);
   }
 
   // ── Chart data ───────────────────────────────────────────────────
@@ -644,7 +624,7 @@ function PlatformPageContent() {
       </Dialog>
 
       {/* ── Confirm Action Dialog ────────────────────────────────── */}
-      <Dialog open={!!confirmAction} onOpenChange={(open) => { if (!open) { setConfirmAction(null); setActionError(null); } }}>
+      <Dialog open={!!confirmAction} onOpenChange={(open) => { if (!open) { setConfirmAction(null); clearActionError(); } }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
@@ -660,7 +640,7 @@ function PlatformPageContent() {
           </DialogHeader>
           {actionError && <ErrorBanner message={actionError} />}
           <DialogFooter>
-            <Button variant="outline" onClick={() => { setConfirmAction(null); setActionError(null); }}>Cancel</Button>
+            <Button variant="outline" onClick={() => { setConfirmAction(null); clearActionError(); }}>Cancel</Button>
             <Button
               variant={confirmAction?.type === "delete" ? "destructive" : "default"}
               onClick={() => confirmAction && executeAction(confirmAction.type, confirmAction.workspace.id)}
@@ -681,7 +661,7 @@ function PlatformPageContent() {
       </Dialog>
 
       {/* ── Change Plan Dialog ───────────────────────────────────── */}
-      <Dialog open={!!planChange} onOpenChange={(open) => { if (!open) { setPlanChange(null); setActionError(null); } }}>
+      <Dialog open={!!planChange} onOpenChange={(open) => { if (!open) { setPlanChange(null); clearPlanError(); } }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Change Plan Tier</DialogTitle>
@@ -689,7 +669,7 @@ function PlatformPageContent() {
               Update the plan tier for &quot;{planChange?.workspace.name}&quot;.
             </DialogDescription>
           </DialogHeader>
-          {actionError && <ErrorBanner message={actionError} />}
+          {planError && <ErrorBanner message={planError} />}
           <Select
             value={planChange?.newTier ?? "free"}
             onValueChange={(v) => planChange && setPlanChange({ ...planChange, newTier: v as PlanTier })}
@@ -705,7 +685,7 @@ function PlatformPageContent() {
             </SelectContent>
           </Select>
           <DialogFooter>
-            <Button variant="outline" onClick={() => { setPlanChange(null); setActionError(null); }}>Cancel</Button>
+            <Button variant="outline" onClick={() => { setPlanChange(null); clearPlanError(); }}>Cancel</Button>
             <Button
               onClick={() => planChange && executePlanChange(planChange.workspace.id, planChange.newTier)}
               disabled={planChange ? inProgress.has(planChange.workspace.id) : false}

@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { useAtlasConfig } from "@/ui/context";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -21,6 +20,7 @@ import { LoadingState } from "@/ui/components/admin/loading-state";
 import { EmptyState } from "@/ui/components/admin/empty-state";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { HardDrive, Trash2, Activity, Database, Clock, Target } from "lucide-react";
 
@@ -83,16 +83,19 @@ function StatItem({
 // ── Main Page ─────────────────────────────────────────────────────
 
 export default function CachePage() {
-  const { apiUrl, isCrossOrigin } = useAtlasConfig();
-  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
-  const [flushing, setFlushing] = useState(false);
   const [flushMessage, setFlushMessage] = useState<string | null>(null);
-  const [flushError, setFlushError] = useState<string | null>(null);
 
   const { data, loading, error, refetch } = useAdminFetch<CacheStatsResponse>(
     "/api/v1/admin/cache/stats",
     { transform: (json) => json as CacheStatsResponse },
   );
+
+  const { mutate: flush, saving: flushing, error: flushError, clearError: clearFlushError } =
+    useAdminMutation<{ flushed?: number }>({
+      path: "/api/v1/admin/cache/flush",
+      method: "POST",
+      invalidates: refetch,
+    });
 
   // Gate: 401/403/404
   if (!loading && error?.status && [401, 403, 404].includes(error.status)) {
@@ -109,26 +112,11 @@ export default function CachePage() {
 
   async function handleFlush() {
     if (flushing) return;
-    setFlushing(true);
-    setFlushError(null);
     setFlushMessage(null);
-    try {
-      const res = await fetch(`${apiUrl}/api/v1/admin/cache/flush`, {
-        method: "POST",
-        credentials,
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        throw new Error(body?.message ?? `HTTP ${res.status}`);
-      }
-      const body = await res.json().catch(() => null);
-      const count = body?.flushed ?? 0;
+    const result = await flush();
+    if (result) {
+      const count = result.flushed ?? 0;
       setFlushMessage(`Flushed ${count} ${count === 1 ? "entry" : "entries"}`);
-      refetch();
-    } catch (err) {
-      setFlushError(err instanceof Error ? err.message : "Failed to flush cache");
-    } finally {
-      setFlushing(false);
     }
   }
 
@@ -148,7 +136,7 @@ export default function CachePage() {
         <div className="flex-1 overflow-auto p-6">
           {error && <ErrorBanner message={friendlyError(error)} onRetry={refetch} />}
           {flushError && (
-            <ErrorBanner message={flushError} onRetry={() => setFlushError(null)} />
+            <ErrorBanner message={flushError} onRetry={clearFlushError} />
           )}
           {flushMessage && (
             <div className="mb-6 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-300">

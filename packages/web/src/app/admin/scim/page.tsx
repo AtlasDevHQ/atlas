@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { useAtlasConfig } from "@/ui/context";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -29,6 +28,7 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { RefreshCw, Trash2, Plus, Cable, Users, ArrowRightLeft, Loader2 } from "lucide-react";
 
@@ -68,12 +68,8 @@ interface GroupMappingsResponse {
 // ── Main Page ─────────────────────────────────────────────────────
 
 export default function SCIMPage() {
-  const { apiUrl, isCrossOrigin } = useAtlasConfig();
-  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
-  const [mutationError, setMutationError] = useState<string | null>(null);
   const [addMappingOpen, setAddMappingOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{ type: "connection" | "mapping"; id: string; label: string } | null>(null);
-  const [deleting, setDeleting] = useState(false);
 
   const { data: statusData, loading: statusLoading, error: statusError, refetch: refetchStatus } =
     useAdminFetch<SCIMStatusResponse>("/api/v1/admin/scim", {
@@ -83,6 +79,12 @@ export default function SCIMPage() {
   const { data: mappingsData, loading: mappingsLoading, error: mappingsError, refetch: refetchMappings } =
     useAdminFetch<GroupMappingsResponse>("/api/v1/admin/scim/group-mappings", {
       transform: (json) => json as GroupMappingsResponse,
+    });
+
+  const { mutate: deleteMutate, saving: deleting, error: mutationError, clearError: clearMutationError } =
+    useAdminMutation({
+      method: "DELETE",
+      invalidates: [refetchStatus, refetchMappings],
     });
 
   const loading = statusLoading || mappingsLoading;
@@ -106,33 +108,14 @@ export default function SCIMPage() {
 
   async function handleDelete() {
     if (!deleteTarget) return;
-    setDeleting(true);
-    setMutationError(null);
-    try {
-      const endpoint = deleteTarget.type === "connection"
-        ? `${apiUrl}/api/v1/admin/scim/connections/${deleteTarget.id}`
-        : `${apiUrl}/api/v1/admin/scim/group-mappings/${deleteTarget.id}`;
+    const path = deleteTarget.type === "connection"
+      ? `/api/v1/admin/scim/connections/${deleteTarget.id}`
+      : `/api/v1/admin/scim/group-mappings/${deleteTarget.id}`;
 
-      const res = await fetch(endpoint, {
-        method: "DELETE",
-        credentials,
-      });
-      if (!res.ok) {
-        const data: unknown = await res.json().catch(() => null);
-        const msg = typeof data === "object" && data !== null && "message" in data
-          ? String((data as Record<string, unknown>).message)
-          : `HTTP ${res.status}`;
-        throw new Error(msg);
-      }
-      refetchStatus();
-      refetchMappings();
-      setDeleteTarget(null);
-    } catch (err) {
-      setMutationError(err instanceof Error ? err.message : String(err));
-      setDeleteTarget(null);
-    } finally {
-      setDeleting(false);
-    }
+    const result = await deleteMutate({ path });
+    setDeleteTarget(null);
+    // error is captured by the hook; result is undefined on failure
+    void result;
   }
 
   return (
@@ -148,7 +131,7 @@ export default function SCIMPage() {
         <div className="flex-1 overflow-auto p-6">
           {error && <ErrorBanner message={friendlyError(error)} onRetry={() => { refetchStatus(); refetchMappings(); }} />}
           {mutationError && (
-            <ErrorBanner message={mutationError} onRetry={() => setMutationError(null)} />
+            <ErrorBanner message={mutationError} onRetry={clearMutationError} />
           )}
 
           {loading ? (
@@ -330,8 +313,6 @@ export default function SCIMPage() {
         open={addMappingOpen}
         onOpenChange={setAddMappingOpen}
         onAdded={() => { refetchMappings(); }}
-        apiUrl={apiUrl}
-        credentials={credentials}
       />
 
       {/* Delete Confirmation Dialog */}
@@ -370,64 +351,51 @@ function AddMappingDialog({
   open,
   onOpenChange,
   onAdded,
-  apiUrl,
-  credentials,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onAdded: () => void;
-  apiUrl: string;
-  credentials: RequestCredentials;
 }) {
   const [scimGroupName, setScimGroupName] = useState("");
   const [roleName, setRoleName] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [validationError, setValidationError] = useState<string | null>(null);
+
+  const { mutate, saving, error: mutateError, reset } = useAdminMutation({
+    path: "/api/v1/admin/scim/group-mappings",
+    method: "POST",
+    invalidates: onAdded,
+  });
+
+  const error = validationError ?? mutateError;
 
   function handleOpen(v: boolean) {
     if (!v) {
       setScimGroupName("");
       setRoleName("");
-      setError(null);
+      setValidationError(null);
+      reset();
     }
     onOpenChange(v);
   }
 
   async function handleSave() {
     if (!scimGroupName.trim()) {
-      setError("SCIM group name is required.");
+      setValidationError("SCIM group name is required.");
       return;
     }
     if (!roleName.trim()) {
-      setError("Role name is required.");
+      setValidationError("Role name is required.");
       return;
     }
-    setSaving(true);
-    setError(null);
-    try {
-      const res = await fetch(`${apiUrl}/api/v1/admin/scim/group-mappings`, {
-        method: "POST",
-        credentials,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          scimGroupName: scimGroupName.trim(),
-          roleName: roleName.trim(),
-        }),
-      });
-      if (!res.ok) {
-        const data: unknown = await res.json().catch(() => null);
-        throw new Error(
-          (data as Record<string, unknown> | null)?.message
-            ? String((data as Record<string, unknown>).message)
-            : `HTTP ${res.status}`,
-        );
-      }
-      onAdded();
+    setValidationError(null);
+    const result = await mutate({
+      body: {
+        scimGroupName: scimGroupName.trim(),
+        roleName: roleName.trim(),
+      },
+    });
+    if (result !== undefined) {
       handleOpen(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create mapping");
-    } finally {
-      setSaving(false);
     }
   }
 

@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { useAtlasConfig } from "@/ui/context";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -37,6 +36,7 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { KeyRound, Plus, Pencil, Trash2, Loader2, Lock, Users } from "lucide-react";
 
@@ -99,24 +99,24 @@ function RoleDialog({
   onOpenChange,
   onSaved,
   editingRole,
-  apiUrl,
-  credentials,
   allPermissions,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSaved: () => void;
   editingRole: CustomRole | null;
-  apiUrl: string;
-  credentials: RequestCredentials;
   allPermissions: string[];
 }) {
   const isEditing = !!editingRole;
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [selectedPerms, setSelectedPerms] = useState<Set<string>>(new Set());
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const { mutate, saving, error, reset } = useAdminMutation({
+    invalidates: onSaved,
+  });
+
+  const displayError = validationError ?? error;
 
   function handleOpen(next: boolean) {
     if (next) {
@@ -129,7 +129,8 @@ function RoleDialog({
         setDescription("");
         setSelectedPerms(new Set());
       }
-      setError(null);
+      setValidationError(null);
+      reset();
     }
     onOpenChange(next);
   }
@@ -147,48 +148,31 @@ function RoleDialog({
   }
 
   async function handleSave() {
+    setValidationError(null);
     if (!isEditing && !name.trim()) {
-      setError("Role name is required.");
+      setValidationError("Role name is required.");
       return;
     }
     if (selectedPerms.size === 0) {
-      setError("At least one permission is required.");
+      setValidationError("At least one permission is required.");
       return;
     }
 
-    setSaving(true);
-    setError(null);
-    try {
-      const url = isEditing
-        ? `${apiUrl}/api/v1/admin/roles/${encodeURIComponent(editingRole.id)}`
-        : `${apiUrl}/api/v1/admin/roles`;
+    const path = isEditing
+      ? `/api/v1/admin/roles/${encodeURIComponent(editingRole.id)}`
+      : `/api/v1/admin/roles`;
 
-      const body = isEditing
-        ? { description, permissions: [...selectedPerms] }
-        : { name: name.trim(), description, permissions: [...selectedPerms] };
+    const body = isEditing
+      ? { description, permissions: [...selectedPerms] }
+      : { name: name.trim(), description, permissions: [...selectedPerms] };
 
-      const res = await fetch(url, {
-        method: isEditing ? "PUT" : "POST",
-        credentials,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        const data: unknown = await res.json().catch((parseErr: unknown) => {
-          console.debug("[Atlas Admin] Failed to parse error response:", parseErr);
-          return null;
-        });
-        const msg = typeof data === "object" && data !== null && "message" in data
-          ? String((data as Record<string, unknown>).message)
-          : `HTTP ${res.status}`;
-        throw new Error(msg);
-      }
-      onSaved();
+    const result = await mutate({
+      path,
+      method: isEditing ? "PUT" : "POST",
+      body,
+    });
+    if (result !== undefined) {
       handleOpen(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save role");
-    } finally {
-      setSaving(false);
     }
   }
 
@@ -255,9 +239,9 @@ function RoleDialog({
             ))}
           </div>
 
-          {error && (
+          {displayError && (
             <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              {error}
+              {displayError}
             </div>
           )}
         </div>
@@ -283,50 +267,29 @@ function DeleteRoleDialog({
   open,
   onOpenChange,
   onDeleted,
-  apiUrl,
-  credentials,
 }: {
   role: CustomRole | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onDeleted: () => void;
-  apiUrl: string;
-  credentials: RequestCredentials;
 }) {
-  const [deleting, setDeleting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { mutate, saving: deleting, error, reset } = useAdminMutation({
+    method: "DELETE",
+    invalidates: onDeleted,
+  });
 
   function handleOpen(next: boolean) {
-    if (!next) setError(null);
+    if (!next) reset();
     onOpenChange(next);
   }
 
   async function handleDelete() {
     if (!role) return;
-    setDeleting(true);
-    setError(null);
-    try {
-      const res = await fetch(
-        `${apiUrl}/api/v1/admin/roles/${encodeURIComponent(role.id)}`,
-        { method: "DELETE", credentials },
-      );
-      if (!res.ok) {
-        const data = await res.json().catch((parseErr: unknown) => {
-          console.debug("[Atlas Admin] Failed to parse error response:", parseErr);
-          return null;
-        });
-        throw new Error(
-          (data as Record<string, unknown> | null)?.message
-            ? String((data as Record<string, unknown>).message)
-            : `HTTP ${res.status}`,
-        );
-      }
-      onDeleted();
+    const result = await mutate({
+      path: `/api/v1/admin/roles/${encodeURIComponent(role.id)}`,
+    });
+    if (result !== undefined) {
       handleOpen(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to delete role");
-    } finally {
-      setDeleting(false);
     }
   }
 
@@ -366,8 +329,6 @@ function DeleteRoleDialog({
 // ── Main Page ─────────────────────────────────────────────────────
 
 export default function RolesPage() {
-  const { apiUrl, isCrossOrigin } = useAtlasConfig();
-  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [editingRole, setEditingRole] = useState<CustomRole | null>(null);
   const [deleteRole, setDeleteRole] = useState<CustomRole | null>(null);
@@ -570,8 +531,6 @@ export default function RolesPage() {
         }}
         onSaved={refetch}
         editingRole={editingRole}
-        apiUrl={apiUrl}
-        credentials={credentials}
         allPermissions={allPermissions}
       />
 
@@ -580,8 +539,6 @@ export default function RolesPage() {
         open={!!deleteRole}
         onOpenChange={(open) => !open && setDeleteRole(null)}
         onDeleted={refetch}
-        apiUrl={apiUrl}
-        credentials={credentials}
       />
     </div>
   );

@@ -35,6 +35,7 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
+import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
   ShieldCheck,
@@ -171,9 +172,6 @@ function CompliancePageContent() {
 // ── Classifications Tab ───────────────────────────────────────────
 
 function ClassificationsTab() {
-  const { apiUrl, isCrossOrigin } = useAtlasConfig();
-  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
-
   const { data, loading, error, refetch } = useAdminFetch<ClassificationsResponse>(
     "/api/v1/admin/compliance/classifications",
     { transform: (json) => json as ClassificationsResponse },
@@ -182,8 +180,11 @@ function ClassificationsTab() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editCategory, setEditCategory] = useState<string>("");
   const [editStrategy, setEditStrategy] = useState<string>("");
-  const [saving, setSaving] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
+
+  const { mutate, saving, error: actionError } = useAdminMutation({
+    method: "PUT",
+    invalidates: refetch,
+  });
 
   if (error?.status === 401 || error?.status === 403 || error?.status === 404) {
     return <FeatureGate status={error.status} feature="PII Compliance" />;
@@ -192,74 +193,34 @@ function ClassificationsTab() {
   const classifications = data?.classifications ?? [];
 
   async function handleUpdate(id: string) {
-    setSaving(true);
-    setActionError(null);
-    try {
-      const res = await fetch(`${apiUrl}/api/v1/admin/compliance/classifications/${id}`, {
-        method: "PUT",
-        credentials,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          category: editCategory || undefined,
-          maskingStrategy: editStrategy || undefined,
-          reviewed: true,
-        }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error((body as Record<string, string>).message ?? `HTTP ${res.status}`);
-      }
+    const result = await mutate({
+      path: `/api/v1/admin/compliance/classifications/${id}`,
+      body: {
+        category: editCategory || undefined,
+        maskingStrategy: editStrategy || undefined,
+        reviewed: true,
+      },
+    });
+    if (result !== undefined) {
       setEditingId(null);
-      refetch();
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSaving(false);
     }
   }
 
   async function handleDismiss(id: string) {
-    setSaving(true);
-    setActionError(null);
-    try {
-      const res = await fetch(`${apiUrl}/api/v1/admin/compliance/classifications/${id}`, {
-        method: "PUT",
-        credentials,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ dismissed: true, reviewed: true }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error((body as Record<string, string>).message ?? `HTTP ${res.status}`);
-      }
-      refetch();
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSaving(false);
-    }
+    await mutate({
+      path: `/api/v1/admin/compliance/classifications/${id}`,
+      body: { dismissed: true, reviewed: true },
+    });
   }
 
   async function handleBulkReview() {
-    setSaving(true);
-    setActionError(null);
     const unreviewed = classifications.filter((c) => !c.reviewed);
-    try {
-      await Promise.all(
-        unreviewed.map((cls) =>
-          fetch(`${apiUrl}/api/v1/admin/compliance/classifications/${cls.id}`, {
-            method: "PUT",
-            credentials,
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ reviewed: true }),
-          }),
-        ),
-      );
-      refetch();
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSaving(false);
+    for (const cls of unreviewed) {
+      const result = await mutate({
+        path: `/api/v1/admin/compliance/classifications/${cls.id}`,
+        body: { reviewed: true },
+      });
+      if (result === undefined) break; // stop on first error
     }
   }
 

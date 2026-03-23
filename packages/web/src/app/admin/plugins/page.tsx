@@ -30,7 +30,8 @@ import { LoadingState } from "@/ui/components/admin/loading-state";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import { Puzzle, Loader2, Settings2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useAdminFetch, useInProgressSet, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -80,27 +81,30 @@ function ConfigDialog({
   plugin,
   open,
   onOpenChange,
-  apiUrl,
-  credentials,
 }: {
   plugin: PluginDescription;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  apiUrl: string;
-  credentials: RequestCredentials;
 }) {
+  const { apiUrl, isCrossOrigin } = useAtlasConfig();
+  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
+
   const [schema, setSchema] = useState<ConfigSchemaField[]>([]);
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [manageable, setManageable] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  const saveMutation = useAdminMutation<{ message?: string; details?: string[] }>({
+    method: "PUT",
+  });
 
   async function loadSchema() {
     setLoading(true);
-    setError(null);
+    setLoadError(null);
     setSuccess(null);
+    saveMutation.reset();
     try {
       const res = await fetch(
         `${apiUrl}/api/v1/admin/plugins/${encodeURIComponent(plugin.id)}/schema`,
@@ -115,7 +119,7 @@ function ConfigDialog({
       setValues(data.values);
       setManageable(data.manageable);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load config");
+      setLoadError(err instanceof Error ? err.message : "Failed to load config");
     } finally {
       setLoading(false);
     }
@@ -126,8 +130,9 @@ function ConfigDialog({
     else {
       setSchema([]);
       setValues({});
-      setError(null);
+      setLoadError(null);
       setSuccess(null);
+      saveMutation.reset();
     }
     onOpenChange(next);
   }
@@ -137,32 +142,14 @@ function ConfigDialog({
   }
 
   async function handleSave() {
-    setSaving(true);
-    setError(null);
     setSuccess(null);
-    try {
-      const res = await fetch(
-        `${apiUrl}/api/v1/admin/plugins/${encodeURIComponent(plugin.id)}/config`,
-        {
-          method: "PUT",
-          credentials,
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(values),
-        },
-      );
-      const data = await res.json();
-      if (!res.ok) {
-        const msg = data.details
-          ? `${data.message} ${(data.details as string[]).join(" ")}`
-          : data.message ?? `HTTP ${res.status}`;
-        throw new Error(msg);
-      }
-      setSuccess(data.message ?? "Configuration saved.");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save");
-    } finally {
-      setSaving(false);
-    }
+    await saveMutation.mutate({
+      path: `/api/v1/admin/plugins/${encodeURIComponent(plugin.id)}/config`,
+      body: values,
+      onSuccess: (data) => {
+        setSuccess(data?.message ?? "Configuration saved.");
+      },
+    });
   }
 
   return (
@@ -181,9 +168,9 @@ function ConfigDialog({
           <div className="flex items-center justify-center py-8">
             <Loader2 className="size-5 animate-spin text-muted-foreground" />
           </div>
-        ) : error && !success ? (
+        ) : loadError && !success ? (
           <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {error}
+            {loadError}
           </div>
         ) : schema.length === 0 ? (
           <div className="py-4 text-center text-sm text-muted-foreground">
@@ -258,9 +245,9 @@ function ConfigDialog({
                 {success}
               </div>
             )}
-            {error && (
+            {saveMutation.error && (
               <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                {error}
+                {saveMutation.error}
               </div>
             )}
           </div>
@@ -271,8 +258,8 @@ function ConfigDialog({
             Close
           </Button>
           {manageable && schema.length > 0 && (
-            <Button onClick={handleSave} disabled={saving}>
-              {saving && <Loader2 className="mr-1 size-3 animate-spin" />}
+            <Button onClick={handleSave} disabled={saveMutation.saving}>
+              {saveMutation.saving && <Loader2 className="mr-1 size-3 animate-spin" />}
               Save
             </Button>
           )}
@@ -285,10 +272,8 @@ function ConfigDialog({
 // ── Main Page ─────────────────────────────────────────────────────
 
 export default function PluginsPage() {
-  const { apiUrl, isCrossOrigin } = useAtlasConfig();
-  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
-  const checking = useInProgressSet();
-  const toggling = useInProgressSet();
+  const checkMutation = useAdminMutation({ method: "POST" });
+  const toggleMutation = useAdminMutation({ method: "POST" });
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [configPlugin, setConfigPlugin] = useState<PluginDescription | null>(null);
 
@@ -322,39 +307,27 @@ export default function PluginsPage() {
   }
 
   async function handleHealthCheck(id: string) {
-    checking.start(id);
     setMutationError(null);
-    try {
-      const res = await fetch(`${apiUrl}/api/v1/admin/plugins/${encodeURIComponent(id)}/health`, {
-        method: "POST",
-        credentials,
-      });
-      if (!res.ok) throw new Error(`Health check failed (HTTP ${res.status})`);
-      await refetch();
-    } catch (err) {
-      setMutationError(
-        `Health check failed for "${id}": ${err instanceof Error ? err.message : "Network error"}`,
-      );
-    } finally {
-      checking.stop(id);
+    await checkMutation.mutate({
+      path: `/api/v1/admin/plugins/${encodeURIComponent(id)}/health`,
+      itemId: id,
+      onSuccess: () => refetch(),
+    });
+    if (checkMutation.error) {
+      setMutationError(`Health check failed for "${id}": ${checkMutation.error}`);
     }
   }
 
   async function handleToggle(id: string, enable: boolean) {
-    toggling.start(id);
     setMutationError(null);
-    try {
-      const action = enable ? "enable" : "disable";
-      const res = await fetch(
-        `${apiUrl}/api/v1/admin/plugins/${encodeURIComponent(id)}/${action}`,
-        { method: "POST", credentials },
-      );
-      if (!res.ok) throw new Error(`Failed to ${action} plugin (HTTP ${res.status})`);
-      await refetch();
-    } catch (err) {
-      setMutationError(err instanceof Error ? err.message : "Toggle failed");
-    } finally {
-      toggling.stop(id);
+    const action = enable ? "enable" : "disable";
+    await toggleMutation.mutate({
+      path: `/api/v1/admin/plugins/${encodeURIComponent(id)}/${action}`,
+      itemId: id,
+      onSuccess: () => refetch(),
+    });
+    if (toggleMutation.error) {
+      setMutationError(toggleMutation.error);
     }
   }
 
@@ -414,10 +387,10 @@ export default function PluginsPage() {
                         variant="ghost"
                         size="sm"
                         className="h-7 text-xs"
-                        disabled={checking.has(plugin.id)}
+                        disabled={checkMutation.isMutating(plugin.id)}
                         onClick={() => handleHealthCheck(plugin.id)}
                       >
-                        {checking.has(plugin.id) ? (
+                        {checkMutation.isMutating(plugin.id) ? (
                           <Loader2 className="mr-1 size-3 animate-spin" />
                         ) : null}
                         Health
@@ -435,7 +408,7 @@ export default function PluginsPage() {
                         size="sm"
                         checked={plugin.enabled}
                         onCheckedChange={(checked) => handleToggle(plugin.id, checked)}
-                        disabled={toggling.has(plugin.id) || !manageable}
+                        disabled={toggleMutation.isMutating(plugin.id) || !manageable}
                         title={
                           !manageable
                             ? "Requires internal database"
@@ -459,8 +432,6 @@ export default function PluginsPage() {
           plugin={configPlugin}
           open={!!configPlugin}
           onOpenChange={(open) => !open && setConfigPlugin(null)}
-          apiUrl={apiUrl}
-          credentials={credentials}
         />
       )}
     </div>

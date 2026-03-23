@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { useAtlasConfig } from "@/ui/context";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -26,6 +25,7 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { Shield, Plus, Trash2, Loader2, AlertTriangle, Globe } from "lucide-react";
 
@@ -52,61 +52,47 @@ function AddEntryDialog({
   open,
   onOpenChange,
   onAdded,
-  apiUrl,
-  credentials,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onAdded: () => void;
-  apiUrl: string;
-  credentials: RequestCredentials;
 }) {
   const [cidr, setCidr] = useState("");
   const [description, setDescription] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const { mutate, saving, error, reset } = useAdminMutation({
+    path: "/api/v1/admin/ip-allowlist",
+    method: "POST",
+    invalidates: onAdded,
+  });
+
+  const displayError = validationError ?? error;
 
   function handleOpen(next: boolean) {
     if (next) {
       setCidr("");
       setDescription("");
-      setError(null);
+      setValidationError(null);
+      reset();
     }
     onOpenChange(next);
   }
 
   async function handleSave() {
+    setValidationError(null);
     if (!cidr.trim()) {
-      setError("CIDR range is required.");
+      setValidationError("CIDR range is required.");
       return;
     }
 
-    setSaving(true);
-    setError(null);
-    try {
-      const res = await fetch(`${apiUrl}/api/v1/admin/ip-allowlist`, {
-        method: "POST",
-        credentials,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          cidr: cidr.trim(),
-          ...(description.trim() && { description: description.trim() }),
-        }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        throw new Error(
-          (data as Record<string, unknown> | null)?.message
-            ? String((data as Record<string, unknown>).message)
-            : `HTTP ${res.status}`,
-        );
-      }
-      onAdded();
+    const result = await mutate({
+      body: {
+        cidr: cidr.trim(),
+        ...(description.trim() && { description: description.trim() }),
+      },
+    });
+    if (result !== undefined) {
       handleOpen(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to add entry");
-    } finally {
-      setSaving(false);
     }
   }
 
@@ -142,9 +128,9 @@ function AddEntryDialog({
             />
           </div>
 
-          {error && (
+          {displayError && (
             <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              {error}
+              {displayError}
             </div>
           )}
         </div>
@@ -172,8 +158,6 @@ function DeleteEntryDialog({
   onDeleted,
   callerIP,
   entries,
-  apiUrl,
-  credentials,
 }: {
   entry: IPAllowlistEntry | null;
   open: boolean;
@@ -181,11 +165,11 @@ function DeleteEntryDialog({
   onDeleted: () => void;
   callerIP: string | null;
   entries: IPAllowlistEntry[];
-  apiUrl: string;
-  credentials: RequestCredentials;
 }) {
-  const [deleting, setDeleting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { mutate, saving: deleting, error, reset } = useAdminMutation({
+    method: "DELETE",
+    invalidates: onDeleted,
+  });
 
   // Check if removing this entry would leave only entries that don't contain the caller's IP
   const wouldBlockCaller = entry && callerIP && entries.length > 0 && (() => {
@@ -197,33 +181,17 @@ function DeleteEntryDialog({
   })();
 
   function handleOpen(next: boolean) {
-    if (!next) setError(null);
+    if (!next) reset();
     onOpenChange(next);
   }
 
   async function handleDelete() {
     if (!entry) return;
-    setDeleting(true);
-    setError(null);
-    try {
-      const res = await fetch(
-        `${apiUrl}/api/v1/admin/ip-allowlist/${encodeURIComponent(entry.id)}`,
-        { method: "DELETE", credentials },
-      );
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        throw new Error(
-          (data as Record<string, unknown> | null)?.message
-            ? String((data as Record<string, unknown>).message)
-            : `HTTP ${res.status}`,
-        );
-      }
-      onDeleted();
+    const result = await mutate({
+      path: `/api/v1/admin/ip-allowlist/${encodeURIComponent(entry.id)}`,
+    });
+    if (result !== undefined) {
       handleOpen(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to remove entry");
-    } finally {
-      setDeleting(false);
     }
   }
 
@@ -282,8 +250,6 @@ function DeleteEntryDialog({
 // ── Main Page ─────────────────────────────────────────────────────
 
 export default function IPAllowlistPage() {
-  const { apiUrl, isCrossOrigin } = useAtlasConfig();
-  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [deleteEntry, setDeleteEntry] = useState<IPAllowlistEntry | null>(null);
 
@@ -423,8 +389,6 @@ export default function IPAllowlistPage() {
         open={addDialogOpen}
         onOpenChange={setAddDialogOpen}
         onAdded={refetch}
-        apiUrl={apiUrl}
-        credentials={credentials}
       />
 
       <DeleteEntryDialog
@@ -434,8 +398,6 @@ export default function IPAllowlistPage() {
         onDeleted={refetch}
         callerIP={callerIP}
         entries={entries}
-        apiUrl={apiUrl}
-        credentials={credentials}
       />
     </div>
   );

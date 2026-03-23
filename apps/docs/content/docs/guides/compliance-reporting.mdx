@@ -118,7 +118,7 @@ The Reports tab provides:
 - Date range picker (defaults to last 30 days)
 - Report type selector (Data Access / User Activity)
 - Filter controls for user, role, and table
-- Results table with sortable columns
+- Results table with detailed breakdown
 - Export buttons for CSV and JSON download
 
 All filter state is persisted in the URL via query parameters, so reports are shareable and bookmarkable.
@@ -129,8 +129,8 @@ All filter state is persisted in the URL via query parameters, so reports are sh
 
 Reports run pure SQL against the internal database. No external services are required.
 
-- **Data Access Report** queries `audit_log` with a `CROSS JOIN LATERAL` on `tables_accessed` (JSONB array), joined with the `user` table for email resolution, `member` table for role enrichment, and `pii_column_classifications` for PII status.
-- **User Activity Report** queries `audit_log` grouped by user, joined with `session` for last login timestamp and `member` for role information.
+- **Data Access Report** queries `audit_log` with a `CROSS JOIN LATERAL` on `tables_accessed` (JSONB array), joined with the `user` table for email resolution. Role data is enriched from the `member` table, and PII status is enriched from `pii_column_classifications`, both via separate concurrent queries.
+- **User Activity Report** queries `audit_log` grouped by user, joined with the `user` table for email. Last login timestamp is enriched from the `session` table, and role information from the `member` table, both via separate concurrent queries.
 
 Both reports only include successful queries (`success = true`) and respect the org isolation boundary (`org_id`).
 

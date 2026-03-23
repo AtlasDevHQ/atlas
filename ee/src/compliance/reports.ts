@@ -3,7 +3,7 @@
  *
  * Two report types:
  * 1. Data Access Report — who queried what tables, when, how often
- * 2. User Activity Report — login history, query count, role info
+ * 2. User Activity Report — query counts, last login, tables accessed, role info
  *
  * Both reports query the internal DB (audit_log + user/session/member tables)
  * and are enterprise-gated via requireEnterprise("compliance").
@@ -140,37 +140,48 @@ export async function generateDataAccessReport(
 
   const result = [...aggregated.values()];
 
-  // Enrich with role from member table
+  // Enrich with role + PII status concurrently (independent queries)
   if (result.length > 0) {
     const userIds = [...new Set(result.map((r) => r.userId).filter(Boolean))];
-    if (userIds.length > 0) {
-      const rolePlaceholders = userIds.map((_, i) => `$${i + 2}`).join(", ");
-      const roleRows = await internalQuery<{ user_id: string; role: string }>(
-        `SELECT user_id, role FROM member WHERE organization_id = $1 AND user_id IN (${rolePlaceholders})`,
-        [orgId, ...userIds],
-      );
-      const roleMap = new Map(roleRows.map((r) => [r.user_id, r.role]));
+
+    const [roleResult, piiResult] = await Promise.allSettled([
+      // Role enrichment from member table
+      userIds.length > 0
+        ? internalQuery<{ user_id: string; role: string }>(
+            `SELECT user_id, role FROM member WHERE organization_id = $1 AND user_id IN (${userIds.map((_, i) => `$${i + 2}`).join(", ")})`,
+            [orgId, ...userIds],
+          )
+        : Promise.resolve([]),
+      // PII enrichment from pii_column_classifications
+      internalQuery<{ table_name: string }>(
+        `SELECT DISTINCT table_name FROM pii_column_classifications WHERE org_id = $1 AND dismissed = false`,
+        [orgId],
+      ),
+    ]);
+
+    if (roleResult.status === "fulfilled") {
+      const roleMap = new Map(roleResult.value.map((r) => [r.user_id, r.role]));
       for (const row of result) {
         row.userRole = roleMap.get(row.userId) ?? null;
       }
+    } else {
+      log.warn(
+        { err: roleResult.reason instanceof Error ? roleResult.reason.message : String(roleResult.reason) },
+        "Could not fetch roles from member table",
+      );
     }
-  }
 
-  // Enrich with PII status from pii_column_classifications
-  try {
-    const piiRows = await internalQuery<{ table_name: string }>(
-      `SELECT DISTINCT table_name FROM pii_column_classifications WHERE org_id = $1 AND dismissed = false`,
-      [orgId],
-    );
-    const piiTables = new Set(piiRows.map((r) => r.table_name.toLowerCase()));
-    for (const row of result) {
-      row.hasPII = piiTables.has(row.tableName.toLowerCase());
+    if (piiResult.status === "fulfilled") {
+      const piiTables = new Set(piiResult.value.map((r) => r.table_name.toLowerCase()));
+      for (const row of result) {
+        row.hasPII = piiTables.has(row.tableName.toLowerCase());
+      }
+    } else {
+      log.warn(
+        { err: piiResult.reason instanceof Error ? piiResult.reason.message : String(piiResult.reason) },
+        "Could not enrich PII status — table may not exist yet",
+      );
     }
-  } catch (err) {
-    log.warn(
-      { err: err instanceof Error ? err.message : String(err) },
-      "Could not enrich PII status — table may not exist yet",
-    );
   }
 
   // Apply role filter (after enrichment)
@@ -257,40 +268,39 @@ export async function generateUserActivityReport(
     LIMIT 5000
   `, params);
 
-  // Get last login from session table
+  // Enrich with login + role data concurrently (independent queries)
   const userIds = rows.map((r) => r.user_id).filter(Boolean);
   const loginMap = new Map<string, string>();
+  const roleMap = new Map<string, string>();
+
   if (userIds.length > 0) {
-    try {
-      const loginPlaceholders = userIds.map((_, i) => `$${i + 1}`).join(", ");
-      const loginRows = await internalQuery<{ user_id: string; last_login: string }>(
+    const [loginResult, roleResult] = await Promise.allSettled([
+      internalQuery<{ user_id: string; last_login: string }>(
         `SELECT "userId" AS user_id, MAX("createdAt")::text AS last_login
-         FROM session WHERE "userId" IN (${loginPlaceholders})
+         FROM session WHERE "userId" IN (${userIds.map((_, i) => `$${i + 1}`).join(", ")})
          GROUP BY "userId"`,
         userIds,
-      );
-      for (const r of loginRows) loginMap.set(r.user_id, r.last_login);
-    } catch (err) {
+      ),
+      internalQuery<{ user_id: string; role: string }>(
+        `SELECT user_id, role FROM member WHERE organization_id = $1 AND user_id IN (${userIds.map((_, i) => `$${i + 2}`).join(", ")})`,
+        [orgId, ...userIds],
+      ),
+    ]);
+
+    if (loginResult.status === "fulfilled") {
+      for (const r of loginResult.value) loginMap.set(r.user_id, r.last_login);
+    } else {
       log.warn(
-        { err: err instanceof Error ? err.message : String(err) },
+        { err: loginResult.reason instanceof Error ? loginResult.reason.message : String(loginResult.reason) },
         "Could not fetch login data from session table",
       );
     }
-  }
 
-  // Get roles from member table
-  const roleMap = new Map<string, string>();
-  if (userIds.length > 0) {
-    try {
-      const rolePlaceholders = userIds.map((_, i) => `$${i + 2}`).join(", ");
-      const roleRows = await internalQuery<{ user_id: string; role: string }>(
-        `SELECT user_id, role FROM member WHERE organization_id = $1 AND user_id IN (${rolePlaceholders})`,
-        [orgId, ...userIds],
-      );
-      for (const r of roleRows) roleMap.set(r.user_id, r.role);
-    } catch (err) {
+    if (roleResult.status === "fulfilled") {
+      for (const r of roleResult.value) roleMap.set(r.user_id, r.role);
+    } else {
       log.warn(
-        { err: err instanceof Error ? err.message : String(err) },
+        { err: roleResult.reason instanceof Error ? roleResult.reason.message : String(roleResult.reason) },
         "Could not fetch roles from member table",
       );
     }
@@ -331,7 +341,11 @@ export async function generateUserActivityReport(
 const MAX_EXPORT_ROWS = 50_000;
 
 function csvField(val: string | null | undefined): string {
-  const s = val ?? "";
+  let s = val ?? "";
+  // Guard against CSV formula injection in spreadsheet software
+  if (/^[=+\-@\t\r]/.test(s)) {
+    s = `'${s}`;
+  }
   if (s.includes(",") || s.includes('"') || s.includes("\n") || s.includes("\r")) {
     return `"${s.replace(/"/g, '""')}"`;
   }

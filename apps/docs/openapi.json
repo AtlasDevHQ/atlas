@@ -22610,7 +22610,7 @@
           "Admin — Compliance"
         ],
         "summary": "Generate user activity compliance report",
-        "description": "Returns a report of user login history, query counts, and role information within the specified date range.",
+        "description": "Returns a report of user query activity, last login timestamp, and role information within the specified date range.",
         "parameters": [
           {
             "schema": {

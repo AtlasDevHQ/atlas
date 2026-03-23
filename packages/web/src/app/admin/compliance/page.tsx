@@ -512,7 +512,12 @@ function ReportsTab() {
     }
   }
 
+  const [exporting, setExporting] = useState(false);
+
   async function exportCSV() {
+    setExporting(true);
+    setError(null);
+
     const qs = new URLSearchParams({
       startDate: from,
       endDate: to,
@@ -533,7 +538,7 @@ function ReportsTab() {
       );
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        throw new Error((body as Record<string, string>).message ?? `HTTP ${res.status}`);
+        throw new Error((body as Record<string, string>).message ?? `HTTP ${res.status}: ${res.statusText}`);
       }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
@@ -544,14 +549,18 @@ function ReportsTab() {
       URL.revokeObjectURL(url);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setExporting(false);
     }
   }
 
-  async function exportJSON() {
+  function exportJSON() {
     if (params.reportType === "data-access" && dataAccessReport) {
       downloadJSON(dataAccessReport, "data-access-report");
     } else if (params.reportType === "user-activity" && userActivityReport) {
       downloadJSON(userActivityReport, "user-activity-report");
+    } else {
+      setError("No report data to export. Generate a report first.");
     }
   }
 
@@ -646,8 +655,8 @@ function ReportsTab() {
             </Button>
             {(dataAccessReport || userActivityReport) && (
               <>
-                <Button variant="outline" onClick={exportCSV}>
-                  <Download className="mr-2 size-4" />
+                <Button variant="outline" onClick={exportCSV} disabled={exporting}>
+                  {exporting ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Download className="mr-2 size-4" />}
                   Export CSV
                 </Button>
                 <Button variant="outline" onClick={exportJSON}>

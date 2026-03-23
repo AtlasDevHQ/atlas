@@ -1,5 +1,5 @@
 /**
- * Admin PII compliance routes.
+ * Admin compliance routes (PII classifications + reporting).
  *
  * Mounted under /api/v1/admin/compliance. All routes require admin role AND
  * enterprise license (enforced within the compliance service layer).
@@ -31,6 +31,7 @@ import {
   dataAccessReportToCSV,
   userActivityReportToCSV,
   ReportError,
+  type ReportErrorCode,
 } from "@atlas/ee/compliance/reports";
 import type { PIICategory, MaskingStrategy } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
@@ -38,7 +39,7 @@ import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 const log = createLogger("admin-compliance");
 
 const COMPLIANCE_ERROR_STATUS = { validation: 400, not_found: 404, conflict: 409 } as const;
-const REPORT_ERROR_STATUS = { validation: 400, not_available: 404 } as const;
+const REPORT_ERROR_STATUS = { validation: 400, not_available: 404 } as const satisfies Record<ReportErrorCode, number>;
 
 function complianceErrorResponse(err: unknown): { body: Record<string, unknown>; status: 400 | 403 | 404 | 409 } | null {
   const message = err instanceof Error ? err.message : String(err);
@@ -360,7 +361,7 @@ const userActivityReportRoute = createRoute({
   path: "/reports/user-activity",
   tags: ["Admin — Compliance"],
   summary: "Generate user activity compliance report",
-  description: "Returns a report of user login history, query counts, and role information within the specified date range.",
+  description: "Returns a report of user query activity, last login timestamp, and role information within the specified date range.",
   request: { query: ReportQuerySchema },
   responses: {
     200: { description: "User activity report", content: { "application/json": { schema: UserActivityReportSchema } } },
@@ -408,7 +409,8 @@ adminCompliance.openapi(dataAccessReportRoute, async (c) => {
 
       if (query.format === "csv") {
         const csv = dataAccessReportToCSV(report);
-        const filename = `data-access-report-${orgId}-${new Date().toISOString().slice(0, 10)}.csv`;
+        const safeOrgId = orgId.replace(/[^a-zA-Z0-9_-]/g, "");
+        const filename = `data-access-report-${safeOrgId}-${new Date().toISOString().slice(0, 10)}.csv`;
         return new Response(csv, {
           headers: {
             "Content-Type": "text/csv; charset=utf-8",
@@ -461,7 +463,8 @@ adminCompliance.openapi(userActivityReportRoute, async (c) => {
 
       if (query.format === "csv") {
         const csv = userActivityReportToCSV(report);
-        const filename = `user-activity-report-${orgId}-${new Date().toISOString().slice(0, 10)}.csv`;
+        const safeOrgId = orgId.replace(/[^a-zA-Z0-9_-]/g, "");
+        const filename = `user-activity-report-${safeOrgId}-${new Date().toISOString().slice(0, 10)}.csv`;
         return new Response(csv, {
           headers: {
             "Content-Type": "text/csv; charset=utf-8",

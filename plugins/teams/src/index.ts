@@ -1,28 +1,34 @@
 /**
  * Microsoft Teams Interaction Plugin.
  *
- * Integrates Microsoft Teams as an interaction surface for Atlas: receive
- * messages via Bot Framework, run queries, and reply with Adaptive Cards
- * containing formatted results, SQL, and data tables.
+ * @deprecated Use `@useatlas/chat` with the Teams adapter instead.
+ * The Chat SDK bridge plugin (`@useatlas/chat`) provides the same Teams
+ * functionality plus support for Slack, Discord, and other platforms.
  *
- * Runtime dependencies (agent executor, rate limiting) are injected via
- * config callbacks rather than imported from `@atlas/api`.
- *
- * @example
+ * Migration:
  * ```typescript
- * import { defineConfig } from "@atlas/api/lib/config";
- * import { executeAgentQuery } from "@atlas/api/lib/agent-query";
+ * // Before (@useatlas/teams):
  * import { teamsPlugin } from "@useatlas/teams";
+ * teamsPlugin({
+ *   appId: process.env.TEAMS_APP_ID!,
+ *   appPassword: process.env.TEAMS_APP_PASSWORD!,
+ *   executeQuery,
+ * })
  *
- * export default defineConfig({
- *   plugins: [
- *     teamsPlugin({
+ * // After (@useatlas/chat):
+ * import { chatPlugin } from "@useatlas/chat";
+ * chatPlugin({
+ *   adapters: {
+ *     teams: {
  *       appId: process.env.TEAMS_APP_ID!,
  *       appPassword: process.env.TEAMS_APP_PASSWORD!,
- *       executeQuery: executeAgentQuery,
- *     }),
- *   ],
- * });
+ *       tenantId: process.env.TEAMS_TENANT_ID,  // optional
+ *     },
+ *   },
+ *   executeQuery,
+ *   actions,        // optional — approve/deny flows
+ *   conversations,  // optional — persistence
+ * })
  * ```
  */
 

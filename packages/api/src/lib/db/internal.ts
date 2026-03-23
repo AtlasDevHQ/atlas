@@ -713,6 +713,52 @@ export async function migrateInternalDB(): Promise<void> {
   await pool.query(`DO $$ BEGIN ALTER TABLE workspace_model_config ADD CONSTRAINT chk_model_provider CHECK (provider IN ('anthropic', 'openai', 'azure-openai', 'custom')); EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_workspace_model_config_org ON workspace_model_config(org_id);`);
 
+  // Enterprise approval workflow rules (0.9.0 — approval workflows #660)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS approval_rules (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      org_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      rule_type TEXT NOT NULL,
+      pattern TEXT NOT NULL DEFAULT '',
+      threshold INTEGER,
+      enabled BOOLEAN NOT NULL DEFAULT true,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(`DO $$ BEGIN ALTER TABLE approval_rules ADD CONSTRAINT chk_approval_rule_type CHECK (rule_type IN ('table', 'column', 'cost')); EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_approval_rules_org ON approval_rules(org_id);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_approval_rules_org_enabled ON approval_rules(org_id) WHERE enabled = true;`);
+
+  // Enterprise approval queue (0.9.0 — approval workflows #660)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS approval_queue (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      org_id TEXT NOT NULL,
+      rule_id UUID NOT NULL,
+      rule_name TEXT NOT NULL,
+      requester_id TEXT NOT NULL,
+      requester_email TEXT,
+      query_sql TEXT NOT NULL,
+      explanation TEXT,
+      connection_id TEXT NOT NULL DEFAULT 'default',
+      tables_accessed JSONB DEFAULT '[]',
+      columns_accessed JSONB DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'pending',
+      reviewer_id TEXT,
+      reviewer_email TEXT,
+      review_comment TEXT,
+      reviewed_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      expires_at TIMESTAMPTZ NOT NULL DEFAULT (now() + interval '24 hours')
+    );
+  `);
+  await pool.query(`DO $$ BEGIN ALTER TABLE approval_queue ADD CONSTRAINT chk_approval_status CHECK (status IN ('pending', 'approved', 'denied', 'expired')); EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_approval_queue_org_status ON approval_queue(org_id, status);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_approval_queue_expires ON approval_queue(expires_at) WHERE status = 'pending';`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_approval_queue_requester ON approval_queue(requester_id);`);
+
   log.info("Internal DB migration complete");
 }
 

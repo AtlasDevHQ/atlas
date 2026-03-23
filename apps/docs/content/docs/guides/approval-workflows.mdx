@@ -1,0 +1,149 @@
+---
+title: Approval Workflows
+description: Require sign-off for queries touching sensitive tables, columns, or exceeding cost thresholds.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas supports approval workflows as an enterprise feature. Admins define rules that intercept sensitive queries before execution, requiring sign-off from designated approvers. This adds a governance layer for compliance-sensitive environments.
+
+<Callout title="Prerequisites">
+- [Managed auth](/deployment/authentication#managed-auth) enabled
+- Internal database configured (`DATABASE_URL`)
+- Enterprise license (the `/ee` module must be available)
+- Admin role required for all approval workflow endpoints
+</Callout>
+
+---
+
+## How It Works
+
+When a user runs a query, the SQL validation pipeline checks the query against approval rules **after** validation passes but **before** execution. If a rule matches, the query is queued for approval instead of executing.
+
+### Flow
+
+1. User submits a query via the chat agent
+2. SQL passes validation (4-layer pipeline)
+3. Approval rules are checked against the validated query's tables and columns
+4. If a rule matches: query is queued and the agent tells the user approval is required
+5. An admin reviews the request in the admin console (or via API)
+6. Once approved, the user can re-submit the same query — it executes normally
+
+### Rule Types
+
+| Type | Match Logic | Example |
+|------|-------------|---------|
+| **Table** | Triggers when a query accesses a specific table | `users` — any query touching the `users` table requires approval |
+| **Column** | Triggers when a query accesses a specific column | `ssn` — any query reading the `ssn` column requires approval |
+| **Cost** | Triggers when estimated row count exceeds threshold | `100000` — queries expected to return more than 100K rows need approval |
+
+### Approval Statuses
+
+| Status | Description |
+|--------|-------------|
+| `pending` | Awaiting review |
+| `approved` | Approved by a reviewer |
+| `denied` | Denied by a reviewer |
+| `expired` | Auto-expired after the configured expiry window |
+
+---
+
+## Configuration
+
+### Creating Rules
+
+Rules are managed via the admin console at `/admin/approval` or the API.
+
+```bash
+# Create a table-based approval rule
+curl -X POST http://localhost:3001/api/v1/admin/approval/rules \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Require approval for PII tables",
+    "ruleType": "table",
+    "pattern": "users",
+    "enabled": true
+  }'
+```
+
+### Reviewing Requests
+
+Pending requests appear in the admin console's Approval Queue tab. Reviewers can approve or deny with an optional comment.
+
+```bash
+# Approve a pending request
+curl -X POST http://localhost:3001/api/v1/admin/approval/queue/{requestId} \
+  -H "Content-Type: application/json" \
+  -d '{
+    "action": "approve",
+    "comment": "Approved for quarterly audit"
+  }'
+```
+
+### Auto-Expiry
+
+Pending requests expire automatically after 24 hours by default. Configure via the `ATLAS_APPROVAL_EXPIRY_HOURS` environment variable.
+
+```bash
+# Set approval expiry to 48 hours
+ATLAS_APPROVAL_EXPIRY_HOURS=48
+```
+
+---
+
+## API Reference
+
+All endpoints are under `/api/v1/admin/approval` and require admin role.
+
+### Rules
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/rules` | List all approval rules |
+| `POST` | `/rules` | Create a new rule |
+| `PUT` | `/rules/:id` | Update an existing rule |
+| `DELETE` | `/rules/:id` | Delete a rule |
+
+### Queue
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/queue` | List approval requests (optional `?status=pending`) |
+| `GET` | `/queue/:id` | Get a single request |
+| `POST` | `/queue/:id` | Approve or deny a request |
+| `POST` | `/expire` | Manually expire stale requests |
+| `GET` | `/pending-count` | Count of pending requests |
+
+---
+
+## Audit Trail
+
+All approval decisions are logged in the internal database's `approval_queue` table with:
+
+- Requester identity and email
+- The SQL query text
+- Tables and columns accessed
+- Reviewer identity and email
+- Review timestamp and comment
+- Final status (approved/denied/expired)
+
+The standard audit log also records queries that were blocked pending approval.
+
+---
+
+## Troubleshooting
+
+### Approval check not triggering
+
+- Verify enterprise is enabled (`ATLAS_ENTERPRISE_ENABLED=true`)
+- Check that the internal database is configured (`DATABASE_URL`)
+- Ensure the rule is enabled and the pattern matches (case-insensitive)
+- Table rules match both bare names (`users`) and schema-qualified names (`public.users`)
+
+### Requests expiring too quickly
+
+Increase the expiry window:
+
+```bash
+ATLAS_APPROVAL_EXPIRY_HOURS=72
+```

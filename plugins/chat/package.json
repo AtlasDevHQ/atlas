@@ -42,6 +42,7 @@
   "dependencies": {
     "chat": "4.20.2",
     "@chat-adapter/slack": "4.20.2",
+    "@chat-adapter/teams": "4.20.2",
     "@chat-adapter/state-memory": "4.20.2"
   },
   "peerDependencies": {

@@ -27,6 +27,7 @@
  * ```
  */
 
+import type { StateAdapter } from "chat";
 import { createPlugin } from "@useatlas/plugin-sdk";
 import type {
   AtlasInteractionPlugin,
@@ -38,10 +39,13 @@ import { ChatConfigSchema } from "./config";
 import type { ChatPluginConfig } from "./config";
 import { createChatBridge } from "./bridge";
 import type { ChatBridge } from "./bridge";
+import { createStateAdapter } from "./state";
 
 // Re-export types for host wiring convenience
-export type { ChatPluginConfig, ChatQueryResult, ChatMessage } from "./config";
+export type { ChatPluginConfig, ChatQueryResult, ChatMessage, StateConfig } from "./config";
 export type { ChatBridge } from "./bridge";
+export { createStateAdapter } from "./state";
+export type { StateBackendConfig, PluginDB } from "./state";
 
 // ---------------------------------------------------------------------------
 // Plugin builder
@@ -51,6 +55,7 @@ function buildChatPlugin(
   config: ChatPluginConfig,
 ): AtlasInteractionPlugin<ChatPluginConfig> {
   let bridge: ChatBridge | null = null;
+  let stateAdapter: StateAdapter | null = null;
   let log: PluginLogger | null = null;
   let initialized = false;
 
@@ -103,15 +108,21 @@ function buildChatPlugin(
       }
 
       log = ctx.logger;
-      bridge = createChatBridge(config, ctx.logger);
+
+      // Create state adapter based on config — PG backend uses ctx.db
+      stateAdapter = createStateAdapter(config.state, ctx.db);
+      await stateAdapter.connect();
+
+      bridge = createChatBridge(config, ctx.logger, stateAdapter);
 
       const enabledAdapters = Object.entries(config.adapters)
         .filter(([, v]) => v !== undefined)
         .map(([k]) => k);
 
+      const backend = config.state?.backend ?? "memory";
       ctx.logger.info(
-        { adapters: enabledAdapters },
-        `Chat interaction plugin initialized (${enabledAdapters.join(", ")})`,
+        { adapters: enabledAdapters, stateBackend: backend },
+        `Chat interaction plugin initialized (${enabledAdapters.join(", ")}, state: ${backend})`,
       );
       initialized = true;
     },
@@ -150,6 +161,10 @@ function buildChatPlugin(
       if (bridge) {
         await bridge.shutdown();
         bridge = null;
+      }
+      if (stateAdapter) {
+        await stateAdapter.disconnect();
+        stateAdapter = null;
       }
       log = null;
       initialized = false;

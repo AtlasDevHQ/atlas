@@ -4,8 +4,9 @@
  * Covers:
  * - Response formatting (markdown tables, SQL, metadata)
  * - Error scrubbing (connection strings, stack traces, API keys, user scrubber faults)
- * - Config validation (adapter requirements, callback types)
+ * - Config validation (adapter requirements, callback types, state config)
  * - Plugin lifecycle (initialization, health checks, teardown, double-init guard)
+ * - State adapter wiring (factory, PG requires db, redis stub)
  */
 
 import { describe, expect, it } from "bun:test";
@@ -14,6 +15,8 @@ import {
   scrubErrorMessage,
 } from "./bridge";
 import type { ChatQueryResult } from "./config";
+import { createStateAdapter } from "./state";
+import { createRedisAdapter } from "./state/redis-adapter";
 
 // ---------------------------------------------------------------------------
 // formatQueryResponse
@@ -353,5 +356,110 @@ describe("chat plugin lifecycle", () => {
 
     await plugin.initialize!(ctx);
     await expect(plugin.initialize!(ctx)).rejects.toThrow(/already initialized/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// State adapter factory
+// ---------------------------------------------------------------------------
+
+describe("createStateAdapter", () => {
+  it("defaults to memory when no config provided", () => {
+    const adapter = createStateAdapter(undefined, null);
+    expect(adapter).toBeDefined();
+    expect(typeof adapter.connect).toBe("function");
+    expect(typeof adapter.subscribe).toBe("function");
+  });
+
+  it("creates memory adapter explicitly", () => {
+    const adapter = createStateAdapter({ backend: "memory" }, null);
+    expect(adapter).toBeDefined();
+  });
+
+  it("creates PG adapter when db is provided", () => {
+    const mockDb = {
+      async query() { return { rows: [] }; },
+      async execute() {},
+    };
+    const adapter = createStateAdapter({ backend: "pg" }, mockDb);
+    expect(adapter).toBeDefined();
+  });
+
+  it("throws when PG backend requested without db", () => {
+    expect(() => createStateAdapter({ backend: "pg" }, null)).toThrow(
+      /DATABASE_URL/,
+    );
+  });
+
+  it("redis stub throws", () => {
+    expect(() => createRedisAdapter()).toThrow(/not yet implemented/);
+    expect(() => createStateAdapter({ backend: "redis" }, null)).toThrow(
+      /not yet implemented/,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// State config validation
+// ---------------------------------------------------------------------------
+
+describe("chatPlugin state config validation", () => {
+  it("accepts config with state backend", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: {
+        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+      },
+      state: { backend: "memory" },
+      executeQuery: async () => ({
+        answer: "test",
+        sql: [],
+        data: [],
+        steps: 1,
+        usage: { totalTokens: 10 },
+      }),
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
+  });
+
+  it("accepts config without state (defaults to memory)", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: {
+        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+      },
+      executeQuery: async () => ({
+        answer: "test",
+        sql: [],
+        data: [],
+        steps: 1,
+        usage: { totalTokens: 10 },
+      }),
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
+  });
+
+  it("accepts PG state config with custom prefix", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: {
+        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+      },
+      state: { backend: "pg", tablePrefix: "myapp_" },
+      executeQuery: async () => ({
+        answer: "test",
+        sql: [],
+        data: [],
+        steps: 1,
+        usage: { totalTokens: 10 },
+      }),
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
   });
 });

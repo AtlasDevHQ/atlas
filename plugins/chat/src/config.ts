@@ -30,11 +30,24 @@ export interface SlackAdapterConfig {
   signingSecret: string;
 }
 
+/** State backend configuration. */
+export interface StateConfig {
+  /** Which state backend to use. Default: "memory" */
+  backend: "memory" | "pg" | "redis";
+  /** Table name prefix for PG backend. Default: "chat_" */
+  tablePrefix?: string;
+  /** Redis connection URL (future — not yet implemented). */
+  redisUrl?: string;
+}
+
 export interface ChatPluginConfig {
   /** Adapter credentials keyed by platform name. */
   adapters: {
     slack?: SlackAdapterConfig;
   };
+
+  /** State backend configuration. Default: { backend: "memory" } */
+  state?: StateConfig;
 
   /** Run the Atlas agent on a question and return structured results. Required. */
   executeQuery: (
@@ -61,6 +74,14 @@ const SlackAdapterSchema = z.object({
   signingSecret: z.string().min(1, "slack signingSecret must not be empty"),
 });
 
+const StateConfigSchema = z
+  .object({
+    backend: z.enum(["memory", "pg", "redis"]).default("memory"),
+    tablePrefix: z.string().min(1).optional(),
+    redisUrl: z.string().url().optional(),
+  })
+  .optional();
+
 export const ChatConfigSchema = z.object({
   adapters: z
     .object({
@@ -70,6 +91,7 @@ export const ChatConfigSchema = z.object({
       (a) => Object.values(a).some((v) => v !== undefined),
       "At least one adapter must be configured",
     ),
+  state: StateConfigSchema,
   executeQuery: z
     .any()
     .refine(

@@ -82,6 +82,21 @@ function buildPlugins() {
           { email: data.email, orgName: data.organization.name, inviterId: data.inviter.user.id },
           "Organization invitation created but email delivery is not configured — share the invite link manually",
         );
+
+        // Trigger onboarding milestone for the inviter
+        try {
+          const { onTeamMemberInvited } = await import("@atlas/api/lib/email/hooks");
+          onTeamMemberInvited({
+            userId: data.inviter.user.id,
+            email: data.inviter.user.email,
+            orgId: data.organization.id,
+          });
+        } catch (err) {
+          log.debug(
+            { err: err instanceof Error ? err.message : String(err) },
+            "Onboarding hook not available — non-blocking",
+          );
+        }
       },
     }),
   ];
@@ -314,6 +329,33 @@ export function getAuthInstance(): AuthInstance {
             }
           },
           after: async (user) => {
+            // Onboarding welcome email — fire-and-forget after signup.
+            // Deferred with setTimeout to allow Better Auth to create the org/membership first.
+            if (user.email) {
+              const userEmail = user.email;
+              setTimeout(async () => {
+                try {
+                  const { onUserSignup } = await import("@atlas/api/lib/email/hooks");
+                  // Look up the user's first org membership
+                  const memberships = await internalQuery<{ organizationId: string }>(
+                    `SELECT "organizationId" FROM member WHERE "userId" = $1 LIMIT 1`,
+                    [user.id],
+                  );
+                  const orgId = memberships[0]?.organizationId;
+                  if (!orgId) {
+                    log.warn({ userId: user.id }, "No org membership found after signup — welcome email deferred to fallback scheduler");
+                    return;
+                  }
+                  onUserSignup({ userId: user.id, email: userEmail, orgId });
+                } catch (err) {
+                  log.warn(
+                    { userId: user.id, err: err instanceof Error ? err.message : String(err) },
+                    "Failed to trigger welcome email — non-blocking",
+                  );
+                }
+              }, 2000);
+            }
+
             // Domain-based SSO auto-provisioning: if the user's email domain
             // matches an enabled SSO provider, auto-add them to that org.
             try {

@@ -33,6 +33,7 @@ import { prompts } from "./routes/prompts";
 import { widget } from "./routes/widget";
 import { widgetLoader, widgetTypesLoader } from "./routes/widget-loader";
 import { publicBranding } from "./routes/public-branding";
+import { onboardingEmails } from "./routes/onboarding-emails";
 
 const log = createLogger("api");
 const tracer = trace.getTracer("atlas");
@@ -118,6 +119,7 @@ app.route("/widget", widget);
 app.route("/widget.js", widgetLoader);
 app.route("/widget.d.ts", widgetTypesLoader);
 app.route("/api/v1/branding", publicBranding);
+app.route("/api/v1/onboarding-emails", onboardingEmails);
 
 // Onboarding routes — self-serve signup flow (test-connection, complete setup).
 try {

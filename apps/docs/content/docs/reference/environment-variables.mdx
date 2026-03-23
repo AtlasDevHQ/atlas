@@ -501,8 +501,10 @@ See [Python Tool](/guides/python) for the full guide.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RESEND_API_KEY` | — | Resend API key for email delivery in scheduled tasks |
-| `ATLAS_EMAIL_FROM` | `Atlas <noreply@useatlas.dev>` | From address for scheduled task emails |
+| `RESEND_API_KEY` | — | Resend API key for email delivery in scheduled tasks and onboarding emails |
+| `ATLAS_EMAIL_FROM` | `Atlas <noreply@useatlas.dev>` | From address for scheduled task and onboarding emails |
+| `ATLAS_SMTP_URL` | — | Webhook URL for email delivery (POST JSON with `from`, `to`, `subject`, `html`). Alternative to Resend |
+| `ATLAS_ONBOARDING_EMAILS_ENABLED` | `false` | Enable automated onboarding drip campaign for new signups. Requires `DATABASE_URL` and either `RESEND_API_KEY` or `ATLAS_SMTP_URL` |
 
 ---
 

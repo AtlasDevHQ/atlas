@@ -250,6 +250,14 @@ if (config.scheduler?.backend === "bun") {
   log.info("Scheduler backend is 'vercel' — tick endpoint active, no in-process loop");
 }
 
+// Start onboarding email fallback scheduler (sends time-based nudge emails)
+try {
+  const { startOnboardingEmailScheduler } = await import("@atlas/api/lib/email/scheduler");
+  startOnboardingEmailScheduler();
+} catch (err) {
+  log.debug({ err: err instanceof Error ? err.message : String(err) }, "Onboarding email scheduler not started — feature may be disabled");
+}
+
 // Start audit log purge scheduler (enterprise feature — no-op when disabled)
 try {
   const { startAuditPurgeScheduler } = await import("@atlas/ee/audit/purge-scheduler");
@@ -280,6 +288,14 @@ async function shutdown(signal: string) {
     } catch (err) {
       log.error({ err: err instanceof Error ? err.message : String(err) }, "Failed to stop scheduler");
     }
+  }
+
+  // Stop onboarding email scheduler
+  try {
+    const { stopOnboardingEmailScheduler } = await import("@atlas/api/lib/email/scheduler");
+    stopOnboardingEmailScheduler();
+  } catch {
+    // intentionally ignored: module may not be loaded
   }
 
   try {

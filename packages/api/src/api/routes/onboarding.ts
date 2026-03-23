@@ -389,6 +389,22 @@ onboarding.openapi(
       _resetWhitelists();
 
       log.info({ requestId, connectionId: id, orgId, dbType, userId: authResult.user?.id }, "Onboarding complete — connection saved");
+
+      // Trigger onboarding milestone: database connected (fire-and-forget)
+      // AtlasUser.label is the user's email in managed auth mode.
+      if (authResult.user?.id && authResult.user.label?.includes("@")) {
+        try {
+          const { onDatabaseConnected } = await import("@atlas/api/lib/email/hooks");
+          onDatabaseConnected({
+            userId: authResult.user.id,
+            email: authResult.user.label,
+            orgId,
+          });
+        } catch (err) {
+          log.debug({ err: err instanceof Error ? err.message : String(err) }, "Onboarding email hook not available");
+        }
+      }
+
       return c.json({
         connectionId: id,
         dbType,

@@ -435,6 +435,21 @@ chat.openapi(chatRoute, async (c) => {
           },
         });
 
+        // Fire-and-forget: trigger onboarding "first query" milestone.
+        // AtlasUser.label is the user's email in managed auth mode.
+        if (authResult.user?.id && authResult.user.label?.includes("@")) {
+          const uid = authResult.user.id;
+          const uemail = authResult.user.label;
+          const uorg = authResult.user.activeOrganizationId ?? "default";
+          void import("@atlas/api/lib/email/hooks")
+            .then(({ onFirstQueryExecuted }) => {
+              onFirstQueryExecuted({ userId: uid, email: uemail, orgId: uorg });
+            })
+            .catch((err: unknown) => {
+              log.debug({ err: err instanceof Error ? err.message : String(err) }, "Onboarding email hook not available — non-blocking");
+            });
+        }
+
         // Fire-and-forget: persist assistant response after stream completes.
         if (conversationId) {
           const cid = conversationId;

@@ -38,6 +38,7 @@
     "self-hosted-models",
     "rate-limiting",
     "troubleshooting",
+    "sla-monitoring",
     "observability"
   ]
 }

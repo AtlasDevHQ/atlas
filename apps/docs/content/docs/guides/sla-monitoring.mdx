@@ -1,0 +1,119 @@
+---
+title: SLA Monitoring
+description: Track per-workspace uptime, query latency percentiles, and error rates with configurable alerting.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas provides built-in SLA monitoring that tracks per-workspace query performance and reliability metrics. Platform operators can view latency percentiles (p50/p95/p99), error rates, and uptime — with configurable alerting when thresholds are breached.
+
+<Callout title="Prerequisites">
+- Enterprise features enabled (`ATLAS_ENTERPRISE_ENABLED=true` + license key)
+- Internal database configured (`DATABASE_URL`)
+- Platform admin role for dashboard access
+</Callout>
+
+## How It Works
+
+Every query execution automatically records two data points:
+
+- **Latency** — round-trip time in milliseconds
+- **Outcome** — success or error
+
+These are stored in the internal database and aggregated on-demand into:
+
+| Metric | Description |
+|--------|-------------|
+| **P50 / P95 / P99 latency** | Query latency percentiles over the time window |
+| **Error rate** | Percentage of queries that returned errors |
+| **Uptime** | Percentage of successful queries (inverse of error rate) |
+| **Total queries** | Query volume per workspace |
+
+Metrics are computed over a configurable time window (default: 24 hours).
+
+## Alerting
+
+SLA alerts fire when workspace metrics exceed configured thresholds. Three alert types are supported:
+
+| Alert Type | Default Threshold | Description |
+|-----------|------------------|-------------|
+| **P99 Latency** | 5000ms | P99 query latency exceeds threshold |
+| **Error Rate** | 5% | Error rate exceeds threshold |
+| **Downtime** | 15 minutes | Consecutive downtime exceeds threshold |
+
+### Alert Lifecycle
+
+Alerts progress through three states:
+
+1. **Firing** — Threshold breached. Notification sent via webhook (if configured).
+2. **Acknowledged** — Operator has acknowledged the alert but it remains active.
+3. **Resolved** — Metric returned below threshold. Auto-resolved on next evaluation.
+
+### Webhook Notifications
+
+Set `ATLAS_SLA_WEBHOOK_URL` to receive alert notifications via HTTP POST:
+
+```json
+{
+  "type": "sla.alert.fired",
+  "alert": {
+    "id": "abc-123",
+    "workspaceId": "ws-456",
+    "workspaceName": "Acme Corp",
+    "type": "latency_p99",
+    "status": "firing",
+    "currentValue": 6200,
+    "threshold": 5000,
+    "message": "Workspace \"Acme Corp\" p99 latency 6200ms exceeds threshold 5000ms"
+  },
+  "timestamp": "2026-03-23T10:30:00.000Z"
+}
+```
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_ENTERPRISE_ENABLED` | `false` | Enable enterprise features including SLA monitoring |
+| `ATLAS_ENTERPRISE_LICENSE_KEY` | — | Enterprise license key |
+| `ATLAS_SLA_LATENCY_P99_MS` | `5000` | Default P99 latency alert threshold (ms) |
+| `ATLAS_SLA_ERROR_RATE_PCT` | `5` | Default error rate alert threshold (%) |
+| `ATLAS_SLA_DOWNTIME_MINUTES` | `15` | Default downtime alert threshold (minutes) |
+| `ATLAS_SLA_WEBHOOK_URL` | — | Webhook URL for alert delivery |
+
+Thresholds can also be configured through the admin UI, which takes precedence over env vars.
+
+## Dashboard
+
+The SLA monitoring dashboard is available in the admin console under **Platform Admin > SLA Monitoring**. It requires the `platform_admin` role.
+
+### Overview Tab
+
+A table of all workspaces showing:
+- Latency percentiles (P50, P95, P99) with color-coded badges
+- Error rate and uptime percentage
+- Total query count
+- Click-through to per-workspace detail with hourly time-series charts
+
+### Alerts Tab
+
+- Active and recent alerts with status badges
+- One-click acknowledge for firing alerts
+- Manual "Evaluate Now" to trigger immediate alert evaluation
+- Threshold configuration dialog
+
+## API Endpoints
+
+All endpoints require `platform_admin` role and are mounted at `/api/v1/platform/sla`.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/` | All workspaces SLA summary |
+| `GET` | `/:workspaceId` | Per-workspace detail with time-series |
+| `GET` | `/alerts` | List alerts (optional `?status=firing`) |
+| `GET` | `/thresholds` | Current alert thresholds |
+| `PUT` | `/thresholds` | Update alert thresholds |
+| `POST` | `/alerts/:alertId/acknowledge` | Acknowledge a firing alert |
+| `POST` | `/evaluate` | Trigger alert evaluation |

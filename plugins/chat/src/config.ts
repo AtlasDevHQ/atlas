@@ -12,6 +12,9 @@ import { z } from "zod";
 // Types
 // ---------------------------------------------------------------------------
 
+/** A single message in a conversation thread. */
+export type ChatMessage = { role: "user" | "assistant"; content: string };
+
 /** Structured query result returned by the Atlas agent. */
 export interface ChatQueryResult {
   answer: string;
@@ -38,7 +41,7 @@ export interface ChatPluginConfig {
     question: string,
     options?: {
       threadId?: string;
-      priorMessages?: Array<{ role: "user" | "assistant"; content: string }>;
+      priorMessages?: ChatMessage[];
     },
   ) => Promise<ChatQueryResult>;
 

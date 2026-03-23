@@ -15,7 +15,7 @@
 import { Chat } from "chat";
 import { createMemoryState } from "@chat-adapter/state-memory";
 import type { PluginLogger } from "@useatlas/plugin-sdk";
-import type { ChatPluginConfig, ChatQueryResult } from "./config";
+import type { ChatPluginConfig, ChatQueryResult, ChatMessage } from "./config";
 import { createSlackAdapter } from "./adapters/slack";
 
 // ---------------------------------------------------------------------------
@@ -24,8 +24,14 @@ import { createSlackAdapter } from "./adapters/slack";
 
 /** Thread conversation history for follow-up context. */
 interface ThreadHistory {
-  messages: Array<{ role: "user" | "assistant"; content: string }>;
+  messages: ChatMessage[];
 }
+
+/** Maximum number of threads to keep history for (LRU eviction). */
+const MAX_THREAD_HISTORIES = 10_000;
+
+/** Maximum messages per thread history. */
+const MAX_MESSAGES_PER_THREAD = 200;
 
 /** Scrubbing patterns for error messages — never expose these to users. */
 const SENSITIVE_PATTERNS = [
@@ -114,9 +120,47 @@ export function scrubErrorMessage(
     scrubbed = scrubbed.replace(pattern, "[REDACTED]");
   }
   if (userScrubber) {
-    scrubbed = userScrubber(scrubbed);
+    try {
+      scrubbed = userScrubber(scrubbed);
+    } catch {
+      // intentionally ignored: user scrubber failure should not prevent
+      // error delivery — the built-in scrubbing has already run.
+    }
   }
   return scrubbed;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Safely post an error message to a chat thread with double-fault protection. */
+async function safePostError(
+  thread: { post: (msg: string) => Promise<unknown> },
+  message: string,
+  log: PluginLogger,
+  threadId: string,
+): Promise<void> {
+  try {
+    await thread.post(message);
+  } catch (postErr) {
+    log.warn(
+      { err: postErr instanceof Error ? postErr : new Error(String(postErr)), threadId },
+      "Failed to deliver error message to chat thread",
+    );
+  }
+}
+
+/** Evict oldest entries when the thread history map exceeds the max size. */
+function evictOldHistories(histories: Map<string, ThreadHistory>): void {
+  if (histories.size <= MAX_THREAD_HISTORIES) return;
+  const keysToDelete = [...histories.keys()].slice(
+    0,
+    histories.size - MAX_THREAD_HISTORIES,
+  );
+  for (const key of keysToDelete) {
+    histories.delete(key);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -124,8 +168,6 @@ export function scrubErrorMessage(
 // ---------------------------------------------------------------------------
 
 export interface ChatBridge {
-  /** The underlying Chat SDK instance. */
-  readonly chat: Chat;
   /** Platform webhook handlers (e.g., `webhooks.slack`). */
   readonly webhooks: Chat["webhooks"];
   /** Shut down the Chat SDK instance and clean up resources. */
@@ -180,30 +222,45 @@ export function createChatBridge(
       "New mention received",
     );
 
-    // Rate limiting
-    if (config.checkRateLimit) {
-      const check = config.checkRateLimit(threadId);
-      if (!check.allowed) {
-        await thread.post(
-          "Rate limit exceeded. Please wait before trying again.",
-        );
-        return;
-      }
-    }
-
-    // Subscribe for follow-up messages
-    await thread.subscribe();
-
     try {
+      // Rate limiting
+      if (config.checkRateLimit) {
+        try {
+          const check = config.checkRateLimit(threadId);
+          if (!check.allowed) {
+            await thread.post(
+              "Rate limit exceeded. Please wait before trying again.",
+            );
+            return;
+          }
+        } catch (rateLimitErr) {
+          log.error(
+            { err: rateLimitErr instanceof Error ? rateLimitErr : new Error(String(rateLimitErr)), threadId },
+            "Rate limit check failed — denying request",
+          );
+          await safePostError(
+            thread,
+            "Unable to verify rate limits. Please try again shortly.",
+            log,
+            threadId,
+          );
+          return;
+        }
+      }
+
+      // Subscribe for follow-up messages
+      await thread.subscribe();
+
       const result = await config.executeQuery(question, { threadId });
 
-      // Store history for follow-ups
+      // Store history for follow-ups (with eviction)
       threadHistories.set(threadId, {
         messages: [
           { role: "user", content: question },
           { role: "assistant", content: result.answer },
         ],
       });
+      evictOldHistories(threadHistories);
 
       const response = formatQueryResponse(result);
       await thread.post({ markdown: response });
@@ -216,8 +273,11 @@ export function createChatBridge(
       );
 
       const errorMessage = scrubErrorMessage(rawMessage, config.scrubError);
-      await thread.post(
-        `Something went wrong while processing your question. ${errorMessage}`,
+      await safePostError(
+        thread,
+        `I was unable to answer your question: ${errorMessage}. This may be a transient issue — please try again in a few seconds.`,
+        log,
+        threadId,
       );
     }
   });
@@ -237,33 +297,50 @@ export function createChatBridge(
       "Follow-up message received",
     );
 
-    // Rate limiting
-    if (config.checkRateLimit) {
-      const check = config.checkRateLimit(threadId);
-      if (!check.allowed) {
-        await thread.post(
-          "Rate limit exceeded. Please wait before trying again.",
-        );
-        return;
-      }
-    }
-
-    // Build prior message context
-    const history = threadHistories.get(threadId);
-    const priorMessages = history?.messages;
-
     try {
+      // Rate limiting
+      if (config.checkRateLimit) {
+        try {
+          const check = config.checkRateLimit(threadId);
+          if (!check.allowed) {
+            await thread.post(
+              "Rate limit exceeded. Please wait before trying again.",
+            );
+            return;
+          }
+        } catch (rateLimitErr) {
+          log.error(
+            { err: rateLimitErr instanceof Error ? rateLimitErr : new Error(String(rateLimitErr)), threadId },
+            "Rate limit check failed — denying request",
+          );
+          await safePostError(
+            thread,
+            "Unable to verify rate limits. Please try again shortly.",
+            log,
+            threadId,
+          );
+          return;
+        }
+      }
+
+      // Build prior message context
+      const history = threadHistories.get(threadId);
+      const priorMessages = history?.messages;
+
       const result = await config.executeQuery(question, {
         threadId,
         priorMessages,
       });
 
-      // Append to history
+      // Append to history (with truncation)
       const existing = threadHistories.get(threadId) ?? { messages: [] };
       existing.messages.push(
         { role: "user", content: question },
         { role: "assistant", content: result.answer },
       );
+      if (existing.messages.length > MAX_MESSAGES_PER_THREAD) {
+        existing.messages.splice(0, existing.messages.length - MAX_MESSAGES_PER_THREAD);
+      }
       threadHistories.set(threadId, existing);
 
       const response = formatQueryResponse(result);
@@ -277,14 +354,16 @@ export function createChatBridge(
       );
 
       const errorMessage = scrubErrorMessage(rawMessage, config.scrubError);
-      await thread.post(
-        `Something went wrong while processing your follow-up. ${errorMessage}`,
+      await safePostError(
+        thread,
+        `I was unable to process your follow-up: ${errorMessage}. This may be a transient issue — please try again in a few seconds.`,
+        log,
+        threadId,
       );
     }
   });
 
   return {
-    chat,
     webhooks: chat.webhooks,
     async shutdown() {
       threadHistories.clear();

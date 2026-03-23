@@ -186,6 +186,16 @@ describe("scrubErrorMessage", () => {
     const scrubbed = scrubErrorMessage(msg);
     expect(scrubbed).toBe(msg);
   });
+
+  it("survives user scrubber throwing", () => {
+    const msg = "Error: postgres://admin:secret@db.com/prod";
+    const scrubbed = scrubErrorMessage(msg, () => {
+      throw new Error("scrubber bug");
+    });
+    // Built-in scrubbing should still have run
+    expect(scrubbed).not.toContain("postgres://");
+    expect(scrubbed).toContain("[REDACTED]");
+  });
 });
 
 // ---------------------------------------------------------------------------

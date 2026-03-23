@@ -798,6 +798,22 @@ export async function migrateInternalDB(): Promise<void> {
     );
   `);
 
+  // Abuse prevention events (0.9.0 — abuse prevention #668)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS abuse_events (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      workspace_id TEXT NOT NULL,
+      level TEXT NOT NULL,
+      trigger_type TEXT NOT NULL,
+      message TEXT NOT NULL,
+      metadata JSONB NOT NULL DEFAULT '{}',
+      actor TEXT NOT NULL DEFAULT 'system',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_abuse_events_workspace ON abuse_events(workspace_id, created_at);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_abuse_events_level ON abuse_events(level);`);
+
   log.info("Internal DB migration complete");
 }
 

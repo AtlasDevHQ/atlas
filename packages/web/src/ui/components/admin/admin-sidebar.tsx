@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useAtlasConfig } from "@/ui/context";
 import { useBranding } from "@/ui/hooks/use-branding";
 import {
+  Ban,
   LayoutDashboard,
   Database,
   GitCompareArrows,
@@ -65,6 +66,7 @@ const navItems = [
   { href: "/admin/prompts", label: "Prompt Library", icon: BookOpen },
   { href: "/admin/roles", label: "Roles", icon: KeyRound },
   { href: "/admin/ip-allowlist", label: "IP Allowlist", icon: Shield },
+  { href: "/admin/abuse", label: "Abuse Prevention", icon: Ban },
   { href: "/admin/actions", label: "Actions", icon: Zap },
   { href: "/admin/approval", label: "Approval Workflows", icon: ShieldAlert },
   { href: "/admin/compliance", label: "PII Compliance", icon: Fingerprint },

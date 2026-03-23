@@ -19,6 +19,7 @@
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalExecute } from "@atlas/api/lib/db/internal";
 import { SENSITIVE_PATTERNS } from "@atlas/api/lib/security";
+import { recordQueryEvent } from "@atlas/api/lib/security/abuse";
 import type { DBType } from "@atlas/api/lib/db/connection";
 
 const log = createLogger("audit");
@@ -63,6 +64,15 @@ export function logQueryAudit(entry: AuditEntry): void {
     },
     entry.success ? "query_success" : "query_failure",
   );
+
+  // Record query event for abuse detection (per-workspace anomaly tracking)
+  const orgId = ctx?.user?.activeOrganizationId;
+  if (orgId) {
+    recordQueryEvent(orgId, {
+      success: entry.success,
+      tablesAccessed: entry.tablesAccessed,
+    });
+  }
 
   // Insert into audit_log when internal DB is available (SQL truncated to 2000 chars)
   if (hasInternalDB()) {

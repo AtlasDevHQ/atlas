@@ -35,6 +35,7 @@ export const CHAT_ERROR_CODES = [
   "billing_check_failed",
   "workspace_check_failed",
   "workspace_suspended",
+  "workspace_throttled",
   "workspace_deleted",
 ] as const;
 
@@ -82,6 +83,7 @@ const RETRYABLE_MAP: Record<ChatErrorCode, boolean> = {
   billing_check_failed: true,
   workspace_check_failed: true,
   workspace_suspended: false,
+  workspace_throttled: true,
   workspace_deleted: false,
 };
 
@@ -507,6 +509,9 @@ export function parseChatError(error: Error, authMode: AuthMode): ChatErrorInfo 
 
     case "workspace_suspended":
       return { title: "Workspace suspended.", detail: serverMessage ?? "Contact your workspace administrator to reactivate it.", code: rawCode, retryable, requestId };
+
+    case "workspace_throttled":
+      return { title: "Workspace throttled.", detail: serverMessage ?? "Your workspace has been temporarily throttled due to unusual activity. Requests will be delayed.", code: rawCode, retryable, requestId };
 
     case "workspace_deleted":
       return { title: "Workspace deleted.", detail: serverMessage ?? "This workspace has been permanently deleted. Create a new workspace to continue.", code: rawCode, retryable, requestId };

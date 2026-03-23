@@ -293,6 +293,25 @@ ATLAS_TRUST_PROXY=true
 
 See [Rate Limiting & Retry](/guides/rate-limiting) for client-side handling, SDK retry patterns, and troubleshooting.
 
+### Abuse Prevention
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_ABUSE_QUERY_RATE` | `200` | Max queries per workspace per sliding window |
+| `ATLAS_ABUSE_WINDOW_SECONDS` | `300` | Sliding window duration in seconds |
+| `ATLAS_ABUSE_ERROR_RATE` | `0.5` | Max error rate (0–1) before escalation |
+| `ATLAS_ABUSE_UNIQUE_TABLES` | `50` | Max unique tables accessed per window |
+| `ATLAS_ABUSE_THROTTLE_DELAY_MS` | `2000` | Delay injected for throttled workspaces (ms) |
+
+```bash
+# Stricter abuse detection for production
+ATLAS_ABUSE_QUERY_RATE=100
+ATLAS_ABUSE_ERROR_RATE=0.3
+ATLAS_ABUSE_THROTTLE_DELAY_MS=5000
+```
+
+See [Abuse Prevention](/guides/abuse-prevention) for details on graduated response and admin reinstatement.
+
 ### Session Timeouts
 
 | Variable | Default | Description |

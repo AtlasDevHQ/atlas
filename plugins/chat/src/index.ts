@@ -2,9 +2,9 @@
  * Atlas Chat SDK Bridge Plugin.
  *
  * Bridges vercel/chat (Chat SDK) into the Atlas plugin system as a unified
- * interaction layer. Instead of maintaining separate per-platform plugins,
- * this single plugin handles Slack, Teams, Discord, and more through Chat
- * SDK adapters.
+ * interaction layer. Currently supports Slack; additional platforms (Teams,
+ * Discord, etc.) will be added as Chat SDK adapters in follow-up issues
+ * (#759–#766).
  *
  * @example
  * ```typescript

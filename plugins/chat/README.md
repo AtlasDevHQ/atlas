@@ -1,6 +1,6 @@
 # @useatlas/chat
 
-Unified chat interaction plugin bridging [Chat SDK](https://github.com/vercel/chat) (vercel/chat) into the Atlas plugin system. Instead of maintaining separate per-platform plugins, this single plugin handles Slack, Teams, Discord, and more through Chat SDK adapters.
+Unified chat interaction plugin bridging [Chat SDK](https://github.com/vercel/chat) (vercel/chat) into the Atlas plugin system. Instead of maintaining separate per-platform plugins, this single plugin provides a bridge for Chat SDK adapters. Currently ships with Slack support; additional platforms (Teams, Discord, etc.) will be added in follow-up issues (#759–#766).
 
 ## Install
 

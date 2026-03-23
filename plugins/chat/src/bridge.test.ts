@@ -3,11 +3,9 @@
  *
  * Covers:
  * - Response formatting (markdown tables, SQL, metadata)
- * - Error scrubbing (connection strings, stack traces, API keys)
- * - Bridge lifecycle (creation, shutdown)
- * - Event mapping (onNewMention → executeQuery → thread.post)
- * - Follow-up handling (onSubscribedMessage with thread history)
- * - Rate limiting
+ * - Error scrubbing (connection strings, stack traces, API keys, user scrubber faults)
+ * - Config validation (adapter requirements, callback types)
+ * - Plugin lifecycle (initialization, health checks, teardown, double-init guard)
  */
 
 import { describe, expect, it } from "bun:test";

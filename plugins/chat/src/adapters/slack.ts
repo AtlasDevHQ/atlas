@@ -1,9 +1,10 @@
 /**
  * Slack adapter configuration for the Chat SDK bridge.
  *
- * Wraps `@chat-adapter/slack`'s `createSlackAdapter()` with Atlas-specific
- * credential wiring. The adapter handles Slack signature verification,
- * event parsing, and Block Kit formatting internally.
+ * Thin wrapper around `@chat-adapter/slack`'s `createSlackAdapter()` for
+ * import isolation. Passes through adapter credentials without modification.
+ * The Chat SDK adapter handles Slack signature verification, event parsing,
+ * and Block Kit formatting internally.
  */
 
 import { createSlackAdapter as createChatSlackAdapter } from "@chat-adapter/slack";

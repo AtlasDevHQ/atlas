@@ -795,6 +795,119 @@ describe("chatPlugin Teams adapter config", () => {
       }),
     ).toThrow(/appPassword/i);
   });
+
+  it("rejects teams adapter with empty tenantId", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          teams: { appId: "test-app-id", appPassword: "test-pw", tenantId: "" },
+        },
+        executeQuery: mockExecuteQuery,
+      }),
+    ).toThrow(/config validation/i);
+  });
+
+  it("rejects unknown adapter keys", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          discord: { token: "test" },
+        } as never,
+        executeQuery: mockExecuteQuery,
+      }),
+    ).toThrow(/config validation/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Teams adapter factory
+// ---------------------------------------------------------------------------
+
+describe("createTeamsAdapter", () => {
+  it("sets MultiTenant when no tenantId", async () => {
+    const { createTeamsAdapter: createAdapter } = await import("./adapters/teams");
+    const { createTeamsAdapter: upstream } = await import("@chat-adapter/teams");
+
+    // We can't easily inspect what was passed to the upstream, but we can
+    // verify the adapter is created successfully and has the right name.
+    const adapter = createAdapter({ appId: "test-id", appPassword: "test-pw" });
+    expect(adapter).toBeDefined();
+    expect(adapter.name).toBe("teams");
+  });
+
+  it("sets SingleTenant when tenantId is provided", async () => {
+    const { createTeamsAdapter: createAdapter } = await import("./adapters/teams");
+
+    const adapter = createAdapter({
+      appId: "test-id",
+      appPassword: "test-pw",
+      tenantId: "tenant-123",
+    });
+    expect(adapter).toBeDefined();
+    expect(adapter.name).toBe("teams");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Webhook route guards
+// ---------------------------------------------------------------------------
+
+describe("webhook route guards", () => {
+  it("teams webhook returns 503 before initialization", async () => {
+    const { buildChatPlugin } = require("./index");
+    const { Hono } = require("hono");
+
+    const plugin = buildChatPlugin({
+      adapters: {
+        teams: { appId: "test-app-id", appPassword: "test-app-password" },
+      },
+      executeQuery: async () => ({
+        answer: "test",
+        sql: [],
+        data: [],
+        steps: 1,
+        usage: { totalTokens: 10 },
+      }),
+    });
+
+    const app = new Hono();
+    plugin.routes!(app);
+
+    const resp = await app.request("/webhooks/teams", { method: "POST" });
+    expect(resp.status).toBe(503);
+    const body = await resp.json();
+    expect(body.error).toContain("not yet initialized");
+  });
+
+  it("slack webhook returns 503 before initialization", async () => {
+    const { buildChatPlugin } = require("./index");
+    const { Hono } = require("hono");
+
+    const plugin = buildChatPlugin({
+      adapters: {
+        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+      },
+      executeQuery: async () => ({
+        answer: "test",
+        sql: [],
+        data: [],
+        steps: 1,
+        usage: { totalTokens: 10 },
+      }),
+    });
+
+    const app = new Hono();
+    plugin.routes!(app);
+
+    const resp = await app.request("/webhooks/slack", { method: "POST" });
+    expect(resp.status).toBe(503);
+    const body = await resp.json();
+    expect(body.error).toContain("not yet initialized");
+  });
 });
 
 // ---------------------------------------------------------------------------

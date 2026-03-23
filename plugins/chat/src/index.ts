@@ -60,6 +60,7 @@ export type {
   PendingAction,
   ActionCallbacks,
   ConversationCallbacks,
+  SlackAdapterConfig,
   TeamsAdapterConfig,
 } from "./config";
 export type { ChatBridge } from "./bridge";
@@ -106,17 +107,25 @@ function buildChatPlugin(
             return c.json({ error: "Slack adapter not configured" }, 404);
           }
 
-          const response = await handler(c.req.raw, {
-            waitUntil: (task: Promise<unknown>) => {
-              task.catch((err: unknown) => {
-                (log ?? console).error(
-                  { err: err instanceof Error ? err : new Error(String(err)) },
-                  "Chat SDK webhook background task failed",
-                );
-              });
-            },
-          });
-          return response;
+          try {
+            const response = await handler(c.req.raw, {
+              waitUntil: (task: Promise<unknown>) => {
+                task.catch((err: unknown) => {
+                  (log ?? console).error(
+                    { err: err instanceof Error ? err : new Error(String(err)) },
+                    "Chat SDK Slack webhook background task failed",
+                  );
+                });
+              },
+            });
+            return response;
+          } catch (err) {
+            (log ?? console).error(
+              { err: err instanceof Error ? err : new Error(String(err)) },
+              "Slack webhook handler threw unexpectedly",
+            );
+            return c.json({ error: "Webhook processing failed" }, 500);
+          }
         });
 
         // OAuth routes — only if clientId is configured
@@ -212,17 +221,25 @@ function buildChatPlugin(
             return c.json({ error: "Teams adapter not configured" }, 404);
           }
 
-          const response = await handler(c.req.raw, {
-            waitUntil: (task: Promise<unknown>) => {
-              task.catch((err: unknown) => {
-                (log ?? console).error(
-                  { err: err instanceof Error ? err : new Error(String(err)) },
-                  "Chat SDK Teams webhook background task failed",
-                );
-              });
-            },
-          });
-          return response;
+          try {
+            const response = await handler(c.req.raw, {
+              waitUntil: (task: Promise<unknown>) => {
+                task.catch((err: unknown) => {
+                  (log ?? console).error(
+                    { err: err instanceof Error ? err : new Error(String(err)) },
+                    "Chat SDK Teams webhook background task failed",
+                  );
+                });
+              },
+            });
+            return response;
+          } catch (err) {
+            (log ?? console).error(
+              { err: err instanceof Error ? err : new Error(String(err)) },
+              "Teams webhook handler threw unexpectedly",
+            );
+            return c.json({ error: "Webhook processing failed" }, 500);
+          }
         });
       }
     },
@@ -243,21 +260,38 @@ function buildChatPlugin(
       await adapter.connect();
       stateAdapter = adapter;
 
-      // Create platform adapters
+      // Create platform adapters — wrap in try-catch to disconnect
+      // the state adapter if adapter creation or bridge setup fails.
       const adapterInstances: {
         slack?: SlackAdapter | null;
         teams?: TeamsAdapter | null;
       } = {};
-      if (config.adapters.slack) {
-        slackAdapterInstance = createSlackAdapter(config.adapters.slack) as SlackAdapter;
-        adapterInstances.slack = slackAdapterInstance;
-      }
-      if (config.adapters.teams) {
-        teamsAdapterInstance = createTeamsAdapter(config.adapters.teams) as TeamsAdapter;
-        adapterInstances.teams = teamsAdapterInstance;
-      }
+      try {
+        if (config.adapters.slack) {
+          slackAdapterInstance = createSlackAdapter(config.adapters.slack) as SlackAdapter;
+          adapterInstances.slack = slackAdapterInstance;
+        }
+        if (config.adapters.teams) {
+          teamsAdapterInstance = createTeamsAdapter(config.adapters.teams) as TeamsAdapter;
+          adapterInstances.teams = teamsAdapterInstance;
+        }
 
-      bridge = createChatBridge(config, ctx.logger, stateAdapter, adapterInstances);
+        bridge = createChatBridge(config, ctx.logger, stateAdapter, adapterInstances);
+      } catch (err) {
+        // Clean up already-connected state adapter to prevent leaks
+        try {
+          await stateAdapter.disconnect();
+        } catch (disconnectErr) {
+          ctx.logger.warn(
+            { err: disconnectErr instanceof Error ? disconnectErr : new Error(String(disconnectErr)) },
+            "Failed to disconnect state adapter during initialization cleanup",
+          );
+        }
+        stateAdapter = null;
+        slackAdapterInstance = null;
+        teamsAdapterInstance = null;
+        throw err;
+      }
 
       const enabledAdapters = Object.entries(config.adapters)
         .filter(([, v]) => v !== undefined)
@@ -316,11 +350,25 @@ function buildChatPlugin(
 
     async teardown() {
       if (bridge) {
-        await bridge.shutdown();
+        try {
+          await bridge.shutdown();
+        } catch (err) {
+          (log ?? console).error(
+            { err: err instanceof Error ? err : new Error(String(err)) },
+            "Failed to shut down chat bridge during teardown",
+          );
+        }
         bridge = null;
       }
       if (stateAdapter) {
-        await stateAdapter.disconnect();
+        try {
+          await stateAdapter.disconnect();
+        } catch (err) {
+          (log ?? console).error(
+            { err: err instanceof Error ? err : new Error(String(err)) },
+            "Failed to disconnect state adapter during teardown",
+          );
+        }
         stateAdapter = null;
       }
       slackAdapterInstance = null;

@@ -50,7 +50,9 @@ export interface TeamsAdapterConfig {
   appId: string;
   /** Microsoft App Password from Azure Bot registration. */
   appPassword: string;
-  /** Optional: restrict to a specific Microsoft Entra ID tenant. */
+  /** Optional: restrict to a specific Microsoft Entra ID tenant.
+   * When set, the adapter operates in single-tenant mode and rejects
+   * tokens from other tenants. */
   tenantId?: string;
 }
 
@@ -173,6 +175,7 @@ export const ChatConfigSchema = z.object({
       slack: SlackAdapterSchema.optional(),
       teams: TeamsAdapterSchema.optional(),
     })
+    .strict()
     .refine(
       (a) => Object.values(a).some((v) => v !== undefined),
       "At least one adapter must be configured",

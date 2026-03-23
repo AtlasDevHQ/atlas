@@ -214,9 +214,17 @@ type SLAModule = typeof import("@atlas/ee/sla/index");
 async function loadSLA(): Promise<SLAModule | null> {
   try {
     return await import("@atlas/ee/sla/index");
-  } catch {
-    // ee/sla module not installed — feature unavailable
-    return null;
+  } catch (err) {
+    // MODULE_NOT_FOUND is expected when ee package is not installed
+    if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND") {
+      return null;
+    }
+    // Unexpected errors (syntax errors, init failures) should surface
+    log.error(
+      { err: err instanceof Error ? err : new Error(String(err)) },
+      "Failed to load SLA module — unexpected error",
+    );
+    throw err;
   }
 }
 
@@ -349,7 +357,11 @@ platformSLA.openapi(acknowledgeAlertRoute, async (c) => {
 
   const alertId = c.req.param("alertId");
   const authResult = c.get("authResult");
-  const actorId = authResult.user?.id ?? "unknown";
+  if (!authResult.user?.id) {
+    log.error({ requestId, alertId }, "SLA alert acknowledge attempted without authenticated user identity");
+    return c.json({ error: "auth_error", message: "User identity could not be determined.", requestId }, 401);
+  }
+  const actorId = authResult.user.id;
 
   try {
     const acknowledged = await sla.acknowledgeAlert(alertId, actorId);

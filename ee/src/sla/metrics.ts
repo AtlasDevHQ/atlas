@@ -13,7 +13,7 @@
  */
 
 import { requireEnterprise } from "../index";
-import { hasInternalDB, internalQuery, internalExecute } from "@atlas/api/lib/db/internal";
+import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { WorkspaceSLASummary, WorkspaceSLADetail, SLAMetricPoint } from "@useatlas/types";
 
@@ -110,18 +110,19 @@ export function recordQueryMetric(
 ): void {
   if (!hasInternalDB()) return;
 
-  // Ensure table exists (idempotent), then insert
+  // Ensure table exists (idempotent), then insert. Single promise chain
+  // so both bootstrap and insert failures are caught and logged.
   ensureTable()
-    .then(() => {
-      internalExecute(
+    .then(() =>
+      internalQuery(
         `INSERT INTO sla_metrics (workspace_id, latency_ms, is_error) VALUES ($1, $2, $3)`,
         [workspaceId, latencyMs, isError],
-      );
-    })
+      ),
+    )
     .catch((err) => {
       log.warn(
         { err: err instanceof Error ? err.message : String(err), workspaceId },
-        "Failed to record SLA metric — table bootstrap failed",
+        "Failed to record SLA metric",
       );
     });
 }

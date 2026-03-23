@@ -28,7 +28,7 @@ export async function getThresholds(workspaceId?: string): Promise<SLAThresholds
   requireEnterprise("sla");
 
   if (!hasInternalDB()) {
-    return defaultThresholds();
+    throw new Error("Internal database not configured — SLA thresholds require DATABASE_URL");
   }
 
   if (workspaceId) {
@@ -106,7 +106,9 @@ export async function getAlerts(
 ): Promise<SLAAlert[]> {
   requireEnterprise("sla");
 
-  if (!hasInternalDB()) return [];
+  if (!hasInternalDB()) {
+    throw new Error("Internal database not configured — SLA alerts require DATABASE_URL");
+  }
 
   const rows = await internalQuery<{
     id: string;
@@ -175,7 +177,9 @@ export async function acknowledgeAlert(alertId: string, actorId: string): Promis
 export async function evaluateAlerts(): Promise<SLAAlert[]> {
   requireEnterprise("sla");
 
-  if (!hasInternalDB()) return [];
+  if (!hasInternalDB()) {
+    throw new Error("Internal database not configured — SLA evaluation requires DATABASE_URL");
+  }
 
   const thresholds = await getThresholds();
   const newAlerts: SLAAlert[] = [];
@@ -204,37 +208,44 @@ export async function evaluateAlerts(): Promise<SLAAlert[]> {
   );
 
   for (const ws of wsMetrics) {
-    const totalQueries = parseInt(ws.total_queries, 10);
-    if (totalQueries === 0) continue;
+    try {
+      const totalQueries = parseInt(ws.total_queries, 10);
+      if (totalQueries === 0) continue;
 
-    // Check latency P99
-    if (ws.latency_p99 !== null && ws.latency_p99 > thresholds.latencyP99Ms) {
-      const alert = await createAlertIfNotFiring(
-        ws.workspace_id,
-        ws.workspace_name,
-        "latency_p99",
-        ws.latency_p99,
-        thresholds.latencyP99Ms,
-        `Workspace "${ws.workspace_name}" p99 latency ${Math.round(ws.latency_p99)}ms exceeds threshold ${thresholds.latencyP99Ms}ms`,
-      );
-      if (alert) newAlerts.push(alert);
-    } else {
-      await resolveAlertsForType(ws.workspace_id, "latency_p99");
-    }
+      // Check latency P99
+      if (ws.latency_p99 !== null && ws.latency_p99 > thresholds.latencyP99Ms) {
+        const alert = await createAlertIfNotFiring(
+          ws.workspace_id,
+          ws.workspace_name,
+          "latency_p99",
+          ws.latency_p99,
+          thresholds.latencyP99Ms,
+          `Workspace "${ws.workspace_name}" p99 latency ${Math.round(ws.latency_p99)}ms exceeds threshold ${thresholds.latencyP99Ms}ms`,
+        );
+        if (alert) newAlerts.push(alert);
+      } else {
+        await resolveAlertsForType(ws.workspace_id, "latency_p99");
+      }
 
-    // Check error rate
-    if (ws.error_rate > thresholds.errorRatePct) {
-      const alert = await createAlertIfNotFiring(
-        ws.workspace_id,
-        ws.workspace_name,
-        "error_rate",
-        ws.error_rate,
-        thresholds.errorRatePct,
-        `Workspace "${ws.workspace_name}" error rate ${ws.error_rate.toFixed(1)}% exceeds threshold ${thresholds.errorRatePct}%`,
+      // Check error rate
+      if (ws.error_rate > thresholds.errorRatePct) {
+        const alert = await createAlertIfNotFiring(
+          ws.workspace_id,
+          ws.workspace_name,
+          "error_rate",
+          ws.error_rate,
+          thresholds.errorRatePct,
+          `Workspace "${ws.workspace_name}" error rate ${ws.error_rate.toFixed(1)}% exceeds threshold ${thresholds.errorRatePct}%`,
+        );
+        if (alert) newAlerts.push(alert);
+      } else {
+        await resolveAlertsForType(ws.workspace_id, "error_rate");
+      }
+    } catch (err) {
+      log.error(
+        { err: err instanceof Error ? err.message : String(err), workspaceId: ws.workspace_id },
+        "Failed to evaluate SLA for workspace — skipping",
       );
-      if (alert) newAlerts.push(alert);
-    } else {
-      await resolveAlertsForType(ws.workspace_id, "error_rate");
     }
   }
 
@@ -245,9 +256,9 @@ export async function evaluateAlerts(): Promise<SLAAlert[]> {
       try {
         await deliverAlert(alert);
       } catch (err) {
-        log.warn(
+        log.error(
           { err: err instanceof Error ? err.message : String(err), alertId: alert.id },
-          "Failed to deliver SLA alert notification",
+          "Failed to deliver SLA alert notification — alert was created but notification was not sent",
         );
       }
     }
@@ -363,9 +374,10 @@ async function deliverAlert(alert: SLAAlert): Promise<void> {
   });
 
   if (!response.ok) {
-    log.warn(
-      { status: response.status, alertId: alert.id },
-      "SLA alert webhook delivery failed",
+    const body = await response.text().catch(() => "(unreadable body)");
+    log.error(
+      { status: response.status, alertId: alert.id, responseBody: body.slice(0, 500) },
+      "SLA alert webhook delivery failed — alert notification was not delivered",
     );
   }
 }

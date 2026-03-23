@@ -58,7 +58,7 @@ const SENSITIVE_PATTERNS = [
 ];
 
 // ---------------------------------------------------------------------------
-// Response formatting (deprecated — use card builders from ./cards/)
+// Response formatting (legacy helpers — see also ./cards/ for JSX cards)
 // ---------------------------------------------------------------------------
 
 /**

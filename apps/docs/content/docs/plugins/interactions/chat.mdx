@@ -143,9 +143,9 @@ For production deployments, use the `pg` backend. The `memory` backend is suitab
 
 The plugin bridges Chat SDK events to the Atlas agent:
 
-1. **Slash commands** (`/atlas <question>`) — Posts a "Thinking about: \<question\>..." indicator, subscribes the thread, runs `executeQuery`, edits the response with results
+1. **Slash commands** (`/atlas <question>`) — Posts a "Thinking about: \<question\>..." indicator, subscribes the thread, runs `executeQuery`, edits the response with a JSX card (or markdown fallback)
 2. **@mentions** — Subscribes to the thread, runs `executeQuery`, posts the result as a native JSX card (Block Kit on Slack, Adaptive Cards on Teams, Discord Embeds) with markdown fallback
-3. **Thread follow-ups** — Messages in subscribed threads are routed through `executeQuery` with conversation history
+3. **Thread follow-ups** — Messages in subscribed threads are routed through `executeQuery` with conversation history, posted as a JSX card with markdown fallback
 4. **Actions** — Approval button clicks call `actions.approve()` or `actions.deny()`, then update the original message
 
 ### Rich Cards

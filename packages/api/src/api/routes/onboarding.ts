@@ -14,7 +14,7 @@ import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { connections, detectDBType } from "@atlas/api/lib/db/connection";
 import { authPreamble } from "./auth-preamble";
-import { hasInternalDB, internalQuery, internalExecute, encryptUrl } from "@atlas/api/lib/db/internal";
+import { hasInternalDB, internalQuery, encryptUrl } from "@atlas/api/lib/db/internal";
 import { maskConnectionUrl } from "@atlas/api/lib/security";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import { ErrorSchema } from "./shared-schemas";
@@ -615,7 +615,7 @@ onboarding.openapi(tourResetRoute, async (c) => {
 
   return withRequestContext({ requestId, user: preamble.authResult.user }, async () => {
     try {
-      internalExecute(
+      await internalQuery(
         `UPDATE user_onboarding SET tour_completed_at = NULL WHERE user_id = $1`,
         [userId],
       );

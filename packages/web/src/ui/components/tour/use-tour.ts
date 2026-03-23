@@ -68,7 +68,7 @@ export function useTour({
           return;
         }
       } catch {
-        // localStorage unavailable — continue to API check
+        // intentionally ignored: localStorage unavailable — continue to API check
       }
 
       if (serverTrackingEnabled) {
@@ -83,7 +83,7 @@ export function useTour({
               try {
                 localStorage.setItem(TOUR_STORAGE_KEY, "true");
               } catch {
-                // intentionally ignored: localStorage may be unavailable in some environments
+                /// intentionally ignored: localStorage may be unavailable in some environments
               }
               setLoading(false);
               setStatusChecked(true);
@@ -113,7 +113,7 @@ export function useTour({
     try {
       localStorage.setItem(TOUR_STORAGE_KEY, "true");
     } catch {
-      // intentionally ignored: localStorage may be unavailable in some environments
+      /// intentionally ignored: localStorage may be unavailable in some environments
     }
 
     // Save to server
@@ -158,7 +158,7 @@ export function useTour({
     try {
       localStorage.removeItem(TOUR_STORAGE_KEY);
     } catch {
-      // intentionally ignored: localStorage may be unavailable in some environments
+      /// intentionally ignored: localStorage may be unavailable in some environments
     }
 
     // Reset server-side status

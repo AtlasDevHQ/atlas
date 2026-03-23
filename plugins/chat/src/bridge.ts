@@ -428,9 +428,11 @@ export function createChatBridge(
         try {
           const check = config.checkRateLimit(threadId);
           if (!check.allowed) {
-            await thread.post(
-              "Rate limit exceeded. Please wait before trying again.",
-            );
+            const rateLimitCard = buildErrorCard({
+              message: "Rate limit exceeded.",
+              retryHint: "Please wait before trying again.",
+            });
+            await thread.post({ card: rateLimitCard.card, fallbackText: rateLimitCard.fallbackText });
             return;
           }
         } catch (rateLimitErr) {
@@ -440,7 +442,7 @@ export function createChatBridge(
           );
           await safePostError(
             thread,
-            "Unable to verify rate limits. Please try again shortly.",
+            buildErrorCard({ message: "Unable to verify rate limits. Please try again shortly." }),
             log,
             threadId,
           );
@@ -518,9 +520,11 @@ export function createChatBridge(
         try {
           const check = config.checkRateLimit(threadId);
           if (!check.allowed) {
-            await thread.post(
-              "Rate limit exceeded. Please wait before trying again.",
-            );
+            const rateLimitCard = buildErrorCard({
+              message: "Rate limit exceeded.",
+              retryHint: "Please wait before trying again.",
+            });
+            await thread.post({ card: rateLimitCard.card, fallbackText: rateLimitCard.fallbackText });
             return;
           }
         } catch (rateLimitErr) {
@@ -530,7 +534,7 @@ export function createChatBridge(
           );
           await safePostError(
             thread,
-            "Unable to verify rate limits. Please try again shortly.",
+            buildErrorCard({ message: "Unable to verify rate limits. Please try again shortly." }),
             log,
             threadId,
           );
@@ -658,9 +662,14 @@ export function createChatBridge(
         try {
           const check = config.checkRateLimit(threadId);
           if (!check.allowed) {
+            const rateLimitCard = buildErrorCard({
+              message: "Rate limit exceeded.",
+              retryHint: "Please wait before trying again.",
+            });
             try {
               await thinkingMsg.edit({
-                markdown: "Rate limit exceeded. Please wait before trying again.",
+                card: rateLimitCard.card,
+                fallbackText: rateLimitCard.fallbackText,
               });
             } catch (editErr) {
               log.warn(
@@ -675,9 +684,13 @@ export function createChatBridge(
             { err: rateLimitErr instanceof Error ? rateLimitErr : new Error(String(rateLimitErr)), threadId },
             "Rate limit check failed — denying request",
           );
+          const rateLimitErrorCard = buildErrorCard({
+            message: "Unable to verify rate limits. Please try again shortly.",
+          });
           try {
             await thinkingMsg.edit({
-              markdown: "Unable to verify rate limits. Please try again shortly.",
+              card: rateLimitErrorCard.card,
+              fallbackText: rateLimitErrorCard.fallbackText,
             });
           } catch (editErr) {
             log.warn(

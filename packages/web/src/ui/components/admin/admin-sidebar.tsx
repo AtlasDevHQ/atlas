@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useAtlasConfig } from "@/ui/context";
 import {
   LayoutDashboard,
   Database,
@@ -67,16 +68,23 @@ const navItems = [
   { href: "/admin/sso", label: "SSO", icon: ShieldCheck },
   { href: "/admin/scim", label: "SCIM", icon: RefreshCw },
   { href: "/admin/settings", label: "Settings", icon: Settings },
-  { href: "/admin/platform", label: "Platform Admin", icon: Globe },
+  { href: "/admin/platform", label: "Platform Admin", icon: Globe, requiredRole: "platform_admin" as const },
 ];
 
 export function AdminSidebar() {
   const pathname = usePathname();
+  const { authClient } = useAtlasConfig();
+  const session = authClient.useSession();
+  const userRole = (session.data?.user as Record<string, unknown> | undefined)?.role as string | undefined;
 
   function isActive(item: (typeof navItems)[number]) {
     if (item.exact) return pathname === item.href;
     return pathname.startsWith(item.href);
   }
+
+  const visibleItems = navItems.filter((item) =>
+    !item.requiredRole || item.requiredRole === userRole,
+  );
 
   return (
     <Sidebar collapsible="icon">
@@ -104,7 +112,7 @@ export function AdminSidebar() {
           <SidebarGroupLabel>Navigation</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {navItems.map((item) => (
+              {visibleItems.map((item) => (
                 <SidebarMenuItem key={item.href}>
                   <SidebarMenuButton asChild isActive={isActive(item)} tooltip={item.label}>
                     <Link href={item.href}>

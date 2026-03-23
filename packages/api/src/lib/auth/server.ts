@@ -310,7 +310,7 @@ export function getAuthInstance(): AuthInstance {
               }
 
             } catch (err) {
-              log.error({ err }, "Bootstrap admin check failed — defaulting to normal role assignment");
+              log.error({ err: err instanceof Error ? err.message : String(err) }, "Bootstrap admin check failed — defaulting to normal role assignment");
             }
           },
           after: async (user) => {

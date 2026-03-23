@@ -69,10 +69,11 @@ export type {
   PlatformWorkspaceUser,
   PlatformStats,
   NoisyNeighbor,
+  NoisyNeighborMetric,
   WorkspaceStatus,
   PlanTier,
 } from "@useatlas/types";
-export { SHARE_EXPIRY_OPTIONS, PROMPT_INDUSTRIES, MODEL_CONFIG_PROVIDERS, APPROVAL_RULE_TYPES, APPROVAL_STATUSES, WORKSPACE_STATUSES, PLAN_TIERS } from "@useatlas/types";
+export { SHARE_EXPIRY_OPTIONS, PROMPT_INDUSTRIES, MODEL_CONFIG_PROVIDERS, APPROVAL_RULE_TYPES, APPROVAL_STATUSES, WORKSPACE_STATUSES, PLAN_TIERS, NOISY_NEIGHBOR_METRICS } from "@useatlas/types";
 export { parseChatError } from "@useatlas/types/errors";
 
 // --- Web-only types (not in @useatlas/types) ---

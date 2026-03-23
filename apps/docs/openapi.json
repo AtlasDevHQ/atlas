@@ -30052,7 +30052,13 @@
                             "type": "string"
                           },
                           "role": {
-                            "type": "string"
+                            "type": "string",
+                            "enum": [
+                              "member",
+                              "admin",
+                              "owner",
+                              "platform_admin"
+                            ]
                           },
                           "createdAt": {
                             "type": "string"

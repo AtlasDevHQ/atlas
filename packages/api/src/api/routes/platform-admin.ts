@@ -35,11 +35,19 @@ import {
   type WorkspaceRow,
   type PlanTier,
 } from "@atlas/api/lib/db/internal";
+import {
+  WORKSPACE_STATUSES,
+  PLAN_TIERS,
+  NOISY_NEIGHBOR_METRICS,
+  type PlatformWorkspace,
+} from "@useatlas/types";
+import { ATLAS_ROLES } from "@atlas/api/lib/auth/types";
+import { authErrorCode } from "./admin-auth";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 const log = createLogger("platform-admin");
 
-const VALID_PLAN_TIERS = new Set<string>(["free", "trial", "team", "enterprise"]);
+const VALID_PLAN_TIERS = new Set<string>(PLAN_TIERS);
 
 // ---------------------------------------------------------------------------
 // Platform admin auth preamble
@@ -63,10 +71,12 @@ async function platformAuthPreamble(req: Request, requestId: string) {
 
   if (!authResult.authenticated) {
     log.warn({ requestId, status: authResult.status }, "Authentication failed");
-    return {
-      error: { error: "auth_error", message: authResult.error, requestId },
-      status: authResult.status as 401 | 403 | 500,
-    };
+    const code = authErrorCode(authResult.error);
+    const errorBody: Record<string, unknown> = { error: code, message: authResult.error, requestId };
+    if (authResult.ssoRedirectUrl) {
+      errorBody.ssoRedirectUrl = authResult.ssoRedirectUrl;
+    }
+    return { error: errorBody, status: authResult.status as 401 | 403 | 500 };
   }
 
   // Enforce platform_admin role. In no-auth mode (local dev), allow access.
@@ -90,6 +100,27 @@ async function platformAuthPreamble(req: Request, requestId: string) {
     };
   }
 
+  // IP allowlist check — enterprise feature, after auth so we have org context
+  const orgId = authResult.user?.activeOrganizationId;
+  if (orgId) {
+    let checkIPAllowlist: ((orgId: string, clientIP: string | null) => Promise<{ allowed: boolean }>) | undefined;
+    try {
+      ({ checkIPAllowlist } = await import("@atlas/ee/auth/ip-allowlist"));
+    } catch {
+      // intentionally ignored: ee module not installed — IP allowlist feature unavailable
+    }
+    if (checkIPAllowlist) {
+      const ipCheck = await checkIPAllowlist(orgId, ip);
+      if (!ipCheck.allowed) {
+        log.warn({ requestId, orgId, ip }, "IP not in workspace allowlist");
+        return {
+          error: { error: "ip_not_allowed", message: "Your IP address is not in the workspace's allowlist.", requestId },
+          status: 403 as const,
+        };
+      }
+    }
+  }
+
   return { authResult };
 }
 
@@ -101,8 +132,8 @@ const PlatformWorkspaceSchema = z.object({
   id: z.string(),
   name: z.string(),
   slug: z.string(),
-  status: z.enum(["active", "suspended", "deleted"]),
-  planTier: z.enum(["free", "trial", "team", "enterprise"]),
+  status: z.enum(WORKSPACE_STATUSES),
+  planTier: z.enum(PLAN_TIERS),
   byot: z.boolean(),
   members: z.number(),
   conversations: z.number(),
@@ -120,7 +151,7 @@ const PlatformWorkspaceUserSchema = z.object({
   id: z.string(),
   name: z.string(),
   email: z.string(),
-  role: z.string(),
+  role: z.enum(ATLAS_ROLES),
   createdAt: z.string(),
 });
 
@@ -136,15 +167,15 @@ const PlatformStatsSchema = z.object({
 const NoisyNeighborSchema = z.object({
   workspaceId: z.string(),
   workspaceName: z.string(),
-  planTier: z.enum(["free", "trial", "team", "enterprise"]),
-  metric: z.enum(["queries", "tokens", "storage"]),
+  planTier: z.enum(PLAN_TIERS),
+  metric: z.enum(NOISY_NEIGHBOR_METRICS),
   value: z.number(),
   median: z.number(),
   ratio: z.number(),
 });
 
 const ChangePlanBodySchema = z.object({
-  planTier: z.enum(["free", "trial", "team", "enterprise"]).openapi({
+  planTier: z.enum(PLAN_TIERS).openapi({
     description: "The new plan tier for the workspace.",
     example: "team",
   }),
@@ -331,7 +362,7 @@ const noisyNeighborsRoute = createRoute({
 function toWorkspaceResponse(
   row: WorkspaceRow,
   health: { members: number; conversations: number; queriesLast24h: number; connections: number; scheduledTasks: number },
-) {
+): PlatformWorkspace {
   return {
     id: row.id,
     name: row.name,
@@ -650,8 +681,14 @@ platformAdmin.openapi(deleteWorkspaceRoute, async (c) => {
         return c.json({ error: "not_found", message: "Workspace not found.", requestId }, 404);
       }
 
-      await updateWorkspaceStatus(workspaceId, "deleted");
+      if (workspace.workspace_status === "deleted") {
+        return c.json({ error: "conflict", message: "Workspace is already deleted.", requestId }, 409);
+      }
+
+      // Cascade cleanup first, then mark as deleted — if cleanup fails,
+      // the workspace remains in its current state and can be retried.
       const cleanup = await cascadeWorkspaceDelete(workspaceId);
+      await updateWorkspaceStatus(workspaceId, "deleted");
 
       log.info({ workspaceId, cleanup, requestId }, "Workspace deleted by platform admin");
 
@@ -708,8 +745,11 @@ platformAdmin.openapi(changePlanRoute, async (c) => {
       try {
         const { invalidatePlanCache } = await import("@atlas/api/lib/billing/enforcement");
         invalidatePlanCache(workspaceId);
-      } catch {
-        // intentionally ignored: billing enforcement module not available
+      } catch (err) {
+        log.warn(
+          { err: err instanceof Error ? err.message : String(err), workspaceId, requestId },
+          "Failed to invalidate plan cache after tier change — stale limits may persist until cache expires",
+        );
       }
 
       log.info({ workspaceId, planTier, previousTier: workspace.plan_tier, requestId }, "Workspace plan changed by platform admin");

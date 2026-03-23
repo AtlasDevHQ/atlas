@@ -57,12 +57,14 @@ describe("parseRole()", () => {
     expect(parseRole("member")).toBe("member");
     expect(parseRole("admin")).toBe("admin");
     expect(parseRole("owner")).toBe("owner");
+    expect(parseRole("platform_admin")).toBe("platform_admin");
   });
 
   it("is case-insensitive", () => {
     expect(parseRole("ADMIN")).toBe("admin");
     expect(parseRole("Member")).toBe("member");
     expect(parseRole("OWNER")).toBe("owner");
+    expect(parseRole("PLATFORM_ADMIN")).toBe("platform_admin");
   });
 
   it("trims whitespace", () => {

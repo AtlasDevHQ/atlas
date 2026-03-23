@@ -166,7 +166,14 @@ export function isIPInRange(ip: string, cidr: ParsedCIDR): boolean {
   try {
     // Use ipaddr.process() to normalize IPv4-mapped IPv6 → IPv4
     const addr = ipaddr.process(ip);
-    return addr.match(cidr.cidr);
+    const [network, prefix] = cidr.cidr;
+    if (addr.kind() === "ipv4" && network.kind() === "ipv4") {
+      return (addr as ipaddr.IPv4).match(network as ipaddr.IPv4, prefix);
+    }
+    if (addr.kind() === "ipv6" && network.kind() === "ipv6") {
+      return (addr as ipaddr.IPv6).match(network as ipaddr.IPv6, prefix);
+    }
+    return false;
   } catch {
     // Invalid IP string
     return false;

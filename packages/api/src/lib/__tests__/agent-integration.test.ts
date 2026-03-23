@@ -35,6 +35,9 @@ let mockModel: InstanceType<typeof MockLanguageModelV3>;
 mock.module("@atlas/api/lib/providers", () => ({
   getModel: () => mockModel,
   getProviderType: () => "anthropic" as const,
+  getModelFromWorkspaceConfig: () => mockModel,
+  getWorkspaceProviderType: () => "anthropic" as const,
+  getDefaultProvider: () => "anthropic" as const,
 }));
 
 mock.module("@atlas/api/lib/semantic", () => ({

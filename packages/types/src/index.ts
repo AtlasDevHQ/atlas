@@ -13,3 +13,4 @@ export * from "./query-suggestion";
 export * from "./sso";
 export * from "./billing";
 export * from "./profiler";
+export * from "./model-config";

@@ -16,18 +16,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-
-interface BrandingConfig {
-  id: string;
-  orgId: string;
-  logoUrl: string | null;
-  logoText: string | null;
-  primaryColor: string | null;
-  faviconUrl: string | null;
-  hideAtlasBranding: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
+import type { WorkspaceBranding } from "@/ui/lib/types";
 
 const HEX_RE = /^#[0-9a-fA-F]{6}$/;
 
@@ -35,9 +24,9 @@ export default function BrandingPage() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
 
-  const { data, loading, error, refetch } = useAdminFetch<BrandingConfig | null>(
+  const { data, loading, error, refetch } = useAdminFetch<WorkspaceBranding | null>(
     "/api/v1/admin/branding",
-    { transform: (json) => (json as { branding: BrandingConfig | null }).branding },
+    { transform: (json) => (json as { branding: WorkspaceBranding | null }).branding },
   );
 
   const [logoUrl, setLogoUrl] = useState("");

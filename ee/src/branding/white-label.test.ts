@@ -19,13 +19,14 @@ mock.module("../index", () => ({
   },
 }));
 
-// Mock internal DB
+// Mock internal DB — hasInternalDB is toggleable
+let mockHasInternalDB = true;
 const mockRows: Record<string, unknown>[][] = [];
 let queryCallCount = 0;
 const capturedQueries: { sql: string; params: unknown[] }[] = [];
 
 mock.module("@atlas/api/lib/db/internal", () => ({
-  hasInternalDB: () => true,
+  hasInternalDB: () => mockHasInternalDB,
   getInternalDB: () => ({
     query: async (sql: string, params?: unknown[]) => {
       capturedQueries.push({ sql, params: params ?? [] });
@@ -71,6 +72,7 @@ function resetMocks() {
   capturedQueries.length = 0;
   mockEnterpriseEnabled = true;
   mockEnterpriseLicenseKey = "test-key";
+  mockHasInternalDB = true;
 }
 
 function makeRow(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
@@ -114,6 +116,13 @@ describe("getWorkspaceBranding", () => {
     mockEnterpriseEnabled = false;
     await expect(getWorkspaceBranding("org-1")).rejects.toThrow("Enterprise features");
   });
+
+  it("returns null when no internal DB", async () => {
+    mockHasInternalDB = false;
+    const result = await getWorkspaceBranding("org-1");
+    expect(result).toBeNull();
+    expect(capturedQueries.length).toBe(0);
+  });
 });
 
 describe("getWorkspaceBrandingPublic", () => {
@@ -131,6 +140,13 @@ describe("getWorkspaceBrandingPublic", () => {
     mockRows.push([]);
     const result = await getWorkspaceBrandingPublic("org-1");
     expect(result).toBeNull();
+  });
+
+  it("returns null when no internal DB", async () => {
+    mockHasInternalDB = false;
+    const result = await getWorkspaceBrandingPublic("org-1");
+    expect(result).toBeNull();
+    expect(capturedQueries.length).toBe(0);
   });
 });
 
@@ -157,16 +173,44 @@ describe("setWorkspaceBranding", () => {
     ).rejects.toThrow("Invalid primary color");
   });
 
+  it("rejects 3-digit hex shorthand", async () => {
+    await expect(
+      setWorkspaceBranding("org-1", { primaryColor: "#F50" }),
+    ).rejects.toThrow("Invalid primary color");
+  });
+
+  it("rejects 8-digit hex with alpha", async () => {
+    await expect(
+      setWorkspaceBranding("org-1", { primaryColor: "#FF550080" }),
+    ).rejects.toThrow("Invalid primary color");
+  });
+
   it("throws on invalid logo URL", async () => {
     await expect(
       setWorkspaceBranding("org-1", { logoUrl: "not-a-url" }),
     ).rejects.toThrow("Invalid logo URL");
   });
 
+  it("throws on javascript: logo URL (XSS prevention)", async () => {
+    await expect(
+      setWorkspaceBranding("org-1", { logoUrl: "javascript:alert(1)" }),
+    ).rejects.toThrow("Logo URL must use http:// or https://");
+  });
+
   it("throws on invalid favicon URL", async () => {
     await expect(
       setWorkspaceBranding("org-1", { faviconUrl: "ftp://bad" }),
     ).rejects.toThrow("Favicon URL must use http");
+  });
+
+  it("allows empty string values (treated as null)", async () => {
+    mockRows.push([makeRow({ logo_url: null, primary_color: null, favicon_url: null })]);
+    const result = await setWorkspaceBranding("org-1", {
+      logoUrl: "",
+      primaryColor: "",
+      faviconUrl: "",
+    });
+    expect(result).not.toBeNull();
   });
 
   it("allows null/empty values", async () => {
@@ -188,6 +232,20 @@ describe("setWorkspaceBranding", () => {
       setWorkspaceBranding("org-1", { logoText: "Test" }),
     ).rejects.toThrow("Enterprise features");
   });
+
+  it("throws when no internal DB", async () => {
+    mockHasInternalDB = false;
+    await expect(
+      setWorkspaceBranding("org-1", { logoText: "Test" }),
+    ).rejects.toThrow("Internal database required");
+  });
+
+  it("throws when INSERT returns no rows", async () => {
+    mockRows.push([]);
+    await expect(
+      setWorkspaceBranding("org-1", { logoText: "Test" }),
+    ).rejects.toThrow("Failed to save workspace branding");
+  });
 });
 
 describe("deleteWorkspaceBranding", () => {
@@ -208,6 +266,11 @@ describe("deleteWorkspaceBranding", () => {
   it("throws when enterprise is disabled", async () => {
     mockEnterpriseEnabled = false;
     await expect(deleteWorkspaceBranding("org-1")).rejects.toThrow("Enterprise features");
+  });
+
+  it("throws when no internal DB", async () => {
+    mockHasInternalDB = false;
+    await expect(deleteWorkspaceBranding("org-1")).rejects.toThrow("Internal database required");
   });
 });
 

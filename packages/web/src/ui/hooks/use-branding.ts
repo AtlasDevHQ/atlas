@@ -2,14 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { useAtlasConfig } from "@/ui/context";
+import type { WorkspaceBrandingPublic } from "@/ui/lib/types";
 
-export interface WorkspaceBrandingPublic {
-  logoUrl: string | null;
-  logoText: string | null;
-  primaryColor: string | null;
-  faviconUrl: string | null;
-  hideAtlasBranding: boolean;
-}
+export type { WorkspaceBrandingPublic } from "@/ui/lib/types";
 
 /**
  * Fetch workspace branding from the public endpoint.
@@ -20,6 +15,7 @@ export function useBranding() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const [branding, setBranding] = useState<WorkspaceBrandingPublic | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
 
   useEffect(() => {
@@ -33,7 +29,9 @@ export function useBranding() {
         });
         if (!res.ok) {
           console.warn(`useBranding: branding endpoint returned ${res.status} — falling back to defaults`);
-          setLoading(false);
+          if (!controller.signal.aborted) {
+            setError(`HTTP ${res.status}`);
+          }
           return;
         }
         const json: unknown = await res.json();
@@ -50,7 +48,11 @@ export function useBranding() {
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") return;
         // intentionally ignored: branding fetch failure is non-critical — use defaults
-        console.debug("useBranding: fetch failed", err instanceof Error ? err.message : String(err));
+        const msg = err instanceof Error ? err.message : String(err);
+        console.debug("useBranding: fetch failed", msg);
+        if (!controller.signal.aborted) {
+          setError(msg);
+        }
       } finally {
         if (!controller.signal.aborted) {
           setLoading(false);
@@ -62,5 +64,5 @@ export function useBranding() {
     return () => controller.abort();
   }, [apiUrl, credentials]);
 
-  return { branding, loading };
+  return { branding, loading, error };
 }

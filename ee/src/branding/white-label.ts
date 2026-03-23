@@ -18,6 +18,9 @@ import {
   getInternalDB,
 } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import type { WorkspaceBranding, SetWorkspaceBrandingInput } from "@useatlas/types";
+
+export type { WorkspaceBranding, SetWorkspaceBrandingInput } from "@useatlas/types";
 
 const log = createLogger("ee:branding");
 
@@ -32,28 +35,6 @@ export class BrandingError extends Error {
   }
 }
 
-// ── Types ───────────────────────────────────────────────────────────
-
-export interface WorkspaceBranding {
-  id: string;
-  orgId: string;
-  logoUrl: string | null;
-  logoText: string | null;
-  primaryColor: string | null;
-  faviconUrl: string | null;
-  hideAtlasBranding: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface SetWorkspaceBrandingInput {
-  logoUrl?: string | null;
-  logoText?: string | null;
-  primaryColor?: string | null;
-  faviconUrl?: string | null;
-  hideAtlasBranding?: boolean;
-}
-
 // ── Internal row shape ──────────────────────────────────────────────
 
 interface BrandingRow {
@@ -66,6 +47,7 @@ interface BrandingRow {
   hide_atlas_branding: boolean;
   created_at: string;
   updated_at: string;
+  // Required by internalQuery<T extends Record<string, unknown>> constraint
   [key: string]: unknown;
 }
 
@@ -180,6 +162,9 @@ export async function getWorkspaceBrandingPublic(orgId: string): Promise<Workspa
 
 /**
  * Set (upsert) the workspace branding for an organization.
+ * This is a full replacement — any field omitted from the input is reset
+ * to null (or false for hideAtlasBranding). Callers must send all fields
+ * to preserve existing values.
  */
 export async function setWorkspaceBranding(
   orgId: string,
@@ -225,7 +210,9 @@ export async function setWorkspaceBranding(
  */
 export async function deleteWorkspaceBranding(orgId: string): Promise<boolean> {
   requireEnterprise("branding");
-  if (!hasInternalDB()) return false;
+  if (!hasInternalDB()) {
+    throw new Error("Internal database required for workspace branding.");
+  }
 
   const pool = getInternalDB();
   const result = await pool.query(

@@ -23,7 +23,9 @@ const log = createLogger("admin-branding");
 
 const BRANDING_ERROR_STATUS = { validation: 400, not_found: 404 } as const;
 
-/** Map branding errors to HTTP responses. Returns null if not a known error. */
+/** Map branding-related errors to HTTP responses. Handles both BrandingError instances
+ *  and enterprise license errors (detected via error message substring match).
+ *  Returns null for unrecognized errors (caller falls through to generic 500). */
 function brandingErrorResponse(err: unknown): { body: Record<string, unknown>; status: 400 | 403 | 404 } | null {
   const message = err instanceof Error ? err.message : String(err);
   if (message.includes("Enterprise features")) {

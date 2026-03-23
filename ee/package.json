@@ -5,6 +5,9 @@
   "exports": {
     "./*": "./src/*.ts"
   },
+  "scripts": {
+    "test": "bun run scripts/test-isolated.ts"
+  },
   "dependencies": {
     "@atlas/api": "workspace:*",
     "@useatlas/types": "workspace:*",

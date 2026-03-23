@@ -40,9 +40,9 @@ type HookResult =
  * const app = new OpenAPIHono({ defaultHook: validationHook });
  * ```
  */
-export function validationHook(
+export function validationHook<E extends Env = Env>(
   result: HookResult,
-  c: Context<Env, string>,
+  c: Context<E, string>,
 ): Response | undefined {
   if (result.success) return undefined;
 

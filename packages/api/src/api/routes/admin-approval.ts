@@ -19,9 +19,8 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
-import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
+import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
-import { adminAuthPreamble } from "./admin-auth";
 import {
   listApprovalRules,
   createApprovalRule,
@@ -35,21 +34,29 @@ import {
   ApprovalError,
 } from "@atlas/ee/governance/approval";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
+import { adminAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("admin-approval");
 
 const APPROVAL_ERROR_STATUS = { validation: 400, not_found: 404, conflict: 409, expired: 410 } as const;
 
-/** Map approval errors to HTTP responses. Returns null if not a known error. */
-function approvalErrorResponse(err: unknown): { body: Record<string, unknown>; status: 400 | 403 | 404 | 409 | 410 } | null {
+/**
+ * Throw HTTPException for known approval errors. Enterprise license
+ * errors → 403; ApprovalError → 400/404/409/410. Unknown errors fall through.
+ */
+function throwIfApprovalError(err: unknown): void {
   const message = err instanceof Error ? err.message : String(err);
   if (message.includes("Enterprise features")) {
-    return { body: { error: "enterprise_required", message }, status: 403 };
+    throw new HTTPException(403, {
+      res: Response.json({ error: "enterprise_required", message }, { status: 403 }),
+    });
   }
   if (err instanceof ApprovalError) {
-    return { body: { error: err.code, message: err.message }, status: APPROVAL_ERROR_STATUS[err.code] };
+    const status = APPROVAL_ERROR_STATUS[err.code];
+    throw new HTTPException(status, {
+      res: Response.json({ error: err.code, message: err.message }, { status }),
+    });
   }
-  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -233,6 +240,7 @@ const getQueueItemRoute = createRoute({
       description: "Approval request details",
       content: { "application/json": { schema: z.object({ request: ApprovalRequestSchema }) } },
     },
+    400: { description: "No active organization", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Request not found", content: { "application/json": { schema: ErrorSchema } } },
@@ -292,337 +300,263 @@ const pendingCountRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const adminApproval = new OpenAPIHono({ defaultHook: validationHook });
+const adminApproval = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
+
+adminApproval.use(adminAuth);
+adminApproval.use(requestContext);
 
 adminApproval.onError((err, c) => {
-  if (err instanceof HTTPException && err.status === 400) {
-    return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
+  if (err instanceof HTTPException) {
+    // Our thrown HTTPExceptions carry a JSON Response
+    if (err.res) return err.res;
+    // Framework 400 for malformed JSON
+    if (err.status === 400) {
+      return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
+    }
   }
   throw err;
 });
 
 // GET /rules — list approval rules
 adminApproval.openapi(listRulesRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-    }
-
-    try {
-      const rules = await listApprovalRules(orgId);
-      return c.json({ rules }, 200);
-    } catch (err) {
-      const mapped = approvalErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to list approval rules");
-      return c.json({ error: "internal_error", message: "Failed to list approval rules.", requestId }, 500);
-    }
-  }) as never;
+  try {
+    const rules = await listApprovalRules(orgId);
+    return c.json({ rules }, 200);
+  } catch (err) {
+    throwIfApprovalError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to list approval rules");
+    return c.json({ error: "internal_error", message: "Failed to list approval rules.", requestId }, 500);
+  }
 });
 
 // POST /rules — create approval rule
 adminApproval.openapi(createRuleRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-    }
+  const body = c.req.valid("json");
 
-    const body = c.req.valid("json");
-
-    try {
-      const rule = await createApprovalRule(orgId, {
-        name: body.name,
-        ruleType: body.ruleType,
-        pattern: body.pattern,
-        threshold: body.threshold ?? null,
-        enabled: body.enabled,
-      });
-      return c.json({ rule }, 201);
-    } catch (err) {
-      const mapped = approvalErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to create approval rule");
-      return c.json({ error: "internal_error", message: "Failed to create approval rule.", requestId }, 500);
-    }
-  }) as never;
+  try {
+    const rule = await createApprovalRule(orgId, {
+      name: body.name,
+      ruleType: body.ruleType,
+      pattern: body.pattern,
+      threshold: body.threshold ?? null,
+      enabled: body.enabled,
+    });
+    return c.json({ rule }, 201);
+  } catch (err) {
+    throwIfApprovalError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to create approval rule");
+    return c.json({ error: "internal_error", message: "Failed to create approval rule.", requestId }, 500);
+  }
 });
 
 // PUT /rules/:id — update approval rule
 adminApproval.openapi(updateRuleRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-    }
+  const ruleId = c.req.param("id");
+  const body = c.req.valid("json");
 
-    const ruleId = c.req.param("id");
-    const body = c.req.valid("json");
-
-    try {
-      const rule = await updateApprovalRule(orgId, ruleId, body);
-      return c.json({ rule }, 200);
-    } catch (err) {
-      const mapped = approvalErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to update approval rule");
-      return c.json({ error: "internal_error", message: "Failed to update approval rule.", requestId }, 500);
-    }
-  }) as never;
+  try {
+    const rule = await updateApprovalRule(orgId, ruleId, body);
+    return c.json({ rule }, 200);
+  } catch (err) {
+    throwIfApprovalError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to update approval rule");
+    return c.json({ error: "internal_error", message: "Failed to update approval rule.", requestId }, 500);
+  }
 });
 
 // DELETE /rules/:id — delete approval rule
 adminApproval.openapi(deleteRuleRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+  }
+
+  const ruleId = c.req.param("id");
+
+  try {
+    const deleted = await deleteApprovalRule(orgId, ruleId);
+    if (!deleted) {
+      return c.json({ error: "not_found", message: "Approval rule not found." }, 404);
     }
-
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-    }
-
-    const ruleId = c.req.param("id");
-
-    try {
-      const deleted = await deleteApprovalRule(orgId, ruleId);
-      if (!deleted) {
-        return c.json({ error: "not_found", message: "Approval rule not found." }, 404);
-      }
-      return c.json({ message: "Approval rule deleted." }, 200);
-    } catch (err) {
-      const mapped = approvalErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to delete approval rule");
-      return c.json({ error: "internal_error", message: "Failed to delete approval rule.", requestId }, 500);
-    }
-  }) as never;
+    return c.json({ message: "Approval rule deleted." }, 200);
+  } catch (err) {
+    throwIfApprovalError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to delete approval rule");
+    return c.json({ error: "internal_error", message: "Failed to delete approval rule.", requestId }, 500);
+  }
 });
 
 // GET /queue — list approval requests
 adminApproval.openapi(listQueueRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-    }
-
-    try {
-      const statusParam = new URL(req.url).searchParams.get("status") as import("@useatlas/types").ApprovalStatus | null;
-      const validStatuses = ["pending", "approved", "denied", "expired"];
-      const status = statusParam && validStatuses.includes(statusParam) ? statusParam as import("@useatlas/types").ApprovalStatus : undefined;
-      const requests = await listApprovalRequests(orgId, status);
-      return c.json({ requests }, 200);
-    } catch (err) {
-      const mapped = approvalErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to list approval requests");
-      return c.json({ error: "internal_error", message: "Failed to list approval requests.", requestId }, 500);
-    }
-  }) as never;
+  try {
+    const statusParam = new URL(c.req.raw.url).searchParams.get("status") as import("@useatlas/types").ApprovalStatus | null;
+    const validStatuses = ["pending", "approved", "denied", "expired"];
+    const status = statusParam && validStatuses.includes(statusParam) ? statusParam as import("@useatlas/types").ApprovalStatus : undefined;
+    const requests = await listApprovalRequests(orgId, status);
+    return c.json({ requests }, 200);
+  } catch (err) {
+    throwIfApprovalError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to list approval requests");
+    return c.json({ error: "internal_error", message: "Failed to list approval requests.", requestId }, 500);
+  }
 });
 
 // GET /queue/:id — get single approval request
 adminApproval.openapi(getQueueItemRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+  }
+
+  const itemId = c.req.param("id");
+
+  try {
+    const item = await getApprovalRequest(orgId, itemId);
+    if (!item) {
+      return c.json({ error: "not_found", message: "Approval request not found." }, 404);
     }
-
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-    }
-
-    const itemId = c.req.param("id");
-
-    try {
-      const item = await getApprovalRequest(orgId, itemId);
-      if (!item) {
-        return c.json({ error: "not_found", message: "Approval request not found." }, 404);
-      }
-      return c.json({ request: item }, 200);
-    } catch (err) {
-      const mapped = approvalErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get approval request");
-      return c.json({ error: "internal_error", message: "Failed to get approval request.", requestId }, 500);
-    }
-  }) as never;
+    return c.json({ request: item }, 200);
+  } catch (err) {
+    throwIfApprovalError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get approval request");
+    return c.json({ error: "internal_error", message: "Failed to get approval request.", requestId }, 500);
+  }
 });
 
 // POST /queue/:id — review (approve/deny) an approval request
 adminApproval.openapi(reviewRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-    }
+  const itemId = c.req.param("id");
+  const body = c.req.valid("json");
+  const reviewerId = authResult.user?.id;
+  const reviewerEmail = authResult.user?.label ?? null;
 
-    const itemId = c.req.param("id");
-    const body = c.req.valid("json");
-    const reviewerId = authResult.user?.id;
-    const reviewerEmail = authResult.user?.label ?? null;
+  if (!reviewerId) {
+    return c.json({ error: "bad_request", message: "Reviewer user ID unavailable." }, 400);
+  }
 
-    if (!reviewerId) {
-      return c.json({ error: "bad_request", message: "Reviewer user ID unavailable." }, 400);
-    }
-
-    try {
-      const result = await reviewApprovalRequest(
-        orgId,
-        itemId,
-        reviewerId,
-        reviewerEmail,
-        body.action,
-        body.comment,
-      );
-      return c.json({ request: result }, 200);
-    } catch (err) {
-      const mapped = approvalErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to review approval request");
-      return c.json({ error: "internal_error", message: "Failed to review approval request.", requestId }, 500);
-    }
-  }) as never;
+  try {
+    const result = await reviewApprovalRequest(
+      orgId,
+      itemId,
+      reviewerId,
+      reviewerEmail,
+      body.action,
+      body.comment,
+    );
+    return c.json({ request: result }, 200);
+  } catch (err) {
+    throwIfApprovalError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to review approval request");
+    return c.json({ error: "internal_error", message: "Failed to review approval request.", requestId }, 500);
+  }
 });
 
 // POST /expire — manually expire stale requests
 adminApproval.openapi(expireRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  try {
+    const expired = await expireStaleRequests();
+    return c.json({ expired }, 200);
+  } catch (err) {
+    throwIfApprovalError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to expire stale requests");
+    return c.json({ error: "internal_error", message: "Failed to expire stale requests.", requestId }, 500);
   }
-  const { authResult } = preamble;
-
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    try {
-      const expired = await expireStaleRequests();
-      return c.json({ expired }, 200);
-    } catch (err) {
-      const mapped = approvalErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to expire stale requests");
-      return c.json({ error: "internal_error", message: "Failed to expire stale requests.", requestId }, 500);
-    }
-  }) as never;
 });
 
 // GET /pending-count — count of pending requests
 adminApproval.openapi(pendingCountRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-    }
-
-    try {
-      const count = await getPendingCount(orgId);
-      return c.json({ count }, 200);
-    } catch (err) {
-      const mapped = approvalErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get pending count");
-      return c.json({ error: "internal_error", message: "Failed to get pending approval count.", requestId }, 500);
-    }
-  }) as never;
+  try {
+    const count = await getPendingCount(orgId);
+    return c.json({ count }, 200);
+  } catch (err) {
+    throwIfApprovalError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get pending count");
+    return c.json({ error: "internal_error", message: "Failed to get pending approval count.", requestId }, 500);
+  }
 });
 
 export { adminApproval };

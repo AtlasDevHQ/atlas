@@ -15,9 +15,8 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { HTTPException } from "hono/http-exception";
 import { validationHook } from "./validation-hook";
-import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
+import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
-import { adminAuthPreamble } from "./admin-auth";
 import {
   listPIIClassifications,
   updatePIIClassification,
@@ -35,24 +34,37 @@ import {
 } from "@atlas/ee/compliance/reports";
 import type { PIICategory, MaskingStrategy } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
+import { adminAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("admin-compliance");
 
 const COMPLIANCE_ERROR_STATUS = { validation: 400, not_found: 404, conflict: 409 } as const;
 const REPORT_ERROR_STATUS = { validation: 400, not_available: 404 } as const satisfies Record<ReportErrorCode, number>;
 
-function complianceErrorResponse(err: unknown): { body: Record<string, unknown>; status: 400 | 403 | 404 | 409 } | null {
+/**
+ * Throw HTTPException for known compliance/report errors. Enterprise license
+ * errors → 403; ComplianceError → 400/404/409; ReportError → 400/404.
+ * Unknown errors fall through.
+ */
+function throwIfComplianceError(err: unknown): void {
   const message = err instanceof Error ? err.message : String(err);
   if (message.includes("Enterprise features")) {
-    return { body: { error: "enterprise_required", message }, status: 403 };
+    throw new HTTPException(403, {
+      res: Response.json({ error: "enterprise_required", message }, { status: 403 }),
+    });
   }
   if (err instanceof ComplianceError) {
-    return { body: { error: err.code, message: err.message }, status: COMPLIANCE_ERROR_STATUS[err.code] };
+    const status = COMPLIANCE_ERROR_STATUS[err.code];
+    throw new HTTPException(status, {
+      res: Response.json({ error: err.code, message: err.message }, { status }),
+    });
   }
   if (err instanceof ReportError) {
-    return { body: { error: err.code, message: err.message }, status: REPORT_ERROR_STATUS[err.code] };
+    const status = REPORT_ERROR_STATUS[err.code];
+    throw new HTTPException(status, {
+      res: Response.json({ error: err.code, message: err.message }, { status }),
+    });
   }
-  return null;
 }
 
 // ── Schemas ─────────────────────────────────────────────────────
@@ -148,125 +160,106 @@ const deleteRoute = createRoute({
 
 // ── Router ──────────────────────────────────────────────────────
 
-export const adminCompliance = new OpenAPIHono({ defaultHook: validationHook });
+export const adminCompliance = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
+
+adminCompliance.use(adminAuth);
+adminCompliance.use(requestContext);
 
 adminCompliance.onError((err, c) => {
-  if (err instanceof HTTPException && err.status === 400) {
-    return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
+  if (err instanceof HTTPException) {
+    // Our thrown HTTPExceptions carry a JSON Response
+    if (err.res) return err.res;
+    // Framework 400 for malformed JSON
+    if (err.status === 400) {
+      return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
+    }
   }
   throw err;
 });
 
 // GET /classifications
 adminCompliance.openapi(listRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+  }
+  const { connectionId } = c.req.valid("query");
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-    }
-    const { connectionId } = c.req.valid("query");
-
-    try {
-      const classifications = await listPIIClassifications(orgId, connectionId);
-      return c.json({ classifications }, 200);
-    } catch (err) {
-      const mapped = complianceErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to list PII classifications");
-      return c.json({ error: "internal_error", message: "Failed to list PII classifications.", requestId }, 500);
-    }
-  }) as never;
+  try {
+    const classifications = await listPIIClassifications(orgId, connectionId);
+    return c.json({ classifications }, 200);
+  } catch (err) {
+    throwIfComplianceError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to list PII classifications");
+    return c.json({ error: "internal_error", message: "Failed to list PII classifications.", requestId }, 500);
+  }
 });
 
 // PUT /classifications/:id
 adminCompliance.openapi(updateRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-    }
+  const id = c.req.param("id");
+  const body = c.req.valid("json");
 
-    const id = c.req.param("id");
-    const body = c.req.valid("json");
-
-    try {
-      const updated = await updatePIIClassification(orgId, id, {
-        category: body.category as PIICategory | undefined,
-        maskingStrategy: body.maskingStrategy as MaskingStrategy | undefined,
-        dismissed: body.dismissed,
-        reviewed: body.reviewed,
-      });
-      invalidateClassificationCache(orgId);
-      return c.json({ classification: updated }, 200);
-    } catch (err) {
-      const mapped = complianceErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to update PII classification");
-      return c.json({ error: "internal_error", message: "Failed to update PII classification.", requestId }, 500);
-    }
-  }) as never;
+  try {
+    const updated = await updatePIIClassification(orgId, id, {
+      category: body.category as PIICategory | undefined,
+      maskingStrategy: body.maskingStrategy as MaskingStrategy | undefined,
+      dismissed: body.dismissed,
+      reviewed: body.reviewed,
+    });
+    invalidateClassificationCache(orgId);
+    return c.json({ classification: updated }, 200);
+  } catch (err) {
+    throwIfComplianceError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to update PII classification");
+    return c.json({ error: "internal_error", message: "Failed to update PII classification.", requestId }, 500);
+  }
 });
 
 // DELETE /classifications/:id
 adminCompliance.openapi(deleteRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-    }
+  const id = c.req.param("id");
 
-    const id = c.req.param("id");
-
-    try {
-      await deletePIIClassification(orgId, id);
-      invalidateClassificationCache(orgId);
-      return c.json({ deleted: true }, 200);
-    } catch (err) {
-      const mapped = complianceErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to delete PII classification");
-      return c.json({ error: "internal_error", message: "Failed to delete PII classification.", requestId }, 500);
-    }
-  }) as never;
+  try {
+    await deletePIIClassification(orgId, id);
+    invalidateClassificationCache(orgId);
+    return c.json({ deleted: true }, 200);
+  } catch (err) {
+    throwIfComplianceError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to delete PII classification");
+    return c.json({ error: "internal_error", message: "Failed to delete PII classification.", requestId }, 500);
+  }
 });
 
 // ── Report schemas ──────────────────────────────────────────────
@@ -377,108 +370,98 @@ const userActivityReportRoute = createRoute({
 
 // GET /reports/data-access
 adminCompliance.openapi(dataAccessReportRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-    }
+  const query = c.req.valid("query");
 
-    const query = c.req.valid("query");
+  try {
+    const report = await generateDataAccessReport(orgId, {
+      startDate: query.startDate,
+      endDate: query.endDate,
+      userId: query.userId,
+      role: query.role,
+      table: query.table,
+    });
 
-    try {
-      const report = await generateDataAccessReport(orgId, {
-        startDate: query.startDate,
-        endDate: query.endDate,
-        userId: query.userId,
-        role: query.role,
-        table: query.table,
-      });
-
-      if (query.format === "csv") {
-        const csv = dataAccessReportToCSV(report);
-        const safeOrgId = orgId.replace(/[^a-zA-Z0-9_-]/g, "");
-        const filename = `data-access-report-${safeOrgId}-${new Date().toISOString().slice(0, 10)}.csv`;
-        return new Response(csv, {
+    if (query.format === "csv") {
+      const csv = dataAccessReportToCSV(report);
+      const safeOrgId = orgId.replace(/[^a-zA-Z0-9_-]/g, "");
+      const filename = `data-access-report-${safeOrgId}-${new Date().toISOString().slice(0, 10)}.csv`;
+      // CSV responses bypass OpenAPI typed returns via HTTPException + res
+      throw new HTTPException(200, {
+        res: new Response(csv, {
+          status: 200,
           headers: {
             "Content-Type": "text/csv; charset=utf-8",
             "Content-Disposition": `attachment; filename="${filename}"`,
           },
-        }) as never;
-      }
-
-      return c.json(report, 200);
-    } catch (err) {
-      const mapped = complianceErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to generate data access report");
-      return c.json({ error: "internal_error", message: "Failed to generate data access report.", requestId }, 500);
+        }),
+      });
     }
-  }) as never;
+
+    return c.json(report, 200);
+  } catch (err) {
+    throwIfComplianceError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to generate data access report");
+    return c.json({ error: "internal_error", message: "Failed to generate data access report.", requestId }, 500);
+  }
 });
 
 // GET /reports/user-activity
 adminCompliance.openapi(userActivityReportRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-    }
+  const query = c.req.valid("query");
 
-    const query = c.req.valid("query");
+  try {
+    const report = await generateUserActivityReport(orgId, {
+      startDate: query.startDate,
+      endDate: query.endDate,
+      userId: query.userId,
+      role: query.role,
+      table: query.table,
+    });
 
-    try {
-      const report = await generateUserActivityReport(orgId, {
-        startDate: query.startDate,
-        endDate: query.endDate,
-        userId: query.userId,
-        role: query.role,
-        table: query.table,
-      });
-
-      if (query.format === "csv") {
-        const csv = userActivityReportToCSV(report);
-        const safeOrgId = orgId.replace(/[^a-zA-Z0-9_-]/g, "");
-        const filename = `user-activity-report-${safeOrgId}-${new Date().toISOString().slice(0, 10)}.csv`;
-        return new Response(csv, {
+    if (query.format === "csv") {
+      const csv = userActivityReportToCSV(report);
+      const safeOrgId = orgId.replace(/[^a-zA-Z0-9_-]/g, "");
+      const filename = `user-activity-report-${safeOrgId}-${new Date().toISOString().slice(0, 10)}.csv`;
+      // CSV responses bypass OpenAPI typed returns via HTTPException + res
+      throw new HTTPException(200, {
+        res: new Response(csv, {
+          status: 200,
           headers: {
             "Content-Type": "text/csv; charset=utf-8",
             "Content-Disposition": `attachment; filename="${filename}"`,
           },
-        }) as never;
-      }
-
-      return c.json(report, 200);
-    } catch (err) {
-      const mapped = complianceErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to generate user activity report");
-      return c.json({ error: "internal_error", message: "Failed to generate user activity report.", requestId }, 500);
+        }),
+      });
     }
-  }) as never;
+
+    return c.json(report, 200);
+  } catch (err) {
+    throwIfComplianceError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to generate user activity report");
+    return c.json({ error: "internal_error", message: "Failed to generate user activity report.", requestId }, 500);
+  }
 });

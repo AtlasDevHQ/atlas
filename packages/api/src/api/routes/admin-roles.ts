@@ -7,9 +7,8 @@
 
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { HTTPException } from "hono/http-exception";
-import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
+import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
-import { adminAuthPreamble } from "./admin-auth";
 import {
   listRoles,
   createRole,
@@ -21,6 +20,7 @@ import {
   PERMISSIONS,
 } from "@atlas/ee/auth/roles";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
+import { adminAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("admin-roles");
 
@@ -32,16 +32,24 @@ function isValidId(id: string | undefined): id is string {
 
 const ROLE_ERROR_STATUS = { not_found: 404, conflict: 409, validation: 400, builtin_protected: 403 } as const;
 
-/** Map role errors to HTTP responses. Returns null if not a role/enterprise error. */
-function roleErrorResponse(err: unknown): { body: Record<string, unknown>; status: 400 | 403 | 404 | 409 } | null {
+/**
+ * Throw HTTPException for known role/enterprise errors.
+ * Enterprise license errors → 403; RoleError → 400/403/404/409.
+ * Unknown errors fall through.
+ */
+function throwIfRoleError(err: unknown): void {
   const message = err instanceof Error ? err.message : String(err);
   if (message.includes("Enterprise features")) {
-    return { body: { error: "enterprise_required", message }, status: 403 };
+    throw new HTTPException(403, {
+      res: Response.json({ error: "enterprise_required", message }, { status: 403 }),
+    });
   }
   if (err instanceof RoleError) {
-    return { body: { error: err.code, message: err.message }, status: ROLE_ERROR_STATUS[err.code] };
+    const status = ROLE_ERROR_STATUS[err.code];
+    throw new HTTPException(status, {
+      res: Response.json({ error: err.code, message: err.message }, { status }),
+    });
   }
-  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -404,248 +412,202 @@ const assignRoleRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const adminRoles = new OpenAPIHono();
+const adminRoles = new OpenAPIHono<AuthEnv>();
+
+adminRoles.use(adminAuth);
+adminRoles.use(requestContext);
 
 adminRoles.onError((err, c) => {
-  if (err instanceof HTTPException && err.status === 400) {
-    return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
+  if (err instanceof HTTPException) {
+    // Our thrown HTTPExceptions carry a JSON Response
+    if (err.res) return err.res;
+    // Framework 400 for malformed JSON
+    if (err.status === 400) {
+      return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
+    }
   }
   throw err;
 });
 
 // GET / — list all roles for the active org
 adminRoles.openapi(listRolesRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-    }
-
-    try {
-      const roles = await listRoles(orgId);
-      return c.json({
-        roles,
-        permissions: [...PERMISSIONS],
-        total: roles.length,
-      }, 200);
-    } catch (err) {
-      const mapped = roleErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to list roles");
-      return c.json({ error: "internal_error", message: "Failed to list roles.", requestId }, 500);
-    }
-  }) as never;
+  try {
+    const roles = await listRoles(orgId);
+    return c.json({
+      roles,
+      permissions: [...PERMISSIONS],
+      total: roles.length,
+    }, 200);
+  } catch (err) {
+    throwIfRoleError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to list roles");
+    return c.json({ error: "internal_error", message: "Failed to list roles.", requestId }, 500);
+  }
 });
 
 // POST / — create a custom role
 adminRoles.openapi(createRoleRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization." }, 400);
-    }
+  const body = c.req.valid("json");
 
-    const body = c.req.valid("json");
+  if (!body.name || !body.permissions || !Array.isArray(body.permissions)) {
+    return c.json({ error: "bad_request", message: "Missing required fields: name, permissions." }, 400);
+  }
 
-    if (!body.name || !body.permissions || !Array.isArray(body.permissions)) {
-      return c.json({ error: "bad_request", message: "Missing required fields: name, permissions." }, 400);
-    }
-
-    try {
-      const role = await createRole(orgId, body);
-      return c.json({ role }, 201);
-    } catch (err) {
-      const mapped = roleErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to create role");
-      return c.json({ error: "internal_error", message: "Failed to create role.", requestId }, 500);
-    }
-  }) as never;
+  try {
+    const role = await createRole(orgId, body);
+    return c.json({ role }, 201);
+  } catch (err) {
+    throwIfRoleError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to create role");
+    return c.json({ error: "internal_error", message: "Failed to create role.", requestId }, 500);
+  }
 });
 
 // PUT /:id — update a custom role
 adminRoles.openapi(updateRoleRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
   const { id: roleId } = c.req.valid("param");
 
   if (!isValidId(roleId)) {
     return c.json({ error: "bad_request", message: "Invalid role ID." }, 400);
   }
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization." }, 400);
-    }
+  const body = c.req.valid("json");
 
-    const body = c.req.valid("json");
-
-    try {
-      const role = await updateRole(orgId, roleId, body);
-      return c.json({ role }, 200);
-    } catch (err) {
-      const mapped = roleErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, roleId }, "Failed to update role");
-      return c.json({ error: "internal_error", message: "Failed to update role.", requestId }, 500);
-    }
-  }) as never;
+  try {
+    const role = await updateRole(orgId, roleId, body);
+    return c.json({ role }, 200);
+  } catch (err) {
+    throwIfRoleError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, roleId }, "Failed to update role");
+    return c.json({ error: "internal_error", message: "Failed to update role.", requestId }, 500);
+  }
 });
 
 // DELETE /:id — delete a custom role
 adminRoles.openapi(deleteRoleRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
   const { id: roleId } = c.req.valid("param");
 
   if (!isValidId(roleId)) {
     return c.json({ error: "bad_request", message: "Invalid role ID." }, 400);
   }
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization." }, 400);
+  try {
+    const deleted = await deleteRole(orgId, roleId);
+    if (!deleted) {
+      return c.json({ error: "not_found", message: "Role not found." }, 404);
     }
-
-    try {
-      const deleted = await deleteRole(orgId, roleId);
-      if (!deleted) {
-        return c.json({ error: "not_found", message: "Role not found." }, 404);
-      }
-      return c.json({ message: "Role deleted." }, 200);
-    } catch (err) {
-      const mapped = roleErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, roleId }, "Failed to delete role");
-      return c.json({ error: "internal_error", message: "Failed to delete role.", requestId }, 500);
-    }
-  }) as never;
+    return c.json({ message: "Role deleted." }, 200);
+  } catch (err) {
+    throwIfRoleError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, roleId }, "Failed to delete role");
+    return c.json({ error: "internal_error", message: "Failed to delete role.", requestId }, 500);
+  }
 });
 
 // GET /:id/members — list members with a specific role
 adminRoles.openapi(listRoleMembersRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
   const { id: roleId } = c.req.valid("param");
 
   if (!isValidId(roleId)) {
     return c.json({ error: "bad_request", message: "Invalid role ID." }, 400);
   }
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization." }, 400);
-    }
-
-    try {
-      const members = await listRoleMembers(orgId, roleId);
-      return c.json({ members, total: members.length }, 200);
-    } catch (err) {
-      const mapped = roleErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, roleId }, "Failed to list role members");
-      return c.json({ error: "internal_error", message: "Failed to list role members.", requestId }, 500);
-    }
-  }) as never;
+  try {
+    const members = await listRoleMembers(orgId, roleId);
+    return c.json({ members, total: members.length }, 200);
+  } catch (err) {
+    throwIfRoleError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, roleId }, "Failed to list role members");
+    return c.json({ error: "internal_error", message: "Failed to list role members.", requestId }, 500);
+  }
 });
 
 // PUT /users/:userId/role — assign a role to a user
 adminRoles.openapi(assignRoleRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
   const { userId } = c.req.valid("param");
 
   if (!isValidId(userId)) {
     return c.json({ error: "bad_request", message: "Invalid user ID." }, 400);
   }
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization." }, 400);
-    }
+  const { role: roleName } = c.req.valid("json");
 
-    const { role: roleName } = c.req.valid("json");
-
-    try {
-      const result = await assignRole(orgId, userId, roleName);
-      return c.json(result, 200);
-    } catch (err) {
-      const mapped = roleErrorResponse(err);
-      if (mapped) return c.json(mapped.body, mapped.status) as never;
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, userId }, "Failed to assign role");
-      return c.json({ error: "internal_error", message: "Failed to assign role.", requestId }, 500);
-    }
-  }) as never;
+  try {
+    const result = await assignRole(orgId, userId, roleName);
+    return c.json(result, 200);
+  } catch (err) {
+    throwIfRoleError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, userId }, "Failed to assign role");
+    return c.json({ error: "internal_error", message: "Failed to assign role.", requestId }, 500);
+  }
 });
 
 export { adminRoles };

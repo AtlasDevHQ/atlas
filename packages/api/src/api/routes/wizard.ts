@@ -16,13 +16,13 @@ import * as fs from "fs";
 import * as path from "path";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { HTTPException } from "hono/http-exception";
-import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
+import { createLogger } from "@atlas/api/lib/logger";
 import { validationHook } from "./validation-hook";
 import { connections, detectDBType } from "@atlas/api/lib/db/connection";
 import { hasInternalDB, internalQuery, decryptUrl } from "@atlas/api/lib/db/internal";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import { syncEntityToDisk } from "@atlas/api/lib/semantic-sync";
-import { adminAuthPreamble } from "./admin-auth";
+import { adminAuth, requestContext, type AuthEnv } from "./middleware";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import {
   type ProfilingResult,
@@ -393,13 +393,21 @@ const saveRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const wizard = new OpenAPIHono({
+const wizard = new OpenAPIHono<AuthEnv>({
   defaultHook: validationHook,
 });
 
+wizard.use(adminAuth);
+wizard.use(requestContext);
+
 wizard.onError((err, c) => {
-  if (err instanceof HTTPException && err.status === 400) {
-    return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+  if (err instanceof HTTPException) {
+    // Middleware-thrown HTTPExceptions carry a JSON Response
+    if (err.res) return err.res;
+    // Framework 400 for malformed JSON
+    if (err.status === 400) {
+      return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+    }
   }
   throw err;
 });
@@ -409,72 +417,64 @@ wizard.onError((err, c) => {
 // ---------------------------------------------------------------------------
 
 wizard.openapi(profileRoute, async (c) => {
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  if ("error" in preamble) {
-    // Auth preamble returns dynamic shapes — use `as never` to satisfy typed route
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  const { connectionId } = c.req.valid("json");
+
+  // Look up the connection URL — resolveConnectionUrl throws on infrastructure errors
+  let connUrl: ResolvedConnection | null;
+  try {
+    connUrl = await resolveConnectionUrl(connectionId, authResult.user?.activeOrganizationId);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, connectionId }, "Failed to resolve connection URL");
+    return c.json({
+      error: "connection_resolution_failed",
+      message: "Failed to resolve connection. Check server logs for details.",
+      requestId,
+    }, 500);
   }
-  const { authResult } = preamble;
+  if (!connUrl) {
+    return c.json({ error: "not_found", message: `Connection "${connectionId}" not found.` }, 404);
+  }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const { connectionId } = c.req.valid("json");
+  const { url, dbType, schema } = connUrl;
 
-    // Look up the connection URL — resolveConnectionUrl throws on infrastructure errors
-    let connUrl: ResolvedConnection | null;
-    try {
-      connUrl = await resolveConnectionUrl(connectionId, authResult.user?.activeOrganizationId);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, connectionId }, "Failed to resolve connection URL");
-      return c.json({
-        error: "connection_resolution_failed",
-        message: "Failed to resolve connection. Check server logs for details.",
-        requestId,
-      }, 500);
+  try {
+    let objects;
+    switch (dbType) {
+      case "postgres":
+        objects = await listPostgresObjects(url, schema, log);
+        break;
+      case "mysql":
+        objects = await listMySQLObjects(url);
+        break;
+      default:
+        return c.json({
+          error: "unsupported_db",
+          message: `Wizard profiling is currently supported for PostgreSQL and MySQL. Got: ${dbType}`,
+        }, 400);
     }
-    if (!connUrl) {
-      return c.json({ error: "not_found", message: `Connection "${connectionId}" not found.` }, 404);
-    }
 
-    const { url, dbType, schema } = connUrl;
+    log.info({ requestId, connectionId, dbType, tableCount: objects.length }, "Wizard profile complete");
 
-    try {
-      let objects;
-      switch (dbType) {
-        case "postgres":
-          objects = await listPostgresObjects(url, schema, log);
-          break;
-        case "mysql":
-          objects = await listMySQLObjects(url);
-          break;
-        default:
-          return c.json({
-            error: "unsupported_db",
-            message: `Wizard profiling is currently supported for PostgreSQL and MySQL. Got: ${dbType}`,
-          }, 400);
-      }
-
-      log.info({ requestId, connectionId, dbType, tableCount: objects.length }, "Wizard profile complete");
-
-      return c.json({
-        connectionId,
-        dbType,
-        schema,
-        tables: objects.map((o) => ({
-          name: o.name,
-          type: o.type,
-        })),
-      }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, connectionId }, "Wizard profile failed");
-      return c.json({
-        error: "profile_failed",
-        message: `Failed to list tables: ${err instanceof Error ? err.message : String(err)}`,
-        requestId,
-      }, 500);
-    }
-  });
+    return c.json({
+      connectionId,
+      dbType,
+      schema,
+      tables: objects.map((o) => ({
+        name: o.name,
+        type: o.type,
+      })),
+    }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, connectionId }, "Wizard profile failed");
+    return c.json({
+      error: "profile_failed",
+      message: `Failed to list tables: ${err instanceof Error ? err.message : String(err)}`,
+      requestId,
+    }, 500);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -482,119 +482,111 @@ wizard.openapi(profileRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 wizard.openapi(generateRoute, async (c) => {
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  if ("error" in preamble) {
-    // Auth preamble returns dynamic shapes — use `as never` to satisfy typed route
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  const { connectionId, tables: tableNames } = c.req.valid("json");
+
+  let connUrl: ResolvedConnection | null;
+  try {
+    connUrl = await resolveConnectionUrl(connectionId, authResult.user?.activeOrganizationId);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, connectionId }, "Failed to resolve connection URL");
+    return c.json({
+      error: "connection_resolution_failed",
+      message: "Failed to resolve connection. Check server logs for details.",
+      requestId,
+    }, 500);
   }
-  const { authResult } = preamble;
+  if (!connUrl) {
+    return c.json({ error: "not_found", message: `Connection "${connectionId}" not found.` }, 404);
+  }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const { connectionId, tables: tableNames } = c.req.valid("json");
+  const { url, dbType, schema } = connUrl;
 
-    let connUrl: ResolvedConnection | null;
-    try {
-      connUrl = await resolveConnectionUrl(connectionId, authResult.user?.activeOrganizationId);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, connectionId }, "Failed to resolve connection URL");
-      return c.json({
-        error: "connection_resolution_failed",
-        message: "Failed to resolve connection. Check server logs for details.",
-        requestId,
-      }, 500);
+  try {
+    let result: ProfilingResult;
+    switch (dbType) {
+      case "postgres":
+        result = await profilePostgres(url, tableNames, undefined, schema, undefined, log);
+        break;
+      case "mysql":
+        result = await profileMySQL(url, tableNames, undefined, undefined, log);
+        break;
+      default:
+        return c.json({
+          error: "unsupported_db",
+          message: `Wizard profiling is currently supported for PostgreSQL and MySQL. Got: ${dbType}`,
+        }, 400);
     }
-    if (!connUrl) {
-      return c.json({ error: "not_found", message: `Connection "${connectionId}" not found.` }, 404);
-    }
 
-    const { url, dbType, schema } = connUrl;
+    // Run heuristics (returns new array — no mutation)
+    const analyzedProfiles = analyzeTableProfiles(result.profiles);
 
-    try {
-      let result: ProfilingResult;
-      switch (dbType) {
-        case "postgres":
-          result = await profilePostgres(url, tableNames, undefined, schema, undefined, log);
-          break;
-        case "mysql":
-          result = await profileMySQL(url, tableNames, undefined, undefined, log);
-          break;
-        default:
-          return c.json({
-            error: "unsupported_db",
-            message: `Wizard profiling is currently supported for PostgreSQL and MySQL. Got: ${dbType}`,
-          }, 400);
-      }
-
-      // Run heuristics (returns new array — no mutation)
-      const analyzedProfiles = analyzeTableProfiles(result.profiles);
-
-      // Generate entity YAML for each profile
-      const sourceId = connectionId === "default" ? undefined : connectionId;
-      const entities = analyzedProfiles.map((profile) => ({
-        tableName: profile.table_name,
-        objectType: profile.object_type,
-        rowCount: profile.row_count,
-        columnCount: profile.columns.length,
-        yaml: generateEntityYAML(profile, analyzedProfiles, dbType, schema, sourceId),
-        profile: {
-          columns: profile.columns.map((col) => ({
-            name: col.name,
-            type: col.type,
-            mappedType: col.is_enum_like ? "enum" : undefined,
-            nullable: col.nullable,
-            isPrimaryKey: col.is_primary_key,
-            isForeignKey: col.is_foreign_key,
-            isEnumLike: col.is_enum_like,
-            sampleValues: col.sample_values.slice(0, 5),
-            uniqueCount: col.unique_count,
-            nullCount: col.null_count,
-          })),
-          primaryKeys: profile.primary_key_columns,
-          foreignKeys: profile.foreign_keys.map((fk) => ({
-            fromColumn: fk.from_column,
-            toTable: fk.to_table,
-            toColumn: fk.to_column,
-            source: fk.source,
-          })),
-          inferredForeignKeys: profile.inferred_foreign_keys.map((fk) => ({
-            fromColumn: fk.from_column,
-            toTable: fk.to_table,
-            toColumn: fk.to_column,
-          })),
-          flags: {
-            possiblyAbandoned: profile.table_flags.possibly_abandoned,
-            possiblyDenormalized: profile.table_flags.possibly_denormalized,
-          },
-          notes: profile.profiler_notes,
+    // Generate entity YAML for each profile
+    const sourceId = connectionId === "default" ? undefined : connectionId;
+    const entities = analyzedProfiles.map((profile) => ({
+      tableName: profile.table_name,
+      objectType: profile.object_type,
+      rowCount: profile.row_count,
+      columnCount: profile.columns.length,
+      yaml: generateEntityYAML(profile, analyzedProfiles, dbType, schema, sourceId),
+      profile: {
+        columns: profile.columns.map((col) => ({
+          name: col.name,
+          type: col.type,
+          mappedType: col.is_enum_like ? "enum" : undefined,
+          nullable: col.nullable,
+          isPrimaryKey: col.is_primary_key,
+          isForeignKey: col.is_foreign_key,
+          isEnumLike: col.is_enum_like,
+          sampleValues: col.sample_values.slice(0, 5),
+          uniqueCount: col.unique_count,
+          nullCount: col.null_count,
+        })),
+        primaryKeys: profile.primary_key_columns,
+        foreignKeys: profile.foreign_keys.map((fk) => ({
+          fromColumn: fk.from_column,
+          toTable: fk.to_table,
+          toColumn: fk.to_column,
+          source: fk.source,
+        })),
+        inferredForeignKeys: profile.inferred_foreign_keys.map((fk) => ({
+          fromColumn: fk.from_column,
+          toTable: fk.to_table,
+          toColumn: fk.to_column,
+        })),
+        flags: {
+          possiblyAbandoned: profile.table_flags.possibly_abandoned,
+          possiblyDenormalized: profile.table_flags.possibly_denormalized,
         },
-      }));
+        notes: profile.profiler_notes,
+      },
+    }));
 
-      log.info({
-        requestId,
-        connectionId,
-        dbType,
-        profiledCount: analyzedProfiles.length,
-        errorCount: result.errors.length,
-      }, "Wizard generate complete");
+    log.info({
+      requestId,
+      connectionId,
+      dbType,
+      profiledCount: analyzedProfiles.length,
+      errorCount: result.errors.length,
+    }, "Wizard generate complete");
 
-      return c.json({
-        connectionId,
-        dbType,
-        schema,
-        entities,
-        errors: result.errors,
-      }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, connectionId }, "Wizard generate failed");
-      return c.json({
-        error: "generate_failed",
-        message: `Failed to profile tables: ${err instanceof Error ? err.message : String(err)}`,
-        requestId,
-      }, 500);
-    }
-  });
+    return c.json({
+      connectionId,
+      dbType,
+      schema,
+      entities,
+      errors: result.errors,
+    }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, connectionId }, "Wizard generate failed");
+    return c.json({
+      error: "generate_failed",
+      message: `Failed to profile tables: ${err instanceof Error ? err.message : String(err)}`,
+      requestId,
+    }, 500);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -602,37 +594,28 @@ wizard.openapi(generateRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 wizard.openapi(previewRoute, async (c) => {
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
 
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  if ("error" in preamble) {
-    // Auth preamble returns dynamic shapes — use `as never` to satisfy typed route
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
+  const { question, entities } = c.req.valid("json");
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const { question, entities } = c.req.valid("json");
+  // Build a semantic context summary from the provided entity YAMLs
+  // (Zod already validated that entities are { tableName: string; yaml: string }[])
+  const entitySummaries = entities
+    .map((e) => `--- ${e.tableName} ---\n${e.yaml}`)
+    .join("\n\n");
 
-    // Build a semantic context summary from the provided entity YAMLs
-    // (Zod already validated that entities are { tableName: string; yaml: string }[])
-    const entitySummaries = entities
-      .map((e) => `--- ${e.tableName} ---\n${e.yaml}`)
-      .join("\n\n");
+  // Generate a preview response showing what the agent would see
+  const preview = {
+    question,
+    semanticContext: `The agent would see ${entities.length} entity definitions when answering this question.`,
+    availableTables: entities.map((e) => e.tableName),
+    entityCount: entities.length,
+    sampleEntityYaml: entitySummaries.slice(0, 2000),
+  };
 
-    // Generate a preview response showing what the agent would see
-    const preview = {
-      question,
-      semanticContext: `The agent would see ${entities.length} entity definitions when answering this question.`,
-      availableTables: entities.map((e) => e.tableName),
-      entityCount: entities.length,
-      sampleEntityYaml: entitySummaries.slice(0, 2000),
-    };
+  log.info({ requestId, question, entityCount: entities.length }, "Wizard preview generated");
 
-    log.info({ requestId, question, entityCount: entities.length }, "Wizard preview generated");
-
-    return c.json(preview, 200);
-  });
+  return c.json(preview, 200);
 });
 
 // ---------------------------------------------------------------------------
@@ -640,123 +623,115 @@ wizard.openapi(previewRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 wizard.openapi(saveRoute, async (c) => {
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  if ("error" in preamble) {
-    // Auth preamble returns dynamic shapes — use `as never` to satisfy typed route
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "no_organization", message: "No active organization. Create a workspace first." }, 400);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "no_organization", message: "No active organization. Create a workspace first." }, 400);
+  const body = c.req.valid("json");
+  const { connectionId, entities } = body;
+
+  // Path traversal protection: validate all table names before writing any files
+  const SAFE_TABLE_NAME = /^[a-zA-Z_][a-zA-Z0-9_.-]*$/;
+  for (const entity of entities) {
+    if (!SAFE_TABLE_NAME.test(entity.tableName) || entity.tableName.includes("..")) {
+      return c.json({
+        error: "invalid_request",
+        message: `Invalid table name: "${entity.tableName}". Only letters, digits, underscores, hyphens, and dots are allowed.`,
+      }, 400);
     }
+  }
 
-    const body = c.req.valid("json");
-    const { connectionId, entities } = body;
+  try {
+    // Write entities to disk (org-scoped)
+    const sourceId = connectionId === "default" ? "default" : connectionId;
+    const outputBase = outputDirForDatasource(sourceId, orgId);
+    const entitiesDir = path.join(outputBase, "entities");
+    const metricsDir = path.join(outputBase, "metrics");
 
-    // Path traversal protection: validate all table names before writing any files
-    const SAFE_TABLE_NAME = /^[a-zA-Z_][a-zA-Z0-9_.-]*$/;
+    fs.mkdirSync(entitiesDir, { recursive: true });
+    fs.mkdirSync(metricsDir, { recursive: true });
+
+    const savedFiles: string[] = [];
+
+    // Write entity YAMLs (table names already validated above)
     for (const entity of entities) {
-      if (!SAFE_TABLE_NAME.test(entity.tableName) || entity.tableName.includes("..")) {
-        return c.json({
-          error: "invalid_request",
-          message: `Invalid table name: "${entity.tableName}". Only letters, digits, underscores, hyphens, and dots are allowed.`,
-        }, 400);
+      const safeName = path.basename(entity.tableName);
+      const filePath = path.join(entitiesDir, `${safeName}.yml`);
+      fs.writeFileSync(filePath, entity.yaml, "utf-8");
+      savedFiles.push(`entities/${safeName}.yml`);
+
+      // Also write to org-scoped semantic directory (semantic/.orgs/{orgId}/)
+      // so the explore tool can discover this entity.
+      if (hasInternalDB()) {
+        await syncEntityToDisk(orgId, entity.tableName, "entity", entity.yaml).catch((err) => {
+          log.warn({ err: err instanceof Error ? err.message : String(err), tableName: entity.tableName }, "Disk sync after wizard save failed");
+        });
       }
     }
 
-    try {
-      // Write entities to disk (org-scoped)
-      const sourceId = connectionId === "default" ? "default" : connectionId;
-      const outputBase = outputDirForDatasource(sourceId, orgId);
-      const entitiesDir = path.join(outputBase, "entities");
-      const metricsDir = path.join(outputBase, "metrics");
+    // Generate catalog, glossary, and metric files from raw profile data.
+    // The wizard frontend does not send raw profile data — it sends
+    // pre-generated entity YAML via { connectionId, entities } instead.
+    // This branch handles callers (e.g. future CLI integrations) that
+    // provide raw TableProfile[] data for server-side generation.
+    const { schema: bodySchema, profiles: profileData } = body;
+    if (profileData && profileData.length > 0) {
+      const profiles = profileData;
+      const resolvedSchema = bodySchema ?? "public";
 
-      fs.mkdirSync(entitiesDir, { recursive: true });
-      fs.mkdirSync(metricsDir, { recursive: true });
+      const catalogYaml = generateCatalogYAML(profiles);
+      const catalogPath = path.join(outputBase, "catalog.yml");
+      fs.writeFileSync(catalogPath, catalogYaml, "utf-8");
+      savedFiles.push("catalog.yml");
 
-      const savedFiles: string[] = [];
+      const glossaryYaml = generateGlossaryYAML(profiles);
+      const glossaryPath = path.join(outputBase, "glossary.yml");
+      fs.writeFileSync(glossaryPath, glossaryYaml, "utf-8");
+      savedFiles.push("glossary.yml");
 
-      // Write entity YAMLs (table names already validated above)
-      for (const entity of entities) {
-        const safeName = path.basename(entity.tableName);
-        const filePath = path.join(entitiesDir, `${safeName}.yml`);
-        fs.writeFileSync(filePath, entity.yaml, "utf-8");
-        savedFiles.push(`entities/${safeName}.yml`);
-
-        // Also write to org-scoped semantic directory (semantic/.orgs/{orgId}/)
-        // so the explore tool can discover this entity.
-        if (hasInternalDB()) {
-          await syncEntityToDisk(orgId, entity.tableName, "entity", entity.yaml).catch((err) => {
-            log.warn({ err: err instanceof Error ? err.message : String(err), tableName: entity.tableName }, "Disk sync after wizard save failed");
-          });
+      // Generate metric files (sanitize table_name from profiles)
+      for (const profile of profiles) {
+        if (!profile.table_name || !SAFE_TABLE_NAME.test(profile.table_name)) continue;
+        const metricYaml = generateMetricYAML(profile, resolvedSchema);
+        if (metricYaml) {
+          const safeMetricName = path.basename(profile.table_name);
+          const filePath = path.join(metricsDir, `${safeMetricName}.yml`);
+          fs.writeFileSync(filePath, metricYaml, "utf-8");
+          savedFiles.push(`metrics/${safeMetricName}.yml`);
         }
       }
-
-      // Generate catalog, glossary, and metric files from raw profile data.
-      // The wizard frontend does not send raw profile data — it sends
-      // pre-generated entity YAML via { connectionId, entities } instead.
-      // This branch handles callers (e.g. future CLI integrations) that
-      // provide raw TableProfile[] data for server-side generation.
-      const { schema: bodySchema, profiles: profileData } = body;
-      if (profileData && profileData.length > 0) {
-        const profiles = profileData;
-        const resolvedSchema = bodySchema ?? "public";
-
-        const catalogYaml = generateCatalogYAML(profiles);
-        const catalogPath = path.join(outputBase, "catalog.yml");
-        fs.writeFileSync(catalogPath, catalogYaml, "utf-8");
-        savedFiles.push("catalog.yml");
-
-        const glossaryYaml = generateGlossaryYAML(profiles);
-        const glossaryPath = path.join(outputBase, "glossary.yml");
-        fs.writeFileSync(glossaryPath, glossaryYaml, "utf-8");
-        savedFiles.push("glossary.yml");
-
-        // Generate metric files (sanitize table_name from profiles)
-        for (const profile of profiles) {
-          if (!profile.table_name || !SAFE_TABLE_NAME.test(profile.table_name)) continue;
-          const metricYaml = generateMetricYAML(profile, resolvedSchema);
-          if (metricYaml) {
-            const safeMetricName = path.basename(profile.table_name);
-            const filePath = path.join(metricsDir, `${safeMetricName}.yml`);
-            fs.writeFileSync(filePath, metricYaml, "utf-8");
-            savedFiles.push(`metrics/${safeMetricName}.yml`);
-          }
-        }
-      }
-
-      // Reset semantic whitelist cache so new entities are queryable
-      _resetWhitelists();
-
-      log.info({
-        requestId,
-        orgId,
-        connectionId,
-        entityCount: entities.length,
-        fileCount: savedFiles.length,
-      }, "Wizard save complete");
-
-      return c.json({
-        saved: true,
-        orgId,
-        connectionId,
-        entityCount: entities.length,
-        files: savedFiles,
-      }, 201);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Wizard save failed");
-      return c.json({
-        error: "save_failed",
-        message: `Failed to save entities: ${err instanceof Error ? err.message : String(err)}`,
-        requestId,
-      }, 500);
     }
-  });
+
+    // Reset semantic whitelist cache so new entities are queryable
+    _resetWhitelists();
+
+    log.info({
+      requestId,
+      orgId,
+      connectionId,
+      entityCount: entities.length,
+      fileCount: savedFiles.length,
+    }, "Wizard save complete");
+
+    return c.json({
+      saved: true,
+      orgId,
+      connectionId,
+      entityCount: entities.length,
+      files: savedFiles,
+    }, 201);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Wizard save failed");
+    return c.json({
+      error: "save_failed",
+      message: `Failed to save entities: ${err instanceof Error ? err.message : String(err)}`,
+      requestId,
+    }, 500);
+  }
 });
 
 // ---------------------------------------------------------------------------

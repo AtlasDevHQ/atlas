@@ -1,15 +1,15 @@
 /**
  * Conversations REST routes — list, get, delete, star, share/unshare.
  *
- * Authenticated routes follow the same auth → rate limit → withRequestContext
- * pattern as chat.ts and query.ts. The public shared-conversation route
- * (`publicConversations`) has its own in-memory rate limiter and no auth.
+ * Authenticated routes use `standardAuth` + `requestContext` middleware from
+ * `./middleware`. The public shared-conversation route (`publicConversations`)
+ * has its own in-memory rate limiter and no auth.
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { z } from "zod";
 import { HTTPException } from "hono/http-exception";
-import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
+import { createLogger } from "@atlas/api/lib/logger";
 import { validationHook } from "./validation-hook";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
 import {
@@ -34,7 +34,7 @@ import {
 } from "@atlas/api/lib/conversations";
 import type { ShareExpiryKey } from "@useatlas/types/share";
 import { SHARE_MODES, SHARE_EXPIRY_OPTIONS } from "@useatlas/types/share";
-import { authPreamble } from "./auth-preamble";
+import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 const log = createLogger("conversations");
@@ -550,16 +550,20 @@ const deleteConversationRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const conversations = new OpenAPIHono({
+const conversations = new OpenAPIHono<AuthEnv>({
   defaultHook: validationHook,
 });
+
+conversations.use(standardAuth);
+conversations.use(requestContext);
 
 // JSON parse error handler — only for truly malformed request bodies
 // (e.g. unparseable JSON). Zod validation failures are handled by the
 // defaultHook above which uses the `target` field for accurate messages.
 conversations.onError((err, c) => {
-  if (err instanceof HTTPException && err.status === 400) {
-    return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+  if (err instanceof HTTPException) {
+    if (err.res) return err.res;
+    if (err.status === 400) return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
   }
   throw err;
 });
@@ -569,36 +573,26 @@ conversations.onError((err, c) => {
 // ---------------------------------------------------------------------------
 
 conversations.openapi(listConversationsRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
   }
 
-  const preamble = await authPreamble(req, requestId);
-  if ("error" in preamble) {
-    // Auth/rate-limit failure — status not in route schema, use `as never`
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
+  const authResult = c.get("authResult");
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const rawLimit = parseInt(c.req.valid("query").limit ?? "20", 10);
-    const rawOffset = parseInt(c.req.valid("query").offset ?? "0", 10);
-    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 100) : 20;
-    const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
-    const starredParam = c.req.valid("query").starred;
-    const starred = starredParam === "true" ? true : starredParam === "false" ? false : undefined;
-    const result = await listConversations({
-      userId: authResult.user?.id,
-      orgId: authResult.user?.activeOrganizationId,
-      starred,
-      limit,
-      offset,
-    });
-    return c.json(result, 200);
+  const rawLimit = parseInt(c.req.valid("query").limit ?? "20", 10);
+  const rawOffset = parseInt(c.req.valid("query").offset ?? "0", 10);
+  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 100) : 20;
+  const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
+  const starredParam = c.req.valid("query").starred;
+  const starred = starredParam === "true" ? true : starredParam === "false" ? false : undefined;
+  const result = await listConversations({
+    userId: authResult.user?.id,
+    orgId: authResult.user?.activeOrganizationId,
+    starred,
+    limit,
+    offset,
   });
+  return c.json(result, 200);
 });
 
 // ---------------------------------------------------------------------------
@@ -606,33 +600,24 @@ conversations.openapi(listConversationsRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 conversations.openapi(getConversationRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
   }
 
-  const preamble = await authPreamble(req, requestId);
-  if ("error" in preamble) {
-    // Auth/rate-limit failure — status not in route schema, use `as never`
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
   const { id } = c.req.valid("param");
   if (!UUID_RE.test(id)) {
     return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const result = await getConversation(id, authResult.user?.id);
-    if (!result.ok) {
-      const fail = crudFailResponse(result.reason, requestId);
-      return c.json(fail.body, fail.status);
-    }
-    return c.json(result.data, 200);
-  });
+  const result = await getConversation(id, authResult.user?.id);
+  if (!result.ok) {
+    const fail = crudFailResponse(result.reason, requestId);
+    return c.json(fail.body, fail.status);
+  }
+  return c.json(result.data, 200);
 });
 
 // ---------------------------------------------------------------------------
@@ -640,35 +625,26 @@ conversations.openapi(getConversationRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 conversations.openapi(starConversationRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
   }
 
-  const preamble = await authPreamble(req, requestId);
-  if ("error" in preamble) {
-    // Auth/rate-limit failure — status not in route schema, use `as never`
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
   const { id } = c.req.valid("param");
   if (!UUID_RE.test(id)) {
     return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const parsed = c.req.valid("json");
+  const parsed = c.req.valid("json");
 
-    const result = await starConversation(id, parsed.starred, authResult.user?.id);
-    if (!result.ok) {
-      const fail = crudFailResponse(result.reason, requestId);
-      return c.json(fail.body, fail.status);
-    }
-    return c.json({ id, starred: parsed.starred }, 200);
-  });
+  const result = await starConversation(id, parsed.starred, authResult.user?.id);
+  if (!result.ok) {
+    const fail = crudFailResponse(result.reason, requestId);
+    return c.json(fail.body, fail.status);
+  }
+  return c.json({ id, starred: parsed.starred }, 200);
 });
 
 // ---------------------------------------------------------------------------
@@ -676,35 +652,26 @@ conversations.openapi(starConversationRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 conversations.openapi(notebookStateRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
   }
 
-  const preamble = await authPreamble(req, requestId);
-  if ("error" in preamble) {
-    // Auth/rate-limit failure — status not in route schema, use `as never`
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
   const { id } = c.req.valid("param");
   if (!UUID_RE.test(id)) {
     return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const parsed = c.req.valid("json");
+  const parsed = c.req.valid("json");
 
-    const result = await updateNotebookState(id, parsed, authResult.user?.id);
-    if (!result.ok) {
-      const fail = crudFailResponse(result.reason, requestId);
-      return c.json(fail.body, fail.status);
-    }
-    return c.json({ id, notebookState: parsed }, 200);
-  });
+  const result = await updateNotebookState(id, parsed, authResult.user?.id);
+  if (!result.ok) {
+    const fail = crudFailResponse(result.reason, requestId);
+    return c.json(fail.body, fail.status);
+  }
+  return c.json({ id, notebookState: parsed }, 200);
 });
 
 // ---------------------------------------------------------------------------
@@ -712,99 +679,90 @@ conversations.openapi(notebookStateRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 conversations.openapi(forkConversationRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
   }
 
-  const preamble = await authPreamble(req, requestId);
-  if ("error" in preamble) {
-    // Auth/rate-limit failure — status not in route schema, use `as never`
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
   const { id } = c.req.valid("param");
   if (!UUID_RE.test(id)) {
     return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const parsed = c.req.valid("json");
+  const parsed = c.req.valid("json");
 
-    const result = await forkConversation({
-      sourceId: id,
-      forkPointMessageId: parsed.forkPointMessageId,
-      userId: authResult.user?.id,
-      orgId: authResult.user?.activeOrganizationId,
-    });
-    if (!result.ok) {
-      const fail = crudFailResponse(result.reason, requestId);
-      return c.json(fail.body, fail.status);
-    }
+  const result = await forkConversation({
+    sourceId: id,
+    forkPointMessageId: parsed.forkPointMessageId,
+    userId: authResult.user?.id,
+    orgId: authResult.user?.activeOrganizationId,
+  });
+  if (!result.ok) {
+    const fail = crudFailResponse(result.reason, requestId);
+    return c.json(fail.body, fail.status);
+  }
 
-    // Update notebook_state on source and new conversation
-    const label = parsed.label ?? `Fork from cell`;
-    const branch = {
-      conversationId: result.data.id,
-      forkPointCellId: parsed.forkPointMessageId,
-      label,
-      createdAt: new Date().toISOString(),
-    };
+  // Update notebook_state on source and new conversation
+  const label = parsed.label ?? `Fork from cell`;
+  const branch = {
+    conversationId: result.data.id,
+    forkPointCellId: parsed.forkPointMessageId,
+    label,
+    createdAt: new Date().toISOString(),
+  };
 
-    // Read current notebook_state from source to preserve existing data
-    const sourceConv = await getConversation(id, authResult.user?.id);
-    if (!sourceConv.ok) {
-      log.error({ requestId, conversationId: id, reason: sourceConv.reason }, "Failed to read source conversation for branch metadata");
-      return c.json({
-        id: result.data.id,
-        messageCount: result.data.messageCount,
-        branches: [branch],
-        warning: "Fork created but branch metadata could not be saved to source conversation.",
-      }, 200);
-    }
-
-    const existing = sourceConv.data.notebookState ?? { version: 3 };
-    const existingBranches = existing.branches ?? [];
-
-    const updatedSourceState = {
-      ...existing,
-      version: existing.version || 3,
-      branches: [...existingBranches, branch],
-    };
-
-    const sourceRoot = existing.forkRootId;
-    const forkChildState = {
-      version: 3,
-      forkRootId: sourceRoot ?? id,
-      forkPointCellId: parsed.forkPointMessageId,
-    };
-
-    // Write both notebook_state updates in parallel
-    const [sourceResult, forkResult] = await Promise.all([
-      updateNotebookState(id, updatedSourceState, authResult.user?.id),
-      updateNotebookState(result.data.id, forkChildState, authResult.user?.id),
-    ]);
-
-    let metadataWarning: string | undefined;
-    if (!sourceResult.ok) {
-      log.error({ requestId, conversationId: id, reason: sourceResult.reason }, "Failed to update source notebook_state after fork");
-      metadataWarning = "Fork created but branch metadata could not be fully saved.";
-    }
-    if (!forkResult.ok) {
-      log.error({ requestId, conversationId: result.data.id, reason: forkResult.reason }, "Failed to set fork metadata on new conversation");
-      metadataWarning = "Fork created but branch metadata could not be fully saved.";
-    }
-
+  // Read current notebook_state from source to preserve existing data
+  const sourceConv = await getConversation(id, authResult.user?.id);
+  if (!sourceConv.ok) {
+    log.error({ requestId, conversationId: id, reason: sourceConv.reason }, "Failed to read source conversation for branch metadata");
     return c.json({
       id: result.data.id,
       messageCount: result.data.messageCount,
-      branches: [...existingBranches, branch],
-      ...(metadataWarning ? { warning: metadataWarning } : {}),
+      branches: [branch],
+      warning: "Fork created but branch metadata could not be saved to source conversation.",
     }, 200);
-  });
+  }
+
+  const existing = sourceConv.data.notebookState ?? { version: 3 };
+  const existingBranches = existing.branches ?? [];
+
+  const updatedSourceState = {
+    ...existing,
+    version: existing.version || 3,
+    branches: [...existingBranches, branch],
+  };
+
+  const sourceRoot = existing.forkRootId;
+  const forkChildState = {
+    version: 3,
+    forkRootId: sourceRoot ?? id,
+    forkPointCellId: parsed.forkPointMessageId,
+  };
+
+  // Write both notebook_state updates in parallel
+  const [sourceResult, forkResult] = await Promise.all([
+    updateNotebookState(id, updatedSourceState, authResult.user?.id),
+    updateNotebookState(result.data.id, forkChildState, authResult.user?.id),
+  ]);
+
+  let metadataWarning: string | undefined;
+  if (!sourceResult.ok) {
+    log.error({ requestId, conversationId: id, reason: sourceResult.reason }, "Failed to update source notebook_state after fork");
+    metadataWarning = "Fork created but branch metadata could not be fully saved.";
+  }
+  if (!forkResult.ok) {
+    log.error({ requestId, conversationId: result.data.id, reason: forkResult.reason }, "Failed to set fork metadata on new conversation");
+    metadataWarning = "Fork created but branch metadata could not be fully saved.";
+  }
+
+  return c.json({
+    id: result.data.id,
+    messageCount: result.data.messageCount,
+    branches: [...existingBranches, branch],
+    ...(metadataWarning ? { warning: metadataWarning } : {}),
+  }, 200);
 });
 
 // ---------------------------------------------------------------------------
@@ -812,46 +770,37 @@ conversations.openapi(forkConversationRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 conversations.openapi(getShareStatusRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
   }
 
-  const preamble = await authPreamble(req, requestId);
-  if ("error" in preamble) {
-    // Auth/rate-limit failure — status not in route schema, use `as never`
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
   const { id } = c.req.valid("param");
   if (!UUID_RE.test(id)) {
     return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const result = await getShareStatus(id, authResult.user?.id);
-    if (!result.ok) {
-      if (result.reason === "error") {
-        log.error({ requestId, conversationId: id }, "Share status fetch failed due to DB error");
-      }
-      const fail = crudFailResponse(result.reason, requestId);
-      return c.json(fail.body, fail.status);
+  const result = await getShareStatus(id, authResult.user?.id);
+  if (!result.ok) {
+    if (result.reason === "error") {
+      log.error({ requestId, conversationId: id }, "Share status fetch failed due to DB error");
     }
-    if (!result.data.shared) {
-      return c.json({ shared: false as const }, 200);
-    }
-    const baseUrl = new URL(req.url).origin;
-    return c.json({
-      shared: true as const,
-      token: result.data.token,
-      url: `${baseUrl}/shared/${result.data.token}`,
-      expiresAt: result.data.expiresAt,
-      shareMode: result.data.shareMode,
-    }, 200);
-  });
+    const fail = crudFailResponse(result.reason, requestId);
+    return c.json(fail.body, fail.status);
+  }
+  if (!result.data.shared) {
+    return c.json({ shared: false as const }, 200);
+  }
+  const baseUrl = new URL(c.req.raw.url).origin;
+  return c.json({
+    shared: true as const,
+    token: result.data.token,
+    url: `${baseUrl}/shared/${result.data.token}`,
+    expiresAt: result.data.expiresAt,
+    shareMode: result.data.shareMode,
+  }, 200);
 });
 
 // ---------------------------------------------------------------------------
@@ -859,57 +808,48 @@ conversations.openapi(getShareStatusRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 conversations.openapi(shareConversationRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
   }
 
-  const preamble = await authPreamble(req, requestId);
-  if ("error" in preamble) {
-    // Auth/rate-limit failure — status not in route schema, use `as never`
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
   const { id } = c.req.valid("param");
   if (!UUID_RE.test(id)) {
     return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    let body: unknown = undefined;
-    try {
-      const text = await req.text();
-      if (text) body = JSON.parse(text);
-    } catch (err) {
-      log.debug({ err: err instanceof Error ? err.message : String(err) }, "Invalid JSON body in POST share");
-      return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
-    }
+  let body: unknown = undefined;
+  try {
+    const text = await c.req.raw.text();
+    if (text) body = JSON.parse(text);
+  } catch (err) {
+    log.debug({ err: err instanceof Error ? err.message : String(err) }, "Invalid JSON body in POST share");
+    return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+  }
 
-    const parsed = ShareConversationBodySchema.safeParse(body);
-    if (!parsed.success) {
-      return c.json({ error: "invalid_request", message: "Invalid share options." }, 400);
-    }
+  const parsed = ShareConversationBodySchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: "invalid_request", message: "Invalid share options." }, 400);
+  }
 
-    const opts = parsed.data;
-    const result = await shareConversation(id, authResult.user?.id, {
-      expiresIn: opts?.expiresIn,
-      shareMode: opts?.shareMode,
-    });
-    if (!result.ok) {
-      const fail = crudFailResponse(result.reason, requestId);
-      return c.json(fail.body, fail.status);
-    }
-    const baseUrl = new URL(req.url).origin;
-    return c.json({
-      token: result.data.token,
-      url: `${baseUrl}/shared/${result.data.token}`,
-      expiresAt: result.data.expiresAt,
-      shareMode: result.data.shareMode,
-    }, 200);
+  const opts = parsed.data;
+  const result = await shareConversation(id, authResult.user?.id, {
+    expiresIn: opts?.expiresIn,
+    shareMode: opts?.shareMode,
   });
+  if (!result.ok) {
+    const fail = crudFailResponse(result.reason, requestId);
+    return c.json(fail.body, fail.status);
+  }
+  const baseUrl = new URL(c.req.raw.url).origin;
+  return c.json({
+    token: result.data.token,
+    url: `${baseUrl}/shared/${result.data.token}`,
+    expiresAt: result.data.expiresAt,
+    shareMode: result.data.shareMode,
+  }, 200);
 });
 
 // ---------------------------------------------------------------------------
@@ -917,33 +857,24 @@ conversations.openapi(shareConversationRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 conversations.openapi(unshareConversationRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
   }
 
-  const preamble = await authPreamble(req, requestId);
-  if ("error" in preamble) {
-    // Auth/rate-limit failure — status not in route schema, use `as never`
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
   const { id } = c.req.valid("param");
   if (!UUID_RE.test(id)) {
     return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const result = await unshareConversation(id, authResult.user?.id);
-    if (!result.ok) {
-      const fail = crudFailResponse(result.reason, requestId);
-      return c.json(fail.body, fail.status);
-    }
-    return c.body(null, 204);
-  });
+  const result = await unshareConversation(id, authResult.user?.id);
+  if (!result.ok) {
+    const fail = crudFailResponse(result.reason, requestId);
+    return c.json(fail.body, fail.status);
+  }
+  return c.body(null, 204);
 });
 
 // ---------------------------------------------------------------------------
@@ -951,33 +882,24 @@ conversations.openapi(unshareConversationRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 conversations.openapi(deleteConversationRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
-
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
   }
 
-  const preamble = await authPreamble(req, requestId);
-  if ("error" in preamble) {
-    // Auth/rate-limit failure — status not in route schema, use `as never`
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
-  }
-  const { authResult } = preamble;
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
   const { id } = c.req.valid("param");
   if (!UUID_RE.test(id)) {
     return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
   }
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    const result = await deleteConversation(id, authResult.user?.id);
-    if (!result.ok) {
-      const fail = crudFailResponse(result.reason, requestId);
-      return c.json(fail.body, fail.status);
-    }
-    return c.body(null, 204);
-  });
+  const result = await deleteConversation(id, authResult.user?.id);
+  if (!result.ok) {
+    const fail = crudFailResponse(result.reason, requestId);
+    return c.json(fail.body, fail.status);
+  }
+  return c.body(null, 204);
 });
 
 // ---------------------------------------------------------------------------

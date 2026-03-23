@@ -12,9 +12,8 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
-import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
+import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
-import { adminAuthPreamble } from "./admin-auth";
 import {
   listConnections,
   deleteConnection,
@@ -25,6 +24,7 @@ import {
   SCIMError,
 } from "@atlas/ee/auth/scim";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
+import { adminAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("admin-scim");
 
@@ -36,16 +36,23 @@ function isValidId(id: string | undefined): id is string {
 
 const SCIM_ERROR_STATUS = { not_found: 404, conflict: 409, validation: 400 } as const;
 
-/** Map SCIM/enterprise errors to HTTP responses. Check specific types first. */
-function scimErrorResponse(err: unknown): { body: Record<string, unknown>; status: 400 | 403 | 404 | 409 } | null {
+/**
+ * Throw HTTPException for known SCIM/enterprise errors. Check specific types
+ * first. Unknown errors fall through (caller handles them).
+ */
+function throwIfScimError(err: unknown): void {
   if (err instanceof SCIMError) {
-    return { body: { error: err.code, message: err.message }, status: SCIM_ERROR_STATUS[err.code] };
+    const status = SCIM_ERROR_STATUS[err.code];
+    throw new HTTPException(status, {
+      res: Response.json({ error: err.code, message: err.message }, { status }),
+    });
   }
   const message = err instanceof Error ? err.message : String(err);
   if (message.includes("Enterprise features")) {
-    return { body: { error: "enterprise_required", message }, status: 403 };
+    throw new HTTPException(403, {
+      res: Response.json({ error: "enterprise_required", message }, { status: 403 }),
+    });
   }
-  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -323,217 +330,165 @@ const deleteGroupMappingRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const adminScim = new OpenAPIHono({ defaultHook: validationHook });
+const adminScim = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
+
+adminScim.use(adminAuth);
+adminScim.use(requestContext);
 
 adminScim.onError((err, c) => {
-  if (err instanceof HTTPException && err.status === 400) {
-    return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
+  if (err instanceof HTTPException) {
+    // Our thrown HTTPExceptions carry a JSON Response
+    if (err.res) return err.res;
+    // Framework 400 for malformed JSON
+    if (err.status === 400) {
+      return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
+    }
   }
   throw err;
 });
 
 // GET / — SCIM connections and sync status
 adminScim.openapi(getStatusRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-    }
-
-    try {
-      const [connections, syncStatus] = await Promise.all([
-        listConnections(orgId),
-        getSyncStatus(orgId),
-      ]);
-      return c.json({ connections, syncStatus }, 200);
-    } catch (err) {
-      const mapped = scimErrorResponse(err);
-      if (mapped) {
-        log.warn({ requestId, orgId, err: err instanceof Error ? err.message : String(err) }, "SCIM status request failed");
-        return c.json({ ...mapped.body, requestId }, mapped.status) as never;
-      }
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get SCIM status");
-      return c.json({ error: "internal_error", message: "Failed to get SCIM status.", requestId }, 500);
-    }
-  }) as never;
+  try {
+    const [connections, syncStatus] = await Promise.all([
+      listConnections(orgId),
+      getSyncStatus(orgId),
+    ]);
+    return c.json({ connections, syncStatus }, 200);
+  } catch (err) {
+    throwIfScimError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get SCIM status");
+    return c.json({ error: "internal_error", message: "Failed to get SCIM status.", requestId }, 500);
+  }
 });
 
 // DELETE /connections/:id — revoke a SCIM connection
 adminScim.openapi(deleteConnectionRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
   const { id: connectionId } = c.req.valid("param");
 
   if (!isValidId(connectionId)) {
     return c.json({ error: "bad_request", message: "Invalid connection ID." }, 400);
   }
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization." }, 400);
+  try {
+    const deleted = await deleteConnection(orgId, connectionId);
+    if (!deleted) {
+      return c.json({ error: "not_found", message: "SCIM connection not found." }, 404);
     }
-
-    try {
-      const deleted = await deleteConnection(orgId, connectionId);
-      if (!deleted) {
-        return c.json({ error: "not_found", message: "SCIM connection not found." }, 404);
-      }
-      return c.json({ message: "SCIM connection deleted." }, 200);
-    } catch (err) {
-      const mapped = scimErrorResponse(err);
-      if (mapped) {
-        log.warn({ requestId, orgId, connectionId, err: err instanceof Error ? err.message : String(err) }, "SCIM delete connection failed");
-        return c.json({ ...mapped.body, requestId }, mapped.status) as never;
-      }
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, connectionId }, "Failed to delete SCIM connection");
-      return c.json({ error: "internal_error", message: "Failed to delete SCIM connection.", requestId }, 500);
-    }
-  }) as never;
+    return c.json({ message: "SCIM connection deleted." }, 200);
+  } catch (err) {
+    throwIfScimError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, connectionId }, "Failed to delete SCIM connection");
+    return c.json({ error: "internal_error", message: "Failed to delete SCIM connection.", requestId }, 500);
+  }
 });
 
 // GET /group-mappings — list group→role mappings
 adminScim.openapi(listGroupMappingsRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-    }
-
-    try {
-      const mappings = await listGroupMappings(orgId);
-      return c.json({ mappings, total: mappings.length }, 200);
-    } catch (err) {
-      const mapped = scimErrorResponse(err);
-      if (mapped) {
-        log.warn({ requestId, orgId, err: err instanceof Error ? err.message : String(err) }, "SCIM list group mappings failed");
-        return c.json({ ...mapped.body, requestId }, mapped.status) as never;
-      }
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to list SCIM group mappings");
-      return c.json({ error: "internal_error", message: "Failed to list SCIM group mappings.", requestId }, 500);
-    }
-  }) as never;
+  try {
+    const mappings = await listGroupMappings(orgId);
+    return c.json({ mappings, total: mappings.length }, 200);
+  } catch (err) {
+    throwIfScimError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to list SCIM group mappings");
+    return c.json({ error: "internal_error", message: "Failed to list SCIM group mappings.", requestId }, 500);
+  }
 });
 
 // POST /group-mappings — create a group→role mapping
 adminScim.openapi(createGroupMappingRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization." }, 400);
-    }
+  const { scimGroupName, roleName } = c.req.valid("json");
+  if (!scimGroupName || !roleName) {
+    return c.json({ error: "bad_request", message: "Missing required fields: scimGroupName, roleName." }, 400);
+  }
 
-    const { scimGroupName, roleName } = c.req.valid("json");
-    if (!scimGroupName || !roleName) {
-      return c.json({ error: "bad_request", message: "Missing required fields: scimGroupName, roleName." }, 400);
-    }
-
-    try {
-      const mapping = await createGroupMapping(orgId, scimGroupName, roleName);
-      return c.json({ mapping }, 201);
-    } catch (err) {
-      const mapped = scimErrorResponse(err);
-      if (mapped) {
-        log.warn({ requestId, orgId, err: err instanceof Error ? err.message : String(err) }, "SCIM create group mapping failed");
-        return c.json({ ...mapped.body, requestId }, mapped.status) as never;
-      }
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to create SCIM group mapping");
-      return c.json({ error: "internal_error", message: "Failed to create SCIM group mapping.", requestId }, 500);
-    }
-  }) as never;
+  try {
+    const mapping = await createGroupMapping(orgId, scimGroupName, roleName);
+    return c.json({ mapping }, 201);
+  } catch (err) {
+    throwIfScimError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to create SCIM group mapping");
+    return c.json({ error: "internal_error", message: "Failed to create SCIM group mapping.", requestId }, 500);
+  }
 });
 
 // DELETE /group-mappings/:id — delete a group mapping
 adminScim.openapi(deleteGroupMappingRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
   const { id: mappingId } = c.req.valid("param");
 
   if (!isValidId(mappingId)) {
     return c.json({ error: "bad_request", message: "Invalid mapping ID." }, 400);
   }
 
-  const preamble = await adminAuthPreamble(req, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers) as never;
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
-  const { authResult } = preamble;
 
-  return withRequestContext({ requestId, user: authResult.user }, async () => {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization." }, 400);
+  }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization." }, 400);
+  try {
+    const deleted = await deleteGroupMapping(orgId, mappingId);
+    if (!deleted) {
+      return c.json({ error: "not_found", message: "SCIM group mapping not found." }, 404);
     }
-
-    try {
-      const deleted = await deleteGroupMapping(orgId, mappingId);
-      if (!deleted) {
-        return c.json({ error: "not_found", message: "SCIM group mapping not found." }, 404);
-      }
-      return c.json({ message: "SCIM group mapping deleted." }, 200);
-    } catch (err) {
-      const mapped = scimErrorResponse(err);
-      if (mapped) {
-        log.warn({ requestId, orgId, mappingId, err: err instanceof Error ? err.message : String(err) }, "SCIM delete group mapping failed");
-        return c.json({ ...mapped.body, requestId }, mapped.status) as never;
-      }
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, mappingId }, "Failed to delete SCIM group mapping");
-      return c.json({ error: "internal_error", message: "Failed to delete SCIM group mapping.", requestId }, 500);
-    }
-  }) as never;
+    return c.json({ message: "SCIM group mapping deleted." }, 200);
+  } catch (err) {
+    throwIfScimError(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, mappingId }, "Failed to delete SCIM group mapping");
+    return c.json({ error: "internal_error", message: "Failed to delete SCIM group mapping.", requestId }, 500);
+  }
 });
 
 export { adminScim };

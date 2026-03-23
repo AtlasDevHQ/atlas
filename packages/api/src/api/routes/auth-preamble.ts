@@ -5,6 +5,7 @@
  * Used by semantic and tables routes.
  */
 
+import { HTTPException } from "hono/http-exception";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
 import {
@@ -84,4 +85,21 @@ export async function authPreamble(
   }
 
   return { authResult };
+}
+
+/**
+ * Assert that the auth preamble succeeded.
+ * Throws HTTPException with a JSON response on failure.
+ */
+export function requireAuth(
+  preamble: AuthPreambleSuccess | AuthPreambleFailure,
+): asserts preamble is AuthPreambleSuccess {
+  if ("error" in preamble) {
+    throw new HTTPException(preamble.status, {
+      res: Response.json(preamble.error, {
+        status: preamble.status,
+        headers: preamble.headers,
+      }),
+    });
+  }
 }

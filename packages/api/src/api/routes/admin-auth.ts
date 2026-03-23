@@ -5,6 +5,7 @@
  * (admin-orgs.ts, admin-learned-patterns.ts, etc.).
  */
 
+import { HTTPException } from "hono/http-exception";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
 import {
@@ -98,4 +99,24 @@ export async function adminAuthPreamble(req: Request, requestId: string) {
   }
 
   return { authResult };
+}
+
+type AdminPreambleResult = Awaited<ReturnType<typeof adminAuthPreamble>>;
+
+/**
+ * Assert that the admin auth preamble succeeded.
+ * Throws HTTPException with a JSON response on failure, so the handler
+ * can destructure `{ authResult }` directly after calling this.
+ */
+export function requireAdminAuth(
+  preamble: AdminPreambleResult,
+): asserts preamble is Extract<AdminPreambleResult, { authResult: unknown }> {
+  if ("error" in preamble) {
+    throw new HTTPException(preamble.status, {
+      res: Response.json(preamble.error, {
+        status: preamble.status,
+        headers: preamble.headers,
+      }),
+    });
+  }
 }

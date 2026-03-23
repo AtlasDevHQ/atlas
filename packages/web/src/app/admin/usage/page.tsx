@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import dynamic from "next/dynamic";
 import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
@@ -98,6 +99,7 @@ export default function UsageDashboardPage() {
       path: "/api/v1/billing/portal",
       method: "POST",
     });
+  const [portalUrlError, setPortalUrlError] = useState<string | null>(null);
 
   // Data table for user breakdown
   const columns = getUserUsageColumns();
@@ -124,6 +126,8 @@ export default function UsageDashboardPage() {
     });
     if (result?.url) {
       window.location.href = result.url;
+    } else if (result && !result.url) {
+      setPortalUrlError("Billing portal URL was not returned. Please contact support.");
     }
   }
 
@@ -157,7 +161,7 @@ export default function UsageDashboardPage() {
 
       <div className="flex-1 overflow-auto p-6 space-y-6">
         {/* Portal error */}
-        {portalError && <ErrorBanner message={portalError} onRetry={openBillingPortal} />}
+        {(portalError ?? portalUrlError) && <ErrorBanner message={(portalError ?? portalUrlError)!} onRetry={() => { setPortalUrlError(null); openBillingPortal(); }} />}
 
         {/* Error state */}
         {error && <ErrorBanner message={friendlyError(error)} onRetry={refetch} />}

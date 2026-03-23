@@ -95,8 +95,10 @@ export default function SSOPage() {
   }
 
   async function doSetEnforcement(value: boolean) {
-    await mutate({ body: { enforced: value } });
-    setConfirmEnforce(false);
+    const result = await mutate({ body: { enforced: value } });
+    if (result !== undefined) {
+      setConfirmEnforce(false);
+    }
   }
 
   return (

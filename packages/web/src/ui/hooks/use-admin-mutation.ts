@@ -94,6 +94,7 @@ export function useAdminMutation<TResponse = unknown>(
   const reset = useCallback(() => {
     setError(null);
     setSaving(false);
+    setInFlight(new Set());
   }, []);
 
   const isMutating = useCallback(
@@ -122,6 +123,7 @@ export function useAdminMutation<TResponse = unknown>(
       }
       setError(null);
 
+      let data: TResponse | undefined;
       try {
         const headers: Record<string, string> = {};
         let body: string | undefined;
@@ -144,10 +146,9 @@ export function useAdminMutation<TResponse = unknown>(
         }
 
         // Parse response (handle 204 No Content)
-        let data: TResponse;
         const contentType = res.headers.get("content-type");
         if (res.status === 204 || !contentType?.includes("application/json")) {
-          data = undefined as TResponse;
+          data = undefined;
         } else {
           data = (await res.json()) as TResponse;
         }
@@ -161,11 +162,6 @@ export function useAdminMutation<TResponse = unknown>(
             invalidates();
           }
         }
-
-        // Call per-mutation onSuccess
-        callOpts?.onSuccess?.(data);
-
-        return data;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         setError(msg || "Request failed");
@@ -181,6 +177,14 @@ export function useAdminMutation<TResponse = unknown>(
           setSaving(false);
         }
       }
+
+      // Call onSuccess outside try/catch so callback bugs don't
+      // get misreported as mutation failures
+      if (data !== undefined) {
+        callOpts?.onSuccess?.(data);
+      }
+
+      return data;
     },
     [apiUrl, credentials],
   );

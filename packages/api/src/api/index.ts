@@ -238,6 +238,18 @@ try {
   );
 }
 
+// Platform backups routes — enterprise-gated, platform_admin role.
+try {
+  const { platformBackups } = await import("./routes/platform-backups");
+  app.route("/api/v1/platform/backups", platformBackups);
+  log.info("Platform backup routes enabled");
+} catch (err) {
+  log.error(
+    { err: err instanceof Error ? err : new Error(String(err)) },
+    "Failed to load platform backup routes — backup management will be unavailable",
+  );
+}
+
 // Billing routes — lazy import, only loaded if STRIPE_SECRET_KEY is set (SaaS mode).
 if (process.env.STRIPE_SECRET_KEY) {
   try {

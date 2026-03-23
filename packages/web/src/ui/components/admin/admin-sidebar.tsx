@@ -78,6 +78,7 @@ const navItems = [
   { href: "/admin/settings", label: "Settings", icon: Settings },
   { href: "/admin/platform", label: "Platform Admin", icon: Globe, requiredRole: "platform_admin" as const },
   { href: "/admin/platform/sla", label: "SLA Monitoring", icon: Activity, requiredRole: "platform_admin" as const },
+  { href: "/admin/platform/backups", label: "Backups", icon: HardDrive, requiredRole: "platform_admin" as const },
 ];
 
 export function AdminSidebar() {

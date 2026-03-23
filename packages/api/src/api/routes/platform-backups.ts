@@ -1,0 +1,437 @@
+/**
+ * Platform backup routes — automated backups and disaster recovery.
+ *
+ * Mounted at /api/v1/platform/backups. All routes require `platform_admin` role.
+ *
+ * Provides:
+ * - GET    /              — list backups with status, size, age
+ * - POST   /              — trigger manual backup
+ * - POST   /:id/verify    — verify backup integrity
+ * - POST   /:id/restore   — request restore (returns confirmation token)
+ * - POST   /:id/restore/confirm — execute restore with confirmation token
+ * - GET    /config        — current schedule and retention config
+ * - PUT    /config        — update schedule/retention
+ */
+
+import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import { validationHook } from "./validation-hook";
+import { createLogger } from "@atlas/api/lib/logger";
+import { BACKUP_STATUSES } from "@useatlas/types";
+import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
+import { platformAdminAuth, requestContext, type AuthEnv } from "./middleware";
+
+const log = createLogger("platform-backups");
+
+// ---------------------------------------------------------------------------
+// Schemas
+// ---------------------------------------------------------------------------
+
+const BackupEntrySchema = z.object({
+  id: z.string(),
+  createdAt: z.string(),
+  sizeBytes: z.number().nullable(),
+  status: z.enum(BACKUP_STATUSES),
+  storagePath: z.string(),
+  retentionExpiresAt: z.string(),
+  errorMessage: z.string().nullable(),
+});
+
+const BackupConfigSchema = z.object({
+  schedule: z.string().openapi({ description: "Cron expression for automated backups", example: "0 3 * * *" }),
+  retentionDays: z.number().min(1).max(365).openapi({ description: "Days to retain backups", example: 30 }),
+  storagePath: z.string().openapi({ description: "Backup storage path", example: "./backups" }),
+});
+
+const CRON_5_FIELD = /^(\*|[\d,\-/]+)(\s+(\*|[\d,\-/]+)){4}$/;
+
+const UpdateConfigSchema = z.object({
+  schedule: z.string().regex(CRON_5_FIELD, "Invalid cron expression — must be 5 space-separated fields").optional().openapi({ description: "Cron expression", example: "0 3 * * *" }),
+  retentionDays: z.number().min(1).max(365).optional().openapi({ description: "Retention days", example: 30 }),
+  storagePath: z.string().refine((p) => !p.includes(".."), "Path must not contain '..'").optional().openapi({ description: "Storage path", example: "./backups" }),
+});
+
+// ---------------------------------------------------------------------------
+// Route definitions
+// ---------------------------------------------------------------------------
+
+const listBackupsRoute = createRoute({
+  method: "get",
+  path: "/",
+  tags: ["Platform Admin — Backups"],
+  summary: "List backups",
+  description: "Returns all backups with status, size, and retention info.",
+  responses: {
+    200: {
+      description: "Backups list",
+      content: { "application/json": { schema: z.object({ backups: z.array(BackupEntrySchema) }) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Enterprise feature not enabled", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const createBackupRoute = createRoute({
+  method: "post",
+  path: "/",
+  tags: ["Platform Admin — Backups"],
+  summary: "Create manual backup",
+  description: "Trigger an immediate backup of the internal database.",
+  responses: {
+    200: {
+      description: "Backup created",
+      content: { "application/json": { schema: z.object({ message: z.string(), backup: BackupEntrySchema }) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Enterprise feature not enabled", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const verifyBackupRoute = createRoute({
+  method: "post",
+  path: "/:id/verify",
+  tags: ["Platform Admin — Backups"],
+  summary: "Verify backup integrity",
+  description: "Decompress and validate the pg_dump header of a backup file.",
+  responses: {
+    200: {
+      description: "Verification result",
+      content: { "application/json": { schema: z.object({ verified: z.boolean(), message: z.string() }) } },
+    },
+    400: { description: "Backup not in verifiable state", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Enterprise feature not enabled or backup not found", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const requestRestoreRoute = createRoute({
+  method: "post",
+  path: "/:id/restore",
+  tags: ["Platform Admin — Backups"],
+  summary: "Request backup restore",
+  description: "Returns a confirmation token that must be passed to the confirm endpoint. The confirm step creates a pre-restore backup automatically before restoring.",
+  responses: {
+    200: {
+      description: "Confirmation token",
+      content: { "application/json": { schema: z.object({ confirmationToken: z.string(), message: z.string() }) } },
+    },
+    400: { description: "Backup not in restorable state", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Enterprise feature not enabled or backup not found", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const confirmRestoreRoute = createRoute({
+  method: "post",
+  path: "/:id/restore/confirm",
+  tags: ["Platform Admin — Backups"],
+  summary: "Confirm and execute restore",
+  description: "Execute the restore operation using the confirmation token from the request endpoint.",
+  request: {
+    body: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: z.object({ confirmationToken: z.string().openapi({ description: "Token from restore request" }) }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Restore completed",
+      content: { "application/json": { schema: z.object({ restored: z.boolean(), preRestoreBackupId: z.string(), message: z.string() }) } },
+    },
+    400: { description: "Invalid or expired token", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Enterprise feature not enabled", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const getConfigRoute = createRoute({
+  method: "get",
+  path: "/config",
+  tags: ["Platform Admin — Backups"],
+  summary: "Get backup configuration",
+  description: "Returns the current backup schedule, retention policy, and storage path.",
+  responses: {
+    200: {
+      description: "Current configuration",
+      content: { "application/json": { schema: BackupConfigSchema } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Enterprise feature not enabled", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const updateConfigRoute = createRoute({
+  method: "put",
+  path: "/config",
+  tags: ["Platform Admin — Backups"],
+  summary: "Update backup configuration",
+  description: "Update the backup schedule, retention policy, or storage path.",
+  request: { body: { required: true, content: { "application/json": { schema: UpdateConfigSchema } } } },
+  responses: {
+    200: {
+      description: "Configuration updated",
+      content: { "application/json": { schema: z.object({ message: z.string(), config: BackupConfigSchema }) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Enterprise feature not enabled", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Lazy import — ee module may not be installed
+// ---------------------------------------------------------------------------
+
+type BackupsModule = typeof import("@atlas/ee/backups/index");
+
+async function loadBackups(): Promise<BackupsModule | null> {
+  try {
+    return await import("@atlas/ee/backups/index");
+  } catch (err) {
+    if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND") {
+      return null;
+    }
+    log.error(
+      { err: err instanceof Error ? err : new Error(String(err)) },
+      "Failed to load backups module — unexpected error",
+    );
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function toBackupEntry(row: {
+  id: string;
+  created_at: string;
+  size_bytes: string | null;
+  status: string;
+  storage_path: string;
+  retention_expires_at: string;
+  error_message: string | null;
+}) {
+  return {
+    id: row.id,
+    createdAt: row.created_at,
+    sizeBytes: row.size_bytes ? parseInt(row.size_bytes, 10) : null,
+    status: row.status as "in_progress" | "completed" | "failed" | "verified",
+    storagePath: row.storage_path,
+    retentionExpiresAt: row.retention_expires_at,
+    errorMessage: row.error_message,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Router
+// ---------------------------------------------------------------------------
+
+const platformBackups = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
+
+platformBackups.use(platformAdminAuth);
+platformBackups.use(requestContext);
+
+// ── List backups ─────────────────────────────────────────────────────
+
+platformBackups.openapi(listBackupsRoute, async (c) => {
+  const requestId = c.get("requestId");
+
+  const backups = await loadBackups();
+  if (!backups) {
+    return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
+  }
+
+  try {
+    const rows = await backups.listBackups(100);
+    return c.json({ backups: rows.map(toBackupEntry) }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to list backups");
+    return c.json({ error: "internal_error", message: "Failed to list backups.", requestId }, 500);
+  }
+});
+
+// ── Create backup ────────────────────────────────────────────────────
+
+platformBackups.openapi(createBackupRoute, async (c) => {
+  const requestId = c.get("requestId");
+
+  const backupsMod = await loadBackups();
+  if (!backupsMod) {
+    return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
+  }
+
+  try {
+    const result = await backupsMod.createBackup();
+    log.info({ backupId: result.id, requestId }, "Manual backup created by platform admin");
+    const row = await backupsMod.getBackupById(result.id);
+    const backup = row ? toBackupEntry(row) : {
+      id: result.id,
+      createdAt: new Date().toISOString(),
+      sizeBytes: result.sizeBytes,
+      status: result.status,
+      storagePath: result.storagePath,
+      retentionExpiresAt: new Date().toISOString(),
+      errorMessage: null,
+    };
+    return c.json({ message: "Backup created successfully.", backup }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to create backup");
+    return c.json({ error: "internal_error", message: "Failed to create backup.", requestId }, 500);
+  }
+});
+
+// ── Verify backup ────────────────────────────────────────────────────
+
+platformBackups.openapi(verifyBackupRoute, async (c) => {
+  const requestId = c.get("requestId");
+
+  const backupsMod = await loadBackups();
+  if (!backupsMod) {
+    return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
+  }
+
+  const backupId = c.req.param("id");
+
+  try {
+    const result = await backupsMod.verifyBackup(backupId);
+    log.info({ backupId, verified: result.verified, requestId }, "Backup verification completed");
+    return c.json(result, 200);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes("not found")) {
+      return c.json({ error: "not_found", message: "Backup not found.", requestId }, 404);
+    }
+    if (message.includes("Cannot verify")) {
+      return c.json({ error: "invalid_state", message, requestId }, 400);
+    }
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, backupId }, "Failed to verify backup");
+    return c.json({ error: "internal_error", message: "Failed to verify backup.", requestId }, 500);
+  }
+});
+
+// ── Request restore ──────────────────────────────────────────────────
+
+platformBackups.openapi(requestRestoreRoute, async (c) => {
+  const requestId = c.get("requestId");
+
+  const backupsMod = await loadBackups();
+  if (!backupsMod) {
+    return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
+  }
+
+  const backupId = c.req.param("id");
+
+  try {
+    const result = await backupsMod.requestRestore(backupId);
+    log.warn({ backupId, requestId }, "Restore requested by platform admin");
+    return c.json(result, 200);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes("not found")) {
+      return c.json({ error: "not_found", message: "Backup not found.", requestId }, 404);
+    }
+    if (message.includes("Cannot restore")) {
+      return c.json({ error: "invalid_state", message, requestId }, 400);
+    }
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, backupId }, "Failed to request restore");
+    return c.json({ error: "internal_error", message: "Failed to request restore.", requestId }, 500);
+  }
+});
+
+// ── Confirm restore ──────────────────────────────────────────────────
+
+platformBackups.openapi(confirmRestoreRoute, async (c) => {
+  const requestId = c.get("requestId");
+
+  const backupsMod = await loadBackups();
+  if (!backupsMod) {
+    return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
+  }
+
+  const body = c.req.valid("json");
+
+  try {
+    const result = await backupsMod.executeRestore(body.confirmationToken);
+    log.warn({ backupId: c.req.param("id"), preRestoreBackupId: result.preRestoreBackupId, requestId }, "Database restore executed by platform admin");
+    return c.json(result, 200);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes("Invalid or expired") || message.includes("expired")) {
+      return c.json({ error: "invalid_token", message, requestId }, 400);
+    }
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to execute restore");
+    return c.json({ error: "internal_error", message: "Failed to execute restore.", requestId }, 500);
+  }
+});
+
+// ── Get config ───────────────────────────────────────────────────────
+
+platformBackups.openapi(getConfigRoute, async (c) => {
+  const requestId = c.get("requestId");
+
+  const backupsMod = await loadBackups();
+  if (!backupsMod) {
+    return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
+  }
+
+  try {
+    const config = await backupsMod.getBackupConfig();
+    return c.json({
+      schedule: config.schedule,
+      retentionDays: config.retention_days,
+      storagePath: config.storage_path,
+    }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to read backup config");
+    return c.json({ error: "internal_error", message: "Failed to read backup configuration.", requestId }, 500);
+  }
+});
+
+// ── Update config ────────────────────────────────────────────────────
+
+platformBackups.openapi(updateConfigRoute, async (c) => {
+  const requestId = c.get("requestId");
+
+  const backupsMod = await loadBackups();
+  if (!backupsMod) {
+    return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
+  }
+
+  const body = c.req.valid("json");
+
+  try {
+    await backupsMod.updateBackupConfig(body);
+    const config = await backupsMod.getBackupConfig();
+    log.info({ config, requestId }, "Backup config updated by platform admin");
+    return c.json({
+      message: "Configuration updated.",
+      config: {
+        schedule: config.schedule,
+        retentionDays: config.retention_days,
+        storagePath: config.storage_path,
+      },
+    }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to update backup config");
+    return c.json({ error: "internal_error", message: "Failed to update backup configuration.", requestId }, 500);
+  }
+});
+
+export { platformBackups };

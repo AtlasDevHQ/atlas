@@ -1,0 +1,177 @@
+---
+title: Backups & Disaster Recovery
+description: Automated backups, integrity verification, and snapshot restore for the Atlas internal database.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas provides automated backup and disaster recovery for the internal PostgreSQL database (`DATABASE_URL`). This database stores auth, audit logs, semantic layer metadata, billing, SLA metrics, learned patterns, and chat state — protecting it is critical.
+
+<Callout title="Prerequisites">
+- Enterprise features enabled (`ATLAS_ENTERPRISE_ENABLED=true` + license key)
+- Internal database configured (`DATABASE_URL`)
+- Platform admin role for dashboard access
+- `pg_dump` and `psql` available on the server `PATH`
+</Callout>
+
+## How It Works
+
+The backup system uses `pg_dump` to create SQL dumps of the internal database, compressed with gzip. Backups are stored in a configurable local directory (or S3-compatible path in the future).
+
+| Component | Description |
+|-----------|-------------|
+| **Backup engine** | `pg_dump` with gzip compression |
+| **Scheduler** | Cron-based, default daily at 03:00 UTC |
+| **Retention** | Auto-purge expired backups (default 30 days) |
+| **Verification** | Decompress and validate pg_dump header |
+| **Restore** | `psql` with single-transaction mode and pre-restore safety backup |
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_BACKUP_SCHEDULE` | `0 3 * * *` | Cron expression (UTC) for automated backups |
+| `ATLAS_BACKUP_RETENTION_DAYS` | `30` | Days to keep backups before auto-purge |
+| `ATLAS_BACKUP_STORAGE_PATH` | `./backups` | Directory for backup files |
+
+### Admin UI
+
+Navigate to **Admin → Backups** (platform admin only) to:
+- View all backups with status, size, and retention info
+- Trigger manual backups
+- Verify backup integrity
+- Restore from a backup
+- Configure schedule and retention
+
+### API Configuration
+
+Update the schedule and retention via API:
+
+```bash
+curl -X PUT http://localhost:3001/api/v1/platform/backups/config \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"schedule": "0 */6 * * *", "retentionDays": 60}'
+```
+
+## Manual Backup
+
+Trigger an immediate backup via the admin UI or API:
+
+```bash
+curl -X POST http://localhost:3001/api/v1/platform/backups \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+The backup runs in the foreground — the response includes the backup ID, size, and status.
+
+## Verification
+
+Verify a backup's integrity by decompressing the archive and validating the pg_dump header:
+
+```bash
+curl -X POST http://localhost:3001/api/v1/platform/backups/$BACKUP_ID/verify \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+A verified backup transitions from `completed` to `verified` status.
+
+## Disaster Recovery
+
+### Restore Process
+
+Restoring from a backup is a two-step process with a confirmation token to prevent accidental restores:
+
+**Step 1 — Request restore:**
+
+```bash
+curl -X POST http://localhost:3001/api/v1/platform/backups/$BACKUP_ID/restore \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+This returns a `confirmationToken` valid for 5 minutes.
+
+**Step 2 — Confirm and execute:**
+
+```bash
+curl -X POST http://localhost:3001/api/v1/platform/backups/$BACKUP_ID/restore/confirm \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"confirmationToken": "the-token-from-step-1"}'
+```
+
+The restore process automatically:
+1. Creates a pre-restore backup (safety net)
+2. Restores the target backup using `psql --single-transaction`
+3. Returns the pre-restore backup ID for rollback if needed
+
+### Disaster Recovery Runbook
+
+If the internal database is corrupted or lost:
+
+1. **Assess the situation** — Check if the database is still accessible. If PostgreSQL is running but data is corrupt, the backup system may still work.
+
+2. **Identify the target backup** — List available backups via API or check the backup storage directory directly:
+   ```bash
+   ls -la ./backups/
+   ```
+
+3. **Verify the backup** (optional but recommended):
+   ```bash
+   gunzip -t ./backups/atlas-backup-TIMESTAMP.sql.gz
+   ```
+
+4. **Restore via API** if the API server is running — follow the two-step restore process above.
+
+5. **Manual restore** if the API server is down:
+   ```bash
+   gunzip -c ./backups/atlas-backup-TIMESTAMP.sql.gz | \
+     psql --single-transaction --set ON_ERROR_STOP=on \
+     -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME
+   ```
+
+6. **Verify the restore** — Check that auth, conversations, and settings are intact by logging in and running a query.
+
+7. **Restart services** — Restart the Atlas API and web servers to pick up the restored data.
+
+<Callout title="Backup storage">
+  Backup files are stored locally by default. For production deployments, consider mounting a persistent volume or configuring an S3-compatible storage path. Keep at least one copy of recent backups off-host.
+</Callout>
+
+## API Reference
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/platform/backups` | List all backups |
+| `POST` | `/api/v1/platform/backups` | Create manual backup |
+| `POST` | `/api/v1/platform/backups/:id/verify` | Verify backup integrity |
+| `POST` | `/api/v1/platform/backups/:id/restore` | Request restore token |
+| `POST` | `/api/v1/platform/backups/:id/restore/confirm` | Execute restore |
+| `GET` | `/api/v1/platform/backups/config` | Get backup configuration |
+| `PUT` | `/api/v1/platform/backups/config` | Update backup configuration |
+
+All endpoints require `platform_admin` role and enterprise features to be enabled.
+
+## Troubleshooting
+
+### `pg_dump` not found
+
+The backup engine requires `pg_dump` to be available on the server `PATH`. On Docker deployments, ensure the PostgreSQL client tools are installed:
+
+```dockerfile
+RUN apt-get update && apt-get install -y postgresql-client
+```
+
+### Backup fails with permission error
+
+Ensure the backup storage directory exists and is writable by the Atlas process:
+
+```bash
+mkdir -p ./backups && chmod 755 ./backups
+```
+
+### Restore fails mid-way
+
+The restore uses `--single-transaction`, so a failed restore will not leave the database in a partial state — it rolls back to the pre-restore state. The pre-restore backup is available for manual recovery if needed.

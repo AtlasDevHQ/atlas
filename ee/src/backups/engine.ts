@@ -2,7 +2,7 @@
  * Backup engine — pg_dump-based backup with gzip compression.
  *
  * Creates compressed backups of the internal PostgreSQL database
- * and stores them to a configurable local directory or S3 path.
+ * and stores them to a configurable local directory.
  *
  * Enterprise-gated via requireEnterprise("backups").
  */
@@ -96,7 +96,11 @@ export async function getBackupConfig(): Promise<BackupConfigRow> {
   }>(
     `SELECT schedule, retention_days, storage_path FROM backup_config WHERE id = '_default'`,
   );
-  return rows[0] ?? { schedule: "0 3 * * *", retention_days: 30, storage_path: "./backups" };
+  if (!rows[0]) {
+    log.warn("Backup config row missing from database — using defaults");
+    return { schedule: "0 3 * * *", retention_days: 30, storage_path: "./backups" };
+  }
+  return rows[0];
 }
 
 export async function updateBackupConfig(
@@ -147,7 +151,7 @@ function parseDatabaseUrl(url: string): { args: string[]; password: string | und
 /**
  * Create a backup of the internal database.
  *
- * Uses pg_dump with custom format, then gzip-compresses the output.
+ * Uses pg_dump with plain-text format, then gzip-compresses the output.
  * Records the backup in the internal backups table.
  */
 export async function createBackup(): Promise<{
@@ -299,15 +303,28 @@ export async function purgeExpiredBackups(): Promise<number> {
     try {
       await unlink(row.storage_path);
     } catch (err) {
-      // File may already be deleted — log and continue
-      log.warn(
-        { err: err instanceof Error ? err.message : String(err), backupId: row.id, path: row.storage_path },
-        "Could not delete backup file — may already be removed",
-      );
+      const code = err instanceof Error && "code" in err
+        ? (err as NodeJS.ErrnoException).code
+        : undefined;
+      if (code !== "ENOENT") {
+        log.warn(
+          { err: err instanceof Error ? err.message : String(err), backupId: row.id, path: row.storage_path },
+          "Could not delete backup file — skipping DB record deletion to avoid orphan",
+        );
+        continue;
+      }
+      // ENOENT is fine — file already removed
     }
 
-    await internalQuery(`DELETE FROM backups WHERE id = $1`, [row.id]);
-    purged++;
+    try {
+      await internalQuery(`DELETE FROM backups WHERE id = $1`, [row.id]);
+      purged++;
+    } catch (err) {
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err), backupId: row.id },
+        "Failed to delete backup DB record — will retry on next purge cycle",
+      );
+    }
   }
 
   if (purged > 0) {
@@ -325,8 +342,14 @@ export async function listStorageFiles(): Promise<string[]> {
   try {
     const files = await readdir(config.storage_path);
     return files.filter((f) => f.endsWith(".sql.gz"));
-  } catch {
-    // Directory may not exist yet
-    return [];
+  } catch (err) {
+    if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") {
+      return [];
+    }
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err), path: config.storage_path },
+      "Failed to list backup storage directory",
+    );
+    throw err;
   }
 }

@@ -1,5 +1,5 @@
 /**
- * Backup restore — pg_restore wrapper with safety checks.
+ * Backup restore — psql-based restore with safety checks.
  *
  * Before restoring, creates a pre-restore backup so the operation
  * is reversible. Requires a confirmation token to proceed.

@@ -1,8 +1,7 @@
 /**
  * Backup verification — integrity checks for backup files.
  *
- * Decompresses the gzip archive, validates the pg_dump header,
- * and optionally checks that the SQL is parseable.
+ * Decompresses the gzip archive and validates the pg_dump header.
  *
  * Enterprise-gated via requireEnterprise("backups").
  */
@@ -22,7 +21,8 @@ const log = createLogger("ee:backups-verify");
  * 2. Decompress the gzip file
  * 3. Validate the pg_dump SQL header is present
  *
- * Returns true if verification passes, throws on failure.
+ * Returns { verified: true } on success, { verified: false } on integrity failure.
+ * Throws if the backup is not found, has an invalid status, or the DB is not configured.
  */
 export async function verifyBackup(backupId: string): Promise<{ verified: boolean; message: string }> {
   requireEnterprise("backups");
@@ -34,11 +34,11 @@ export async function verifyBackup(backupId: string): Promise<{ verified: boolea
 
   const backup = await getBackupById(backupId);
   if (!backup) {
-    return { verified: false, message: "Backup not found" };
+    throw new Error("Backup not found");
   }
 
   if (backup.status !== "completed" && backup.status !== "verified") {
-    return { verified: false, message: `Cannot verify backup with status "${backup.status}"` };
+    throw new Error(`Cannot verify backup with status "${backup.status}"`);
   }
 
   try {

@@ -42,10 +42,12 @@ const BackupConfigSchema = z.object({
   storagePath: z.string().openapi({ description: "Backup storage path", example: "./backups" }),
 });
 
+const CRON_5_FIELD = /^(\*|[\d,\-/]+)(\s+(\*|[\d,\-/]+)){4}$/;
+
 const UpdateConfigSchema = z.object({
-  schedule: z.string().optional().openapi({ description: "Cron expression", example: "0 3 * * *" }),
+  schedule: z.string().regex(CRON_5_FIELD, "Invalid cron expression — must be 5 space-separated fields").optional().openapi({ description: "Cron expression", example: "0 3 * * *" }),
   retentionDays: z.number().min(1).max(365).optional().openapi({ description: "Retention days", example: 30 }),
-  storagePath: z.string().optional().openapi({ description: "Storage path", example: "./backups" }),
+  storagePath: z.string().refine((p) => !p.includes(".."), "Path must not contain '..'").optional().openapi({ description: "Storage path", example: "./backups" }),
 });
 
 // ---------------------------------------------------------------------------
@@ -99,6 +101,7 @@ const verifyBackupRoute = createRoute({
       description: "Verification result",
       content: { "application/json": { schema: z.object({ verified: z.boolean(), message: z.string() }) } },
     },
+    400: { description: "Backup not in verifiable state", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Enterprise feature not enabled or backup not found", content: { "application/json": { schema: ErrorSchema } } },
@@ -111,7 +114,7 @@ const requestRestoreRoute = createRoute({
   path: "/:id/restore",
   tags: ["Platform Admin — Backups"],
   summary: "Request backup restore",
-  description: "Returns a confirmation token that must be passed to the confirm endpoint. Creates a pre-restore backup automatically.",
+  description: "Returns a confirmation token that must be passed to the confirm endpoint. The confirm step creates a pre-restore backup automatically before restoring.",
   responses: {
     200: {
       description: "Confirmation token",
@@ -277,18 +280,17 @@ platformBackups.openapi(createBackupRoute, async (c) => {
   try {
     const result = await backupsMod.createBackup();
     log.info({ backupId: result.id, requestId }, "Manual backup created by platform admin");
-    return c.json({
-      message: "Backup created successfully.",
-      backup: {
-        id: result.id,
-        createdAt: new Date().toISOString(),
-        sizeBytes: result.sizeBytes,
-        status: result.status,
-        storagePath: result.storagePath,
-        retentionExpiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
-        errorMessage: null,
-      },
-    }, 200);
+    const row = await backupsMod.getBackupById(result.id);
+    const backup = row ? toBackupEntry(row) : {
+      id: result.id,
+      createdAt: new Date().toISOString(),
+      sizeBytes: result.sizeBytes,
+      status: result.status,
+      storagePath: result.storagePath,
+      retentionExpiresAt: new Date().toISOString(),
+      errorMessage: null,
+    };
+    return c.json({ message: "Backup created successfully.", backup }, 200);
   } catch (err) {
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to create backup");
     return c.json({ error: "internal_error", message: "Failed to create backup.", requestId }, 500);
@@ -312,6 +314,13 @@ platformBackups.openapi(verifyBackupRoute, async (c) => {
     log.info({ backupId, verified: result.verified, requestId }, "Backup verification completed");
     return c.json(result, 200);
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes("not found")) {
+      return c.json({ error: "not_found", message: "Backup not found.", requestId }, 404);
+    }
+    if (message.includes("Cannot verify")) {
+      return c.json({ error: "invalid_state", message, requestId }, 400);
+    }
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, backupId }, "Failed to verify backup");
     return c.json({ error: "internal_error", message: "Failed to verify backup.", requestId }, 500);
   }

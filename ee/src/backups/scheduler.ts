@@ -24,7 +24,10 @@ let _lastRunMinute = -1;
  */
 function cronMatchesNow(expression: string): boolean {
   const parts = expression.trim().split(/\s+/);
-  if (parts.length !== 5) return false;
+  if (parts.length !== 5) {
+    log.warn({ expression }, "Invalid cron expression — expected 5 fields. Scheduled backups will not run.");
+    return false;
+  }
 
   const now = new Date();
   const fields = [

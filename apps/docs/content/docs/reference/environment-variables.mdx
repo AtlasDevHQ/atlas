@@ -322,14 +322,14 @@ These can also be configured via [`atlas.config.ts`](/reference/config#session-t
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ATLAS_SEMANTIC_ROOT` | `./semantic` (relative to cwd) | Override the semantic layer directory path. Useful for monorepos or non-standard layouts where the `semantic/` directory isn't in the project root |
+| `ATLAS_SEMANTIC_ROOT` | `semantic/` under cwd (absolute) | Development/testing override for the semantic layer directory. For production path customization, use the `semanticLayer` field in [`atlas.config.ts`](/reference/config) instead |
 | `ATLAS_SEMANTIC_INDEX_ENABLED` | `true` | Set `false` to disable the pre-computed semantic index. The index pre-computes a summary of the semantic layer and injects it into the agent system prompt to reduce explore tool calls |
 
 For additional index configuration, use [`atlas.config.ts`](/reference/config#semantic-index).
 
 ```bash
-# Custom semantic layer location
-ATLAS_SEMANTIC_ROOT=/opt/atlas/semantic
+# Development: override semantic layer location (for production, use atlas.config.ts)
+ATLAS_SEMANTIC_ROOT=/tmp/test-semantic
 
 # Disable pre-computed index (agent will use explore tool instead)
 ATLAS_SEMANTIC_INDEX_ENABLED=false
@@ -374,7 +374,7 @@ Explore tool isolation backends. See [Sandbox Architecture](/architecture/sandbo
 | `ATLAS_SANDBOX` | — | Set `nsjail` to enforce nsjail isolation (hard fail if unavailable) |
 | `ATLAS_SANDBOX_URL` | — | Sidecar service URL for explore isolation (e.g. `http://sandbox-sidecar:8080`) |
 | `SIDECAR_AUTH_TOKEN` | — | Shared secret for sidecar auth (set on both API and sidecar) |
-| `SEMANTIC_DIR` | `/semantic` | Sidecar only: directory where the sidecar serves semantic layer files. Set in the sidecar Dockerfile — not used by the main API |
+| `SEMANTIC_DIR` | `/semantic` | Sidecar only: directory where the sidecar serves semantic layer files. Defaults to `/semantic` via the sidecar Dockerfile, but can be overridden at container runtime. Not used by the main API |
 | `ATLAS_NSJAIL_PATH` | Auto-detected | Explicit path to nsjail binary |
 | `ATLAS_NSJAIL_TIME_LIMIT` | `10` | nsjail per-command time limit in seconds |
 | `ATLAS_NSJAIL_MEMORY_LIMIT` | `256` | nsjail per-command memory limit in MB |

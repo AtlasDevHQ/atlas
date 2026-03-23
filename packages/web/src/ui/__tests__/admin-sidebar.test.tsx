@@ -21,10 +21,21 @@ mock.module("next/link", () => ({
 
 import { render } from "@testing-library/react";
 import { SidebarProvider } from "@/components/ui/sidebar";
+import { AtlasUIProvider, type AtlasAuthClient } from "../context";
 import { AdminSidebar } from "../components/admin/admin-sidebar";
 
+const stubAuthClient: AtlasAuthClient = {
+  signIn: { email: async () => ({}) },
+  signOut: async () => {},
+  useSession: () => ({ data: { user: { role: "admin" } }, isPending: false }),
+};
+
 function Wrapper({ children }: { children: ReactNode }) {
-  return <SidebarProvider>{children}</SidebarProvider>;
+  return (
+    <AtlasUIProvider config={{ apiUrl: "http://localhost:3001", isCrossOrigin: false, authClient: stubAuthClient }}>
+      <SidebarProvider>{children}</SidebarProvider>
+    </AtlasUIProvider>
+  );
 }
 
 describe("AdminSidebar", () => {

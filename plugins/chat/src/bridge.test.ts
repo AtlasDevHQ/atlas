@@ -1557,3 +1557,408 @@ describe("chat plugin three-adapter lifecycle", () => {
     expect(result.message).toContain("discord");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Google Chat adapter config validation
+// ---------------------------------------------------------------------------
+
+describe("chatPlugin Google Chat adapter config", () => {
+  const mockExecuteQueryFn = async () => ({
+    answer: "test",
+    sql: [] as string[],
+    data: [] as { columns: string[]; rows: Record<string, unknown>[] }[],
+    steps: 1,
+    usage: { totalTokens: 10 },
+  });
+
+  it("accepts valid config with gchat adapter (no credentials — env auto-detect)", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: {
+        gchat: {},
+      },
+      executeQuery: mockExecuteQueryFn,
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
+    expect(plugin.types).toEqual(["interaction"]);
+    expect(plugin.version).toBe("0.2.0");
+  });
+
+  it("accepts gchat config with service account credentials", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: {
+        gchat: {
+          credentials: {
+            client_email: "bot@my-project.iam.gserviceaccount.com",
+            private_key: "-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----\n",
+          },
+        },
+      },
+      executeQuery: mockExecuteQueryFn,
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
+  });
+
+  it("accepts gchat config with ADC", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: {
+        gchat: {
+          useApplicationDefaultCredentials: true,
+        },
+      },
+      executeQuery: mockExecuteQueryFn,
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
+  });
+
+  it("accepts gchat config with pubsubTopic and endpointUrl", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: {
+        gchat: {
+          credentials: {
+            client_email: "bot@my-project.iam.gserviceaccount.com",
+            private_key: "-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----\n",
+          },
+          endpointUrl: "https://my-atlas.example.com/api/plugins/chat-interaction/webhooks/gchat",
+          pubsubTopic: "projects/my-project/topics/chat-events",
+          impersonateUser: "admin@example.com",
+        },
+      },
+      executeQuery: mockExecuteQueryFn,
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
+  });
+
+  it("rejects gchat config with invalid pubsubTopic format", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          gchat: {
+            pubsubTopic: "invalid-topic",
+          },
+        },
+        executeQuery: mockExecuteQueryFn,
+      }),
+    ).toThrow(/pubsubTopic/i);
+  });
+
+  it("rejects gchat config with invalid endpointUrl", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          gchat: {
+            endpointUrl: "not-a-url",
+          },
+        },
+        executeQuery: mockExecuteQueryFn,
+      }),
+    ).toThrow(/endpointUrl/i);
+  });
+
+  it("rejects gchat config with invalid impersonateUser email", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          gchat: {
+            impersonateUser: "not-an-email",
+          },
+        },
+        executeQuery: mockExecuteQueryFn,
+      }),
+    ).toThrow(/impersonateUser/i);
+  });
+
+  it("rejects gchat credentials with empty private_key", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          gchat: {
+            credentials: {
+              client_email: "bot@my-project.iam.gserviceaccount.com",
+              private_key: "",
+            },
+          },
+        },
+        executeQuery: mockExecuteQueryFn,
+      }),
+    ).toThrow(/private_key/i);
+  });
+
+  it("rejects gchat credentials with invalid client_email", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          gchat: {
+            credentials: {
+              client_email: "not-an-email",
+              private_key: "-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----\n",
+            },
+          },
+        },
+        executeQuery: mockExecuteQueryFn,
+      }),
+    ).toThrow(/client_email/i);
+  });
+
+  it("rejects gchat config with both credentials and ADC", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          gchat: {
+            credentials: {
+              client_email: "bot@test.iam.gserviceaccount.com",
+              private_key: "-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----\n",
+            },
+            useApplicationDefaultCredentials: true,
+          },
+        },
+        executeQuery: mockExecuteQueryFn,
+      }),
+    ).toThrow(/not both/i);
+  });
+
+  it("accepts config with all four adapters", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: {
+        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        teams: { appId: "test-app-id", appPassword: "test-app-password" },
+        discord: {
+          botToken: "test-bot-token",
+          applicationId: "test-app-id",
+          publicKey: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+        },
+        gchat: {},
+      },
+      executeQuery: mockExecuteQueryFn,
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Google Chat adapter factory
+// ---------------------------------------------------------------------------
+
+describe("createGoogleChatAdapter", () => {
+  it("creates adapter with correct name", async () => {
+    const { createGoogleChatAdapter: createAdapter } = await import("./adapters/gchat");
+
+    const adapter = createAdapter({ credentials: testGchatCredentials });
+    expect(adapter).toBeDefined();
+    expect(adapter.name).toBe("gchat");
+  });
+
+  it("creates adapter with full config", async () => {
+    const { createGoogleChatAdapter: createAdapter } = await import("./adapters/gchat");
+
+    const adapter = createAdapter({
+      credentials: testGchatCredentials,
+      endpointUrl: "https://example.com/api/webhooks/gchat",
+      pubsubTopic: "projects/my-project/topics/chat-events",
+    });
+    expect(adapter).toBeDefined();
+    expect(adapter.name).toBe("gchat");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Google Chat webhook route guard
+// ---------------------------------------------------------------------------
+
+// Dummy service account credentials for test adapter construction.
+// The adapter validates credential shape but doesn't make API calls during tests.
+const testGchatCredentials = {
+  client_email: "bot@test-project.iam.gserviceaccount.com",
+  private_key: "-----BEGIN RSA PRIVATE KEY-----\nMIIBogIBAAJBALRiMLAH\n-----END RSA PRIVATE KEY-----\n",
+  project_id: "test-project",
+};
+
+describe("gchat webhook route guard", () => {
+  it("gchat webhook returns 503 before initialization", async () => {
+    const { buildChatPlugin } = require("./index");
+    const { Hono } = require("hono");
+
+    const plugin = buildChatPlugin({
+      adapters: {
+        gchat: { credentials: testGchatCredentials },
+      },
+      executeQuery: async () => ({
+        answer: "test",
+        sql: [],
+        data: [],
+        steps: 1,
+        usage: { totalTokens: 10 },
+      }),
+    });
+
+    const app = new Hono();
+    plugin.routes!(app);
+
+    const resp = await app.request("/webhooks/gchat", { method: "POST" });
+    expect(resp.status).toBe(503);
+    const body = await resp.json();
+    expect(body.error).toContain("not yet initialized");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Google Chat adapter lifecycle
+// ---------------------------------------------------------------------------
+
+describe("chat plugin Google Chat lifecycle", () => {
+  function createGchatTestPlugin() {
+    const { buildChatPlugin } = require("./index");
+    return buildChatPlugin({
+      adapters: {
+        gchat: { credentials: testGchatCredentials },
+      },
+      executeQuery: async () => ({
+        answer: "test answer",
+        sql: ["SELECT 1"],
+        data: [],
+        steps: 1,
+        usage: { totalTokens: 50 },
+      }),
+    });
+  }
+
+  it("healthCheck returns unhealthy before initialization", async () => {
+    const plugin = createGchatTestPlugin();
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(false);
+    expect(result.message).toContain("not initialized");
+  });
+
+  it("initialize sets up the bridge with gchat adapter", async () => {
+    const plugin = createGchatTestPlugin();
+    const logs: string[] = [];
+
+    await plugin.initialize!({
+      db: null,
+      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      tools: { register: () => {} },
+      logger: {
+        info: (msg: unknown) => logs.push(typeof msg === "string" ? msg : JSON.stringify(msg)),
+        warn: () => {},
+        error: () => {},
+        debug: () => {},
+      },
+      config: {},
+    });
+
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(true);
+    expect(result.message).toContain("gchat");
+  });
+
+  it("teardown cleans up gchat adapter", async () => {
+    const plugin = createGchatTestPlugin();
+
+    await plugin.initialize!({
+      db: null,
+      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      tools: { register: () => {} },
+      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+      config: {},
+    });
+
+    await plugin.teardown!();
+
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(false);
+  });
+
+  it("double initialize throws with gchat adapter", async () => {
+    const plugin = createGchatTestPlugin();
+    const ctx = {
+      db: null,
+      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      tools: { register: () => {} },
+      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+      config: {},
+    };
+
+    await plugin.initialize!(ctx);
+    await expect(plugin.initialize!(ctx)).rejects.toThrow(/already initialized/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Multi-adapter lifecycle (all four adapters)
+// ---------------------------------------------------------------------------
+
+describe("chat plugin four-adapter lifecycle", () => {
+  function createQuadAdapterPlugin() {
+    const { buildChatPlugin } = require("./index");
+    return buildChatPlugin({
+      adapters: {
+        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        teams: { appId: "test-app-id", appPassword: "test-app-password" },
+        discord: {
+          botToken: "test-bot-token",
+          applicationId: "test-app-id",
+          publicKey: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+        },
+        gchat: { credentials: testGchatCredentials },
+      },
+      executeQuery: async () => ({
+        answer: "test answer",
+        sql: ["SELECT 1"],
+        data: [],
+        steps: 1,
+        usage: { totalTokens: 50 },
+      }),
+    });
+  }
+
+  it("initializes with all four adapters", async () => {
+    const plugin = createQuadAdapterPlugin();
+    const logs: string[] = [];
+
+    await plugin.initialize!({
+      db: null,
+      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      tools: { register: () => {} },
+      logger: {
+        info: (msg: unknown) => logs.push(typeof msg === "string" ? msg : JSON.stringify(msg)),
+        warn: () => {},
+        error: () => {},
+        debug: () => {},
+      },
+      config: {},
+    });
+
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(true);
+    expect(result.message).toContain("slack");
+    expect(result.message).toContain("teams");
+    expect(result.message).toContain("discord");
+    expect(result.message).toContain("gchat");
+  });
+});

@@ -28,8 +28,9 @@ bun add @useatlas/chat
 | Slack | `@chat-adapter/slack` | Stable |
 | Microsoft Teams | `@chat-adapter/teams` | Stable |
 | Discord | `@chat-adapter/discord` | Stable |
+| Google Chat | `@chat-adapter/gchat` | Stable |
 
-Stable adapters are bundled as dependencies of `@useatlas/chat` — no separate install needed. Additional platforms (Google Chat, Telegram, WhatsApp) are planned and will be supported as Chat SDK adapters are published.
+Stable adapters are bundled as dependencies of `@useatlas/chat` — no separate install needed. Additional platforms (Telegram, WhatsApp) are planned and will be supported as Chat SDK adapters are published.
 
 ## Configuration
 
@@ -96,6 +97,11 @@ export default defineConfig({
 | `adapters.discord.applicationId` | `string` | Yes* | Discord application ID. |
 | `adapters.discord.publicKey` | `string` | Yes* | 64-character hex string (Ed25519 public key from Discord Developer Portal). |
 | `adapters.discord.mentionRoleIds` | `string[]` | No | Role IDs that trigger mention handlers (in addition to direct @mentions). |
+| `adapters.gchat.credentials` | `object` | No* | Service account credentials (`client_email`, `private_key`, optional `project_id`). |
+| `adapters.gchat.useApplicationDefaultCredentials` | `true` | No* | Use Application Default Credentials. |
+| `adapters.gchat.endpointUrl` | `string` | No | HTTP endpoint URL for card button click actions. |
+| `adapters.gchat.pubsubTopic` | `string` | No | Pub/Sub topic for Workspace Events (`projects/{project}/topics/{topic}`). |
+| `adapters.gchat.impersonateUser` | `string` | No | User email for domain-wide delegation. |
 | `state` | `object` | No | State backend config (default: `{ backend: "memory" }`). |
 | `state.backend` | `"memory" \| "pg" \| "redis"` | No | State backend to use. Default: `"memory"`. |
 | `state.tablePrefix` | `string` | No | Table name prefix for PG backend. Must be a valid SQL identifier. Default: `"chat_"`. |
@@ -167,6 +173,7 @@ import { buildQueryResultCard } from "@useatlas/chat/cards";
 | `POST` | `/webhooks/slack` | Slack webhook (slash commands, events, interactions) |
 | `POST` | `/webhooks/teams` | Teams webhook (Bot Framework activities) |
 | `POST` | `/webhooks/discord` | Discord webhook (interactions, gateway events) |
+| `POST` | `/webhooks/gchat` | Google Chat webhook (@mentions, DMs, card clicks, Pub/Sub) |
 | `GET` | `/oauth/slack/install` | Slack OAuth install redirect (only when `clientId` configured) |
 | `GET` | `/oauth/slack/callback` | Slack OAuth callback (only when `clientId` configured) |
 
@@ -186,6 +193,10 @@ Routes are mounted under the plugin's base path (e.g., `/api/plugins/chat-intera
 | `DISCORD_BOT_TOKEN` | Discord bot token |
 | `DISCORD_APPLICATION_ID` | Discord application ID |
 | `DISCORD_PUBLIC_KEY` | Discord application public key (64-char hex, Ed25519) |
+| `GOOGLE_CHAT_CREDENTIALS` | Google Chat service account key JSON (stringified) |
+| `GOOGLE_CHAT_USE_ADC` | Set to `"true"` for Application Default Credentials |
+| `GOOGLE_CHAT_PUBSUB_TOPIC` | Pub/Sub topic for Workspace Events |
+| `GOOGLE_CHAT_IMPERSONATE_USER` | User email for domain-wide delegation |
 | `DATABASE_URL` | Required for `pg` state backend |
 
 ## Error Scrubbing
@@ -281,3 +292,4 @@ Routes return 503 if the plugin hasn't finished initializing. This is normal dur
 - [Plugin authoring guide](/plugins/authoring-guide)
 - [Slack plugin (deprecated)](/plugins/interactions/slack)
 - [Teams plugin (deprecated)](/plugins/interactions/teams)
+- [Google Chat bot setup](/plugins/interactions/gchat)

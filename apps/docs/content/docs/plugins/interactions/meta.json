@@ -8,6 +8,7 @@
     "slack",
     "teams",
     "discord",
+    "gchat",
     "webhook"
   ]
 }

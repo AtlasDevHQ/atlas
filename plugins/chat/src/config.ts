@@ -68,6 +68,26 @@ export interface DiscordAdapterConfig {
   mentionRoleIds?: string[];
 }
 
+/** Google Chat adapter credential configuration. */
+export interface GoogleChatAdapterConfig {
+  /** Service account credentials JSON (client_email + private_key). */
+  credentials?: {
+    client_email: string;
+    private_key: string;
+    project_id?: string;
+  };
+  /** Use Application Default Credentials instead of explicit credentials. */
+  useApplicationDefaultCredentials?: true;
+  /** HTTP endpoint URL for button click actions (card interactions). */
+  endpointUrl?: string;
+  /** Pub/Sub topic for receiving all messages via Workspace Events.
+   * Format: "projects/my-project/topics/my-topic".
+   * When set, the adapter receives all messages, not just @mentions. */
+  pubsubTopic?: string;
+  /** User email to impersonate for Workspace Events API (domain-wide delegation). */
+  impersonateUser?: string;
+}
+
 /** State backend configuration. */
 export interface StateConfig {
   /** Which state backend to use. Default: "memory" */
@@ -124,6 +144,7 @@ export interface ChatPluginConfig {
     slack?: SlackAdapterConfig;
     teams?: TeamsAdapterConfig;
     discord?: DiscordAdapterConfig;
+    gchat?: GoogleChatAdapterConfig;
   };
 
   /** State backend configuration. Default: { backend: "memory" } */
@@ -178,6 +199,24 @@ const DiscordAdapterSchema = z.object({
   mentionRoleIds: z.array(z.string().min(1)).optional(),
 });
 
+const GoogleChatAdapterSchema = z.object({
+  credentials: z.object({
+    client_email: z.string().email("gchat credentials.client_email must be a valid email"),
+    private_key: z.string().min(1, "gchat credentials.private_key must not be empty"),
+    project_id: z.string().min(1).optional(),
+  }).optional(),
+  useApplicationDefaultCredentials: z.literal(true).optional(),
+  endpointUrl: z.string().url("gchat endpointUrl must be a valid URL").optional(),
+  pubsubTopic: z.string().regex(
+    /^projects\/[^/]+\/topics\/[^/]+$/,
+    "gchat pubsubTopic must be in format 'projects/{project}/topics/{topic}'",
+  ).optional(),
+  impersonateUser: z.string().email("gchat impersonateUser must be a valid email").optional(),
+}).refine(
+  (c) => !(c.credentials != null && c.useApplicationDefaultCredentials === true),
+  "Provide either credentials or useApplicationDefaultCredentials, not both (or omit both for env-var auto-detection)",
+);
+
 const StateConfigSchema = z
   .object({
     backend: z.enum(["memory", "pg", "redis"]).default("memory"),
@@ -195,6 +234,7 @@ export const ChatConfigSchema = z.object({
       slack: SlackAdapterSchema.optional(),
       teams: TeamsAdapterSchema.optional(),
       discord: DiscordAdapterSchema.optional(),
+      gchat: GoogleChatAdapterSchema.optional(),
     })
     .strict()
     .refine(

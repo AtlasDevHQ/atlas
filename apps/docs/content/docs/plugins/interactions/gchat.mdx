@@ -1,0 +1,233 @@
+---
+title: Google Chat Bot
+description: Integrate Google Chat as an interaction surface for Atlas with @mentions, threaded conversations, and Google Chat Cards.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The Google Chat interaction is provided via the [`@useatlas/chat`](/plugins/interactions/chat) Chat SDK bridge plugin. Users can @mention the bot in Google Chat spaces or send direct messages to query data. The bot replies with Google Chat Card v2 cards containing formatted query results, SQL, and data tables.
+
+The Chat SDK adapter supports two message delivery modes: direct webhooks (for @mentions, DMs, and card button clicks) and Pub/Sub via Workspace Events (for receiving all messages in a space).
+
+## Prerequisites
+
+- A Google Cloud project with the **Google Chat API** enabled
+- A service account with a JSON key file (or Application Default Credentials)
+- The Chat app configured in the [Google Cloud Console](https://console.cloud.google.com/apis/api/chat.googleapis.com)
+- For all-message delivery: a Pub/Sub topic and the **Google Workspace Events API** enabled
+
+## Google Cloud Console Setup
+
+### 1. Enable APIs
+
+1. Go to the [Google Cloud Console](https://console.cloud.google.com)
+2. Select or create a project
+3. Enable the **Google Chat API** (`chat.googleapis.com`)
+4. (Optional) Enable the **Google Workspace Events API** for all-message delivery
+
+### 2. Create a Service Account
+
+1. Go to **IAM & Admin** > **Service Accounts**
+2. Click **Create Service Account**
+3. Name it (e.g., "atlas-chat-bot")
+4. Click **Create and Continue**
+5. Click **Done** (no additional roles needed for basic Chat)
+6. Click on the service account, go to **Keys** > **Add Key** > **Create new key** > **JSON**
+7. Download the JSON key file
+
+<Callout type="warn">
+Store the service account key securely. It contains credentials that allow sending messages as the bot. Never commit it to source control.
+</Callout>
+
+### 3. Configure the Chat App
+
+1. Go to the [Google Chat API configuration](https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat)
+2. Fill in the app details:
+   - **App name**: Atlas (or your preferred name)
+   - **Avatar URL**: Your bot avatar
+   - **Description**: Data analyst powered by Atlas
+3. Under **Functionality**, enable:
+   - **Receive 1:1 messages**
+   - **Join spaces and group conversations**
+4. Under **Connection settings**, select **HTTP endpoint URL** and set:
+
+```
+https://your-atlas-api.example.com/api/plugins/chat-interaction/webhooks/gchat
+```
+
+5. Under **Visibility**, configure who can install the app (your domain or public)
+6. Click **Save**
+
+### 4. Set Up Pub/Sub (Optional — For All Messages)
+
+By default, Google Chat only sends webhooks for @mentions and direct messages. To receive **all messages** in a space (not just @mentions), set up Workspace Events:
+
+1. Create a Pub/Sub topic in your GCP project:
+
+```bash
+gcloud pubsub topics create chat-events
+```
+
+2. Grant the Chat service account publish permissions:
+
+```bash
+gcloud pubsub topics add-iam-policy-binding chat-events \
+  --member="serviceAccount:chat-api-push@system.gserviceaccount.com" \
+  --role="roles/pubsub.publisher"
+```
+
+3. Create a push subscription pointing to your Atlas endpoint:
+
+```bash
+gcloud pubsub subscriptions create chat-events-push \
+  --topic=chat-events \
+  --push-endpoint="https://your-atlas-api.example.com/api/plugins/chat-interaction/webhooks/gchat"
+```
+
+4. Set the `pubsubTopic` in your Atlas config (see below)
+
+The adapter automatically creates Workspace Events subscriptions when added to a space.
+
+## Configuration
+
+### Basic (Service Account Credentials)
+
+```typescript
+import { defineConfig } from "@atlas/api/lib/config";
+import { executeAgentQuery } from "@atlas/api/lib/agent-query";
+import { chatPlugin } from "@useatlas/chat";
+
+export default defineConfig({
+  plugins: [
+    chatPlugin({
+      adapters: {
+        gchat: {
+          credentials: JSON.parse(process.env.GOOGLE_CHAT_CREDENTIALS!),
+        },
+      },
+      executeQuery: executeAgentQuery,
+    }),
+  ],
+});
+```
+
+### Application Default Credentials
+
+Use ADC when running on GCE, Cloud Run, or with Workload Identity Federation:
+
+```typescript
+chatPlugin({
+  adapters: {
+    gchat: {
+      useApplicationDefaultCredentials: true,
+    },
+  },
+  executeQuery: executeAgentQuery,
+})
+```
+
+### Full Configuration (With Pub/Sub)
+
+```typescript
+chatPlugin({
+  adapters: {
+    gchat: {
+      credentials: JSON.parse(process.env.GOOGLE_CHAT_CREDENTIALS!),
+      endpointUrl: "https://your-atlas-api.example.com/api/plugins/chat-interaction/webhooks/gchat",
+      pubsubTopic: "projects/my-project/topics/chat-events",
+      impersonateUser: "admin@example.com",
+    },
+  },
+  executeQuery: executeAgentQuery,
+})
+```
+
+### Options
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `credentials` | `object` | No* | Service account credentials (`client_email`, `private_key`, optional `project_id`). |
+| `useApplicationDefaultCredentials` | `true` | No* | Use Application Default Credentials (GCE, Cloud Run, Workload Identity). |
+| `endpointUrl` | `string` | No | HTTP endpoint URL for card button click actions. Required for interactive cards. |
+| `pubsubTopic` | `string` | No | Pub/Sub topic for Workspace Events (format: `projects/{project}/topics/{topic}`). |
+| `impersonateUser` | `string` | No | User email to impersonate for Workspace Events API (domain-wide delegation). |
+
+<Callout type="info">
+\* Provide `credentials` OR `useApplicationDefaultCredentials`, or omit both for automatic detection from `GOOGLE_CHAT_CREDENTIALS` and `GOOGLE_CHAT_USE_ADC` environment variables.
+</Callout>
+
+## Mounted Routes
+
+The Chat SDK bridge mounts the following route for Google Chat:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/webhooks/gchat` | Google Chat webhook — receives @mentions, DMs, card button clicks, and Pub/Sub messages |
+
+## How It Works
+
+### @Mentions
+1. A user @mentions the bot in a Google Chat space
+2. Google sends a webhook event to the `/webhooks/gchat` endpoint
+3. The Chat SDK subscribes the thread for follow-up messages
+4. The `executeQuery` callback runs the Atlas agent
+5. Results are posted as a reply with Google Chat Card v2 formatting
+
+### Direct Messages
+1. A user sends a direct message to the bot
+2. The message is received via the webhook endpoint
+3. The `executeQuery` callback runs the Atlas agent
+4. Results are posted as a reply in the DM
+
+### Threaded Follow-ups
+1. After an initial response, the thread is subscribed via the Chat SDK state adapter
+2. With Pub/Sub + Workspace Events: follow-up messages in the thread trigger new queries with conversation history
+3. Without Pub/Sub: only @mentions in the thread are received
+
+### AI Streaming
+Google Chat doesn't support true message streaming. The adapter uses a post-then-edit pattern: an initial message is posted immediately, then progressively edited with new content as the response streams in.
+
+### Card Button Clicks
+When a response includes approval buttons (e.g., for pending actions), button clicks are routed back to the webhook endpoint. The `endpointUrl` config is required for this to work with HTTP endpoint apps.
+
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `GOOGLE_CHAT_CREDENTIALS` | Service account key JSON (stringified). Parsed with `JSON.parse()`. |
+| `GOOGLE_CHAT_USE_ADC` | Set to `"true"` for Application Default Credentials. |
+| `GOOGLE_CHAT_PUBSUB_TOPIC` | Pub/Sub topic for Workspace Events (fallback if not in config). |
+| `GOOGLE_CHAT_IMPERSONATE_USER` | User email for domain-wide delegation (fallback if not in config). |
+
+## Troubleshooting
+
+### Bot not responding to messages
+
+1. Verify the Chat app HTTP endpoint URL points to your Atlas API's `/webhooks/gchat` route
+2. Check that the Google Chat API is enabled in your GCP project
+3. Ensure the service account credentials are valid and have the correct permissions
+4. Check Atlas logs for initialization errors
+
+### Card button clicks not working
+
+The `endpointUrl` must be set in your config for HTTP endpoint apps. Button clicks are routed to this URL with action parameters. Ensure the URL matches your actual webhook endpoint.
+
+### Not receiving all messages (only @mentions)
+
+By default, Google Chat only sends @mentions and DMs to webhook endpoints. To receive all messages in a space:
+
+1. Set up Pub/Sub with Workspace Events (see setup instructions above)
+2. Configure `pubsubTopic` in your Atlas config
+3. The adapter automatically creates subscriptions when added to a space
+
+### Authentication errors
+
+- **Service Account**: Verify the JSON key contains valid `client_email` and `private_key` fields
+- **ADC**: Ensure `GOOGLE_APPLICATION_CREDENTIALS` points to a valid key file, or you're running on a GCP service with default credentials
+- **Impersonation**: The service account needs domain-wide delegation configured in Google Workspace Admin
+
+### Workspace Events subscription failures
+
+1. Ensure the **Google Workspace Events API** is enabled
+2. The Pub/Sub topic must exist and have publish permissions for `chat-api-push@system.gserviceaccount.com`
+3. If using impersonation, the impersonated user must have access to the target spaces

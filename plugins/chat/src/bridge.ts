@@ -3,8 +3,8 @@
  *
  * Maps Chat SDK lifecycle and events to Atlas plugin callbacks:
  *
- * - `onNewMention` → subscribe thread + `executeQuery` → `thread.post()`
- * - `onSubscribedMessage` → `executeQuery` with thread history → `thread.post()`
+ * - `onNewMention` → lock + subscribe thread + `executeQuery` → `thread.post()`
+ * - `onSubscribedMessage` → lock + `executeQuery` with thread history → `thread.post()`
  * - Error scrubbing prevents leaking connection strings, stack traces, or
  *   internal errors to chat platforms
  *
@@ -14,7 +14,7 @@
  */
 
 import { Chat } from "chat";
-import type { StateAdapter } from "chat";
+import type { StateAdapter, Lock } from "chat";
 import type { PluginLogger } from "@useatlas/plugin-sdk";
 import type { ChatPluginConfig, ChatQueryResult, ChatMessage } from "./config";
 import { createSlackAdapter } from "./adapters/slack";
@@ -121,9 +121,13 @@ export function scrubErrorMessage(
   if (userScrubber) {
     try {
       scrubbed = userScrubber(scrubbed);
-    } catch {
-      // intentionally ignored: user scrubber failure should not prevent
+    } catch (scrubErr) {
+      // intentionally non-fatal: user scrubber failure should not prevent
       // error delivery — the built-in scrubbing has already run.
+      console.debug(
+        "User scrubError callback threw:",
+        scrubErr instanceof Error ? scrubErr.message : String(scrubErr),
+      );
     }
   }
   return scrubbed;
@@ -153,6 +157,71 @@ async function safePostError(
 /** State adapter key for conversation history. */
 function convKey(threadId: string): string {
   return `conv:${threadId}`;
+}
+
+/**
+ * Attempt to acquire a dedup lock. Returns the lock on success, null if
+ * already locked, or null (with a warning log) if the adapter throws.
+ */
+async function tryAcquireLock(
+  stateAdapter: StateAdapter,
+  lockKey: string,
+  ttlMs: number,
+  log: PluginLogger,
+  threadId: string,
+): Promise<Lock | null> {
+  try {
+    return await stateAdapter.acquireLock(lockKey, ttlMs);
+  } catch (lockErr) {
+    log.error(
+      { err: lockErr instanceof Error ? lockErr : new Error(String(lockErr)), threadId },
+      "Failed to acquire dedup lock — processing without lock protection",
+    );
+    // Return a synthetic lock so the handler still runs; releaseLock
+    // will be a no-op (token won't match anything in the backend).
+    return { threadId: lockKey, token: "synthetic-fallback", expiresAt: Date.now() + ttlMs };
+  }
+}
+
+/** Persist conversation messages — non-fatal; failures are logged. */
+async function persistHistory(
+  stateAdapter: StateAdapter,
+  threadId: string,
+  messages: ChatMessage[],
+  log: PluginLogger,
+): Promise<void> {
+  try {
+    for (const msg of messages) {
+      await stateAdapter.appendToList(
+        convKey(threadId),
+        msg,
+        { maxLength: MAX_MESSAGES_PER_THREAD, ttlMs: CONVERSATION_TTL_MS },
+      );
+    }
+  } catch (historyErr) {
+    log.warn(
+      { err: historyErr instanceof Error ? historyErr : new Error(String(historyErr)), threadId },
+      "Failed to persist conversation history — follow-ups may lack context",
+    );
+  }
+}
+
+/** Retrieve prior conversation context — non-fatal; returns undefined on failure. */
+async function retrieveHistory(
+  stateAdapter: StateAdapter,
+  threadId: string,
+  log: PluginLogger,
+): Promise<ChatMessage[] | undefined> {
+  try {
+    const messages = await stateAdapter.getList<ChatMessage>(convKey(threadId));
+    return messages.length > 0 ? messages : undefined;
+  } catch (historyErr) {
+    log.warn(
+      { err: historyErr instanceof Error ? historyErr : new Error(String(historyErr)), threadId },
+      "Failed to retrieve conversation history — proceeding without context",
+    );
+    return undefined;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -213,8 +282,8 @@ export function createChatBridge(
       "New mention received",
     );
 
-    // Distributed lock — prevent duplicate processing of the same event
-    const lock = await stateAdapter.acquireLock(`bridge:${threadId}`, DEDUP_LOCK_TTL_MS);
+    // Dedup lock — prevent duplicate processing of the same event
+    const lock = await tryAcquireLock(stateAdapter, `bridge:${threadId}`, DEDUP_LOCK_TTL_MS, log, threadId);
     if (!lock) {
       log.debug({ threadId }, "Thread locked — event already being processed");
       return;
@@ -251,20 +320,15 @@ export function createChatBridge(
 
       const result = await config.executeQuery(question, { threadId });
 
-      // Persist conversation history via state adapter
-      await stateAdapter.appendToList(
-        convKey(threadId),
-        { role: "user", content: question } satisfies ChatMessage,
-        { maxLength: MAX_MESSAGES_PER_THREAD, ttlMs: CONVERSATION_TTL_MS },
-      );
-      await stateAdapter.appendToList(
-        convKey(threadId),
-        { role: "assistant", content: result.answer } satisfies ChatMessage,
-        { maxLength: MAX_MESSAGES_PER_THREAD, ttlMs: CONVERSATION_TTL_MS },
-      );
-
+      // Post the response first — ensure the user gets the answer
       const response = formatQueryResponse(result);
       await thread.post({ markdown: response });
+
+      // Persist conversation history (non-fatal)
+      await persistHistory(stateAdapter, threadId, [
+        { role: "user", content: question },
+        { role: "assistant", content: result.answer },
+      ], log);
     } catch (err) {
       const rawMessage =
         err instanceof Error ? err.message : String(err);
@@ -282,9 +346,9 @@ export function createChatBridge(
       );
     } finally {
       await stateAdapter.releaseLock(lock).catch((releaseErr: unknown) => {
-        log.warn(
+        log.error(
           { err: releaseErr instanceof Error ? releaseErr : new Error(String(releaseErr)), threadId },
-          "Failed to release thread lock",
+          "Failed to release thread lock — thread may be blocked until TTL expires",
         );
       });
     }
@@ -305,8 +369,8 @@ export function createChatBridge(
       "Follow-up message received",
     );
 
-    // Distributed lock — prevent duplicate processing
-    const lock = await stateAdapter.acquireLock(`bridge:${threadId}`, DEDUP_LOCK_TTL_MS);
+    // Dedup lock — prevent duplicate processing
+    const lock = await tryAcquireLock(stateAdapter, `bridge:${threadId}`, DEDUP_LOCK_TTL_MS, log, threadId);
     if (!lock) {
       log.debug({ threadId }, "Thread locked — event already being processed");
       return;
@@ -338,28 +402,23 @@ export function createChatBridge(
         }
       }
 
-      // Retrieve prior conversation context from state adapter
-      const priorMessages = await stateAdapter.getList<ChatMessage>(convKey(threadId));
+      // Retrieve prior conversation context (non-fatal — falls back to no context)
+      const priorMessages = await retrieveHistory(stateAdapter, threadId, log);
 
       const result = await config.executeQuery(question, {
         threadId,
-        priorMessages: priorMessages.length > 0 ? priorMessages : undefined,
+        priorMessages,
       });
 
-      // Append to conversation history
-      await stateAdapter.appendToList(
-        convKey(threadId),
-        { role: "user", content: question } satisfies ChatMessage,
-        { maxLength: MAX_MESSAGES_PER_THREAD, ttlMs: CONVERSATION_TTL_MS },
-      );
-      await stateAdapter.appendToList(
-        convKey(threadId),
-        { role: "assistant", content: result.answer } satisfies ChatMessage,
-        { maxLength: MAX_MESSAGES_PER_THREAD, ttlMs: CONVERSATION_TTL_MS },
-      );
-
+      // Post the response first — ensure the user gets the answer
       const response = formatQueryResponse(result);
       await thread.post({ markdown: response });
+
+      // Persist conversation history (non-fatal)
+      await persistHistory(stateAdapter, threadId, [
+        { role: "user", content: question },
+        { role: "assistant", content: result.answer },
+      ], log);
     } catch (err) {
       const rawMessage =
         err instanceof Error ? err.message : String(err);
@@ -377,9 +436,9 @@ export function createChatBridge(
       );
     } finally {
       await stateAdapter.releaseLock(lock).catch((releaseErr: unknown) => {
-        log.warn(
+        log.error(
           { err: releaseErr instanceof Error ? releaseErr : new Error(String(releaseErr)), threadId },
-          "Failed to release thread lock",
+          "Failed to release thread lock — thread may be blocked until TTL expires",
         );
       });
     }

@@ -77,7 +77,10 @@ const SlackAdapterSchema = z.object({
 const StateConfigSchema = z
   .object({
     backend: z.enum(["memory", "pg", "redis"]).default("memory"),
-    tablePrefix: z.string().min(1).optional(),
+    tablePrefix: z.string().min(1).regex(
+      /^[a-zA-Z_][a-zA-Z0-9_]*$/,
+      "tablePrefix must be a valid SQL identifier (letters, numbers, underscores)",
+    ).optional(),
     redisUrl: z.string().url().optional(),
   })
   .optional();

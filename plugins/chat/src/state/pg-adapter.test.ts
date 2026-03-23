@@ -87,6 +87,25 @@ describe("PgStateAdapter lifecycle", () => {
 
     expect(adapter.subscribe("t1")).rejects.toThrow(/not connected/);
   });
+
+  it("rejects invalid tablePrefix with SQL metacharacters", () => {
+    const { db } = createMockDB();
+
+    expect(() => new PgStateAdapter(db, { tablePrefix: "; DROP TABLE" })).toThrow(/Invalid tablePrefix/);
+    expect(() => new PgStateAdapter(db, { tablePrefix: "has spaces" })).toThrow(/Invalid tablePrefix/);
+    expect(() => new PgStateAdapter(db, { tablePrefix: "semi;colon" })).toThrow(/Invalid tablePrefix/);
+    expect(() => new PgStateAdapter(db, { tablePrefix: "quote'" })).toThrow(/Invalid tablePrefix/);
+    expect(() => new PgStateAdapter(db, { tablePrefix: "1starts_with_number" })).toThrow(/Invalid tablePrefix/);
+  });
+
+  it("accepts valid tablePrefix values", () => {
+    const { db } = createMockDB();
+
+    expect(() => new PgStateAdapter(db, { tablePrefix: "chat_" })).not.toThrow();
+    expect(() => new PgStateAdapter(db, { tablePrefix: "MyApp_" })).not.toThrow();
+    expect(() => new PgStateAdapter(db, { tablePrefix: "_private" })).not.toThrow();
+    expect(() => new PgStateAdapter(db, { tablePrefix: "a1b2c3" })).not.toThrow();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -340,8 +359,7 @@ describe("PgStateAdapter cache", () => {
     const mock = createMockDB({
       queryResults: [
         [], [], [], [], [],
-        [], // cleanup DELETE (no expired rows)
-        [{ key: "newkey" }], // INSERT returned a row
+        [{ key: "newkey" }], // CTE INSERT returned a row
       ],
     });
     const adapter = new PgStateAdapter(mock.db);
@@ -351,12 +369,28 @@ describe("PgStateAdapter cache", () => {
     expect(result).toBe(true);
   });
 
+  it("setIfNotExists uses atomic CTE (single query)", async () => {
+    const mock = createMockDB({
+      queryResults: [[], [], [], [], [], [{ key: "k" }]],
+    });
+    const adapter = new PgStateAdapter(mock.db);
+    await adapter.connect();
+    mock.calls.length = 0;
+
+    await adapter.setIfNotExists("k", "v");
+
+    // Should be a single query (CTE), not two separate queries
+    expect(mock.calls.length).toBe(1);
+    expect(mock.calls[0].sql).toContain("WITH cleanup AS");
+    expect(mock.calls[0].sql).toContain("DELETE FROM");
+    expect(mock.calls[0].sql).toContain("INSERT INTO");
+  });
+
   it("setIfNotExists returns false when key exists", async () => {
     const mock = createMockDB({
       queryResults: [
         [], [], [], [], [],
-        [], // cleanup
-        [], // INSERT returned nothing (conflict)
+        [], // CTE INSERT returned nothing (conflict)
       ],
     });
     const adapter = new PgStateAdapter(mock.db);
@@ -429,6 +463,39 @@ describe("PgStateAdapter lists", () => {
     await adapter.connect();
 
     const result = await adapter.getList("missing");
+    expect(result).toEqual([]);
+  });
+
+  it("appendToList with both maxLength and ttlMs uses $4 for trim", async () => {
+    const mock = createMockDB({
+      queryResults: [[], [], [], [], [], [], []],
+    });
+    const adapter = new PgStateAdapter(mock.db);
+    await adapter.connect();
+    mock.calls.length = 0;
+
+    await adapter.appendToList("list1", { msg: "hi" }, { maxLength: 200, ttlMs: 604800000 });
+
+    // Insert uses $3 for TTL
+    expect(mock.calls[0].params).toEqual(["list1", '{"msg":"hi"}', 604800000]);
+    expect(mock.calls[0].sql).toContain("make_interval");
+
+    // Trim uses $4 for maxLength
+    expect(mock.calls[1].sql).toContain("$4::int");
+    expect(mock.calls[1].params).toEqual(["list1", '{"msg":"hi"}', 604800000, 200]);
+  });
+
+  it("getList returns empty array for non-array value", async () => {
+    const mock = createMockDB({
+      queryResults: [
+        [], [], [], [], [],
+        [{ value: "not-an-array" }],
+      ],
+    });
+    const adapter = new PgStateAdapter(mock.db);
+    await adapter.connect();
+
+    const result = await adapter.getList("key-with-scalar");
     expect(result).toEqual([]);
   });
 });

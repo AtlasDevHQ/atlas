@@ -2,8 +2,8 @@
  * PostgreSQL state adapter for Chat SDK.
  *
  * Persists thread subscriptions, distributed locks, and key-value/list cache
- * to Atlas's internal PostgreSQL database. Tables are lazily created on
- * first connect() with idempotent CREATE TABLE IF NOT EXISTS statements.
+ * to Atlas's internal PostgreSQL database. Tables are created idempotently
+ * on first connect() with CREATE TABLE IF NOT EXISTS statements.
  *
  * Uses the plugin DB context (AtlasPluginContext["db"]) — never imports
  * from @atlas/api directly.
@@ -14,6 +14,9 @@ import type { StateAdapter, Lock } from "chat";
 import type { PluginDB } from "./types";
 
 const DEFAULT_PREFIX = "chat_";
+
+/** Only letters, numbers, and underscores — must start with letter or underscore. */
+const SAFE_PREFIX_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
 export interface PgAdapterOptions {
   /** Table name prefix. Default: "chat_" */
@@ -27,7 +30,13 @@ export class PgStateAdapter implements StateAdapter {
 
   constructor(db: PluginDB, options?: PgAdapterOptions) {
     this.db = db;
-    this.prefix = options?.tablePrefix ?? DEFAULT_PREFIX;
+    const prefix = options?.tablePrefix ?? DEFAULT_PREFIX;
+    if (!SAFE_PREFIX_RE.test(prefix)) {
+      throw new Error(
+        `Invalid tablePrefix "${prefix}" — must match /^[a-zA-Z_][a-zA-Z0-9_]*$/`,
+      );
+    }
+    this.prefix = prefix;
   }
 
   // ---------------------------------------------------------------------------
@@ -181,15 +190,13 @@ export class PgStateAdapter implements StateAdapter {
     const params: unknown[] = [key, JSON.stringify(value)];
     if (ttlMs != null) params.push(ttlMs);
 
-    // Clean up expired entry first, then attempt insert
-    await this.db.query(
-      `DELETE FROM ${this.t("cache")}
-       WHERE key = $1 AND expires_at IS NOT NULL AND expires_at <= NOW()`,
-      [key],
-    );
-
+    // Atomic: clean expired entry + insert in a single statement via CTE
     const { rows } = await this.db.query(
-      `INSERT INTO ${this.t("cache")} (key, value, expires_at)
+      `WITH cleanup AS (
+         DELETE FROM ${this.t("cache")}
+         WHERE key = $1 AND expires_at IS NOT NULL AND expires_at <= NOW()
+       )
+       INSERT INTO ${this.t("cache")} (key, value, expires_at)
        VALUES ($1, $2::jsonb, ${expiresExpr})
        ON CONFLICT (key) DO NOTHING
        RETURNING key`,
@@ -270,7 +277,12 @@ export class PgStateAdapter implements StateAdapter {
     );
     if (rows.length === 0) return [];
     const arr = rows[0].value;
-    if (!Array.isArray(arr)) return [];
+    if (!Array.isArray(arr)) {
+      console.debug(
+        `[chat-state] getList: stored value for key "${key}" is not an array — returning empty`,
+      );
+      return [];
+    }
     return arr as T[];
   }
 
@@ -278,7 +290,7 @@ export class PgStateAdapter implements StateAdapter {
   // Internals
   // ---------------------------------------------------------------------------
 
-  /** Qualified table name. */
+  /** Prefixed table name. */
   private t(name: string): string {
     return `${this.prefix}${name}`;
   }

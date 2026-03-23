@@ -1,30 +1,20 @@
 /**
  * Chat SDK state adapter types.
  *
- * Re-exports Chat SDK's StateAdapter and Lock interfaces and defines
- * Atlas-specific configuration for state backend selection.
+ * Re-exports Chat SDK's StateAdapter and Lock interfaces. Derives PluginDB
+ * from the plugin-sdk's AtlasPluginContext to maintain a compile-time link.
+ * Re-exports StateConfig from ../config as the single canonical definition.
  */
+
+import type { AtlasPluginContext } from "@useatlas/plugin-sdk";
 
 export type { StateAdapter, Lock } from "chat";
 
 /**
- * Internal DB access — mirrors AtlasPluginContext["db"].
+ * Internal DB access — derived from AtlasPluginContext["db"].
  * Plugins must not import from @atlas/api; they receive this via context.
  */
-export interface PluginDB {
-  query(
-    sql: string,
-    params?: unknown[],
-  ): Promise<{ rows: Record<string, unknown>[] }>;
-  execute(sql: string, params?: unknown[]): Promise<void>;
-}
+export type PluginDB = NonNullable<AtlasPluginContext["db"]>;
 
-/** Configuration for the chat state backend. */
-export interface StateBackendConfig {
-  /** Which state backend to use. Default: "memory" */
-  backend: "memory" | "pg" | "redis";
-  /** Table name prefix for PG backend. Default: "chat_" */
-  tablePrefix?: string;
-  /** Redis connection URL (future — not yet implemented). */
-  redisUrl?: string;
-}
+// Re-export StateConfig as the single canonical config type
+export type { StateConfig } from "../config";

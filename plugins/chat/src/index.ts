@@ -45,7 +45,7 @@ import { createStateAdapter } from "./state";
 export type { ChatPluginConfig, ChatQueryResult, ChatMessage, StateConfig } from "./config";
 export type { ChatBridge } from "./bridge";
 export { createStateAdapter } from "./state";
-export type { StateBackendConfig, PluginDB } from "./state";
+export type { PluginDB } from "./state";
 
 // ---------------------------------------------------------------------------
 // Plugin builder
@@ -109,9 +109,12 @@ function buildChatPlugin(
 
       log = ctx.logger;
 
-      // Create state adapter based on config — PG backend uses ctx.db
-      stateAdapter = createStateAdapter(config.state, ctx.db);
-      await stateAdapter.connect();
+      // Create state adapter based on config — PG backend uses ctx.db.
+      // Use a local variable until connect() succeeds to avoid leaking
+      // a partially-initialized adapter on retry.
+      const adapter = createStateAdapter(config.state, ctx.db);
+      await adapter.connect();
+      stateAdapter = adapter;
 
       bridge = createChatBridge(config, ctx.logger, stateAdapter);
 
@@ -148,6 +151,19 @@ function buildChatPlugin(
           message: "No adapters configured",
           latencyMs: Math.round(performance.now() - start),
         };
+      }
+
+      // Probe state adapter health (lightweight get on a non-existent key)
+      if (stateAdapter) {
+        try {
+          await stateAdapter.get("_healthcheck");
+        } catch (stateErr) {
+          return {
+            healthy: false,
+            message: `State backend error: ${stateErr instanceof Error ? stateErr.message : String(stateErr)}`,
+            latencyMs: Math.round(performance.now() - start),
+          };
+        }
       }
 
       return {

@@ -3,16 +3,17 @@
  *
  * Entry point for creating a Chat SDK state adapter based on plugin config.
  * The adapter is passed to `new Chat({ state })` and also used by the bridge
- * for conversation caching and distributed lock-based dedup.
+ * for conversation caching and lock-based dedup.
  */
 
 import type { StateAdapter } from "chat";
-import type { PluginDB, StateBackendConfig } from "./types";
+import type { StateConfig } from "../config";
+import type { PluginDB } from "./types";
 import { createMemoryState } from "./memory-adapter";
 import { createPgAdapter } from "./pg-adapter";
 import { createRedisAdapter } from "./redis-adapter";
 
-export type { StateAdapter, Lock, PluginDB, StateBackendConfig } from "./types";
+export type { StateAdapter, Lock, PluginDB } from "./types";
 export { PgStateAdapter, createPgAdapter } from "./pg-adapter";
 export { createMemoryState } from "./memory-adapter";
 export { createRedisAdapter } from "./redis-adapter";
@@ -24,7 +25,7 @@ export { createRedisAdapter } from "./redis-adapter";
  * @param db     - Plugin DB context (required for "pg" backend)
  */
 export function createStateAdapter(
-  config: StateBackendConfig | undefined,
+  config: StateConfig | undefined,
   db: PluginDB | null,
 ): StateAdapter {
   const backend = config?.backend ?? "memory";

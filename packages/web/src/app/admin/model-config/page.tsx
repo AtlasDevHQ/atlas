@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { useAtlasConfig } from "@/ui/context";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -18,6 +17,7 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { Cpu, Loader2, CheckCircle2, XCircle, RotateCcw, Eye, EyeOff } from "lucide-react";
 import type { ModelConfigProvider, WorkspaceModelConfig, TestModelConfigResponse } from "@/ui/lib/types";
@@ -42,19 +42,13 @@ const NEEDS_BASE_URL: Set<ModelConfigProvider> = new Set(["azure-openai", "custo
 // ── Main Page ─────────────────────────────────────────────────────
 
 export default function ModelConfigPage() {
-  const { apiUrl, isCrossOrigin } = useAtlasConfig();
-  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
-
   const [provider, setProvider] = useState<ModelConfigProvider>("anthropic");
   const [model, setModel] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [showApiKey, setShowApiKey] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
-  const [mutationError, setMutationError] = useState<string | null>(null);
+  const [validationError, setValidationError] = useState<string | null>(null);
 
   const { data, loading, error, refetch } = useAdminFetch<ModelConfigResponse>(
     "/api/v1/admin/model-config",
@@ -62,6 +56,28 @@ export default function ModelConfigPage() {
       transform: (json) => json as ModelConfigResponse,
     },
   );
+
+  const { mutate: saveMutate, saving, error: saveError, clearError: clearSaveError } =
+    useAdminMutation({
+      path: "/api/v1/admin/model-config",
+      method: "PUT",
+      invalidates: refetch,
+    });
+
+  const { mutate: deleteMutate, saving: deleting, error: deleteError, clearError: clearDeleteError } =
+    useAdminMutation({
+      path: "/api/v1/admin/model-config",
+      method: "DELETE",
+      invalidates: refetch,
+    });
+
+  const { mutate: testMutate, saving: testing, error: testError, clearError: clearTestError } =
+    useAdminMutation<TestResult>({
+      path: "/api/v1/admin/model-config/test",
+      method: "POST",
+    });
+
+  const mutationError = validationError ?? saveError ?? deleteError ?? testError;
 
   const existingConfig = data?.config ?? null;
 
@@ -104,106 +120,63 @@ export default function ModelConfigPage() {
 
   async function handleSave() {
     if (!apiKey && !existingConfig) {
-      setMutationError("API key is required.");
+      setValidationError("API key is required.");
       return;
     }
 
-    setSaving(true);
-    setMutationError(null);
     setTestResult(null);
+    setValidationError(null);
+    clearSaveError();
+    clearDeleteError();
+    clearTestError();
 
-    try {
-      const body: Record<string, string> = {
-        provider,
-        model: model.trim(),
-        apiKey,
-      };
-      if (NEEDS_BASE_URL.has(provider) && baseUrl) {
-        body.baseUrl = baseUrl.trim();
-      }
+    const body: Record<string, string> = {
+      provider,
+      model: model.trim(),
+      apiKey,
+    };
+    if (NEEDS_BASE_URL.has(provider) && baseUrl) {
+      body.baseUrl = baseUrl.trim();
+    }
 
-      const res = await fetch(`${apiUrl}/api/v1/admin/model-config`, {
-        method: "PUT",
-        credentials,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-
-      if (!res.ok) {
-        const data = await res.json().catch(() => null) as { message?: string } | null;
-        throw new Error(data?.message ?? `HTTP ${res.status}`);
-      }
-
+    const result = await saveMutate({ body });
+    if (result !== undefined) {
       setApiKey(""); // Clear API key after save
-      await refetch();
-    } catch (err) {
-      setMutationError(err instanceof Error ? err.message : "Failed to save configuration");
-    } finally {
-      setSaving(false);
     }
   }
 
   async function handleDelete() {
-    setDeleting(true);
-    setMutationError(null);
     setTestResult(null);
+    setValidationError(null);
+    clearSaveError();
+    clearDeleteError();
+    clearTestError();
 
-    try {
-      const res = await fetch(`${apiUrl}/api/v1/admin/model-config`, {
-        method: "DELETE",
-        credentials,
-      });
-
-      if (!res.ok) {
-        const data = await res.json().catch(() => null) as { message?: string } | null;
-        throw new Error(data?.message ?? `HTTP ${res.status}`);
-      }
-
+    const result = await deleteMutate();
+    if (result !== undefined) {
       syncFormToConfig(null);
-      await refetch();
-    } catch (err) {
-      setMutationError(err instanceof Error ? err.message : "Failed to reset configuration");
-    } finally {
-      setDeleting(false);
     }
   }
 
   async function handleTest() {
-    setTesting(true);
     setTestResult(null);
-    setMutationError(null);
+    setValidationError(null);
+    clearSaveError();
+    clearDeleteError();
+    clearTestError();
 
-    try {
-      const body: Record<string, string> = {
-        provider,
-        model: model.trim(),
-        apiKey: apiKey || "placeholder-for-test",
-      };
-      if (NEEDS_BASE_URL.has(provider) && baseUrl) {
-        body.baseUrl = baseUrl.trim();
-      }
+    const body: Record<string, string> = {
+      provider,
+      model: model.trim(),
+      apiKey: apiKey || "placeholder-for-test",
+    };
+    if (NEEDS_BASE_URL.has(provider) && baseUrl) {
+      body.baseUrl = baseUrl.trim();
+    }
 
-      const res = await fetch(`${apiUrl}/api/v1/admin/model-config/test`, {
-        method: "POST",
-        credentials,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-
-      if (!res.ok) {
-        const data = await res.json().catch(() => null) as { message?: string } | null;
-        throw new Error(data?.message ?? `HTTP ${res.status}`);
-      }
-
-      const result = (await res.json()) as TestResult;
+    const result = await testMutate({ body });
+    if (result !== undefined) {
       setTestResult(result);
-    } catch (err) {
-      setTestResult({
-        success: false,
-        message: err instanceof Error ? err.message : "Test failed",
-      });
-    } finally {
-      setTesting(false);
     }
   }
 
@@ -220,7 +193,7 @@ export default function ModelConfigPage() {
         <div className="flex-1 overflow-auto p-6">
           {error && <ErrorBanner message={friendlyError(error)} onRetry={refetch} />}
           {mutationError && (
-            <ErrorBanner message={mutationError} onRetry={() => setMutationError(null)} />
+            <ErrorBanner message={mutationError} onRetry={() => { setValidationError(null); clearSaveError(); clearDeleteError(); clearTestError(); }} />
           )}
 
           {loading ? (

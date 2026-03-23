@@ -63,10 +63,10 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import {
-  useInProgressSet,
   friendlyError,
   type FetchError,
 } from "@/ui/hooks/use-admin-fetch";
+import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
   BookOpen,
@@ -124,7 +124,6 @@ export default function PromptsPage() {
   const [formName, setFormName] = useState("");
   const [formIndustry, setFormIndustry] = useState("");
   const [formDescription, setFormDescription] = useState("");
-  const [formSubmitting, setFormSubmitting] = useState(false);
 
   // Delete confirmation
   const [deleteTarget, setDeleteTarget] = useState<PromptCollection | null>(
@@ -134,14 +133,22 @@ export default function PromptsPage() {
   // Add item form
   const [addItemQuestion, setAddItemQuestion] = useState("");
   const [addItemDescription, setAddItemDescription] = useState("");
-  const [addingItem, setAddingItem] = useState(false);
 
   // Delete item confirmation
   const [deleteItemTarget, setDeleteItemTarget] = useState<PromptItem | null>(
     null,
   );
 
-  const inProgress = useInProgressSet();
+  // Mutation hooks
+  const collectionMutation = useAdminMutation<PromptCollection>({
+    invalidates: () => setFetchKey((k) => k + 1),
+  });
+  const deleteCollectionMutation = useAdminMutation({
+    method: "DELETE",
+    invalidates: () => setFetchKey((k) => k + 1),
+  });
+  const addItemMutation = useAdminMutation<PromptItem>({ method: "POST" });
+  const deleteItemMutation = useAdminMutation({ method: "DELETE" });
 
   // -- Fetch collections ------------------------------------------------------
 
@@ -301,179 +308,79 @@ export default function PromptsPage() {
   }
 
   async function submitCollectionForm() {
-    setFormSubmitting(true);
-    setError(null);
+    const isEdit = collectionDialog.mode === "edit";
+    const path = isEdit
+      ? `/api/v1/admin/prompts/${collectionDialog.collection!.id}`
+      : `/api/v1/admin/prompts`;
 
-    try {
-      const isEdit = collectionDialog.mode === "edit";
-      const url = isEdit
-        ? `${apiUrl}/api/v1/admin/prompts/${collectionDialog.collection!.id}`
-        : `${apiUrl}/api/v1/admin/prompts`;
-
-      const res = await fetch(url, {
-        method: isEdit ? "PATCH" : "POST",
-        credentials,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: formName,
-          industry: formIndustry,
-          description: formDescription,
-        }),
-      });
-
-      if (!res.ok) {
-        let msg = `HTTP ${res.status}`;
-        try {
-          msg = (await res.json()).message ?? msg;
-        } catch {
-          /* intentionally ignored: response may not be JSON */
+    await collectionMutation.mutate({
+      path,
+      method: isEdit ? "PATCH" : "POST",
+      body: {
+        name: formName,
+        industry: formIndustry,
+        description: formDescription,
+      },
+      onSuccess: (updated) => {
+        // Update detail if viewing this collection
+        if (detailCollection?.id === updated.id) {
+          setDetailCollection(updated);
         }
-        setError({ message: msg, status: res.status });
-        return;
-      }
-
-      const updated: PromptCollection = await res.json();
-
-      // Update detail if viewing this collection
-      if (detailCollection?.id === updated.id) {
-        setDetailCollection(updated);
-      }
-
-      setCollectionDialog({ open: false, mode: "create" });
-      setFetchKey((k) => k + 1);
-    } catch (err) {
-      setError({
-        message:
-          err instanceof Error ? err.message : "Failed to save collection",
-      });
-    } finally {
-      setFormSubmitting(false);
-    }
+        setCollectionDialog({ open: false, mode: "create" });
+      },
+    });
   }
 
   async function deleteCollection(id: string) {
-    setError(null);
-    inProgress.start(id);
-    try {
-      const res = await fetch(`${apiUrl}/api/v1/admin/prompts/${id}`, {
-        method: "DELETE",
-        credentials,
-      });
-      if (!res.ok) {
-        let msg = `HTTP ${res.status}`;
-        try {
-          msg = (await res.json()).message ?? msg;
-        } catch {
-          /* intentionally ignored: response may not be JSON */
-        }
-        setError({ message: msg, status: res.status });
-        setDeleteTarget(null);
-        return;
-      }
-      setDeleteTarget(null);
-      if (detailCollection?.id === id) setDetailCollection(null);
-      setFetchKey((k) => k + 1);
-    } catch (err) {
-      setError({
-        message:
-          err instanceof Error ? err.message : "Failed to delete collection",
-      });
-      setDeleteTarget(null);
-    } finally {
-      inProgress.stop(id);
-    }
+    await deleteCollectionMutation.mutate({
+      path: `/api/v1/admin/prompts/${id}`,
+      itemId: id,
+      onSuccess: () => {
+        if (detailCollection?.id === id) setDetailCollection(null);
+      },
+    });
+    setDeleteTarget(null);
   }
 
   async function addItem() {
     if (!detailCollection || !addItemQuestion.trim()) return;
-    setAddingItem(true);
-    setError(null);
 
-    try {
-      const res = await fetch(
-        `${apiUrl}/api/v1/admin/prompts/${detailCollection.id}/items`,
-        {
-          method: "POST",
-          credentials,
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            question: addItemQuestion.trim(),
-            description: addItemDescription.trim() || null,
-          }),
-        },
-      );
-
-      if (!res.ok) {
-        let msg = `HTTP ${res.status}`;
-        try {
-          msg = (await res.json()).message ?? msg;
-        } catch {
-          /* intentionally ignored: response may not be JSON */
-        }
-        setError({ message: msg, status: res.status });
-        return;
-      }
-
-      const newItem: PromptItem = await res.json();
-      setDetailItems((prev) => [...prev, newItem]);
-      setItemCounts((prev) => {
-        const next = new Map(prev);
-        next.set(detailCollection.id, (next.get(detailCollection.id) ?? 0) + 1);
-        return next;
-      });
-      setAddItemQuestion("");
-      setAddItemDescription("");
-    } catch (err) {
-      setError({
-        message: err instanceof Error ? err.message : "Failed to add item",
-      });
-    } finally {
-      setAddingItem(false);
-    }
+    await addItemMutation.mutate({
+      path: `/api/v1/admin/prompts/${detailCollection.id}/items`,
+      body: {
+        question: addItemQuestion.trim(),
+        description: addItemDescription.trim() || null,
+      },
+      onSuccess: (newItem) => {
+        setDetailItems((prev) => [...prev, newItem]);
+        setItemCounts((prev) => {
+          const next = new Map(prev);
+          next.set(detailCollection.id, (next.get(detailCollection.id) ?? 0) + 1);
+          return next;
+        });
+        setAddItemQuestion("");
+        setAddItemDescription("");
+      },
+    });
   }
 
   async function deleteItem(item: PromptItem) {
     if (!detailCollection) return;
-    setError(null);
-    inProgress.start(item.id);
 
-    try {
-      const res = await fetch(
-        `${apiUrl}/api/v1/admin/prompts/${detailCollection.id}/items/${item.id}`,
-        {
-          method: "DELETE",
-          credentials,
-        },
-      );
-
-      if (!res.ok) {
-        let msg = `HTTP ${res.status}`;
-        try {
-          msg = (await res.json()).message ?? msg;
-        } catch {
-          /* intentionally ignored: response may not be JSON */
-        }
-        setError({ message: msg, status: res.status });
-        setDeleteItemTarget(null);
-        return;
-      }
-
-      setDeleteItemTarget(null);
-      setDetailItems((prev) => prev.filter((i) => i.id !== item.id));
-      setItemCounts((prev) => {
-        const next = new Map(prev);
-        const current = next.get(detailCollection.id) ?? 1;
-        next.set(detailCollection.id, Math.max(0, current - 1));
-        return next;
-      });
-    } catch (err) {
-      setError({
-        message: err instanceof Error ? err.message : "Failed to delete item",
-      });
-      setDeleteItemTarget(null);
-    } finally {
-      inProgress.stop(item.id);
-    }
+    await deleteItemMutation.mutate({
+      path: `/api/v1/admin/prompts/${detailCollection.id}/items/${item.id}`,
+      itemId: item.id,
+      onSuccess: () => {
+        setDetailItems((prev) => prev.filter((i) => i.id !== item.id));
+        setItemCounts((prev) => {
+          const next = new Map(prev);
+          const current = next.get(detailCollection.id) ?? 1;
+          next.set(detailCollection.id, Math.max(0, current - 1));
+          return next;
+        });
+      },
+    });
+    setDeleteItemTarget(null);
   }
 
   // -- Column definitions with actions ----------------------------------------
@@ -486,7 +393,7 @@ export default function PromptsPage() {
       cell: ({ row }) => {
         const collection = row.original;
         if (collection.isBuiltin) return null;
-        const busy = inProgress.has(collection.id);
+        const busy = deleteCollectionMutation.isMutating(collection.id);
         return (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -655,6 +562,10 @@ export default function PromptsPage() {
           </div>
 
           {/* Content */}
+          {collectionMutation.error && <ErrorBanner message={collectionMutation.error} onRetry={collectionMutation.clearError} />}
+          {deleteCollectionMutation.error && <ErrorBanner message={deleteCollectionMutation.error} onRetry={deleteCollectionMutation.clearError} />}
+          {addItemMutation.error && <ErrorBanner message={addItemMutation.error} onRetry={addItemMutation.clearError} />}
+          {deleteItemMutation.error && <ErrorBanner message={deleteItemMutation.error} onRetry={deleteItemMutation.clearError} />}
           {error &&
           (!error.status || ![401, 403, 404].includes(error.status)) ? (
             <ErrorBanner
@@ -805,7 +716,7 @@ export default function PromptsPage() {
                               size="sm"
                               className="size-7 p-0 opacity-0 group-hover:opacity-100 shrink-0"
                               onClick={() => setDeleteItemTarget(item)}
-                              disabled={inProgress.has(item.id)}
+                              disabled={deleteItemMutation.isMutating(item.id)}
                             >
                               <Trash2 className="size-3.5 text-destructive" />
                             </Button>
@@ -834,7 +745,7 @@ export default function PromptsPage() {
                       <Button
                         size="sm"
                         onClick={addItem}
-                        disabled={addingItem || !addItemQuestion.trim()}
+                        disabled={addItemMutation.saving || !addItemQuestion.trim()}
                       >
                         <Plus className="mr-1.5 size-3.5" />
                         Add
@@ -862,7 +773,7 @@ export default function PromptsPage() {
                         setDetailCollection(null);
                         setDeleteTarget(detailCollection);
                       }}
-                      disabled={inProgress.has(detailCollection.id)}
+                      disabled={deleteCollectionMutation.isMutating(detailCollection.id)}
                     >
                       <Trash2 className="mr-1.5 size-3.5" />
                       Delete
@@ -947,9 +858,9 @@ export default function PromptsPage() {
             </Button>
             <Button
               onClick={submitCollectionForm}
-              disabled={formSubmitting || !formName.trim() || !formIndustry}
+              disabled={collectionMutation.saving || !formName.trim() || !formIndustry}
             >
-              {formSubmitting
+              {collectionMutation.saving
                 ? "Saving..."
                 : collectionDialog.mode === "edit"
                   ? "Save Changes"

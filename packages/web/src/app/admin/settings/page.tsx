@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { useAtlasConfig } from "@/ui/context";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -27,6 +26,7 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { Settings, Pencil, RotateCcw, Loader2, Info, Lock, RefreshCw, Palette } from "lucide-react";
 import { DEFAULT_BRAND_COLOR, OKLCH_RE, applyBrandColor } from "@/ui/hooks/use-dark-mode";
@@ -84,51 +84,34 @@ function EditDialog({
   open,
   onOpenChange,
   onSaved,
-  apiUrl,
-  credentials,
 }: {
   setting: SettingWithValue;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSaved: () => void;
-  apiUrl: string;
-  credentials: RequestCredentials;
 }) {
   const [value, setValue] = useState(setting.currentValue ?? "");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+
+  const { mutate, saving, error, reset } = useAdminMutation({
+    method: "PUT",
+    invalidates: onSaved,
+  });
 
   function handleOpen(next: boolean) {
     if (next) {
       setValue(setting.currentValue ?? setting.default ?? "");
-      setError(null);
+      reset();
     }
     onOpenChange(next);
   }
 
   async function handleSave() {
-    setSaving(true);
-    setError(null);
-    try {
-      const res = await fetch(
-        `${apiUrl}/api/v1/admin/settings/${encodeURIComponent(setting.key)}`,
-        {
-          method: "PUT",
-          credentials,
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ value }),
-        },
-      );
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        throw new Error(data?.message ?? `HTTP ${res.status}`);
-      }
-      onSaved();
+    const result = await mutate({
+      path: `/api/v1/admin/settings/${encodeURIComponent(setting.key)}`,
+      body: { value },
+    });
+    if (result !== undefined) {
       onOpenChange(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save");
-    } finally {
-      setSaving(false);
     }
   }
 
@@ -279,21 +262,20 @@ function SettingRow({
 function BrandColorCard({
   setting,
   manageable,
-  apiUrl,
-  credentials,
   onSaved,
 }: {
   setting: SettingWithValue | undefined;
   manageable: boolean;
-  apiUrl: string;
-  credentials: RequestCredentials;
   onSaved: () => void;
 }) {
   const currentValue = setting?.currentValue ?? DEFAULT_BRAND_COLOR;
   const [value, setValue] = useState(currentValue);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const isValidOklch = OKLCH_RE.test(value.trim());
+
+  const { mutate, saving, error } = useAdminMutation({
+    path: `/api/v1/admin/settings/${encodeURIComponent("ATLAS_BRAND_COLOR")}`,
+    invalidates: onSaved,
+  });
 
   // Sync local state when API data changes
   const settingValue = setting?.currentValue;
@@ -304,50 +286,20 @@ function BrandColorCard({
   }
 
   async function handleSave() {
-    setSaving(true);
-    setError(null);
-    try {
-      const res = await fetch(
-        `${apiUrl}/api/v1/admin/settings/${encodeURIComponent("ATLAS_BRAND_COLOR")}`,
-        {
-          method: "PUT",
-          credentials,
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ value }),
-        },
-      );
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        throw new Error(data?.message ?? `HTTP ${res.status}`);
-      }
+    const result = await mutate({
+      method: "PUT",
+      body: { value },
+    });
+    if (result !== undefined) {
       applyBrandColor(value);
-      onSaved();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save");
-    } finally {
-      setSaving(false);
     }
   }
 
   async function handleReset() {
-    setSaving(true);
-    setError(null);
-    try {
-      const res = await fetch(
-        `${apiUrl}/api/v1/admin/settings/${encodeURIComponent("ATLAS_BRAND_COLOR")}`,
-        { method: "DELETE", credentials },
-      );
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        throw new Error(data?.message ?? `HTTP ${res.status}`);
-      }
+    const result = await mutate({ method: "DELETE" });
+    if (result !== undefined) {
       setValue(DEFAULT_BRAND_COLOR);
       applyBrandColor(DEFAULT_BRAND_COLOR);
-      onSaved();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to reset");
-    } finally {
-      setSaving(false);
     }
   }
 
@@ -426,11 +378,7 @@ function BrandColorCard({
 // ── Main Page ─────────────────────────────────────────────────────
 
 export default function SettingsPage() {
-  const { apiUrl, isCrossOrigin } = useAtlasConfig();
-  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
   const [editSetting, setEditSetting] = useState<SettingWithValue | null>(null);
-  const [resettingKey, setResettingKey] = useState<string | null>(null);
-  const [mutationError, setMutationError] = useState<string | null>(null);
 
   const { data, loading, error, refetch } = useAdminFetch<SettingsResponse>(
     "/api/v1/admin/settings",
@@ -438,6 +386,12 @@ export default function SettingsPage() {
       transform: (json) => json as SettingsResponse,
     },
   );
+
+  const { mutate: resetSetting, error: mutationError, clearError: clearMutationError, isMutating } =
+    useAdminMutation({
+      method: "DELETE",
+      invalidates: refetch,
+    });
 
   const settings = data?.settings ?? [];
   const manageable = data?.manageable ?? false;
@@ -466,23 +420,10 @@ export default function SettingsPage() {
   }
 
   async function handleReset(key: string) {
-    setResettingKey(key);
-    setMutationError(null);
-    try {
-      const res = await fetch(
-        `${apiUrl}/api/v1/admin/settings/${encodeURIComponent(key)}`,
-        { method: "DELETE", credentials },
-      );
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        throw new Error(data?.message ?? `HTTP ${res.status}`);
-      }
-      await refetch();
-    } catch (err) {
-      setMutationError(err instanceof Error ? err.message : "Failed to reset setting");
-    } finally {
-      setResettingKey(null);
-    }
+    await resetSetting({
+      path: `/api/v1/admin/settings/${encodeURIComponent(key)}`,
+      itemId: key,
+    });
   }
 
   return (
@@ -498,7 +439,7 @@ export default function SettingsPage() {
       <div className="flex-1 overflow-auto p-6">
         {error && <ErrorBanner message={friendlyError(error)} onRetry={refetch} />}
         {mutationError && (
-          <ErrorBanner message={mutationError} onRetry={() => setMutationError(null)} />
+          <ErrorBanner message={mutationError} onRetry={clearMutationError} />
         )}
 
         {!manageable && !loading && !error && (
@@ -532,8 +473,6 @@ export default function SettingsPage() {
             <BrandColorCard
               setting={brandColorSetting}
               manageable={manageable}
-              apiUrl={apiUrl}
-              credentials={credentials}
               onSaved={refetch}
             />
             {Array.from(sections.entries()).map(([section, items]) => (
@@ -555,7 +494,7 @@ export default function SettingsPage() {
                         manageable={manageable}
                         onEdit={() => setEditSetting(setting)}
                         onReset={() => handleReset(setting.key)}
-                        resetting={resettingKey === setting.key}
+                        resetting={isMutating(setting.key)}
                       />
                     </div>
                   ))}
@@ -578,8 +517,6 @@ export default function SettingsPage() {
           open={!!editSetting}
           onOpenChange={(open) => !open && setEditSetting(null)}
           onSaved={refetch}
-          apiUrl={apiUrl}
-          credentials={credentials}
         />
       )}
     </div>

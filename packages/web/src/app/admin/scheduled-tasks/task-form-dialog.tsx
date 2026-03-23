@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useAtlasConfig } from "@/ui/context";
+import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import {
   Dialog,
   DialogContent,
@@ -146,8 +148,6 @@ interface TaskFormDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   task: ScheduledTask | null; // null = create mode
-  apiUrl: string;
-  credentials: RequestCredentials;
   onSuccess: () => void;
 }
 
@@ -155,22 +155,27 @@ export function TaskFormDialog({
   open,
   onOpenChange,
   task,
-  apiUrl,
-  credentials,
   onSuccess,
 }: TaskFormDialogProps) {
+  const { apiUrl, isCrossOrigin } = useAtlasConfig();
+  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
+
   const isEdit = task !== null;
   const [form, setForm] = useState<FormState>(defaultFormState);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [validationError, setValidationError] = useState<string | null>(null);
   const [connections, setConnections] = useState<ConnectionInfo[]>([]);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+
+  const submitMutation = useAdminMutation({
+    invalidates: onSuccess,
+  });
 
   // Reset form when dialog opens
   useEffect(() => {
     if (open) {
       setForm(task ? formStateFromTask(task) : defaultFormState());
-      setError(null);
+      setValidationError(null);
+      submitMutation.reset();
     }
   }, [open, task]);
 
@@ -285,20 +290,21 @@ export function TaskFormDialog({
   }
 
   async function handleSubmit() {
-    setError(null);
+    setValidationError(null);
+    submitMutation.clearError();
 
     // Validate
-    if (!form.name.trim()) { setError("Name is required"); return; }
-    if (!form.question.trim()) { setError("Question is required"); return; }
-    if (!form.cronExpression.trim()) { setError("Cron expression is required"); return; }
-    if (!isValidCron(form.cronExpression)) { setError("Invalid cron expression format"); return; }
+    if (!form.name.trim()) { setValidationError("Name is required"); return; }
+    if (!form.question.trim()) { setValidationError("Question is required"); return; }
+    if (!form.cronExpression.trim()) { setValidationError("Cron expression is required"); return; }
+    if (!isValidCron(form.cronExpression)) { setValidationError("Invalid cron expression format"); return; }
 
     const recipients = buildRecipients();
     if (recipients.length === 0) {
       switch (form.deliveryChannel) {
-        case "email": setError("At least one email recipient is required"); break;
-        case "slack": setError("Slack channel is required"); break;
-        case "webhook": setError("Webhook URL is required"); break;
+        case "email": setValidationError("At least one email recipient is required"); break;
+        case "slack": setValidationError("Slack channel is required"); break;
+        case "webhook": setValidationError("Webhook URL is required"); break;
       }
       return;
     }
@@ -314,30 +320,16 @@ export function TaskFormDialog({
       ...(isEdit ? { enabled: form.enabled } : {}),
     };
 
-    setSubmitting(true);
-    try {
-      const url = task
-        ? `${apiUrl}/api/v1/scheduled-tasks/${encodeURIComponent(task.id)}`
-        : `${apiUrl}/api/v1/scheduled-tasks`;
-      const res = await fetch(url, {
-        credentials,
-        method: task ? "PUT" : "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        const msg = data?.message ?? `HTTP ${res.status}`;
-        setError(msg);
-        return;
-      }
-      onSuccess();
-      onOpenChange(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Request failed");
-    } finally {
-      setSubmitting(false);
-    }
+    const path = task
+      ? `/api/v1/scheduled-tasks/${encodeURIComponent(task.id)}`
+      : `/api/v1/scheduled-tasks`;
+
+    await submitMutation.mutate({
+      path,
+      method: task ? "PUT" : "POST",
+      body: body as Record<string, unknown>,
+      onSuccess: () => onOpenChange(false),
+    });
   }
 
   // ── Cron preview ────────────────────────────────────────────────────
@@ -604,16 +596,16 @@ export function TaskFormDialog({
           )}
         </div>
 
-        {error && (
-          <p className="text-sm text-destructive">{error}</p>
+        {(validationError || submitMutation.error) && (
+          <p className="text-sm text-destructive">{validationError || submitMutation.error}</p>
         )}
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitMutation.saving}>
             Cancel
           </Button>
-          <Button onClick={handleSubmit} disabled={submitting}>
-            {submitting && <Loader2 className="mr-2 size-4 animate-spin" />}
+          <Button onClick={handleSubmit} disabled={submitMutation.saving}>
+            {submitMutation.saving && <Loader2 className="mr-2 size-4 animate-spin" />}
             {isEdit ? "Save" : "Create"}
           </Button>
         </DialogFooter>

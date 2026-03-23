@@ -58,10 +58,10 @@ import { LoadingState } from "@/ui/components/admin/loading-state";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import {
   useAdminFetch,
-  useInProgressSet,
   friendlyError,
   type FetchError,
 } from "@/ui/hooks/use-admin-fetch";
+import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
   Users,
@@ -114,16 +114,28 @@ export default function UsersPage() {
   // Local search input — pushed to URL on Enter/Apply
   const [searchInput, setSearchInput] = useState(params.search);
 
-  const busy = useInProgressSet();
+  // Admin action mutation (role change, ban, unban, revoke, delete)
+  const adminAction = useAdminMutation({
+    invalidates: () => setParams((p) => ({ ...p })),
+  });
 
   // -- Invite dialog state --
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState<string>("member");
-  const [inviteLoading, setInviteLoading] = useState(false);
-  const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteResult, setInviteResult] = useState<{ inviteUrl: string; emailSent: boolean; emailError?: string } | null>(null);
   const [copied, setCopied] = useState(false);
+
+  // Invite mutation
+  const invite = useAdminMutation<{ inviteUrl: string; emailSent: boolean; emailError?: string }>({
+    path: "/api/v1/admin/users/invite",
+    method: "POST",
+  });
+
+  // Revoke invitation mutation
+  const revokeInvitation = useAdminMutation({
+    method: "DELETE",
+  });
 
   // -- Invitations list --
   const [invitations, setInvitations] = useState<Invitation[]>([]);
@@ -318,53 +330,46 @@ export default function UsersPage() {
     setParams({ search: searchInput, page: 1 });
   }
 
-  async function adminAction(
-    userId: string,
-    path: string,
-    method: string,
-    body?: Record<string, unknown>,
-  ) {
-    busy.start(userId);
-    try {
-      const res = await fetch(`${apiUrl}/api/v1/admin/users/${userId}${path}`, {
-        method,
-        credentials,
-        headers: body ? { "Content-Type": "application/json" } : undefined,
-        body: body ? JSON.stringify(body) : undefined,
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        setError({ message: data.message ?? `Action failed (HTTP ${res.status})`, status: res.status });
-        return;
-      }
-      // Refresh the list
-      setParams((p) => ({ ...p }));
-    } catch (err) {
-      setError({ message: err instanceof Error ? err.message : "Action failed" });
-    } finally {
-      busy.stop(userId);
-    }
-  }
-
   async function handleRoleChange(userId: string, newRole: string) {
-    await adminAction(userId, "/role", "PATCH", { role: newRole });
+    await adminAction.mutate({
+      path: `/api/v1/admin/users/${userId}/role`,
+      method: "PATCH",
+      body: { role: newRole },
+      itemId: userId,
+    });
   }
 
   async function handleBan(user: User) {
-    await adminAction(user.id, "/ban", "POST");
+    await adminAction.mutate({
+      path: `/api/v1/admin/users/${user.id}/ban`,
+      method: "POST",
+      itemId: user.id,
+    });
     setConfirmAction(null);
   }
 
   async function handleUnban(userId: string) {
-    await adminAction(userId, "/unban", "POST");
+    await adminAction.mutate({
+      path: `/api/v1/admin/users/${userId}/unban`,
+      method: "POST",
+      itemId: userId,
+    });
   }
 
   async function handleRevoke(userId: string) {
-    await adminAction(userId, "/revoke", "POST");
+    await adminAction.mutate({
+      path: `/api/v1/admin/users/${userId}/revoke`,
+      method: "POST",
+      itemId: userId,
+    });
   }
 
   async function handleDelete(user: User) {
-    await adminAction(user.id, "", "DELETE");
+    await adminAction.mutate({
+      path: `/api/v1/admin/users/${user.id}`,
+      method: "DELETE",
+      itemId: user.id,
+    });
     setConfirmAction(null);
   }
 
@@ -373,34 +378,19 @@ export default function UsersPage() {
   function resetInviteDialog() {
     setInviteEmail("");
     setInviteRole("member");
-    setInviteError(null);
+    invite.reset();
     setInviteResult(null);
-    setInviteLoading(false);
     setCopied(false);
   }
 
   async function handleInvite() {
-    setInviteLoading(true);
-    setInviteError(null);
-    try {
-      const res = await fetch(`${apiUrl}/api/v1/admin/users/invite`, {
-        method: "POST",
-        credentials,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: inviteEmail, role: inviteRole }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setInviteError(data.message ?? `Failed (HTTP ${res.status})`);
-        return;
-      }
-      setInviteResult({ inviteUrl: data.inviteUrl, emailSent: data.emailSent, emailError: data.emailError });
-      setInvitationsVersion((v) => v + 1);
-    } catch (err) {
-      setInviteError(err instanceof Error ? err.message : "Failed to send invitation");
-    } finally {
-      setInviteLoading(false);
-    }
+    await invite.mutate({
+      body: { email: inviteEmail, role: inviteRole },
+      onSuccess: (data) => {
+        setInviteResult({ inviteUrl: data.inviteUrl, emailSent: data.emailSent, emailError: data.emailError });
+        setInvitationsVersion((v) => v + 1);
+      },
+    });
   }
 
   async function handleCopyLink(url: string) {
@@ -409,25 +399,15 @@ export default function UsersPage() {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      setInviteError("Could not copy to clipboard. Please select and copy the link manually.");
+      // intentionally ignored: clipboard API not available — user can select and copy manually
     }
   }
 
   async function handleRevokeInvitation(id: string) {
-    try {
-      const res = await fetch(`${apiUrl}/api/v1/admin/users/invitations/${id}`, {
-        method: "DELETE",
-        credentials,
-      });
-      if (res.ok) {
-        setInvitationsVersion((v) => v + 1);
-      } else {
-        const data = await res.json().catch(() => ({}));
-        setError({ message: data.message ?? `Failed to revoke invitation (HTTP ${res.status})`, status: res.status });
-      }
-    } catch (err) {
-      setError({ message: err instanceof Error ? err.message : "Failed to revoke invitation" });
-    }
+    await revokeInvitation.mutate({
+      path: `/api/v1/admin/users/invitations/${id}`,
+      onSuccess: () => setInvitationsVersion((v) => v + 1),
+    });
   }
 
   // Gate: 401/403/404
@@ -535,6 +515,8 @@ export default function UsersPage() {
         </div>
 
         {/* Content */}
+        {adminAction.error && <ErrorBanner message={adminAction.error} onRetry={adminAction.clearError} />}
+        {revokeInvitation.error && <ErrorBanner message={revokeInvitation.error} onRetry={revokeInvitation.clearError} />}
         {error && error.status !== 401 && error.status !== 403 && error.status !== 404 ? (
           <ErrorBanner message={friendlyError(error)} onRetry={() => setParams({ page: 1 })} />
         ) : loading ? (
@@ -669,13 +651,13 @@ export default function UsersPage() {
                   </SelectContent>
                 </Select>
               </div>
-              {inviteError && (
-                <p className="text-sm text-destructive">{inviteError}</p>
+              {invite.error && (
+                <p className="text-sm text-destructive">{invite.error}</p>
               )}
               <DialogFooter>
                 <Button variant="outline" onClick={() => setInviteOpen(false)}>Cancel</Button>
-                <Button onClick={handleInvite} disabled={inviteLoading || !inviteEmail}>
-                  {inviteLoading ? "Sending..." : "Send invitation"}
+                <Button onClick={handleInvite} disabled={invite.saving || !inviteEmail}>
+                  {invite.saving ? "Sending..." : "Send invitation"}
                 </Button>
               </DialogFooter>
             </div>

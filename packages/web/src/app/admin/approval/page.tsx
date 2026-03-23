@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { useAtlasConfig } from "@/ui/context";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -29,6 +28,7 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
   ShieldAlert,
@@ -82,25 +82,18 @@ export default function ApprovalWorkflowsPage() {
 }
 
 function ApprovalPageContent() {
-  const { apiUrl, isCrossOrigin } = useAtlasConfig();
-  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
-
   // Rule form state
   const [ruleName, setRuleName] = useState("");
   const [ruleType, setRuleType] = useState<ApprovalRuleType>("table");
   const [rulePattern, setRulePattern] = useState("");
   const [ruleThreshold, setRuleThreshold] = useState("");
-  const [creatingRule, setCreatingRule] = useState(false);
   const [showCreateForm, setShowCreateForm] = useState(false);
 
   // Review state — per-request comments to avoid cross-contamination
   const [reviewComments, setReviewComments] = useState<Record<string, string>>({});
-  const [reviewingId, setReviewingId] = useState<string | null>(null);
 
   // Queue filter
   const [statusFilter, setStatusFilter] = useState<string>("all");
-
-  const [mutationError, setMutationError] = useState<string | null>(null);
 
   // Fetch rules
   const { data: rulesData, loading: rulesLoading, error: rulesError, refetch: refetchRules } =
@@ -118,6 +111,41 @@ function ApprovalPageContent() {
       deps: [statusFilter],
     });
 
+  // Mutation hooks
+  const { mutate: createRule, saving: creatingRule, error: createError, clearError: clearCreateError } =
+    useAdminMutation({
+      path: "/api/v1/admin/approval/rules",
+      method: "POST",
+      invalidates: refetchRules,
+    });
+
+  const { mutate: toggleRule, error: toggleError, clearError: clearToggleError } =
+    useAdminMutation({
+      method: "PUT",
+      invalidates: refetchRules,
+    });
+
+  const { mutate: deleteRule, error: deleteError, clearError: clearDeleteError } =
+    useAdminMutation({
+      method: "DELETE",
+      invalidates: refetchRules,
+    });
+
+  const { mutate: reviewRequest, error: reviewError, clearError: clearReviewError, isMutating: isReviewing } =
+    useAdminMutation({
+      method: "POST",
+      invalidates: refetchQueue,
+    });
+
+  const mutationError = createError ?? toggleError ?? deleteError ?? reviewError;
+
+  function clearMutationError() {
+    clearCreateError();
+    clearToggleError();
+    clearDeleteError();
+    clearReviewError();
+  }
+
   // Gate on auth/feature errors
   const gateError = rulesError ?? queueError;
   if (gateError && (gateError.status === 401 || gateError.status === 403 || gateError.status === 404)) {
@@ -126,96 +154,47 @@ function ApprovalPageContent() {
 
   // Create rule handler
   async function handleCreateRule() {
-    setMutationError(null);
-    setCreatingRule(true);
-    try {
-      const res = await fetch(`${apiUrl}/api/v1/admin/approval/rules`, {
-        method: "POST",
-        credentials,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: ruleName,
-          ruleType,
-          pattern: rulePattern,
-          threshold: ruleType === "cost" ? Number(ruleThreshold) : null,
-          enabled: true,
-        }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({})) as Record<string, unknown>;
-        throw new Error(typeof body.message === "string" ? body.message : `HTTP ${res.status}`);
-      }
+    const result = await createRule({
+      body: {
+        name: ruleName,
+        ruleType,
+        pattern: rulePattern,
+        threshold: ruleType === "cost" ? Number(ruleThreshold) : null,
+        enabled: true,
+      },
+    });
+    if (result !== undefined) {
       setRuleName("");
       setRulePattern("");
       setRuleThreshold("");
       setShowCreateForm(false);
-      refetchRules();
-    } catch (err) {
-      setMutationError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setCreatingRule(false);
     }
   }
 
   // Toggle rule enabled
   async function handleToggleRule(rule: ApprovalRule) {
-    setMutationError(null);
-    try {
-      const res = await fetch(`${apiUrl}/api/v1/admin/approval/rules/${rule.id}`, {
-        method: "PUT",
-        credentials,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled: !rule.enabled }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({})) as Record<string, unknown>;
-        throw new Error(typeof body.message === "string" ? body.message : `HTTP ${res.status}`);
-      }
-      refetchRules();
-    } catch (err) {
-      setMutationError(err instanceof Error ? err.message : String(err));
-    }
+    await toggleRule({
+      path: `/api/v1/admin/approval/rules/${rule.id}`,
+      body: { enabled: !rule.enabled },
+    });
   }
 
   // Delete rule
   async function handleDeleteRule(ruleId: string) {
-    setMutationError(null);
-    try {
-      const res = await fetch(`${apiUrl}/api/v1/admin/approval/rules/${ruleId}`, {
-        method: "DELETE",
-        credentials,
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({})) as Record<string, unknown>;
-        throw new Error(typeof body.message === "string" ? body.message : `HTTP ${res.status}`);
-      }
-      refetchRules();
-    } catch (err) {
-      setMutationError(err instanceof Error ? err.message : String(err));
-    }
+    await deleteRule({
+      path: `/api/v1/admin/approval/rules/${ruleId}`,
+    });
   }
 
   // Review approval request
   async function handleReview(requestId: string, action: "approve" | "deny") {
-    setMutationError(null);
-    setReviewingId(requestId);
-    try {
-      const res = await fetch(`${apiUrl}/api/v1/admin/approval/queue/${requestId}`, {
-        method: "POST",
-        credentials,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, comment: reviewComments[requestId] || undefined }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({})) as Record<string, unknown>;
-        throw new Error(typeof body.message === "string" ? body.message : `HTTP ${res.status}`);
-      }
+    const result = await reviewRequest({
+      path: `/api/v1/admin/approval/queue/${requestId}`,
+      body: { action, comment: reviewComments[requestId] || undefined },
+      itemId: requestId,
+    });
+    if (result !== undefined) {
       setReviewComments((prev) => { const next = { ...prev }; delete next[requestId]; return next; });
-      refetchQueue();
-    } catch (err) {
-      setMutationError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setReviewingId(null);
     }
   }
 
@@ -233,7 +212,7 @@ function ApprovalPageContent() {
         </p>
       </div>
 
-      {mutationError && <ErrorBanner message={mutationError} onRetry={() => setMutationError(null)} />}
+      {mutationError && <ErrorBanner message={mutationError} onRetry={clearMutationError} />}
       {rulesError && !gateError && <ErrorBanner message={friendlyError(rulesError)} />}
       {queueError && !gateError && <ErrorBanner message={friendlyError(queueError)} />}
 
@@ -476,9 +455,9 @@ function ApprovalPageContent() {
                             <Button
                               size="sm"
                               onClick={() => handleReview(req.id, "approve")}
-                              disabled={reviewingId === req.id && reviewingId !== null}
+                              disabled={isReviewing(req.id)}
                             >
-                              {reviewingId === req.id ? (
+                              {isReviewing(req.id) ? (
                                 <Loader2 className="mr-1 size-4 animate-spin" />
                               ) : (
                                 <CheckCircle2 className="mr-1 size-4" />
@@ -489,7 +468,7 @@ function ApprovalPageContent() {
                               size="sm"
                               variant="destructive"
                               onClick={() => handleReview(req.id, "deny")}
-                              disabled={reviewingId === req.id && reviewingId !== null}
+                              disabled={isReviewing(req.id)}
                             >
                               <XCircle className="mr-1 size-4" />
                               Deny

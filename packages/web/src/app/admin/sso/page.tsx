@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useAtlasConfig } from "@/ui/context";
+import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
@@ -49,11 +49,7 @@ interface EnforcementResponse {
 // ── Main Page ─────────────────────────────────────────────────────
 
 export default function SSOPage() {
-  const { apiUrl, isCrossOrigin } = useAtlasConfig();
-  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
   const [confirmEnforce, setConfirmEnforce] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [mutationError, setMutationError] = useState<string | null>(null);
 
   const { data: providersData, loading: providersLoading, error: providersError, refetch: refetchProviders } =
     useAdminFetch<ProvidersResponse>("/api/v1/admin/sso/providers", {
@@ -64,6 +60,12 @@ export default function SSOPage() {
     useAdminFetch<EnforcementResponse>("/api/v1/admin/sso/enforcement", {
       transform: (json) => json as EnforcementResponse,
     });
+
+  const { mutate, saving, error: mutationError, clearError: clearMutationError } = useAdminMutation({
+    path: "/api/v1/admin/sso/enforcement",
+    method: "PUT",
+    invalidates: [refetchProviders, refetchEnforcement],
+  });
 
   const loading = providersLoading || enforcementLoading;
   const error = providersError ?? enforcementError;
@@ -93,28 +95,8 @@ export default function SSOPage() {
   }
 
   async function doSetEnforcement(value: boolean) {
-    setSaving(true);
-    setMutationError(null);
-    try {
-      const res = await fetch(`${apiUrl}/api/v1/admin/sso/enforcement`, {
-        method: "PUT",
-        credentials,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enforced: value }),
-      });
-      if (!res.ok) {
-        const data: unknown = await res.json().catch(() => null);
-        const msg = typeof data === "object" && data !== null && "message" in data
-          ? String((data as Record<string, unknown>).message)
-          : `HTTP ${res.status}`;
-        throw new Error(msg);
-      }
-      refetchEnforcement();
-      refetchProviders();
-    } catch (err) {
-      setMutationError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSaving(false);
+    const result = await mutate({ body: { enforced: value } });
+    if (result !== undefined) {
       setConfirmEnforce(false);
     }
   }
@@ -132,7 +114,7 @@ export default function SSOPage() {
         <div className="flex-1 overflow-auto p-6">
           {error && <ErrorBanner message={friendlyError(error)} onRetry={() => { refetchProviders(); refetchEnforcement(); }} />}
           {mutationError && (
-            <ErrorBanner message={mutationError} onRetry={() => setMutationError(null)} />
+            <ErrorBanner message={mutationError} onRetry={clearMutationError} />
           )}
 
           {loading ? (

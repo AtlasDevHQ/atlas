@@ -1,8 +1,9 @@
 "use client";
 
+import { useState } from "react";
 import dynamic from "next/dynamic";
 import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
-import { useAtlasConfig } from "@/ui/context";
+import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { useDarkMode } from "@/ui/hooks/use-dark-mode";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -28,7 +29,7 @@ import {
   ExternalLink,
   CreditCard,
 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 
 import type { DailyUsagePoint } from "./usage-chart";
 
@@ -88,14 +89,17 @@ function formatPeriod(start: string, end: string): string {
 
 export default function UsageDashboardPage() {
   const dark = useDarkMode();
-  const { apiUrl, isCrossOrigin } = useAtlasConfig();
-  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
-  const [portalLoading, setPortalLoading] = useState(false);
-  const [portalError, setPortalError] = useState<string | null>(null);
 
   const { data, loading, error, refetch } = useAdminFetch<UsageSummary>(
     "/api/v1/admin/usage/summary",
   );
+
+  const { mutate: portalMutate, saving: portalLoading, error: portalError } =
+    useAdminMutation<{ url?: string }>({
+      path: "/api/v1/billing/portal",
+      method: "POST",
+    });
+  const [portalUrlError, setPortalUrlError] = useState<string | null>(null);
 
   // Data table for user breakdown
   const columns = getUserUsageColumns();
@@ -117,31 +121,13 @@ export default function UsageDashboardPage() {
   }
 
   async function openBillingPortal() {
-    setPortalLoading(true);
-    setPortalError(null);
-    try {
-      const res = await fetch(`${apiUrl}/api/v1/billing/portal`, {
-        method: "POST",
-        credentials,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ returnUrl: window.location.href }),
-      });
-      if (!res.ok) {
-        setPortalError(`Failed to open billing portal (HTTP ${res.status}). Please try again.`);
-        return;
-      }
-      const json = (await res.json()) as { url?: string };
-      if (!json.url) {
-        setPortalError("Billing portal URL was not returned. Please contact support.");
-        return;
-      }
-      window.location.href = json.url;
-    } catch (err) {
-      setPortalError(
-        `Could not reach the billing service. ${err instanceof Error ? err.message : "Please try again."}`,
-      );
-    } finally {
-      setPortalLoading(false);
+    const result = await portalMutate({
+      body: { returnUrl: window.location.href },
+    });
+    if (result?.url) {
+      window.location.href = result.url;
+    } else if (result && !result.url) {
+      setPortalUrlError("Billing portal URL was not returned. Please contact support.");
     }
   }
 
@@ -175,7 +161,7 @@ export default function UsageDashboardPage() {
 
       <div className="flex-1 overflow-auto p-6 space-y-6">
         {/* Portal error */}
-        {portalError && <ErrorBanner message={portalError} onRetry={openBillingPortal} />}
+        {(portalError ?? portalUrlError) && <ErrorBanner message={(portalError ?? portalUrlError)!} onRetry={() => { setPortalUrlError(null); openBillingPortal(); }} />}
 
         {/* Error state */}
         {error && <ErrorBanner message={friendlyError(error)} onRetry={refetch} />}

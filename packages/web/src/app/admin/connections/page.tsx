@@ -41,7 +41,8 @@ import { getConnectionColumns } from "./columns";
 import { useDataTable } from "@/hooks/use-data-table";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Cable, Loader2, Plus, Pencil, Trash2, Eye, EyeOff, Activity, ChevronDown, ChevronUp, Droplets } from "lucide-react";
-import { useAdminFetch, useInProgressSet, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { useState, useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
@@ -60,10 +61,7 @@ interface ConnectionFormProps {
   onOpenChange: (open: boolean) => void;
   editId?: string | null;
   editDetail?: ConnectionDetail | null;
-  apiUrl: string;
-  credentials: RequestCredentials;
   onSuccess: () => void;
-  onError: (msg: string) => void;
 }
 
 function ConnectionFormDialog({
@@ -71,10 +69,7 @@ function ConnectionFormDialog({
   onOpenChange,
   editId,
   editDetail,
-  apiUrl,
-  credentials,
   onSuccess,
-  onError,
 }: ConnectionFormProps) {
   const isEdit = !!editId;
   const [id, setId] = useState("");
@@ -83,9 +78,17 @@ function ConnectionFormDialog({
   const [schema, setSchema] = useState("");
   const [description, setDescription] = useState("");
   const [showUrl, setShowUrl] = useState(false);
-  const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
-  const [saving, setSaving] = useState(false);
+  const [validationError, setValidationError] = useState<string | null>(null);
+
+  const testMutation = useAdminMutation<{ status: string; latencyMs?: number; message?: string }>({
+    path: "/api/v1/admin/connections/test",
+    method: "POST",
+  });
+
+  const saveMutation = useAdminMutation({
+    invalidates: onSuccess,
+  });
 
   // Reset form when dialog opens
   function handleOpenChange(nextOpen: boolean) {
@@ -104,9 +107,10 @@ function ConnectionFormDialog({
         setDescription("");
       }
       setShowUrl(false);
-      setTesting(false);
       setTestResult(null);
-      setSaving(false);
+      setValidationError(null);
+      testMutation.reset();
+      saveMutation.reset();
     }
     onOpenChange(nextOpen);
   }
@@ -116,82 +120,57 @@ function ConnectionFormDialog({
       setTestResult({ ok: false, message: "Enter a connection URL first." });
       return;
     }
-    setTesting(true);
     setTestResult(null);
-    try {
-      // Use the dedicated test endpoint — works for both new and edit flows
-      const res = await fetch(`${apiUrl}/api/v1/admin/connections/test`, {
-        method: "POST",
-        credentials,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, schema: schema || undefined }),
-      });
-      const data = await res.json().catch(() => ({ message: `HTTP ${res.status}` }));
-      if (res.ok) {
+    const data = await testMutation.mutate({
+      body: { url, schema: schema || undefined },
+      onSuccess: (d) => {
         setTestResult({
-          ok: data.status === "healthy",
-          message: data.status === "healthy"
-            ? `Connected (${data.latencyMs}ms)`
-            : data.message || "Connection unhealthy",
+          ok: d.status === "healthy",
+          message: d.status === "healthy"
+            ? `Connected (${d.latencyMs}ms)`
+            : d.message || "Connection unhealthy",
         });
-      } else {
-        setTestResult({ ok: false, message: data.message || `Test failed (HTTP ${res.status})` });
-      }
-    } catch (err) {
-      setTestResult({ ok: false, message: err instanceof Error ? err.message : "Network error" });
-    } finally {
-      setTesting(false);
+      },
+    });
+    if (data === undefined) {
+      setTestResult({ ok: false, message: "Connection test failed" });
     }
   }
 
   async function handleSave() {
     if (!isEdit && !id) {
-      onError("Connection ID is required.");
+      setValidationError("Connection ID is required.");
       return;
     }
     if (!isEdit && !url) {
-      onError("Connection URL is required.");
+      setValidationError("Connection URL is required.");
       return;
     }
-    setSaving(true);
-    try {
-      const endpoint = isEdit
-        ? `${apiUrl}/api/v1/admin/connections/${encodeURIComponent(editId!)}`
-        : `${apiUrl}/api/v1/admin/connections`;
-      const method = isEdit ? "PUT" : "POST";
 
-      const body: Record<string, unknown> = {};
-      if (!isEdit) {
-        body.id = id;
-        body.url = url;
-        if (description) body.description = description;
-        if (schema) body.schema = schema;
-      } else {
-        if (url) body.url = url;
-        body.description = description;
-        body.schema = schema || undefined;
-      }
+    setValidationError(null);
+    const path = isEdit
+      ? `/api/v1/admin/connections/${encodeURIComponent(editId!)}`
+      : `/api/v1/admin/connections`;
+    const method = isEdit ? "PUT" as const : "POST" as const;
 
-      const res = await fetch(endpoint, {
-        method,
-        credentials,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({ message: `HTTP ${res.status}` }));
-        onError(data.message || `Save failed (HTTP ${res.status})`);
-        return;
-      }
-
-      onSuccess();
-      onOpenChange(false);
-    } catch (err) {
-      onError(err instanceof Error ? err.message : "Network error");
-    } finally {
-      setSaving(false);
+    const body: Record<string, unknown> = {};
+    if (!isEdit) {
+      body.id = id;
+      body.url = url;
+      if (description) body.description = description;
+      if (schema) body.schema = schema;
+    } else {
+      if (url) body.url = url;
+      body.description = description;
+      body.schema = schema || undefined;
     }
+
+    await saveMutation.mutate({
+      path,
+      method,
+      body,
+      onSuccess: () => onOpenChange(false),
+    });
   }
 
   const showSchemaField = dbType === "postgres";
@@ -309,20 +288,26 @@ function ConnectionFormDialog({
           )}
         </div>
 
+        {(validationError ?? saveMutation.error) && (
+          <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {validationError ?? saveMutation.error}
+          </div>
+        )}
+
         <DialogFooter>
           <Button
             variant="outline"
             onClick={handleTest}
-            disabled={testing || !url}
+            disabled={testMutation.saving || !url}
           >
-            {testing ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
+            {testMutation.saving ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
             Test
           </Button>
           <Button
             onClick={handleSave}
-            disabled={saving || (!isEdit && (!id || !url))}
+            disabled={saveMutation.saving || (!isEdit && (!id || !url))}
           >
-            {saving ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
+            {saveMutation.saving ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
             {isEdit ? "Save Changes" : "Add Connection"}
           </Button>
         </DialogFooter>
@@ -337,43 +322,26 @@ interface DeleteDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   connectionId: string | null;
-  apiUrl: string;
-  credentials: RequestCredentials;
   onSuccess: () => void;
-  onError: (msg: string) => void;
 }
 
 function DeleteConnectionDialog({
   open,
   onOpenChange,
   connectionId,
-  apiUrl,
-  credentials,
   onSuccess,
-  onError,
 }: DeleteDialogProps) {
-  const [deleting, setDeleting] = useState(false);
+  const deleteMutation = useAdminMutation({
+    method: "DELETE",
+    invalidates: onSuccess,
+  });
 
   async function handleDelete() {
     if (!connectionId) return;
-    setDeleting(true);
-    try {
-      const res = await fetch(
-        `${apiUrl}/api/v1/admin/connections/${encodeURIComponent(connectionId)}`,
-        { method: "DELETE", credentials }
-      );
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({ message: `HTTP ${res.status}` }));
-        onError(data.message || `Delete failed (HTTP ${res.status})`);
-        return;
-      }
-      onSuccess();
-      onOpenChange(false);
-    } catch (err) {
-      onError(err instanceof Error ? err.message : "Network error");
-    } finally {
-      setDeleting(false);
-    }
+    await deleteMutation.mutate({
+      path: `/api/v1/admin/connections/${encodeURIComponent(connectionId)}`,
+      onSuccess: () => onOpenChange(false),
+    });
   }
 
   return (
@@ -387,14 +355,19 @@ function DeleteConnectionDialog({
             This action cannot be undone.
           </AlertDialogDescription>
         </AlertDialogHeader>
+        {deleteMutation.error && (
+          <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {deleteMutation.error}
+          </div>
+        )}
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+          <AlertDialogCancel disabled={deleteMutation.saving}>Cancel</AlertDialogCancel>
           <AlertDialogAction
             variant="destructive"
             onClick={handleDelete}
-            disabled={deleting}
+            disabled={deleteMutation.saving}
           >
-            {deleting ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
+            {deleteMutation.saving ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
             Delete
           </AlertDialogAction>
         </AlertDialogFooter>
@@ -417,21 +390,18 @@ function PoolBar({ active, idle, total }: { active: number; idle: number; total:
   );
 }
 
-function PoolStatsSection({
-  apiUrl,
-  credentials,
-  onError,
-}: {
-  apiUrl: string;
-  credentials: RequestCredentials;
-  onError: (msg: string) => void;
-}) {
+function PoolStatsSection({ onError }: { onError: (msg: string) => void }) {
+  const { apiUrl, isCrossOrigin } = useAtlasConfig();
+  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
   const [metrics, setMetrics] = useState<PoolMetrics[] | null>(null);
   const [poolLoading, setPoolLoading] = useState(true);
   const [expanded, setExpanded] = useState(true);
   const [drainTarget, setDrainTarget] = useState<string | null>(null);
-  const [draining, setDraining] = useState(false);
   const cancelledRef = useRef(false);
+
+  const drainMutation = useAdminMutation<{ drained?: boolean; message?: string }>({
+    method: "POST",
+  });
 
   async function fetchMetrics() {
     try {
@@ -453,23 +423,20 @@ function PoolStatsSection({
   }, [apiUrl, credentials]);
 
   async function handleDrain(id: string) {
-    setDraining(true);
-    try {
-      const res = await fetch(`${apiUrl}/api/v1/admin/connections/${encodeURIComponent(id)}/drain`, {
-        method: "POST",
-        credentials,
-      });
-      const data = await res.json().catch(() => ({ message: `HTTP ${res.status}` }));
-      if (!res.ok || !data.drained) {
-        onError(data.message || "Drain failed");
-      }
-      fetchMetrics();
-    } catch (err) {
-      onError(err instanceof Error ? err.message : "Network error");
-    } finally {
-      setDraining(false);
-      setDrainTarget(null);
+    const result = await drainMutation.mutate({
+      path: `/api/v1/admin/connections/${encodeURIComponent(id)}/drain`,
+      onSuccess: (data) => {
+        if (!data?.drained) {
+          onError(data?.message || "Drain failed");
+        }
+        fetchMetrics();
+      },
+    });
+    if (result === undefined) {
+      // Error already set in hook — surface it via onError
+      onError("Drain request failed");
     }
+    setDrainTarget(null);
   }
 
   if (poolLoading || !metrics || metrics.length === 0) return null;
@@ -566,13 +533,13 @@ function PoolStatsSection({
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={draining}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={drainMutation.saving}>Cancel</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               onClick={() => drainTarget && handleDrain(drainTarget)}
-              disabled={draining}
+              disabled={drainMutation.saving}
             >
-              {draining ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
+              {drainMutation.saving ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
               Drain & Recreate
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -587,7 +554,8 @@ function PoolStatsSection({
 export default function ConnectionsPage() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
-  const testing = useInProgressSet();
+
+  const testMutation = useAdminMutation<ConnectionHealth>({ method: "POST" });
   const [mutationError, setMutationError] = useState<string | null>(null);
 
   // Dialog state
@@ -619,11 +587,11 @@ export default function ConnectionsPage() {
             <Button
               variant="outline"
               size="sm"
-              disabled={testing.has(conn.id)}
+              disabled={testMutation.isMutating(conn.id)}
               onClick={() => testConnection(conn.id)}
-              aria-label={testing.has(conn.id) ? `Testing connection ${conn.id}…` : undefined}
+              aria-label={testMutation.isMutating(conn.id) ? `Testing connection ${conn.id}…` : undefined}
             >
-              {testing.has(conn.id) ? (
+              {testMutation.isMutating(conn.id) ? (
                 <Loader2 className="size-3.5 animate-spin" />
               ) : (
                 "Test"
@@ -686,26 +654,20 @@ export default function ConnectionsPage() {
   }
 
   async function testConnection(id: string) {
-    testing.start(id);
     setMutationError(null);
-    try {
-      const res = await fetch(
-        `${apiUrl}/api/v1/admin/connections/${encodeURIComponent(id)}/test`,
-        { credentials, method: "POST" }
-      );
-      if (!res.ok) throw new Error(`Test failed (HTTP ${res.status})`);
-      const result: ConnectionHealth = await res.json();
-      setLocalConnections((prev) =>
-        (prev ?? displayConnections).map((c) =>
-          c.id === id ? { ...c, health: result } : c
-        )
-      );
-    } catch (err) {
-      setMutationError(
-        `Connection test failed for "${id}": ${err instanceof Error ? err.message : "Network error"}`
-      );
-    } finally {
-      testing.stop(id);
+    const result = await testMutation.mutate({
+      path: `/api/v1/admin/connections/${encodeURIComponent(id)}/test`,
+      itemId: id,
+      onSuccess: (data) => {
+        setLocalConnections((prev) =>
+          (prev ?? displayConnections).map((c) =>
+            c.id === id ? { ...c, health: data } : c
+          )
+        );
+      },
+    });
+    if (result === undefined) {
+      setMutationError(`Connection test failed for "${id}"`);
     }
   }
 
@@ -763,8 +725,9 @@ export default function ConnectionsPage() {
       <div className="flex-1 overflow-auto p-6 space-y-6">
         {error && <ErrorBanner message={friendlyError(error)} onRetry={refetch} />}
         {mutationError && <ErrorBanner message={mutationError} onRetry={() => setMutationError(null)} />}
+        {testMutation.error && !mutationError && <ErrorBanner message={testMutation.error} onRetry={testMutation.clearError} />}
 
-        <PoolStatsSection apiUrl={apiUrl} credentials={credentials} onError={setMutationError} />
+        <PoolStatsSection onError={setMutationError} />
 
         {loading ? (
           <div className="flex h-64 items-center justify-center">
@@ -790,20 +753,14 @@ export default function ConnectionsPage() {
         onOpenChange={setFormOpen}
         editId={editId}
         editDetail={editDetail}
-        apiUrl={apiUrl}
-        credentials={credentials}
         onSuccess={handleMutationSuccess}
-        onError={setMutationError}
       />
 
       <DeleteConnectionDialog
         open={deleteOpen}
         onOpenChange={setDeleteOpen}
         connectionId={deleteId}
-        apiUrl={apiUrl}
-        credentials={credentials}
         onSuccess={handleMutationSuccess}
-        onError={setMutationError}
       />
     </div>
   );

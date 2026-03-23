@@ -47,7 +47,8 @@ import {
   History,
   Eye,
 } from "lucide-react";
-import { useInProgressSet, type FetchError, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { type FetchError, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { DeliveryStatusBadge } from "@/ui/components/admin/delivery-status-badge";
 import { ExpandableDataTable } from "@/components/data-table/data-table-expandable";
@@ -75,7 +76,6 @@ export default function ScheduledTasksPage() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<FetchError | null>(null);
-  const [mutationError, setMutationError] = useState<string | null>(null);
 
   const [{ page, enabled: enabledFilter, expanded: expandedId }, setParams] = useQueryStates(scheduledTasksSearchParams);
   const offset = (page - 1) * PAGE_SIZE;
@@ -84,8 +84,15 @@ export default function ScheduledTasksPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
 
-  const toggling = useInProgressSet();
-  const triggering = useInProgressSet();
+  // Mutation hooks for per-item actions
+  const toggleMutation = useAdminMutation<ScheduledTask>({ method: "PUT" });
+  const triggerMutation = useAdminMutation({ method: "POST" });
+  const deleteMutation = useAdminMutation({
+    method: "DELETE",
+  });
+  const previewMutation = useAdminMutation<{ channel: string; email?: { subject: string; body: string }; slack?: { text: string; blocks: unknown[] }; webhook?: unknown }>({
+    method: "POST",
+  });
 
   // ── Form dialog state ──────────────────────────────────────────
   const [formOpen, setFormOpen] = useState(false);
@@ -94,13 +101,10 @@ export default function ScheduledTasksPage() {
 
   // ── Delete confirmation state ──────────────────────────────────
   const [deleteTarget, setDeleteTarget] = useState<ScheduledTask | null>(null);
-  const deleting = useInProgressSet();
 
   // ── Preview state ─────────────────────────────────────────────
   const [previewOpen, setPreviewOpen] = useState(false);
-  const [previewLoading, setPreviewLoading] = useState(false);
   const [previewData, setPreviewData] = useState<{ channel: string; email?: { subject: string; body: string }; slack?: { text: string; blocks: unknown[] }; webhook?: unknown } | null>(null);
-  const [previewError, setPreviewError] = useState<string | null>(null);
 
   function openCreate() {
     setEditingTask(null);
@@ -121,22 +125,13 @@ export default function ScheduledTasksPage() {
   async function handlePreview(taskId: string, e: React.MouseEvent) {
     e.stopPropagation();
     setPreviewData(null);
-    setPreviewError(null);
-    setPreviewLoading(true);
+    previewMutation.reset();
     setPreviewOpen(true);
-    try {
-      const res = await fetch(
-        `${apiUrl}/api/v1/scheduled-tasks/${encodeURIComponent(taskId)}/preview`,
-        { credentials, method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
-      );
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      setPreviewData(data);
-    } catch (err) {
-      setPreviewError(err instanceof Error ? err.message : "Failed to generate preview");
-    } finally {
-      setPreviewLoading(false);
-    }
+    await previewMutation.mutate({
+      path: `/api/v1/scheduled-tasks/${encodeURIComponent(taskId)}/preview`,
+      body: {},
+      onSuccess: (data) => setPreviewData(data),
+    });
   }
 
   // ── Fetch task list ──────────────────────────────────────────────
@@ -226,83 +221,41 @@ export default function ScheduledTasksPage() {
   // ── Toggle enabled ──────────────────────────────────────────────
   async function handleToggle(task: ScheduledTask, e: React.MouseEvent) {
     e.stopPropagation();
-    if (toggling.has(task.id)) return;
-    toggling.start(task.id);
-    setMutationError(null);
-    try {
-      const res = await fetch(
-        `${apiUrl}/api/v1/scheduled-tasks/${encodeURIComponent(task.id)}`,
-        {
-          credentials,
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ enabled: !task.enabled }),
-        },
-      );
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const updated: ScheduledTask = await res.json();
-      setTasks((prev) =>
-        prev.map((t) => (t.id === updated.id ? updated : t)),
-      );
-    } catch (err) {
-      setMutationError(
-        `Toggle failed: ${err instanceof Error ? err.message : "Network error"}`
-      );
-    } finally {
-      toggling.stop(task.id);
-    }
+    if (toggleMutation.isMutating(task.id)) return;
+    await toggleMutation.mutate({
+      path: `/api/v1/scheduled-tasks/${encodeURIComponent(task.id)}`,
+      body: { enabled: !task.enabled },
+      itemId: task.id,
+      onSuccess: (updated) => {
+        setTasks((prev) =>
+          prev.map((t) => (t.id === updated.id ? updated : t)),
+        );
+      },
+    });
   }
 
   // ── Run now ─────────────────────────────────────────────────────
   async function handleRunNow(taskId: string, e: React.MouseEvent) {
     e.stopPropagation();
-    if (triggering.has(taskId)) return;
-    triggering.start(taskId);
-    setMutationError(null);
-    try {
-      const res = await fetch(
-        `${apiUrl}/api/v1/scheduled-tasks/${encodeURIComponent(taskId)}/run`,
-        {
-          credentials,
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: "{}",
-        },
-      );
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    } catch (err) {
-      setMutationError(
-        `Run failed: ${err instanceof Error ? err.message : "Network error"}`
-      );
-    } finally {
-      triggering.stop(taskId);
-    }
+    if (triggerMutation.isMutating(taskId)) return;
+    await triggerMutation.mutate({
+      path: `/api/v1/scheduled-tasks/${encodeURIComponent(taskId)}/run`,
+      body: {},
+      itemId: taskId,
+    });
   }
 
   // ── Delete task ──────────────────────────────────────────────────
   async function handleDelete(task: ScheduledTask) {
-    if (deleting.has(task.id)) return;
-    deleting.start(task.id);
-    setMutationError(null);
-    try {
-      const res = await fetch(
-        `${apiUrl}/api/v1/scheduled-tasks/${encodeURIComponent(task.id)}`,
-        { credentials, method: "DELETE" },
-      );
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        throw new Error(data?.message ?? `HTTP ${res.status}`);
-      }
-      setDeleteTarget(null);
-      setRefetchKey((k) => k + 1);
-    } catch (err) {
-      setMutationError(
-        `Delete failed: ${err instanceof Error ? err.message : "Network error"}`
-      );
-      setDeleteTarget(null);
-    } finally {
-      deleting.stop(task.id);
-    }
+    if (deleteMutation.isMutating(task.id)) return;
+    await deleteMutation.mutate({
+      path: `/api/v1/scheduled-tasks/${encodeURIComponent(task.id)}`,
+      itemId: task.id,
+      onSuccess: () => {
+        setRefetchKey((k) => k + 1);
+      },
+    });
+    setDeleteTarget(null);
   }
 
   // ── Filter change resets pagination ─────────────────────────────
@@ -324,10 +277,10 @@ export default function ScheduledTasksPage() {
           <Button
             size="sm"
             variant={task.enabled ? "secondary" : "ghost"}
-            disabled={toggling.has(task.id)}
+            disabled={toggleMutation.isMutating(task.id)}
             onClick={(e) => handleToggle(task, e)}
           >
-            {toggling.has(task.id) ? (
+            {toggleMutation.isMutating(task.id) ? (
               <Loader2 className="size-3 animate-spin" />
             ) : task.enabled ? "On" : "Off"}
           </Button>
@@ -346,10 +299,10 @@ export default function ScheduledTasksPage() {
             <Button
               size="sm"
               variant="ghost"
-              disabled={triggering.has(task.id)}
+              disabled={triggerMutation.isMutating(task.id)}
               onClick={(e) => handleRunNow(task.id, e)}
             >
-              {triggering.has(task.id) ? (
+              {triggerMutation.isMutating(task.id) ? (
                 <Loader2 className="size-3 animate-spin" />
               ) : (
                 <>
@@ -500,7 +453,9 @@ export default function ScheduledTasksPage() {
       <ErrorBoundary>
       <div className="flex-1 overflow-auto p-6 space-y-6">
         {error && <ErrorBanner message={friendlyError(error)} onRetry={() => setError(null)} />}
-        {mutationError && <ErrorBanner message={mutationError} onRetry={() => setMutationError(null)} />}
+        {toggleMutation.error && <ErrorBanner message={toggleMutation.error} onRetry={toggleMutation.clearError} />}
+        {triggerMutation.error && <ErrorBanner message={triggerMutation.error} onRetry={triggerMutation.clearError} />}
+        {deleteMutation.error && <ErrorBanner message={deleteMutation.error} onRetry={deleteMutation.clearError} />}
 
         {loading ? (
           <div className="flex h-64 items-center justify-center">
@@ -532,8 +487,6 @@ export default function ScheduledTasksPage() {
         open={formOpen}
         onOpenChange={setFormOpen}
         task={editingTask}
-        apiUrl={apiUrl}
-        credentials={credentials}
         onSuccess={handleFormSuccess}
       />
 
@@ -542,13 +495,13 @@ export default function ScheduledTasksPage() {
           <DialogHeader>
             <DialogTitle>Delivery Preview</DialogTitle>
           </DialogHeader>
-          {previewLoading ? (
+          {previewMutation.saving ? (
             <div className="flex items-center gap-2 py-8 justify-center text-muted-foreground">
               <Loader2 className="size-4 animate-spin" />
               Generating preview...
             </div>
-          ) : previewError ? (
-            <p className="text-sm text-destructive py-4">{previewError}</p>
+          ) : previewMutation.error ? (
+            <p className="text-sm text-destructive py-4">{previewMutation.error}</p>
           ) : previewData ? (
             <div className="space-y-4">
               <Badge variant="outline" className="capitalize">{previewData.channel}</Badge>
@@ -609,10 +562,10 @@ export default function ScheduledTasksPage() {
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              disabled={deleteTarget ? deleting.has(deleteTarget.id) : false}
+              disabled={deleteTarget ? deleteMutation.isMutating(deleteTarget.id) : false}
               onClick={() => deleteTarget && handleDelete(deleteTarget)}
             >
-              {deleteTarget && deleting.has(deleteTarget.id) ? (
+              {deleteTarget && deleteMutation.isMutating(deleteTarget.id) ? (
                 <Loader2 className="mr-2 size-4 animate-spin" />
               ) : null}
               Delete

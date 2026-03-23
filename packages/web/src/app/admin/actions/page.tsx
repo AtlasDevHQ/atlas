@@ -45,7 +45,8 @@ import {
   Inbox,
   Undo2,
 } from "lucide-react";
-import { useInProgressSet, type FetchError, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { type FetchError, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 
 type StatusFilter = "pending" | "executed" | "denied" | "failed" | "rolled_back" | "all";
@@ -133,13 +134,24 @@ export default function ActionsPage() {
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [{ status: statusFilter, expanded: expandedId }, setParams] = useQueryStates(actionsSearchParams);
   const [, startTransition] = useTransition();
-  const approving = useInProgressSet();
-  const denying = useInProgressSet();
-  const rollingBack = useInProgressSet();
 
   const [refetchKey, setRefetchKey] = useState(0);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkAction, setBulkAction] = useState<"approve" | "deny" | null>(null);
+
+  // Mutation hooks for per-item actions
+  const approveMutation = useAdminMutation({
+    method: "POST",
+    invalidates: () => setRefetchKey((k) => k + 1),
+  });
+  const denyMutation = useAdminMutation({
+    method: "POST",
+    invalidates: () => setRefetchKey((k) => k + 1),
+  });
+  const rollbackMutation = useAdminMutation({
+    method: "POST",
+    invalidates: () => setRefetchKey((k) => k + 1),
+  });
 
   const bulkInProgress = bulkAction !== null;
 
@@ -217,85 +229,36 @@ export default function ActionsPage() {
   }
 
   async function handleApprove(id: string) {
-    approving.start(id);
     setMutationError(null);
-    try {
-      const res = await fetch(`${apiUrl}/api/v1/actions/${id}/approve`, {
-        credentials,
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      });
-      if (!res.ok) {
-        let serverMessage = `Approve failed (HTTP ${res.status})`;
-        try {
-          const body = await res.json();
-          if (body?.message) serverMessage = body.message;
-        } catch { /* intentionally ignored: response may not be JSON */ }
-        throw new Error(serverMessage);
-      }
-      setRefetchKey((k) => k + 1);
-    } catch (err) {
-      setMutationError(err instanceof Error ? err.message : "Approve failed");
-    } finally {
-      approving.stop(id);
-    }
+    await approveMutation.mutate({
+      path: `/api/v1/actions/${id}/approve`,
+      body: {},
+      itemId: id,
+    });
   }
 
   async function handleDeny(id: string) {
-    denying.start(id);
     setMutationError(null);
-    try {
-      const res = await fetch(`${apiUrl}/api/v1/actions/${id}/deny`, {
-        credentials,
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reason: "Denied by admin" }),
-      });
-      if (!res.ok) {
-        let serverMessage = `Deny failed (HTTP ${res.status})`;
-        try {
-          const body = await res.json();
-          if (body?.message) serverMessage = body.message;
-        } catch { /* intentionally ignored: response may not be JSON */ }
-        throw new Error(serverMessage);
-      }
-      setRefetchKey((k) => k + 1);
-    } catch (err) {
-      setMutationError(err instanceof Error ? err.message : "Deny failed");
-    } finally {
-      denying.stop(id);
-    }
+    await denyMutation.mutate({
+      path: `/api/v1/actions/${id}/deny`,
+      body: { reason: "Denied by admin" },
+      itemId: id,
+    });
   }
 
   async function handleRollback(id: string) {
-    rollingBack.start(id);
     setMutationError(null);
-    try {
-      const res = await fetch(`${apiUrl}/api/v1/actions/${id}/rollback`, {
-        credentials,
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      });
-      if (!res.ok) {
-        let serverMessage = `Rollback failed (HTTP ${res.status})`;
-        try {
-          const body = await res.json();
-          if (body?.message) serverMessage = body.message;
-        } catch { /* intentionally ignored: response may not be JSON */ }
-        throw new Error(serverMessage);
-      }
-      const body = await res.json();
-      if (body?.warning) {
-        setMutationError(body.warning);
-      }
-      setRefetchKey((k) => k + 1);
-    } catch (err) {
-      setMutationError(err instanceof Error ? err.message : "Rollback failed");
-    } finally {
-      rollingBack.stop(id);
-    }
+    await rollbackMutation.mutate({
+      path: `/api/v1/actions/${id}/rollback`,
+      body: {},
+      itemId: id,
+      onSuccess: (data) => {
+        const body = data as Record<string, unknown> | undefined;
+        if (body?.warning && typeof body.warning === "string") {
+          setMutationError(body.warning);
+        }
+      },
+    });
   }
 
   async function handleBulkAction(action: "approve" | "deny") {
@@ -416,6 +379,9 @@ export default function ActionsPage() {
         <div className="flex-1 overflow-auto p-6 space-y-6">
           {error && <ErrorBanner message={friendlyError(error)} onRetry={() => setRefetchKey((k) => k + 1)} />}
           {mutationError && <ErrorBanner message={mutationError} onRetry={() => setMutationError(null)} />}
+          {approveMutation.error && <ErrorBanner message={approveMutation.error} onRetry={approveMutation.clearError} />}
+          {denyMutation.error && <ErrorBanner message={denyMutation.error} onRetry={denyMutation.clearError} />}
+          {rollbackMutation.error && <ErrorBanner message={rollbackMutation.error} onRetry={rollbackMutation.clearError} />}
 
           {loading ? (
             <div className="flex h-64 items-center justify-center">
@@ -510,10 +476,10 @@ export default function ActionsPage() {
                               <Button
                                 size="sm"
                                 variant="ghost"
-                                disabled={approving.has(action.id) || bulkInProgress}
+                                disabled={approveMutation.isMutating(action.id) || bulkInProgress}
                                 onClick={() => handleApprove(action.id)}
                               >
-                                {approving.has(action.id) ? (
+                                {approveMutation.isMutating(action.id) ? (
                                   <Loader2 className="size-4 animate-spin" />
                                 ) : (
                                   <Check className="size-4" />
@@ -522,10 +488,10 @@ export default function ActionsPage() {
                               <Button
                                 size="sm"
                                 variant="ghost"
-                                disabled={denying.has(action.id) || bulkInProgress}
+                                disabled={denyMutation.isMutating(action.id) || bulkInProgress}
                                 onClick={() => handleDeny(action.id)}
                               >
-                                {denying.has(action.id) ? (
+                                {denyMutation.isMutating(action.id) ? (
                                   <Loader2 className="size-4 animate-spin" />
                                 ) : (
                                   <X className="size-4" />
@@ -543,10 +509,10 @@ export default function ActionsPage() {
                                   <Button
                                     size="sm"
                                     variant="ghost"
-                                    disabled={rollingBack.has(action.id)}
+                                    disabled={rollbackMutation.isMutating(action.id)}
                                     onClick={() => handleRollback(action.id)}
                                   >
-                                    {rollingBack.has(action.id) ? (
+                                    {rollbackMutation.isMutating(action.id) ? (
                                       <Loader2 className="size-4 animate-spin" />
                                     ) : (
                                       <Undo2 className="size-4" />
@@ -604,10 +570,10 @@ export default function ActionsPage() {
                                 <div className="flex gap-2 pt-2">
                                   <Button
                                     size="sm"
-                                    disabled={approving.has(action.id) || bulkInProgress}
+                                    disabled={approveMutation.isMutating(action.id) || bulkInProgress}
                                     onClick={() => handleApprove(action.id)}
                                   >
-                                    {approving.has(action.id) ? (
+                                    {approveMutation.isMutating(action.id) ? (
                                       <Loader2 className="mr-1 size-4 animate-spin" />
                                     ) : (
                                       <Check className="mr-1 size-4" />
@@ -617,10 +583,10 @@ export default function ActionsPage() {
                                   <Button
                                     size="sm"
                                     variant="destructive"
-                                    disabled={denying.has(action.id) || bulkInProgress}
+                                    disabled={denyMutation.isMutating(action.id) || bulkInProgress}
                                     onClick={() => handleDeny(action.id)}
                                   >
-                                    {denying.has(action.id) ? (
+                                    {denyMutation.isMutating(action.id) ? (
                                       <Loader2 className="mr-1 size-4 animate-spin" />
                                     ) : (
                                       <X className="mr-1 size-4" />
@@ -634,10 +600,10 @@ export default function ActionsPage() {
                                   <Button
                                     size="sm"
                                     variant="outline"
-                                    disabled={rollingBack.has(action.id)}
+                                    disabled={rollbackMutation.isMutating(action.id)}
                                     onClick={() => handleRollback(action.id)}
                                   >
-                                    {rollingBack.has(action.id) ? (
+                                    {rollbackMutation.isMutating(action.id) ? (
                                       <Loader2 className="mr-1 size-4 animate-spin" />
                                     ) : (
                                       <Undo2 className="mr-1 size-4" />

@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { useAtlasConfig } from "@/ui/context";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -25,6 +24,7 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
   ShieldAlert,
@@ -75,47 +75,29 @@ function ReinstateDialog({
   open,
   onOpenChange,
   onReinstated,
-  apiUrl,
-  credentials,
 }: {
   workspace: AbuseStatus | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onReinstated: () => void;
-  apiUrl: string;
-  credentials: RequestCredentials;
 }) {
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { mutate, saving: loading, error, reset } = useAdminMutation({
+    method: "POST",
+    invalidates: onReinstated,
+  });
 
   function handleOpen(next: boolean) {
-    if (!next) setError(null);
+    if (!next) reset();
     onOpenChange(next);
   }
 
   async function handleReinstate() {
     if (!workspace) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch(
-        `${apiUrl}/api/v1/admin/abuse/${encodeURIComponent(workspace.workspaceId)}/reinstate`,
-        { method: "POST", credentials },
-      );
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        throw new Error(
-          (data as Record<string, unknown> | null)?.message
-            ? String((data as Record<string, unknown>).message)
-            : `HTTP ${res.status}`,
-        );
-      }
-      onReinstated();
+    const result = await mutate({
+      path: `/api/v1/admin/abuse/${encodeURIComponent(workspace.workspaceId)}/reinstate`,
+    });
+    if (result !== undefined) {
       handleOpen(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to reinstate workspace");
-    } finally {
-      setLoading(false);
     }
   }
 
@@ -174,8 +156,6 @@ function ReinstateDialog({
 // ── Main Page ─────────────────────────────────────────────────────
 
 export default function AbusePage() {
-  const { apiUrl, isCrossOrigin } = useAtlasConfig();
-  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
   const [reinstateTarget, setReinstateTarget] = useState<AbuseStatus | null>(null);
 
   const { data, loading, error, refetch } = useAdminFetch<AbuseListResponse>(
@@ -331,8 +311,6 @@ export default function AbusePage() {
         open={!!reinstateTarget}
         onOpenChange={(open) => !open && setReinstateTarget(null)}
         onReinstated={refetch}
-        apiUrl={apiUrl}
-        credentials={credentials}
       />
     </div>
   );

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useAtlasConfig } from "@/ui/context";
+import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -74,8 +75,6 @@ export function RetentionPanel() {
   const [policy, setPolicy] = useState<RetentionPolicy | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
   // Form state
@@ -91,8 +90,20 @@ export function RetentionPanel() {
   const [exportEndDate, setExportEndDate] = useState("");
 
   // Purge state
-  const [purging, setPurging] = useState(false);
   const [purgeResult, setPurgeResult] = useState<string | null>(null);
+
+  // Mutation hooks
+  const { mutate: saveMutate, saving, error: saveError, clearError: clearSaveError } =
+    useAdminMutation<{ policy: RetentionPolicy }>({
+      path: "/api/v1/admin/audit/retention",
+      method: "PUT",
+    });
+
+  const { mutate: purgeMutate, saving: purging, error: purgeError } =
+    useAdminMutation<{ results: Array<{ orgId: string; softDeletedCount: number }> }>({
+      path: "/api/v1/admin/audit/retention/purge",
+      method: "POST",
+    });
 
   // Fetch current policy
   useEffect(() => {
@@ -137,30 +148,16 @@ export function RetentionPanel() {
   }, [apiUrl, credentials]);
 
   async function handleSave() {
-    setSaving(true);
-    setSaveError(null);
     setSaveSuccess(false);
-    try {
-      const retentionDays = daysFromPreset(preset, customDays);
-      const res = await fetch(`${apiUrl}/api/v1/admin/audit/retention`, {
-        method: "PUT",
-        credentials,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ retentionDays, hardDeleteDelayDays: hardDeleteDelay }),
-      });
-      if (!res.ok) {
-        const msg = await extractError(res, "Failed to save retention policy");
-        setSaveError(msg);
-        return;
-      }
-      const data = await res.json();
-      setPolicy(data.policy);
+    clearSaveError();
+    const retentionDays = daysFromPreset(preset, customDays);
+    const result = await saveMutate({
+      body: { retentionDays, hardDeleteDelayDays: hardDeleteDelay },
+    });
+    if (result !== undefined) {
+      setPolicy(result.policy);
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3000);
-    } catch (err) {
-      setSaveError(err instanceof Error ? err.message : "Failed to save retention policy");
-    } finally {
-      setSaving(false);
     }
   }
 
@@ -200,29 +197,14 @@ export function RetentionPanel() {
   }
 
   async function handlePurge() {
-    setPurging(true);
     setPurgeResult(null);
-    try {
-      const res = await fetch(`${apiUrl}/api/v1/admin/audit/retention/purge`, {
-        method: "POST",
-        credentials,
-      });
-      if (!res.ok) {
-        const msg = await extractError(res, "Purge failed");
-        setPurgeResult(msg);
-        return;
-      }
-      const data = await res.json();
-      const results = data.results as Array<{ orgId: string; softDeletedCount: number }>;
-      const total = results.reduce((sum: number, r: { softDeletedCount: number }) => sum + r.softDeletedCount, 0);
+    const result = await purgeMutate();
+    if (result !== undefined) {
+      const total = result.results.reduce((sum, r) => sum + r.softDeletedCount, 0);
       setPurgeResult(total > 0
         ? `Successfully purged ${total.toLocaleString()} expired entries.`
         : "No expired entries to purge."
       );
-    } catch (err) {
-      setPurgeResult(err instanceof Error ? err.message : "Purge failed");
-    } finally {
-      setPurging(false);
     }
   }
 
@@ -333,6 +315,7 @@ export function RetentionPanel() {
             </Button>
           </div>
 
+          {purgeError && <ErrorBanner message={purgeError} />}
           {purgeResult && (
             <p className="text-sm text-muted-foreground">{purgeResult}</p>
           )}

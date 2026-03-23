@@ -17,7 +17,8 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import { Monitor, Search, X, Users, Activity, Trash2 } from "lucide-react";
-import { useAdminFetch, useInProgressSet, friendlyError, type FetchError } from "@/ui/hooks/use-admin-fetch";
+import { useAdminFetch, friendlyError, type FetchError } from "@/ui/hooks/use-admin-fetch";
+import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
   AlertDialog,
@@ -54,34 +55,26 @@ export default function SessionsPage() {
   const [params, setParams] = useQueryStates(sessionsSearchParams);
   const { search } = params;
 
-  const inProgress = useInProgressSet();
+  const { mutate: revokeMutate, error: revokeError, isMutating } = useAdminMutation({
+    method: "DELETE",
+  });
 
   // Revoke a single session
   async function revokeSession(sessionId: string) {
-    inProgress.start(sessionId);
-    try {
-      const res = await fetch(`${apiUrl}/api/v1/admin/sessions/${sessionId}`, {
-        method: "DELETE",
-        credentials,
-      });
-      if (!res.ok) {
-        let msg = `HTTP ${res.status}`;
-        try { msg = (await res.json()).message ?? msg; } catch { /* intentionally ignored: response may not be JSON */ }
-        setError({ message: msg, status: res.status });
-        return;
-      }
+    setError(null);
+    const result = await revokeMutate({
+      path: `/api/v1/admin/sessions/${sessionId}`,
+      itemId: sessionId,
+    });
+    if (result !== undefined) {
       setFetchKey((k) => k + 1);
-    } catch (err) {
-      setError({ message: err instanceof Error ? err.message : "Failed to revoke session" });
-    } finally {
-      inProgress.stop(sessionId);
     }
   }
 
   // Column definitions with action callbacks
   const sessionActions: SessionActions = {
     onRevoke: revokeSession,
-    isRevoking: (id: string) => inProgress.has(id),
+    isRevoking: (id: string) => isMutating(id),
   };
   const columns = getSessionColumns(sessionActions);
 
@@ -248,6 +241,9 @@ export default function SessionsPage() {
           </div>
 
           {/* Content */}
+          {revokeError && (
+            <ErrorBanner message={revokeError} onRetry={() => setFetchKey((k) => k + 1)} />
+          )}
           {error && !error.status ? (
             <ErrorBanner message={friendlyError(error)} onRetry={() => setFetchKey((k) => k + 1)} />
           ) : loading ? (

@@ -6,10 +6,9 @@
  */
 
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { HTTPException } from "hono/http-exception";
 import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
-import { throwIfEEError } from "./ee-error-handler";
+import { throwIfEEError, eeOnError } from "./ee-error-handler";
 import {
   listRoles,
   createRole,
@@ -398,17 +397,7 @@ const adminRoles = new OpenAPIHono<AuthEnv>();
 adminRoles.use(adminAuth);
 adminRoles.use(requestContext);
 
-adminRoles.onError((err, c) => {
-  if (err instanceof HTTPException) {
-    // Our thrown HTTPExceptions carry a JSON Response
-    if (err.res) return err.res;
-    // Framework 400 for malformed JSON
-    if (err.status === 400) {
-      return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
-    }
-  }
-  throw err;
-});
+adminRoles.onError(eeOnError);
 
 // GET / — list all roles for the active org
 adminRoles.openapi(listRolesRoute, async (c) => {

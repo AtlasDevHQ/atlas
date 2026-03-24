@@ -7,10 +7,9 @@
 
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { validationHook } from "./validation-hook";
-import { HTTPException } from "hono/http-exception";
 import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
-import { throwIfEEError } from "./ee-error-handler";
+import { throwIfEEError, eeOnError } from "./ee-error-handler";
 import {
   getWorkspaceModelConfig,
   setWorkspaceModelConfig,
@@ -271,17 +270,7 @@ const adminModelConfig = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook 
 adminModelConfig.use(adminAuth);
 adminModelConfig.use(requestContext);
 
-adminModelConfig.onError((err, c) => {
-  if (err instanceof HTTPException) {
-    // Our thrown HTTPExceptions carry a JSON Response
-    if (err.res) return err.res;
-    // Framework 400 for malformed JSON
-    if (err.status === 400) {
-      return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
-    }
-  }
-  throw err;
-});
+adminModelConfig.onError(eeOnError);
 
 // GET / — get workspace model configuration
 adminModelConfig.openapi(getConfigRoute, async (c) => {

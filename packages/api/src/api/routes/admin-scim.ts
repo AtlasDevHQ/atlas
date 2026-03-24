@@ -11,10 +11,9 @@
 
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { validationHook } from "./validation-hook";
-import { HTTPException } from "hono/http-exception";
 import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
-import { throwIfEEError } from "./ee-error-handler";
+import { throwIfEEError, eeOnError } from "./ee-error-handler";
 import {
   listConnections,
   deleteConnection,
@@ -317,17 +316,7 @@ const adminScim = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
 adminScim.use(adminAuth);
 adminScim.use(requestContext);
 
-adminScim.onError((err, c) => {
-  if (err instanceof HTTPException) {
-    // Our thrown HTTPExceptions carry a JSON Response
-    if (err.res) return err.res;
-    // Framework 400 for malformed JSON
-    if (err.status === 400) {
-      return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
-    }
-  }
-  throw err;
-});
+adminScim.onError(eeOnError);
 
 // GET / — SCIM connections and sync status
 adminScim.openapi(getStatusRoute, async (c) => {

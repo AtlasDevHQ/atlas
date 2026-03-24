@@ -3,10 +3,11 @@
  *
  * Replaces the per-file throwIf*Error helpers that each duplicated the same
  * pattern: EnterpriseError → 403, domain error → status-mapped code.
- * New admin routes should use throwIfEEError from this module rather than
- * creating local error-mapping helpers.
+ * New admin routes should use throwIfEEError and eeOnError from this module
+ * rather than creating local error-mapping helpers.
  */
 
+import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { EnterpriseError } from "@atlas/ee/index";
@@ -60,4 +61,20 @@ export function throwIfEEError(
       });
     }
   }
+}
+
+/**
+ * Shared Hono onError handler for admin routes.
+ *
+ * Surfaces HTTPExceptions thrown by throwIfEEError (or framework validation)
+ * as JSON responses. Unhandled errors re-throw to Hono's default handler.
+ */
+export function eeOnError(err: Error, c: Context): Response {
+  if (err instanceof HTTPException) {
+    if (err.res) return err.res;
+    if (err.status === 400) {
+      return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
+    }
+  }
+  throw err;
 }

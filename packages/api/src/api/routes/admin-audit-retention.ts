@@ -14,11 +14,10 @@
 
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { validationHook } from "./validation-hook";
-import { HTTPException } from "hono/http-exception";
 import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { RetentionError } from "@atlas/ee/audit/retention";
-import { throwIfEEError } from "./ee-error-handler";
+import { throwIfEEError, eeOnError } from "./ee-error-handler";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { adminAuth, requestContext, type AuthEnv } from "./middleware";
 
@@ -310,17 +309,7 @@ const adminAuditRetention = new OpenAPIHono<AuthEnv>({ defaultHook: validationHo
 adminAuditRetention.use(adminAuth);
 adminAuditRetention.use(requestContext);
 
-adminAuditRetention.onError((err, c) => {
-  if (err instanceof HTTPException) {
-    // Our thrown HTTPExceptions carry a JSON Response
-    if (err.res) return err.res;
-    // Framework 400 for malformed JSON
-    if (err.status === 400) {
-      return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
-    }
-  }
-  throw err;
-});
+adminAuditRetention.onError(eeOnError);
 
 // GET / — get current retention policy
 adminAuditRetention.openapi(getRetentionRoute, async (c) => {

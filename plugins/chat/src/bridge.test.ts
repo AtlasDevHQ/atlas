@@ -2276,6 +2276,36 @@ describe("chatPlugin streaming config", () => {
       }),
     ).toThrow(/executeQueryStream/i);
   });
+
+  it("rejects streaming.enabled: true without executeQueryStream", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        },
+        executeQuery: mockExecuteQueryFn,
+        streaming: { enabled: true },
+        // no executeQueryStream
+      }),
+    ).toThrow(/executeQueryStream/i);
+  });
+
+  it("allows streaming.enabled: true with executeQueryStream", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: {
+        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+      },
+      executeQuery: mockExecuteQueryFn,
+      streaming: { enabled: true },
+      executeQueryStream: mockExecuteQueryStreamFn,
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
+  });
 });
 
 // ---------------------------------------------------------------------------

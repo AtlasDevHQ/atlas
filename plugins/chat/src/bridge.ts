@@ -431,9 +431,32 @@ export function createChatBridge(
     postApproval: ((action: PendingAction) => Promise<void>) | null,
     priorMessages?: ChatMessage[],
   ): Promise<void> {
-    const { stream, result } = config.executeQueryStream!(question, {
+    // Defensive guard — streamingEnabled should prevent this, but
+    // protects against config mutation after bridge creation.
+    if (typeof config.executeQueryStream !== "function") {
+      throw new Error(
+        "handleStreamingQuery called but executeQueryStream is not configured",
+      );
+    }
+
+    const streamResult = config.executeQueryStream(question, {
       threadId,
       priorMessages,
+    });
+    if (!streamResult?.stream || !streamResult?.result) {
+      throw new Error(
+        "executeQueryStream must return { stream, result }",
+      );
+    }
+    const { stream, result } = streamResult;
+
+    // Prevent unhandled rejection if the stream consumer aborts early
+    // and the result promise rejects as a consequence.
+    result.catch((err) => {
+      log.debug(
+        { err: err instanceof Error ? err : new Error(String(err)), threadId },
+        "Streaming result promise rejected (likely due to stream abort)",
+      );
     });
 
     // Stream to platform — Chat SDK handles native streaming on Slack
@@ -441,16 +464,18 @@ export function createChatBridge(
     // Throws if the stream errors mid-way (partial content may be visible).
     await postStream(stream);
 
-    // Stream completed — retrieve final structured result for persistence
+    // Stream completed — retrieve final structured result for persistence.
+    // If result rejects, re-throw so the caller's catch block posts an error
+    // card — the user already saw streamed text but would miss approval prompts.
     let queryResult: ChatQueryResult;
     try {
       queryResult = await result;
     } catch (resultErr) {
-      log.warn(
+      log.error(
         { err: resultErr instanceof Error ? resultErr : new Error(String(resultErr)), threadId },
-        "Stream completed but final result unavailable — skipping history persistence",
+        "Stream completed but final result unavailable — approval prompts, history, and conversation tracking lost",
       );
-      return;
+      throw resultErr;
     }
 
     // Post approval prompts for pending actions

@@ -116,12 +116,12 @@ export interface StreamingConfig {
 /** Streaming query result returned by `executeQueryStream`. */
 export interface StreamingQueryResult {
   /** Async iterable of text chunks and structured status updates.
-   * Chat SDK routes this to native streaming on Slack or edit-based fallback
-   * on Teams, Discord, and Google Chat.
    * Yield plain strings for text or `StreamChunk` objects for rich status
    * indicators (e.g. `{ type: "task_update", title: "Running SQL...", status: "in_progress", id: "sql" }`). */
   stream: AsyncIterable<string | StreamChunk>;
   /** Resolves with the final structured result after the stream completes.
+   * Must not resolve before the stream is fully consumed. If the stream
+   * errors, this promise should reject with the same error.
    * Used for history persistence, approval prompts, and conversation tracking. */
   result: Promise<ChatQueryResult>;
 }
@@ -216,9 +216,8 @@ export interface ChatPluginConfig {
 
   /** Streaming query callback. When provided and `streaming.enabled !== false`,
    * the bridge streams responses incrementally instead of waiting for the full
-   * result. The returned stream is passed directly to Chat SDK's `thread.post()`
-   * which routes to native streaming on Slack or edit-based fallback elsewhere.
-   * If not provided, the bridge falls back to the non-streaming `executeQuery`. */
+   * result. If not provided, the bridge falls back to the non-streaming
+   * `executeQuery`. */
   executeQueryStream?: (
     question: string,
     options?: {
@@ -374,4 +373,13 @@ export const ChatConfigSchema = z.object({
       "executeQueryStream must be a function",
     )
     .optional(),
-});
+}).refine(
+  (c) => {
+    // Warn if streaming.enabled is explicitly true but executeQueryStream is missing
+    if (c.streaming?.enabled === true && typeof c.executeQueryStream !== "function") {
+      return false;
+    }
+    return true;
+  },
+  "streaming.enabled is true but executeQueryStream is not provided — streaming will not activate without executeQueryStream",
+);

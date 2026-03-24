@@ -3,13 +3,15 @@
  *
  * Replaces the per-file throwIf*Error helpers that each duplicated the same
  * pattern: EnterpriseError → 403, domain error → status-mapped code.
+ * New admin routes should use throwIfEEError from this module rather than
+ * creating local error-mapping helpers.
  */
 
 import { HTTPException } from "hono/http-exception";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { EnterpriseError } from "@atlas/ee/index";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- constructor signatures vary across EE error classes
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- constructor signatures vary across EE error classes; { code: string } ensures the statusMap lookup is valid
 type DomainErrorClass = new (...args: any[]) => Error & { code: string };
 
 /**
@@ -17,16 +19,19 @@ type DomainErrorClass = new (...args: any[]) => Error & { code: string };
  * Call in catch blocks. Unknown errors fall through.
  *
  * EnterpriseError always maps to 403. Domain errors map to the status
- * specified in their statusMap, falling back to 400 for unmapped codes.
+ * specified in their statusMap. If a code is missing from the map (all codes
+ * should be mapped), defaults to 400 as a safety net.
+ *
+ * @throws {HTTPException} When err is an EnterpriseError or matched domain error.
  *
  * @example
  * ```ts
- * throwIfEEError(err, [ApprovalError, { validation: 400, not_found: 404 }]);
+ * throwIfEEError(err, [ApprovalError, APPROVAL_ERROR_STATUS]);
  * ```
  *
  * @example Multiple domain errors (compliance has both ComplianceError and ReportError):
  * ```ts
- * throwIfEEError(err, [ComplianceError, COMPLIANCE_STATUS], [ReportError, REPORT_STATUS]);
+ * throwIfEEError(err, [ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]);
  * ```
  */
 export function throwIfEEError(
@@ -43,6 +48,9 @@ export function throwIfEEError(
   }
   for (const [errorClass, statusMap] of mappings) {
     if (err instanceof errorClass) {
+      if (statusMap[err.code] === undefined) {
+        console.warn(`[ee-error-handler] Unmapped error code "${err.code}" for ${errorClass.name}, defaulting to 400`);
+      }
       const status = (statusMap[err.code] ?? 400) as ContentfulStatusCode;
       throw new HTTPException(status, {
         res: Response.json(

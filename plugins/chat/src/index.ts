@@ -150,12 +150,13 @@ function buildChatPlugin(
             return c.json({ error: "Slack adapter not configured" }, 404);
           }
 
+          const requestId = crypto.randomUUID();
           try {
             const response = await handler(c.req.raw, {
               waitUntil: (task: Promise<unknown>) => {
                 task.catch((err: unknown) => {
                   (log ?? console).error(
-                    { err: err instanceof Error ? err : new Error(String(err)) },
+                    { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "slack" },
                     "Chat SDK Slack webhook background task failed",
                   );
                 });
@@ -163,7 +164,6 @@ function buildChatPlugin(
             });
             return response;
           } catch (err) {
-            const requestId = crypto.randomUUID();
             (log ?? console).error(
               { err: err instanceof Error ? err : new Error(String(err)), requestId },
               "Slack webhook handler threw unexpectedly",
@@ -265,12 +265,13 @@ function buildChatPlugin(
             return c.json({ error: "Teams adapter not configured" }, 404);
           }
 
+          const requestId = crypto.randomUUID();
           try {
             const response = await handler(c.req.raw, {
               waitUntil: (task: Promise<unknown>) => {
                 task.catch((err: unknown) => {
                   (log ?? console).error(
-                    { err: err instanceof Error ? err : new Error(String(err)) },
+                    { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "teams" },
                     "Chat SDK Teams webhook background task failed",
                   );
                 });
@@ -278,7 +279,6 @@ function buildChatPlugin(
             });
             return response;
           } catch (err) {
-            const requestId = crypto.randomUUID();
             (log ?? console).error(
               { err: err instanceof Error ? err : new Error(String(err)), requestId },
               "Teams webhook handler threw unexpectedly",
@@ -299,12 +299,13 @@ function buildChatPlugin(
             return c.json({ error: "Discord adapter not configured" }, 404);
           }
 
+          const requestId = crypto.randomUUID();
           try {
             const response = await handler(c.req.raw, {
               waitUntil: (task: Promise<unknown>) => {
                 task.catch((err: unknown) => {
                   (log ?? console).error(
-                    { err: err instanceof Error ? err : new Error(String(err)) },
+                    { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "discord" },
                     "Chat SDK Discord webhook background task failed",
                   );
                 });
@@ -312,7 +313,6 @@ function buildChatPlugin(
             });
             return response;
           } catch (err) {
-            const requestId = crypto.randomUUID();
             (log ?? console).error(
               { err: err instanceof Error ? err : new Error(String(err)), requestId },
               "Discord webhook handler threw unexpectedly",
@@ -333,12 +333,13 @@ function buildChatPlugin(
             return c.json({ error: "Google Chat adapter not configured" }, 404);
           }
 
+          const requestId = crypto.randomUUID();
           try {
             const response = await handler(c.req.raw, {
               waitUntil: (task: Promise<unknown>) => {
                 task.catch((err: unknown) => {
                   (log ?? console).error(
-                    { err: err instanceof Error ? err : new Error(String(err)) },
+                    { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "gchat" },
                     "Chat SDK Google Chat webhook background task failed",
                   );
                 });
@@ -346,7 +347,6 @@ function buildChatPlugin(
             });
             return response;
           } catch (err) {
-            const requestId = crypto.randomUUID();
             (log ?? console).error(
               { err: err instanceof Error ? err : new Error(String(err)), requestId },
               "Google Chat webhook handler threw unexpectedly",
@@ -367,12 +367,13 @@ function buildChatPlugin(
             return c.json({ error: "Telegram adapter not configured" }, 404);
           }
 
+          const requestId = crypto.randomUUID();
           try {
             const response = await handler(c.req.raw, {
               waitUntil: (task: Promise<unknown>) => {
                 task.catch((err: unknown) => {
                   (log ?? console).error(
-                    { err: err instanceof Error ? err : new Error(String(err)) },
+                    { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "telegram" },
                     "Chat SDK Telegram webhook background task failed",
                   );
                 });
@@ -380,7 +381,6 @@ function buildChatPlugin(
             });
             return response;
           } catch (err) {
-            const requestId = crypto.randomUUID();
             (log ?? console).error(
               { err: err instanceof Error ? err : new Error(String(err)), requestId },
               "Telegram webhook handler threw unexpectedly",
@@ -401,12 +401,13 @@ function buildChatPlugin(
             return c.json({ error: "GitHub adapter not configured" }, 404);
           }
 
+          const requestId = crypto.randomUUID();
           try {
             const response = await handler(c.req.raw, {
               waitUntil: (task: Promise<unknown>) => {
                 task.catch((err: unknown) => {
                   (log ?? console).error(
-                    { err: err instanceof Error ? err : new Error(String(err)) },
+                    { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "github" },
                     "Chat SDK GitHub webhook background task failed",
                   );
                 });
@@ -414,7 +415,6 @@ function buildChatPlugin(
             });
             return response;
           } catch (err) {
-            const requestId = crypto.randomUUID();
             (log ?? console).error(
               { err: err instanceof Error ? err : new Error(String(err)), requestId },
               "GitHub webhook handler threw unexpectedly",

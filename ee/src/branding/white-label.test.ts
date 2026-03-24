@@ -1,62 +1,13 @@
 import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { createEEMock } from "../__mocks__/internal";
 
 // ── Mocks ───────────────────────────────────────────────────────────
 
-let mockEnterpriseEnabled = false;
-let mockEnterpriseLicenseKey: string | undefined = "test-key";
+const ee = createEEMock();
 
-const { EnterpriseError } = await import("../index");
-
-mock.module("../index", () => ({
-  isEnterpriseEnabled: () => mockEnterpriseEnabled,
-  getEnterpriseLicenseKey: () => mockEnterpriseLicenseKey,
-  EnterpriseError,
-  requireEnterprise: (feature?: string) => {
-    const label = feature ? ` (${feature})` : "";
-    if (!mockEnterpriseEnabled) {
-      throw new EnterpriseError(`Enterprise features${label} are not enabled.`);
-    }
-    if (!mockEnterpriseLicenseKey) {
-      throw new EnterpriseError(`Enterprise features${label} are enabled but no license key is configured.`);
-    }
-  },
-}));
-
-// Mock internal DB — hasInternalDB is toggleable
-let mockHasInternalDB = true;
-const mockRows: Record<string, unknown>[][] = [];
-let queryCallCount = 0;
-const capturedQueries: { sql: string; params: unknown[] }[] = [];
-
-mock.module("@atlas/api/lib/db/internal", () => ({
-  hasInternalDB: () => mockHasInternalDB,
-  getInternalDB: () => ({
-    query: async (sql: string, params?: unknown[]) => {
-      capturedQueries.push({ sql, params: params ?? [] });
-      const rows = mockRows[queryCallCount] ?? [];
-      queryCallCount++;
-      return { rows };
-    },
-    end: async () => {},
-    on: () => {},
-  }),
-  internalQuery: async (sql: string, params?: unknown[]) => {
-    capturedQueries.push({ sql, params: params ?? [] });
-    const rows = mockRows[queryCallCount] ?? [];
-    queryCallCount++;
-    return rows;
-  },
-  internalExecute: () => {},
-}));
-
-mock.module("@atlas/api/lib/logger", () => ({
-  createLogger: () => ({
-    info: () => {},
-    warn: () => {},
-    error: () => {},
-    debug: () => {},
-  }),
-}));
+mock.module("../index", () => ee.enterpriseMock);
+mock.module("@atlas/api/lib/db/internal", () => ee.internalDBMock);
+mock.module("@atlas/api/lib/logger", () => ee.loggerMock);
 
 // Import after mocks
 const {
@@ -68,15 +19,6 @@ const {
 } = await import("./white-label");
 
 // ── Helpers ─────────────────────────────────────────────────────────
-
-function resetMocks() {
-  mockRows.length = 0;
-  queryCallCount = 0;
-  capturedQueries.length = 0;
-  mockEnterpriseEnabled = true;
-  mockEnterpriseLicenseKey = "test-key";
-  mockHasInternalDB = true;
-}
 
 function makeRow(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
   return {
@@ -96,10 +38,10 @@ function makeRow(overrides: Partial<Record<string, unknown>> = {}): Record<strin
 // ── Tests ───────────────────────────────────────────────────────────
 
 describe("getWorkspaceBranding", () => {
-  beforeEach(resetMocks);
+  beforeEach(() => ee.reset());
 
   it("returns branding when found", async () => {
-    mockRows.push([makeRow()]);
+    ee.setMockRows([makeRow()]);
     const result = await getWorkspaceBranding("org-1");
     expect(result).not.toBeNull();
     expect(result!.orgId).toBe("org-1");
@@ -110,54 +52,54 @@ describe("getWorkspaceBranding", () => {
   });
 
   it("returns null when no branding found", async () => {
-    mockRows.push([]);
+    ee.setMockRows([]);
     const result = await getWorkspaceBranding("org-1");
     expect(result).toBeNull();
   });
 
   it("throws when enterprise is disabled", async () => {
-    mockEnterpriseEnabled = false;
+    ee.setEnterpriseEnabled(false);
     await expect(getWorkspaceBranding("org-1")).rejects.toThrow("Enterprise features");
   });
 
   it("returns null when no internal DB", async () => {
-    mockHasInternalDB = false;
+    ee.setHasInternalDB(false);
     const result = await getWorkspaceBranding("org-1");
     expect(result).toBeNull();
-    expect(capturedQueries.length).toBe(0);
+    expect(ee.capturedQueries.length).toBe(0);
   });
 });
 
 describe("getWorkspaceBrandingPublic", () => {
-  beforeEach(resetMocks);
+  beforeEach(() => ee.reset());
 
   it("returns branding without enterprise check", async () => {
-    mockEnterpriseEnabled = false;
-    mockRows.push([makeRow()]);
+    ee.setEnterpriseEnabled(false);
+    ee.setMockRows([makeRow()]);
     const result = await getWorkspaceBrandingPublic("org-1");
     expect(result).not.toBeNull();
     expect(result!.logoText).toBe("Acme Corp");
   });
 
   it("returns null when no branding found", async () => {
-    mockRows.push([]);
+    ee.setMockRows([]);
     const result = await getWorkspaceBrandingPublic("org-1");
     expect(result).toBeNull();
   });
 
   it("returns null when no internal DB", async () => {
-    mockHasInternalDB = false;
+    ee.setHasInternalDB(false);
     const result = await getWorkspaceBrandingPublic("org-1");
     expect(result).toBeNull();
-    expect(capturedQueries.length).toBe(0);
+    expect(ee.capturedQueries.length).toBe(0);
   });
 });
 
 describe("setWorkspaceBranding", () => {
-  beforeEach(resetMocks);
+  beforeEach(() => ee.reset());
 
   it("upserts branding and returns result", async () => {
-    mockRows.push([makeRow()]);
+    ee.setMockRows([makeRow()]);
     const result = await setWorkspaceBranding("org-1", {
       logoUrl: "https://example.com/logo.png",
       logoText: "Acme Corp",
@@ -167,7 +109,7 @@ describe("setWorkspaceBranding", () => {
     });
     expect(result.orgId).toBe("org-1");
     expect(result.logoUrl).toBe("https://example.com/logo.png");
-    expect(capturedQueries[0].sql).toContain("INSERT INTO workspace_branding");
+    expect(ee.capturedQueries[0].sql).toContain("INSERT INTO workspace_branding");
   });
 
   it("throws on invalid hex color", async () => {
@@ -207,7 +149,7 @@ describe("setWorkspaceBranding", () => {
   });
 
   it("allows empty string values (treated as null)", async () => {
-    mockRows.push([makeRow({ logo_url: null, primary_color: null, favicon_url: null })]);
+    ee.setMockRows([makeRow({ logo_url: null, primary_color: null, favicon_url: null })]);
     const result = await setWorkspaceBranding("org-1", {
       logoUrl: "",
       primaryColor: "",
@@ -217,7 +159,7 @@ describe("setWorkspaceBranding", () => {
   });
 
   it("allows null/empty values", async () => {
-    mockRows.push([makeRow({ logo_url: null, logo_text: null, primary_color: null, favicon_url: null, hide_atlas_branding: false })]);
+    ee.setMockRows([makeRow({ logo_url: null, logo_text: null, primary_color: null, favicon_url: null, hide_atlas_branding: false })]);
     const result = await setWorkspaceBranding("org-1", {
       logoUrl: null,
       logoText: null,
@@ -230,21 +172,21 @@ describe("setWorkspaceBranding", () => {
   });
 
   it("throws when enterprise is disabled", async () => {
-    mockEnterpriseEnabled = false;
+    ee.setEnterpriseEnabled(false);
     await expect(
       setWorkspaceBranding("org-1", { logoText: "Test" }),
     ).rejects.toThrow("Enterprise features");
   });
 
   it("throws when no internal DB", async () => {
-    mockHasInternalDB = false;
+    ee.setHasInternalDB(false);
     await expect(
       setWorkspaceBranding("org-1", { logoText: "Test" }),
     ).rejects.toThrow("Internal database required");
   });
 
   it("throws when INSERT returns no rows", async () => {
-    mockRows.push([]);
+    ee.setMockRows([]);
     await expect(
       setWorkspaceBranding("org-1", { logoText: "Test" }),
     ).rejects.toThrow("Failed to save workspace branding");
@@ -252,27 +194,27 @@ describe("setWorkspaceBranding", () => {
 });
 
 describe("deleteWorkspaceBranding", () => {
-  beforeEach(resetMocks);
+  beforeEach(() => ee.reset());
 
   it("returns true when branding was deleted", async () => {
-    mockRows.push([{ id: "brand-123" }]);
+    ee.setMockRows([{ id: "brand-123" }]);
     const result = await deleteWorkspaceBranding("org-1");
     expect(result).toBe(true);
   });
 
   it("returns false when no branding existed", async () => {
-    mockRows.push([]);
+    ee.setMockRows([]);
     const result = await deleteWorkspaceBranding("org-1");
     expect(result).toBe(false);
   });
 
   it("throws when enterprise is disabled", async () => {
-    mockEnterpriseEnabled = false;
+    ee.setEnterpriseEnabled(false);
     await expect(deleteWorkspaceBranding("org-1")).rejects.toThrow("Enterprise features");
   });
 
   it("throws when no internal DB", async () => {
-    mockHasInternalDB = false;
+    ee.setHasInternalDB(false);
     await expect(deleteWorkspaceBranding("org-1")).rejects.toThrow("Internal database required");
   });
 });

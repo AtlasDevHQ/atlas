@@ -64,6 +64,7 @@ Each service points to its `railway.json` via the Railway dashboard. Key env var
 ### Web service (`app.useatlas.dev`)
 
 - `NEXT_PUBLIC_ATLAS_API_URL=https://api.useatlas.dev` — Baked at build time
+- `NEXT_PUBLIC_ATLAS_AUTH_MODE=managed` — Baked at build time, enables proxy route protection
 - `PORT=3000`
 
 ### Sidecar service (internal)

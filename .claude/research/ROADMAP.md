@@ -479,7 +479,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Consolidate semantic layer into semantic/ directory (#837, PR #855) — 5 top-level files → barrel export, move db/semantic-entities.ts
 - [x] Extract shared pagination parser and ID validator (#838, PR #851) — `parsePagination()` + `isValidId()` + `PaginationQuerySchema` replace 24 inline implementations
 - [x] Extract shared sandbox backends for explore/python (#839, PR #859) — 6 parallel backend files → 3 shared, SandboxBackend interface
-- [x] Adopt react-hook-form + shadcn Form for admin dialogs (#856, PR #862) — FormDialog component, 3 admin pages migrated (connections, prompts, users)
+- [x] Adopt react-hook-form + shadcn Form for admin dialogs (#856, PRs #862, #863, #864, #865) — FormDialog component with Zod 4 validation, all 26 admin pages migrated across 4 batches. z.ZodType<T,T> generic pattern for proper zodResolver overload matching
 
 ---
 

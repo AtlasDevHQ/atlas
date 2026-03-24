@@ -111,3 +111,26 @@ Tracking module-deepening refactors discovered by the `improve-codebase-architec
 - All 10+ existing tool tests continue to pass without modification
 
 **Category:** Parallel backend implementations consolidated into shared utilities with barrel exports.
+
+---
+
+## 6. Adopt react-hook-form + shadcn Form for admin dialogs
+
+**Date:** 2026-03-24
+**Issue:** #856
+**PRs:** #862 (initial + 3 pages), #863 (batch 2, 6 pages), #864 (batch 3, 5 pages), #865 (batch 1 EE, 6 pages)
+
+**Problem:** 26 admin pages managed form state via manual `useState` per field — ~230 total useState calls across all pages. Each form dialog (~26 total) repeated: individual field state (5-17 useState per form), manual validation in handleSubmit with string checks, manual form reset on dialog close, and manual error clearing. Top offenders: connections (21 useState), prompts (17), users (16), scheduled-tasks (14).
+
+**Solution:** Installed `react-hook-form` + `@hookform/resolvers` + shadcn `form` component. Created `FormDialog<TValues>` component combining Dialog + useForm + Zod validation with automatic reset on open, field-level errors via shadcn Form primitives, and root-level error display. Used `z.ZodType<TValues, TValues>` generic to properly satisfy zodResolver's Zod 4 overload (avoids `any` cast). Migrated all 26 admin pages across 4 parallel batches.
+
+**Impact:**
+- **+1,682 additions, -1,159 deletions** across 4 PRs (26 admin pages + FormDialog component + shadcn form component)
+- Eliminated ~70% of form-related useState calls
+- Zod schemas now shared between API validation and form validation
+- New admin dialogs: ~40-60 LOC instead of ~150 LOC
+- Field-level validation for free (vs. manual string checks in handleSubmit)
+- Automatic form reset on dialog close (was manual in every dialog)
+- Discovered 2 bugs during migration: useAdminMutation 204 handling (#866, #867)
+
+**Category:** Manual form state management replaced with composable hook + component pattern, leveraging existing ecosystem (react-hook-form + Zod + shadcn).

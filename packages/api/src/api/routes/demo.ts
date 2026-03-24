@@ -25,6 +25,7 @@ import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { getClientIP } from "@atlas/api/lib/auth/middleware";
 import { createAtlasUser } from "@atlas/api/lib/auth/types";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
+import { parsePagination } from "./shared-schemas";
 import {
   createConversation,
   addMessage,
@@ -632,8 +633,7 @@ demo.openapi(listDemoConversationsRoute, async (c) => {
 
   try {
     const userId = demoUserId(email);
-    const limit = Math.min(parseInt(c.req.query("limit") ?? "50", 10) || 50, 100);
-    const offset = parseInt(c.req.query("offset") ?? "0", 10) || 0;
+    const { limit, offset } = parsePagination(c, { limit: 50, maxLimit: 100 });
     const result = await listConversations({ userId, limit, offset });
     return c.json(result, 200);
   } catch (err) {

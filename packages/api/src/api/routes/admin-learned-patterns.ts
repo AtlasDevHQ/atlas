@@ -12,7 +12,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { LEARNED_PATTERN_STATUSES, type LearnedPattern } from "@useatlas/types";
 import { invalidatePatternCache } from "@atlas/api/lib/learn/pattern-cache";
-import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
+import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
 import { adminAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("admin-learned-patterns");
@@ -385,8 +385,7 @@ adminLearnedPatterns.openapi(listPatternsRoute, async (c) => {
     const sourceEntity = url.searchParams.get("source_entity");
     const minConfidence = url.searchParams.get("min_confidence");
     const maxConfidence = url.searchParams.get("max_confidence");
-    let limit = parseInt(url.searchParams.get("limit") ?? "50", 10);
-    let offset = parseInt(url.searchParams.get("offset") ?? "0", 10);
+    const { limit, offset } = parsePagination(c);
 
     if (status && !VALID_STATUSES.has(status)) {
       return c.json({ error: "bad_request", message: `Invalid status filter. Must be one of: pending, approved, rejected.` }, 400);
@@ -411,10 +410,6 @@ adminLearnedPatterns.openapi(listPatternsRoute, async (c) => {
         return c.json({ error: "bad_request", message: "min_confidence must be less than or equal to max_confidence." }, 400);
       }
     }
-
-    if (isNaN(limit) || limit < 1) limit = 50;
-    if (limit > 200) limit = 200;
-    if (isNaN(offset) || offset < 0) offset = 0;
 
     const orgId = authResult.user?.activeOrganizationId;
     const whereParts: string[] = [];

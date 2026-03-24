@@ -16,7 +16,7 @@ import {
 } from "@atlas/api/lib/email/engine";
 import { ONBOARDING_SEQUENCE } from "@atlas/api/lib/email/sequence";
 import { ONBOARDING_EMAIL_STEPS, ONBOARDING_MILESTONES } from "@useatlas/types";
-import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
+import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
 
 const log = createLogger("admin-onboarding-emails");
 
@@ -131,8 +131,7 @@ adminOnboardingEmails.openapi(listStatusesRoute, async (c) => {
       }, 200);
     }
 
-    const limit = Math.min(parseInt(c.req.query("limit") ?? "50", 10) || 50, 200);
-    const offset = parseInt(c.req.query("offset") ?? "0", 10) || 0;
+    const { limit, offset } = parsePagination(c);
 
     try {
       const result = await getOnboardingStatuses(orgId, limit, offset);

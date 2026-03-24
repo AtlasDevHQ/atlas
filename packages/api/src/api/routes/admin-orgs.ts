@@ -22,12 +22,11 @@ import {
 import { connections } from "@atlas/api/lib/db/connection";
 import { flushCache } from "@atlas/api/lib/cache/index";
 import { invalidatePlanCache } from "@atlas/api/lib/billing/enforcement";
-import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
+import { ErrorSchema, AuthErrorSchema, MAX_ID_LENGTH } from "./shared-schemas";
 import { adminAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("admin-orgs");
 
-const MAX_ID_LENGTH = 128;
 
 // ---------------------------------------------------------------------------
 // Schemas

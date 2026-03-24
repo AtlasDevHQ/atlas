@@ -24,16 +24,10 @@ import {
   deleteGroupMapping,
   SCIMError,
 } from "@atlas/ee/auth/scim";
-import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
+import { ErrorSchema, AuthErrorSchema, isValidId, MAX_ID_LENGTH } from "./shared-schemas";
 import { adminAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("admin-scim");
-
-const MAX_ID_LENGTH = 128;
-
-function isValidId(id: string | undefined): id is string {
-  return !!id && id.length > 0 && id.length <= MAX_ID_LENGTH;
-}
 
 const SCIM_ERROR_STATUS = { not_found: 404, conflict: 409, validation: 400 } as const;
 

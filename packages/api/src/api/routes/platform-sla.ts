@@ -20,7 +20,7 @@ import {
   SLA_ALERT_STATUSES,
   SLA_ALERT_TYPES,
 } from "@useatlas/types";
-import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
+import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
 import { platformAdminAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("platform-sla");
@@ -293,7 +293,7 @@ platformSLA.openapi(listAlertsRoute, async (c) => {
   const statusParam = c.req.query("status");
   const validStatuses = new Set(SLA_ALERT_STATUSES);
   const status = statusParam && validStatuses.has(statusParam as "firing") ? (statusParam as "firing" | "resolved" | "acknowledged") : undefined;
-  const limit = Math.min(Math.max(parseInt(c.req.query("limit") ?? "100", 10) || 100, 1), 500);
+  const { limit } = parsePagination(c, { limit: 100, maxLimit: 500 });
 
   try {
     const alerts = await sla.getAlerts(status, limit);

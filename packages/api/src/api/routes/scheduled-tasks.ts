@@ -27,7 +27,7 @@ import {
 import { DELIVERY_CHANNELS, RUN_STATUSES, type RunStatus } from "@atlas/api/lib/scheduled-task-types";
 import { ACTION_APPROVAL_MODES } from "@atlas/api/lib/action-types";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
-import { ErrorSchema } from "./shared-schemas";
+import { ErrorSchema, parsePagination } from "./shared-schemas";
 
 const log = createLogger("scheduled-tasks-routes");
 
@@ -397,10 +397,7 @@ authed.openapi(listTasksRoute, async (c) => {
 
   const authResult = c.get("authResult");
 
-  const rawLimit = parseInt(c.req.query("limit") ?? "20", 10);
-  const rawOffset = parseInt(c.req.query("offset") ?? "0", 10);
-  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 100) : 20;
-  const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
+  const { limit, offset } = parsePagination(c, { limit: 20, maxLimit: 100 });
   const enabledParam = c.req.query("enabled");
   const enabled = enabledParam === "true" ? true : enabledParam === "false" ? false : undefined;
 
@@ -523,10 +520,7 @@ authed.openapi(listAllRunsRoute, async (c) => {
     return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
   }
 
-  const rawLimit = parseInt(c.req.query("limit") ?? "20", 10);
-  const rawOffset = parseInt(c.req.query("offset") ?? "0", 10);
-  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 100) : 20;
-  const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
+  const { limit, offset } = parsePagination(c, { limit: 20, maxLimit: 100 });
 
   const taskIdParam = c.req.query("task_id") || undefined;
   const taskId = taskIdParam && UUID_RE.test(taskIdParam) ? taskIdParam : undefined;
@@ -744,8 +738,7 @@ authed.openapi(listTaskRunsRoute, async (c) => {
     return c.json(fail.body, fail.status);
   }
 
-  const rawLimit = parseInt(c.req.query("limit") ?? "20", 10);
-  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 100) : 20;
+  const { limit } = parsePagination(c, { limit: 20, maxLimit: 100 });
   const runs = await listTaskRuns(id, { limit });
   return c.json({ runs }, 200);
 });

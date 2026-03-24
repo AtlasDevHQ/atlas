@@ -132,9 +132,6 @@ function SettingControl({
         placeholder={setting.default ?? ""}
         value={field.value}
         onChange={(e) => field.onChange(e.target.value)}
-        onBlur={field.onBlur}
-        name={field.name}
-        ref={field.ref}
       />
     </FormControl>
   );

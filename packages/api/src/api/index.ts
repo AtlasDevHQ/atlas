@@ -262,6 +262,18 @@ try {
   );
 }
 
+// Platform custom domain routes — enterprise-gated, platform_admin role.
+try {
+  const { platformDomains } = await import("./routes/platform-domains");
+  app.route("/api/v1/platform/domains", platformDomains);
+  log.info("Platform custom domain routes enabled");
+} catch (err) {
+  log.error(
+    { err: err instanceof Error ? err : new Error(String(err)) },
+    "Failed to load platform domain routes — custom domains will be unavailable",
+  );
+}
+
 // Billing routes — lazy import, only loaded if STRIPE_SECRET_KEY is set (SaaS mode).
 if (process.env.STRIPE_SECRET_KEY) {
   try {

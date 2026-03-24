@@ -80,6 +80,7 @@ const navItems = [
   { href: "/admin/platform/sla", label: "SLA Monitoring", icon: Activity, requiredRole: "platform_admin" as const },
   { href: "/admin/platform/backups", label: "Backups", icon: HardDrive, requiredRole: "platform_admin" as const },
   { href: "/admin/platform/residency", label: "Data Residency", icon: Globe, requiredRole: "platform_admin" as const },
+  { href: "/admin/platform/domains", label: "Custom Domains", icon: Globe, requiredRole: "platform_admin" as const },
 ];
 
 export function AdminSidebar() {

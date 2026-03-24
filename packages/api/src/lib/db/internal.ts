@@ -818,6 +818,24 @@ export async function migrateInternalDB(): Promise<void> {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_abuse_events_workspace ON abuse_events(workspace_id, created_at);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_abuse_events_level ON abuse_events(level);`);
 
+  // Enterprise custom domains (0.9.0 — workspace custom domains #664)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS custom_domains (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      workspace_id TEXT NOT NULL,
+      domain TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL DEFAULT 'pending',
+      railway_domain_id TEXT,
+      cname_target TEXT,
+      certificate_status TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      verified_at TIMESTAMPTZ
+    );
+  `);
+  await pool.query(`DO $$ BEGIN ALTER TABLE custom_domains ADD CONSTRAINT chk_domain_status CHECK (status IN ('pending', 'verified', 'failed')); EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_custom_domains_workspace ON custom_domains(workspace_id);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_custom_domains_status ON custom_domains(status);`);
+
   log.info("Internal DB migration complete");
 }
 

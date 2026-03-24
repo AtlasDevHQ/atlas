@@ -126,6 +126,12 @@ export type {
   WorkspaceRegion,
   RegionStatus,
 } from "@useatlas/types";
+export type {
+  CustomDomain,
+  DomainStatus,
+  CertificateStatus,
+} from "@useatlas/types";
+export { DOMAIN_STATUSES, CERTIFICATE_STATUSES } from "@useatlas/types";
 export { BACKUP_STATUSES } from "@useatlas/types";
 export { WELL_KNOWN_REGIONS } from "@useatlas/types";
 export { ABUSE_LEVELS, ABUSE_TRIGGERS } from "@useatlas/types";

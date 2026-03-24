@@ -23,3 +23,4 @@ export * from "./abuse";
 export * from "./sla";
 export * from "./backups";
 export * from "./residency";
+export * from "./domain";

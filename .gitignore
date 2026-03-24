@@ -8,6 +8,7 @@ tsconfig.tsbuildinfo
 .claude/*
 !.claude/commands/
 !.claude/settings.json
+!.claude/research/
 /semantic/
 create-atlas/templates/*/semantic/
 create-atlas/templates/*/bin/

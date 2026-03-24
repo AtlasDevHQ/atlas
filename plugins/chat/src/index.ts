@@ -2,8 +2,8 @@
  * Atlas Chat SDK Bridge Plugin.
  *
  * Bridges vercel/chat (Chat SDK) into the Atlas plugin system as a unified
- * interaction layer. Supports Slack, Teams, Discord, Google Chat, and Telegram;
- * additional platforms will be added as Chat SDK adapters in follow-up issues.
+ * interaction layer. Supports Slack, Teams, Discord, Google Chat, Telegram,
+ * and GitHub; additional platforms will be added as Chat SDK adapters.
  *
  * Replaces the standalone `@useatlas/slack` and `@useatlas/teams` plugins
  * with a unified Chat SDK adapter approach. See the migration guide in README.md.
@@ -36,6 +36,11 @@
  *         telegram: {
  *           botToken: process.env.TELEGRAM_BOT_TOKEN!,
  *         },
+ *         github: {
+ *           appId: process.env.GITHUB_APP_ID!,
+ *           privateKey: process.env.GITHUB_PRIVATE_KEY!,
+ *           webhookSecret: process.env.GITHUB_WEBHOOK_SECRET!,
+ *         },
  *       },
  *       executeQuery: myQueryFunction,
  *     }),
@@ -50,6 +55,7 @@ import type { TeamsAdapter } from "@chat-adapter/teams";
 import type { DiscordAdapter } from "@chat-adapter/discord";
 import type { GoogleChatAdapter } from "@chat-adapter/gchat";
 import type { TelegramAdapter } from "@chat-adapter/telegram";
+import type { GitHubAdapter } from "@chat-adapter/github";
 import { createPlugin } from "@useatlas/plugin-sdk";
 import type {
   AtlasInteractionPlugin,
@@ -66,6 +72,7 @@ import { createTeamsAdapter } from "./adapters/teams";
 import { createDiscordAdapter } from "./adapters/discord";
 import { createGoogleChatAdapter } from "./adapters/gchat";
 import { createTelegramAdapter } from "./adapters/telegram";
+import { createGitHubAdapter } from "./adapters/github";
 import { createStateAdapter } from "./state";
 
 // Re-export types for host wiring convenience
@@ -82,6 +89,7 @@ export type {
   DiscordAdapterConfig,
   GoogleChatAdapterConfig,
   TelegramAdapterConfig,
+  GitHubAdapterConfig,
   StreamingConfig,
   StreamingQueryResult,
 } from "./config";
@@ -112,6 +120,7 @@ function buildChatPlugin(
   let discordAdapterInstance: DiscordAdapter | null = null;
   let gchatAdapterInstance: GoogleChatAdapter | null = null;
   let telegramAdapterInstance: TelegramAdapter | null = null;
+  let githubAdapterInstance: GitHubAdapter | null = null;
   let log: PluginLogger | null = null;
   let initialized = false;
 
@@ -380,6 +389,40 @@ function buildChatPlugin(
           }
         });
       }
+
+      if (config.adapters.github) {
+        app.post("/webhooks/github", async (c) => {
+          if (!bridge) {
+            return c.json({ error: "Chat plugin not yet initialized" }, 503);
+          }
+
+          const handler = bridge.webhooks.github;
+          if (!handler) {
+            return c.json({ error: "GitHub adapter not configured" }, 404);
+          }
+
+          try {
+            const response = await handler(c.req.raw, {
+              waitUntil: (task: Promise<unknown>) => {
+                task.catch((err: unknown) => {
+                  (log ?? console).error(
+                    { err: err instanceof Error ? err : new Error(String(err)) },
+                    "Chat SDK GitHub webhook background task failed",
+                  );
+                });
+              },
+            });
+            return response;
+          } catch (err) {
+            const requestId = crypto.randomUUID();
+            (log ?? console).error(
+              { err: err instanceof Error ? err : new Error(String(err)), requestId },
+              "GitHub webhook handler threw unexpectedly",
+            );
+            return c.json({ error: "Webhook processing failed", requestId }, 500);
+          }
+        });
+      }
     },
 
     async initialize(ctx: AtlasPluginContext) {
@@ -406,6 +449,7 @@ function buildChatPlugin(
         discord?: DiscordAdapter | null;
         gchat?: GoogleChatAdapter | null;
         telegram?: TelegramAdapter | null;
+        github?: GitHubAdapter | null;
       } = {};
       try {
         if (config.adapters.slack) {
@@ -427,6 +471,15 @@ function buildChatPlugin(
         if (config.adapters.telegram) {
           telegramAdapterInstance = createTelegramAdapter(config.adapters.telegram) as TelegramAdapter;
           adapterInstances.telegram = telegramAdapterInstance;
+        }
+        if (config.adapters.github) {
+          if (!config.adapters.github.webhookSecret) {
+            ctx.logger.warn(
+              "GitHub adapter configured without webhookSecret — webhook endpoint will accept unauthenticated requests. Set webhookSecret for production deployments.",
+            );
+          }
+          githubAdapterInstance = createGitHubAdapter(config.adapters.github) as GitHubAdapter;
+          adapterInstances.github = githubAdapterInstance;
         }
 
         bridge = createChatBridge(config, ctx.logger, stateAdapter, adapterInstances);
@@ -450,6 +503,7 @@ function buildChatPlugin(
         discordAdapterInstance = null;
         gchatAdapterInstance = null;
         telegramAdapterInstance = null;
+        githubAdapterInstance = null;
         throw err;
       }
 
@@ -536,6 +590,7 @@ function buildChatPlugin(
       discordAdapterInstance = null;
       gchatAdapterInstance = null;
       telegramAdapterInstance = null;
+      githubAdapterInstance = null;
       log = null;
       initialized = false;
     },
@@ -558,6 +613,7 @@ function buildChatPlugin(
  *     discord: { botToken: "...", applicationId: "...", publicKey: "..." },
  *     gchat: { credentials: { client_email: "...", private_key: "..." } },
  *     telegram: { botToken: "..." },
+ *     github: { appId: "...", privateKey: "...", webhookSecret: "..." },
  *   },
  *   executeQuery: myQueryFunction,
  * })]
@@ -567,7 +623,10 @@ export const chatPlugin = createPlugin<
   ChatPluginConfig,
   AtlasInteractionPlugin<ChatPluginConfig>
 >({
-  configSchema: ChatConfigSchema,
+  // Cast: Zod infers all-optional fields for GitHub's schema, but runtime
+  // superRefine validates the discriminated union constraints. The TypeScript
+  // union type (GitHubAdapterConfig) provides compile-time safety separately.
+  configSchema: ChatConfigSchema as unknown as { parse(input: unknown): ChatPluginConfig },
   create: buildChatPlugin,
 });
 

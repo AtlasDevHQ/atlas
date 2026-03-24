@@ -1,0 +1,239 @@
+---
+title: GitHub Bot
+description: Integrate GitHub as an interaction surface for Atlas — @mention the bot in Pull Request comments to get data answers rendered as GitHub-Flavored Markdown.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The GitHub interaction is provided via the [`@useatlas/chat`](/plugins/interactions/chat) Chat SDK bridge plugin. Users can @mention the bot in Pull Request comments — both in the Conversation tab and in review comment threads on the Files Changed tab — to query data. The bot replies with GitHub-Flavored Markdown containing the answer, SQL in code fences, and data as a Markdown table.
+
+The Chat SDK adapter supports both Personal Access Token (PAT) auth and GitHub App auth (single-tenant or multi-tenant). Webhook payloads are verified via HMAC-SHA256 when a webhook secret is configured.
+
+## Prerequisites
+
+- A GitHub App or a Personal Access Token with appropriate permissions
+- A publicly accessible HTTPS URL for webhook delivery
+- Repository or organization access for the bot
+
+## GitHub App Setup
+
+GitHub App auth is recommended for production. It provides fine-grained permissions and supports multi-tenant (public app) mode.
+
+### 1. Create a GitHub App
+
+1. Go to your organization's **Settings** > **Developer settings** > **GitHub Apps** > **New GitHub App**
+2. Fill in the app name and homepage URL
+3. Set the **Webhook URL** to your Atlas API endpoint:
+   ```
+   https://your-atlas-api.example.com/api/plugins/chat-interaction/webhooks/github
+   ```
+4. Set a **Webhook secret** and save it securely
+5. Under **Permissions**, grant:
+   - **Issues**: Read & write (required — GitHub's API uses the issues endpoint for PR conversation-tab comments)
+   - **Pull requests**: Read & write (for review comments on the Files Changed tab)
+6. Under **Subscribe to events**, check:
+   - **Issue comments** (covers PR conversation-tab comments — standalone issue comments are ignored by the adapter)
+   - **Pull request review comments**
+7. Click **Create GitHub App**
+
+### 2. Generate a Private Key
+
+1. On the app settings page, scroll to **Private keys**
+2. Click **Generate a private key** — a `.pem` file will download
+3. Store the private key securely. You'll need the contents as `GITHUB_PRIVATE_KEY`
+
+<Callout type="warn">
+The private key grants full access to your GitHub App's permissions. Store it securely and never commit it to source control. For multi-line env vars, replace newlines with `\n` or base64-encode the key.
+</Callout>
+
+### 3. Install the App
+
+1. From the app settings page, click **Install App** in the left sidebar
+2. Choose the organization or user account to install on
+3. Select **All repositories** or specific repositories
+4. Click **Install**
+
+Note the **App ID** (shown on the app's General settings page) and the **Installation ID** (visible in the URL after installing: `https://github.com/settings/installations/{installation_id}`).
+
+## Personal Access Token Setup
+
+For personal bots or testing, you can use a PAT instead of a GitHub App.
+
+1. Go to **Settings** > **Developer settings** > **Personal access tokens** > **Fine-grained tokens**
+2. Create a token with:
+   - **Repository access**: select repositories where the bot should respond
+   - **Permissions**: Issues (Read & write), Pull requests (Read & write)
+3. Set up webhooks manually on each repository or organization:
+   - **Settings** > **Webhooks** > **Add webhook**
+   - **Payload URL**: `https://your-atlas-api.example.com/api/plugins/chat-interaction/webhooks/github`
+   - **Content type**: `application/json`
+   - **Secret**: your webhook secret
+   - **Events**: select "Issue comments" and "Pull request review comments"
+
+## Configuration
+
+### GitHub App (Multi-Tenant)
+
+```typescript
+import { defineConfig } from "@atlas/api/lib/config";
+import { executeAgentQuery } from "@atlas/api/lib/agent-query";
+import { chatPlugin } from "@useatlas/chat";
+
+export default defineConfig({
+  plugins: [
+    chatPlugin({
+      adapters: {
+        github: {
+          appId: process.env.GITHUB_APP_ID!,
+          privateKey: process.env.GITHUB_PRIVATE_KEY!,
+          webhookSecret: process.env.GITHUB_WEBHOOK_SECRET!,
+        },
+      },
+      executeQuery: executeAgentQuery,
+    }),
+  ],
+});
+```
+
+### GitHub App (Single-Tenant)
+
+```typescript
+chatPlugin({
+  adapters: {
+    github: {
+      appId: process.env.GITHUB_APP_ID!,
+      privateKey: process.env.GITHUB_PRIVATE_KEY!,
+      installationId: Number(process.env.GITHUB_INSTALLATION_ID!),
+      webhookSecret: process.env.GITHUB_WEBHOOK_SECRET!,
+    },
+  },
+  executeQuery: executeAgentQuery,
+})
+```
+
+### Personal Access Token
+
+```typescript
+chatPlugin({
+  adapters: {
+    github: {
+      token: process.env.GITHUB_TOKEN!,
+      webhookSecret: process.env.GITHUB_WEBHOOK_SECRET!,
+      userName: "my-bot-username",
+    },
+  },
+  executeQuery: executeAgentQuery,
+})
+```
+
+### Options
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `appId` | `string` | Yes* | GitHub App ID. Required for App-based auth. |
+| `privateKey` | `string` | Yes* | GitHub App private key (PEM format). Required for App-based auth. |
+| `installationId` | `number` | No | Installation ID for single-tenant mode. Omit for multi-tenant (auto-detected from webhook payloads). |
+| `token` | `string` | Yes* | Personal Access Token. Alternative to App-based auth. |
+| `webhookSecret` | `string` | No | Webhook secret for HMAC-SHA256 signature verification. Strongly recommended for production. |
+| `userName` | `string` | No | Bot username for @-mention detection (e.g., `"my-bot"` or `"my-bot[bot]"`). |
+
+<Callout type="info">
+\* Provide either `token` (PAT auth) or `appId` + `privateKey` (GitHub App auth). Do not provide both.
+</Callout>
+
+## Mounted Routes
+
+The Chat SDK bridge mounts the following route for GitHub:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/webhooks/github` | GitHub webhook — receives PR conversation comments and review comments |
+
+## How It Works
+
+### @Mentions in PR Conversation Tab
+
+1. A user @mentions the bot in a PR conversation comment
+2. GitHub sends an `issue_comment` webhook to the `/webhooks/github` endpoint
+3. The adapter detects it is PR-related, subscribes the thread for follow-ups
+4. The `executeQuery` callback runs the Atlas agent
+5. Results are posted as a GFM comment: answer text, SQL in code fences, data as a Markdown table
+
+<Callout type="info">
+The adapter only processes comments on Pull Requests. Standalone issue comments (on non-PR issues) are silently ignored by the underlying `@chat-adapter/github` adapter.
+</Callout>
+
+### @Mentions in Review Comments (Files Changed Tab)
+
+1. A user @mentions the bot in a line-specific review comment
+2. GitHub sends a `pull_request_review_comment` webhook
+3. The adapter subscribes the review comment thread for follow-ups
+4. Results are posted as a reply in the same review thread
+
+### Threaded Follow-ups
+
+1. After an initial response, the thread is subscribed via the Chat SDK state adapter
+2. Follow-up comments in the same PR thread trigger new queries with conversation history
+3. The agent has context from prior messages for multi-turn analysis
+
+### Streaming
+
+When `executeQueryStream` is configured, the adapter accumulates the full streamed response and posts it as a single comment once complete. Unlike Teams or Discord, there are no progressive edits — GitHub's API constraints make rapid comment edits impractical. The `chunkIntervalMs` setting has no effect on GitHub.
+
+### Actions and Buttons
+
+GitHub does not support interactive buttons or card actions. Approval prompts (pending actions) are not rendered on this platform. If your workflow requires approval flows, use a platform that supports interactive cards (Slack, Teams, Discord).
+
+### Response Format
+
+Responses are rendered as GitHub-Flavored Markdown:
+
+- **Answer text** as plain markdown
+- **SQL queries** in ` ```sql ` code fences
+- **Data tables** as GFM Markdown tables
+- **Reactions** supported (thumbs up/down, etc.)
+
+GitHub does not support rich cards or interactive buttons. The Chat SDK adapter automatically uses the markdown fallback format. For streaming, the adapter accumulates the full response and posts it as a single comment rather than progressively editing, so there is no visible incremental update.
+
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `GITHUB_APP_ID` | GitHub App ID (for App-based auth) |
+| `GITHUB_PRIVATE_KEY` | GitHub App private key in PEM format (for App-based auth) |
+| `GITHUB_INSTALLATION_ID` | Installation ID for single-tenant mode (optional) |
+| `GITHUB_TOKEN` | Personal Access Token (for PAT auth) |
+| `GITHUB_WEBHOOK_SECRET` | Webhook secret for HMAC-SHA256 verification |
+| `GITHUB_BOT_USERNAME` | Bot username for @-mention detection (optional, falls back to adapter default) |
+
+## Troubleshooting
+
+### Bot not responding to @mentions
+
+1. Verify the webhook is configured and delivering successfully: check **Settings** > **Webhooks** > **Recent Deliveries**
+2. Check that the webhook URL is publicly accessible over HTTPS
+3. Ensure the GitHub App is installed on the target repository
+4. Check Atlas logs for initialization errors
+
+### Webhook signature verification failures
+
+Ensure the `webhookSecret` in your Atlas config matches the secret configured in the GitHub webhook settings. The comparison is case-sensitive.
+
+### Bot replying to its own messages
+
+The adapter uses the bot's user ID for self-message detection. For GitHub Apps, this is handled automatically. For PAT auth, set `userName` to your bot account's GitHub username.
+
+### Rate limiting
+
+GitHub API has rate limits (5,000 requests/hour for authenticated requests, higher for GitHub Apps). For high-traffic repositories, use GitHub App auth which has higher rate limits per installation.
+
+### Large data tables
+
+GitHub comments have a 65,536-character limit. Very large query results may be truncated or fail to post. Consider configuring `ATLAS_ROW_LIMIT` to limit result size.
+
+## Reference
+
+- [GitHub Apps documentation](https://docs.github.com/en/apps/creating-github-apps)
+- [GitHub webhooks documentation](https://docs.github.com/en/webhooks)
+- [Chat SDK Bridge plugin](/plugins/interactions/chat)
+- [Chat SDK documentation](https://chat-sdk.dev/docs)

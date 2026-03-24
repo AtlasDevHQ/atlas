@@ -79,6 +79,57 @@ export interface TelegramAdapterConfig {
   secretToken?: string;
 }
 
+/** Shared GitHub adapter fields (auth-mode-independent). */
+interface GitHubAdapterBaseConfig {
+  /** Webhook secret for HMAC-SHA256 signature verification.
+   * Must match the secret configured in your GitHub webhook settings. */
+  webhookSecret?: string;
+  /** Bot username (e.g., "my-bot" or "my-bot[bot]" for GitHub Apps).
+   * Used for @-mention detection. */
+  userName?: string;
+}
+
+/** GitHub adapter using a Personal Access Token. */
+interface GitHubPATConfig extends GitHubAdapterBaseConfig {
+  /** Personal Access Token — simplest auth, for personal bots or testing. */
+  token: string;
+  appId?: never;
+  privateKey?: never;
+  installationId?: never;
+}
+
+/** GitHub adapter using a GitHub App with a fixed installation. */
+interface GitHubAppSingleTenantConfig extends GitHubAdapterBaseConfig {
+  token?: never;
+  /** GitHub App ID. */
+  appId: string;
+  /** GitHub App private key (PEM format). */
+  privateKey: string;
+  /** Installation ID — locks the adapter to a single org/repo. */
+  installationId: number;
+}
+
+/** GitHub adapter using a GitHub App in multi-tenant mode.
+ * Installation ID is auto-detected from each webhook payload. */
+interface GitHubAppMultiTenantConfig extends GitHubAdapterBaseConfig {
+  token?: never;
+  /** GitHub App ID. */
+  appId: string;
+  /** GitHub App private key (PEM format). */
+  privateKey: string;
+  installationId?: never;
+}
+
+/** GitHub adapter credential configuration.
+ * Discriminated union — exactly one auth mode must be provided:
+ * - PAT: `{ token }` — simplest, for personal bots
+ * - App single-tenant: `{ appId, privateKey, installationId }` — fixed org
+ * - App multi-tenant: `{ appId, privateKey }` — public app, auto-detects installation */
+export type GitHubAdapterConfig =
+  | GitHubPATConfig
+  | GitHubAppSingleTenantConfig
+  | GitHubAppMultiTenantConfig;
+
 /** Google Chat adapter credential configuration. */
 export interface GoogleChatAdapterConfig {
   /** Service account credentials JSON (client_email + private_key). */
@@ -107,7 +158,8 @@ export interface StreamingConfig {
    * or edit-based fallback (Teams, Discord, Google Chat). */
   enabled?: boolean;
   /** Minimum interval (ms) between message edits for edit-based streaming
-   * on platforms without native streaming (Teams, Discord, Google Chat).
+   * on platforms that support progressive edits (Teams, Discord, Google Chat,
+   * Telegram). GitHub is unaffected — it buffers and posts once.
    * Must be between 200 and 10,000. Lower values provide smoother updates
    * but risk hitting platform rate limits.
    * Default: 500 (Chat SDK default) */
@@ -185,6 +237,7 @@ export interface ChatPluginConfig {
     discord?: DiscordAdapterConfig;
     gchat?: GoogleChatAdapterConfig;
     telegram?: TelegramAdapterConfig;
+    github?: GitHubAdapterConfig;
   };
 
   /** State backend configuration. Default: { backend: "memory" } */
@@ -267,6 +320,49 @@ const TelegramAdapterSchema = z.object({
   secretToken: z.string().min(1).optional(),
 });
 
+const GitHubAdapterSchema = z.object({
+  token: z.string().min(1, "github token must not be empty").optional(),
+  appId: z.string().min(1, "github appId must not be empty").optional(),
+  privateKey: z.string().min(1, "github privateKey must not be empty").optional(),
+  installationId: z.number().int().positive("github installationId must be a positive integer").optional(),
+  webhookSecret: z.string().min(1, "github webhookSecret must not be empty").optional(),
+  userName: z.string().min(1, "github userName must not be empty").optional(),
+}).superRefine((c, ctx) => {
+  if (c.token && c.appId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Cannot provide both token (PAT) and appId (GitHub App) — choose one auth mode",
+    });
+  }
+  if (c.appId && !c.privateKey) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "appId requires privateKey for GitHub App auth",
+      path: ["privateKey"],
+    });
+  }
+  if (!c.appId && c.privateKey) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "privateKey requires appId for GitHub App auth",
+      path: ["appId"],
+    });
+  }
+  if (c.installationId && !c.appId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "installationId requires appId — it is only used with GitHub App auth",
+      path: ["installationId"],
+    });
+  }
+  if (!c.token && !c.appId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Provide either token (PAT) or appId + privateKey (GitHub App) — at least one credential path is required",
+    });
+  }
+});
+
 const GoogleChatAdapterSchema = z.object({
   credentials: z.object({
     client_email: z.string().email("gchat credentials.client_email must be a valid email"),
@@ -316,6 +412,7 @@ export const ChatConfigSchema = z.object({
       discord: DiscordAdapterSchema.optional(),
       gchat: GoogleChatAdapterSchema.optional(),
       telegram: TelegramAdapterSchema.optional(),
+      github: GitHubAdapterSchema.optional(),
     })
     .strict()
     .refine(

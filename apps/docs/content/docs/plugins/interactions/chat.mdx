@@ -30,6 +30,7 @@ bun add @useatlas/chat
 | Discord | `@chat-adapter/discord` | Stable |
 | Google Chat | `@chat-adapter/gchat` | Stable |
 | Telegram | `@chat-adapter/telegram` | Stable |
+| GitHub | `@chat-adapter/github` | Stable |
 
 Stable adapters are bundled as dependencies of `@useatlas/chat` — no separate install needed. Additional platforms (WhatsApp) are planned and will be supported as Chat SDK adapters are published.
 
@@ -105,6 +106,12 @@ export default defineConfig({
 | `adapters.gchat.impersonateUser` | `string` | No | User email for domain-wide delegation. |
 | `adapters.telegram.botToken` | `string` | Yes* | Telegram bot token from BotFather. |
 | `adapters.telegram.secretToken` | `string` | No | Webhook secret token for request verification. |
+| `adapters.github.appId` | `string` | Yes* | GitHub App ID. Required for App-based auth. |
+| `adapters.github.privateKey` | `string` | Yes* | GitHub App private key (PEM format). |
+| `adapters.github.installationId` | `number` | No | Installation ID for single-tenant mode. |
+| `adapters.github.token` | `string` | Yes* | Personal Access Token (alternative to App auth). |
+| `adapters.github.webhookSecret` | `string` | No | Webhook secret for HMAC-SHA256 verification. |
+| `adapters.github.userName` | `string` | No | Bot username for @-mention detection. |
 | `state` | `object` | No | State backend config (default: `{ backend: "memory" }`). |
 | `state.backend` | `"memory" \| "pg" \| "redis"` | No | State backend to use. Default: `"memory"`. |
 | `state.tablePrefix` | `string` | No | Table name prefix for PG backend. Must be a valid SQL identifier. Default: `"chat_"`. |
@@ -165,7 +172,7 @@ The plugin bridges Chat SDK events to the Atlas agent:
 
 ### Rich Cards
 
-Query results render as platform-native cards using the Chat SDK JSX runtime. Cards include the answer, SQL code block, data table preview, and metadata (steps, tokens). On platforms that don't support rich cards (WhatsApp), a markdown fallback is sent automatically. Telegram receives formatted text with the markdown fallback.
+Query results render as platform-native cards using the Chat SDK JSX runtime. Cards include the answer, SQL code block, data table preview, and metadata (steps, tokens). On platforms that don't support rich cards (WhatsApp), a markdown fallback is sent automatically. Telegram and GitHub receive formatted text with the markdown fallback.
 
 Card components are exported for host customization:
 
@@ -233,6 +240,8 @@ When `executeQueryStream` is provided and `streaming.enabled` is not `false`, th
 
 - **Slack** — Uses Chat SDK's native streaming API for real-time token-by-token updates
 - **Teams, Discord, Google Chat** — Posts an initial message then edits it with new content at the configured `chunkIntervalMs` interval (post + edit pattern)
+- **Telegram** — Posts an initial message then progressively edits it (same post + edit pattern)
+- **GitHub** — Accumulates the full stream and posts as a single comment (no progressive edits due to API constraints)
 
 The bridge passes the async iterable from `executeQueryStream` directly to Chat SDK's `thread.post()`, which automatically selects the best transport per platform.
 
@@ -301,6 +310,7 @@ The `chunkIntervalMs` setting controls how frequently messages are edited on pla
 | `POST` | `/webhooks/discord` | Discord webhook (interactions, gateway events) |
 | `POST` | `/webhooks/gchat` | Google Chat webhook (@mentions, DMs, card clicks, Pub/Sub) |
 | `POST` | `/webhooks/telegram` | Telegram webhook (messages, @mentions, commands, callback queries) |
+| `POST` | `/webhooks/github` | GitHub webhook (issue comments, PR comments, review comments) |
 | `GET` | `/oauth/slack/install` | Slack OAuth install redirect (only when `clientId` configured) |
 | `GET` | `/oauth/slack/callback` | Slack OAuth callback (only when `clientId` configured) |
 
@@ -326,6 +336,11 @@ Routes are mounted under the plugin's base path (e.g., `/api/plugins/chat-intera
 | `GOOGLE_CHAT_IMPERSONATE_USER` | User email for domain-wide delegation |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token from BotFather |
 | `TELEGRAM_WEBHOOK_SECRET_TOKEN` | Optional webhook secret token for request verification |
+| `GITHUB_APP_ID` | GitHub App ID (for App-based auth) |
+| `GITHUB_PRIVATE_KEY` | GitHub App private key in PEM format (for App-based auth) |
+| `GITHUB_INSTALLATION_ID` | Installation ID for single-tenant mode (optional) |
+| `GITHUB_TOKEN` | Personal Access Token (for PAT auth) |
+| `GITHUB_WEBHOOK_SECRET` | Webhook secret for HMAC-SHA256 verification |
 | `DATABASE_URL` | Required for `pg` state backend |
 
 ## Error Scrubbing
@@ -423,3 +438,4 @@ Routes return 503 if the plugin hasn't finished initializing. This is normal dur
 - [Teams plugin (deprecated)](/plugins/interactions/teams)
 - [Google Chat bot setup](/plugins/interactions/gchat)
 - [Telegram bot setup](/plugins/interactions/telegram)
+- [GitHub bot setup](/plugins/interactions/github)

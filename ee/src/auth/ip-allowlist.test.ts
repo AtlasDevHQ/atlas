@@ -1,63 +1,13 @@
 import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { createEEMock } from "../__mocks__/internal";
 
 // ── Mocks ───────────────────────────────────────────────────────────
 
-let mockEnterpriseEnabled = false;
-let mockEnterpriseLicenseKey: string | undefined = "test-key";
+const ee = createEEMock();
 
-const { EnterpriseError } = await import("../index");
-
-mock.module("../index", () => ({
-  isEnterpriseEnabled: () => mockEnterpriseEnabled,
-  getEnterpriseLicenseKey: () => mockEnterpriseLicenseKey,
-  EnterpriseError,
-  requireEnterprise: (feature?: string) => {
-    const label = feature ? ` (${feature})` : "";
-    if (!mockEnterpriseEnabled) {
-      throw new EnterpriseError(`Enterprise features${label} are not enabled.`);
-    }
-    if (!mockEnterpriseLicenseKey) {
-      throw new EnterpriseError(`Enterprise features${label} are enabled but no license key is configured.`);
-    }
-  },
-}));
-
-// Mock internal DB
-const mockRows: Record<string, unknown>[][] = [];
-let queryCallCount = 0;
-const capturedQueries: { sql: string; params: unknown[] }[] = [];
-
-mock.module("@atlas/api/lib/db/internal", () => ({
-  hasInternalDB: () => true,
-  getInternalDB: () => ({
-    query: async (sql: string, params?: unknown[]) => {
-      capturedQueries.push({ sql, params: params ?? [] });
-      const rows = mockRows[queryCallCount] ?? [];
-      queryCallCount++;
-      return { rows };
-    },
-    end: async () => {},
-    on: () => {},
-  }),
-  internalQuery: async (sql: string, params?: unknown[]) => {
-    capturedQueries.push({ sql, params: params ?? [] });
-    const rows = mockRows[queryCallCount] ?? [];
-    queryCallCount++;
-    return rows;
-  },
-  internalExecute: () => {},
-  encryptUrl: (v: string) => `encrypted:${v}`,
-  decryptUrl: (v: string) => v.startsWith("encrypted:") ? v.slice(10) : v,
-}));
-
-mock.module("@atlas/api/lib/logger", () => ({
-  createLogger: () => ({
-    info: () => {},
-    warn: () => {},
-    error: () => {},
-    debug: () => {},
-  }),
-}));
+mock.module("../index", () => ee.enterpriseMock);
+mock.module("@atlas/api/lib/db/internal", () => ee.internalDBMock);
+mock.module("@atlas/api/lib/logger", () => ee.loggerMock);
 
 // Import after mocks
 const {
@@ -75,11 +25,7 @@ const {
 // ── Helpers ─────────────────────────────────────────────────────────
 
 function resetMocks() {
-  mockRows.length = 0;
-  queryCallCount = 0;
-  capturedQueries.length = 0;
-  mockEnterpriseEnabled = true;
-  mockEnterpriseLicenseKey = "test-key";
+  ee.reset();
   _clearCache();
 }
 
@@ -276,7 +222,7 @@ describe("listIPAllowlistEntries", () => {
   beforeEach(resetMocks);
 
   it("returns entries from DB", async () => {
-    mockRows.push([
+    ee.queueMockRows([
       {
         id: "entry-1",
         org_id: "org-1",
@@ -295,7 +241,7 @@ describe("listIPAllowlistEntries", () => {
   });
 
   it("throws if enterprise not enabled", async () => {
-    mockEnterpriseEnabled = false;
+    ee.setEnterpriseEnabled(false);
     await expect(listIPAllowlistEntries("org-1")).rejects.toThrow("Enterprise features");
   });
 });
@@ -305,9 +251,9 @@ describe("addIPAllowlistEntry", () => {
 
   it("adds a valid CIDR entry", async () => {
     // First query: duplicate check (no results)
-    mockRows.push([]);
+    ee.queueMockRows([]);
     // Second query: INSERT RETURNING
-    mockRows.push([
+    ee.queueMockRows([
       {
         id: "new-id",
         org_id: "org-1",
@@ -335,7 +281,7 @@ describe("addIPAllowlistEntry", () => {
 
   it("rejects duplicate CIDR", async () => {
     // Duplicate check returns existing row
-    mockRows.push([{ id: "existing-id" }]);
+    ee.queueMockRows([{ id: "existing-id" }]);
 
     try {
       await addIPAllowlistEntry("org-1", "10.0.0.0/8", null, null);
@@ -347,7 +293,7 @@ describe("addIPAllowlistEntry", () => {
   });
 
   it("throws if enterprise not enabled", async () => {
-    mockEnterpriseEnabled = false;
+    ee.setEnterpriseEnabled(false);
     await expect(addIPAllowlistEntry("org-1", "10.0.0.0/8", null, null)).rejects.toThrow("Enterprise features");
   });
 });
@@ -356,19 +302,19 @@ describe("removeIPAllowlistEntry", () => {
   beforeEach(resetMocks);
 
   it("removes existing entry", async () => {
-    mockRows.push([{ id: "entry-1" }]);
+    ee.queueMockRows([{ id: "entry-1" }]);
     const deleted = await removeIPAllowlistEntry("org-1", "entry-1");
     expect(deleted).toBe(true);
   });
 
   it("returns false for non-existent entry", async () => {
-    mockRows.push([]);
+    ee.queueMockRows([]);
     const deleted = await removeIPAllowlistEntry("org-1", "no-such-entry");
     expect(deleted).toBe(false);
   });
 
   it("throws if enterprise not enabled", async () => {
-    mockEnterpriseEnabled = false;
+    ee.setEnterpriseEnabled(false);
     await expect(removeIPAllowlistEntry("org-1", "entry-1")).rejects.toThrow("Enterprise features");
   });
 });
@@ -379,57 +325,57 @@ describe("checkIPAllowlist", () => {
   beforeEach(resetMocks);
 
   it("allows when enterprise is disabled", async () => {
-    mockEnterpriseEnabled = false;
+    ee.setEnterpriseEnabled(false);
     const result = await checkIPAllowlist("org-1", "1.2.3.4");
     expect(result.allowed).toBe(true);
   });
 
   it("allows when no allowlist entries exist (opt-in)", async () => {
-    mockRows.push([]); // empty allowlist
+    ee.queueMockRows([]); // empty allowlist
     const result = await checkIPAllowlist("org-1", "1.2.3.4");
     expect(result.allowed).toBe(true);
   });
 
   it("allows matching IP", async () => {
-    mockRows.push([{ cidr: "10.0.0.0/8" }]);
+    ee.queueMockRows([{ cidr: "10.0.0.0/8" }]);
     const result = await checkIPAllowlist("org-1", "10.0.0.1");
     expect(result.allowed).toBe(true);
   });
 
   it("blocks non-matching IP", async () => {
-    mockRows.push([{ cidr: "10.0.0.0/8" }]);
+    ee.queueMockRows([{ cidr: "10.0.0.0/8" }]);
     const result = await checkIPAllowlist("org-1", "192.168.1.1");
     expect(result.allowed).toBe(false);
   });
 
   it("blocks when IP is null and allowlist has entries", async () => {
-    mockRows.push([{ cidr: "10.0.0.0/8" }]);
+    ee.queueMockRows([{ cidr: "10.0.0.0/8" }]);
     const result = await checkIPAllowlist("org-1", null);
     expect(result.allowed).toBe(false);
   });
 
   it("uses cache on second call", async () => {
-    mockRows.push([{ cidr: "10.0.0.0/8" }]);
+    ee.queueMockRows([{ cidr: "10.0.0.0/8" }]);
     await checkIPAllowlist("org-1", "10.0.0.1");
     // Second call should not query DB (no additional rows needed)
     const result = await checkIPAllowlist("org-1", "10.0.0.1");
     expect(result.allowed).toBe(true);
     // Only 1 DB query should have been made
-    expect(capturedQueries).toHaveLength(1);
+    expect(ee.capturedQueries).toHaveLength(1);
   });
 
   it("cache invalidation forces DB reload", async () => {
-    mockRows.push([{ cidr: "10.0.0.0/8" }]);
+    ee.queueMockRows([{ cidr: "10.0.0.0/8" }]);
     await checkIPAllowlist("org-1", "10.0.0.1");
 
     // Invalidate cache
     _clearCache();
-    mockRows.push([{ cidr: "192.168.0.0/16" }]);
+    ee.queueMockRows([{ cidr: "192.168.0.0/16" }]);
 
     const result = await checkIPAllowlist("org-1", "10.0.0.1");
     // Should now be blocked because cache was cleared and new DB data loaded
     expect(result.allowed).toBe(false);
-    expect(capturedQueries).toHaveLength(2);
+    expect(ee.capturedQueries).toHaveLength(2);
   });
 });
 
@@ -439,7 +385,7 @@ describe("edge cases", () => {
   beforeEach(resetMocks);
 
   it("handles multiple CIDR ranges for one org", async () => {
-    mockRows.push([
+    ee.queueMockRows([
       { cidr: "10.0.0.0/8" },
       { cidr: "172.16.0.0/12" },
       { cidr: "192.168.0.0/16" },
@@ -450,7 +396,7 @@ describe("edge cases", () => {
   });
 
   it("handles mixed IPv4/IPv6 in allowlist", async () => {
-    mockRows.push([
+    ee.queueMockRows([
       { cidr: "10.0.0.0/8" },
       { cidr: "2001:db8::/32" },
     ]);
@@ -459,7 +405,7 @@ describe("edge cases", () => {
 
     // Clear cache for fresh query
     _clearCache();
-    mockRows.push([
+    ee.queueMockRows([
       { cidr: "10.0.0.0/8" },
       { cidr: "2001:db8::/32" },
     ]);
@@ -505,8 +451,8 @@ describe("fixed issues", () => {
 
   it("addIPAllowlistEntry normalizes CIDR for duplicate check", async () => {
     // First call: add 10.0.0.0/8
-    mockRows.push([]); // no duplicates
-    mockRows.push([
+    ee.queueMockRows([]); // no duplicates
+    ee.queueMockRows([
       {
         id: "new-id",
         org_id: "org-1",
@@ -520,9 +466,9 @@ describe("fixed issues", () => {
     await addIPAllowlistEntry("org-1", "10.0.0.5/8", null, null);
 
     // The duplicate check query should use normalized "10.0.0.0/8", not raw "10.0.0.5/8"
-    expect(capturedQueries[0].params).toEqual(["org-1", "10.0.0.0/8"]);
+    expect(ee.capturedQueries[0].params).toEqual(["org-1", "10.0.0.0/8"]);
     // The INSERT should also use normalized form
-    expect(capturedQueries[1].params[1]).toBe("10.0.0.0/8");
+    expect(ee.capturedQueries[1].params[1]).toBe("10.0.0.0/8");
   });
 
   it("IPv4-mapped IPv6 matches IPv4 CIDR", () => {
@@ -559,8 +505,8 @@ describe("fixed issues", () => {
   });
 
   it("plain IP can be added to allowlist", async () => {
-    mockRows.push([]); // no duplicates
-    mockRows.push([
+    ee.queueMockRows([]); // no duplicates
+    ee.queueMockRows([
       {
         id: "new-id",
         org_id: "org-1",
@@ -575,6 +521,6 @@ describe("fixed issues", () => {
     expect(entry.cidr).toBe("10.0.0.1/32");
 
     // The stored CIDR should be the normalized /32 form
-    expect(capturedQueries[1].params[1]).toBe("10.0.0.1/32");
+    expect(ee.capturedQueries[1].params[1]).toBe("10.0.0.1/32");
   });
 });

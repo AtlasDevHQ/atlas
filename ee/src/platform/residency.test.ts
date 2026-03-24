@@ -1,28 +1,38 @@
 import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { createEEMock } from "../__mocks__/internal";
 
 // ── Mocks ───────────────────────────────────────────────────────────
 
-let mockEnterpriseEnabled = false;
-let mockEnterpriseLicenseKey: string | undefined = "test-key";
-
-const { EnterpriseError } = await import("../index");
-
-mock.module("../index", () => ({
-  isEnterpriseEnabled: () => mockEnterpriseEnabled,
-  getEnterpriseLicenseKey: () => mockEnterpriseLicenseKey,
-  EnterpriseError,
-  requireEnterprise: (feature?: string) => {
-    const label = feature ? ` (${feature})` : "";
-    if (!mockEnterpriseEnabled) {
-      throw new EnterpriseError(`Enterprise features${label} are not enabled.`);
-    }
-    if (!mockEnterpriseLicenseKey) {
-      throw new EnterpriseError(`Enterprise features${label} are enabled but no license key is configured.`);
-    }
+const ee = createEEMock({
+  internalDB: {
+    getWorkspaceRegion: async (orgId: string) => {
+      ee.capturedQueries.push({ sql: "getWorkspaceRegion", params: [orgId] });
+      const rows = mockRows[queryCallCount] ?? [];
+      queryCallCount++;
+      return (rows[0] as Record<string, unknown> | undefined)?.region ?? null;
+    },
+    setWorkspaceRegion: async (orgId: string, region: string) => {
+      ee.capturedQueries.push({ sql: "setWorkspaceRegion", params: [orgId, region] });
+      const rows = mockRows[queryCallCount] ?? [];
+      queryCallCount++;
+      if (rows.length > 0) {
+        const row = rows[0] as Record<string, unknown>;
+        if (row.assigned === false) {
+          return { assigned: false, existing: row.existing as string | undefined };
+        }
+      }
+      return { assigned: true };
+    },
   },
-}));
+});
 
-// Mock config
+// Extra state for the custom overrides above
+const mockRows: Record<string, unknown>[][] = [];
+let queryCallCount = 0;
+
+mock.module("../index", () => ee.enterpriseMock);
+mock.module("@atlas/api/lib/db/internal", () => ee.internalDBMock);
+
 let mockConfig: Record<string, unknown> | null = null;
 
 mock.module("@atlas/api/lib/config", () => ({
@@ -30,58 +40,7 @@ mock.module("@atlas/api/lib/config", () => ({
   defineConfig: (c: unknown) => c,
 }));
 
-// Mock internal DB
-const mockRows: Record<string, unknown>[][] = [];
-let queryCallCount = 0;
-const capturedQueries: { sql: string; params: unknown[] }[] = [];
-
-mock.module("@atlas/api/lib/db/internal", () => ({
-  hasInternalDB: () => true,
-  getInternalDB: () => ({
-    query: async (sql: string, params?: unknown[]) => {
-      capturedQueries.push({ sql, params: params ?? [] });
-      const rows = mockRows[queryCallCount] ?? [];
-      queryCallCount++;
-      return { rows };
-    },
-    end: async () => {},
-    on: () => {},
-  }),
-  internalQuery: async (sql: string, params?: unknown[]) => {
-    capturedQueries.push({ sql, params: params ?? [] });
-    const rows = mockRows[queryCallCount] ?? [];
-    queryCallCount++;
-    return rows;
-  },
-  getWorkspaceRegion: async (orgId: string) => {
-    capturedQueries.push({ sql: "getWorkspaceRegion", params: [orgId] });
-    const rows = mockRows[queryCallCount] ?? [];
-    queryCallCount++;
-    return (rows[0] as Record<string, unknown> | undefined)?.region ?? null;
-  },
-  setWorkspaceRegion: async (orgId: string, region: string) => {
-    capturedQueries.push({ sql: "setWorkspaceRegion", params: [orgId, region] });
-    const rows = mockRows[queryCallCount] ?? [];
-    queryCallCount++;
-    if (rows.length > 0) {
-      const row = rows[0] as Record<string, unknown>;
-      if (row.assigned === false) {
-        return { assigned: false, existing: row.existing as string | undefined };
-      }
-    }
-    return { assigned: true };
-  },
-  internalExecute: () => {},
-}));
-
-mock.module("@atlas/api/lib/logger", () => ({
-  createLogger: () => ({
-    info: () => {},
-    warn: () => {},
-    error: () => {},
-    debug: () => {},
-  }),
-}));
+mock.module("@atlas/api/lib/logger", () => ee.loggerMock);
 
 // Import after mocks
 const {
@@ -99,11 +58,9 @@ const {
 // ── Helpers ─────────────────────────────────────────────────────────
 
 function resetMocks() {
+  ee.reset();
   mockRows.length = 0;
   queryCallCount = 0;
-  capturedQueries.length = 0;
-  mockEnterpriseEnabled = true;
-  mockEnterpriseLicenseKey = "test-key";
   mockConfig = {
     residency: {
       regions: {
@@ -122,17 +79,17 @@ describe("residency", () => {
 
   describe("enterprise gating", () => {
     it("listRegions throws when enterprise is disabled", async () => {
-      mockEnterpriseEnabled = false;
+      ee.setEnterpriseEnabled(false);
       await expect(listRegions()).rejects.toThrow("Enterprise features");
     });
 
     it("getDefaultRegion throws when enterprise is disabled", () => {
-      mockEnterpriseEnabled = false;
+      ee.setEnterpriseEnabled(false);
       expect(() => getDefaultRegion()).toThrow("Enterprise features");
     });
 
     it("assignWorkspaceRegion throws when enterprise is disabled", async () => {
-      mockEnterpriseEnabled = false;
+      ee.setEnterpriseEnabled(false);
       await expect(assignWorkspaceRegion("org-1", "us-east")).rejects.toThrow("Enterprise features");
     });
   });
@@ -156,7 +113,7 @@ describe("residency", () => {
 
   describe("listRegions", () => {
     it("returns regions with workspace counts", async () => {
-      mockRows.push([
+      ee.queueMockRows([
         { region: "us-east", cnt: "3" },
         { region: "eu-west", cnt: "1" },
       ]);
@@ -170,7 +127,7 @@ describe("residency", () => {
     });
 
     it("returns zero counts for regions with no workspaces", async () => {
-      mockRows.push([]); // no workspace counts
+      ee.queueMockRows([]); // no workspace counts
       const regions = await listRegions();
       expect(regions[0].workspaceCount).toBe(0);
     });
@@ -203,7 +160,7 @@ describe("residency", () => {
 
   describe("getWorkspaceRegionAssignment", () => {
     it("returns assignment for workspace with region", async () => {
-      mockRows.push([{ region: "eu-west", region_assigned_at: "2026-03-23T00:00:00Z" }]);
+      ee.queueMockRows([{ region: "eu-west", region_assigned_at: "2026-03-23T00:00:00Z" }]);
       const result = await getWorkspaceRegionAssignment("org-1");
       expect(result).not.toBeNull();
       expect(result!.region).toBe("eu-west");
@@ -211,13 +168,13 @@ describe("residency", () => {
     });
 
     it("returns null for workspace without region", async () => {
-      mockRows.push([{ region: null, region_assigned_at: null }]);
+      ee.queueMockRows([{ region: null, region_assigned_at: null }]);
       const result = await getWorkspaceRegionAssignment("org-1");
       expect(result).toBeNull();
     });
 
     it("returns null for nonexistent workspace", async () => {
-      mockRows.push([]);
+      ee.queueMockRows([]);
       const result = await getWorkspaceRegionAssignment("org-999");
       expect(result).toBeNull();
     });
@@ -248,7 +205,7 @@ describe("residency", () => {
 
   describe("listWorkspaceRegions", () => {
     it("returns all assignments", async () => {
-      mockRows.push([
+      ee.queueMockRows([
         { id: "org-1", region: "us-east", region_assigned_at: "2026-03-23T00:00:00Z" },
         { id: "org-2", region: "eu-west", region_assigned_at: "2026-03-23T01:00:00Z" },
       ]);

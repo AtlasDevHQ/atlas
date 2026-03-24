@@ -1,64 +1,13 @@
 import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { createEEMock } from "../__mocks__/internal";
 
 // ── Mocks ───────────────────────────────────────────────────────────
 
-let mockEnterpriseEnabled = false;
-let mockEnterpriseLicenseKey: string | undefined = "test-key";
+const ee = createEEMock();
 
-const { EnterpriseError } = await import("../index");
-
-mock.module("../index", () => ({
-  isEnterpriseEnabled: () => mockEnterpriseEnabled,
-  getEnterpriseLicenseKey: () => mockEnterpriseLicenseKey,
-  EnterpriseError,
-  requireEnterprise: (feature?: string) => {
-    const label = feature ? ` (${feature})` : "";
-    if (!mockEnterpriseEnabled) {
-      throw new EnterpriseError(`Enterprise features${label} are not enabled.`);
-    }
-    if (!mockEnterpriseLicenseKey) {
-      throw new EnterpriseError(`Enterprise features${label} are enabled but no license key is configured.`);
-    }
-  },
-}));
-
-// Mock internal DB
-const mockRows: Record<string, unknown>[][] = [];
-let queryCallCount = 0;
-const capturedQueries: { sql: string; params: unknown[] }[] = [];
-
-mock.module("@atlas/api/lib/db/internal", () => ({
-  hasInternalDB: () => true,
-  getInternalDB: () => ({
-    query: async (sql: string, params?: unknown[]) => {
-      capturedQueries.push({ sql, params: params ?? [] });
-      const rows = mockRows[queryCallCount] ?? [];
-      queryCallCount++;
-      return { rows };
-    },
-    end: async () => {},
-    on: () => {},
-  }),
-  internalQuery: async (sql: string, params?: unknown[]) => {
-    capturedQueries.push({ sql, params: params ?? [] });
-    const rows = mockRows[queryCallCount] ?? [];
-    queryCallCount++;
-    return rows;
-  },
-  internalExecute: () => {},
-  encryptUrl: (v: string) => `encrypted:${v}`,
-  decryptUrl: (v: string) => v.startsWith("encrypted:") ? v.slice(10) : v,
-  getEncryptionKey: () => Buffer.from("test-key-32-bytes-long-enough!!!"),
-}));
-
-mock.module("@atlas/api/lib/logger", () => ({
-  createLogger: () => ({
-    info: () => {},
-    warn: () => {},
-    error: () => {},
-    debug: () => {},
-  }),
-}));
+mock.module("../index", () => ee.enterpriseMock);
+mock.module("@atlas/api/lib/db/internal", () => ee.internalDBMock);
+mock.module("@atlas/api/lib/logger", () => ee.loggerMock);
 
 // Import after mocks
 const {
@@ -71,14 +20,6 @@ const {
 } = await import("./model-routing");
 
 // ── Helpers ─────────────────────────────────────────────────────────
-
-function resetMocks() {
-  mockRows.length = 0;
-  queryCallCount = 0;
-  capturedQueries.length = 0;
-  mockEnterpriseEnabled = true;
-  mockEnterpriseLicenseKey = "test-key";
-}
 
 function makeRow(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
   return {
@@ -112,16 +53,16 @@ describe("maskApiKey", () => {
 });
 
 describe("getWorkspaceModelConfig", () => {
-  beforeEach(resetMocks);
+  beforeEach(() => ee.reset());
 
   it("returns null when no config exists", async () => {
-    mockRows.push([]); // empty result
+    ee.queueMockRows([]); // empty result
     const result = await getWorkspaceModelConfig("org-1");
     expect(result).toBeNull();
   });
 
   it("returns config with masked API key", async () => {
-    mockRows.push([makeRow()]);
+    ee.queueMockRows([makeRow()]);
     const result = await getWorkspaceModelConfig("org-1");
     expect(result).not.toBeNull();
     expect(result!.provider).toBe("anthropic");
@@ -131,22 +72,22 @@ describe("getWorkspaceModelConfig", () => {
   });
 
   it("throws when enterprise is not enabled", async () => {
-    mockEnterpriseEnabled = false;
+    ee.setEnterpriseEnabled(false);
     await expect(getWorkspaceModelConfig("org-1")).rejects.toThrow("Enterprise features");
   });
 });
 
 describe("getWorkspaceModelConfigRaw", () => {
-  beforeEach(resetMocks);
+  beforeEach(() => ee.reset());
 
   it("returns null when no config exists", async () => {
-    mockRows.push([]); // empty result
+    ee.queueMockRows([]); // empty result
     const result = await getWorkspaceModelConfigRaw("org-1");
     expect(result).toBeNull();
   });
 
   it("returns raw config with decrypted API key", async () => {
-    mockRows.push([makeRow()]);
+    ee.queueMockRows([makeRow()]);
     const result = await getWorkspaceModelConfigRaw("org-1");
     expect(result).not.toBeNull();
     expect(result!.provider).toBe("anthropic");
@@ -155,8 +96,8 @@ describe("getWorkspaceModelConfigRaw", () => {
   });
 
   it("does NOT enforce enterprise gate (called in hot path)", async () => {
-    mockEnterpriseEnabled = false;
-    mockRows.push([]);
+    ee.setEnterpriseEnabled(false);
+    ee.queueMockRows([]);
     // Should not throw even when enterprise is disabled
     const result = await getWorkspaceModelConfigRaw("org-1");
     expect(result).toBeNull();
@@ -164,10 +105,10 @@ describe("getWorkspaceModelConfigRaw", () => {
 });
 
 describe("setWorkspaceModelConfig", () => {
-  beforeEach(resetMocks);
+  beforeEach(() => ee.reset());
 
   it("saves config with encrypted API key", async () => {
-    mockRows.push([makeRow()]);
+    ee.queueMockRows([makeRow()]);
     const result = await setWorkspaceModelConfig("org-1", {
       provider: "anthropic",
       model: "claude-opus-4-6",
@@ -175,9 +116,9 @@ describe("setWorkspaceModelConfig", () => {
     });
     expect(result.provider).toBe("anthropic");
     expect(result.model).toBe("claude-opus-4-6");
-    expect(capturedQueries[0].sql).toContain("INSERT INTO workspace_model_config");
+    expect(ee.capturedQueries[0].sql).toContain("INSERT INTO workspace_model_config");
     // Verify the API key was encrypted before storage
-    expect(capturedQueries[0].params[3]).toBe("encrypted:sk-ant-test1234");
+    expect(ee.capturedQueries[0].params[3]).toBe("encrypted:sk-ant-test1234");
   });
 
   it("rejects invalid provider", async () => {
@@ -242,7 +183,7 @@ describe("setWorkspaceModelConfig", () => {
   });
 
   it("accepts valid base URL for custom provider", async () => {
-    mockRows.push([makeRow({
+    ee.queueMockRows([makeRow({
       provider: "custom",
       model: "llama-3",
       base_url: "https://api.example.com/v1",
@@ -258,7 +199,7 @@ describe("setWorkspaceModelConfig", () => {
   });
 
   it("throws when enterprise is not enabled", async () => {
-    mockEnterpriseEnabled = false;
+    ee.setEnterpriseEnabled(false);
     await expect(
       setWorkspaceModelConfig("org-1", {
         provider: "anthropic",
@@ -270,23 +211,23 @@ describe("setWorkspaceModelConfig", () => {
 });
 
 describe("deleteWorkspaceModelConfig", () => {
-  beforeEach(resetMocks);
+  beforeEach(() => ee.reset());
 
   it("returns true when config is deleted", async () => {
-    mockRows.push([{ id: "cfg-123" }]); // DELETE RETURNING result
+    ee.queueMockRows([{ id: "cfg-123" }]); // DELETE RETURNING result
     const result = await deleteWorkspaceModelConfig("org-1");
     expect(result).toBe(true);
-    expect(capturedQueries[0].sql).toContain("DELETE FROM workspace_model_config");
+    expect(ee.capturedQueries[0].sql).toContain("DELETE FROM workspace_model_config");
   });
 
   it("returns false when no config exists", async () => {
-    mockRows.push([]); // empty DELETE RETURNING result
+    ee.queueMockRows([]); // empty DELETE RETURNING result
     const result = await deleteWorkspaceModelConfig("org-1");
     expect(result).toBe(false);
   });
 
   it("throws when enterprise is not enabled", async () => {
-    mockEnterpriseEnabled = false;
+    ee.setEnterpriseEnabled(false);
     await expect(deleteWorkspaceModelConfig("org-1")).rejects.toThrow("Enterprise features");
   });
 });

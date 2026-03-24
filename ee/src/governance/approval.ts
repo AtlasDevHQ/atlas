@@ -257,7 +257,7 @@ export async function createApprovalRule(
 
   log.info({ orgId, ruleId: rows[0].id, ruleType: input.ruleType, pattern: input.pattern }, "Approval rule created");
   const rule = rowToRule(rows[0]);
-  if (!rule) throw new ApprovalError("Created rule has invalid rule_type — this should never happen.", "validation");
+  if (!rule) throw new ApprovalError(`Created rule has unexpected rule_type "${rows[0].rule_type}" after insert.`, "conflict");
   return rule;
 }
 
@@ -323,7 +323,7 @@ export async function updateApprovalRule(
 
   log.info({ orgId, ruleId }, "Approval rule updated");
   const rule = rowToRule(rows[0]);
-  if (!rule) throw new ApprovalError("Updated rule has invalid rule_type — this should never happen.", "validation");
+  if (!rule) throw new ApprovalError(`Updated rule has unexpected rule_type "${rows[0].rule_type}" after update.`, "conflict");
   return rule;
 }
 
@@ -354,10 +354,9 @@ export interface ApprovalMatchResult {
  * Check whether a query requires approval based on the org's rules.
  * Matches validated SQL classification (tables/columns) against enabled rules.
  *
- * This function does NOT require enterprise — it gracefully returns
- * `{ required: false }` when enterprise is disabled or no internal DB exists.
- * However, unexpected errors from the enterprise check are re-thrown to avoid
- * silently bypassing governance.
+ * This function gracefully degrades when enterprise is disabled, returning
+ * `{ required: false }` instead of throwing. Unexpected errors from the
+ * enterprise check are re-thrown to avoid silently bypassing governance.
  */
 export async function checkApprovalRequired(
   orgId: string | undefined,

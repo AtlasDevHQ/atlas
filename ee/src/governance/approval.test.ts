@@ -217,7 +217,7 @@ describe("createApprovalRule", () => {
     mockRows.push([makeRuleRow({ rule_type: "corrupted" })]);
     await expect(
       createApprovalRule("org-1", { name: "test", ruleType: "table", pattern: "users" }),
-    ).rejects.toThrow("invalid rule_type");
+    ).rejects.toThrow("unexpected rule_type");
   });
 
   it("rejects table rule without pattern", async () => {
@@ -255,7 +255,7 @@ describe("updateApprovalRule", () => {
     mockRows.push([makeRuleRow({ rule_type: "corrupted" })]); // UPDATE RETURNING has bad type
     await expect(
       updateApprovalRule("org-1", "rule-1", { name: "Updated" }),
-    ).rejects.toThrow("invalid rule_type");
+    ).rejects.toThrow("unexpected rule_type");
   });
 });
 

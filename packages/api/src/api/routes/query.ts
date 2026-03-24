@@ -209,7 +209,7 @@ query.openapi(
       });
     }
 
-    // Abuse check — block suspended workspaces, delay throttled ones
+    // Abuse check — block suspended workspaces, reject throttled ones with 429
     const abuseOrgId = authResult.user?.activeOrganizationId;
     if (abuseOrgId) {
       const abuse = checkAbuseStatus(abuseOrgId);
@@ -223,8 +223,21 @@ query.openapi(
         });
       }
       if (abuse.level === "throttled" && abuse.throttleDelayMs) {
-        log.debug({ requestId, orgId: abuseOrgId, delayMs: abuse.throttleDelayMs }, "Throttling workspace request");
-        await new Promise((resolve) => setTimeout(resolve, abuse.throttleDelayMs));
+        const retryAfterSeconds = Math.ceil(abuse.throttleDelayMs / 1000);
+        log.warn({ requestId, orgId: abuseOrgId, delayMs: abuse.throttleDelayMs }, "Workspace throttled due to abuse");
+        throw new HTTPException(429, {
+          // Use raw Response (not Response.json) to include Retry-After header
+          res: new Response(
+            JSON.stringify({
+              error: "workspace_throttled",
+              message: "Workspace is temporarily throttled due to high usage. Please retry shortly.",
+              retryable: true,
+              retryAfterSeconds,
+              requestId,
+            }),
+            { status: 429, headers: { "Content-Type": "application/json", "Retry-After": String(retryAfterSeconds) } },
+          ),
+        });
       }
     }
 

@@ -150,6 +150,7 @@ function buildChatPlugin(
             return c.json({ error: "Slack adapter not configured" }, 404);
           }
 
+          // Generated before try so both waitUntil errors and handler errors share the same correlation ID
           const requestId = crypto.randomUUID();
           try {
             const response = await handler(c.req.raw, {

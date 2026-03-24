@@ -23,6 +23,7 @@ import {
 } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { CustomDomain, CertificateStatus } from "@useatlas/types";
+import { DOMAIN_STATUSES, CERTIFICATE_STATUSES } from "@useatlas/types";
 
 const log = createLogger("ee:domains");
 
@@ -59,18 +60,34 @@ function requireInternalDB(): void {
   }
 }
 
-/** Map a DB row to a CustomDomain wire type. */
+/** Coerce a value that may be a Date or string to an ISO 8601 string. */
+function toISOString(value: unknown): string {
+  if (value instanceof Date) return value.toISOString();
+  return String(value ?? "");
+}
+
+/** Map a DB row to a CustomDomain wire type with runtime validation. */
 function rowToDomain(row: Record<string, unknown>): CustomDomain {
+  const status = String(row.status ?? "");
+  if (!DOMAIN_STATUSES.includes(status as CustomDomain["status"])) {
+    throw new Error(`rowToDomain: unexpected status "${status}" — expected one of ${DOMAIN_STATUSES.join(", ")}`);
+  }
+
+  const certRaw = row.certificate_status != null ? String(row.certificate_status) : null;
+  if (certRaw != null && !CERTIFICATE_STATUSES.includes(certRaw as CertificateStatus)) {
+    throw new Error(`rowToDomain: unexpected certificate_status "${certRaw}" — expected one of ${CERTIFICATE_STATUSES.join(", ")}`);
+  }
+
   return {
-    id: row.id as string,
-    workspaceId: row.workspace_id as string,
-    domain: row.domain as string,
-    status: row.status as CustomDomain["status"],
-    railwayDomainId: (row.railway_domain_id as string) ?? null,
-    cnameTarget: (row.cname_target as string) ?? null,
-    certificateStatus: (row.certificate_status as CertificateStatus) ?? null,
-    createdAt: (row.created_at as Date).toISOString(),
-    verifiedAt: row.verified_at ? (row.verified_at as Date).toISOString() : null,
+    id: String(row.id ?? ""),
+    workspaceId: String(row.workspace_id ?? ""),
+    domain: String(row.domain ?? ""),
+    status: status as CustomDomain["status"],
+    railwayDomainId: row.railway_domain_id != null ? String(row.railway_domain_id) : null,
+    cnameTarget: row.cname_target != null ? String(row.cname_target) : null,
+    certificateStatus: certRaw as CertificateStatus | null,
+    createdAt: toISOString(row.created_at),
+    verifiedAt: row.verified_at ? toISOString(row.verified_at) : null,
   };
 }
 
@@ -365,7 +382,10 @@ export async function verifyDomain(domainId: string): Promise<CustomDomain> {
   const config = getRailwayConfig();
   const railwayStatus = await getRailwayDomainStatus(config, record.railwayDomainId);
 
-  const certStatus = railwayStatus.status.certificateStatus as CertificateStatus;
+  const certRaw = String(railwayStatus.status.certificateStatus ?? "");
+  const certStatus: CertificateStatus = CERTIFICATE_STATUSES.includes(certRaw as CertificateStatus)
+    ? (certRaw as CertificateStatus)
+    : "PENDING";
   const dnsReady = railwayStatus.status.dnsRecords.every((r) => r.status === "VALID" || r.status === "valid");
   const verified = certStatus === "ISSUED" && dnsReady;
 

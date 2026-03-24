@@ -169,6 +169,11 @@ describe("getApprovalRule", () => {
     expect(result!.ruleType).toBe("table");
     expect(result!.pattern).toBe("users");
   });
+
+  it("throws for rule with invalid rule_type instead of returning null", async () => {
+    mockRows.push([makeRuleRow({ rule_type: "bogus" })]);
+    await expect(getApprovalRule("org-1", "rule-1")).rejects.toThrow("invalid type");
+  });
 });
 
 describe("createApprovalRule", () => {
@@ -208,6 +213,13 @@ describe("createApprovalRule", () => {
     ).rejects.toThrow("Cost rules require a positive threshold");
   });
 
+  it("throws when DB returns invalid rule_type after insert", async () => {
+    mockRows.push([makeRuleRow({ rule_type: "corrupted" })]);
+    await expect(
+      createApprovalRule("org-1", { name: "test", ruleType: "table", pattern: "users" }),
+    ).rejects.toThrow("unexpected rule_type");
+  });
+
   it("rejects table rule without pattern", async () => {
     await expect(
       createApprovalRule("org-1", { name: "test", ruleType: "table", pattern: "" }),
@@ -236,6 +248,14 @@ describe("updateApprovalRule", () => {
     mockRows.push([makeRuleRow()]);
     const result = await updateApprovalRule("org-1", "rule-1", {});
     expect(result.name).toBe("PII table approval");
+  });
+
+  it("throws when DB returns invalid rule_type after update", async () => {
+    mockRows.push([makeRuleRow()]); // getApprovalRule succeeds
+    mockRows.push([makeRuleRow({ rule_type: "corrupted" })]); // UPDATE RETURNING has bad type
+    await expect(
+      updateApprovalRule("org-1", "rule-1", { name: "Updated" }),
+    ).rejects.toThrow("unexpected rule_type");
   });
 });
 
@@ -476,6 +496,64 @@ describe("hasApprovedRequest", () => {
     mockRows.push([]);
     const result = await hasApprovedRequest("org-1", "user-1", "SELECT * FROM users");
     expect(result).toBe(false);
+  });
+
+  it("returns false when enterprise is disabled without querying DB", async () => {
+    mockEnterpriseEnabled = false;
+    const result = await hasApprovedRequest("org-1", "user-1", "SELECT * FROM users");
+    expect(result).toBe(false);
+    expect(capturedQueries).toHaveLength(0);
+  });
+
+  it("re-throws unexpected errors instead of returning false", async () => {
+    const original = new Error("Config service down");
+    mockGetConfigError = original;
+    try {
+      await hasApprovedRequest("org-1", "user-1", "SELECT * FROM users");
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect(err).toBe(original);
+    }
+  });
+});
+
+describe("listApprovalRules — invalid rule_type filtering", () => {
+  beforeEach(resetMocks);
+
+  it("skips rules with invalid rule_type", async () => {
+    mockRows.push([
+      makeRuleRow({ id: "rule-1", rule_type: "table" }),
+      makeRuleRow({ id: "rule-2", rule_type: "bogus" }),
+      makeRuleRow({ id: "rule-3", rule_type: "column", name: "SSN column", pattern: "ssn" }),
+    ]);
+    const result = await listApprovalRules("org-1");
+    expect(result).toHaveLength(2);
+    expect(result[0].id).toBe("rule-1");
+    expect(result[1].id).toBe("rule-3");
+  });
+
+  it("returns empty array when all rules have invalid types", async () => {
+    mockRows.push([
+      makeRuleRow({ id: "rule-1", rule_type: "invalid" }),
+      makeRuleRow({ id: "rule-2", rule_type: "" }),
+    ]);
+    const result = await listApprovalRules("org-1");
+    expect(result).toEqual([]);
+  });
+});
+
+describe("checkApprovalRequired — invalid rule_type in matching", () => {
+  beforeEach(resetMocks);
+
+  it("skips rules with invalid rule_type during matching", async () => {
+    mockRows.push([
+      makeRuleRow({ id: "rule-1", rule_type: "bogus", pattern: "users" }),
+      makeRuleRow({ id: "rule-2", rule_type: "table", pattern: "users" }),
+    ]);
+    const result = await checkApprovalRequired("org-1", ["users"], ["id"]);
+    expect(result.required).toBe(true);
+    expect(result.matchedRules).toHaveLength(1);
+    expect(result.matchedRules[0].id).toBe("rule-2");
   });
 });
 

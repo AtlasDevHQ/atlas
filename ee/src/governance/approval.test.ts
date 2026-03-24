@@ -169,6 +169,11 @@ describe("getApprovalRule", () => {
     expect(result!.ruleType).toBe("table");
     expect(result!.pattern).toBe("users");
   });
+
+  it("throws for rule with invalid rule_type instead of returning null", async () => {
+    mockRows.push([makeRuleRow({ rule_type: "bogus" })]);
+    await expect(getApprovalRule("org-1", "rule-1")).rejects.toThrow("invalid type");
+  });
 });
 
 describe("createApprovalRule", () => {
@@ -208,6 +213,13 @@ describe("createApprovalRule", () => {
     ).rejects.toThrow("Cost rules require a positive threshold");
   });
 
+  it("throws when DB returns invalid rule_type after insert", async () => {
+    mockRows.push([makeRuleRow({ rule_type: "corrupted" })]);
+    await expect(
+      createApprovalRule("org-1", { name: "test", ruleType: "table", pattern: "users" }),
+    ).rejects.toThrow("invalid rule_type");
+  });
+
   it("rejects table rule without pattern", async () => {
     await expect(
       createApprovalRule("org-1", { name: "test", ruleType: "table", pattern: "" }),
@@ -236,6 +248,14 @@ describe("updateApprovalRule", () => {
     mockRows.push([makeRuleRow()]);
     const result = await updateApprovalRule("org-1", "rule-1", {});
     expect(result.name).toBe("PII table approval");
+  });
+
+  it("throws when DB returns invalid rule_type after update", async () => {
+    mockRows.push([makeRuleRow()]); // getApprovalRule succeeds
+    mockRows.push([makeRuleRow({ rule_type: "corrupted" })]); // UPDATE RETURNING has bad type
+    await expect(
+      updateApprovalRule("org-1", "rule-1", { name: "Updated" }),
+    ).rejects.toThrow("invalid rule_type");
   });
 });
 
@@ -478,10 +498,11 @@ describe("hasApprovedRequest", () => {
     expect(result).toBe(false);
   });
 
-  it("returns false when enterprise is disabled", async () => {
+  it("returns false when enterprise is disabled without querying DB", async () => {
     mockEnterpriseEnabled = false;
     const result = await hasApprovedRequest("org-1", "user-1", "SELECT * FROM users");
     expect(result).toBe(false);
+    expect(capturedQueries).toHaveLength(0);
   });
 
   it("re-throws unexpected errors instead of returning false", async () => {

@@ -10,7 +10,11 @@
  * of executing. Designated approvers (via custom roles) can approve or deny.
  * Approved queries can then be re-executed. Stale requests auto-expire.
  *
- * All mutating operations call `requireEnterprise("approval-workflows")`.
+ * All exported functions require enterprise. CRUD and listing operations call
+ * `requireEnterprise()` directly (throws on failure). Functions in the agent's
+ * critical path (`checkApprovalRequired`, `hasApprovedRequest`,
+ * `expireStaleRequests`, `getPendingCount`) catch `EnterpriseError` and return
+ * a safe default (false, 0, or empty) while re-throwing unexpected errors.
  */
 
 import { requireEnterprise, EnterpriseError } from "../index";
@@ -210,7 +214,15 @@ export async function getApprovalRule(orgId: string, ruleId: string): Promise<Ap
     [orgId, ruleId],
   );
   if (rows.length === 0) return null;
-  return rowToRule(rows[0]);
+  const rule = rowToRule(rows[0]);
+  if (!rule) {
+    log.warn({ orgId, ruleId, ruleType: rows[0].rule_type }, "Approval rule found but has invalid rule_type — treating as corrupt");
+    throw new ApprovalError(
+      `Approval rule "${ruleId}" exists but has an invalid type "${rows[0].rule_type}".`,
+      "validation",
+    );
+  }
+  return rule;
 }
 
 /** Create a new approval rule. */

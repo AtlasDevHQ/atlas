@@ -46,7 +46,7 @@ export default function SignupPage() {
       })
       .catch((err: unknown) => {
         // Graceful degradation: email/password form still works
-        console.debug("Social providers unavailable:", err instanceof Error ? err.message : String(err));
+        console.warn("Social providers unavailable:", err instanceof Error ? err.message : String(err));
       });
   }, []);
 
@@ -89,6 +89,7 @@ export default function SignupPage() {
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Social login failed");
+    } finally {
       setSocialLoading(null);
     }
   }

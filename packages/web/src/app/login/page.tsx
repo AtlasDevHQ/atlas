@@ -44,7 +44,8 @@ export default function LoginPage() {
         if (Array.isArray(data.providers)) setSocialProviders(data.providers);
       })
       .catch((err: unknown) => {
-        console.debug(
+        // Graceful degradation: email/password form still works
+        console.warn(
           "Social providers unavailable:",
           err instanceof Error ? err.message : String(err),
         );
@@ -87,6 +88,7 @@ export default function LoginPage() {
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Social login failed");
+    } finally {
       setSocialLoading(null);
     }
   }

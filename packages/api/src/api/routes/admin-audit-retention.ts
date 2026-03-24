@@ -16,35 +16,15 @@ import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
 import { createLogger } from "@atlas/api/lib/logger";
-import { EnterpriseError } from "@atlas/ee/index";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
+import { RetentionError } from "@atlas/ee/audit/retention";
+import { throwIfEEError } from "./ee-error-handler";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { adminAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("admin-audit-retention");
 
-/**
- * Throw HTTPException for known retention errors. Enterprise license
- * errors → 403; RetentionError → 400/404. Unknown errors fall through.
- */
-function throwIfRetentionError(err: unknown): void {
-  if (err instanceof EnterpriseError) {
-    throw new HTTPException(403, {
-      res: Response.json({ error: "enterprise_required", message: err.message }, { status: 403 }),
-    });
-  }
-  // Dynamically import to check error type
-  if (err && typeof err === "object" && "code" in err && "name" in err) {
-    const typedErr = err as { name: string; code: string; message: string };
-    if (typedErr.name === "RetentionError") {
-      const statusMap = { validation: 400, not_found: 404 } as const;
-      const status = statusMap[typedErr.code as keyof typeof statusMap] ?? 400;
-      throw new HTTPException(status, {
-        res: Response.json({ error: typedErr.code, message: typedErr.message }, { status }),
-      });
-    }
-  }
-}
+const RETENTION_ERROR_STATUS = { validation: 400, not_found: 404 } as const;
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -361,7 +341,7 @@ adminAuditRetention.openapi(getRetentionRoute, async (c) => {
     const policy = await getRetentionPolicy(orgId);
     return c.json({ policy }, 200);
   } catch (err) {
-    throwIfRetentionError(err);
+    throwIfEEError(err, [RetentionError, RETENTION_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get retention policy");
     return c.json({ error: "internal_error", message: "Failed to get retention policy.", requestId }, 500);
   }
@@ -395,7 +375,7 @@ adminAuditRetention.openapi(updateRetentionRoute, async (c) => {
     );
     return c.json({ policy }, 200);
   } catch (err) {
-    throwIfRetentionError(err);
+    throwIfEEError(err, [RetentionError, RETENTION_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to update retention policy");
     return c.json({ error: "internal_error", message: "Failed to update retention policy.", requestId }, 500);
   }
@@ -453,7 +433,7 @@ adminAuditRetention.openapi(exportRoute, async (c) => {
       },
     });
   } catch (err) {
-    throwIfRetentionError(err);
+    throwIfEEError(err, [RetentionError, RETENTION_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to export audit log");
     return c.json({ error: "internal_error", message: "Failed to export audit log.", requestId }, 500);
   }
@@ -478,7 +458,7 @@ adminAuditRetention.openapi(purgeRoute, async (c) => {
     const results = await purgeExpiredEntries(orgId);
     return c.json({ results }, 200);
   } catch (err) {
-    throwIfRetentionError(err);
+    throwIfEEError(err, [RetentionError, RETENTION_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to purge audit log");
     return c.json({ error: "internal_error", message: "Failed to purge audit log entries.", requestId }, 500);
   }
@@ -503,7 +483,7 @@ adminAuditRetention.openapi(hardDeleteRoute, async (c) => {
     const result = await hardDeleteExpired(orgId);
     return c.json(result, 200);
   } catch (err) {
-    throwIfRetentionError(err);
+    throwIfEEError(err, [RetentionError, RETENTION_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to hard-delete audit log entries");
     return c.json({ error: "internal_error", message: "Failed to hard-delete audit log entries.", requestId }, 500);
   }

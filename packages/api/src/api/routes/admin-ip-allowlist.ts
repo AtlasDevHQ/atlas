@@ -9,8 +9,8 @@ import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
 import { createLogger } from "@atlas/api/lib/logger";
-import { EnterpriseError } from "@atlas/ee/index";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
+import { throwIfEEError } from "./ee-error-handler";
 import { getClientIP } from "@atlas/api/lib/auth/middleware";
 import {
   listIPAllowlistEntries,
@@ -30,24 +30,6 @@ function isValidId(id: string | undefined): id is string {
 }
 
 const IP_ALLOWLIST_ERROR_STATUS = { validation: 400, conflict: 409, not_found: 404 } as const;
-
-/**
- * Throw HTTPException for known IP allowlist errors. Enterprise license
- * errors → 403; IPAllowlistError → 400/404/409. Unknown errors fall through.
- */
-function throwIfIPAllowlistError(err: unknown): void {
-  if (err instanceof EnterpriseError) {
-    throw new HTTPException(403, {
-      res: Response.json({ error: "enterprise_required", message: err.message }, { status: 403 }),
-    });
-  }
-  if (err instanceof IPAllowlistError) {
-    const status = IP_ALLOWLIST_ERROR_STATUS[err.code];
-    throw new HTTPException(status, {
-      res: Response.json({ error: err.code, message: err.message }, { status }),
-    });
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -273,7 +255,7 @@ adminIPAllowlist.openapi(listEntriesRoute, async (c) => {
     const entries = await listIPAllowlistEntries(orgId);
     return c.json({ entries, total: entries.length, callerIP }, 200);
   } catch (err) {
-    throwIfIPAllowlistError(err);
+    throwIfEEError(err, [IPAllowlistError, IP_ALLOWLIST_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to list IP allowlist entries");
     return c.json({ error: "internal_error", message: "Failed to list IP allowlist entries.", requestId }, 500);
   }
@@ -308,7 +290,7 @@ adminIPAllowlist.openapi(addEntryRoute, async (c) => {
     );
     return c.json({ entry }, 201);
   } catch (err) {
-    throwIfIPAllowlistError(err);
+    throwIfEEError(err, [IPAllowlistError, IP_ALLOWLIST_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to add IP allowlist entry");
     return c.json({ error: "internal_error", message: "Failed to add IP allowlist entry.", requestId }, 500);
   }
@@ -340,7 +322,7 @@ adminIPAllowlist.openapi(deleteEntryRoute, async (c) => {
     }
     return c.json({ message: "IP allowlist entry removed." }, 200);
   } catch (err) {
-    throwIfIPAllowlistError(err);
+    throwIfEEError(err, [IPAllowlistError, IP_ALLOWLIST_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, entryId }, "Failed to remove IP allowlist entry");
     return c.json({ error: "internal_error", message: "Failed to remove IP allowlist entry.", requestId }, 500);
   }

@@ -9,8 +9,8 @@ import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
 import { createLogger } from "@atlas/api/lib/logger";
-import { EnterpriseError } from "@atlas/ee/index";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
+import { throwIfEEError } from "./ee-error-handler";
 import {
   getWorkspaceModelConfig,
   setWorkspaceModelConfig,
@@ -24,24 +24,6 @@ import { adminAuth, requestContext, type AuthEnv } from "./middleware";
 const log = createLogger("admin-model-config");
 
 const MODEL_CONFIG_ERROR_STATUS = { validation: 400, not_found: 404, test_failed: 422 } as const;
-
-/**
- * Throw HTTPException for known model config errors. Enterprise license
- * errors → 403; ModelConfigError → 400/404/422. Unknown errors fall through.
- */
-function throwIfModelConfigError(err: unknown): void {
-  if (err instanceof EnterpriseError) {
-    throw new HTTPException(403, {
-      res: Response.json({ error: "enterprise_required", message: err.message }, { status: 403 }),
-    });
-  }
-  if (err instanceof ModelConfigError) {
-    const status = MODEL_CONFIG_ERROR_STATUS[err.code];
-    throw new HTTPException(status, {
-      res: Response.json({ error: err.code, message: err.message }, { status }),
-    });
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -319,7 +301,7 @@ adminModelConfig.openapi(getConfigRoute, async (c) => {
     const config = await getWorkspaceModelConfig(orgId);
     return c.json({ config }, 200);
   } catch (err) {
-    throwIfModelConfigError(err);
+    throwIfEEError(err, [ModelConfigError, MODEL_CONFIG_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get workspace model config");
     return c.json({ error: "internal_error", message: "Failed to get workspace model configuration.", requestId }, 500);
   }
@@ -358,7 +340,7 @@ adminModelConfig.openapi(setConfigRoute, async (c) => {
     });
     return c.json({ config }, 200);
   } catch (err) {
-    throwIfModelConfigError(err);
+    throwIfEEError(err, [ModelConfigError, MODEL_CONFIG_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to set workspace model config");
     return c.json({ error: "internal_error", message: "Failed to save workspace model configuration.", requestId }, 500);
   }
@@ -385,7 +367,7 @@ adminModelConfig.openapi(deleteConfigRoute, async (c) => {
     }
     return c.json({ message: "Model configuration reset to platform default." }, 200);
   } catch (err) {
-    throwIfModelConfigError(err);
+    throwIfEEError(err, [ModelConfigError, MODEL_CONFIG_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to delete workspace model config");
     return c.json({ error: "internal_error", message: "Failed to reset workspace model configuration.", requestId }, 500);
   }
@@ -412,7 +394,7 @@ adminModelConfig.openapi(testConfigRoute, async (c) => {
     });
     return c.json(result, 200);
   } catch (err) {
-    throwIfModelConfigError(err);
+    throwIfEEError(err, [ModelConfigError, MODEL_CONFIG_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to test model config");
     return c.json({ error: "internal_error", message: "Failed to test model configuration.", requestId }, 500);
   }

@@ -8,8 +8,8 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { HTTPException } from "hono/http-exception";
 import { createLogger } from "@atlas/api/lib/logger";
-import { EnterpriseError } from "@atlas/ee/index";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
+import { throwIfEEError } from "./ee-error-handler";
 import {
   listRoles,
   createRole,
@@ -32,25 +32,6 @@ function isValidId(id: string | undefined): id is string {
 }
 
 const ROLE_ERROR_STATUS = { not_found: 404, conflict: 409, validation: 400, builtin_protected: 403 } as const;
-
-/**
- * Throw HTTPException for known role/enterprise errors.
- * Enterprise license errors → 403; RoleError → 400/403/404/409.
- * Unknown errors fall through.
- */
-function throwIfRoleError(err: unknown): void {
-  if (err instanceof EnterpriseError) {
-    throw new HTTPException(403, {
-      res: Response.json({ error: "enterprise_required", message: err.message }, { status: 403 }),
-    });
-  }
-  if (err instanceof RoleError) {
-    const status = ROLE_ERROR_STATUS[err.code];
-    throw new HTTPException(status, {
-      res: Response.json({ error: err.code, message: err.message }, { status }),
-    });
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -451,7 +432,7 @@ adminRoles.openapi(listRolesRoute, async (c) => {
       total: roles.length,
     }, 200);
   } catch (err) {
-    throwIfRoleError(err);
+    throwIfEEError(err, [RoleError, ROLE_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to list roles");
     return c.json({ error: "internal_error", message: "Failed to list roles.", requestId }, 500);
   }
@@ -481,7 +462,7 @@ adminRoles.openapi(createRoleRoute, async (c) => {
     const role = await createRole(orgId, body);
     return c.json({ role }, 201);
   } catch (err) {
-    throwIfRoleError(err);
+    throwIfEEError(err, [RoleError, ROLE_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to create role");
     return c.json({ error: "internal_error", message: "Failed to create role.", requestId }, 500);
   }
@@ -512,7 +493,7 @@ adminRoles.openapi(updateRoleRoute, async (c) => {
     const role = await updateRole(orgId, roleId, body);
     return c.json({ role }, 200);
   } catch (err) {
-    throwIfRoleError(err);
+    throwIfEEError(err, [RoleError, ROLE_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, roleId }, "Failed to update role");
     return c.json({ error: "internal_error", message: "Failed to update role.", requestId }, 500);
   }
@@ -544,7 +525,7 @@ adminRoles.openapi(deleteRoleRoute, async (c) => {
     }
     return c.json({ message: "Role deleted." }, 200);
   } catch (err) {
-    throwIfRoleError(err);
+    throwIfEEError(err, [RoleError, ROLE_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, roleId }, "Failed to delete role");
     return c.json({ error: "internal_error", message: "Failed to delete role.", requestId }, 500);
   }
@@ -573,7 +554,7 @@ adminRoles.openapi(listRoleMembersRoute, async (c) => {
     const members = await listRoleMembers(orgId, roleId);
     return c.json({ members, total: members.length }, 200);
   } catch (err) {
-    throwIfRoleError(err);
+    throwIfEEError(err, [RoleError, ROLE_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, roleId }, "Failed to list role members");
     return c.json({ error: "internal_error", message: "Failed to list role members.", requestId }, 500);
   }
@@ -604,7 +585,7 @@ adminRoles.openapi(assignRoleRoute, async (c) => {
     const result = await assignRole(orgId, userId, roleName);
     return c.json(result, 200);
   } catch (err) {
-    throwIfRoleError(err);
+    throwIfEEError(err, [RoleError, ROLE_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, userId }, "Failed to assign role");
     return c.json({ error: "internal_error", message: "Failed to assign role.", requestId }, 500);
   }

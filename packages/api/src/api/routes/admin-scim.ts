@@ -13,8 +13,8 @@ import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
 import { createLogger } from "@atlas/api/lib/logger";
-import { EnterpriseError } from "@atlas/ee/index";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
+import { throwIfEEError } from "./ee-error-handler";
 import {
   listConnections,
   deleteConnection,
@@ -36,24 +36,6 @@ function isValidId(id: string | undefined): id is string {
 }
 
 const SCIM_ERROR_STATUS = { not_found: 404, conflict: 409, validation: 400 } as const;
-
-/**
- * Throw HTTPException for known SCIM/enterprise errors. Check specific types
- * first. Unknown errors fall through (caller handles them).
- */
-function throwIfScimError(err: unknown): void {
-  if (err instanceof SCIMError) {
-    const status = SCIM_ERROR_STATUS[err.code];
-    throw new HTTPException(status, {
-      res: Response.json({ error: err.code, message: err.message }, { status }),
-    });
-  }
-  if (err instanceof EnterpriseError) {
-    throw new HTTPException(403, {
-      res: Response.json({ error: "enterprise_required", message: err.message }, { status: 403 }),
-    });
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -368,7 +350,7 @@ adminScim.openapi(getStatusRoute, async (c) => {
     ]);
     return c.json({ connections, syncStatus }, 200);
   } catch (err) {
-    throwIfScimError(err);
+    throwIfEEError(err, [SCIMError, SCIM_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get SCIM status");
     return c.json({ error: "internal_error", message: "Failed to get SCIM status.", requestId }, 500);
   }
@@ -400,7 +382,7 @@ adminScim.openapi(deleteConnectionRoute, async (c) => {
     }
     return c.json({ message: "SCIM connection deleted." }, 200);
   } catch (err) {
-    throwIfScimError(err);
+    throwIfEEError(err, [SCIMError, SCIM_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, connectionId }, "Failed to delete SCIM connection");
     return c.json({ error: "internal_error", message: "Failed to delete SCIM connection.", requestId }, 500);
   }
@@ -424,7 +406,7 @@ adminScim.openapi(listGroupMappingsRoute, async (c) => {
     const mappings = await listGroupMappings(orgId);
     return c.json({ mappings, total: mappings.length }, 200);
   } catch (err) {
-    throwIfScimError(err);
+    throwIfEEError(err, [SCIMError, SCIM_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to list SCIM group mappings");
     return c.json({ error: "internal_error", message: "Failed to list SCIM group mappings.", requestId }, 500);
   }
@@ -453,7 +435,7 @@ adminScim.openapi(createGroupMappingRoute, async (c) => {
     const mapping = await createGroupMapping(orgId, scimGroupName, roleName);
     return c.json({ mapping }, 201);
   } catch (err) {
-    throwIfScimError(err);
+    throwIfEEError(err, [SCIMError, SCIM_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to create SCIM group mapping");
     return c.json({ error: "internal_error", message: "Failed to create SCIM group mapping.", requestId }, 500);
   }
@@ -485,7 +467,7 @@ adminScim.openapi(deleteGroupMappingRoute, async (c) => {
     }
     return c.json({ message: "SCIM group mapping deleted." }, 200);
   } catch (err) {
-    throwIfScimError(err);
+    throwIfEEError(err, [SCIMError, SCIM_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, mappingId }, "Failed to delete SCIM group mapping");
     return c.json({ error: "internal_error", message: "Failed to delete SCIM group mapping.", requestId }, 500);
   }

@@ -7,10 +7,9 @@
 
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { validationHook } from "./validation-hook";
-import { HTTPException } from "hono/http-exception";
 import { createLogger } from "@atlas/api/lib/logger";
-import { EnterpriseError } from "@atlas/ee/index";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
+import { throwIfEEError, eeOnError } from "./ee-error-handler";
 import {
   getWorkspaceBranding,
   setWorkspaceBranding,
@@ -23,24 +22,6 @@ import { adminAuth, requestContext, type AuthEnv } from "./middleware";
 const log = createLogger("admin-branding");
 
 const BRANDING_ERROR_STATUS = { validation: 400, not_found: 404 } as const;
-
-/**
- * Throw HTTPException for known branding errors. Enterprise license
- * errors → 403; BrandingError → 400/404. Unknown errors fall through.
- */
-function throwIfBrandingError(err: unknown): void {
-  if (err instanceof EnterpriseError) {
-    throw new HTTPException(403, {
-      res: Response.json({ error: "enterprise_required", message: err.message }, { status: 403 }),
-    });
-  }
-  if (err instanceof BrandingError) {
-    const status = BRANDING_ERROR_STATUS[err.code];
-    throw new HTTPException(status, {
-      res: Response.json({ error: err.code, message: err.message }, { status }),
-    });
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -231,17 +212,7 @@ const adminBranding = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
 adminBranding.use(adminAuth);
 adminBranding.use(requestContext);
 
-adminBranding.onError((err, c) => {
-  if (err instanceof HTTPException) {
-    // Our thrown HTTPExceptions carry a JSON Response
-    if (err.res) return err.res;
-    // Framework 400 for malformed JSON
-    if (err.status === 400) {
-      return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
-    }
-  }
-  throw err;
-});
+adminBranding.onError(eeOnError);
 
 // GET / — get workspace branding
 adminBranding.openapi(getBrandingRoute, async (c) => {
@@ -261,7 +232,7 @@ adminBranding.openapi(getBrandingRoute, async (c) => {
     const branding = await getWorkspaceBranding(orgId);
     return c.json({ branding }, 200);
   } catch (err) {
-    throwIfBrandingError(err);
+    throwIfEEError(err, [BrandingError, BRANDING_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get workspace branding");
     return c.json({ error: "internal_error", message: "Failed to get workspace branding.", requestId }, 500);
   }
@@ -293,7 +264,7 @@ adminBranding.openapi(setBrandingRoute, async (c) => {
     });
     return c.json({ branding }, 200);
   } catch (err) {
-    throwIfBrandingError(err);
+    throwIfEEError(err, [BrandingError, BRANDING_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to save workspace branding");
     return c.json({ error: "internal_error", message: "Failed to save workspace branding.", requestId }, 500);
   }
@@ -320,7 +291,7 @@ adminBranding.openapi(deleteBrandingRoute, async (c) => {
     }
     return c.json({ message: "Branding reset to Atlas defaults." }, 200);
   } catch (err) {
-    throwIfBrandingError(err);
+    throwIfEEError(err, [BrandingError, BRANDING_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to reset workspace branding");
     return c.json({ error: "internal_error", message: "Failed to reset workspace branding.", requestId }, 500);
   }

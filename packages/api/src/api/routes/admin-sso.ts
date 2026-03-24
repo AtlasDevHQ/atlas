@@ -7,10 +7,9 @@
 
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { validationHook } from "./validation-hook";
-import { HTTPException } from "hono/http-exception";
 import { createLogger } from "@atlas/api/lib/logger";
-import { EnterpriseError } from "@atlas/ee/index";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
+import { throwIfEEError, eeOnError } from "./ee-error-handler";
 import {
   listSSOProviders,
   getSSOProvider,
@@ -34,28 +33,7 @@ import { adminAuth, requestContext, type AuthEnv } from "./middleware";
 const log = createLogger("admin-sso");
 
 const SSO_ERROR_STATUS = { not_found: 404, conflict: 409, validation: 400 } as const;
-
-/**
- * Throw HTTPException for known SSO/enterprise errors. Unknown errors fall through.
- */
-function throwIfSSOError(err: unknown): void {
-  if (err instanceof EnterpriseError) {
-    throw new HTTPException(403, {
-      res: Response.json({ error: "enterprise_required", message: err.message }, { status: 403 }),
-    });
-  }
-  if (err instanceof SSOEnforcementError) {
-    throw new HTTPException(400, {
-      res: Response.json({ error: err.code, message: err.message }, { status: 400 }),
-    });
-  }
-  if (err instanceof SSOError) {
-    const status = SSO_ERROR_STATUS[err.code];
-    throw new HTTPException(status, {
-      res: Response.json({ error: err.code, message: err.message }, { status }),
-    });
-  }
-}
+const SSO_ENFORCEMENT_ERROR_STATUS = { no_provider: 400, not_enterprise: 400 } as const;
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -472,17 +450,7 @@ const adminSso = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
 adminSso.use(adminAuth);
 adminSso.use(requestContext);
 
-adminSso.onError((err, c) => {
-  if (err instanceof HTTPException) {
-    // Our thrown HTTPExceptions carry a JSON Response
-    if (err.res) return err.res;
-    // Framework 400 for malformed JSON
-    if (err.status === 400) {
-      return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
-    }
-  }
-  throw err;
-});
+adminSso.onError(eeOnError);
 
 // GET /providers — list SSO providers for the active org
 adminSso.openapi(listProvidersRoute, async (c) => {
@@ -502,7 +470,7 @@ adminSso.openapi(listProvidersRoute, async (c) => {
     const providers = await listSSOProviders(orgId);
     return c.json({ providers: providers.map(summarizeProvider), total: providers.length }, 200);
   } catch (err) {
-    throwIfSSOError(err);
+    throwIfEEError(err, [SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to list SSO providers");
     return c.json({ error: "internal_error", message: "Failed to list SSO providers.", requestId }, 500);
   }
@@ -534,7 +502,7 @@ adminSso.openapi(getProviderRoute, async (c) => {
     }
     return c.json({ provider: redactProvider(provider) }, 200);
   } catch (err) {
-    throwIfSSOError(err);
+    throwIfEEError(err, [SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get SSO provider");
     return c.json({ error: "internal_error", message: "Failed to get SSO provider.", requestId }, 500);
   }
@@ -565,7 +533,7 @@ adminSso.openapi(createProviderRoute, async (c) => {
     const provider = await createSSOProvider(orgId, body as unknown as CreateSSOProviderRequest);
     return c.json({ provider: redactProvider(provider) }, 201);
   } catch (err) {
-    throwIfSSOError(err);
+    throwIfEEError(err, [SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to create SSO provider");
     return c.json({ error: "internal_error", message: "Failed to create SSO provider.", requestId }, 500);
   }
@@ -596,7 +564,7 @@ adminSso.openapi(updateProviderRoute, async (c) => {
     const provider = await updateSSOProvider(orgId, providerId, body);
     return c.json({ provider: redactProvider(provider) }, 200);
   } catch (err) {
-    throwIfSSOError(err);
+    throwIfEEError(err, [SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, providerId }, "Failed to update SSO provider");
     return c.json({ error: "internal_error", message: "Failed to update SSO provider.", requestId }, 500);
   }
@@ -628,7 +596,7 @@ adminSso.openapi(deleteProviderRoute, async (c) => {
     }
     return c.json({ message: "SSO provider deleted." }, 200);
   } catch (err) {
-    throwIfSSOError(err);
+    throwIfEEError(err, [SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, providerId }, "Failed to delete SSO provider");
     return c.json({ error: "internal_error", message: "Failed to delete SSO provider.", requestId }, 500);
   }
@@ -652,7 +620,7 @@ adminSso.openapi(getEnforcementRoute, async (c) => {
     const result = await isSSOEnforced(orgId);
     return c.json({ enforced: result?.enforced ?? false, orgId }, 200);
   } catch (err) {
-    throwIfSSOError(err);
+    throwIfEEError(err, [SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get SSO enforcement status");
     return c.json({ error: "internal_error", message: "Failed to get SSO enforcement status.", requestId }, 500);
   }
@@ -678,7 +646,7 @@ adminSso.openapi(setEnforcementRoute, async (c) => {
     const result = await setSSOEnforcement(orgId, enforced);
     return c.json(result, 200);
   } catch (err) {
-    throwIfSSOError(err);
+    throwIfEEError(err, [SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to set SSO enforcement");
     return c.json({ error: "internal_error", message: "Failed to set SSO enforcement.", requestId }, 500);
   }

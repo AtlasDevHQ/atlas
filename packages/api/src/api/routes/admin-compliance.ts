@@ -16,8 +16,8 @@ import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { HTTPException } from "hono/http-exception";
 import { validationHook } from "./validation-hook";
 import { createLogger } from "@atlas/api/lib/logger";
-import { EnterpriseError } from "@atlas/ee/index";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
+import { throwIfEEError, eeOnError } from "./ee-error-handler";
 import {
   listPIIClassifications,
   updatePIIClassification,
@@ -41,31 +41,6 @@ const log = createLogger("admin-compliance");
 
 const COMPLIANCE_ERROR_STATUS = { validation: 400, not_found: 404, conflict: 409 } as const;
 const REPORT_ERROR_STATUS = { validation: 400, not_available: 404 } as const satisfies Record<ReportErrorCode, number>;
-
-/**
- * Throw HTTPException for known compliance/report errors. Enterprise license
- * errors → 403; ComplianceError → 400/404/409; ReportError → 400/404.
- * Unknown errors fall through.
- */
-function throwIfComplianceError(err: unknown): void {
-  if (err instanceof EnterpriseError) {
-    throw new HTTPException(403, {
-      res: Response.json({ error: "enterprise_required", message: err.message }, { status: 403 }),
-    });
-  }
-  if (err instanceof ComplianceError) {
-    const status = COMPLIANCE_ERROR_STATUS[err.code];
-    throw new HTTPException(status, {
-      res: Response.json({ error: err.code, message: err.message }, { status }),
-    });
-  }
-  if (err instanceof ReportError) {
-    const status = REPORT_ERROR_STATUS[err.code];
-    throw new HTTPException(status, {
-      res: Response.json({ error: err.code, message: err.message }, { status }),
-    });
-  }
-}
 
 // ── Schemas ─────────────────────────────────────────────────────
 
@@ -165,17 +140,7 @@ export const adminCompliance = new OpenAPIHono<AuthEnv>({ defaultHook: validatio
 adminCompliance.use(adminAuth);
 adminCompliance.use(requestContext);
 
-adminCompliance.onError((err, c) => {
-  if (err instanceof HTTPException) {
-    // Our thrown HTTPExceptions carry a JSON Response
-    if (err.res) return err.res;
-    // Framework 400 for malformed JSON
-    if (err.status === 400) {
-      return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
-    }
-  }
-  throw err;
-});
+adminCompliance.onError(eeOnError);
 
 // GET /classifications
 adminCompliance.openapi(listRoute, async (c) => {
@@ -196,7 +161,7 @@ adminCompliance.openapi(listRoute, async (c) => {
     const classifications = await listPIIClassifications(orgId, connectionId);
     return c.json({ classifications }, 200);
   } catch (err) {
-    throwIfComplianceError(err);
+    throwIfEEError(err, [ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to list PII classifications");
     return c.json({ error: "internal_error", message: "Failed to list PII classifications.", requestId }, 500);
   }
@@ -229,7 +194,7 @@ adminCompliance.openapi(updateRoute, async (c) => {
     invalidateClassificationCache(orgId);
     return c.json({ classification: updated }, 200);
   } catch (err) {
-    throwIfComplianceError(err);
+    throwIfEEError(err, [ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to update PII classification");
     return c.json({ error: "internal_error", message: "Failed to update PII classification.", requestId }, 500);
   }
@@ -256,7 +221,7 @@ adminCompliance.openapi(deleteRoute, async (c) => {
     invalidateClassificationCache(orgId);
     return c.json({ deleted: true }, 200);
   } catch (err) {
-    throwIfComplianceError(err);
+    throwIfEEError(err, [ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to delete PII classification");
     return c.json({ error: "internal_error", message: "Failed to delete PII classification.", requestId }, 500);
   }
@@ -411,7 +376,7 @@ adminCompliance.openapi(dataAccessReportRoute, async (c) => {
 
     return c.json(report, 200);
   } catch (err) {
-    throwIfComplianceError(err);
+    throwIfEEError(err, [ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to generate data access report");
     return c.json({ error: "internal_error", message: "Failed to generate data access report.", requestId }, 500);
   }
@@ -460,7 +425,7 @@ adminCompliance.openapi(userActivityReportRoute, async (c) => {
 
     return c.json(report, 200);
   } catch (err) {
-    throwIfComplianceError(err);
+    throwIfEEError(err, [ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to generate user activity report");
     return c.json({ error: "internal_error", message: "Failed to generate user activity report.", requestId }, 500);
   }

@@ -18,10 +18,9 @@
 
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { validationHook } from "./validation-hook";
-import { HTTPException } from "hono/http-exception";
 import { createLogger } from "@atlas/api/lib/logger";
-import { EnterpriseError } from "@atlas/ee/index";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
+import { throwIfEEError, eeOnError } from "./ee-error-handler";
 import {
   listApprovalRules,
   createApprovalRule,
@@ -40,24 +39,6 @@ import { adminAuth, requestContext, type AuthEnv } from "./middleware";
 const log = createLogger("admin-approval");
 
 const APPROVAL_ERROR_STATUS = { validation: 400, not_found: 404, conflict: 409, expired: 410 } as const;
-
-/**
- * Throw HTTPException for known approval errors. Enterprise license
- * errors → 403; ApprovalError → 400/404/409/410. Unknown errors fall through.
- */
-function throwIfApprovalError(err: unknown): void {
-  if (err instanceof EnterpriseError) {
-    throw new HTTPException(403, {
-      res: Response.json({ error: "enterprise_required", message: err.message }, { status: 403 }),
-    });
-  }
-  if (err instanceof ApprovalError) {
-    const status = APPROVAL_ERROR_STATUS[err.code];
-    throw new HTTPException(status, {
-      res: Response.json({ error: err.code, message: err.message }, { status }),
-    });
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -305,17 +286,7 @@ const adminApproval = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
 adminApproval.use(adminAuth);
 adminApproval.use(requestContext);
 
-adminApproval.onError((err, c) => {
-  if (err instanceof HTTPException) {
-    // Our thrown HTTPExceptions carry a JSON Response
-    if (err.res) return err.res;
-    // Framework 400 for malformed JSON
-    if (err.status === 400) {
-      return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
-    }
-  }
-  throw err;
-});
+adminApproval.onError(eeOnError);
 
 // GET /rules — list approval rules
 adminApproval.openapi(listRulesRoute, async (c) => {
@@ -335,7 +306,7 @@ adminApproval.openapi(listRulesRoute, async (c) => {
     const rules = await listApprovalRules(orgId);
     return c.json({ rules }, 200);
   } catch (err) {
-    throwIfApprovalError(err);
+    throwIfEEError(err, [ApprovalError, APPROVAL_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to list approval rules");
     return c.json({ error: "internal_error", message: "Failed to list approval rules.", requestId }, 500);
   }
@@ -367,7 +338,7 @@ adminApproval.openapi(createRuleRoute, async (c) => {
     });
     return c.json({ rule }, 201);
   } catch (err) {
-    throwIfApprovalError(err);
+    throwIfEEError(err, [ApprovalError, APPROVAL_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to create approval rule");
     return c.json({ error: "internal_error", message: "Failed to create approval rule.", requestId }, 500);
   }
@@ -394,7 +365,7 @@ adminApproval.openapi(updateRuleRoute, async (c) => {
     const rule = await updateApprovalRule(orgId, ruleId, body);
     return c.json({ rule }, 200);
   } catch (err) {
-    throwIfApprovalError(err);
+    throwIfEEError(err, [ApprovalError, APPROVAL_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to update approval rule");
     return c.json({ error: "internal_error", message: "Failed to update approval rule.", requestId }, 500);
   }
@@ -423,7 +394,7 @@ adminApproval.openapi(deleteRuleRoute, async (c) => {
     }
     return c.json({ message: "Approval rule deleted." }, 200);
   } catch (err) {
-    throwIfApprovalError(err);
+    throwIfEEError(err, [ApprovalError, APPROVAL_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to delete approval rule");
     return c.json({ error: "internal_error", message: "Failed to delete approval rule.", requestId }, 500);
   }
@@ -450,7 +421,7 @@ adminApproval.openapi(listQueueRoute, async (c) => {
     const requests = await listApprovalRequests(orgId, status);
     return c.json({ requests }, 200);
   } catch (err) {
-    throwIfApprovalError(err);
+    throwIfEEError(err, [ApprovalError, APPROVAL_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to list approval requests");
     return c.json({ error: "internal_error", message: "Failed to list approval requests.", requestId }, 500);
   }
@@ -479,7 +450,7 @@ adminApproval.openapi(getQueueItemRoute, async (c) => {
     }
     return c.json({ request: item }, 200);
   } catch (err) {
-    throwIfApprovalError(err);
+    throwIfEEError(err, [ApprovalError, APPROVAL_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get approval request");
     return c.json({ error: "internal_error", message: "Failed to get approval request.", requestId }, 500);
   }
@@ -519,7 +490,7 @@ adminApproval.openapi(reviewRoute, async (c) => {
     );
     return c.json({ request: result }, 200);
   } catch (err) {
-    throwIfApprovalError(err);
+    throwIfEEError(err, [ApprovalError, APPROVAL_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to review approval request");
     return c.json({ error: "internal_error", message: "Failed to review approval request.", requestId }, 500);
   }
@@ -533,7 +504,7 @@ adminApproval.openapi(expireRoute, async (c) => {
     const expired = await expireStaleRequests();
     return c.json({ expired }, 200);
   } catch (err) {
-    throwIfApprovalError(err);
+    throwIfEEError(err, [ApprovalError, APPROVAL_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to expire stale requests");
     return c.json({ error: "internal_error", message: "Failed to expire stale requests.", requestId }, 500);
   }
@@ -553,7 +524,7 @@ adminApproval.openapi(pendingCountRoute, async (c) => {
     const count = await getPendingCount(orgId);
     return c.json({ count }, 200);
   } catch (err) {
-    throwIfApprovalError(err);
+    throwIfEEError(err, [ApprovalError, APPROVAL_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get pending count");
     return c.json({ error: "internal_error", message: "Failed to get pending approval count.", requestId }, 500);
   }

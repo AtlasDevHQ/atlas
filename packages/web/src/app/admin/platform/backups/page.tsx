@@ -148,8 +148,8 @@ function BackupsPageContent() {
   async function handleRequestRestore(id: string) {
     setRestoreBackupId(id);
     const result = await restoreRequestMutate({ path: `/api/v1/platform/backups/${id}/restore` });
-    if (result && typeof result === "object" && "confirmationToken" in result) {
-      setConfirmToken((result as { confirmationToken: string }).confirmationToken);
+    if (result.ok && result.data && typeof result.data === "object" && "confirmationToken" in result.data) {
+      setConfirmToken((result.data as { confirmationToken: string }).confirmationToken);
     }
   }
 

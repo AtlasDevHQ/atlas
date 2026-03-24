@@ -124,9 +124,9 @@ export default function UsageDashboardPage() {
     const result = await portalMutate({
       body: { returnUrl: window.location.href },
     });
-    if (result?.url) {
-      window.location.href = result.url;
-    } else if (result && !result.url) {
+    if (result.ok && result.data?.url) {
+      window.location.href = result.data.url;
+    } else if (result.ok && !result.data?.url) {
       setPortalUrlError("Billing portal URL was not returned. Please contact support.");
     }
   }

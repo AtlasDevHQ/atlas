@@ -17,6 +17,8 @@ export function friendlyError(err: FetchError): string {
     msg = "Access denied. Admin role required to view this page.";
   else if (err.status === 404)
     msg = "This feature is not enabled on this server.";
+  else if (err.status === 503)
+    msg = "A required service is unavailable. Check server configuration.";
   else msg = err.message;
   if (err.requestId) msg += ` (Request ID: ${err.requestId})`;
   return msg;

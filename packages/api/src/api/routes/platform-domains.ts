@@ -69,7 +69,7 @@ const listDomainsRoute = createRoute({
     403: { description: "Platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Enterprise feature not enabled", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
-    503: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Required infrastructure not configured (database or Railway)", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -96,7 +96,7 @@ const registerDomainRoute = createRoute({
     404: { description: "Enterprise feature not enabled", content: { "application/json": { schema: ErrorSchema } } },
     409: { description: "Domain already registered", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
-    503: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Required infrastructure not configured (database or Railway)", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -115,7 +115,7 @@ const verifyDomainRoute = createRoute({
     403: { description: "Platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Domain not found or enterprise not enabled", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
-    503: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Required infrastructure not configured (database or Railway)", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -134,7 +134,7 @@ const deleteDomainRoute = createRoute({
     403: { description: "Platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Domain not found or enterprise not enabled", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
-    503: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Required infrastructure not configured (database or Railway)", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -182,9 +182,9 @@ function handleDomainError(err: unknown, requestId: string): { error: string; me
     return { error: code, message: safeMessage, status, requestId };
   }
 
-  // Enterprise license error → 403
+  // Enterprise license error → 403 (sanitize to avoid leaking config details)
   if (err instanceof EnterpriseError) {
-    return { error: "enterprise_required", message, status: 403, requestId };
+    return { error: "enterprise_required", message: "This feature requires an enterprise license. Visit https://useatlas.dev/enterprise for licensing options.", status: 403, requestId };
   }
 
   return { error: "internal_error", message: `Unexpected error (ref: ${requestId.slice(0, 8)})`, status: 500, requestId };

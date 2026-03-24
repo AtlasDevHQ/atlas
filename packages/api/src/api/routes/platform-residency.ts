@@ -177,9 +177,9 @@ function handleResidencyError(err: unknown, requestId: string): { error: string;
     return { error: code, message, status, requestId };
   }
 
-  // Enterprise license error → 403
+  // Enterprise license error → 403 (sanitize to avoid leaking config details)
   if (err instanceof EnterpriseError) {
-    return { error: "enterprise_required", message, status: 403, requestId };
+    return { error: "enterprise_required", message: "This feature requires an enterprise license. Visit https://useatlas.dev/enterprise for licensing options.", status: 403, requestId };
   }
 
   return { error: "internal_error", message: `Unexpected error (ref: ${requestId.slice(0, 8)})`, status: 500, requestId };

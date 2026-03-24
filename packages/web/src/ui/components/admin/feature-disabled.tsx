@@ -5,8 +5,9 @@ import { Ban, DatabaseZap, ShieldX } from "lucide-react";
 /**
  * Shown when an admin page gets a 401/403/404/503 status.
  *
- * - 404 → feature not enabled (enterprise config)
+ * Evaluation order (matches code):
  * - 503 → internal database not configured (DATABASE_URL missing)
+ * - 404 → feature not enabled (enterprise config)
  * - 401 → authentication required
  * - 403 → insufficient role
  */

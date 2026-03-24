@@ -5,7 +5,8 @@
  *
  *   isEnterpriseEnabled()       — returns boolean (safe for conditional logic)
  *   getEnterpriseLicenseKey()   — returns the license key string, if set
- *   requireEnterprise()         — throws if not enabled or no license key (guard)
+ *   requireEnterprise()         — throws EnterpriseError if not enabled or no license key (guard)
+ *   EnterpriseError             — typed error for instanceof checks (thrown by requireEnterprise)
  */
 
 import { getConfig } from "@atlas/api/lib/config";
@@ -52,6 +53,8 @@ export class EnterpriseError extends Error {
 /**
  * Guard: throws if enterprise is not enabled or no license key is configured.
  * Use at the entry point of any enterprise-only code path.
+ *
+ * @throws {EnterpriseError} When enterprise is disabled or no license key is set.
  */
 export function requireEnterprise(feature?: string): void {
   const label = feature ? ` (${feature})` : "";

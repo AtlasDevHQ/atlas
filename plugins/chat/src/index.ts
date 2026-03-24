@@ -165,7 +165,7 @@ function buildChatPlugin(
             return response;
           } catch (err) {
             (log ?? console).error(
-              { err: err instanceof Error ? err : new Error(String(err)), requestId },
+              { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "slack" },
               "Slack webhook handler threw unexpectedly",
             );
             return c.json({ error: "Webhook processing failed", requestId }, 500);
@@ -280,7 +280,7 @@ function buildChatPlugin(
             return response;
           } catch (err) {
             (log ?? console).error(
-              { err: err instanceof Error ? err : new Error(String(err)), requestId },
+              { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "teams" },
               "Teams webhook handler threw unexpectedly",
             );
             return c.json({ error: "Webhook processing failed", requestId }, 500);
@@ -314,7 +314,7 @@ function buildChatPlugin(
             return response;
           } catch (err) {
             (log ?? console).error(
-              { err: err instanceof Error ? err : new Error(String(err)), requestId },
+              { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "discord" },
               "Discord webhook handler threw unexpectedly",
             );
             return c.json({ error: "Webhook processing failed", requestId }, 500);
@@ -348,7 +348,7 @@ function buildChatPlugin(
             return response;
           } catch (err) {
             (log ?? console).error(
-              { err: err instanceof Error ? err : new Error(String(err)), requestId },
+              { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "gchat" },
               "Google Chat webhook handler threw unexpectedly",
             );
             return c.json({ error: "Webhook processing failed", requestId }, 500);
@@ -382,7 +382,7 @@ function buildChatPlugin(
             return response;
           } catch (err) {
             (log ?? console).error(
-              { err: err instanceof Error ? err : new Error(String(err)), requestId },
+              { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "telegram" },
               "Telegram webhook handler threw unexpectedly",
             );
             return c.json({ error: "Webhook processing failed", requestId }, 500);
@@ -416,7 +416,7 @@ function buildChatPlugin(
             return response;
           } catch (err) {
             (log ?? console).error(
-              { err: err instanceof Error ? err : new Error(String(err)), requestId },
+              { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "github" },
               "GitHub webhook handler threw unexpectedly",
             );
             return c.json({ error: "Webhook processing failed", requestId }, 500);

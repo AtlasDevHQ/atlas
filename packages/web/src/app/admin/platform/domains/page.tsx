@@ -117,6 +117,7 @@ function DomainsPageContent() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   // Feature gate
+  if (error?.status === 503) return <FeatureGate status={503} feature="Custom Domains" />;
   if (error?.status === 404) return <FeatureGate status={404} feature="Custom Domains" />;
   if (error?.status === 403) return <FeatureGate status={403} feature="Custom Domains" />;
   if (error?.status === 401) return <FeatureGate status={401} feature="Custom Domains" />;

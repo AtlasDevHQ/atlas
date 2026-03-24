@@ -38,13 +38,25 @@ export function getEnterpriseLicenseKey(): string | undefined {
 }
 
 /**
+ * Typed error thrown when enterprise features are required but not available.
+ * Use `err instanceof EnterpriseError` instead of string matching on messages.
+ */
+export class EnterpriseError extends Error {
+  readonly code = "enterprise_required" as const;
+  constructor(message = "Enterprise features are not enabled") {
+    super(message);
+    this.name = "EnterpriseError";
+  }
+}
+
+/**
  * Guard: throws if enterprise is not enabled or no license key is configured.
  * Use at the entry point of any enterprise-only code path.
  */
 export function requireEnterprise(feature?: string): void {
   const label = feature ? ` (${feature})` : "";
   if (!isEnterpriseEnabled()) {
-    throw new Error(
+    throw new EnterpriseError(
       `Enterprise features${label} are not enabled. ` +
       `Set ATLAS_ENTERPRISE_ENABLED=true and provide a license key, ` +
       `or configure enterprise.enabled in atlas.config.ts. ` +
@@ -53,7 +65,7 @@ export function requireEnterprise(feature?: string): void {
   }
   const key = getEnterpriseLicenseKey();
   if (!key) {
-    throw new Error(
+    throw new EnterpriseError(
       `Enterprise features${label} are enabled but no license key is configured. ` +
       `Set ATLAS_ENTERPRISE_LICENSE_KEY or configure enterprise.licenseKey in atlas.config.ts. ` +
       `Visit https://useatlas.dev/enterprise for licensing options.`,

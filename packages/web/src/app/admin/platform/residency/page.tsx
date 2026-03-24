@@ -80,6 +80,7 @@ function ResidencyPageContent() {
   const [selectedRegion, setSelectedRegion] = useState<string>("");
 
   // Feature gate
+  if (regionsError?.status === 503) return <FeatureGate status={503} feature="Data Residency" />;
   if (regionsError?.status === 404) return <FeatureGate status={404} feature="Data Residency" />;
   if (regionsError?.status === 403) return <FeatureGate status={403} feature="Data Residency" />;
   if (regionsError?.status === 401) return <FeatureGate status={401} feature="Data Residency" />;

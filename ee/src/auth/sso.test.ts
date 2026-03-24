@@ -187,6 +187,16 @@ describe("Enterprise gating", () => {
     await expect(listSSOProviders("org-1")).rejects.toThrow("Enterprise features");
   });
 
+  it("enterprise gate throws EnterpriseError instance", async () => {
+    mockEnterpriseEnabled = false;
+    try {
+      await listSSOProviders("org-1");
+      expect.unreachable("Should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(EnterpriseError);
+    }
+  });
+
   it("getSSOProvider throws when enterprise is disabled", async () => {
     mockEnterpriseEnabled = false;
     await expect(getSSOProvider("org-1", "prov-1")).rejects.toThrow("Enterprise features");

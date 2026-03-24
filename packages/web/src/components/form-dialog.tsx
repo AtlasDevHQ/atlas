@@ -5,7 +5,6 @@ import { useEffect } from "react";
 import type {
   DefaultValues,
   FieldValues,
-  Resolver,
   UseFormReturn,
 } from "react-hook-form";
 import { useForm } from "react-hook-form";
@@ -28,7 +27,7 @@ interface FormDialogProps<TValues extends FieldValues> {
   onOpenChange: (open: boolean) => void;
   title: string;
   description?: string;
-  schema: z.ZodType<TValues>;
+  schema: z.ZodType<TValues, TValues>;
   defaultValues: DefaultValues<TValues>;
   onSubmit: (values: TValues) => Promise<void>;
   /** Render form fields. Use shadcn FormField / FormItem / FormControl components. */
@@ -69,11 +68,7 @@ export function FormDialog<TValues extends FieldValues>({
   className,
 }: FormDialogProps<TValues>) {
   const form = useForm<TValues>({
-    // zodResolver's overloads target Zod 3 and Zod 4 internal types that can't
-    // be satisfied by the public z.ZodType<T> generic. The cast is safe because
-    // zodResolver handles any valid Zod schema at runtime.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    resolver: zodResolver(schema as any) as Resolver<TValues>,
+    resolver: zodResolver(schema),
     defaultValues,
   });
 

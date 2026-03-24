@@ -8,7 +8,7 @@
  * - `onSlashCommand(configurable, default "/atlas")` → post thinking → subscribe → query → edit with card or stream
  * - `onAction("atlas_action_approve"|"atlas_action_deny")` → approve/deny → edit message
  * - `onAction("atlas_run_again")` → re-execute query → post result card
- * - `onAction("atlas_export_csv")` → stub response (full implementation in separate issue)
+ * - `onAction("atlas_export_csv")` → re-execute SQL → generate CSV → upload file or fallback link
  * - `onModalSubmit("atlas_clarify")` → feed clarification response into conversation
  * - `onModalClose("atlas_clarify")` → log dismissal
  * - Error scrubbing prevents leaking connection strings, stack traces, or
@@ -36,6 +36,14 @@ import type {
 import { buildQueryResultCard } from "./cards/query-result-card";
 import { buildErrorCard } from "./cards/error-card";
 import { buildApprovalCardJSX } from "./cards/approval-card";
+import {
+  buildCSVFromQueryData,
+  buildFallbackMessage,
+  countTotalRows,
+  isExportRequest,
+  platformSupportsFileUpload,
+  shouldAttachCSV,
+} from "./features/file-upload";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -400,18 +408,46 @@ export function createChatBridge(
   async function handleQuery(
     threadId: string,
     question: string,
-    postResponse: (response: { card: CardElement; fallbackText: string }) => Promise<unknown>,
+    postResponse: (response: { card: CardElement; fallbackText: string; files?: import("chat").FileUpload[] }) => Promise<unknown>,
     postApproval: ((action: PendingAction) => Promise<void>) | null,
     priorMessages?: ChatMessage[],
+    csvContext?: { adapterName: string; postMessage: (msg: string) => Promise<unknown> },
   ): Promise<void> {
     const result = await config.executeQuery(question, {
       threadId,
       priorMessages,
     });
 
-    // Post the response first — ensure the user gets the answer
+    // Determine if CSV should be attached
+    const totalRows = countTotalRows(result.data);
+    const explicitExport = isExportRequest(question);
+    const attachCSV = shouldAttachCSV(totalRows, explicitExport, config.fileUpload);
+
+    // Build the card response, optionally with CSV file attachment
     const response = buildQueryResultCard(result);
-    await postResponse(response);
+    if (attachCSV && csvContext && totalRows > 0) {
+      if (platformSupportsFileUpload(csvContext.adapterName)) {
+        const csvFile = buildCSVFromQueryData(result.data);
+        if (csvFile) {
+          await postResponse({ ...response, files: [csvFile] });
+        } else {
+          await postResponse(response);
+        }
+      } else {
+        // Post card without file, then post fallback message
+        await postResponse(response);
+        try {
+          await csvContext.postMessage(buildFallbackMessage(config.fileUpload?.webBaseUrl));
+        } catch (fallbackErr) {
+          log.warn(
+            { err: fallbackErr instanceof Error ? fallbackErr : new Error(String(fallbackErr)), threadId },
+            "Failed to post CSV fallback message",
+          );
+        }
+      }
+    } else {
+      await postResponse(response);
+    }
 
     // Post ephemeral approval prompts for pending actions
     if (config.actions && result.pendingActions?.length && postApproval) {
@@ -455,6 +491,7 @@ export function createChatBridge(
     postStream: (stream: AsyncIterable<string | StreamChunk>) => Promise<unknown>,
     postApproval: ((action: PendingAction) => Promise<void>) | null,
     priorMessages?: ChatMessage[],
+    csvContext?: { adapterName: string; postFile: (file: import("chat").FileUpload) => Promise<unknown>; postMessage: (msg: string) => Promise<unknown> },
   ): Promise<void> {
     // Defensive guard — streamingEnabled should prevent this, but
     // protects against config mutation after bridge creation.
@@ -501,6 +538,29 @@ export function createChatBridge(
         "Stream completed but final result unavailable — approval prompts, history, and conversation tracking lost",
       );
       throw resultErr;
+    }
+
+    // Attach CSV file after streaming if threshold exceeded or export requested
+    if (csvContext) {
+      const totalRows = countTotalRows(queryResult.data);
+      const explicitExport = isExportRequest(question);
+      if (shouldAttachCSV(totalRows, explicitExport, config.fileUpload) && totalRows > 0) {
+        try {
+          if (platformSupportsFileUpload(csvContext.adapterName)) {
+            const csvFile = buildCSVFromQueryData(queryResult.data);
+            if (csvFile) {
+              await csvContext.postFile(csvFile);
+            }
+          } else {
+            await csvContext.postMessage(buildFallbackMessage(config.fileUpload?.webBaseUrl));
+          }
+        } catch (csvErr) {
+          log.warn(
+            { err: csvErr instanceof Error ? csvErr : new Error(String(csvErr)), threadId },
+            "Failed to post CSV file after streaming — query answer was delivered successfully",
+          );
+        }
+      }
     }
 
     // Post approval prompts for pending actions
@@ -594,19 +654,29 @@ export function createChatBridge(
         ).then(() => {});
       };
 
+      const csvCtx = {
+        adapterName: thread.adapter.name,
+        postFile: (file: import("chat").FileUpload) => thread.post({ markdown: "", files: [file] }),
+        postMessage: (msg: string) => thread.post({ markdown: msg }),
+      };
+
       if (streamingEnabled) {
         await handleStreamingQuery(
           threadId,
           question,
           (stream) => thread.post(stream),
           approvalCallback,
+          undefined,
+          csvCtx,
         );
       } else {
         await handleQuery(
           threadId,
           question,
-          (response) => thread.post({ card: response.card, fallbackText: response.fallbackText }),
+          (response) => thread.post({ card: response.card, fallbackText: response.fallbackText, files: response.files }),
           approvalCallback,
+          undefined,
+          csvCtx,
         );
       }
     } catch (err) {
@@ -697,6 +767,12 @@ export function createChatBridge(
         ).then(() => {});
       };
 
+      const csvCtx = {
+        adapterName: thread.adapter.name,
+        postFile: (file: import("chat").FileUpload) => thread.post({ markdown: "", files: [file] }),
+        postMessage: (msg: string) => thread.post({ markdown: msg }),
+      };
+
       if (streamingEnabled) {
         await handleStreamingQuery(
           threadId,
@@ -704,14 +780,16 @@ export function createChatBridge(
           (stream) => thread.post(stream),
           approvalCallback,
           priorMessages,
+          csvCtx,
         );
       } else {
         await handleQuery(
           threadId,
           question,
-          (response) => thread.post({ card: response.card, fallbackText: response.fallbackText }),
+          (response) => thread.post({ card: response.card, fallbackText: response.fallbackText, files: response.files }),
           approvalCallback,
           priorMessages,
+          csvCtx,
         );
       }
     } catch (err) {
@@ -869,12 +947,22 @@ export function createChatBridge(
           }
         : null;
 
+      const slashCsvCtx = {
+        adapterName: event.adapter.name,
+        postFile: (file: import("chat").FileUpload) =>
+          event.adapter.postMessage(threadId, { markdown: "", files: [file] }),
+        postMessage: (msg: string) =>
+          event.adapter.postMessage(threadId, { markdown: msg }),
+      };
+
       if (streamingEnabled) {
         await handleStreamingQuery(
           threadId,
           question,
           (stream) => thinkingMsg.edit(stream).then(() => {}),
           approvalCallback,
+          undefined,
+          slashCsvCtx,
         );
       } else {
         await handleQuery(
@@ -882,6 +970,8 @@ export function createChatBridge(
           question,
           (response) => thinkingMsg.edit({ card: response.card, fallbackText: response.fallbackText }).then(() => {}),
           approvalCallback,
+          undefined,
+          slashCsvCtx,
         );
       }
     } catch (err) {
@@ -1101,8 +1191,9 @@ export function createChatBridge(
     }
   });
 
-  // --- onAction: Export CSV button (stub — full implementation in #770) ---
+  // --- onAction: Export CSV button ---
   chat.onAction("atlas_export_csv", async (event) => {
+    const sqlPayload = event.value;
     const threadId = event.threadId;
 
     if (!threadId) {
@@ -1112,18 +1203,92 @@ export function createChatBridge(
 
     log.info(
       { threadId, userId: event.user.userId },
-      "Export CSV button clicked (stub)",
+      "Export CSV button clicked",
     );
 
+    // Platform fallback — post link instead of file
+    if (!platformSupportsFileUpload(event.adapter.name)) {
+      try {
+        await event.adapter.postMessage(threadId, {
+          markdown: buildFallbackMessage(config.fileUpload?.webBaseUrl),
+        });
+      } catch (postErr) {
+        log.warn(
+          { err: postErr instanceof Error ? postErr : new Error(String(postErr)), threadId },
+          "Failed to post CSV fallback message",
+        );
+      }
+      return;
+    }
+
+    if (!sqlPayload) {
+      log.warn({ actionId: event.actionId }, "Export CSV action missing SQL value");
+      try {
+        await event.adapter.postMessage(threadId, {
+          markdown: "Unable to export — no SQL query found. Try asking your question again.",
+        });
+      } catch (postErr) {
+        log.warn(
+          { err: postErr instanceof Error ? postErr : new Error(String(postErr)), threadId },
+          "Failed to post Export CSV error message",
+        );
+      }
+      return;
+    }
+
+    // Dedup lock
+    const lock = await tryAcquireLock(stateAdapter, `bridge:export-csv:${threadId}`, DEDUP_LOCK_TTL_MS, log, threadId);
+    if (!lock) {
+      log.debug({ threadId }, "Export CSV already being processed");
+      return;
+    }
+
     try {
-      await event.adapter.postMessage(threadId, {
-        markdown: "CSV export is not yet available. This feature is coming soon.",
-      });
-    } catch (postErr) {
-      log.warn(
-        { err: postErr instanceof Error ? postErr : new Error(String(postErr)), threadId },
-        "Failed to post Export CSV stub response",
+      const priorMessages = await retrieveHistory(stateAdapter, threadId, log);
+      const question = `Re-run this SQL query and return all results: ${sqlPayload}`;
+
+      const result = await config.executeQuery(question, { threadId, priorMessages });
+      const csvFile = buildCSVFromQueryData(result.data);
+
+      if (csvFile) {
+        if (event.thread) {
+          await event.thread.post({ markdown: "", files: [csvFile] });
+        } else {
+          await event.adapter.postMessage(threadId, { markdown: "", files: [csvFile] });
+        }
+      } else {
+        const msg = "No data to export — the query returned no results.";
+        if (event.thread) {
+          await event.thread.post({ markdown: msg });
+        } else {
+          await event.adapter.postMessage(threadId, { markdown: msg });
+        }
+      }
+    } catch (err) {
+      log.error(
+        { err: err instanceof Error ? err : new Error(String(err)), threadId },
+        "Export CSV query execution failed",
       );
+
+      const errorMessage = scrubErrorMessage(
+        err instanceof Error ? err.message : String(err),
+        config.scrubError,
+      );
+      try {
+        await event.adapter.postMessage(threadId, { ...buildErrorCard({ message: `CSV export failed: ${errorMessage}` }) });
+      } catch (postErr) {
+        log.warn(
+          { err: postErr instanceof Error ? postErr : new Error(String(postErr)), threadId },
+          "Failed to post error for Export CSV action",
+        );
+      }
+    } finally {
+      await stateAdapter.releaseLock(lock).catch((releaseErr: unknown) => {
+        log.error(
+          { err: releaseErr instanceof Error ? releaseErr : new Error(String(releaseErr)), threadId },
+          "Failed to release Export CSV lock — thread may be blocked until TTL expires",
+        );
+      });
     }
   });
 

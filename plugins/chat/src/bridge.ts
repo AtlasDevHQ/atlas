@@ -24,7 +24,7 @@
  */
 
 import { Chat, Modal, TextInput } from "chat";
-import type { Adapter, StateAdapter, Lock, CardElement, StreamChunk } from "chat";
+import type { Adapter, StateAdapter, Lock, CardElement, FileUpload, StreamChunk } from "chat";
 import { toModalElement } from "chat/jsx-runtime";
 import type { PluginLogger } from "@useatlas/plugin-sdk";
 import type {
@@ -44,6 +44,17 @@ import {
   platformSupportsFileUpload,
   shouldAttachCSV,
 } from "./features/file-upload";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+/** Context for CSV file attachment in query responses. */
+interface CSVContext {
+  adapterName: string;
+  postFile: (file: FileUpload) => Promise<unknown>;
+  postMessage: (msg: string) => Promise<unknown>;
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -408,45 +419,41 @@ export function createChatBridge(
   async function handleQuery(
     threadId: string,
     question: string,
-    postResponse: (response: { card: CardElement; fallbackText: string; files?: import("chat").FileUpload[] }) => Promise<unknown>,
+    postResponse: (response: { card: CardElement; fallbackText: string }) => Promise<unknown>,
     postApproval: ((action: PendingAction) => Promise<void>) | null,
     priorMessages?: ChatMessage[],
-    csvContext?: { adapterName: string; postMessage: (msg: string) => Promise<unknown> },
+    csvContext?: CSVContext,
   ): Promise<void> {
     const result = await config.executeQuery(question, {
       threadId,
       priorMessages,
     });
 
-    // Determine if CSV should be attached
-    const totalRows = countTotalRows(result.data);
-    const explicitExport = isExportRequest(question);
-    const attachCSV = shouldAttachCSV(totalRows, explicitExport, config.fileUpload);
-
-    // Build the card response, optionally with CSV file attachment
+    // Post the card response first — ensure the user gets the answer
     const response = buildQueryResultCard(result);
-    if (attachCSV && csvContext && totalRows > 0) {
-      if (platformSupportsFileUpload(csvContext.adapterName)) {
-        const csvFile = buildCSVFromQueryData(result.data);
-        if (csvFile) {
-          await postResponse({ ...response, files: [csvFile] });
-        } else {
-          await postResponse(response);
-        }
-      } else {
-        // Post card without file, then post fallback message
-        await postResponse(response);
+    await postResponse(response);
+
+    // Attach CSV file if threshold exceeded or export requested
+    if (csvContext) {
+      const totalRows = countTotalRows(result.data);
+      const explicitExport = isExportRequest(question);
+      if (shouldAttachCSV(totalRows, explicitExport, config.fileUpload) && totalRows > 0) {
         try {
-          await csvContext.postMessage(buildFallbackMessage(config.fileUpload?.webBaseUrl));
-        } catch (fallbackErr) {
+          if (platformSupportsFileUpload(csvContext.adapterName)) {
+            const csvFile = buildCSVFromQueryData(result.data);
+            if (csvFile) {
+              await csvContext.postFile(csvFile);
+            }
+          } else {
+            await csvContext.postMessage(buildFallbackMessage(config.fileUpload?.webBaseUrl));
+          }
+        } catch (csvErr) {
           log.warn(
-            { err: fallbackErr instanceof Error ? fallbackErr : new Error(String(fallbackErr)), threadId },
-            "Failed to post CSV fallback message",
+            { err: csvErr instanceof Error ? csvErr : new Error(String(csvErr)), threadId },
+            "Failed to post CSV file — query answer was delivered successfully",
           );
         }
       }
-    } else {
-      await postResponse(response);
     }
 
     // Post ephemeral approval prompts for pending actions
@@ -491,7 +498,7 @@ export function createChatBridge(
     postStream: (stream: AsyncIterable<string | StreamChunk>) => Promise<unknown>,
     postApproval: ((action: PendingAction) => Promise<void>) | null,
     priorMessages?: ChatMessage[],
-    csvContext?: { adapterName: string; postFile: (file: import("chat").FileUpload) => Promise<unknown>; postMessage: (msg: string) => Promise<unknown> },
+    csvContext?: CSVContext,
   ): Promise<void> {
     // Defensive guard — streamingEnabled should prevent this, but
     // protects against config mutation after bridge creation.
@@ -656,7 +663,7 @@ export function createChatBridge(
 
       const csvCtx = {
         adapterName: thread.adapter.name,
-        postFile: (file: import("chat").FileUpload) => thread.post({ markdown: "", files: [file] }),
+        postFile: (file: FileUpload) => thread.post({ markdown: "", files: [file] }),
         postMessage: (msg: string) => thread.post({ markdown: msg }),
       };
 
@@ -673,7 +680,7 @@ export function createChatBridge(
         await handleQuery(
           threadId,
           question,
-          (response) => thread.post({ card: response.card, fallbackText: response.fallbackText, files: response.files }),
+          (response) => thread.post({ card: response.card, fallbackText: response.fallbackText }),
           approvalCallback,
           undefined,
           csvCtx,
@@ -769,7 +776,7 @@ export function createChatBridge(
 
       const csvCtx = {
         adapterName: thread.adapter.name,
-        postFile: (file: import("chat").FileUpload) => thread.post({ markdown: "", files: [file] }),
+        postFile: (file: FileUpload) => thread.post({ markdown: "", files: [file] }),
         postMessage: (msg: string) => thread.post({ markdown: msg }),
       };
 
@@ -786,7 +793,7 @@ export function createChatBridge(
         await handleQuery(
           threadId,
           question,
-          (response) => thread.post({ card: response.card, fallbackText: response.fallbackText, files: response.files }),
+          (response) => thread.post({ card: response.card, fallbackText: response.fallbackText }),
           approvalCallback,
           priorMessages,
           csvCtx,
@@ -949,7 +956,7 @@ export function createChatBridge(
 
       const slashCsvCtx = {
         adapterName: event.adapter.name,
-        postFile: (file: import("chat").FileUpload) =>
+        postFile: (file: FileUpload) =>
           event.adapter.postMessage(threadId, { markdown: "", files: [file] }),
         postMessage: (msg: string) =>
           event.adapter.postMessage(threadId, { markdown: msg }),

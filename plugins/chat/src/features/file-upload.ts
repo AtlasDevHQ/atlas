@@ -113,7 +113,7 @@ export function isExportRequest(question: string): boolean {
  *
  * Returns true when:
  * 1. The user explicitly requested an export (keyword match), OR
- * 2. Any dataset in the result exceeds the auto-attach threshold
+ * 2. Total row count across all datasets exceeds the auto-attach threshold
  *
  * @param totalRows - Total row count across all datasets
  * @param explicitExport - Whether the user explicitly requested export

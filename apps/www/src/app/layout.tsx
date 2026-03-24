@@ -15,22 +15,22 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Atlas — Open-source data agent",
+  title: "Atlas — Quit copying SQL from ChatGPT",
   description:
-    "Open-source text-to-SQL agent. Connect any database, auto-generate a semantic layer, and let your team query data in plain English. Self-host for free or use Atlas Cloud with enterprise features.",
+    "Stop pasting AI-generated SQL into your database client and hoping it works. Atlas connects to your actual schema, writes validated queries, and runs them. Open-source, self-hosted or cloud.",
   openGraph: {
-    title: "Atlas — Open-source data agent",
+    title: "Atlas — Quit copying SQL from ChatGPT",
     description:
-      "Open-source text-to-SQL agent. Self-host for free or use Atlas Cloud. 7 databases, 20+ plugins, admin console, Slack, MCP, and more.",
+      "AI writes better SQL than you — let it. Atlas connects to your schema, validates queries, and runs them. Open-source with 7 databases, 20+ plugins, and enterprise cloud.",
     url: "https://useatlas.dev",
     siteName: "Atlas",
     type: "website",
   },
   twitter: {
     card: "summary_large_image",
-    title: "Atlas — Open-source data agent",
+    title: "Atlas — Quit copying SQL from ChatGPT",
     description:
-      "Open-source text-to-SQL agent with auto-generated semantic layer and production-grade security. Self-host or use Atlas Cloud.",
+      "Stop pasting AI-generated SQL and hoping it works. Atlas connects to your schema, validates every query, and runs it. Open-source or cloud.",
   },
 };
 

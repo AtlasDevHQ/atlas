@@ -148,20 +148,21 @@ export default function Home() {
       <section className="mx-auto max-w-5xl px-6 pt-24 pb-20 md:pt-36 md:pb-28">
         <div className="max-w-3xl">
           <p className="animate-fade-in-up delay-100 mb-5 font-mono text-sm tracking-wide text-brand">
-            Open-source text-to-SQL agent
+            AI writes better SQL than you. Let it.
           </p>
           <h1 className="animate-fade-in-up delay-200 text-4xl leading-[1.1] font-semibold tracking-tight text-zinc-100 md:text-6xl">
-            Ask your data
+            Quit copying SQL
             <br />
-            anything
+            from ChatGPT
             <span className="animate-blink ml-0.5 inline-block text-brand">
               _
             </span>
           </h1>
           <p className="animate-fade-in-up delay-300 mt-6 max-w-xl text-lg leading-relaxed text-zinc-400">
-            Connect your database, generate a semantic layer, and give your team
-            a data analyst that actually understands your schema.
-            Self-host for free or use Atlas Cloud.
+            You&apos;re already using AI to query your data — but ChatGPT
+            doesn&apos;t know your schema, can&apos;t validate queries, and
+            definitely can&apos;t run them. Atlas does all three. Connect your
+            database and ask questions in plain English.
           </p>
           <div className="animate-fade-in-up delay-400 mt-10 flex flex-wrap items-center gap-4">
             <a
@@ -411,8 +412,9 @@ export default function Home() {
           Embed in your app
         </h2>
         <p className="mb-8 max-w-xl text-zinc-400">
-          Add a data analyst to any page with one script tag. No build step,
-          no framework dependency. Or use the React component for full control.
+          Give every user a data analyst instead of a Jira ticket to the
+          data team. One script tag, no build step. Or use the React
+          component for full control.
         </p>
         <div className="grid gap-6 md:grid-cols-2">
           <CodeBlock title="Script tag">
@@ -466,7 +468,7 @@ export default function App() {
               step: "03",
               title: "Ask questions",
               description:
-                "Natural language in, validated SQL out. The agent reads your semantic layer, writes queries, and builds notebook-style analyses you can fork and export.",
+                "No more describing your schema to ChatGPT from memory. Atlas already knows your tables, columns, and joins. Just ask — it writes the SQL, validates it, runs it, and explains the results.",
               code: '"What were our top 10 accounts last quarter?"',
             },
           ].map((step) => (
@@ -498,12 +500,13 @@ export default function App() {
               See it in action
             </h2>
             <p className="mb-6 max-w-md text-zinc-400">
-              Watch Atlas turn a natural language question into validated SQL,
-              execute it, and return results with charts — all in seconds.
+              This is what happens when the AI actually knows your schema.
+              Question in, validated SQL out, results rendered — no
+              clipboard required.
             </p>
             <p className="mb-8 text-sm text-zinc-500">
-              This is a scripted replay from the demo database.
-              Want to try it yourself with your own questions?
+              Scripted replay from the demo database. Try it live with
+              your own questions.
             </p>
             <a
               href="https://demo.useatlas.dev"
@@ -672,8 +675,9 @@ export default function App() {
           Security
         </h2>
         <p className="mb-10 max-w-xl text-zinc-400">
-          Multi-layer security at every step. Your database credentials and
-          query results never leave your infrastructure.
+          The reason you can&apos;t just give ChatGPT your database connection
+          string. Atlas enforces read-only access, validates every query, and
+          keeps credentials on your infrastructure.
         </p>
         <ChecklistGrid
           items={[

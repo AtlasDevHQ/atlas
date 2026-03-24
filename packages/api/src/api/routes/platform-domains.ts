@@ -56,7 +56,7 @@ const listDomainsRoute = createRoute({
   path: "/",
   tags: ["Platform Admin — Custom Domains"],
   summary: "List all custom domains",
-  description: "Returns all registered custom domains across workspaces.",
+  description: "SaaS only. Returns all registered custom domains across workspaces.",
   responses: {
     200: {
       description: "Domains list",
@@ -79,7 +79,7 @@ const registerDomainRoute = createRoute({
   path: "/",
   tags: ["Platform Admin — Custom Domains"],
   summary: "Register a custom domain",
-  description: "Register a custom domain for a workspace via Railway. Returns CNAME target for DNS setup.",
+  description: "SaaS only. Register a custom domain for a workspace via Railway. Returns CNAME target for DNS setup.",
   request: {
     body: {
       required: true,
@@ -106,7 +106,7 @@ const verifyDomainRoute = createRoute({
   path: "/:id/verify",
   tags: ["Platform Admin — Custom Domains"],
   summary: "Verify a custom domain",
-  description: "Checks DNS propagation and TLS certificate status via Railway.",
+  description: "SaaS only. Checks DNS propagation and TLS certificate status via Railway.",
   responses: {
     200: {
       description: "Verification result",
@@ -125,7 +125,7 @@ const deleteDomainRoute = createRoute({
   path: "/:id",
   tags: ["Platform Admin — Custom Domains"],
   summary: "Delete a custom domain",
-  description: "Removes a custom domain from both Railway and Atlas.",
+  description: "SaaS only. Removes a custom domain from both Railway and Atlas.",
   responses: {
     200: {
       description: "Domain deleted",

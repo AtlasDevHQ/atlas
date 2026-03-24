@@ -54,7 +54,7 @@ const listStatusesRoute = createRoute({
   path: "/",
   tags: ["Admin — Onboarding Emails"],
   summary: "List onboarding email statuses",
-  description: "Returns onboarding email progress for users in the authenticated admin's organization.",
+  description: "SaaS only. Returns onboarding email progress for users in the authenticated admin's organization.",
   request: {
     query: z.object({
       limit: z.string().optional().openapi({ description: "Max results (default 50)" }),
@@ -85,7 +85,7 @@ const getSequenceRoute = createRoute({
   path: "/sequence",
   tags: ["Admin — Onboarding Emails"],
   summary: "Get onboarding email sequence definition",
-  description: "Returns the configured onboarding email sequence steps with triggers and timing.",
+  description: "SaaS only. Returns the configured onboarding email sequence steps with triggers and timing.",
   responses: {
     200: {
       description: "Sequence steps",

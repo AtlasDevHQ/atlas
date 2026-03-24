@@ -53,7 +53,7 @@ const listRegionsRoute = createRoute({
   path: "/regions",
   tags: ["Platform Admin — Residency"],
   summary: "List configured regions",
-  description: "Returns all configured regions with workspace counts and health status.",
+  description: "SaaS only. Returns all configured regions with workspace counts and health status.",
   responses: {
     200: {
       description: "Regions list",
@@ -79,7 +79,7 @@ const getWorkspaceRegionRoute = createRoute({
   path: "/workspaces/:id/region",
   tags: ["Platform Admin — Residency"],
   summary: "Get workspace region",
-  description: "Returns the region assignment for a workspace.",
+  description: "SaaS only. Returns the region assignment for a workspace.",
   responses: {
     200: {
       description: "Workspace region assignment",
@@ -98,7 +98,7 @@ const assignRegionRoute = createRoute({
   path: "/workspaces/:id/region",
   tags: ["Platform Admin — Residency"],
   summary: "Assign region to workspace",
-  description: "Assign a workspace to a geographic region. Region is immutable after assignment.",
+  description: "SaaS only. Assign a workspace to a geographic region. Region is immutable after assignment.",
   request: {
     body: {
       required: true,
@@ -125,7 +125,7 @@ const listAssignmentsRoute = createRoute({
   path: "/assignments",
   tags: ["Platform Admin — Residency"],
   summary: "List all workspace region assignments",
-  description: "Returns all workspaces that have been assigned to a region.",
+  description: "SaaS only. Returns all workspaces that have been assigned to a region.",
   responses: {
     200: {
       description: "Workspace region assignments",

@@ -791,6 +791,44 @@ Planned enterprise features include SSO (SAML/OIDC), SCIM provisioning, PII dete
 
 ---
 
+## Residency
+
+<Callout type="warn">
+SaaS only. Requires enterprise features to be enabled.
+</Callout>
+
+Data residency configuration for routing workspaces to geographic regions with region-specific databases.
+
+```typescript
+export default defineConfig({
+  enterprise: { enabled: true, licenseKey: process.env.ATLAS_ENTERPRISE_LICENSE_KEY },
+  residency: {
+    regions: {
+      "us-east": { label: "US East", databaseUrl: process.env.US_EAST_DB_URL! },
+      "eu-west": { label: "EU West", databaseUrl: process.env.EU_WEST_DB_URL! },
+    },
+    defaultRegion: "us-east",
+  },
+});
+```
+
+### Residency fields
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `regions` | `Record<string, RegionConfig>` | Yes | — | Map of region identifiers to database configuration. At least one region required |
+| `defaultRegion` | `string` | Yes | — | Default region for new workspaces. Must be a key in the `regions` map |
+
+**RegionConfig fields:**
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `label` | `string` | Yes | — | Human-readable region name for the admin console |
+| `databaseUrl` | `string` | Yes | — | Connection string for the region's internal database |
+| `datasourceUrl` | `string` | No | — | Analytics datasource override for the region. When unset, uses the default datasource |
+
+---
+
 ## Full Example
 
 ```typescript

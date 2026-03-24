@@ -117,6 +117,7 @@ OPENAI_COMPATIBLE_BASE_URL=http://localhost:8000/v1  # Required
 |----------|---------|-------------|
 | `ATLAS_DATASOURCE_URL` | — | Analytics datasource connection string (PostgreSQL or MySQL). Optional when datasources are defined in `atlas.config.ts` |
 | `DATABASE_URL` | — | Atlas internal Postgres (auth, audit, conversations). Optional — Atlas works without it |
+| `DATABASE_URL_UNPOOLED` | — | Unpooled Postgres connection string (e.g. Neon direct URL). When `ATLAS_DEMO_DATA=true` and `ATLAS_DATASOURCE_URL` is unset, checked before `DATABASE_URL` in the demo data fallback chain |
 | `ATLAS_DEMO_DATA` | — | Set `true` to use the internal DB as both analytics datasource and internal DB |
 
 **Demo data fallback chain:** When `ATLAS_DEMO_DATA=true` and `ATLAS_DATASOURCE_URL` is not set, Atlas resolves the analytics datasource by checking `DATABASE_URL_UNPOOLED` first, then `DATABASE_URL`. This lets a single Postgres instance (e.g. Neon on Vercel) serve as both the analytics datasource and Atlas's internal database.
@@ -434,6 +435,7 @@ ATLAS_NSJAIL_MEMORY_LIMIT=256
 | `ATLAS_PUBLIC_URL` | — | Public base URL for constructing action approval URLs. When not set, derived from request headers. Set explicitly in production for reliable approve/deny links in `/api/v1/query` responses |
 | `ATLAS_CORS_ORIGIN` | `*` | CORS allowed origin. Must set explicitly for cross-origin + managed auth (cookie-based) |
 | `NEXT_PUBLIC_ATLAS_API_URL` | — | Next.js frontend: cross-origin API URL. When unset, same-origin via Next.js rewrites |
+| `NEXT_PUBLIC_ATLAS_AUTH_MODE` | — | Enables proxy-level route protection in the Next.js frontend. When set to `managed`, unauthenticated users are redirected to `/signup`. Other auth modes skip proxy enforcement |
 | `ATLAS_API_URL` | `http://localhost:3001` | Rewrite target for same-origin mode (only used when `NEXT_PUBLIC_ATLAS_API_URL` is unset) |
 
 ```bash
@@ -592,6 +594,37 @@ stripe listen --forward-to localhost:3001/api/auth/stripe/webhook
 | `ATLAS_APPROVAL_EXPIRY_HOURS` | `24` | Hours before pending approval requests auto-expire. See [Approval Workflows](/guides/approval-workflows) |
 
 These can also be configured via [`atlas.config.ts`](/reference/config#enterprise).
+
+### SLA Monitoring
+
+SaaS only. Thresholds for SLA alerting.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_SLA_LATENCY_P99_MS` | — | P99 latency threshold in milliseconds. When unset, the system applies an internal default of 5000ms for alert evaluation |
+| `ATLAS_SLA_ERROR_RATE_PCT` | — | Error rate threshold as a percentage (0–100). When unset, the system applies an internal default of 5% for alert evaluation |
+| `ATLAS_SLA_WEBHOOK_URL` | — | Webhook URL for SLA alert notifications. Receives POST requests with alert payloads |
+
+### Backups
+
+SaaS only. Automated internal database backups.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_BACKUP_SCHEDULE` | `0 3 * * *` | Cron expression (5 fields) for automated backup schedule |
+| `ATLAS_BACKUP_RETENTION_DAYS` | `30` | Number of days to retain backups before automatic deletion |
+| `ATLAS_BACKUP_STORAGE_PATH` | `./backups` | Directory path for backup file storage. Must not contain `..` |
+
+### Custom Domains (Railway)
+
+SaaS only. Required for custom domain support via Railway.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RAILWAY_API_TOKEN` | — | Workspace-scoped Railway API token |
+| `RAILWAY_PROJECT_ID` | — | Railway project ID for the Atlas deployment |
+| `RAILWAY_ENVIRONMENT_ID` | — | Railway environment ID (e.g. production) |
+| `RAILWAY_WEB_SERVICE_ID` | — | Railway service ID for the web service (custom domains point here) |
 
 ---
 

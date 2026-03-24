@@ -23,7 +23,7 @@ const unsubscribeRoute = createRoute({
   path: "/unsubscribe",
   tags: ["Onboarding Emails"],
   summary: "Unsubscribe from onboarding emails",
-  description: "Unsubscribe a user from onboarding emails via the link in emails.",
+  description: "SaaS only. Unsubscribe a user from onboarding emails via the link in emails.",
   request: {
     query: z.object({
       userId: z.string().openapi({ description: "User ID to unsubscribe" }),
@@ -43,7 +43,7 @@ const resubscribeRoute = createRoute({
   path: "/resubscribe",
   tags: ["Onboarding Emails"],
   summary: "Resubscribe to onboarding emails",
-  description: "Re-enable onboarding emails for a user.",
+  description: "SaaS only. Re-enable onboarding emails for a user.",
   request: {
     body: {
       content: {

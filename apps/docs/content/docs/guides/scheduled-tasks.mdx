@@ -7,7 +7,11 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 Scheduled tasks run natural language queries on a cron schedule and deliver results to configured recipients. Use them for daily reports, weekly digests, or real-time alerting via webhooks.
 
-<Callout title="Prerequisites">
+<Callout type="info" title="SaaS">
+Scheduled tasks are pre-enabled on [app.useatlas.dev](https://app.useatlas.dev) — no configuration needed. Create tasks from the admin console or API immediately after signup.
+</Callout>
+
+<Callout title="Self-hosted prerequisites">
 - `ATLAS_SCHEDULER_ENABLED=true`
 - An internal database (`DATABASE_URL`) for task persistence
 - Authentication enabled (any mode except `none`)
@@ -68,7 +72,9 @@ minute  hour  day-of-month  month  day-of-week
 
 ### Email
 
-Requires [Resend](https://resend.com) for email delivery.
+On [app.useatlas.dev](https://app.useatlas.dev), email delivery is pre-configured — just add recipients and you're set.
+
+Self-hosted deployments require [Resend](https://resend.com) for email delivery:
 
 ```bash
 RESEND_API_KEY=re_...
@@ -113,7 +119,11 @@ Webhook URLs must use HTTPS in production. Private/internal IPs (localhost, 127.
 
 ---
 
-## Execution Backends
+## Execution Backends (Self-Hosted)
+
+<Callout type="info" title="SaaS">
+On [app.useatlas.dev](https://app.useatlas.dev), the scheduler backend is managed for you. This section is for self-hosted operators only.
+</Callout>
 
 The scheduler needs a mechanism to trigger periodic checks for due tasks.
 
@@ -236,7 +246,11 @@ See the [SDK](/reference/sdk) for typed client methods.
 
 ---
 
-## Environment Variables
+## Environment Variables (Self-Hosted)
+
+<Callout type="info" title="SaaS">
+On [app.useatlas.dev](https://app.useatlas.dev), these variables are managed automatically. This section is for self-hosted operators only.
+</Callout>
 
 | Variable | Default | Description |
 |----------|---------|-------------|

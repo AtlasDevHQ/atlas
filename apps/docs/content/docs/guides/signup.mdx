@@ -7,7 +7,11 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 Atlas includes a self-serve signup flow that walks new users through account creation, workspace setup, and database connection — all from the browser. Once complete, users land in the chat UI ready to query.
 
-<Callout title="Prerequisites">
+<Callout type="info" title="SaaS">
+On [app.useatlas.dev](https://app.useatlas.dev), signup is available immediately at [app.useatlas.dev/signup](https://app.useatlas.dev/signup). Social login (Google, GitHub, Microsoft) is pre-configured. Skip to [How It Works](#how-it-works) for the user experience.
+</Callout>
+
+<Callout title="Self-hosted prerequisites">
 - [Managed auth](/deployment/authentication#managed-auth) enabled (`ATLAS_AUTH_MODE=managed`)
 - Internal database configured (`DATABASE_URL`)
 - At least one LLM provider configured (`ATLAS_PROVIDER` + API key)
@@ -31,6 +35,10 @@ Each step validates before allowing the user to proceed. The database URL is tes
 ---
 
 ## Enabling Social Login
+
+<Callout type="info" title="SaaS">
+On [app.useatlas.dev](https://app.useatlas.dev), Google, GitHub, and Microsoft login are pre-configured. This section is for self-hosted operators only.
+</Callout>
 
 Social OAuth buttons appear automatically when the corresponding environment variables are set. Each provider requires both a client ID and client secret:
 
@@ -129,7 +137,11 @@ Response (201):
 
 ---
 
-## Configuration
+## Configuration (Self-Hosted)
+
+<Callout type="info" title="SaaS">
+On [app.useatlas.dev](https://app.useatlas.dev), auth and datasource configuration is handled automatically during signup. This section is for self-hosted operators only.
+</Callout>
 
 ```typescript
 // atlas.config.ts

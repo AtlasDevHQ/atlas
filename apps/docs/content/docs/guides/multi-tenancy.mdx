@@ -7,7 +7,11 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 Atlas supports multi-tenancy through [Better Auth organizations](https://www.better-auth.com/docs/plugins/organization). Each organization gets isolated semantic layers, connection pools, and query caches — preventing data leakage and noisy-neighbor issues between tenants.
 
-<Callout title="Prerequisites">
+<Callout type="info" title="SaaS">
+On [app.useatlas.dev](https://app.useatlas.dev), multi-tenancy is built in. Your workspace is an organization — manage members and roles from **Admin > Organization**. The infrastructure sections below (per-org pooling, scaling config) are handled automatically.
+</Callout>
+
+<Callout title="Self-hosted prerequisites">
 - [Managed auth](/deployment/authentication#managed-auth) enabled (`BETTER_AUTH_SECRET` set)
 - An internal database (`DATABASE_URL`) — organizations and their data are stored here
 - At least one analytics datasource (`ATLAS_DATASOURCE_URL`)
@@ -141,7 +145,11 @@ If the on-disk directory is empty on first access (e.g., after a container resta
 
 ---
 
-## Org-scoped connections
+## Org-scoped connections (Operators)
+
+<Callout type="info" title="SaaS">
+On [app.useatlas.dev](https://app.useatlas.dev), per-org connection pooling is managed automatically. This section is for self-hosted operators only.
+</Callout>
 
 By default, all organizations share the same database connection pools. For SaaS deployments where tenant isolation is critical, enable **per-org pool isolation** — each org gets its own connection pool instances with independent limits.
 
@@ -301,7 +309,11 @@ The org switcher component is at `packages/web/src/ui/components/org-switcher.ts
 
 ---
 
-## `atlas init` with organizations
+## `atlas init` with organizations (Operators)
+
+<Callout type="info" title="SaaS">
+On [app.useatlas.dev](https://app.useatlas.dev), semantic layer initialization is handled through the admin console. This section is for self-hosted operators using the CLI.
+</Callout>
 
 The CLI supports org-scoped initialization via the `--org` flag:
 

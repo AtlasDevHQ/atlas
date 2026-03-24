@@ -6,9 +6,13 @@ icon: CreditCard
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Atlas uses a tiered billing model. Self-hosted deployments are free with no enforcement. SaaS workspaces on [app.useatlas.dev](https://app.useatlas.dev) start with a 14-day trial, then require a paid plan. Billing is powered by Stripe with automatic usage metering and graceful overage handling.
+Atlas uses a tiered billing model. SaaS workspaces on [app.useatlas.dev](https://app.useatlas.dev) start with a 14-day trial, then require a paid plan. Self-hosted deployments are free with no enforcement. Billing includes automatic usage metering and graceful overage handling.
 
-<Callout title="Prerequisites">
+<Callout type="info" title="SaaS">
+On [app.useatlas.dev](https://app.useatlas.dev), billing is fully managed. View your usage, manage your plan, and update payment methods from the admin dashboard — no Stripe setup required on your end.
+</Callout>
+
+<Callout title="Self-hosted prerequisites">
 - Internal database configured (`DATABASE_URL`) — required for usage tracking
 - `STRIPE_SECRET_KEY` set — enables billing routes and Stripe integration
 - Admin role required for the usage dashboard
@@ -53,44 +57,6 @@ curl -X POST https://your-atlas.example.com/api/v1/billing/byot \
 
 ---
 
-## Stripe Setup
-
-Set these environment variables to enable billing:
-
-| Variable | Description |
-|----------|-------------|
-| `STRIPE_SECRET_KEY` | Stripe secret key (test or live). Enables billing routes when set |
-| `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret for verifying events |
-| `STRIPE_TEAM_PRICE_ID` | Price ID for the Team plan (monthly) |
-| `STRIPE_TEAM_ANNUAL_PRICE_ID` | Price ID for the Team plan (annual discount) |
-| `STRIPE_ENTERPRISE_PRICE_ID` | Price ID for the Enterprise plan |
-
-When `STRIPE_SECRET_KEY` is set:
-
-- Billing routes mount at `/api/v1/billing`
-- The Better Auth Stripe plugin handles checkout, webhooks, and subscription lifecycle at `/api/auth/stripe/*`
-- Plan changes from Stripe webhooks automatically update the workspace tier
-
-### Webhook Configuration
-
-Point your Stripe webhook endpoint to:
-
-```
-https://your-atlas.example.com/api/auth/stripe/webhook
-```
-
-For local development, use [Stripe CLI](https://docs.stripe.com/stripe-cli) to forward webhooks:
-
-```bash
-stripe listen --forward-to localhost:3001/api/auth/stripe/webhook
-```
-
-<Callout type="warn">
-The webhook signing secret (`STRIPE_WEBHOOK_SECRET`) must match the secret shown by `stripe listen` or configured in your Stripe dashboard. Mismatched secrets cause silent webhook failures.
-</Callout>
-
----
-
 ## Usage Dashboard
 
 The admin usage dashboard is available at **Admin > Usage** (`/admin/usage`). It shows:
@@ -102,7 +68,7 @@ The admin usage dashboard is available at **Admin > Usage** (`/admin/usage`). It
 - **Daily usage chart** — queries and tokens over the last 30 days
 - **Per-user breakdown** — sortable table of usage by individual user (top 50)
 
-If the workspace has a Stripe customer, a **Manage Plan** button opens the Stripe Customer Portal for self-service plan changes.
+If the workspace has a Stripe subscription, a **Manage Plan** button opens the Stripe Customer Portal for self-service plan changes.
 
 ### API Endpoints
 
@@ -162,6 +128,48 @@ curl -X POST https://your-atlas.example.com/api/v1/billing/portal \
 ```
 
 The response contains a `url` field — redirect the user to this URL to open the portal.
+
+---
+
+## Stripe Setup (Self-Hosted Operators)
+
+<Callout type="info" title="SaaS">
+On [app.useatlas.dev](https://app.useatlas.dev), Stripe is pre-configured. Skip this section — manage your subscription from **Admin > Usage** instead.
+</Callout>
+
+Set these environment variables to enable billing:
+
+| Variable | Description |
+|----------|-------------|
+| `STRIPE_SECRET_KEY` | Stripe secret key (test or live). Enables billing routes when set |
+| `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret for verifying events |
+| `STRIPE_TEAM_PRICE_ID` | Price ID for the Team plan (monthly) |
+| `STRIPE_TEAM_ANNUAL_PRICE_ID` | Price ID for the Team plan (annual discount) |
+| `STRIPE_ENTERPRISE_PRICE_ID` | Price ID for the Enterprise plan |
+
+When `STRIPE_SECRET_KEY` is set:
+
+- Billing routes mount at `/api/v1/billing`
+- The Better Auth Stripe plugin handles checkout, webhooks, and subscription lifecycle at `/api/auth/stripe/*`
+- Plan changes from Stripe webhooks automatically update the workspace tier
+
+### Webhook Configuration
+
+Point your Stripe webhook endpoint to:
+
+```
+https://your-atlas.example.com/api/auth/stripe/webhook
+```
+
+For local development, use [Stripe CLI](https://docs.stripe.com/stripe-cli) to forward webhooks:
+
+```bash
+stripe listen --forward-to localhost:3001/api/auth/stripe/webhook
+```
+
+<Callout type="warn">
+The webhook signing secret (`STRIPE_WEBHOOK_SECRET`) must match the secret shown by `stripe listen` or configured in your Stripe dashboard. Mismatched secrets cause silent webhook failures.
+</Callout>
 
 ---
 

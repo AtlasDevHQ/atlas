@@ -7,7 +7,11 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 Onboarding emails are an automated drip campaign sent to new users after signup. Each email is triggered by a milestone (e.g., connecting a database, running a first query) or sent on a time-based fallback if the milestone is not reached.
 
-<Callout title="Prerequisites">
+<Callout type="info" title="SaaS">
+Onboarding emails are pre-enabled on [app.useatlas.dev](https://app.useatlas.dev) — new users receive the welcome sequence automatically. No configuration needed.
+</Callout>
+
+<Callout title="Self-hosted prerequisites">
 - Internal database configured (`DATABASE_URL`)
 - Email delivery configured (`RESEND_API_KEY` or `ATLAS_SMTP_URL`)
 - Feature flag enabled (`ATLAS_ONBOARDING_EMAILS_ENABLED=true`)
@@ -32,6 +36,10 @@ Each email is sent at most once per user. If the user completes the milestone be
 ---
 
 ## Configuration
+
+On [app.useatlas.dev](https://app.useatlas.dev), onboarding emails are enabled by default with no additional setup.
+
+### Self-hosted setup
 
 Enable onboarding emails via environment variable:
 

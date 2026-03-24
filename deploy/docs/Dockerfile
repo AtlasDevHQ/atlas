@@ -1,4 +1,4 @@
-FROM oven/bun:1.3.10 AS base
+FROM oven/bun:1.3.11 AS base
 
 # --- Build ---
 FROM base AS builder

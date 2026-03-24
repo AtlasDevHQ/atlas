@@ -4,9 +4,8 @@
  * Tests the ingestIntoDuckDB, listDuckDBObjects, and profileDuckDB functions
  * using real DuckDB instances with temporary files.
  *
- * SKIPPED: @duckdb/node-api triggers a segfault in Bun 1.3.10.
- * https://bun.report/1.3.10/lt130e609eg3EugggC4xu5zEA2AwH
- * Re-enable once Bun ships a fix.
+ * Previously skipped due to @duckdb/node-api segfault in Bun 1.3.10.
+ * Fixed in Bun 1.3.11 — re-enabled.
  */
 import { describe, it, expect, afterEach } from "bun:test";
 import * as fs from "fs";
@@ -32,7 +31,7 @@ function cleanTmpDir(): void {
 
 afterEach(cleanTmpDir);
 
-describe.skip("ingestIntoDuckDB", () => {
+describe("ingestIntoDuckDB", () => {
   it("ingests a CSV file and creates a table", async () => {
     const dir = createTmpDir();
     const csvPath = path.join(dir, "sales.csv");
@@ -102,7 +101,7 @@ describe.skip("ingestIntoDuckDB", () => {
   });
 });
 
-describe.skip("listDuckDBObjects", () => {
+describe("listDuckDBObjects", () => {
   it("lists tables in a DuckDB database", async () => {
     const dir = createTmpDir();
     const csvPath = path.join(dir, "data.csv");
@@ -118,7 +117,7 @@ describe.skip("listDuckDBObjects", () => {
   });
 });
 
-describe.skip("profileDuckDB", () => {
+describe("profileDuckDB", () => {
   it("profiles a table with correct row count and columns", async () => {
     const dir = createTmpDir();
     const csvPath = path.join(dir, "employees.csv");

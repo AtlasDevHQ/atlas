@@ -297,6 +297,15 @@ export interface ConversationCallbacks {
   generateTitle(question: string): string;
 }
 
+/** Ephemeral message configuration. */
+export interface EphemeralConfig {
+  /** Post error messages as ephemeral (visible only to the requesting user).
+   * On Slack and Google Chat, uses native ephemeral messages. On other
+   * platforms, falls back to a DM to the user.
+   * Default: true */
+  errorsAsEphemeral?: boolean;
+}
+
 /** File upload (CSV export) configuration. */
 export interface FileUploadConfig {
   /** Row count threshold for auto-attaching CSV files. When a query result
@@ -375,6 +384,10 @@ export interface ChatPluginConfig {
    * during the query lifecycle (received → processing → complete/error).
    * Default: enabled with standard emoji. */
   reactions?: ReactionConfig;
+
+  /** Ephemeral message configuration. Controls whether errors and debug info
+   * are posted as ephemeral messages (visible only to the requesting user). */
+  ephemeral?: EphemeralConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -545,6 +558,12 @@ const StreamingConfigSchema = z
   })
   .optional();
 
+const EphemeralConfigSchema = z
+  .object({
+    errorsAsEphemeral: z.boolean().optional(),
+  })
+  .optional();
+
 const FileUploadConfigSchema = z
   .object({
     autoAttachThreshold: z
@@ -652,6 +671,7 @@ export const ChatConfigSchema = z.object({
   streaming: StreamingConfigSchema,
   fileUpload: FileUploadConfigSchema,
   reactions: ReactionConfigSchema,
+  ephemeral: EphemeralConfigSchema,
   executeQueryStream: z
     .any()
     .refine(

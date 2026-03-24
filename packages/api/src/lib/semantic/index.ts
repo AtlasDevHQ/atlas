@@ -5,7 +5,7 @@
  * Other submodules are imported directly via their paths:
  *   - @atlas/api/lib/semantic/files   (YAML file discovery/parsing)
  *   - @atlas/api/lib/semantic/sync    (dual-write DB sync)
- *   - @atlas/api/lib/semantic/search  (keyword extraction, inverted index)
+ *   - @atlas/api/lib/semantic/search  (pre-indexed semantic layer summary)
  *   - @atlas/api/lib/semantic/diff    (schema diffing)
  *   - @atlas/api/lib/semantic/entities (DB query helper)
  *

@@ -1,6 +1,6 @@
 # @useatlas/chat
 
-Unified chat interaction plugin bridging [Chat SDK](https://github.com/vercel/chat) (vercel/chat) into the Atlas plugin system. Instead of maintaining separate per-platform plugins, this single plugin provides a bridge for Chat SDK adapters. Supports Slack, Teams, and Discord; additional platforms (Google Chat, Telegram, etc.) will be added in follow-up issues.
+Unified chat interaction plugin bridging [Chat SDK](https://github.com/vercel/chat) (vercel/chat) into the Atlas plugin system. Instead of maintaining separate per-platform plugins, this single plugin provides a bridge for Chat SDK adapters. Supports Slack, Teams, Discord, Google Chat, and Telegram; additional platforms will be added as Chat SDK adapters in follow-up issues.
 
 ## Install
 
@@ -35,6 +35,12 @@ export default defineConfig({
           publicKey: process.env.DISCORD_PUBLIC_KEY!,
           mentionRoleIds: [],                          // optional, role IDs that trigger mentions
         },
+        gchat: {
+          credentials: JSON.parse(process.env.GOOGLE_CHAT_CREDENTIALS!),
+        },
+        telegram: {
+          botToken: process.env.TELEGRAM_BOT_TOKEN!,
+        },
       },
       executeQuery: myQueryFunction,
       actions: myActionCallbacks,        // optional — approve/deny flows
@@ -59,6 +65,13 @@ export default defineConfig({
 | `adapters.discord.applicationId` | `string` | — | Discord application ID |
 | `adapters.discord.publicKey` | `string` | — | Application public key for Ed25519 webhook signature verification |
 | `adapters.discord.mentionRoleIds` | `string[]?` | — | Optional: role IDs that trigger mention handlers |
+| `adapters.gchat.credentials` | `object?` | — | Service account credentials (`client_email`, `private_key`) |
+| `adapters.gchat.useApplicationDefaultCredentials` | `true?` | — | Use Application Default Credentials |
+| `adapters.gchat.endpointUrl` | `string?` | — | HTTP endpoint URL for card button click actions |
+| `adapters.gchat.pubsubTopic` | `string?` | — | Pub/Sub topic for Workspace Events |
+| `adapters.gchat.impersonateUser` | `string?` | — | User email for domain-wide delegation |
+| `adapters.telegram.botToken` | `string` | — | Telegram bot token from BotFather |
+| `adapters.telegram.secretToken` | `string?` | — | Webhook secret token for request verification |
 | `state` | `object?` | `{ backend: "memory" }` | State backend configuration (see below) |
 | `executeQuery` | `function` | — | Callback to run the Atlas agent on a question |
 | `checkRateLimit` | `function?` | — | Optional rate limiting callback |
@@ -107,6 +120,8 @@ The plugin bridges Chat SDK events to Atlas:
 | `/webhooks/slack` | POST | Slack Chat SDK webhook (handles slash commands, events, and interactions) |
 | `/webhooks/teams` | POST | Teams Chat SDK webhook (handles Bot Framework activities) |
 | `/webhooks/discord` | POST | Discord Interactions endpoint (handles slash commands, mentions, and buttons) |
+| `/webhooks/gchat` | POST | Google Chat webhook (handles @mentions, DMs, card clicks, Pub/Sub) |
+| `/webhooks/telegram` | POST | Telegram Bot API webhook (handles messages, @mentions, commands, callback queries) |
 | `/oauth/slack/install` | GET | Slack OAuth install redirect (only when `clientId` configured) |
 | `/oauth/slack/callback` | GET | Slack OAuth callback (only when `clientId` configured) |
 
@@ -125,8 +140,7 @@ Provide a custom `scrubError` callback for additional scrubbing.
 
 ## Architecture
 
-This is the foundation plugin for the Chat SDK adoption (#757). It replaces `@useatlas/slack` (#759) and `@useatlas/teams` (#760), and supports Discord (#761). Additional platforms:
-- Google Chat (#762), Telegram (#763), and more
+This is the foundation plugin for the Chat SDK adoption (#757). It replaces `@useatlas/slack` (#759) and `@useatlas/teams` (#760), and supports Discord (#761), Google Chat (#762), and Telegram (#763). Additional platforms will be added as Chat SDK adapters.
 
 ## Reference
 

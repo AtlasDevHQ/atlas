@@ -72,7 +72,9 @@ export interface DiscordAdapterConfig {
 export interface TelegramAdapterConfig {
   /** Telegram bot token from BotFather. */
   botToken: string;
-  /** Optional webhook secret token for verifying incoming requests. */
+  /** Webhook secret token for verifying incoming requests.
+   * When omitted, the webhook endpoint accepts unauthenticated POST requests.
+   * Strongly recommended for production deployments. */
   secretToken?: string;
 }
 
@@ -209,7 +211,10 @@ const DiscordAdapterSchema = z.object({
 });
 
 const TelegramAdapterSchema = z.object({
-  botToken: z.string().min(1, "telegram botToken must not be empty"),
+  botToken: z.string().min(1, "telegram botToken must not be empty").regex(
+    /^\d+:[A-Za-z0-9_-]{20,}$/,
+    "telegram botToken must be in format '<bot-id>:<secret>' from BotFather",
+  ),
   secretToken: z.string().min(1).optional(),
 });
 

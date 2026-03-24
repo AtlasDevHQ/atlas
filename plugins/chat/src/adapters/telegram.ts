@@ -2,7 +2,7 @@
  * Telegram adapter configuration for the Chat SDK bridge.
  *
  * Thin wrapper around `@chat-adapter/telegram`'s `createTelegramAdapter()` for
- * import isolation. Maps Atlas config fields to Chat SDK adapter config.
+ * import isolation. Passes through adapter credentials and sets webhook mode.
  * The Chat SDK adapter handles Telegram Bot API communication, webhook
  * secret token verification, and message formatting internally.
  */

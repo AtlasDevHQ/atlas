@@ -2063,6 +2063,20 @@ describe("chat plugin Telegram lifecycle", () => {
     expect(result.message).toContain("telegram");
   });
 
+  it("double initialize throws with telegram adapter", async () => {
+    const plugin = createTelegramTestPlugin();
+    const ctx = {
+      db: null,
+      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      tools: { register: () => {} },
+      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+      config: {},
+    };
+
+    await plugin.initialize!(ctx);
+    await expect(plugin.initialize!(ctx)).rejects.toThrow(/already initialized/);
+  });
+
   it("teardown cleans up telegram adapter", async () => {
     const plugin = createTelegramTestPlugin();
 

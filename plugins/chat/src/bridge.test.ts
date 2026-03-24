@@ -2150,3 +2150,227 @@ describe("chat plugin five-adapter lifecycle", () => {
     expect(result.message).toContain("telegram");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Streaming config validation
+// ---------------------------------------------------------------------------
+
+describe("chatPlugin streaming config", () => {
+  const mockExecuteQueryFn = async () => ({
+    answer: "test",
+    sql: [] as string[],
+    data: [] as { columns: string[]; rows: Record<string, unknown>[] }[],
+    steps: 1,
+    usage: { totalTokens: 10 },
+  });
+
+  const mockExecuteQueryStreamFn = () => ({
+    stream: (async function* () {
+      yield "Thinking...";
+      yield "Done.";
+    })(),
+    result: Promise.resolve({
+      answer: "test",
+      sql: [],
+      data: [],
+      steps: 1,
+      usage: { totalTokens: 10 },
+    }),
+  });
+
+  it("accepts config with streaming enabled", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: {
+        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+      },
+      executeQuery: mockExecuteQueryFn,
+      streaming: { enabled: true, chunkIntervalMs: 500 },
+      executeQueryStream: mockExecuteQueryStreamFn,
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
+  });
+
+  it("accepts config with streaming disabled", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: {
+        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+      },
+      executeQuery: mockExecuteQueryFn,
+      streaming: { enabled: false },
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
+  });
+
+  it("accepts config with streaming defaults (no streaming field)", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: {
+        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+      },
+      executeQuery: mockExecuteQueryFn,
+      executeQueryStream: mockExecuteQueryStreamFn,
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
+  });
+
+  it("accepts config with only chunkIntervalMs", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: {
+        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+      },
+      executeQuery: mockExecuteQueryFn,
+      streaming: { chunkIntervalMs: 2000 },
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
+  });
+
+  it("rejects chunkIntervalMs below 200ms", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        },
+        executeQuery: mockExecuteQueryFn,
+        streaming: { chunkIntervalMs: 50 },
+      }),
+    ).toThrow(/chunkIntervalMs/i);
+  });
+
+  it("rejects chunkIntervalMs above 10000ms", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        },
+        executeQuery: mockExecuteQueryFn,
+        streaming: { chunkIntervalMs: 20000 },
+      }),
+    ).toThrow(/chunkIntervalMs/i);
+  });
+
+  it("rejects non-function executeQueryStream", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        },
+        executeQuery: mockExecuteQueryFn,
+        executeQueryStream: "not a function" as never,
+      }),
+    ).toThrow(/executeQueryStream/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Streaming lifecycle
+// ---------------------------------------------------------------------------
+
+describe("chat plugin streaming lifecycle", () => {
+  function createStreamingPlugin() {
+    const { buildChatPlugin } = require("./index");
+    return buildChatPlugin({
+      adapters: {
+        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+      },
+      executeQuery: async () => ({
+        answer: "test answer",
+        sql: ["SELECT 1"],
+        data: [],
+        steps: 1,
+        usage: { totalTokens: 50 },
+      }),
+      streaming: { enabled: true, chunkIntervalMs: 1000 },
+      executeQueryStream: () => ({
+        stream: (async function* () {
+          yield "Analyzing...";
+          yield "test answer";
+        })(),
+        result: Promise.resolve({
+          answer: "test answer",
+          sql: ["SELECT 1"],
+          data: [],
+          steps: 1,
+          usage: { totalTokens: 50 },
+        }),
+      }),
+    });
+  }
+
+  it("initializes with streaming config", async () => {
+    const plugin = createStreamingPlugin();
+
+    await plugin.initialize!({
+      db: null,
+      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      tools: { register: () => {} },
+      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+      config: {},
+    });
+
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(true);
+    expect(result.message).toContain("slack");
+  });
+
+  it("teardown cleans up streaming plugin", async () => {
+    const plugin = createStreamingPlugin();
+
+    await plugin.initialize!({
+      db: null,
+      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      tools: { register: () => {} },
+      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+      config: {},
+    });
+
+    await plugin.teardown!();
+
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(false);
+  });
+
+  it("initializes with streaming disabled (falls back to executeQuery)", async () => {
+    const { buildChatPlugin } = require("./index");
+    const plugin = buildChatPlugin({
+      adapters: {
+        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+      },
+      executeQuery: async () => ({
+        answer: "test",
+        sql: [],
+        data: [],
+        steps: 1,
+        usage: { totalTokens: 10 },
+      }),
+      streaming: { enabled: false },
+    });
+
+    await plugin.initialize!({
+      db: null,
+      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      tools: { register: () => {} },
+      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+      config: {},
+    });
+
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(true);
+  });
+});

@@ -110,6 +110,10 @@ export default defineConfig({
 | `state.tablePrefix` | `string` | No | Table name prefix for PG backend. Must be a valid SQL identifier. Default: `"chat_"`. |
 | `state.redisUrl` | `string` | No | Redis connection URL (future — not yet implemented). |
 | `executeQuery` | `function` | Yes | Callback to run the Atlas agent on a question. |
+| `executeQueryStream` | `function` | No | Streaming query callback — returns `{ stream, result }`. See [Streaming](#streaming). |
+| `streaming` | `object` | No | Streaming configuration. |
+| `streaming.enabled` | `boolean` | No | Enable streaming responses. Default: `true`. |
+| `streaming.chunkIntervalMs` | `number` | No | Minimum interval (ms) between edits on non-streaming platforms. Range: 200–10000. Default: `1000`. |
 | `checkRateLimit` | `function` | No | Optional rate limiting callback. |
 | `scrubError` | `function` | No | Optional error scrubbing callback. |
 | `actions` | `ActionCallbacks` | No | Optional action framework callbacks (`approve`, `deny`, `get`). |
@@ -168,6 +172,73 @@ import { buildQueryResultCard, buildErrorCard, buildApprovalCardJSX, buildDataTa
 // Or from the dedicated cards entrypoint:
 import { buildQueryResultCard } from "@useatlas/chat/cards";
 ```
+
+## Streaming
+
+When `executeQueryStream` is provided and `streaming.enabled` is not `false`, the bridge streams agent responses incrementally to chat platforms instead of waiting for the full result.
+
+### How it works
+
+- **Slack** — Uses Chat SDK's native streaming API for real-time token-by-token updates
+- **Teams, Discord, Google Chat** — Posts an initial message then edits it with new content at the configured `chunkIntervalMs` interval (post + edit pattern)
+
+The bridge passes the async iterable from `executeQueryStream` directly to Chat SDK's `thread.post()`, which automatically selects the best transport per platform.
+
+### Configuration
+
+```typescript
+import { chatPlugin } from "@useatlas/chat";
+import type { StreamChunk } from "@useatlas/chat";
+
+chatPlugin({
+  adapters: {
+    slack: { botToken: "xoxb-...", signingSecret: "..." },
+    teams: { appId: "...", appPassword: "..." },
+  },
+  executeQuery: myQueryFunction, // required fallback
+  streaming: {
+    enabled: true,        // default: true
+    chunkIntervalMs: 1000, // default: 1000ms — edit throttle for Teams/Discord/GChat
+  },
+  executeQueryStream: (question, options) => {
+    // Return a stream and a promise for the final structured result
+    const agentResult = runAgent(question, options);
+
+    return {
+      stream: agentResult.textStream, // AsyncIterable<string | StreamChunk>
+      result: agentResult.finalResult, // Promise<ChatQueryResult>
+    };
+  },
+})
+```
+
+### Status indicators
+
+The stream can yield structured `StreamChunk` objects for rich status updates during agent reasoning:
+
+```typescript
+executeQueryStream: (question) => {
+  const stream = async function* () {
+    yield { type: "task_update", id: "think", title: "Analyzing question...", status: "in_progress" } as StreamChunk;
+    yield { type: "task_update", id: "sql", title: "Running SQL...", status: "in_progress" } as StreamChunk;
+    yield { type: "task_update", id: "sql", title: "Running SQL", status: "complete" } as StreamChunk;
+    yield "Here are the results..."; // plain text chunks also work
+  };
+  return { stream: stream(), result: computeResult() };
+},
+```
+
+### Error handling
+
+If the stream fails mid-way, partial content may already be visible on the platform. The bridge catches the error, scrubs sensitive information, and posts an error card as a follow-up message. The `executeQuery` callback is not used as a fallback — if streaming fails, the error is reported directly.
+
+### Disabling streaming
+
+Set `streaming.enabled` to `false`, or omit `executeQueryStream` entirely. The bridge falls back to the non-streaming `executeQuery` path, posting the complete result as a single message.
+
+<Callout type="info">
+The `chunkIntervalMs` setting controls how frequently messages are edited on platforms that use the post + edit pattern. Values below 200ms are rejected to avoid platform rate limits. Slack uses native streaming and is not affected by this setting.
+</Callout>
 
 ## Mounted Routes
 

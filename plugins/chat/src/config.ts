@@ -7,6 +7,7 @@
  */
 
 import { z } from "zod";
+import type { StreamChunk } from "chat";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -98,6 +99,33 @@ export interface GoogleChatAdapterConfig {
   impersonateUser?: string;
 }
 
+/** Streaming response configuration. */
+export interface StreamingConfig {
+  /** Enable streaming responses to chat platforms. Default: true.
+   * When enabled and `executeQueryStream` is provided, the bridge streams
+   * agent responses incrementally via Chat SDK's native streaming (Slack)
+   * or edit-based fallback (Teams, Discord, Google Chat). */
+  enabled?: boolean;
+  /** Minimum interval (ms) between message edits for edit-based streaming
+   * on platforms without native streaming (Teams, Discord, Google Chat).
+   * Lower values provide smoother updates but risk hitting platform rate limits.
+   * Default: 1000 */
+  chunkIntervalMs?: number;
+}
+
+/** Streaming query result returned by `executeQueryStream`. */
+export interface StreamingQueryResult {
+  /** Async iterable of text chunks and structured status updates.
+   * Chat SDK routes this to native streaming on Slack or edit-based fallback
+   * on Teams, Discord, and Google Chat.
+   * Yield plain strings for text or `StreamChunk` objects for rich status
+   * indicators (e.g. `{ type: "task_update", title: "Running SQL...", status: "in_progress", id: "sql" }`). */
+  stream: AsyncIterable<string | StreamChunk>;
+  /** Resolves with the final structured result after the stream completes.
+   * Used for history persistence, approval prompts, and conversation tracking. */
+  result: Promise<ChatQueryResult>;
+}
+
 /** State backend configuration. */
 export interface StateConfig {
   /** Which state backend to use. Default: "memory" */
@@ -181,6 +209,23 @@ export interface ChatPluginConfig {
 
   /** Optional conversation persistence callbacks for host integration. */
   conversations?: ConversationCallbacks;
+
+  /** Streaming configuration. Controls how the bridge delivers incremental
+   * responses to chat platforms. */
+  streaming?: StreamingConfig;
+
+  /** Streaming query callback. When provided and `streaming.enabled !== false`,
+   * the bridge streams responses incrementally instead of waiting for the full
+   * result. The returned stream is passed directly to Chat SDK's `thread.post()`
+   * which routes to native streaming on Slack or edit-based fallback elsewhere.
+   * If not provided, the bridge falls back to the non-streaming `executeQuery`. */
+  executeQueryStream?: (
+    question: string,
+    options?: {
+      threadId?: string;
+      priorMessages?: ChatMessage[];
+    },
+  ) => StreamingQueryResult;
 }
 
 // ---------------------------------------------------------------------------
@@ -247,6 +292,18 @@ const StateConfigSchema = z
   })
   .optional();
 
+const StreamingConfigSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    chunkIntervalMs: z
+      .number()
+      .int()
+      .min(200, "chunkIntervalMs must be at least 200ms to avoid rate limits")
+      .max(10_000, "chunkIntervalMs must be at most 10000ms")
+      .optional(),
+  })
+  .optional();
+
 export const ChatConfigSchema = z.object({
   adapters: z
     .object({
@@ -307,6 +364,14 @@ export const ChatConfigSchema = z.object({
           typeof v.get === "function" &&
           typeof v.generateTitle === "function"),
       "conversations must implement { create, addMessage, get, generateTitle }",
+    )
+    .optional(),
+  streaming: StreamingConfigSchema,
+  executeQueryStream: z
+    .any()
+    .refine(
+      (v) => v === undefined || typeof v === "function",
+      "executeQueryStream must be a function",
     )
     .optional(),
 });

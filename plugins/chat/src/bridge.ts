@@ -20,7 +20,7 @@
  */
 
 import { Chat } from "chat";
-import type { Adapter, StateAdapter, Lock, CardElement } from "chat";
+import type { Adapter, StateAdapter, Lock, CardElement, StreamChunk } from "chat";
 import type { PluginLogger } from "@useatlas/plugin-sdk";
 import type {
   ChatPluginConfig,
@@ -359,9 +359,17 @@ export function createChatBridge(
     userName: "atlas",
     adapters,
     state: stateAdapter,
+    ...(config.streaming?.chunkIntervalMs != null && {
+      streamingUpdateIntervalMs: config.streaming.chunkIntervalMs,
+    }),
   });
 
   // --- Shared handler logic ---
+
+  /** Whether streaming is available and enabled. */
+  const streamingEnabled =
+    typeof config.executeQueryStream === "function" &&
+    config.streaming?.enabled !== false;
 
   async function handleQuery(
     threadId: string,
@@ -405,6 +413,72 @@ export function createChatBridge(
     );
     await persistConversationMessages(
       config, conversationId, question, result.answer, log, threadId,
+    );
+  }
+
+  /**
+   * Streaming variant of handleQuery. Passes the async iterable from
+   * `executeQueryStream` directly to Chat SDK, which routes to native
+   * streaming on Slack or edit-based fallback (post + edit) on Teams,
+   * Discord, and Google Chat.
+   *
+   * Throws on stream errors — callers handle error posting per context.
+   */
+  async function handleStreamingQuery(
+    threadId: string,
+    question: string,
+    postStream: (stream: AsyncIterable<string | StreamChunk>) => Promise<unknown>,
+    postApproval: ((action: PendingAction) => Promise<void>) | null,
+    priorMessages?: ChatMessage[],
+  ): Promise<void> {
+    const { stream, result } = config.executeQueryStream!(question, {
+      threadId,
+      priorMessages,
+    });
+
+    // Stream to platform — Chat SDK handles native streaming on Slack
+    // and edit-based fallback on Teams/Discord/Google Chat.
+    // Throws if the stream errors mid-way (partial content may be visible).
+    await postStream(stream);
+
+    // Stream completed — retrieve final structured result for persistence
+    let queryResult: ChatQueryResult;
+    try {
+      queryResult = await result;
+    } catch (resultErr) {
+      log.warn(
+        { err: resultErr instanceof Error ? resultErr : new Error(String(resultErr)), threadId },
+        "Stream completed but final result unavailable — skipping history persistence",
+      );
+      return;
+    }
+
+    // Post approval prompts for pending actions
+    if (config.actions && queryResult.pendingActions?.length && postApproval) {
+      for (const action of queryResult.pendingActions) {
+        try {
+          await postApproval(action);
+        } catch (err) {
+          log.warn(
+            { err: err instanceof Error ? err : new Error(String(err)), threadId, actionId: action.id },
+            "Failed to post action approval prompt",
+          );
+        }
+      }
+    }
+
+    // Persist conversation history (non-fatal)
+    await persistHistory(stateAdapter, threadId, [
+      { role: "user", content: question },
+      { role: "assistant", content: queryResult.answer },
+    ], log);
+
+    // Persist to host conversation system (non-fatal)
+    const conversationId = await ensureConversation(
+      config, stateAdapter, threadId, question, log,
+    );
+    await persistConversationMessages(
+      config, conversationId, question, queryResult.answer, log, threadId,
     );
   }
 
@@ -461,19 +535,30 @@ export function createChatBridge(
       // Subscribe for follow-up messages
       await thread.subscribe();
 
-      await handleQuery(
-        threadId,
-        question,
-        (response) => thread.post({ card: response.card, fallbackText: response.fallbackText }),
-        (action) => {
-          const approval = buildApprovalCardJSX(action);
-          return thread.postEphemeral(
-            message.author,
-            { card: approval.card, fallbackText: approval.fallbackText },
-            { fallbackToDM: false },
-          ).then(() => {});
-        },
-      );
+      const approvalCallback = (action: PendingAction) => {
+        const approval = buildApprovalCardJSX(action);
+        return thread.postEphemeral(
+          message.author,
+          { card: approval.card, fallbackText: approval.fallbackText },
+          { fallbackToDM: false },
+        ).then(() => {});
+      };
+
+      if (streamingEnabled) {
+        await handleStreamingQuery(
+          threadId,
+          question,
+          (stream) => thread.post(stream),
+          approvalCallback,
+        );
+      } else {
+        await handleQuery(
+          threadId,
+          question,
+          (response) => thread.post({ card: response.card, fallbackText: response.fallbackText }),
+          approvalCallback,
+        );
+      }
     } catch (err) {
       const rawMessage =
         err instanceof Error ? err.message : String(err);
@@ -553,20 +638,32 @@ export function createChatBridge(
       // Retrieve prior conversation context (non-fatal — falls back to no context)
       const priorMessages = await retrieveHistory(stateAdapter, threadId, log);
 
-      await handleQuery(
-        threadId,
-        question,
-        (response) => thread.post({ card: response.card, fallbackText: response.fallbackText }),
-        (action) => {
-          const approval = buildApprovalCardJSX(action);
-          return thread.postEphemeral(
-            message.author,
-            { card: approval.card, fallbackText: approval.fallbackText },
-            { fallbackToDM: false },
-          ).then(() => {});
-        },
-        priorMessages,
-      );
+      const approvalCallback = (action: PendingAction) => {
+        const approval = buildApprovalCardJSX(action);
+        return thread.postEphemeral(
+          message.author,
+          { card: approval.card, fallbackText: approval.fallbackText },
+          { fallbackToDM: false },
+        ).then(() => {});
+      };
+
+      if (streamingEnabled) {
+        await handleStreamingQuery(
+          threadId,
+          question,
+          (stream) => thread.post(stream),
+          approvalCallback,
+          priorMessages,
+        );
+      } else {
+        await handleQuery(
+          threadId,
+          question,
+          (response) => thread.post({ card: response.card, fallbackText: response.fallbackText }),
+          approvalCallback,
+          priorMessages,
+        );
+      }
     } catch (err) {
       const rawMessage =
         err instanceof Error ? err.message : String(err);
@@ -710,21 +807,32 @@ export function createChatBridge(
         }
       }
 
-      await handleQuery(
-        threadId,
-        question,
-        (response) => thinkingMsg.edit({ card: response.card, fallbackText: response.fallbackText }).then(() => {}),
-        event.adapter.postEphemeral
-          ? (action) => {
-              const approval = buildApprovalCardJSX(action);
-              return event.adapter.postEphemeral!(
-                threadId,
-                event.user.userId,
-                { card: approval.card, fallbackText: approval.fallbackText },
-              ).then(() => {});
-            }
-          : null,
-      );
+      const approvalCallback = event.adapter.postEphemeral
+        ? (action: PendingAction) => {
+            const approval = buildApprovalCardJSX(action);
+            return event.adapter.postEphemeral!(
+              threadId,
+              event.user.userId,
+              { card: approval.card, fallbackText: approval.fallbackText },
+            ).then(() => {});
+          }
+        : null;
+
+      if (streamingEnabled) {
+        await handleStreamingQuery(
+          threadId,
+          question,
+          (stream) => thinkingMsg.edit(stream).then(() => {}),
+          approvalCallback,
+        );
+      } else {
+        await handleQuery(
+          threadId,
+          question,
+          (response) => thinkingMsg.edit({ card: response.card, fallbackText: response.fallbackText }).then(() => {}),
+          approvalCallback,
+        );
+      }
     } catch (err) {
       const rawMessage = err instanceof Error ? err.message : String(err);
       log.error(

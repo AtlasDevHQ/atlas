@@ -181,6 +181,22 @@ export type LinearAdapterConfig =
   | LinearOAuthConfig
   | LinearAppConfig;
 
+/** WhatsApp adapter credential configuration. */
+export interface WhatsAppAdapterConfig {
+  /** WhatsApp Business phone number ID (not the phone number itself). */
+  phoneNumberId: string;
+  /** System User access token for WhatsApp Cloud API calls. */
+  accessToken: string;
+  /** Verify token for webhook challenge-response verification. */
+  verifyToken: string;
+  /** Meta App Secret for webhook HMAC-SHA256 signature verification. */
+  appSecret: string;
+  /** Bot display name used for identification. */
+  userName?: string;
+  /** Meta Graph API version (default: "v21.0"). */
+  apiVersion?: string;
+}
+
 /** Google Chat adapter credential configuration. */
 export interface GoogleChatAdapterConfig {
   /** Service account credentials JSON (client_email + private_key). */
@@ -303,6 +319,7 @@ export interface ChatPluginConfig {
     telegram?: TelegramAdapterConfig;
     github?: GitHubAdapterConfig;
     linear?: LinearAdapterConfig;
+    whatsapp?: WhatsAppAdapterConfig;
   };
 
   /** State backend configuration. Default: { backend: "memory" } */
@@ -469,6 +486,18 @@ const LinearAdapterSchema = z.object({
   }
 });
 
+const WhatsAppAdapterSchema = z.object({
+  phoneNumberId: z.string().min(1, "whatsapp phoneNumberId must not be empty"),
+  accessToken: z.string().min(1, "whatsapp accessToken must not be empty"),
+  verifyToken: z.string().min(1, "whatsapp verifyToken must not be empty"),
+  appSecret: z.string().min(1, "whatsapp appSecret must not be empty"),
+  userName: z.string().min(1).optional(),
+  apiVersion: z.string().regex(
+    /^v\d+\.\d+$/,
+    "whatsapp apiVersion must be in format 'vN.N' (e.g. 'v21.0')",
+  ).optional(),
+});
+
 const GoogleChatAdapterSchema = z.object({
   credentials: z.object({
     client_email: z.string().email("gchat credentials.client_email must be a valid email"),
@@ -531,6 +560,7 @@ export const ChatConfigSchema = z.object({
       telegram: TelegramAdapterSchema.optional(),
       github: GitHubAdapterSchema.optional(),
       linear: LinearAdapterSchema.optional(),
+      whatsapp: WhatsAppAdapterSchema.optional(),
     })
     .strict()
     .refine(

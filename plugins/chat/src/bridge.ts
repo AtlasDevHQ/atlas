@@ -51,6 +51,9 @@ import type { IReactionLifecycle } from "./features/reactions";
 // Types
 // ---------------------------------------------------------------------------
 
+/** Valid platform adapter names for the chat bridge. */
+export type ChatPlatform = "slack" | "teams" | "discord" | "gchat" | "telegram" | "github" | "linear" | "whatsapp";
+
 /** Context for CSV file attachment in query responses. */
 interface CSVContext {
   adapterName: string;
@@ -178,6 +181,39 @@ async function safePostError(
       { err: postErr instanceof Error ? postErr : new Error(String(postErr)), threadId },
       "Failed to deliver error message to chat thread",
     );
+  }
+}
+
+/**
+ * Post an error as an ephemeral message (visible only to the requesting user).
+ *
+ * Uses the Chat SDK's built-in ephemeral support:
+ * - Slack/Google Chat: native ephemeral message
+ * - Discord/Teams/Telegram/WhatsApp: falls back to DM
+ *
+ * If ephemeral delivery fails entirely, falls back to a public thread post
+ * so the user still sees _something_.
+ *
+ * The `thread` and `user` parameters use permissive types because they come
+ * directly from Chat SDK event handlers which have complex generic signatures.
+ */
+async function safePostEphemeralError(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Chat SDK Thread/Author generics are complex; we only call postEphemeral/post
+  thread: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Chat SDK Author type varies per adapter
+  user: any,
+  message: { card: CardElement; fallbackText: string },
+  log: PluginLogger,
+  threadId: string,
+): Promise<void> {
+  try {
+    await thread.postEphemeral(user, message, { fallbackToDM: true });
+  } catch (ephemeralErr) {
+    log.warn(
+      { err: ephemeralErr instanceof Error ? ephemeralErr : new Error(String(ephemeralErr)), threadId },
+      "Ephemeral error delivery failed — falling back to public post",
+    );
+    await safePostError(thread, message, log, threadId);
   }
 }
 
@@ -344,6 +380,27 @@ export interface ChatBridge {
     event: { openModal: (modal: unknown) => Promise<{ viewId: string } | undefined> },
     prompt: string,
   ): Promise<{ viewId: string } | undefined>;
+  /**
+   * Send a proactive direct message to a user on a specific platform.
+   *
+   * Uses the Chat SDK's `adapter.openDM(userId)` to open a DM channel,
+   * then `adapter.postMessage()` to deliver the message. Works across
+   * all configured adapters that support DMs.
+   *
+   * Use cases: digest delivery, alert notifications, anomaly detection,
+   * and scheduled report delivery.
+   *
+   * @param platform - Adapter name (e.g., "slack", "teams", "discord")
+   * @param userId - Platform-specific user ID
+   * @param message - Message content (markdown string or card)
+   * @returns The sent message ID, or null if the adapter is not configured,
+   *   does not support DMs, or if DM delivery fails
+   */
+  sendDirectMessage(
+    platform: ChatPlatform,
+    userId: string,
+    message: string | { card: CardElement; fallbackText: string },
+  ): Promise<{ messageId: string } | null>;
   /** Shut down the Chat SDK instance and clean up resources. */
   shutdown(): Promise<void>;
 }
@@ -421,6 +478,9 @@ export function createChatBridge(
   const streamingEnabled =
     typeof config.executeQueryStream === "function" &&
     config.streaming?.enabled !== false;
+
+  /** Whether errors should be posted as ephemeral messages (default: true). */
+  const useEphemeralErrors = config.ephemeral?.errorsAsEphemeral !== false;
 
   async function handleQuery(
     threadId: string,
@@ -656,7 +716,11 @@ export function createChatBridge(
               message: "Rate limit exceeded.",
               retryHint: "Please wait before trying again.",
             });
-            await thread.post({ card: rateLimitCard.card, fallbackText: rateLimitCard.fallbackText });
+            if (useEphemeralErrors) {
+              await safePostEphemeralError(thread, message.author, rateLimitCard, log, threadId);
+            } else {
+              await safePostError(thread, rateLimitCard, log, threadId);
+            }
             return;
           }
         } catch (rateLimitErr) {
@@ -665,12 +729,12 @@ export function createChatBridge(
             "Rate limit check failed — denying request",
           );
           await reactions.markError();
-          await safePostError(
-            thread,
-            buildErrorCard({ message: "Unable to verify rate limits. Please try again shortly." }),
-            log,
-            threadId,
-          );
+          const rateLimitErrorCard = buildErrorCard({ message: "Unable to verify rate limits. Please try again shortly." });
+          if (useEphemeralErrors) {
+            await safePostEphemeralError(thread, message.author, rateLimitErrorCard, log, threadId);
+          } else {
+            await safePostError(thread, rateLimitErrorCard, log, threadId);
+          }
           return;
         }
       }
@@ -725,12 +789,11 @@ export function createChatBridge(
       // Deliver error to user first — never let reaction failure block this
       const errorMessage = scrubErrorMessage(rawMessage, config.scrubError);
       const errorCard = buildErrorCard({ message: errorMessage });
-      await safePostError(
-        thread,
-        errorCard,
-        log,
-        threadId,
-      );
+      if (useEphemeralErrors) {
+        await safePostEphemeralError(thread, message.author, errorCard, log, threadId);
+      } else {
+        await safePostError(thread, errorCard, log, threadId);
+      }
 
       // Best-effort error reaction — after user feedback is secured
       await reactions.markError();
@@ -785,7 +848,11 @@ export function createChatBridge(
               message: "Rate limit exceeded.",
               retryHint: "Please wait before trying again.",
             });
-            await thread.post({ card: rateLimitCard.card, fallbackText: rateLimitCard.fallbackText });
+            if (useEphemeralErrors) {
+              await safePostEphemeralError(thread, message.author, rateLimitCard, log, threadId);
+            } else {
+              await safePostError(thread, rateLimitCard, log, threadId);
+            }
             return;
           }
         } catch (rateLimitErr) {
@@ -794,12 +861,12 @@ export function createChatBridge(
             "Rate limit check failed — denying request",
           );
           await reactions.markError();
-          await safePostError(
-            thread,
-            buildErrorCard({ message: "Unable to verify rate limits. Please try again shortly." }),
-            log,
-            threadId,
-          );
+          const rateLimitErrorCard = buildErrorCard({ message: "Unable to verify rate limits. Please try again shortly." });
+          if (useEphemeralErrors) {
+            await safePostEphemeralError(thread, message.author, rateLimitErrorCard, log, threadId);
+          } else {
+            await safePostError(thread, rateLimitErrorCard, log, threadId);
+          }
           return;
         }
       }
@@ -854,12 +921,11 @@ export function createChatBridge(
       // Deliver error to user first — never let reaction failure block this
       const errorMessage = scrubErrorMessage(rawMessage, config.scrubError);
       const errorCard = buildErrorCard({ message: errorMessage });
-      await safePostError(
-        thread,
-        errorCard,
-        log,
-        threadId,
-      );
+      if (useEphemeralErrors) {
+        await safePostEphemeralError(thread, message.author, errorCard, log, threadId);
+      } else {
+        await safePostError(thread, errorCard, log, threadId);
+      }
 
       // Best-effort error reaction — after user feedback is secured
       await reactions.markError();
@@ -884,7 +950,7 @@ export function createChatBridge(
         await event.channel.postEphemeral(
           event.user,
           { markdown: `Usage: \`${commandName} <your question>\`\nExample: \`${commandName} how many active users last month?\`` },
-          { fallbackToDM: false },
+          { fallbackToDM: true },
         );
       } catch (ephErr) {
         log.warn(
@@ -915,10 +981,15 @@ export function createChatBridge(
         await event.channel.postEphemeral(
           event.user,
           { markdown: "Unable to start processing your question. Please try again." },
-          { fallbackToDM: false },
+          { fallbackToDM: true },
         );
-      } catch {
-        // intentionally ignored: double-fault — both post and ephemeral failed
+      } catch (fallbackErr) {
+        // All delivery attempts failed (post + ephemeral + DM fallback).
+        // Log for operational visibility — user received no feedback.
+        log.error(
+          { err: fallbackErr instanceof Error ? fallbackErr : new Error(String(fallbackErr)), channelId },
+          "All message delivery attempts failed for slash command — user received no feedback",
+        );
       }
       return;
     }
@@ -1476,6 +1547,52 @@ export function createChatBridge(
           "Failed to open clarification modal via platform API",
         );
         return undefined;
+      }
+    },
+
+    async sendDirectMessage(
+      platform: ChatPlatform,
+      userId: string,
+      message: string | { card: CardElement; fallbackText: string },
+    ): Promise<{ messageId: string } | null> {
+      const adapter = adapters[platform];
+      if (!adapter) {
+        log.warn({ platform, userId }, "sendDirectMessage: adapter not configured");
+        return null;
+      }
+
+      if (!adapter.openDM) {
+        log.warn({ platform, userId }, "sendDirectMessage: adapter does not support DMs");
+        return null;
+      }
+
+      let dmThreadId: string;
+      try {
+        dmThreadId = await adapter.openDM(userId);
+      } catch (err) {
+        log.error(
+          { err: err instanceof Error ? err : new Error(String(err)), platform, userId },
+          "sendDirectMessage: failed to open DM channel",
+        );
+        return null;
+      }
+
+      try {
+        const postableMessage = typeof message === "string"
+          ? { markdown: message }
+          : { card: message.card, fallbackText: message.fallbackText };
+        const sent = await adapter.postMessage(dmThreadId, postableMessage);
+        log.info(
+          { platform, userId, messageId: sent.id },
+          "Proactive DM sent",
+        );
+        return { messageId: sent.id };
+      } catch (err) {
+        log.error(
+          { err: err instanceof Error ? err : new Error(String(err)), platform, userId, dmThreadId },
+          "sendDirectMessage: failed to post message to DM channel",
+        );
+        return null;
       }
     },
 

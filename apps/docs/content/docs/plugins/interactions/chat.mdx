@@ -497,6 +497,57 @@ All error messages are scrubbed before sending to chat platforms. Built-in patte
 
 Provide a custom `scrubError` callback for additional scrubbing.
 
+## Ephemeral Messages
+
+Error messages and rate-limit notices are posted as **ephemeral messages** by default — visible only to the requesting user, not the entire channel.
+
+| Platform | Behavior |
+|----------|----------|
+| Slack | Native ephemeral (disappears on reload) |
+| Google Chat | Native private message (persists, only target user sees it) |
+| Discord | DM fallback (bot sends a DM to the user) |
+| Teams | DM fallback |
+| Telegram | DM fallback |
+| WhatsApp | DM fallback |
+| GitHub | DM fallback (opens issue/comment thread with user) |
+| Linear | DM fallback |
+
+Configure via the `ephemeral` option:
+
+```typescript
+chatPlugin({
+  adapters: { slack: { /* ... */ } },
+  executeQuery,
+  ephemeral: {
+    // Default: true — errors shown only to requesting user
+    errorsAsEphemeral: true,
+  },
+})
+```
+
+Set `errorsAsEphemeral: false` to post errors publicly in the thread.
+
+## Proactive Direct Messages
+
+The bridge exposes a `sendDirectMessage()` method for programmatic DMs — useful for digest delivery, alert notifications, and anomaly detection.
+
+The `sendDirectMessage()` method is available on the `ChatBridge` instance returned by the bridge's internal initialization. It accepts a platform name, user ID, and message:
+
+```typescript
+// Send a proactive DM to a Slack user
+const result = await bridge.sendDirectMessage(
+  "slack",        // platform name
+  "U0123456789",  // platform-specific user ID
+  "Your saved query detected an anomaly in revenue data.",
+);
+
+if (result) {
+  console.log(`DM sent: ${result.messageId}`);
+}
+```
+
+`sendDirectMessage()` works across all configured adapters that support DMs. Returns `null` if the adapter is not configured, does not support DMs, or if delivery fails.
+
 ## Migrating from @useatlas/slack
 
 ```typescript

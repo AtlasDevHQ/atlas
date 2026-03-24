@@ -110,10 +110,11 @@ export type {
   StreamingConfig,
   StreamingQueryResult,
   FileUploadConfig,
+  EphemeralConfig,
 } from "./config";
 export type { ReactionConfig, IReactionLifecycle } from "./features/reactions";
 export { StatusEmoji, createReactionLifecycle } from "./features/reactions";
-export type { ChatBridge } from "./bridge";
+export type { ChatBridge, ChatPlatform } from "./bridge";
 export type { StreamChunk, TaskUpdateChunk, PlanUpdateChunk, MarkdownTextChunk } from "chat";
 export { createStateAdapter } from "./state";
 export type { PluginDB } from "./state";

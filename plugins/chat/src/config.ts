@@ -8,6 +8,7 @@
 
 import { z } from "zod";
 import type { StreamChunk } from "chat";
+import type { ReactionConfig } from "./features/reactions";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -369,6 +370,11 @@ export interface ChatPluginConfig {
   /** File upload (CSV export) configuration. Controls when query results are
    * attached as CSV files in chat responses. */
   fileUpload?: FileUploadConfig;
+
+  /** Status reaction configuration. Controls emoji reactions on user messages
+   * during the query lifecycle (received → processing → complete/error).
+   * Default: enabled with standard emoji. */
+  reactions?: ReactionConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -550,6 +556,20 @@ const FileUploadConfigSchema = z
   })
   .optional();
 
+const ReactionConfigSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    customEmoji: z
+      .object({
+        received: z.any().optional(),
+        processing: z.any().optional(),
+        complete: z.any().optional(),
+        error: z.any().optional(),
+      })
+      .optional(),
+  })
+  .optional();
+
 export const ChatConfigSchema = z.object({
   adapters: z
     .object({
@@ -624,6 +644,7 @@ export const ChatConfigSchema = z.object({
     .optional(),
   streaming: StreamingConfigSchema,
   fileUpload: FileUploadConfigSchema,
+  reactions: ReactionConfigSchema,
   executeQueryStream: z
     .any()
     .refine(

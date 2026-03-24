@@ -143,6 +143,9 @@ export default defineConfig({
 | `fileUpload` | `object` | No | CSV file upload configuration. |
 | `fileUpload.autoAttachThreshold` | `number` | No | Row count above which CSV files are auto-attached. Set to `0` to disable. Default: `20`. |
 | `fileUpload.webBaseUrl` | `string` | No | Atlas web UI base URL for fallback links on platforms without file upload (GitHub, Linear). |
+| `reactions` | `object` | No | Status reaction configuration. See [Status Reactions](#status-reactions). |
+| `reactions.enabled` | `boolean` | No | Enable emoji reactions on user messages. Default: `true`. |
+| `reactions.customEmoji` | `object` | No | Override default emoji for each lifecycle stage (`received`, `processing`, `complete`, `error`). |
 
 <Callout type="info">
 \* Required when that adapter is configured. At least one adapter must be present.
@@ -267,6 +270,7 @@ CSV files include a UTF-8 BOM for Excel compatibility and follow RFC 4180 format
 | Slash commands | Yes | Yes | Yes | Yes | Yes | No | No | No |
 | Action buttons | Yes | Yes | Yes | Yes | Partial (inline keyboard) | No | No | No |
 | File uploads | Yes | Yes | Yes | Yes | Yes | No | No | Yes |
+| Status reactions | Yes | Limited | Yes | Yes | Yes | No | No | Limited |
 | Modals | Yes | No | No | No | No | No | No | No |
 
 ### Slack Modals
@@ -285,6 +289,77 @@ The modal collects user input and feeds the response back into the conversation 
 <Callout type="info">
 Modals are currently supported only on Slack. On other platforms, clarifying questions are handled through regular thread messages.
 </Callout>
+
+## Status Reactions
+
+The bridge adds emoji reactions to user messages as visual feedback during query processing:
+
+| Stage | Emoji | Meaning |
+|-------|-------|---------|
+| Received | `eyes` (👀) | "I see your message" |
+| Processing | `hourglass` (⏳) | "Running your query" |
+| Complete | `check` (✅) | "Query finished successfully" |
+| Error | `warning` (⚠️) | "Something went wrong" |
+
+Reactions are managed via Chat SDK's type-safe emoji API — no raw Unicode strings. Each transition removes the previous reaction and adds the new one.
+
+### Platform support
+
+| Platform | Reactions | Notes |
+|----------|-----------|-------|
+| Slack | Full | Native emoji reactions |
+| Discord | Full | Unicode emoji reactions |
+| Google Chat | Full | Unicode emoji reactions |
+| Telegram | Full | Message reactions |
+| Teams | Limited | Read-only — reactions may silently no-op |
+| WhatsApp | Limited | Reactions may silently no-op |
+| GitHub | N/A | Graceful no-op |
+| Linear | N/A | Graceful no-op |
+
+Reactions are always best-effort — failures are logged at debug level and never fail a query. On platforms where reactions aren't supported, the lifecycle silently does nothing.
+
+### Configuration
+
+Reactions are enabled by default. To disable or customize:
+
+```typescript
+import { emoji } from "chat";
+
+chatPlugin({
+  adapters: { slack: { /* ... */ } },
+  executeQuery: myQueryFunction,
+  reactions: {
+    enabled: true, // default — set to false to disable
+    customEmoji: {
+      received: emoji.sparkles, // override 👀 with ✨
+      complete: emoji.rocket,   // override ✅ with 🚀
+    },
+  },
+})
+```
+
+For workspaces with custom emoji installed (Slack, Discord), use `emoji.custom()`:
+
+```typescript
+reactions: {
+  customEmoji: {
+    received: emoji.custom("atlas_thinking"),
+    complete: emoji.custom("atlas_done"),
+  },
+}
+```
+
+### Disabling reactions
+
+Set `reactions.enabled` to `false` to skip all reaction lifecycle calls:
+
+```typescript
+chatPlugin({
+  adapters: { /* ... */ },
+  executeQuery: myQueryFunction,
+  reactions: { enabled: false },
+})
+```
 
 ## Streaming
 

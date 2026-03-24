@@ -383,25 +383,25 @@ describe("formatActionResult", () => {
     const result = formatActionResult(action, "approved");
     expect(result).toContain("approved");
     expect(result).toContain("Send notification");
-    expect(result).toContain("\u2705"); // checkmark
+    expect(result).toContain("check"); // type-safe emoji placeholder
   });
 
   it("formats executed status", () => {
     const result = formatActionResult(action, "executed");
     expect(result).toContain("executed");
-    expect(result).toContain("\u2705");
+    expect(result).toContain("check");
   });
 
   it("formats denied status", () => {
     const result = formatActionResult(action, "denied");
     expect(result).toContain("denied");
-    expect(result).toContain("\u26D4"); // no entry
+    expect(result).toContain("stop"); // type-safe emoji placeholder
   });
 
   it("formats failed status with error", () => {
     const result = formatActionResult(action, "failed", "Permission denied");
     expect(result).toContain("failed");
-    expect(result).toContain("\u274C"); // cross
+    expect(result).toContain("x"); // type-safe emoji placeholder
     expect(result).toContain("Permission denied");
   });
 

@@ -111,7 +111,7 @@ export type {
   StreamingQueryResult,
   FileUploadConfig,
 } from "./config";
-export type { ReactionConfig, ReactionLifecycle } from "./features/reactions";
+export type { ReactionConfig, IReactionLifecycle } from "./features/reactions";
 export { StatusEmoji, createReactionLifecycle } from "./features/reactions";
 export type { ChatBridge } from "./bridge";
 export type { StreamChunk, TaskUpdateChunk, PlanUpdateChunk, MarkdownTextChunk } from "chat";

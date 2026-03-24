@@ -7,6 +7,9 @@
  * - Custom emoji overrides
  * - Disabled reactions (no-op stub)
  * - Type-safe emoji via StatusEmoji constants
+ * - Failed addReaction does not leave stale currentEmoji
+ * - Simultaneous addReaction + removeReaction failures
+ * - Config schema validation (EmojiValue shape)
  */
 
 import { describe, expect, it, mock } from "bun:test";
@@ -200,6 +203,48 @@ describe("graceful degradation", () => {
     await lifecycle.markReceived();
     expect(log.debug).toHaveBeenCalled();
   });
+
+  it("does not attempt to remove a reaction that failed to add", async () => {
+    let callCount = 0;
+    const addReaction = mock(() => {
+      callCount++;
+      if (callCount === 1) return Promise.reject(new Error("API error"));
+      return Promise.resolve();
+    });
+    const removeReaction = mock(() => Promise.resolve());
+    const adapter = createMockAdapter({ addReaction, removeReaction });
+    const log = createMockLogger();
+    const lifecycle = new ReactionLifecycle(
+      adapter as never, "thread-1", "msg-1", log as never,
+    );
+
+    await lifecycle.markReceived();   // fails to add
+    await lifecycle.markProcessing(); // should NOT remove, should add
+
+    expect(removeReaction).not.toHaveBeenCalled();
+    expect(addReaction).toHaveBeenCalledTimes(2);
+  });
+
+  it("continues when both removeReaction and addReaction throw in one transition", async () => {
+    let addCallCount = 0;
+    const addReaction = mock(() => {
+      addCallCount++;
+      if (addCallCount === 1) return Promise.resolve(); // markReceived succeeds
+      return Promise.reject(new Error("API down"));     // markProcessing fails
+    });
+    const removeReaction = mock(() => Promise.reject(new Error("API down")));
+    const adapter = createMockAdapter({ addReaction, removeReaction });
+    const log = createMockLogger();
+    const lifecycle = new ReactionLifecycle(
+      adapter as never, "thread-1", "msg-1", log as never,
+    );
+
+    await lifecycle.markReceived();
+    await lifecycle.markProcessing(); // both remove + add fail
+
+    // Should have logged for both remove and add failures
+    expect(log.debug).toHaveBeenCalledTimes(2);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -295,7 +340,7 @@ describe("ChatConfigSchema reactions field", () => {
     expect(result.success).toBe(true);
   });
 
-  it("accepts reactions with custom emoji", () => {
+  it("accepts reactions with custom emoji (EmojiValue objects)", () => {
     const result = ChatConfigSchema.safeParse({
       ...baseConfig,
       reactions: {
@@ -304,5 +349,25 @@ describe("ChatConfigSchema reactions field", () => {
       },
     });
     expect(result.success).toBe(true);
+  });
+
+  it("rejects non-EmojiValue custom emoji values", () => {
+    const result = ChatConfigSchema.safeParse({
+      ...baseConfig,
+      reactions: {
+        customEmoji: { received: "raw-string" },
+      },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects numeric custom emoji values", () => {
+    const result = ChatConfigSchema.safeParse({
+      ...baseConfig,
+      reactions: {
+        customEmoji: { received: 42 },
+      },
+    });
+    expect(result.success).toBe(false);
   });
 });

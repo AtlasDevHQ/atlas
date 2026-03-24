@@ -45,7 +45,7 @@ import {
   shouldAttachCSV,
 } from "./features/file-upload";
 import { createReactionLifecycle } from "./features/reactions";
-import type { ReactionLifecycle } from "./features/reactions";
+import type { IReactionLifecycle } from "./features/reactions";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -429,7 +429,7 @@ export function createChatBridge(
     postApproval: ((action: PendingAction) => Promise<void>) | null,
     priorMessages?: ChatMessage[],
     csvContext?: CSVContext,
-    reactions?: ReactionLifecycle,
+    reactions?: IReactionLifecycle,
   ): Promise<void> {
     await reactions?.markProcessing();
 
@@ -510,7 +510,7 @@ export function createChatBridge(
     postApproval: ((action: PendingAction) => Promise<void>) | null,
     priorMessages?: ChatMessage[],
     csvContext?: CSVContext,
-    reactions?: ReactionLifecycle,
+    reactions?: IReactionLifecycle,
   ): Promise<void> {
     // Defensive guard — streamingEnabled should prevent this, but
     // protects against config mutation after bridge creation.
@@ -637,18 +637,21 @@ export function createChatBridge(
       return;
     }
 
-    // Status reactions — best-effort visual feedback on user message
+    // Status reactions — best-effort visual feedback on user message.
+    // Created before try so it's available in the catch block.
     const reactions = createReactionLifecycle(
       thread.adapter, thread.id, message.id, log, config.reactions,
     );
-    await reactions.markReceived();
 
     try {
+      await reactions.markReceived();
+
       // Rate limiting
       if (config.checkRateLimit) {
         try {
           const check = config.checkRateLimit(threadId);
           if (!check.allowed) {
+            await reactions.markError();
             const rateLimitCard = buildErrorCard({
               message: "Rate limit exceeded.",
               retryHint: "Please wait before trying again.",
@@ -661,6 +664,7 @@ export function createChatBridge(
             { err: rateLimitErr instanceof Error ? rateLimitErr : new Error(String(rateLimitErr)), threadId },
             "Rate limit check failed — denying request",
           );
+          await reactions.markError();
           await safePostError(
             thread,
             buildErrorCard({ message: "Unable to verify rate limits. Please try again shortly." }),
@@ -718,8 +722,7 @@ export function createChatBridge(
         "Query execution failed",
       );
 
-      await reactions.markError();
-
+      // Deliver error to user first — never let reaction failure block this
       const errorMessage = scrubErrorMessage(rawMessage, config.scrubError);
       const errorCard = buildErrorCard({ message: errorMessage });
       await safePostError(
@@ -728,6 +731,9 @@ export function createChatBridge(
         log,
         threadId,
       );
+
+      // Best-effort error reaction — after user feedback is secured
+      await reactions.markError();
     } finally {
       await stateAdapter.releaseLock(lock).catch((releaseErr: unknown) => {
         log.error(
@@ -760,18 +766,21 @@ export function createChatBridge(
       return;
     }
 
-    // Status reactions — best-effort visual feedback on user message
+    // Status reactions — best-effort visual feedback on user message.
+    // Created before try so it's available in the catch block.
     const reactions = createReactionLifecycle(
       thread.adapter, thread.id, message.id, log, config.reactions,
     );
-    await reactions.markReceived();
 
     try {
+      await reactions.markReceived();
+
       // Rate limiting
       if (config.checkRateLimit) {
         try {
           const check = config.checkRateLimit(threadId);
           if (!check.allowed) {
+            await reactions.markError();
             const rateLimitCard = buildErrorCard({
               message: "Rate limit exceeded.",
               retryHint: "Please wait before trying again.",
@@ -784,6 +793,7 @@ export function createChatBridge(
             { err: rateLimitErr instanceof Error ? rateLimitErr : new Error(String(rateLimitErr)), threadId },
             "Rate limit check failed — denying request",
           );
+          await reactions.markError();
           await safePostError(
             thread,
             buildErrorCard({ message: "Unable to verify rate limits. Please try again shortly." }),
@@ -841,8 +851,7 @@ export function createChatBridge(
         "Follow-up query execution failed",
       );
 
-      await reactions.markError();
-
+      // Deliver error to user first — never let reaction failure block this
       const errorMessage = scrubErrorMessage(rawMessage, config.scrubError);
       const errorCard = buildErrorCard({ message: errorMessage });
       await safePostError(
@@ -851,6 +860,9 @@ export function createChatBridge(
         log,
         threadId,
       );
+
+      // Best-effort error reaction — after user feedback is secured
+      await reactions.markError();
     } finally {
       await stateAdapter.releaseLock(lock).catch((releaseErr: unknown) => {
         log.error(

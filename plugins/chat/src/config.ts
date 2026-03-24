@@ -556,15 +556,22 @@ const FileUploadConfigSchema = z
   })
   .optional();
 
+const EmojiValueSchema = z.any().refine(
+  (v: unknown) =>
+    v === undefined ||
+    (typeof v === "object" && v !== null && typeof (v as Record<string, unknown>).name === "string"),
+  "customEmoji values must be EmojiValue objects from Chat SDK's emoji helper (e.g., emoji.eyes, emoji.custom('my_emoji'))",
+).optional();
+
 const ReactionConfigSchema = z
   .object({
     enabled: z.boolean().optional(),
     customEmoji: z
       .object({
-        received: z.any().optional(),
-        processing: z.any().optional(),
-        complete: z.any().optional(),
-        error: z.any().optional(),
+        received: EmojiValueSchema,
+        processing: EmojiValueSchema,
+        complete: EmojiValueSchema,
+        error: EmojiValueSchema,
       })
       .optional(),
   })

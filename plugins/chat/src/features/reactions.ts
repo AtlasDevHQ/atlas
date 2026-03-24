@@ -5,8 +5,9 @@
  *   received (👀) → processing (⏳) → complete (✅) or error (⚠️)
  *
  * Uses Chat SDK's type-safe emoji API — no raw Unicode strings. All
- * operations are best-effort: reaction failures are logged at debug
- * level and never fail the query.
+ * operations are best-effort: reaction failures are caught and logged
+ * at debug level. The public methods on {@link IReactionLifecycle} never
+ * throw — callers can safely await them without try/catch.
  */
 
 import { emoji } from "chat";
@@ -14,7 +15,7 @@ import type { EmojiValue, Adapter } from "chat";
 import type { PluginLogger } from "@useatlas/plugin-sdk";
 
 // ---------------------------------------------------------------------------
-// Status emoji (type-safe via Chat SDK singletons)
+// Status emoji
 // ---------------------------------------------------------------------------
 
 /** Default emoji for each lifecycle stage. */
@@ -45,18 +46,34 @@ export interface ReactionConfig {
 }
 
 // ---------------------------------------------------------------------------
-// Lifecycle
+// Interface
+// ---------------------------------------------------------------------------
+
+/** Public contract for reaction lifecycle management. */
+export interface IReactionLifecycle {
+  /** Mark the message as received (default: eyes emoji). */
+  markReceived(): Promise<void>;
+  /** Mark the message as being processed (default: hourglass emoji). */
+  markProcessing(): Promise<void>;
+  /** Mark the query as successfully completed (default: check emoji). */
+  markComplete(): Promise<void>;
+  /** Mark the query as failed (default: warning emoji). */
+  markError(): Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
+// Implementation
 // ---------------------------------------------------------------------------
 
 /**
  * Manages the reaction lifecycle on a single user message.
  *
  * Each transition removes the previous reaction and adds the new one.
- * All operations are best-effort — failures are logged at debug level
+ * All operations are best-effort — failures are caught at every level
  * and never propagated. This ensures reactions never block or fail a
  * query execution.
  */
-export class ReactionLifecycle {
+export class ReactionLifecycle implements IReactionLifecycle {
   private readonly adapter: Adapter;
   private readonly threadId: string;
   private readonly messageId: string;
@@ -84,22 +101,18 @@ export class ReactionLifecycle {
     this.errEmoji = config?.customEmoji?.error ?? StatusEmoji.error;
   }
 
-  /** React with 👀 — "I see your message". */
   async markReceived(): Promise<void> {
     await this.transition(this.received);
   }
 
-  /** React with ⏳ — "Processing your query". */
   async markProcessing(): Promise<void> {
     await this.transition(this.processing);
   }
 
-  /** React with ✅ — "Query completed successfully". */
   async markComplete(): Promise<void> {
     await this.transition(this.complete);
   }
 
-  /** React with ⚠️ — "Query encountered an error". */
   async markError(): Promise<void> {
     await this.transition(this.errEmoji);
   }
@@ -108,38 +121,46 @@ export class ReactionLifecycle {
    * Transition to a new status emoji. Removes the previous reaction
    * first, then adds the new one. Both steps are independently
    * best-effort — a failed removal doesn't prevent the new reaction.
+   *
+   * The outer try/catch ensures this method never throws, even if the
+   * logger or adapter has unexpected failures.
    */
   private async transition(next: EmojiValue): Promise<void> {
-    if (this.currentEmoji) {
+    try {
+      if (this.currentEmoji) {
+        try {
+          await this.adapter.removeReaction(this.threadId, this.messageId, this.currentEmoji);
+        } catch (err) {
+          this.log.debug(
+            { err: err instanceof Error ? err : new Error(String(err)), threadId: this.threadId },
+            "Failed to remove previous reaction — continuing",
+          );
+        }
+      }
+
       try {
-        await this.adapter.removeReaction(this.threadId, this.messageId, this.currentEmoji);
+        await this.adapter.addReaction(this.threadId, this.messageId, next);
+        this.currentEmoji = next;
       } catch (err) {
         this.log.debug(
           { err: err instanceof Error ? err : new Error(String(err)), threadId: this.threadId },
-          "Failed to remove previous reaction — continuing",
+          `Failed to add ${next.name} reaction — continuing without indicator`,
         );
       }
-    }
-
-    try {
-      await this.adapter.addReaction(this.threadId, this.messageId, next);
-      this.currentEmoji = next;
-    } catch (err) {
-      this.log.debug(
-        { err: err instanceof Error ? err : new Error(String(err)), threadId: this.threadId },
-        `Failed to add ${next.name} reaction — continuing without indicator`,
-      );
+    } catch {
+      // intentionally ignored: outermost guard ensures transition() never throws,
+      // even if the logger itself fails during error handling above.
     }
   }
 }
 
-/** No-op lifecycle stub for disabled reactions or unsupported contexts. */
-const NOOP_LIFECYCLE: ReactionLifecycle = {
+/** No-op lifecycle stub returned when reactions are explicitly disabled. */
+const NOOP_LIFECYCLE: IReactionLifecycle = {
   markReceived: () => Promise.resolve(),
   markProcessing: () => Promise.resolve(),
   markComplete: () => Promise.resolve(),
   markError: () => Promise.resolve(),
-} as unknown as ReactionLifecycle;
+};
 
 /**
  * Create a ReactionLifecycle for a user message, or a no-op stub
@@ -151,7 +172,7 @@ export function createReactionLifecycle(
   messageId: string,
   log: PluginLogger,
   config?: ReactionConfig,
-): ReactionLifecycle {
+): IReactionLifecycle {
   if (config?.enabled === false) return NOOP_LIFECYCLE;
   return new ReactionLifecycle(adapter, threadId, messageId, log, config);
 }

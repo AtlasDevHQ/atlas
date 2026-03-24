@@ -62,7 +62,7 @@ const connectionCreateSchema = z.object({
     .string()
     .min(1, "Connection ID is required")
     .regex(/^[a-z][a-z0-9_-]*$/, "Lowercase letters, numbers, hyphens, underscores. Must start with a letter."),
-  dbType: z.string().min(1),
+  dbType: z.string().min(1, "Database type is required"),
   url: z.string().min(1, "Connection URL is required"),
   schema: z.string(),
   description: z.string(),
@@ -71,7 +71,7 @@ const connectionCreateSchema = z.object({
 const connectionEditSchema = z.object({
   id: z.string(),
   dbType: z.string(),
-  url: z.string(), // optional on edit — empty means keep current
+  url: z.string(), // empty string is valid on edit — empty means keep current URL
   schema: z.string(),
   description: z.string(),
 });

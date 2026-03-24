@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 import { useEffect } from "react";
-import type { DefaultValues, FieldValues, Path, UseFormReturn } from "react-hook-form";
+import type { DefaultValues, FieldValues, UseFormReturn } from "react-hook-form";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import type { z } from "zod";
@@ -30,11 +30,11 @@ interface FormDialogProps<TSchema extends z.ZodType<FieldValues>> {
   children: (form: UseFormReturn<z.infer<TSchema>>) => ReactNode;
   /** Text for the submit button. Default: "Save" */
   submitLabel?: string;
-  /** Whether the mutation is in flight (disables submit button + shows spinner). */
+  /** Whether the mutation is in flight (disables submit button + shows spinner). Callers should not vary submitLabel for saving state — the spinner handles it. */
   saving?: boolean;
   /** Server-side error message to display above the footer. */
   serverError?: string | null;
-  /** Extra buttons to render in the footer before the submit button. */
+  /** Extra content to render in the footer before the submit button. */
   extraFooter?: (form: UseFormReturn<z.infer<TSchema>>) => ReactNode;
   /** Dialog content class name override. */
   className?: string;
@@ -43,8 +43,9 @@ interface FormDialogProps<TSchema extends z.ZodType<FieldValues>> {
 /**
  * Combines Dialog + react-hook-form + Zod validation.
  *
- * - Resets form to `defaultValues` whenever the dialog opens
+ * - Resets form to `defaultValues` whenever the dialog opens (changes while open are ignored)
  * - Validates on submit via Zod schema
+ * - Catches `onSubmit` errors and surfaces them as root-level form errors
  * - Renders field-level errors via shadcn Form primitives
  */
 export function FormDialog<TSchema extends z.ZodType<FieldValues>>({
@@ -69,7 +70,6 @@ export function FormDialog<TSchema extends z.ZodType<FieldValues>>({
     defaultValues,
   });
 
-  // Reset form whenever dialog opens with new defaultValues
   useEffect(() => {
     if (open) {
       form.reset(defaultValues);
@@ -86,23 +86,31 @@ export function FormDialog<TSchema extends z.ZodType<FieldValues>>({
 
         <Form {...form}>
           <form
-            onSubmit={form.handleSubmit(onSubmit)}
+            onSubmit={form.handleSubmit(async (values) => {
+              try {
+                await onSubmit(values);
+              } catch (err) {
+                form.setError("root", {
+                  message: err instanceof Error ? err.message : String(err),
+                });
+              }
+            })}
             className="space-y-4"
           >
             <div className="grid gap-4 py-2">
               {children(form)}
             </div>
 
-            {serverError && (
+            {(serverError || form.formState.errors.root?.message) && (
               <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                {serverError}
+                {serverError || form.formState.errors.root?.message}
               </div>
             )}
 
             <DialogFooter>
               {extraFooter?.(form)}
-              <Button type="submit" disabled={saving}>
-                {saving && <Loader2 className="mr-2 size-4 animate-spin" />}
+              <Button type="submit" disabled={saving || form.formState.isSubmitting}>
+                {(saving || form.formState.isSubmitting) && <Loader2 className="mr-2 size-4 animate-spin" />}
                 {submitLabel}
               </Button>
             </DialogFooter>
@@ -123,5 +131,3 @@ export {
   FormMessage,
 } from "@/components/ui/form";
 
-/** Re-export Path type for FormField name prop. */
-export type { Path as FormPath };

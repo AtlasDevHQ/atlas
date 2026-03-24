@@ -583,7 +583,7 @@ export default function UsersPage() {
             <DialogHeader>
               <DialogTitle>Invite user</DialogTitle>
               <DialogDescription>
-                Send an invitation to a new user. They will be assigned the selected role on signup.
+                Invitation has been created for the new user.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4">
@@ -647,7 +647,7 @@ export default function UsersPage() {
           schema={inviteSchema}
           defaultValues={{ email: "", role: "member" }}
           onSubmit={handleInvite}
-          submitLabel={invite.saving ? "Sending..." : "Send invitation"}
+          submitLabel="Send invitation"
           saving={invite.saving}
           serverError={invite.error}
           className="sm:max-w-md"

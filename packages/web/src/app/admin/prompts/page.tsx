@@ -801,13 +801,7 @@ export default function PromptsPage() {
             : { name: "", industry: "", description: "" }
         }
         onSubmit={submitCollectionForm}
-        submitLabel={
-          collectionMutation.saving
-            ? "Saving..."
-            : collectionDialog.mode === "edit"
-              ? "Save Changes"
-              : "Create"
-        }
+        submitLabel={collectionDialog.mode === "edit" ? "Save Changes" : "Create"}
         saving={collectionMutation.saving}
         serverError={collectionMutation.error}
       >

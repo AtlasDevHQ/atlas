@@ -82,8 +82,11 @@ export type {
   DiscordAdapterConfig,
   GoogleChatAdapterConfig,
   TelegramAdapterConfig,
+  StreamingConfig,
+  StreamingQueryResult,
 } from "./config";
 export type { ChatBridge } from "./bridge";
+export type { StreamChunk, TaskUpdateChunk, PlanUpdateChunk, MarkdownTextChunk } from "chat";
 export { createStateAdapter } from "./state";
 export type { PluginDB } from "./state";
 

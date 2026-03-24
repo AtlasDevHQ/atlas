@@ -66,7 +66,6 @@ export default function ModelConfigPage() {
   });
   const [showApiKey, setShowApiKey] = useState(false);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
-  const [validationError, setValidationError] = useState<string | null>(null);
 
   const { data, loading, error, refetch } = useAdminFetch<ModelConfigResponse>(
     "/api/v1/admin/model-config",
@@ -95,7 +94,7 @@ export default function ModelConfigPage() {
       method: "POST",
     });
 
-  const mutationError = validationError ?? saveError ?? deleteError ?? testError;
+  const mutationError = saveError ?? deleteError ?? testError;
 
   const existingConfig = data?.config ?? null;
   const provider = form.watch("provider");
@@ -114,7 +113,7 @@ export default function ModelConfigPage() {
       form.reset({ provider: "anthropic", model: "", apiKey: "", baseUrl: "" });
     }
     setTestResult(null);
-    setValidationError(null);
+
     clearSaveError();
     clearDeleteError();
     clearTestError();
@@ -133,15 +132,14 @@ export default function ModelConfigPage() {
     );
   }
 
-  async function handleSave() {
-    const values = form.getValues();
+  async function handleSave(values: z.infer<typeof modelConfigSchema>) {
     if (!values.apiKey && !existingConfig) {
-      setValidationError("API key is required.");
+      form.setError("apiKey", { message: "API key is required for new configurations." });
       return;
     }
 
     setTestResult(null);
-    setValidationError(null);
+
     clearSaveError();
     clearDeleteError();
     clearTestError();
@@ -163,7 +161,7 @@ export default function ModelConfigPage() {
 
   async function handleDelete() {
     setTestResult(null);
-    setValidationError(null);
+
     clearSaveError();
     clearDeleteError();
     clearTestError();
@@ -177,7 +175,7 @@ export default function ModelConfigPage() {
   async function handleTest() {
     const values = form.getValues();
     setTestResult(null);
-    setValidationError(null);
+
     clearSaveError();
     clearDeleteError();
     clearTestError();
@@ -210,7 +208,7 @@ export default function ModelConfigPage() {
         <div className="flex-1 overflow-auto p-6">
           {error && <ErrorBanner message={friendlyError(error)} onRetry={refetch} />}
           {mutationError && (
-            <ErrorBanner message={mutationError} onRetry={() => { setValidationError(null); clearSaveError(); clearDeleteError(); clearTestError(); }} />
+            <ErrorBanner message={mutationError} onRetry={() => { clearSaveError(); clearDeleteError(); clearTestError(); }} />
           )}
 
           {loading ? (
@@ -279,7 +277,7 @@ export default function ModelConfigPage() {
                 </CardHeader>
                 <CardContent>
                   <Form {...form}>
-                    <div className="space-y-4">
+                    <form onSubmit={form.handleSubmit(handleSave)} className="space-y-4">
                       {/* Provider */}
                       <FormField
                         control={form.control}
@@ -420,11 +418,12 @@ export default function ModelConfigPage() {
 
                       {/* Actions */}
                       <div className="flex items-center gap-2 pt-2">
-                        <Button onClick={handleSave} disabled={saving || !form.watch("model").trim() || (!form.watch("apiKey") && !existingConfig)}>
+                        <Button type="submit" disabled={saving || !form.watch("model").trim() || (!form.watch("apiKey") && !existingConfig)}>
                           {saving && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
                           {existingConfig ? "Update" : "Save"}
                         </Button>
                         <Button
+                          type="button"
                           variant="outline"
                           onClick={handleTest}
                           disabled={testing || !form.watch("model").trim() || !form.watch("apiKey")}
@@ -434,6 +433,7 @@ export default function ModelConfigPage() {
                         </Button>
                         {existingConfig && (
                           <Button
+                            type="button"
                             variant="ghost"
                             className="text-muted-foreground"
                             onClick={handleDelete}
@@ -448,7 +448,7 @@ export default function ModelConfigPage() {
                           </Button>
                         )}
                       </div>
-                    </div>
+                    </form>
                   </Form>
                 </CardContent>
               </Card>

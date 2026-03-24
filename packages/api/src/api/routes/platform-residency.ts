@@ -14,6 +14,7 @@ import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { validationHook } from "./validation-hook";
 import { createLogger } from "@atlas/api/lib/logger";
 import { EnterpriseError } from "@atlas/ee/index";
+import { ResidencyError } from "@atlas/ee/platform/residency";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { platformAdminAuth, requestContext, type AuthEnv } from "./middleware";
 
@@ -171,8 +172,8 @@ function handleResidencyError(err: unknown, requestId: string): { error: string;
   const message = err instanceof Error ? err.message : String(err);
 
   // Typed residency errors (most specific — check first)
-  if (err instanceof Error && err.name === "ResidencyError" && "code" in err) {
-    const code = (err as { code: string }).code;
+  if (err instanceof ResidencyError) {
+    const code = err.code;
     const status = RESIDENCY_ERROR_STATUS[code] ?? 500;
     return { error: code, message, status, requestId };
   }

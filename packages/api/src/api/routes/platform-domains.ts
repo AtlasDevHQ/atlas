@@ -14,6 +14,7 @@ import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { validationHook } from "./validation-hook";
 import { createLogger } from "@atlas/api/lib/logger";
 import { EnterpriseError } from "@atlas/ee/index";
+import { DomainError } from "@atlas/ee/platform/domains";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { platformAdminAuth, requestContext, type AuthEnv } from "./middleware";
 
@@ -172,8 +173,8 @@ function handleDomainError(err: unknown, requestId: string): { error: string; me
   const message = err instanceof Error ? err.message : String(err);
 
   // Typed domain errors (most specific — check first)
-  if (err instanceof Error && err.name === "DomainError" && "code" in err) {
-    const code = (err as { code: string }).code;
+  if (err instanceof DomainError) {
+    const code = err.code;
     const status = DOMAIN_ERROR_STATUS[code] ?? 500;
     // Sanitize Railway errors to avoid leaking infrastructure details
     const safeMessage = (code === "railway_error" || code === "railway_not_configured")

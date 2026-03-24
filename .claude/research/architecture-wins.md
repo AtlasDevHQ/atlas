@@ -90,3 +90,24 @@ Tracking module-deepening refactors discovered by the `improve-codebase-architec
 - Adding a new enterprise feature route now requires zero error-handling boilerplate
 
 **Category:** Duplicated error-handling pattern consolidated into parameterized shared function.
+
+---
+
+## 5. Extract shared sandbox backends (`backends/`)
+
+**Date:** 2026-03-24
+**Issue:** #839
+**PR:** #859
+
+**Problem:** Explore and Python tools each implemented 3 sandbox backends (nsjail, Vercel sandbox, sidecar) as separate files with duplicated utility functions: `readLimited()`, `parsePositiveInt()`, `sandboxErrorDetail()`, `findNsjailBinary()`, and runtime detection logic. 6 parallel backend files with shared patterns. `SandboxExecBackend` interface manually mirrored from `ExploreBackend`.
+
+**Solution:** Extracted shared utilities into `packages/api/src/lib/tools/backends/` with `nsjail.ts`, `shared.ts`, and barrel `index.ts`. Both explore and python backends now import from the shared module. `SandboxExecBackend` became a type alias for the canonical `ExploreBackend`. Added `tools/index.ts` barrel export for the entire tools directory.
+
+**Impact:**
+- **-370 deletions, +420 additions** across 14 files (net +50 due to barrel exports and shared module structure)
+- Eliminated 5 duplicated utility functions between explore and python backends
+- Single source of truth for nsjail binary detection and sandbox error formatting
+- `tools/index.ts` barrel export added for cleaner imports
+- All 10+ existing tool tests continue to pass without modification
+
+**Category:** Parallel backend implementations consolidated into shared utilities with barrel exports.

@@ -383,8 +383,8 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Unified JSX cards for query results (#768, PR #803) — QueryResultCard, ErrorCard, ApprovalCard, DataTableCard via Chat SDK JSX runtime. Auto-compiles to Block Kit (Slack), Adaptive Cards (Teams), Discord Embeds, Google Chat Cards with markdown fallback
 - [x] Modals, slash commands, and action buttons (#769, PR #812)
 - [x] File upload support — CSV export (#770, PR #854)
-- [ ] Ephemeral messages and proactive DMs (#771)
-- [ ] Cross-platform emoji and reactions (#773)
+- [x] Ephemeral messages and proactive DMs (#771, PR #861)
+- [x] Cross-platform emoji and reactions (#773, PR #860)
 
 ### Auth & Routing
 
@@ -478,7 +478,8 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Fix approval request status cast (#846, PR #848) — validate status against known values instead of unchecked `as` cast
 - [x] Consolidate semantic layer into semantic/ directory (#837, PR #855) — 5 top-level files → barrel export, move db/semantic-entities.ts
 - [x] Extract shared pagination parser and ID validator (#838, PR #851) — `parsePagination()` + `isValidId()` + `PaginationQuerySchema` replace 24 inline implementations
-- [ ] Extract shared sandbox backends for explore/python (#839) — 6 parallel backend files → 3 shared, SandboxBackend interface
+- [x] Extract shared sandbox backends for explore/python (#839, PR #859) — 6 parallel backend files → 3 shared, SandboxBackend interface
+- [x] Adopt react-hook-form + shadcn Form for admin dialogs (#856, PR #862) — FormDialog component, 3 admin pages migrated (connections, prompts, users)
 
 ---
 

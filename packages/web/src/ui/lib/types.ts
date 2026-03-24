@@ -120,7 +120,14 @@ export type {
   BackupStatus,
   BackupConfig,
 } from "@useatlas/types";
+export type {
+  Region,
+  RegionConfig,
+  WorkspaceRegion,
+  RegionStatus,
+} from "@useatlas/types";
 export { BACKUP_STATUSES } from "@useatlas/types";
+export { WELL_KNOWN_REGIONS } from "@useatlas/types";
 export { ABUSE_LEVELS, ABUSE_TRIGGERS } from "@useatlas/types";
 export { SLA_ALERT_STATUSES, SLA_ALERT_TYPES } from "@useatlas/types";
 export { ONBOARDING_EMAIL_STEPS, ONBOARDING_MILESTONES } from "@useatlas/types";

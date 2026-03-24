@@ -565,6 +565,10 @@ export async function migrateInternalDB(): Promise<void> {
     await pool.query(`ALTER TABLE organization ADD COLUMN IF NOT EXISTS byot BOOLEAN NOT NULL DEFAULT false;`);
     await pool.query(`ALTER TABLE organization ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT;`);
     await pool.query(`ALTER TABLE organization ADD COLUMN IF NOT EXISTS trial_ends_at TIMESTAMPTZ;`);
+
+    // Data residency (0.9.0 — region-based routing, enterprise-gated)
+    await pool.query(`ALTER TABLE organization ADD COLUMN IF NOT EXISTS region TEXT;`);
+    await pool.query(`ALTER TABLE organization ADD COLUMN IF NOT EXISTS region_assigned_at TIMESTAMPTZ;`);
   }
 
   // Soft-delete support for conversations (needed by workspace cascade delete)
@@ -1298,6 +1302,8 @@ export interface WorkspaceRow {
   trial_ends_at: string | null;
   suspended_at: string | null;
   deleted_at: string | null;
+  region: string | null;
+  region_assigned_at: string | null;
   createdAt: string;
   [key: string]: unknown;
 }
@@ -1322,7 +1328,7 @@ export async function getWorkspaceStatus(orgId: string): Promise<WorkspaceStatus
 export async function getWorkspaceDetails(orgId: string): Promise<WorkspaceRow | null> {
   if (!hasInternalDB()) return null;
   const rows = await internalQuery<WorkspaceRow>(
-    `SELECT id, name, slug, workspace_status, plan_tier, byot, stripe_customer_id, trial_ends_at, suspended_at, deleted_at, "createdAt"
+    `SELECT id, name, slug, workspace_status, plan_tier, byot, stripe_customer_id, trial_ends_at, suspended_at, deleted_at, region, region_assigned_at, "createdAt"
      FROM organization WHERE id = $1`,
     [orgId],
   );
@@ -1366,6 +1372,50 @@ export async function updateWorkspacePlanTier(
     [planTier, orgId],
   );
   return result.rows.length > 0;
+}
+
+/**
+ * Get the region assigned to a workspace. Returns null if no region is assigned
+ * or the workspace doesn't exist.
+ */
+export async function getWorkspaceRegion(orgId: string): Promise<string | null> {
+  if (!hasInternalDB()) return null;
+  const rows = await internalQuery<{ region: string | null }>(
+    `SELECT region FROM organization WHERE id = $1`,
+    [orgId],
+  );
+  return rows[0]?.region ?? null;
+}
+
+/**
+ * Assign a region to a workspace. Region is immutable — once set, returns
+ * `{ assigned: false, existing: <current region> }` without updating.
+ * On first assignment, returns `{ assigned: true }`. If the workspace
+ * does not exist, returns `{ assigned: false }` without an `existing` field.
+ */
+export async function setWorkspaceRegion(
+  orgId: string,
+  region: string,
+): Promise<{ assigned: boolean; existing?: string }> {
+  const pool = getInternalDB();
+  // Only assign if region is currently NULL (immutable after first assignment)
+  const result = await pool.query(
+    `UPDATE organization SET region = $1, region_assigned_at = now()
+     WHERE id = $2 AND region IS NULL RETURNING id`,
+    [region, orgId],
+  );
+  if (result.rows.length > 0) {
+    return { assigned: true };
+  }
+  // Check if workspace exists with a different region already set
+  const existing = await internalQuery<{ region: string | null }>(
+    `SELECT region FROM organization WHERE id = $1`,
+    [orgId],
+  );
+  if (existing.length === 0) {
+    return { assigned: false };
+  }
+  return { assigned: false, existing: existing[0].region ?? undefined };
 }
 
 /**

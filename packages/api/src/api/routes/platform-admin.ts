@@ -64,6 +64,8 @@ const PlatformWorkspaceSchema = z.object({
   trialEndsAt: z.string().nullable(),
   suspendedAt: z.string().nullable(),
   deletedAt: z.string().nullable(),
+  region: z.string().nullable(),
+  regionAssignedAt: z.string().nullable(),
   createdAt: z.string(),
 });
 
@@ -300,6 +302,8 @@ function toWorkspaceResponse(
     trialEndsAt: row.trial_ends_at,
     suspendedAt: row.suspended_at,
     deletedAt: row.deleted_at,
+    region: row.region,
+    regionAssignedAt: row.region_assigned_at,
     createdAt: row.createdAt,
   };
 }
@@ -354,6 +358,8 @@ platformAdmin.openapi(listWorkspacesRoute, async (c) => {
       trial_ends_at: string | null;
       suspended_at: string | null;
       deleted_at: string | null;
+      region: string | null;
+      region_assigned_at: string | null;
       createdAt: string;
       members: number;
       conversations: number;
@@ -363,7 +369,8 @@ platformAdmin.openapi(listWorkspacesRoute, async (c) => {
     }>(
       `SELECT
          o.id, o.name, o.slug, o.workspace_status, o.plan_tier, o.byot,
-         o.stripe_customer_id, o.trial_ends_at, o.suspended_at, o.deleted_at, o."createdAt",
+         o.stripe_customer_id, o.trial_ends_at, o.suspended_at, o.deleted_at,
+         o.region, o.region_assigned_at, o."createdAt",
          COALESCE(m.cnt, 0)::int AS members,
          COALESCE(cv.cnt, 0)::int AS conversations,
          COALESCE(al.cnt, 0)::int AS queries_last_24h,
@@ -394,6 +401,8 @@ platformAdmin.openapi(listWorkspacesRoute, async (c) => {
       trialEndsAt: row.trial_ends_at,
       suspendedAt: row.suspended_at,
       deletedAt: row.deleted_at,
+      region: row.region,
+      regionAssignedAt: row.region_assigned_at,
       createdAt: row.createdAt,
     }));
 

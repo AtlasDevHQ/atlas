@@ -32,6 +32,8 @@ export interface PlatformWorkspace {
   trialEndsAt: string | null;
   suspendedAt: string | null;
   deletedAt: string | null;
+  region: string | null;
+  regionAssignedAt: string | null;
   createdAt: string;
 }
 

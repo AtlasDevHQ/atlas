@@ -391,13 +391,14 @@ function PlatformPageContent() {
                         Created <ArrowUpDown className="size-3" />
                       </Button>
                     </TableHead>
+                    <TableHead>Region</TableHead>
                     <TableHead className="text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {filtered.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
+                      <TableCell colSpan={8} className="text-center text-muted-foreground py-8">
                         No workspaces found.
                       </TableCell>
                     </TableRow>
@@ -410,6 +411,13 @@ function PlatformPageContent() {
                         <TableCell>{ws.members}</TableCell>
                         <TableCell>{ws.queriesLast24h.toLocaleString()}</TableCell>
                         <TableCell>{formatDate(ws.createdAt)}</TableCell>
+                        <TableCell>
+                          {ws.region ? (
+                            <Badge variant="outline" className="text-xs">{ws.region}</Badge>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
                         <TableCell className="text-right">
                           <div className="flex items-center justify-end gap-1">
                             <Button variant="ghost" size="icon" onClick={() => setDetailId(ws.id)} title="View details">
@@ -590,6 +598,10 @@ function PlatformPageContent() {
                 <div>
                   <span className="text-sm text-muted-foreground">Connections</span>
                   <p className="font-medium">{detailData.workspace.connections}</p>
+                </div>
+                <div>
+                  <span className="text-sm text-muted-foreground">Region</span>
+                  <p className="font-medium">{detailData.workspace.region ?? "Not assigned"}</p>
                 </div>
               </div>
 

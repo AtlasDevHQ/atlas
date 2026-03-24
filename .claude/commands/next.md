@@ -32,6 +32,7 @@ For each suggestion:
 - Bias toward things that improve the core experience
 - Don't suggest more than one large effort at a time
 - If a parent issue's sub-issues are all done, suggest closing it
+- **Architecture refactors** (label: `architecture`) are good candidates when bugs are clear and features are on track. These are module-deepening refactors from `/improve-codebase-architecture` — they reduce duplication and improve testability. When suggesting one, note the expected line-count impact from the issue body. After an architecture refactor ships, remind the session to record the win in `.claude/research/architecture-wins.md`
 
 **Docs check:**
 After reviewing recent commits, check if docs are stale — especially after renames, config changes, or new features. Grep for old names/paths in `apps/docs/`, `docs/`, plugin READMEs, and ROADMAP.md. Include doc fixes in your suggestions or fix them directly if trivial (< 5 lines).

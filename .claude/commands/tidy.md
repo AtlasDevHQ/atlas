@@ -77,6 +77,7 @@ The public roadmap is a prose summary (no checkboxes). Keep it in sync with the 
 - **Issues missing labels** -> every issue needs a type label AND area label(s):
   - Type (exactly one): `bug`, `feature`, `refactor`, `chore`, `docs`
   - Area (one or more): `area: api`, `area: web`, `area: cli`, `area: plugins`, `area: sandbox`, `area: deploy`, `area: ci`, `area: sdk`, `area: mcp`, `area: starter`, `area: docs`, `area: testing`
+  - Special: `architecture` — for module-deepening refactors from `/improve-codebase-architecture`. When an `architecture` issue is closed, check if `.claude/research/architecture-wins.md` was updated with the win. If not, add a reminder comment on the closed issue
 - **Issues missing milestone** -> assign to the appropriate milestone:
   - 0.1.0 — Documentation & DX (CLOSED)
   - 0.2.0 — Plugin Ecosystem (CLOSED)

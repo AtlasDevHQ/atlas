@@ -10,11 +10,11 @@ import { resolve, join } from "path";
 import { mkdirSync, writeFileSync, rmSync, existsSync } from "fs";
 
 // Cache-busting import for fresh module instance
-const semModPath = resolve(__dirname, "../semantic.ts");
+const semModPath = resolve(__dirname, "../semantic/whitelist.ts");
 const semMod = await import(`${semModPath}?t=multisource-${Date.now()}`);
-const getWhitelistedTables = semMod.getWhitelistedTables as typeof import("../semantic").getWhitelistedTables;
-const _resetWhitelists = semMod._resetWhitelists as typeof import("../semantic")._resetWhitelists;
-const getCrossSourceJoins = semMod.getCrossSourceJoins as typeof import("../semantic").getCrossSourceJoins;
+const getWhitelistedTables = semMod.getWhitelistedTables as typeof import("../semantic/whitelist").getWhitelistedTables;
+const _resetWhitelists = semMod._resetWhitelists as typeof import("../semantic/whitelist")._resetWhitelists;
+const getCrossSourceJoins = semMod.getCrossSourceJoins as typeof import("../semantic/whitelist").getCrossSourceJoins;
 
 const tmpBase = resolve(__dirname, ".tmp-semantic-multisource-test");
 let testCounter = 0;

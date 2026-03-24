@@ -34,7 +34,7 @@ export async function createSidecarBackend(
   // (relative to /semantic in the container).
   let sidecarCwd: string | undefined;
   if (options?.semanticRoot) {
-    const { getSemanticRoot } = await import("@atlas/api/lib/semantic-sync");
+    const { getSemanticRoot } = await import("@atlas/api/lib/semantic/sync");
     const base = getSemanticRoot(); // base semantic root (no org)
     const path = await import("path");
     const rel = path.relative(base, options.semanticRoot);

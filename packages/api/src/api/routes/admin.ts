@@ -41,8 +41,8 @@ import {
   readYamlFile,
   discoverEntities,
   findEntityFile,
-} from "@atlas/api/lib/semantic-files";
-import { runDiff } from "@atlas/api/lib/semantic-diff";
+} from "@atlas/api/lib/semantic/files";
+import { runDiff } from "@atlas/api/lib/semantic/diff";
 import { adminOrgs } from "./admin-orgs";
 import { adminLearnedPatterns } from "./admin-learned-patterns";
 import { adminPrompts } from "./admin-prompts";
@@ -145,7 +145,7 @@ admin.route("/abuse", adminAbuse);
 admin.route("/abuse/", adminAbuse);
 
 // Path traversal guard, YAML helpers, entity discovery, and file finding
-// are all imported from @atlas/api/lib/semantic-files above.
+// are all imported from @atlas/api/lib/semantic/files above.
 
 function discoverMetrics(root: string): Array<{ source: string; file: string; data: unknown }> {
   const metrics: Array<{ source: string; file: string; data: unknown }> = [];
@@ -2108,7 +2108,7 @@ admin.openapi(listOrgEntitiesRoute, async (c) => {
   }
 
   try {
-    const { listEntities } = await import("@atlas/api/lib/db/semantic-entities");
+    const { listEntities } = await import("@atlas/api/lib/semantic/entities");
     const rawType = c.req.query("type");
     if (rawType && !VALID_ENTITY_TYPES.has(rawType)) {
       return c.json({ error: "bad_request", message: `Invalid type. Must be one of: ${[...VALID_ENTITY_TYPES].join(", ")}` }, 400);
@@ -2149,7 +2149,7 @@ admin.openapi(getOrgEntityRoute, async (c) => {
     return c.json({ error: "bad_request", message: `Invalid type. Must be one of: ${[...VALID_ENTITY_TYPES].join(", ")}` }, 400);
   }
   try {
-    const { getEntity } = await import("@atlas/api/lib/db/semantic-entities");
+    const { getEntity } = await import("@atlas/api/lib/semantic/entities");
     const row = await getEntity(orgId, entityType, name);
     if (!row) {
       return c.json({ error: "not_found", message: `Entity "${name}" not found.` }, 404);
@@ -2213,9 +2213,9 @@ admin.openapi(putOrgEntityRoute, async (c) => {
   }
 
   try {
-    const { upsertEntity } = await import("@atlas/api/lib/db/semantic-entities");
+    const { upsertEntity } = await import("@atlas/api/lib/semantic/entities");
     const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
-    const { syncEntityToDisk } = await import("@atlas/api/lib/semantic-sync");
+    const { syncEntityToDisk } = await import("@atlas/api/lib/semantic/sync");
     await upsertEntity(orgId, entityType, name, body.yamlContent, body.connectionId);
     invalidateOrgWhitelist(orgId);
     await syncEntityToDisk(orgId, name, entityType, body.yamlContent);
@@ -2247,9 +2247,9 @@ admin.openapi(deleteOrgEntityRoute, async (c) => {
     return c.json({ error: "bad_request", message: `Invalid type. Must be one of: ${[...VALID_ENTITY_TYPES].join(", ")}` }, 400);
   }
   try {
-    const { deleteEntity } = await import("@atlas/api/lib/db/semantic-entities");
+    const { deleteEntity } = await import("@atlas/api/lib/semantic/entities");
     const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
-    const { syncEntityDeleteFromDisk } = await import("@atlas/api/lib/semantic-sync");
+    const { syncEntityDeleteFromDisk } = await import("@atlas/api/lib/semantic/sync");
     const deleted = await deleteEntity(orgId, entityType, name);
     if (!deleted) {
       return c.json({ error: "not_found", message: `Entity "${name}" not found.` }, 404);
@@ -2288,7 +2288,7 @@ admin.openapi(importOrgEntitiesRoute, async (c) => {
   }
 
   try {
-    const { importFromDisk } = await import("@atlas/api/lib/semantic-sync");
+    const { importFromDisk } = await import("@atlas/api/lib/semantic/sync");
     const result = await importFromDisk(orgId, {
       connectionId: body.connectionId,
     });

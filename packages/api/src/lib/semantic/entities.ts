@@ -5,7 +5,7 @@
  * Each entity is stored as raw YAML content keyed by (orgId, entityType, name).
  */
 
-import { internalQuery, hasInternalDB } from "./internal";
+import { internalQuery, hasInternalDB } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("semantic-entities");

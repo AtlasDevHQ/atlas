@@ -18,7 +18,7 @@ import { resolve } from "path";
 // Mock the DB layer
 // ---------------------------------------------------------------------------
 
-import type { SemanticEntityRow } from "../db/semantic-entities";
+import type { SemanticEntityRow } from "../semantic/entities";
 
 const mockListEntities = mock((): Promise<SemanticEntityRow[]> => Promise.resolve([]));
 const mockGetEntity = mock((): Promise<SemanticEntityRow | null> => Promise.resolve(null));
@@ -27,7 +27,7 @@ const mockDeleteEntity = mock((): Promise<boolean> => Promise.resolve(false));
 const mockCountEntities = mock((): Promise<number> => Promise.resolve(0));
 const mockBulkUpsertEntities = mock((): Promise<number> => Promise.resolve(0));
 
-mock.module("@atlas/api/lib/db/semantic-entities", () => ({
+mock.module("@atlas/api/lib/semantic/entities", () => ({
   listEntities: mockListEntities,
   getEntity: mockGetEntity,
   upsertEntity: mockUpsertEntity,
@@ -37,13 +37,13 @@ mock.module("@atlas/api/lib/db/semantic-entities", () => ({
 }));
 
 // Cache-busting import
-const modPath = resolve(__dirname, "../semantic.ts");
+const modPath = resolve(__dirname, "../semantic/whitelist.ts");
 const mod = await import(`${modPath}?t=${Date.now()}`);
-const loadOrgWhitelist = mod.loadOrgWhitelist as typeof import("../semantic").loadOrgWhitelist;
-const getOrgWhitelistedTables = mod.getOrgWhitelistedTables as typeof import("../semantic").getOrgWhitelistedTables;
-const invalidateOrgWhitelist = mod.invalidateOrgWhitelist as typeof import("../semantic").invalidateOrgWhitelist;
-const _resetOrgWhitelists = mod._resetOrgWhitelists as typeof import("../semantic")._resetOrgWhitelists;
-const _resetOrgSemanticIndexes = mod._resetOrgSemanticIndexes as typeof import("../semantic")._resetOrgSemanticIndexes;
+const loadOrgWhitelist = mod.loadOrgWhitelist as typeof import("../semantic/whitelist").loadOrgWhitelist;
+const getOrgWhitelistedTables = mod.getOrgWhitelistedTables as typeof import("../semantic/whitelist").getOrgWhitelistedTables;
+const invalidateOrgWhitelist = mod.invalidateOrgWhitelist as typeof import("../semantic/whitelist").invalidateOrgWhitelist;
+const _resetOrgWhitelists = mod._resetOrgWhitelists as typeof import("../semantic/whitelist")._resetOrgWhitelists;
+const _resetOrgSemanticIndexes = mod._resetOrgSemanticIndexes as typeof import("../semantic/whitelist")._resetOrgSemanticIndexes;
 
 // ---------------------------------------------------------------------------
 // Helpers

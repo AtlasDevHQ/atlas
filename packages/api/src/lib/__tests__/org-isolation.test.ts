@@ -27,7 +27,7 @@ import * as path from "path";
 // Mock the DB layer — all named exports
 // ---------------------------------------------------------------------------
 
-import type { SemanticEntityRow } from "../db/semantic-entities";
+import type { SemanticEntityRow } from "../semantic/entities";
 
 const mockListEntities = mock((): Promise<SemanticEntityRow[]> => Promise.resolve([]));
 const mockGetEntity = mock((): Promise<SemanticEntityRow | null> => Promise.resolve(null));
@@ -41,7 +41,7 @@ const mockInternalExecute = mock((_sql: string, _params?: unknown[]) => {});
 /** Controls the activeOrganizationId returned by the mocked getRequestContext. */
 let mockActiveOrgId: string | undefined;
 
-mock.module("@atlas/api/lib/db/semantic-entities", () => ({
+mock.module("@atlas/api/lib/semantic/entities", () => ({
   listEntities: mockListEntities,
   getEntity: mockGetEntity,
   upsertEntity: mockUpsertEntity,
@@ -118,16 +118,16 @@ mock.module("@atlas/api/lib/security", () => ({
 
 import { resolve } from "path";
 
-const semanticPath = resolve(__dirname, "../semantic.ts");
+const semanticPath = resolve(__dirname, "../semantic/whitelist.ts");
 const semanticMod = await import(`${semanticPath}?t=${Date.now()}`);
-const loadOrgWhitelist = semanticMod.loadOrgWhitelist as typeof import("../semantic").loadOrgWhitelist;
-const getOrgWhitelistedTables = semanticMod.getOrgWhitelistedTables as typeof import("../semantic").getOrgWhitelistedTables;
-const _resetOrgWhitelists = semanticMod._resetOrgWhitelists as typeof import("../semantic")._resetOrgWhitelists;
-const _resetOrgSemanticIndexes = semanticMod._resetOrgSemanticIndexes as typeof import("../semantic")._resetOrgSemanticIndexes;
-const getOrgSemanticIndex = semanticMod.getOrgSemanticIndex as typeof import("../semantic").getOrgSemanticIndex;
-const getWhitelistedTables = semanticMod.getWhitelistedTables as typeof import("../semantic").getWhitelistedTables;
+const loadOrgWhitelist = semanticMod.loadOrgWhitelist as typeof import("../semantic/whitelist").loadOrgWhitelist;
+const getOrgWhitelistedTables = semanticMod.getOrgWhitelistedTables as typeof import("../semantic/whitelist").getOrgWhitelistedTables;
+const _resetOrgWhitelists = semanticMod._resetOrgWhitelists as typeof import("../semantic/whitelist")._resetOrgWhitelists;
+const _resetOrgSemanticIndexes = semanticMod._resetOrgSemanticIndexes as typeof import("../semantic/whitelist")._resetOrgSemanticIndexes;
+const getOrgSemanticIndex = semanticMod.getOrgSemanticIndex as typeof import("../semantic/whitelist").getOrgSemanticIndex;
+const getWhitelistedTables = semanticMod.getWhitelistedTables as typeof import("../semantic/whitelist").getWhitelistedTables;
 
-import { getSemanticRoot } from "../semantic-sync";
+import { getSemanticRoot } from "../semantic/sync";
 import { buildCacheKey } from "../cache/keys";
 import { logQueryAudit } from "../auth/audit";
 import { createConversation, listConversations } from "../conversations";

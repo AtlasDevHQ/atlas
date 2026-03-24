@@ -10,7 +10,7 @@ import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { validationHook } from "./validation-hook";
 import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
-import { getSemanticRoot, discoverTables } from "@atlas/api/lib/semantic-files";
+import { getSemanticRoot, discoverTables } from "@atlas/api/lib/semantic/files";
 import { ErrorSchema } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 

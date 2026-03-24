@@ -123,7 +123,7 @@ mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
   _resetPatternCache: () => {},
 }));
 
-mock.module("@atlas/api/lib/db/semantic-entities", () => ({
+mock.module("@atlas/api/lib/semantic/entities", () => ({
   listEntities: mock(() => Promise.resolve([])),
   getEntity: mock(() => Promise.resolve(null)),
   upsertEntity: mock(() => Promise.resolve()),
@@ -160,7 +160,7 @@ mock.module("@atlas/api/lib/agent", () => ({
 }));
 
 mock.module("@atlas/api/lib/tools/actions", () => ({}));
-mock.module("@atlas/api/lib/semantic-diff", () => ({
+mock.module("@atlas/api/lib/semantic/diff", () => ({
   runDiff: mock(() => Promise.resolve({})),
   mapSQLType: (t: string) => t,
   parseEntityYAML: () => ({ table: "", columns: new Map(), foreignKeys: new Set() }),

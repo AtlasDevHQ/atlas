@@ -14,7 +14,7 @@
  * **Org scoping:** When an orgId is active, the whitelist is loaded from
  * the internal DB (`semantic_entities` table). The semantic index is built
  * from persistent on-disk files at `{semanticRoot}/.orgs/{orgId}/`, maintained
- * by the dual-write sync layer (`semantic-sync.ts`). When no orgId is
+ * by the dual-write sync layer (`./sync.ts`). When no orgId is
  * present (CLI, self-hosted without orgs), file-based YAML is used
  * (existing behavior).
  */
@@ -23,9 +23,9 @@ import * as fs from "fs";
 import * as path from "path";
 import * as yaml from "js-yaml";
 import { z } from "zod";
-import { getSemanticRoot as getDefaultSemanticRoot } from "@atlas/api/lib/semantic-files";
+import { getSemanticRoot as getDefaultSemanticRoot } from "./files";
 import { createLogger } from "@atlas/api/lib/logger";
-import { invalidateSemanticIndex } from "@atlas/api/lib/semantic-index";
+import { invalidateSemanticIndex } from "./search";
 
 const log = createLogger("semantic");
 
@@ -420,7 +420,7 @@ export async function loadOrgWhitelist(orgId: string): Promise<Map<string, Set<s
   const cached = _orgWhitelists.get(orgId);
   if (cached) return cached;
 
-  const { listEntities } = await import("@atlas/api/lib/db/semantic-entities");
+  const { listEntities } = await import("@atlas/api/lib/semantic/entities");
   const rows = await listEntities(orgId, "entity");
 
   const byConnection = new Map<string, Set<string>>();
@@ -516,7 +516,7 @@ export function invalidateOrgSemanticIndex(orgId: string): void {
  * Get or build the semantic index for an org.
  *
  * Reads from the persistent org directory at `{semanticRoot}/.orgs/{orgId}/`
- * maintained by the dual-write sync layer (`semantic-sync.ts`). If the
+ * maintained by the dual-write sync layer (`./sync.ts`). If the
  * directory is empty or missing, triggers a DB-to-disk sync first.
  *
  * On sync failure (e.g. transient DB outage), returns an uncached result
@@ -526,7 +526,7 @@ export async function getOrgSemanticIndex(orgId: string): Promise<string> {
   const cached = _orgSemanticIndexes.get(orgId);
   if (cached !== undefined) return cached;
 
-  const { getSemanticRoot, syncAllEntitiesToDisk } = await import("@atlas/api/lib/semantic-sync");
+  const { getSemanticRoot, syncAllEntitiesToDisk } = await import("@atlas/api/lib/semantic/sync");
   const orgRoot = getSemanticRoot(orgId);
 
   // Ensure the org directory exists on disk (may be first access after boot)
@@ -558,7 +558,7 @@ export async function getOrgSemanticIndex(orgId: string): Promise<string> {
     }
   }
 
-  const { buildSemanticIndex } = await import("@atlas/api/lib/semantic-index");
+  const { buildSemanticIndex } = await import("@atlas/api/lib/semantic/search");
   const index = buildSemanticIndex(orgRoot);
 
   // Don't cache if sync failed — next call should retry

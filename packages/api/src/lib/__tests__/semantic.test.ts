@@ -10,12 +10,12 @@ import { resolve } from "path";
 import { mkdirSync, writeFileSync, rmSync, existsSync } from "fs";
 
 // Cache-busting import for fresh module instance
-const semModPath = resolve(__dirname, "../semantic.ts");
+const semModPath = resolve(__dirname, "../semantic/whitelist.ts");
 const semMod = await import(`${semModPath}?t=${Date.now()}`);
-const getWhitelistedTables = semMod.getWhitelistedTables as typeof import("../semantic").getWhitelistedTables;
-const _resetWhitelists = semMod._resetWhitelists as typeof import("../semantic")._resetWhitelists;
-const registerPluginEntities = semMod.registerPluginEntities as typeof import("../semantic").registerPluginEntities;
-const _resetPluginEntities = semMod._resetPluginEntities as typeof import("../semantic")._resetPluginEntities;
+const getWhitelistedTables = semMod.getWhitelistedTables as typeof import("../semantic/whitelist").getWhitelistedTables;
+const _resetWhitelists = semMod._resetWhitelists as typeof import("../semantic/whitelist")._resetWhitelists;
+const registerPluginEntities = semMod.registerPluginEntities as typeof import("../semantic/whitelist").registerPluginEntities;
+const _resetPluginEntities = semMod._resetPluginEntities as typeof import("../semantic/whitelist")._resetPluginEntities;
 
 const tmpBase = resolve(__dirname, ".tmp-semantic-test");
 let testCounter = 0;

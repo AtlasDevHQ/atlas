@@ -25,7 +25,7 @@ import * as path from "path";
 // Mock the DB layer
 // ---------------------------------------------------------------------------
 
-import type { SemanticEntityRow } from "../db/semantic-entities";
+import type { SemanticEntityRow } from "../semantic/entities";
 
 const mockListEntities = mock((): Promise<SemanticEntityRow[]> => Promise.resolve([]));
 const mockBulkUpsertEntities = mock((_orgId: string, entities: unknown[]): Promise<number> =>
@@ -34,7 +34,7 @@ const mockBulkUpsertEntities = mock((_orgId: string, entities: unknown[]): Promi
 const mockHasInternalDB = mock((): boolean => true);
 const mockInternalQuery = mock((): Promise<Array<{ org_id: string }>> => Promise.resolve([]));
 
-mock.module("@atlas/api/lib/db/semantic-entities", () => ({
+mock.module("@atlas/api/lib/semantic/entities", () => ({
   listEntities: mockListEntities,
   getEntity: mock(() => Promise.resolve(null)),
   upsertEntity: mock(() => Promise.resolve()),
@@ -83,7 +83,7 @@ import {
   syncAllEntitiesToDisk,
   cleanupOrgDirectory,
   importFromDisk,
-} from "../semantic-sync";
+} from "../semantic/sync";
 
 // ---------------------------------------------------------------------------
 // Test setup — use a unique org ID per test to avoid collisions

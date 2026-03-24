@@ -17,7 +17,7 @@ import * as path from "path";
 import { ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ReadResourceResult } from "@modelcontextprotocol/sdk/types.js";
-import { getSemanticRoot } from "@atlas/api/lib/semantic-files";
+import { getSemanticRoot } from "@atlas/api/lib/semantic/files";
 
 const SEMANTIC_ROOT = getSemanticRoot();
 

@@ -10,7 +10,7 @@ import * as path from "path";
 import type { SemanticTableDiff, SemanticDiffResponse } from "@useatlas/types";
 import { createLogger } from "@atlas/api/lib/logger";
 import { connections } from "@atlas/api/lib/db/connection";
-import { getSemanticRoot, readYamlFile, discoverEntities } from "@atlas/api/lib/semantic-files";
+import { getSemanticRoot, readYamlFile, discoverEntities } from "./files";
 
 const log = createLogger("semantic-diff");
 

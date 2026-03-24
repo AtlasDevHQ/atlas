@@ -104,7 +104,7 @@ const mockSyncEntityToDisk: Mock<(orgId: string, name: string, type: string, yam
   async () => {},
 );
 
-mock.module("@atlas/api/lib/semantic-sync", () => ({
+mock.module("@atlas/api/lib/semantic/sync", () => ({
   syncEntityToDisk: mockSyncEntityToDisk,
   syncEntityDeleteFromDisk: async () => {},
   syncAllEntitiesToDisk: async () => 0,

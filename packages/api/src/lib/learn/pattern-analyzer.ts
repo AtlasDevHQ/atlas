@@ -13,7 +13,7 @@ import * as path from "path";
 import * as yaml from "js-yaml";
 import { Parser } from "node-sql-parser";
 import { createLogger } from "@atlas/api/lib/logger";
-import { getSemanticRoot as getDefaultSemanticRoot } from "@atlas/api/lib/semantic-files";
+import { getSemanticRoot as getDefaultSemanticRoot } from "@atlas/api/lib/semantic/files";
 
 const log = createLogger("pattern-analyzer");
 

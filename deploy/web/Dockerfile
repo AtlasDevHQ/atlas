@@ -54,8 +54,9 @@ COPY --from=deps /app ./
 COPY . .
 # Build @useatlas/types first (exports point to dist/) then the Next.js app
 RUN cd packages/types && bun run build
-# Bake the API URL into the client JS bundle at build time
+# Bake build-time env vars into the client JS bundle
 ENV NEXT_PUBLIC_ATLAS_API_URL=https://api.useatlas.dev
+ENV NEXT_PUBLIC_ATLAS_AUTH_MODE=managed
 RUN cd packages/web && bun run build
 
 # --- runner ---

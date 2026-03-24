@@ -24,9 +24,8 @@ function getApiBase(): string {
   return "http://localhost:3000";
 }
 
-export default function SignupPage() {
+export default function LoginPage() {
   const router = useRouter();
-  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -46,7 +45,10 @@ export default function SignupPage() {
       })
       .catch((err: unknown) => {
         // Graceful degradation: email/password form still works
-        console.warn("Social providers unavailable:", err instanceof Error ? err.message : String(err));
+        console.warn(
+          "Social providers unavailable:",
+          err instanceof Error ? err.message : String(err),
+        );
       });
   }, []);
 
@@ -58,21 +60,18 @@ export default function SignupPage() {
     setError(null);
 
     try {
-      const res = await authClient.signUp.email({
-        email,
-        password,
-        name: name || email.split("@")[0],
-      });
+      const res = await authClient.signIn.email({ email, password });
       if (res.error) {
-        setError(res.error.message ?? "Sign up failed");
+        setError(res.error.message ?? "Sign in failed");
         return;
       }
-      router.push("/signup/workspace");
+      router.push("/");
     } catch (err) {
+      console.debug("Sign in failed:", err instanceof Error ? err.message : String(err));
       setError(
         err instanceof TypeError
           ? "Unable to reach the server"
-          : "Sign up failed",
+          : "Sign in failed",
       );
     } finally {
       setLoading(false);
@@ -85,7 +84,7 @@ export default function SignupPage() {
     try {
       await authClient.signIn.social({
         provider: provider as "google" | "github" | "microsoft",
-        callbackURL: "/signup/workspace",
+        callbackURL: "/",
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Social login failed");
@@ -100,9 +99,9 @@ export default function SignupPage() {
         <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-lg bg-primary/10">
           <Database className="size-6 text-primary" />
         </div>
-        <CardTitle className="text-2xl">Create your account</CardTitle>
+        <CardTitle className="text-2xl">Sign in to Atlas</CardTitle>
         <CardDescription>
-          Get started with Atlas — your AI data analyst.
+          Your AI-powered data analyst.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -117,7 +116,9 @@ export default function SignupPage() {
                   onClick={() => handleSocialLogin("google")}
                 >
                   <GoogleIcon />
-                  {socialLoading === "google" ? "Redirecting..." : "Continue with Google"}
+                  {socialLoading === "google"
+                    ? "Redirecting..."
+                    : "Continue with Google"}
                 </Button>
               )}
               {socialProviders.includes("github") && (
@@ -128,7 +129,9 @@ export default function SignupPage() {
                   onClick={() => handleSocialLogin("github")}
                 >
                   <GitHubIcon />
-                  {socialLoading === "github" ? "Redirecting..." : "Continue with GitHub"}
+                  {socialLoading === "github"
+                    ? "Redirecting..."
+                    : "Continue with GitHub"}
                 </Button>
               )}
               {socialProviders.includes("microsoft") && (
@@ -139,7 +142,9 @@ export default function SignupPage() {
                   onClick={() => handleSocialLogin("microsoft")}
                 >
                   <MicrosoftIcon />
-                  {socialLoading === "microsoft" ? "Redirecting..." : "Continue with Microsoft"}
+                  {socialLoading === "microsoft"
+                    ? "Redirecting..."
+                    : "Continue with Microsoft"}
                 </Button>
               )}
             </div>
@@ -154,36 +159,26 @@ export default function SignupPage() {
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="signup-name">Name</Label>
+            <Label htmlFor="login-email">Email</Label>
             <Input
-              id="signup-name"
-              placeholder="Jane Doe"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              autoFocus
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="signup-email">Email</Label>
-            <Input
-              id="signup-email"
+              id="login-email"
               type="email"
               placeholder="jane@example.com"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
+              autoFocus
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="signup-password">Password</Label>
+            <Label htmlFor="login-password">Password</Label>
             <Input
-              id="signup-password"
+              id="login-password"
               type="password"
-              placeholder="At least 8 characters"
+              placeholder="Your password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
-              minLength={8}
             />
           </div>
           {error && <p className="text-sm text-destructive">{error}</p>}
@@ -192,14 +187,14 @@ export default function SignupPage() {
             className="w-full"
             disabled={loading || !email || !password}
           >
-            {loading ? "Creating account..." : "Create account"}
+            {loading ? "Signing in..." : "Sign in"}
           </Button>
         </form>
 
         <p className="text-center text-sm text-muted-foreground">
-          Already have an account?{" "}
-          <a href="/login" className="text-primary hover:underline">
-            Sign in
+          Don&apos;t have an account?{" "}
+          <a href="/signup" className="text-primary hover:underline">
+            Create one
           </a>
         </p>
       </CardContent>

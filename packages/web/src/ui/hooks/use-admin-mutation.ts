@@ -7,7 +7,12 @@ import type { FetchError } from "./use-admin-fetch";
 /** HTTP methods supported by admin mutations. */
 type MutationMethod = "POST" | "PUT" | "PATCH" | "DELETE";
 
-/** Discriminated result returned by `mutate()`. */
+/**
+ * Discriminated result returned by `mutate()`.
+ * Discriminates on `ok`: true means the request succeeded (data is
+ * undefined for 204 No Content or non-JSON responses), false means
+ * an error occurred.
+ */
 export type MutateResult<T> =
   | { ok: true; data: T | undefined }
   | { ok: false; error: string };
@@ -22,8 +27,8 @@ interface MutateOptions<TResponse = unknown> {
   body?: Record<string, unknown>;
   /** Track this mutation under an ID for per-item loading state. */
   itemId?: string;
-  /** Called on success. `data` is undefined for 204 No Content responses. */
-  onSuccess?: (data: TResponse | undefined) => void;
+  /** Called on success when the server returns a JSON body. Not called for 204 No Content. */
+  onSuccess?: (data: TResponse) => void;
 }
 
 /** Hook-level configuration. */
@@ -185,8 +190,11 @@ export function useAdminMutation<TResponse = unknown>(
       }
 
       // Call onSuccess outside try/catch so callback bugs don't
-      // get misreported as mutation failures
-      callOpts?.onSuccess?.(data);
+      // get misreported as mutation failures.
+      // Only called when data is present — 204/non-JSON callers use result.ok instead.
+      if (data !== undefined) {
+        callOpts?.onSuccess?.(data);
+      }
 
       return { ok: true, data };
     },

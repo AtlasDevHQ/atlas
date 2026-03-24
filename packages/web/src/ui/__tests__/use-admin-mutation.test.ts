@@ -101,7 +101,7 @@ describe("useAdminMutation", () => {
     expect(refetch).toHaveBeenCalledTimes(1);
   });
 
-  test("204 No Content fires onSuccess callback", async () => {
+  test("204 No Content does NOT fire onSuccess (no data to pass)", async () => {
     mockFetch(new Response(null, { status: 204 }));
 
     const onSuccess = mock(() => {});
@@ -114,8 +114,7 @@ describe("useAdminMutation", () => {
       await result.current.mutate({ onSuccess });
     });
 
-    expect(onSuccess).toHaveBeenCalledTimes(1);
-    expect(onSuccess).toHaveBeenCalledWith(undefined);
+    expect(onSuccess).not.toHaveBeenCalled();
   });
 
   /* ---------------------------------------------------------------- */
@@ -247,7 +246,64 @@ describe("useAdminMutation", () => {
   });
 
   /* ---------------------------------------------------------------- */
-  /*  Saving state                                                     */
+  /*  Per-item mutation tracking (itemId / isMutating)                  */
+  /* ---------------------------------------------------------------- */
+
+  test("isMutating tracks per-item loading state", async () => {
+    let resolveFetch: (res: Response) => void;
+    globalThis.fetch = mock(() =>
+      new Promise<Response>((resolve) => { resolveFetch = resolve; }),
+    ) as unknown as typeof fetch;
+
+    const { result } = renderHook(
+      () => useAdminMutation({ path: "/api/v1/admin/test" }),
+      { wrapper },
+    );
+
+    expect(result.current.isMutating("item-1")).toBe(false);
+    expect(result.current.saving).toBe(false);
+
+    let mutatePromise: Promise<MutateResult<unknown>>;
+    act(() => {
+      mutatePromise = result.current.mutate({ itemId: "item-1" });
+    });
+
+    // During flight: isMutating is true, saving stays false (itemId path)
+    expect(result.current.isMutating("item-1")).toBe(true);
+    expect(result.current.saving).toBe(false);
+
+    await act(async () => {
+      resolveFetch!(jsonResponse({ ok: true }));
+      await mutatePromise!;
+    });
+
+    expect(result.current.isMutating("item-1")).toBe(false);
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  Array invalidates                                                */
+  /* ---------------------------------------------------------------- */
+
+  test("array invalidates calls all refetch functions", async () => {
+    mockFetch(jsonResponse({ ok: true }));
+
+    const refetch1 = mock(() => {});
+    const refetch2 = mock(() => {});
+    const { result } = renderHook(
+      () => useAdminMutation({ path: "/api/v1/admin/test", invalidates: [refetch1, refetch2] }),
+      { wrapper },
+    );
+
+    await act(async () => {
+      await result.current.mutate();
+    });
+
+    expect(refetch1).toHaveBeenCalledTimes(1);
+    expect(refetch2).toHaveBeenCalledTimes(1);
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  State management                                                 */
   /* ---------------------------------------------------------------- */
 
   test("saving is true during mutation, false after", async () => {
@@ -288,5 +344,25 @@ describe("useAdminMutation", () => {
       await result.current.mutate();
     });
     expect(result.current.error).toBeNull();
+  });
+
+  test("reset() clears error state", async () => {
+    mockFetch(jsonResponse({ message: "Fail" }, 500));
+
+    const { result } = renderHook(
+      () => useAdminMutation({ path: "/api/v1/admin/test" }),
+      { wrapper },
+    );
+
+    await act(async () => {
+      await result.current.mutate();
+    });
+    expect(result.current.error).toBe("Fail");
+
+    act(() => {
+      result.current.reset();
+    });
+    expect(result.current.error).toBeNull();
+    expect(result.current.saving).toBe(false);
   });
 });

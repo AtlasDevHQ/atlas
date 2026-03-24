@@ -155,14 +155,12 @@ function ConnectionFormDialog({
     const data = await testMutation.mutate({
       body: { url, schema: schemaVal || undefined },
       onSuccess: (d) => {
-        if (d) {
-          setTestResult({
-            ok: d.status === "healthy",
-            message: d.status === "healthy"
-              ? `Connected (${d.latencyMs}ms)`
-              : d.message || "Connection unhealthy",
-          });
-        }
+        setTestResult({
+          ok: d.status === "healthy",
+          message: d.status === "healthy"
+            ? `Connected (${d.latencyMs}ms)`
+            : d.message || "Connection unhealthy",
+        });
       },
     });
     if (!data.ok) {
@@ -681,13 +679,11 @@ export default function ConnectionsPage() {
       path: `/api/v1/admin/connections/${encodeURIComponent(id)}/test`,
       itemId: id,
       onSuccess: (data) => {
-        if (data) {
-          setLocalConnections((prev) =>
-            (prev ?? displayConnections).map((c) =>
-              c.id === id ? { ...c, health: data } : c
-            )
-          );
-        }
+        setLocalConnections((prev) =>
+          (prev ?? displayConnections).map((c) =>
+            c.id === id ? { ...c, health: data } : c
+          )
+        );
       },
     });
     if (!result.ok) {

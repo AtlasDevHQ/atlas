@@ -1,6 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { z } from "zod";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -24,6 +27,14 @@ import {
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Form,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormControl,
+  FormMessage,
+} from "@/components/ui/form";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
@@ -58,6 +69,19 @@ const RULE_TYPES: { value: ApprovalRuleType; label: string; description: string 
   { value: "cost", label: "Cost", description: "Match queries exceeding a cost threshold" },
 ];
 
+const createRuleSchema = z.object({
+  name: z.string().min(1, "Rule name is required"),
+  ruleType: z.enum(["table", "column", "cost"]),
+  pattern: z.string(),
+  threshold: z.string(),
+}).refine(
+  (data) => data.ruleType === "cost" || data.pattern.trim().length > 0,
+  { message: "Pattern is required for table/column rules", path: ["pattern"] },
+).refine(
+  (data) => data.ruleType !== "cost" || (data.threshold.trim().length > 0 && !isNaN(Number(data.threshold))),
+  { message: "A valid numeric threshold is required", path: ["threshold"] },
+);
+
 function statusBadge(status: ApprovalStatus) {
   switch (status) {
     case "pending":
@@ -82,11 +106,11 @@ export default function ApprovalWorkflowsPage() {
 }
 
 function ApprovalPageContent() {
-  // Rule form state
-  const [ruleName, setRuleName] = useState("");
-  const [ruleType, setRuleType] = useState<ApprovalRuleType>("table");
-  const [rulePattern, setRulePattern] = useState("");
-  const [ruleThreshold, setRuleThreshold] = useState("");
+  // Rule form
+  const ruleForm = useForm<z.infer<typeof createRuleSchema>>({
+    resolver: zodResolver(createRuleSchema),
+    defaultValues: { name: "", ruleType: "table", pattern: "", threshold: "" },
+  });
   const [showCreateForm, setShowCreateForm] = useState(false);
 
   // Review state — per-request comments to avoid cross-contamination
@@ -153,20 +177,18 @@ function ApprovalPageContent() {
   }
 
   // Create rule handler
-  async function handleCreateRule() {
+  async function handleCreateRule(values: z.infer<typeof createRuleSchema>) {
     const result = await createRule({
       body: {
-        name: ruleName,
-        ruleType,
-        pattern: rulePattern,
-        threshold: ruleType === "cost" ? Number(ruleThreshold) : null,
+        name: values.name,
+        ruleType: values.ruleType,
+        pattern: values.pattern,
+        threshold: values.ruleType === "cost" ? Number(values.threshold) : null,
         enabled: true,
       },
     });
     if (result !== undefined) {
-      setRuleName("");
-      setRulePattern("");
-      setRuleThreshold("");
+      ruleForm.reset();
       setShowCreateForm(false);
     }
   }
@@ -249,67 +271,95 @@ function ApprovalPageContent() {
             </CardHeader>
             <CardContent>
               {showCreateForm && (
-                <div className="mb-6 rounded-lg border p-4 space-y-4">
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <div className="space-y-2">
-                      <Label htmlFor="rule-name">Rule Name</Label>
-                      <Input
-                        id="rule-name"
-                        placeholder="e.g., Require approval for PII tables"
-                        value={ruleName}
-                        onChange={(e) => setRuleName(e.target.value)}
+                <Form {...ruleForm}>
+                  <form
+                    onSubmit={ruleForm.handleSubmit(handleCreateRule)}
+                    className="mb-6 rounded-lg border p-4 space-y-4"
+                  >
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <FormField
+                        control={ruleForm.control}
+                        name="name"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Rule Name</FormLabel>
+                            <FormControl>
+                              <Input placeholder="e.g., Require approval for PII tables" {...field} />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      <FormField
+                        control={ruleForm.control}
+                        name="ruleType"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Rule Type</FormLabel>
+                            <Select value={field.value} onValueChange={field.onChange}>
+                              <FormControl>
+                                <SelectTrigger>
+                                  <SelectValue />
+                                </SelectTrigger>
+                              </FormControl>
+                              <SelectContent>
+                                {RULE_TYPES.map((t) => (
+                                  <SelectItem key={t.value} value={t.value}>
+                                    {t.label} — {t.description}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                            <FormMessage />
+                          </FormItem>
+                        )}
                       />
                     </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="rule-type">Rule Type</Label>
-                      <Select value={ruleType} onValueChange={(v) => setRuleType(v as ApprovalRuleType)}>
-                        <SelectTrigger id="rule-type">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {RULE_TYPES.map((t) => (
-                            <SelectItem key={t.value} value={t.value}>
-                              {t.label} — {t.description}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-                  {ruleType !== "cost" ? (
-                    <div className="space-y-2">
-                      <Label htmlFor="rule-pattern">
-                        {ruleType === "table" ? "Table Name" : "Column Name"}
-                      </Label>
-                      <Input
-                        id="rule-pattern"
-                        placeholder={ruleType === "table" ? "e.g., users" : "e.g., ssn"}
-                        value={rulePattern}
-                        onChange={(e) => setRulePattern(e.target.value)}
+                    {ruleForm.watch("ruleType") !== "cost" ? (
+                      <FormField
+                        control={ruleForm.control}
+                        name="pattern"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>
+                              {ruleForm.watch("ruleType") === "table" ? "Table Name" : "Column Name"}
+                            </FormLabel>
+                            <FormControl>
+                              <Input
+                                placeholder={ruleForm.watch("ruleType") === "table" ? "e.g., users" : "e.g., ssn"}
+                                {...field}
+                              />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
                       />
-                    </div>
-                  ) : (
-                    <div className="space-y-2">
-                      <Label htmlFor="rule-threshold">Cost Threshold (row estimate)</Label>
-                      <Input
-                        id="rule-threshold"
-                        type="number"
-                        placeholder="e.g., 100000"
-                        value={ruleThreshold}
-                        onChange={(e) => setRuleThreshold(e.target.value)}
+                    ) : (
+                      <FormField
+                        control={ruleForm.control}
+                        name="threshold"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Cost Threshold (row estimate)</FormLabel>
+                            <FormControl>
+                              <Input type="number" placeholder="e.g., 100000" {...field} />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
                       />
+                    )}
+                    <div className="flex gap-2">
+                      <Button type="submit" size="sm" disabled={creatingRule}>
+                        {creatingRule && <Loader2 className="mr-1 size-4 animate-spin" />}
+                        Create Rule
+                      </Button>
+                      <Button type="button" size="sm" variant="ghost" onClick={() => setShowCreateForm(false)}>
+                        Cancel
+                      </Button>
                     </div>
-                  )}
-                  <div className="flex gap-2">
-                    <Button size="sm" onClick={handleCreateRule} disabled={creatingRule || !ruleName.trim()}>
-                      {creatingRule && <Loader2 className="mr-1 size-4 animate-spin" />}
-                      Create Rule
-                    </Button>
-                    <Button size="sm" variant="ghost" onClick={() => setShowCreateForm(false)}>
-                      Cancel
-                    </Button>
-                  </div>
-                </div>
+                  </form>
+                </Form>
               )}
 
               {isLoading ? (

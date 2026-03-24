@@ -1,14 +1,25 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect } from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { z } from "zod";
 import { Paintbrush, Loader2, RotateCcw, Eye } from "lucide-react";
 import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import {
+  Form,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormControl,
+  FormDescription,
+  FormMessage,
+} from "@/components/ui/form";
 import {
   Card,
   CardContent,
@@ -20,6 +31,16 @@ import type { WorkspaceBranding } from "@/ui/lib/types";
 
 const HEX_RE = /^#[0-9a-fA-F]{6}$/;
 
+const brandingSchema = z.object({
+  logoUrl: z.string(),
+  logoText: z.string(),
+  primaryColor: z.string().refine((v) => !v || HEX_RE.test(v), {
+    message: "Must be a 6-digit hex color (e.g. #FF5500)",
+  }),
+  faviconUrl: z.string(),
+  hideAtlasBranding: z.boolean(),
+});
+
 export default function BrandingPage() {
   const { data, loading, error, refetch } = useAdminFetch<WorkspaceBranding | null>(
     "/api/v1/admin/branding",
@@ -30,54 +51,59 @@ export default function BrandingPage() {
     invalidates: refetch,
   });
 
-  const [logoUrl, setLogoUrl] = useState("");
-  const [logoText, setLogoText] = useState("");
-  const [primaryColor, setPrimaryColor] = useState("");
-  const [faviconUrl, setFaviconUrl] = useState("");
-  const [hideAtlasBranding, setHideAtlasBranding] = useState(false);
-  const [synced, setSynced] = useState(false);
+  const form = useForm<z.infer<typeof brandingSchema>>({
+    resolver: zodResolver(brandingSchema),
+    defaultValues: { logoUrl: "", logoText: "", primaryColor: "", faviconUrl: "", hideAtlasBranding: false },
+  });
 
-  // Sync form state when data loads
-  if (data && !synced) {
-    setLogoUrl(data.logoUrl ?? "");
-    setLogoText(data.logoText ?? "");
-    setPrimaryColor(data.primaryColor ?? "");
-    setFaviconUrl(data.faviconUrl ?? "");
-    setHideAtlasBranding(data.hideAtlasBranding);
-    setSynced(true);
-  }
-  if (!loading && !data && !synced) {
-    setSynced(true);
-  }
+  // Sync form when server data loads or changes
+  useEffect(() => {
+    if (loading) return;
+    if (data) {
+      form.reset({
+        logoUrl: data.logoUrl ?? "",
+        logoText: data.logoText ?? "",
+        primaryColor: data.primaryColor ?? "",
+        faviconUrl: data.faviconUrl ?? "",
+        hideAtlasBranding: data.hideAtlasBranding,
+      });
+    } else {
+      form.reset({ logoUrl: "", logoText: "", primaryColor: "", faviconUrl: "", hideAtlasBranding: false });
+    }
+  }, [data, loading]); // intentionally reset when data changes (after save/refetch)
 
   // Gate on 401/403/404
   if (!loading && error?.status && [401, 403, 404].includes(error.status)) {
     return <FeatureGate status={error.status as 401 | 403 | 404} feature="Branding" />;
   }
 
+  const primaryColor = form.watch("primaryColor");
+  const logoUrl = form.watch("logoUrl");
+  const logoText = form.watch("logoText");
+  const hideAtlasBranding = form.watch("hideAtlasBranding");
   const colorValid = !primaryColor || HEX_RE.test(primaryColor);
 
-  async function handleSave() {
-    await mutate({
+  async function handleSave(values: z.infer<typeof brandingSchema>) {
+    const result = await mutate({
       method: "PUT",
       body: {
-        logoUrl: logoUrl || null,
-        logoText: logoText || null,
-        primaryColor: primaryColor || null,
-        faviconUrl: faviconUrl || null,
-        hideAtlasBranding,
+        logoUrl: values.logoUrl || null,
+        logoText: values.logoText || null,
+        primaryColor: values.primaryColor || null,
+        faviconUrl: values.faviconUrl || null,
+        hideAtlasBranding: values.hideAtlasBranding,
       },
     });
+    if (result === undefined) {
+      throw new Error("Save failed");
+    }
   }
 
   async function handleReset() {
-    await mutate({ method: "DELETE" });
-    // Always reset form — 404 means no branding exists (already default)
-    setLogoUrl("");
-    setLogoText("");
-    setPrimaryColor("");
-    setFaviconUrl("");
-    setHideAtlasBranding(false);
+    const result = await mutate({ method: "DELETE" });
+    if (result !== undefined) {
+      form.reset({ logoUrl: "", logoText: "", primaryColor: "", faviconUrl: "", hideAtlasBranding: false });
+    }
   }
 
   return (
@@ -115,103 +141,117 @@ export default function BrandingPage() {
                 Configure custom branding for this workspace. Changes affect the admin console, chat UI, and widget embeds.
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-5">
-              {/* Logo URL */}
-              <div className="space-y-2">
-                <Label htmlFor="logoUrl">Logo URL</Label>
-                <Input
-                  id="logoUrl"
-                  value={logoUrl}
-                  onChange={(e) => setLogoUrl(e.target.value)}
-                  placeholder="https://example.com/logo.png"
-                  className="font-mono text-sm"
-                />
-                <p className="text-xs text-muted-foreground">URL to your custom logo image (PNG, SVG, or JPEG recommended).</p>
-              </div>
-
-              {/* Logo Text */}
-              <div className="space-y-2">
-                <Label htmlFor="logoText">Logo Text</Label>
-                <Input
-                  id="logoText"
-                  value={logoText}
-                  onChange={(e) => setLogoText(e.target.value)}
-                  placeholder="Acme Corp"
-                />
-                <p className="text-xs text-muted-foreground">Text displayed next to or instead of the logo (e.g. your company name).</p>
-              </div>
-
-              {/* Primary Color */}
-              <div className="space-y-2">
-                <Label htmlFor="primaryColor">Primary Color</Label>
-                <div className="flex items-center gap-3">
-                  <div
-                    className="size-10 rounded-md border"
-                    style={{ backgroundColor: colorValid && primaryColor ? primaryColor : "#e5e5e5" }}
+            <CardContent>
+              <Form {...form}>
+                <form onSubmit={form.handleSubmit(handleSave)} className="space-y-5">
+                  {/* Logo URL */}
+                  <FormField
+                    control={form.control}
+                    name="logoUrl"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Logo URL</FormLabel>
+                        <FormControl>
+                          <Input placeholder="https://example.com/logo.png" className="font-mono text-sm" {...field} />
+                        </FormControl>
+                        <FormDescription>URL to your custom logo image (PNG, SVG, or JPEG recommended).</FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
                   />
-                  <Input
-                    id="primaryColor"
-                    value={primaryColor}
-                    onChange={(e) => setPrimaryColor(e.target.value)}
-                    placeholder="#FF5500"
-                    className="font-mono text-sm"
+
+                  {/* Logo Text */}
+                  <FormField
+                    control={form.control}
+                    name="logoText"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Logo Text</FormLabel>
+                        <FormControl>
+                          <Input placeholder="Acme Corp" {...field} />
+                        </FormControl>
+                        <FormDescription>Text displayed next to or instead of the logo (e.g. your company name).</FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
                   />
-                </div>
-                {primaryColor && !colorValid && (
-                  <p className="text-xs text-amber-600 dark:text-amber-400">
-                    Must be a 6-digit hex color (e.g. <code className="rounded bg-muted px-1">#FF5500</code>).
+
+                  {/* Primary Color */}
+                  <FormField
+                    control={form.control}
+                    name="primaryColor"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Primary Color</FormLabel>
+                        <div className="flex items-center gap-3">
+                          <div
+                            className="size-10 rounded-md border"
+                            style={{ backgroundColor: colorValid && primaryColor ? primaryColor : "#e5e5e5" }}
+                          />
+                          <FormControl>
+                            <Input placeholder="#FF5500" className="font-mono text-sm" {...field} />
+                          </FormControl>
+                        </div>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  {/* Favicon URL */}
+                  <FormField
+                    control={form.control}
+                    name="faviconUrl"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Favicon URL</FormLabel>
+                        <FormControl>
+                          <Input placeholder="https://example.com/favicon.ico" className="font-mono text-sm" {...field} />
+                        </FormControl>
+                        <FormDescription>URL to a custom favicon (.ico, .png, or .svg).</FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  {/* Hide Atlas Branding */}
+                  <FormField
+                    control={form.control}
+                    name="hideAtlasBranding"
+                    render={({ field }) => (
+                      <FormItem className="flex items-center gap-3 space-y-0">
+                        <FormControl>
+                          <Switch checked={field.value} onCheckedChange={field.onChange} />
+                        </FormControl>
+                        <FormLabel className="cursor-pointer">Hide Atlas branding</FormLabel>
+                      </FormItem>
+                    )}
+                  />
+                  <p className="text-xs text-muted-foreground -mt-3">
+                    When enabled, removes &ldquo;Atlas&rdquo; and &ldquo;Powered by Atlas&rdquo; text from the UI.
                   </p>
-                )}
-              </div>
 
-              {/* Favicon URL */}
-              <div className="space-y-2">
-                <Label htmlFor="faviconUrl">Favicon URL</Label>
-                <Input
-                  id="faviconUrl"
-                  value={faviconUrl}
-                  onChange={(e) => setFaviconUrl(e.target.value)}
-                  placeholder="https://example.com/favicon.ico"
-                  className="font-mono text-sm"
-                />
-                <p className="text-xs text-muted-foreground">URL to a custom favicon (.ico, .png, or .svg).</p>
-              </div>
+                  {/* Error */}
+                  {saveError && (
+                    <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                      {saveError}
+                    </div>
+                  )}
 
-              {/* Hide Atlas Branding */}
-              <div className="flex items-center gap-3">
-                <Switch
-                  id="hideAtlasBranding"
-                  checked={hideAtlasBranding}
-                  onCheckedChange={setHideAtlasBranding}
-                />
-                <Label htmlFor="hideAtlasBranding" className="cursor-pointer">
-                  Hide Atlas branding
-                </Label>
-              </div>
-              <p className="text-xs text-muted-foreground -mt-3">
-                When enabled, removes &ldquo;Atlas&rdquo; and &ldquo;Powered by Atlas&rdquo; text from the UI.
-              </p>
-
-              {/* Error */}
-              {saveError && (
-                <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                  {saveError}
-                </div>
-              )}
-
-              {/* Actions */}
-              <div className="flex gap-2">
-                <Button onClick={handleSave} disabled={saving || !colorValid} size="sm">
-                  {saving && <Loader2 className="mr-1 size-3 animate-spin" />}
-                  Save
-                </Button>
-                {data && (
-                  <Button variant="outline" size="sm" onClick={handleReset} disabled={saving}>
-                    <RotateCcw className="mr-1 size-3" />
-                    Reset to defaults
-                  </Button>
-                )}
-              </div>
+                  {/* Actions */}
+                  <div className="flex gap-2">
+                    <Button type="submit" disabled={saving || !colorValid} size="sm">
+                      {saving && <Loader2 className="mr-1 size-3 animate-spin" />}
+                      Save
+                    </Button>
+                    {data && (
+                      <Button type="button" variant="outline" size="sm" onClick={handleReset} disabled={saving}>
+                        <RotateCcw className="mr-1 size-3" />
+                        Reset to defaults
+                      </Button>
+                    )}
+                  </div>
+                </form>
+              </Form>
             </CardContent>
           </Card>
 

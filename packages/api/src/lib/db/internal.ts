@@ -1388,8 +1388,10 @@ export async function getWorkspaceRegion(orgId: string): Promise<string | null> 
 }
 
 /**
- * Assign a region to a workspace. Region is immutable — once set, this
- * function returns false without updating. Returns true on first assignment.
+ * Assign a region to a workspace. Region is immutable — once set, returns
+ * `{ assigned: false, existing: <current region> }` without updating.
+ * On first assignment, returns `{ assigned: true }`. If the workspace
+ * does not exist, returns `{ assigned: false }` without an `existing` field.
  */
 export async function setWorkspaceRegion(
   orgId: string,

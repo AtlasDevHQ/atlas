@@ -16,7 +16,7 @@ Atlas data residency controls let enterprise operators assign workspaces to geog
 
 ## How It Works
 
-When a workspace is created or assigned a region, Atlas routes its database connections to the region-specific database URL configured for that region. Internal writes (conversations, audit logs, learned patterns) and analytics datasource queries are directed to the correct regional infrastructure.
+When a workspace is created or assigned a region, Atlas routes its analytics datasource queries to the region-specific datasource URL configured for that region. Internal database routing (conversations, audit logs) to region-specific databases is planned for a future release.
 
 | Concept | Description |
 |---------|-------------|
@@ -137,7 +137,7 @@ curl http://localhost:3001/api/v1/platform/residency/assignments \
 When a workspace has a region assigned:
 
 1. **Analytics queries** — If the region has a `datasourceUrl`, queries route to that region-specific datasource instead of the default
-2. **Internal writes** — Conversations, audit logs, and other internal data route to the region's `databaseUrl`
+2. **Internal writes** — Not yet routed by region. All internal data (conversations, audit logs, learned patterns) currently goes to the default internal database configured via `DATABASE_URL`. Region-specific internal routing is planned for a future release
 3. **No region** — Workspaces without a region use the default datasource and internal database as before
 
 The routing is transparent to the agent and end users — the same API endpoints work regardless of region.
@@ -145,6 +145,6 @@ The routing is transparent to the agent and end users — the same API endpoints
 ## Limitations
 
 - Region assignment is immutable (no cross-region migration yet)
-- Region health checks are basic (connectivity only)
+- Region health checks are not yet implemented (all regions report as healthy)
 - Requires enterprise license
 - Region configuration changes require server restart

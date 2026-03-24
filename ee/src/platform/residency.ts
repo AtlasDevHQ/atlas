@@ -2,9 +2,11 @@
  * Enterprise data residency — region-based tenant routing.
  *
  * Assigns workspaces to geographic regions and resolves region-specific
- * database URLs for connection routing. Every public function calls
- * `requireEnterprise("data-residency")` — unlicensed deployments get
- * a clear error.
+ * database URLs for connection routing. Most public functions call
+ * `requireEnterprise("data-residency")` — exceptions are
+ * `resolveRegionDatabaseUrl` (used in connection routing where graceful
+ * fallback is needed) and `isConfiguredRegion` (used at workspace creation
+ * for validation without requiring a license).
  *
  * Region assignment is immutable after creation — changing a workspace's
  * region requires data migration (separate future work).
@@ -20,7 +22,7 @@ import {
   setWorkspaceRegion,
 } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
-import type { Region, RegionStatus, WorkspaceRegion } from "@useatlas/types";
+import type { RegionStatus, WorkspaceRegion } from "@useatlas/types";
 
 const log = createLogger("ee:residency");
 
@@ -78,7 +80,7 @@ export async function listRegions(): Promise<RegionStatus[]> {
   }
 
   return Object.entries(residency.regions).map(([regionId, regionConfig]) => ({
-    region: regionId as Region,
+    region: regionId,
     label: regionConfig.label,
     workspaceCount: workspaceCounts[regionId] ?? 0,
     healthy: true, // health check can be extended later
@@ -147,7 +149,7 @@ export async function assignWorkspaceRegion(
   log.info({ workspaceId, region }, "Workspace assigned to region");
   return {
     workspaceId,
-    region: region as Region,
+    region: region,
     assignedAt: new Date().toISOString(),
   };
 }
@@ -177,15 +179,20 @@ export async function getWorkspaceRegionAssignment(
 
   return {
     workspaceId,
-    region: rows[0].region as Region,
+    region: rows[0].region,
     assignedAt: rows[0].region_assigned_at ?? new Date().toISOString(),
   };
 }
 
 /**
- * Resolve the internal database URL for a workspace's region.
+ * Resolve region-specific database URLs for a workspace.
  * Returns null if no residency is configured or workspace has no region.
- * Used by connection routing to direct writes to the correct region.
+ * Currently used by connection routing to override the analytics datasource
+ * for region-assigned workspaces. The returned `databaseUrl` is available
+ * for future internal DB routing.
+ *
+ * Does NOT call requireEnterprise — returns null gracefully for
+ * non-enterprise deployments in the connection routing path.
  */
 export async function resolveRegionDatabaseUrl(
   workspaceId: string,
@@ -198,7 +205,10 @@ export async function resolveRegionDatabaseUrl(
 
   const regionConfig = config.residency.regions[region];
   if (!regionConfig) {
-    log.warn({ workspaceId, region }, "Workspace assigned to unknown region — falling back to default");
+    log.error(
+      { workspaceId, region, configuredRegions: Object.keys(config.residency.regions) },
+      "Workspace assigned to region that is no longer configured — data residency contract may be violated",
+    );
     return null;
   }
 
@@ -215,7 +225,12 @@ export async function resolveRegionDatabaseUrl(
 export async function listWorkspaceRegions(): Promise<WorkspaceRegion[]> {
   requireEnterprise("data-residency");
 
-  if (!hasInternalDB()) return [];
+  if (!hasInternalDB()) {
+    throw new ResidencyError(
+      "Internal database is required for data residency.",
+      "no_internal_db",
+    );
+  }
 
   const rows = await internalQuery<{ id: string; region: string; region_assigned_at: string }>(
     `SELECT id, region, region_assigned_at FROM organization WHERE region IS NOT NULL ORDER BY region_assigned_at DESC`,
@@ -224,7 +239,7 @@ export async function listWorkspaceRegions(): Promise<WorkspaceRegion[]> {
 
   return rows.map((row) => ({
     workspaceId: row.id,
-    region: row.region as Region,
+    region: row.region,
     assignedAt: row.region_assigned_at,
   }));
 }

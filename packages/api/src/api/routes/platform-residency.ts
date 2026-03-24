@@ -165,16 +165,16 @@ async function loadResidency(): Promise<ResidencyModule | null> {
 function handleResidencyError(err: unknown, requestId: string): { error: string; message: string; status: number; requestId: string } {
   const message = err instanceof Error ? err.message : String(err);
 
-  // Enterprise license error → 403
-  if (message.includes("Enterprise features")) {
-    return { error: "enterprise_required", message, status: 403, requestId };
-  }
-
-  // Typed residency errors
-  if (err instanceof Error && "code" in err) {
+  // Typed residency errors (most specific — check first)
+  if (err instanceof Error && err.name === "ResidencyError" && "code" in err) {
     const code = (err as { code: string }).code;
     const status = RESIDENCY_ERROR_STATUS[code] ?? 500;
     return { error: code, message, status, requestId };
+  }
+
+  // Enterprise license error → 403 (requireEnterprise throws plain Error)
+  if (err instanceof Error && message.includes("Enterprise features")) {
+    return { error: "enterprise_required", message, status: 403, requestId };
   }
 
   return { error: "internal_error", message: `Unexpected error (ref: ${requestId.slice(0, 8)})`, status: 500, requestId };
@@ -205,7 +205,8 @@ platformResidency.openapi(listRegionsRoute, async (c) => {
     return c.json({ regions, defaultRegion }, 200);
   } catch (err) {
     const result = handleResidencyError(err, requestId);
-    log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to list regions");
+    const logFn = result.status >= 500 ? log.error : log.warn;
+    logFn({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to list regions");
     return c.json({ error: result.error, message: result.message, requestId: result.requestId }, result.status as 403);
   }
 });
@@ -229,7 +230,8 @@ platformResidency.openapi(getWorkspaceRegionRoute, async (c) => {
     return c.json(assignment, 200);
   } catch (err) {
     const result = handleResidencyError(err, requestId);
-    log.warn({ err: err instanceof Error ? err.message : String(err), workspaceId, requestId }, "Failed to get workspace region");
+    const logFn = result.status >= 500 ? log.error : log.warn;
+    logFn({ err: err instanceof Error ? err : new Error(String(err)), workspaceId, requestId }, "Failed to get workspace region");
     return c.json({ error: result.error, message: result.message, requestId: result.requestId }, result.status as 403);
   }
 });
@@ -252,7 +254,8 @@ platformResidency.openapi(assignRegionRoute, async (c) => {
     return c.json(assignment, 200);
   } catch (err) {
     const result = handleResidencyError(err, requestId);
-    log.warn({ err: err instanceof Error ? err.message : String(err), workspaceId, region: body.region, requestId }, "Failed to assign region");
+    const logFn = result.status >= 500 ? log.error : log.warn;
+    logFn({ err: err instanceof Error ? err : new Error(String(err)), workspaceId, region: body.region, requestId }, "Failed to assign region");
     return c.json({ error: result.error, message: result.message, requestId: result.requestId }, result.status as 400);
   }
 });
@@ -272,7 +275,8 @@ platformResidency.openapi(listAssignmentsRoute, async (c) => {
     return c.json({ assignments }, 200);
   } catch (err) {
     const result = handleResidencyError(err, requestId);
-    log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to list region assignments");
+    const logFn = result.status >= 500 ? log.error : log.warn;
+    logFn({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to list region assignments");
     return c.json({ error: result.error, message: result.message, requestId: result.requestId }, result.status as 403);
   }
 });

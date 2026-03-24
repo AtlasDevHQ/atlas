@@ -85,7 +85,7 @@ function ResidencyPageContent() {
   if (regionsError?.status === 401) return <FeatureGate status={401} />;
 
   if (regionsLoading) return <LoadingState label="Loading regions..." />;
-  if (regionsError) return <ErrorBanner error={regionsError} />;
+  if (regionsError) return <ErrorBanner message={regionsError.message} />;
 
   const regions = regionsData?.regions ?? [];
   const defaultRegion = regionsData?.defaultRegion ?? "";
@@ -94,13 +94,15 @@ function ResidencyPageContent() {
 
   async function handleAssign() {
     if (!assignDialog || !selectedRegion) return;
-    await assignRegion({
+    const result = await assignRegion({
       path: `/api/v1/platform/residency/workspaces/${assignDialog.workspaceId}/region`,
       method: "POST",
       body: { region: selectedRegion },
     });
-    setAssignDialog(null);
-    setSelectedRegion("");
+    if (result !== undefined) {
+      setAssignDialog(null);
+      setSelectedRegion("");
+    }
   }
 
   return (
@@ -192,7 +194,7 @@ function ResidencyPageContent() {
         {assignmentsLoading ? (
           <LoadingState label="Loading assignments..." />
         ) : assignmentsError ? (
-          <ErrorBanner error={assignmentsError} />
+          <ErrorBanner message={assignmentsError.message} />
         ) : (
           <Card>
             <CardContent className="p-0">
@@ -257,7 +259,7 @@ function ResidencyPageContent() {
                 </SelectContent>
               </Select>
             </div>
-            {assignError && <ErrorBanner error={assignError} />}
+            {assignError && <ErrorBanner message={assignError} />}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => { setAssignDialog(null); setSelectedRegion(""); clearAssignError(); }}>

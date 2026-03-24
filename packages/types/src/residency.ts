@@ -4,13 +4,21 @@
  * Used by the platform admin console and enterprise residency module
  * to assign workspaces to geographic regions and route connections
  * to region-specific databases.
+ *
+ * Region identifiers are operator-defined via `atlas.config.ts` — the
+ * `WELL_KNOWN_REGIONS` array provides suggestions for the admin UI but
+ * does not constrain which regions can be configured.
  */
 
 // ---------------------------------------------------------------------------
 // Region identifiers
 // ---------------------------------------------------------------------------
 
-export const REGIONS = [
+/**
+ * Well-known region identifiers used as suggestions in the admin UI.
+ * Operators may configure arbitrary region keys in atlas.config.ts.
+ */
+export const WELL_KNOWN_REGIONS = [
   "us-east",
   "us-west",
   "eu-west",
@@ -19,7 +27,11 @@ export const REGIONS = [
   "ap-northeast",
 ] as const;
 
-export type Region = (typeof REGIONS)[number];
+/**
+ * Region identifier — an operator-defined string from the residency config.
+ * Not constrained to WELL_KNOWN_REGIONS; any string key in the regions map is valid.
+ */
+export type Region = string;
 
 // ---------------------------------------------------------------------------
 // Region configuration (per region)
@@ -28,9 +40,9 @@ export type Region = (typeof REGIONS)[number];
 export interface RegionConfig {
   /** Display label shown in the admin console. */
   label: string;
-  /** Database URL for the region's internal database. */
+  /** PostgreSQL URL for the region's internal database. Region-specific internal routing is planned for a future release. */
   databaseUrl: string;
-  /** Optional datasource URL override for the region's analytics datasource. */
+  /** Optional analytics datasource URL override for this region. */
   datasourceUrl?: string;
 }
 
@@ -41,6 +53,7 @@ export interface RegionConfig {
 export interface WorkspaceRegion {
   workspaceId: string;
   region: Region;
+  /** ISO 8601 timestamp of when the region was assigned. */
   assignedAt: string;
 }
 
@@ -52,5 +65,6 @@ export interface RegionStatus {
   region: Region;
   label: string;
   workspaceCount: number;
+  /** Always true in current implementation. Reserved for future health checks. */
   healthy: boolean;
 }

@@ -5,16 +5,19 @@ import { describe, it, expect, beforeEach, mock } from "bun:test";
 let mockEnterpriseEnabled = false;
 let mockEnterpriseLicenseKey: string | undefined = "test-key";
 
+const { EnterpriseError } = await import("../index");
+
 mock.module("../index", () => ({
   isEnterpriseEnabled: () => mockEnterpriseEnabled,
   getEnterpriseLicenseKey: () => mockEnterpriseLicenseKey,
+  EnterpriseError,
   requireEnterprise: (feature?: string) => {
     const label = feature ? ` (${feature})` : "";
     if (!mockEnterpriseEnabled) {
-      throw new Error(`Enterprise features${label} are not enabled.`);
+      throw new EnterpriseError(`Enterprise features${label} are not enabled.`);
     }
     if (!mockEnterpriseLicenseKey) {
-      throw new Error(`Enterprise features${label} are enabled but no license key is configured.`);
+      throw new EnterpriseError(`Enterprise features${label} are enabled but no license key is configured.`);
     }
   },
 }));

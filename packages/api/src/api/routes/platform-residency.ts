@@ -14,6 +14,7 @@ import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { validationHook } from "./validation-hook";
 import { createLogger } from "@atlas/api/lib/logger";
 import { EnterpriseError } from "@atlas/ee/index";
+import { ResidencyError, type ResidencyErrorCode } from "@atlas/ee/platform/residency";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { platformAdminAuth, requestContext, type AuthEnv } from "./middleware";
 
@@ -144,7 +145,7 @@ const listAssignmentsRoute = createRoute({
 
 type ResidencyModule = typeof import("@atlas/ee/platform/residency");
 
-const RESIDENCY_ERROR_STATUS: Record<string, number> = {
+const RESIDENCY_ERROR_STATUS: Record<ResidencyErrorCode, number> = {
   not_configured: 404,
   invalid_region: 400,
   already_assigned: 409,
@@ -170,14 +171,14 @@ async function loadResidency(): Promise<ResidencyModule | null> {
 function handleResidencyError(err: unknown, requestId: string): { error: string; message: string; status: number; requestId: string } {
   const message = err instanceof Error ? err.message : String(err);
 
-  // Typed residency errors (most specific — check first)
-  if (err instanceof Error && err.name === "ResidencyError" && "code" in err) {
-    const code = (err as { code: string }).code;
-    const status = RESIDENCY_ERROR_STATUS[code] ?? 500;
+  // Typed residency errors — handle known residency-specific codes
+  if (err instanceof ResidencyError) {
+    const code = err.code;
+    const status = RESIDENCY_ERROR_STATUS[code];
     return { error: code, message, status, requestId };
   }
 
-  // Enterprise license error → 403 (sanitize to avoid leaking config details)
+  // Enterprise feature gate → 403 (sanitize to avoid leaking config details)
   if (err instanceof EnterpriseError) {
     return { error: "enterprise_required", message: "This feature requires an enterprise license. Visit https://useatlas.dev/enterprise for licensing options.", status: 403, requestId };
   }

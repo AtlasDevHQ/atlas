@@ -14,6 +14,7 @@ import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { validationHook } from "./validation-hook";
 import { createLogger } from "@atlas/api/lib/logger";
 import { EnterpriseError } from "@atlas/ee/index";
+import { DomainError, type DomainErrorCode } from "@atlas/ee/platform/domains";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { platformAdminAuth, requestContext, type AuthEnv } from "./middleware";
 
@@ -144,13 +145,14 @@ const deleteDomainRoute = createRoute({
 
 type DomainsModule = typeof import("@atlas/ee/platform/domains");
 
-const DOMAIN_ERROR_STATUS: Record<string, number> = {
+const DOMAIN_ERROR_STATUS: Record<DomainErrorCode, number> = {
   no_internal_db: 503,
   invalid_domain: 400,
   duplicate_domain: 409,
   domain_not_found: 404,
   railway_error: 502,
   railway_not_configured: 503,
+  data_integrity: 500,
 };
 
 async function loadDomains(): Promise<DomainsModule | null> {
@@ -171,18 +173,18 @@ async function loadDomains(): Promise<DomainsModule | null> {
 function handleDomainError(err: unknown, requestId: string): { error: string; message: string; status: number; requestId: string } {
   const message = err instanceof Error ? err.message : String(err);
 
-  // Typed domain errors (most specific — check first)
-  if (err instanceof Error && err.name === "DomainError" && "code" in err) {
-    const code = (err as { code: string }).code;
-    const status = DOMAIN_ERROR_STATUS[code] ?? 500;
-    // Sanitize Railway errors to avoid leaking infrastructure details
-    const safeMessage = (code === "railway_error" || code === "railway_not_configured")
-      ? `Railway API error (ref: ${requestId.slice(0, 8)})`
+  // Typed domain errors — handle known domain-specific codes
+  if (err instanceof DomainError) {
+    const code = err.code;
+    const status = DOMAIN_ERROR_STATUS[code];
+    // Sanitize infrastructure/internal errors to avoid leaking details
+    const safeMessage = (code === "railway_error" || code === "railway_not_configured" || code === "data_integrity")
+      ? `Domain service error (ref: ${requestId.slice(0, 8)})`
       : message;
     return { error: code, message: safeMessage, status, requestId };
   }
 
-  // Enterprise license error → 403 (sanitize to avoid leaking config details)
+  // Enterprise feature gate → 403 (sanitize to avoid leaking config details)
   if (err instanceof EnterpriseError) {
     return { error: "enterprise_required", message: "This feature requires an enterprise license. Visit https://useatlas.dev/enterprise for licensing options.", status: 403, requestId };
   }

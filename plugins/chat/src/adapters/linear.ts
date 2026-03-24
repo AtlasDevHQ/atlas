@@ -35,6 +35,9 @@ export function createLinearAdapter(config: LinearAdapterConfig) {
   }
 
   if ("clientId" in config && config.clientId) {
+    if (!config.clientSecret) {
+      throw new Error("clientId provided without clientSecret — this should be caught by validation");
+    }
     return createChatLinearAdapter({
       ...base,
       clientId: config.clientId,

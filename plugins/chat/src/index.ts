@@ -679,9 +679,9 @@ export const chatPlugin = createPlugin<
   ChatPluginConfig,
   AtlasInteractionPlugin<ChatPluginConfig>
 >({
-  // Cast: Zod infers all-optional fields for GitHub's schema, but runtime
-  // superRefine validates the discriminated union constraints. The TypeScript
-  // union type (GitHubAdapterConfig) provides compile-time safety separately.
+  // Cast: Zod infers all-optional fields for GitHub's and Linear's schemas,
+  // but runtime superRefine validates the discriminated union constraints.
+  // The TypeScript union types provide compile-time safety separately.
   configSchema: ChatConfigSchema as unknown as { parse(input: unknown): ChatPluginConfig },
   create: buildChatPlugin,
 });

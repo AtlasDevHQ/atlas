@@ -85,15 +85,16 @@ function isValidRuleType(type: string): type is ApprovalRuleType {
   return (APPROVAL_RULE_TYPES as readonly string[]).includes(type);
 }
 
-function rowToRule(row: ApprovalRuleRow): ApprovalRule {
+function rowToRule(row: ApprovalRuleRow): ApprovalRule | null {
   if (!isValidRuleType(row.rule_type)) {
-    log.warn({ ruleId: row.id, ruleType: row.rule_type }, "Approval rule has unexpected rule_type in database — defaulting to 'table'");
+    log.warn({ ruleId: row.id, ruleType: row.rule_type }, "Approval rule has unexpected rule_type in database — skipping rule");
+    return null;
   }
   return {
     id: row.id,
     orgId: row.org_id,
     name: row.name,
-    ruleType: isValidRuleType(row.rule_type) ? row.rule_type : "table",
+    ruleType: row.rule_type,
     pattern: row.pattern,
     threshold: row.threshold,
     enabled: row.enabled,
@@ -193,7 +194,7 @@ export async function listApprovalRules(orgId: string): Promise<ApprovalRule[]> 
      ORDER BY created_at ASC`,
     [orgId],
   );
-  return rows.map(rowToRule);
+  return rows.map(rowToRule).filter((r): r is ApprovalRule => r !== null);
 }
 
 /** Get a single approval rule by ID. */
@@ -243,7 +244,9 @@ export async function createApprovalRule(
   }
 
   log.info({ orgId, ruleId: rows[0].id, ruleType: input.ruleType, pattern: input.pattern }, "Approval rule created");
-  return rowToRule(rows[0]);
+  const rule = rowToRule(rows[0]);
+  if (!rule) throw new ApprovalError("Created rule has invalid rule_type — this should never happen.", "validation");
+  return rule;
 }
 
 /** Update an existing approval rule. */
@@ -307,7 +310,9 @@ export async function updateApprovalRule(
   }
 
   log.info({ orgId, ruleId }, "Approval rule updated");
-  return rowToRule(rows[0]);
+  const rule = rowToRule(rows[0]);
+  if (!rule) throw new ApprovalError("Updated rule has invalid rule_type — this should never happen.", "validation");
+  return rule;
 }
 
 /** Delete an approval rule. Returns true if deleted, false if not found. */
@@ -380,6 +385,7 @@ export async function checkApprovalRequired(
 
   for (const row of rows) {
     const rule = rowToRule(row);
+    if (!rule) continue;
     const patternLower = rule.pattern.toLowerCase();
 
     if (rule.ruleType === "table") {
@@ -630,6 +636,10 @@ export async function getPendingCount(orgId: string): Promise<number> {
  * Check whether a query already has an approved request for a given user.
  * Used by the SQL interception to allow re-execution of approved queries.
  * Returns true if an approved request exists for this exact query text.
+ *
+ * Returns false when enterprise is disabled — stale approved records from a
+ * previously-enabled enterprise license should not grant query access.
+ * Unexpected errors are re-thrown to avoid silently bypassing governance.
  */
 export async function hasApprovedRequest(
   orgId: string,
@@ -637,6 +647,15 @@ export async function hasApprovedRequest(
   querySql: string,
 ): Promise<boolean> {
   if (!hasInternalDB()) return false;
+
+  try {
+    requireEnterprise("approval-workflows");
+  } catch (err) {
+    if (err instanceof EnterpriseError) return false;
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warn({ err: msg }, "Unexpected error checking enterprise status in hasApprovedRequest — re-throwing");
+    throw err;
+  }
 
   const rows = await internalQuery<{ id: string }>(
     `SELECT id FROM approval_queue

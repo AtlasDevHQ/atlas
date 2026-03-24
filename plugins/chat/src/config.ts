@@ -168,7 +168,7 @@ export interface ConversationCallbacks {
     conversationId: string;
     role: "user" | "assistant";
     content: string;
-  }): void;
+  }): Promise<void> | void;
   get(
     id: string,
   ): Promise<{

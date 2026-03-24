@@ -1,0 +1,131 @@
+---
+title: Custom Domains
+description: Configure custom domains for enterprise workspaces so users access Atlas at your own URL.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Custom domains let enterprise workspaces use their own URL (e.g. `data.acme.com`) instead of the default `app.useatlas.dev`. Atlas integrates with Railway's custom domain API for provisioning and automatic TLS certificate management via Let's Encrypt.
+
+<Callout title="Prerequisites">
+- Enterprise features enabled (`ATLAS_ENTERPRISE_ENABLED=true` + license key)
+- Internal database configured (`DATABASE_URL`)
+- Platform admin role for dashboard access
+- Railway deployment with API token configured
+</Callout>
+
+## How It Works
+
+| Step | What Happens |
+|------|-------------|
+| **Register** | Admin registers a domain in the Atlas admin console. Atlas calls Railway to provision it |
+| **Configure DNS** | Admin creates a CNAME record pointing their domain at the Railway target |
+| **Verify** | Admin clicks "Verify" — Atlas checks Railway for DNS propagation and TLS certificate status |
+| **Route** | Once verified, requests to the custom domain are routed to the correct workspace |
+
+Railway handles TLS certificate provisioning automatically. Atlas stores the domain-to-workspace mapping for host-based routing.
+
+## Configuration
+
+### Environment Variables
+
+Add these to your `.env` file (get values from your Railway dashboard):
+
+```bash
+# Railway custom domain API
+RAILWAY_API_TOKEN=your-workspace-scoped-token
+RAILWAY_PROJECT_ID=your-project-id
+RAILWAY_ENVIRONMENT_ID=your-environment-id
+RAILWAY_WEB_SERVICE_ID=your-web-service-id
+```
+
+| Variable | Description |
+|----------|-------------|
+| `RAILWAY_API_TOKEN` | Workspace-scoped API token from Railway dashboard → Settings → Tokens |
+| `RAILWAY_PROJECT_ID` | Project ID from your Railway project settings |
+| `RAILWAY_ENVIRONMENT_ID` | Environment ID (typically `production`) |
+| `RAILWAY_WEB_SERVICE_ID` | Service ID for the web service that should receive custom domain traffic |
+
+## Admin UI
+
+Navigate to **Admin Console → Platform Admin → Custom Domains** to manage domains.
+
+### Registering a Domain
+
+1. Click **Add Domain**
+2. Enter the **Workspace ID** and **Domain** (e.g. `data.acme.com`)
+3. Click **Register Domain**
+4. Atlas creates the domain in Railway and shows the CNAME target
+
+### DNS Setup
+
+After registration, set up a CNAME record with your DNS provider:
+
+| Record Type | Name | Value |
+|-------------|------|-------|
+| CNAME | `data.acme.com` | `<target>.up.railway.app` (shown in admin UI) |
+
+The CNAME target is displayed in the admin table — click the copy button to copy it.
+
+### Verification
+
+1. After creating the DNS record, wait a few minutes for propagation
+2. Click the **refresh icon** next to the domain in the admin table
+3. Atlas checks Railway for DNS propagation and certificate status
+4. Status updates to **Verified** (green) once DNS is propagated and TLS certificate is issued
+
+### Status Badges
+
+| Status | Meaning |
+|--------|---------|
+| **Pending** (yellow) | Domain registered, waiting for DNS setup or certificate provisioning |
+| **Verified** (green) | DNS verified and TLS certificate issued — domain is live |
+| **Failed** (red) | DNS verification or certificate provisioning failed |
+
+### Deleting a Domain
+
+Click the trash icon next to any domain. This removes the domain from both Railway (revoking the TLS certificate) and Atlas.
+
+## Host-Based Routing
+
+When a request arrives on a custom domain, Atlas:
+
+1. Looks up the hostname in the `custom_domains` table (with 60-second cache)
+2. If a verified match is found, sets the workspace context to the owning workspace
+3. All subsequent operations (queries, conversations, etc.) are scoped to that workspace
+
+## API Reference
+
+All endpoints require `platform_admin` role and enterprise features.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/platform/domains` | List all custom domains |
+| `POST` | `/api/v1/platform/domains` | Register a domain (`{ workspaceId, domain }`) |
+| `POST` | `/api/v1/platform/domains/:id/verify` | Check verification status |
+| `DELETE` | `/api/v1/platform/domains/:id` | Delete a domain |
+
+## Troubleshooting
+
+### Domain stays in "Pending" status
+
+- Verify your CNAME record is correctly configured with your DNS provider
+- DNS propagation can take up to 48 hours (though usually minutes)
+- Check that the CNAME target matches exactly what Atlas shows in the admin UI
+- Click the verify button again after waiting
+
+### Certificate status shows "Failed"
+
+- Ensure no CAA records on your domain block Let's Encrypt (`letsencrypt.org`)
+- Verify no conflicting A or AAAA records exist for the same hostname
+- Delete and re-register the domain if the issue persists
+
+### "Railway API is not configured" error
+
+- Ensure all four Railway environment variables are set: `RAILWAY_API_TOKEN`, `RAILWAY_PROJECT_ID`, `RAILWAY_ENVIRONMENT_ID`, `RAILWAY_WEB_SERVICE_ID`
+- Verify the API token has workspace-level permissions in Railway
+
+### "Domain is not available" error
+
+- The domain may already be registered in another Railway project
+- Check Railway dashboard for existing custom domain entries

@@ -41,6 +41,7 @@
     "sla-monitoring",
     "backups",
     "data-residency",
+    "custom-domains",
     "observability"
   ]
 }

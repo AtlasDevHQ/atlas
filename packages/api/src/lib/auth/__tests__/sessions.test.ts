@@ -177,7 +177,7 @@ mock.module("@atlas/api/lib/auth/server", () => ({
 }));
 
 // Need to mock semantic-files since admin.ts imports it
-mock.module("@atlas/api/lib/semantic-files", () => ({
+mock.module("@atlas/api/lib/semantic/files", () => ({
   getSemanticRoot: () => "/tmp/atlas-test-sessions",
   isValidEntityName: () => true,
   readYamlFile: () => ({}),

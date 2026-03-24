@@ -21,7 +21,7 @@ import { validationHook } from "./validation-hook";
 import { connections, detectDBType } from "@atlas/api/lib/db/connection";
 import { hasInternalDB, internalQuery, decryptUrl } from "@atlas/api/lib/db/internal";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
-import { syncEntityToDisk } from "@atlas/api/lib/semantic-sync";
+import { syncEntityToDisk } from "@atlas/api/lib/semantic/sync";
 import { adminAuth, requestContext, type AuthEnv } from "./middleware";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import {

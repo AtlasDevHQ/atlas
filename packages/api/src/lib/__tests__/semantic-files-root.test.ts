@@ -9,7 +9,7 @@ import { describe, it, expect, afterEach } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { getSemanticRoot } from "../semantic-files";
+import { getSemanticRoot } from "../semantic/files";
 
 afterEach(() => {
   delete process.env.ATLAS_SEMANTIC_ROOT;

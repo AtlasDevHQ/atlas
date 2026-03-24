@@ -5,6 +5,8 @@
   "license": "AGPL-3.0-or-later",
   "exports": {
     "./app": "./src/api/index.ts",
+    "./lib/semantic": "./src/lib/semantic/index.ts",
+    "./lib/semantic/*": "./src/lib/semantic/*.ts",
     "./lib/*": "./src/lib/*.ts",
     "./lib/auth/*": "./src/lib/auth/*.ts",
     "./lib/db/*": "./src/lib/db/*.ts",

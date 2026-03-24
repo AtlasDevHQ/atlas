@@ -204,7 +204,7 @@ mock.module("@atlas/api/lib/semantic", () => ({
   _resetPluginEntities: () => {},
 }));
 
-mock.module("@atlas/api/lib/db/semantic-entities", () => ({
+mock.module("@atlas/api/lib/semantic/entities", () => ({
   listEntities: mock(() => Promise.resolve([])),
   getEntity: mock(() => Promise.resolve(null)),
   upsertEntity: mock(() => Promise.resolve()),
@@ -259,7 +259,7 @@ mock.module("@atlas/api/lib/plugins/settings", () => ({
   getPluginConfig: mock(async () => null),
 }));
 
-mock.module("@atlas/api/lib/semantic-diff", () => ({
+mock.module("@atlas/api/lib/semantic/diff", () => ({
   runDiff: mock(async () => ({ connection: "default", newTables: [], removedTables: [], tableDiffs: [] })),
 }));
 

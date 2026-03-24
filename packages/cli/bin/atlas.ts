@@ -2359,7 +2359,7 @@ async function handleIndex(args: string[]): Promise<void> {
   }
 
   try {
-    const { getSemanticIndexStats, buildSemanticIndex } = await import("@atlas/api/lib/semantic-index");
+    const { getSemanticIndexStats, buildSemanticIndex } = await import("@atlas/api/lib/semantic/search");
 
     // Use stats-based validation — works for both default and per-source layouts
     const stats = getSemanticIndexStats(SEMANTIC_DIR);

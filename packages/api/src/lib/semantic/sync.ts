@@ -17,7 +17,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { createLogger } from "@atlas/api/lib/logger";
-import { getSemanticRoot as getBaseSemanticRoot } from "@atlas/api/lib/semantic-files";
+import { getSemanticRoot as getBaseSemanticRoot } from "./files";
 
 const log = createLogger("semantic-sync");
 
@@ -196,7 +196,7 @@ export async function syncAllEntitiesToDisk(orgId: string): Promise<number> {
 }
 
 async function _doSyncAllEntitiesToDisk(orgId: string): Promise<number> {
-  const { listEntities } = await import("@atlas/api/lib/db/semantic-entities");
+  const { listEntities } = await import("@atlas/api/lib/semantic/entities");
   const rows = await listEntities(orgId);
 
   const root = getSemanticRoot(orgId);
@@ -327,7 +327,7 @@ export async function importFromDisk(
   orgId: string,
   options?: { connectionId?: string; sourceDir?: string },
 ): Promise<ImportResult> {
-  const { bulkUpsertEntities } = await import("@atlas/api/lib/db/semantic-entities");
+  const { bulkUpsertEntities } = await import("@atlas/api/lib/semantic/entities");
   const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
   const yaml = await import("js-yaml");
 
@@ -544,7 +544,7 @@ async function _autoImportOrgsFromDisk(): Promise<void> {
     return;
   }
 
-  const { countEntities } = await import("@atlas/api/lib/db/semantic-entities");
+  const { countEntities } = await import("@atlas/api/lib/semantic/entities");
 
   for (const orgId of orgDirs) {
     const entitiesDir = path.join(orgsDir, orgId, "entities");

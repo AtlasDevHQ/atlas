@@ -16,7 +16,7 @@ import {
   readYamlFile,
   discoverEntities,
   findEntityFile,
-} from "@atlas/api/lib/semantic-files";
+} from "@atlas/api/lib/semantic/files";
 import { ErrorSchema } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 

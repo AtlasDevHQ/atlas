@@ -25,7 +25,7 @@ import { z } from "zod";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { withSpan } from "@atlas/api/lib/tracing";
 import { getConfig, type SandboxBackendName } from "@atlas/api/lib/config";
-import { getSemanticRoot } from "@atlas/api/lib/semantic-sync";
+import { getSemanticRoot } from "@atlas/api/lib/semantic/sync";
 
 const log = createLogger("explore");
 

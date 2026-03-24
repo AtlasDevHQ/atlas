@@ -10,12 +10,12 @@ import { resolve, join } from "path";
 import { mkdirSync, writeFileSync, rmSync, existsSync } from "fs";
 
 // Cache-busting import for fresh module instance
-const modPath = resolve(__dirname, "../semantic-index.ts");
+const modPath = resolve(__dirname, "../semantic/search.ts");
 const mod = await import(`${modPath}?t=${Date.now()}`);
-const buildSemanticIndex = mod.buildSemanticIndex as typeof import("../semantic-index").buildSemanticIndex;
-const getSemanticIndex = mod.getSemanticIndex as typeof import("../semantic-index").getSemanticIndex;
-const invalidateSemanticIndex = mod.invalidateSemanticIndex as typeof import("../semantic-index").invalidateSemanticIndex;
-const getIndexedEntityCount = mod.getIndexedEntityCount as typeof import("../semantic-index").getIndexedEntityCount;
+const buildSemanticIndex = mod.buildSemanticIndex as typeof import("../semantic/search").buildSemanticIndex;
+const getSemanticIndex = mod.getSemanticIndex as typeof import("../semantic/search").getSemanticIndex;
+const invalidateSemanticIndex = mod.invalidateSemanticIndex as typeof import("../semantic/search").invalidateSemanticIndex;
+const getIndexedEntityCount = mod.getIndexedEntityCount as typeof import("../semantic/search").getIndexedEntityCount;
 
 const tmpBase = resolve(__dirname, ".tmp-semantic-index-test");
 let testCounter = 0;

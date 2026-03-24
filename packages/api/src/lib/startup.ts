@@ -13,7 +13,7 @@ import { maskConnectionUrl } from "./security";
 import { getDefaultProvider } from "./providers";
 import { detectAuthMode, getAuthModeSource } from "./auth/detect";
 import { createLogger } from "./logger";
-import { getSemanticRoot as getDefaultSemanticRoot } from "./semantic-files";
+import { getSemanticRoot as getDefaultSemanticRoot } from "./semantic/files";
 
 const log = createLogger("startup");
 

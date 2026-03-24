@@ -11,7 +11,7 @@ import {
   parseEntityYAML,
   computeDiff,
   type EntitySnapshot,
-} from "../semantic-diff";
+} from "../semantic/diff";
 
 // ---------------------------------------------------------------------------
 // mapSQLType

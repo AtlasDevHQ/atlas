@@ -262,7 +262,7 @@ const mockGetEntityAdmin: Mock<(orgId: string, type: string, name: string) => Pr
 const mockUpsertEntityAdmin: Mock<(...args: unknown[]) => Promise<void>> = mock(() => Promise.resolve());
 const mockDeleteEntityAdmin: Mock<(orgId: string, type: string, name: string) => Promise<boolean>> = mock(() => Promise.resolve(false));
 
-mock.module("@atlas/api/lib/db/semantic-entities", () => ({
+mock.module("@atlas/api/lib/semantic/entities", () => ({
   listEntities: mockListEntitiesAdmin,
   getEntity: mockGetEntityAdmin,
   upsertEntity: mockUpsertEntityAdmin,
@@ -366,7 +366,7 @@ const mockRunDiff: Mock<(connectionId?: string) => Promise<unknown>> = mock(() =
   }),
 );
 
-mock.module("@atlas/api/lib/semantic-diff", () => ({
+mock.module("@atlas/api/lib/semantic/diff", () => ({
   runDiff: mockRunDiff,
   mapSQLType: (t: string) => t,
   parseEntityYAML: () => ({ table: "", columns: new Map(), foreignKeys: new Set() }),

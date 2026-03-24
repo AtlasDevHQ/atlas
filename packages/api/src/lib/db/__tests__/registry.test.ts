@@ -53,10 +53,10 @@ const getDB = connMod.getDB as typeof import("../connection").getDB;
 const detectDBType = connMod.detectDBType as typeof import("../connection").detectDBType;
 
 // Import semantic module with cache-busting too
-const semModPath = resolve(__dirname, "../../semantic.ts");
+const semModPath = resolve(__dirname, "../../semantic/whitelist.ts");
 const semMod = await import(`${semModPath}?t=${Date.now()}`);
-const getWhitelistedTables = semMod.getWhitelistedTables as typeof import("../../semantic").getWhitelistedTables;
-const _resetWhitelists = semMod._resetWhitelists as typeof import("../../semantic")._resetWhitelists;
+const getWhitelistedTables = semMod.getWhitelistedTables as typeof import("../../semantic/whitelist").getWhitelistedTables;
+const _resetWhitelists = semMod._resetWhitelists as typeof import("../../semantic/whitelist")._resetWhitelists;
 
 describe("ConnectionRegistry", () => {
   const origUrl = process.env.ATLAS_DATASOURCE_URL;
@@ -320,7 +320,7 @@ describe("ConnectionRegistry", () => {
       // Populate whitelist cache via the same semantic module that connection.ts uses
       // (connection.ts imports _resetWhitelists from @atlas/api/lib/semantic, which is
       // the non-cache-busted instance — so we import it the same way to test the contract)
-      const semOrigModPath = resolve(__dirname, "../../semantic.ts");
+      const semOrigModPath = resolve(__dirname, "../../semantic/whitelist.ts");
       const semOrig = await import(semOrigModPath);
       const origGetWhitelisted = semOrig.getWhitelistedTables as typeof getWhitelistedTables;
 

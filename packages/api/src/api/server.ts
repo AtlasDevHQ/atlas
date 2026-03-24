@@ -234,7 +234,7 @@ await migrateAuthTables().catch((err) => {
 // Reconcile org semantic layer directories from DB.
 // Ensures persistent org dirs exist on disk for the explore tool after
 // restart, disk loss, or new deployment. Non-blocking — errors logged internally.
-import { reconcileAllOrgs } from "@atlas/api/lib/semantic-sync";
+import { reconcileAllOrgs } from "@atlas/api/lib/semantic/sync";
 await reconcileAllOrgs();
 
 // Load settings overrides from internal DB into in-process cache.

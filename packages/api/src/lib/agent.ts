@@ -21,7 +21,7 @@ import { defaultRegistry, type ToolRegistry } from "./tools/registry";
 import { getContextFragments, getDialectHints } from "./plugins/tools";
 import { connections, detectDBType, type ConnectionMetadata, type DBType } from "./db/connection";
 import { getCrossSourceJoins, type CrossSourceJoin, loadOrgWhitelist, getOrgSemanticIndex } from "./semantic";
-import { getSemanticIndex } from "./semantic-index";
+import { getSemanticIndex } from "./semantic/search";
 import { getConfig } from "./config";
 import { createLogger, getRequestContext } from "./logger";
 import { getSetting } from "./settings";

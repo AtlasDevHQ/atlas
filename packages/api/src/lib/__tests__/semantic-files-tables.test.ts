@@ -7,7 +7,7 @@
 import { describe, it, expect, afterEach } from "bun:test";
 import { resolve } from "path";
 import { mkdirSync, writeFileSync, rmSync, existsSync } from "fs";
-import { discoverTables } from "../semantic-files";
+import { discoverTables } from "../semantic/files";
 
 const tmpBase = resolve(__dirname, ".tmp-tables-test");
 let counter = 0;

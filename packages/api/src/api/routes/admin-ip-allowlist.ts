@@ -23,7 +23,6 @@ import { adminAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("admin-ip-allowlist");
 
-
 const IP_ALLOWLIST_ERROR_STATUS = { validation: 400, conflict: 409, not_found: 404 } as const;
 
 /**

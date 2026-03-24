@@ -29,7 +29,6 @@ import { adminAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("admin-scim");
 
-
 const SCIM_ERROR_STATUS = { not_found: 404, conflict: 409, validation: 400 } as const;
 
 /**

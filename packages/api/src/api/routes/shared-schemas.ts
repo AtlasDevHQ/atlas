@@ -21,12 +21,22 @@ export const AuthErrorSchema = z.record(z.string(), z.unknown());
 // Pagination
 // ---------------------------------------------------------------------------
 
+/**
+ * Permissive Zod schema for OpenAPI route declarations.
+ * Accepts the widest bounds any route allows; individual routes enforce
+ * stricter limits at runtime via {@link parsePagination}.
+ */
 export const PaginationQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(500).default(50).optional(),
   offset: z.coerce.number().int().min(0).default(0).optional(),
 });
 
-/** Parse limit/offset from query params with consistent bounds. */
+/**
+ * Parse limit/offset from query params with clamped bounds.
+ * Values <= 0 or non-numeric fall back to the default limit.
+ * Values above maxLimit are clamped. Offset below 0 defaults to 0.
+ * Defaults: limit=50, maxLimit=200, offset=0.
+ */
 export function parsePagination(
   c: Context,
   defaults?: { limit?: number; maxLimit?: number },
@@ -45,8 +55,10 @@ export function parsePagination(
 // ID validation
 // ---------------------------------------------------------------------------
 
+/** Max length for path-param IDs (roles, SSO providers, SCIM connections, etc.). */
 export const MAX_ID_LENGTH = 128;
 
+/** Type guard: checks that id is a non-empty string within MAX_ID_LENGTH characters. */
 export function isValidId(id: string | undefined): id is string {
   return !!id && id.length > 0 && id.length <= MAX_ID_LENGTH;
 }

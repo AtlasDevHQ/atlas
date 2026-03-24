@@ -25,7 +25,6 @@ import { adminAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("admin-roles");
 
-
 const ROLE_ERROR_STATUS = { not_found: 404, conflict: 409, validation: 400, builtin_protected: 403 } as const;
 
 /**

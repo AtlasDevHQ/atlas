@@ -22,7 +22,7 @@ import {
 } from "@atlas/api/lib/tools/actions/handler";
 import { ACTION_STATUSES, type ActionStatus } from "@atlas/api/lib/action-types";
 import { canApprove } from "@atlas/api/lib/auth/permissions";
-import { ErrorSchema } from "./shared-schemas";
+import { ErrorSchema, parsePagination } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("actions");
@@ -330,8 +330,7 @@ actions.openapi(listActionsRoute, async (c) => {
     const status: ActionStatus | undefined = (ACTION_STATUSES as readonly string[]).includes(rawStatus)
       ? (rawStatus as ActionStatus)
       : undefined;
-    const rawLimit = parseInt(c.req.query("limit") ?? "50", 10);
-    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 100) : 50;
+    const { limit } = parsePagination(c, { limit: 50, maxLimit: 100 });
 
     const result = await listPendingActions({
       status,

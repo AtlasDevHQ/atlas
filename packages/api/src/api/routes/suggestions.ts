@@ -22,7 +22,7 @@ import {
   incrementSuggestionClick,
 } from "@atlas/api/lib/db/internal";
 import { toQuerySuggestion } from "@atlas/api/lib/learn/suggestion-helpers";
-import { ErrorSchema } from "./shared-schemas";
+import { ErrorSchema, parsePagination } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("suggestions");
@@ -181,8 +181,7 @@ suggestions.openapi(listSuggestionsRoute, async (c) => {
     return c.json({ error: "At least one 'table' query parameter is required" }, { status: 400 });
   }
 
-  const limitParam = c.req.query("limit");
-  const limit = Math.min(Math.max(parseInt(limitParam ?? "10", 10) || 10, 1), 50);
+  const { limit } = parsePagination(c, { limit: 10, maxLimit: 50 });
   const orgId = authResult.user?.activeOrganizationId ?? null;
 
   try {
@@ -203,8 +202,7 @@ suggestions.openapi(listPopularRoute, async (c) => {
     return c.json({ suggestions: [], total: 0 }, 200);
   }
 
-  const limitParam = c.req.query("limit");
-  const limit = Math.min(Math.max(parseInt(limitParam ?? "10", 10) || 10, 1), 50);
+  const { limit } = parsePagination(c, { limit: 10, maxLimit: 50 });
   const orgId = authResult.user?.activeOrganizationId ?? null;
 
   try {

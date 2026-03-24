@@ -17,7 +17,7 @@ import {
   aggregateUsageSummary,
 } from "@atlas/api/lib/metering";
 import { getPlanDefinition, getPlanLimits, isUnlimited } from "@atlas/api/lib/billing/plans";
-import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
+import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
 import { adminAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("admin-usage");
@@ -380,7 +380,7 @@ adminUsage.openapi(getUsageHistoryRoute, async (c) => {
   const period = c.req.query("period") === "daily" ? "daily" as const : "monthly" as const;
   const startDate = c.req.query("startDate");
   const endDate = c.req.query("endDate");
-  const limit = Math.min(Math.max(parseInt(c.req.query("limit") ?? "90", 10) || 90, 1), 365);
+  const { limit } = parsePagination(c, { limit: 90, maxLimit: 365 });
 
   if (startDate && !isValidDateParam(startDate)) {
     return c.json({ error: "invalid_param", message: "startDate must be a valid ISO date string." }, 400);
@@ -421,7 +421,7 @@ adminUsage.openapi(getUsageBreakdownRoute, async (c) => {
 
   const startDate = c.req.query("startDate");
   const endDate = c.req.query("endDate");
-  const limit = Math.min(Math.max(parseInt(c.req.query("limit") ?? "100", 10) || 100, 1), 500);
+  const { limit } = parsePagination(c, { limit: 100, maxLimit: 500 });
 
   if (startDate && !isValidDateParam(startDate)) {
     return c.json({ error: "invalid_param", message: "startDate must be a valid ISO date string." }, 400);

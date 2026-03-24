@@ -11,7 +11,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery, deleteSuggestion } from "@atlas/api/lib/db/internal";
 import { toQuerySuggestion } from "@atlas/api/lib/learn/suggestion-helpers";
 import type { QuerySuggestionRow } from "@atlas/api/lib/db/internal";
-import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
+import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
 import { adminAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("admin-suggestions");
@@ -152,8 +152,7 @@ adminSuggestions.openapi(listSuggestionsRoute, async (c) => {
   try {
     const table = c.req.query("table");
     const minFreq = parseInt(c.req.query("min_frequency") ?? "0", 10) || 0;
-    const limit = Math.min(parseInt(c.req.query("limit") ?? "50", 10) || 50, 200);
-    const offset = parseInt(c.req.query("offset") ?? "0", 10) || 0;
+    const { limit, offset } = parsePagination(c);
 
     const conditions: string[] = [];
     const params: unknown[] = [];

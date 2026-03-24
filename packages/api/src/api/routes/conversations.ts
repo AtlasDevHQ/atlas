@@ -35,7 +35,7 @@ import {
 import type { ShareExpiryKey } from "@useatlas/types/share";
 import { SHARE_MODES, SHARE_EXPIRY_OPTIONS } from "@useatlas/types/share";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
-import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
+import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
 
 const log = createLogger("conversations");
 
@@ -579,10 +579,7 @@ conversations.openapi(listConversationsRoute, async (c) => {
 
   const authResult = c.get("authResult");
 
-  const rawLimit = parseInt(c.req.valid("query").limit ?? "20", 10);
-  const rawOffset = parseInt(c.req.valid("query").offset ?? "0", 10);
-  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 100) : 20;
-  const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
+  const { limit, offset } = parsePagination(c, { limit: 20, maxLimit: 100 });
   const starredParam = c.req.valid("query").starred;
   const starred = starredParam === "true" ? true : starredParam === "false" ? false : undefined;
   const result = await listConversations({

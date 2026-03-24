@@ -60,7 +60,7 @@ import { adminCompliance } from "./admin-compliance";
 import { adminBranding } from "./admin-branding";
 import { adminOnboardingEmails } from "./admin-onboarding-emails";
 import { adminAbuse } from "./admin-abuse";
-import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
+import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
 
 const log = createLogger("admin-routes");
 
@@ -2823,10 +2823,7 @@ admin.openapi(listAuditRoute, async (c) => {
     return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
   }
 
-  const rawLimit = parseInt(c.req.query("limit") ?? "50", 10);
-  const rawOffset = parseInt(c.req.query("offset") ?? "0", 10);
-  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 200) : 50;
-  const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
+  const { limit, offset } = parsePagination(c);
 
   // Queries the internal DB directly (not the analytics datasource),
   // so no validateSQL pipeline needed. Parameterized queries prevent injection.
@@ -3600,10 +3597,7 @@ admin.openapi(listSessionsRoute, async (c) => {
     return c.json({ error: "not_available", message: "Session management requires managed auth mode." }, 404);
   }
 
-  const rawLimit = parseInt(c.req.query("limit") ?? "50", 10);
-  const rawOffset = parseInt(c.req.query("offset") ?? "0", 10);
-  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 200) : 50;
-  const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
+  const { limit, offset } = parsePagination(c);
   const search = c.req.query("search");
 
   try {
@@ -3756,10 +3750,7 @@ admin.openapi(listUsersRoute, async (c) => {
     return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
   }
 
-  const rawLimit = parseInt(c.req.query("limit") ?? "50", 10);
-  const rawOffset = parseInt(c.req.query("offset") ?? "0", 10);
-  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 200) : 50;
-  const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
+  const { limit, offset } = parsePagination(c);
   const search = c.req.query("search");
   const role = c.req.query("role");
 
@@ -4296,8 +4287,7 @@ admin.openapi(getTokensByUserRoute, async (c) => {
     return c.json({ error: "invalid_request", message: range.error }, 400);
   }
   const { fromDate, toDate } = range;
-  const parsedLimit = parseInt(c.req.query("limit") ?? "20", 10);
-  const limit = Number.isFinite(parsedLimit) ? Math.min(Math.max(parsedLimit, 1), 100) : 20;
+  const { limit } = parsePagination(c, { limit: 20, maxLimit: 100 });
 
   try {
     const rows = await internalQuery<{

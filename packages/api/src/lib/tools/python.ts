@@ -17,6 +17,7 @@ import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
 import { withSpan } from "@atlas/api/lib/tracing";
 import { getConfig } from "@atlas/api/lib/config";
+import { useVercelSandbox, useSidecar } from "./backends/detect";
 import { getStreamWriter } from "./python-stream";
 
 const log = createLogger("python");
@@ -295,8 +296,8 @@ export interface PythonBackend {
  */
 async function getPythonBackend(): Promise<PythonBackend | { error: string }> {
   // 1. Sidecar
-  const sidecarUrl = process.env.ATLAS_SANDBOX_URL;
-  if (sidecarUrl) {
+  if (useSidecar()) {
+    const sidecarUrl = process.env.ATLAS_SANDBOX_URL!;
     const { executePythonViaSidecar, executePythonViaSidecarStream } = await import("./python-sidecar");
     return {
       exec: (code, data) => executePythonViaSidecar(sidecarUrl, code, data),
@@ -306,7 +307,7 @@ async function getPythonBackend(): Promise<PythonBackend | { error: string }> {
   }
 
   // 2. Vercel sandbox (Python 3.13 runtime)
-  if (process.env.ATLAS_RUNTIME === "vercel" || process.env.VERCEL) {
+  if (useVercelSandbox()) {
     let createPythonSandboxBackend;
     try {
       ({ createPythonSandboxBackend } = await import("./python-sandbox"));
@@ -321,7 +322,7 @@ async function getPythonBackend(): Promise<PythonBackend | { error: string }> {
   // 3. nsjail explicit (ATLAS_SANDBOX=nsjail) — hard-fail
   if (process.env.ATLAS_SANDBOX === "nsjail") {
     try {
-      const { findNsjailBinary } = await import("./explore-nsjail");
+      const { findNsjailBinary } = await import("./backends/nsjail");
       const nsjailPath = findNsjailBinary();
       if (nsjailPath) {
         const { createPythonNsjailBackend } = await import("./python-nsjail");
@@ -338,7 +339,7 @@ async function getPythonBackend(): Promise<PythonBackend | { error: string }> {
 
   // 4. nsjail auto-detect
   try {
-    const { findNsjailBinary } = await import("./explore-nsjail");
+    const { findNsjailBinary } = await import("./backends/nsjail");
     const nsjailPath = findNsjailBinary();
     if (nsjailPath) {
       const { createPythonNsjailBackend } = await import("./python-nsjail");
@@ -351,7 +352,7 @@ async function getPythonBackend(): Promise<PythonBackend | { error: string }> {
       "code" in err &&
       (err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND"
     ) {
-      log.debug("explore-nsjail module not available, skipping nsjail Python backend");
+      log.debug("nsjail module not available, skipping nsjail Python backend");
     } else {
       const detail = err instanceof Error ? err.message : String(err);
       log.error({ err: detail }, "Unexpected error initializing nsjail Python backend");

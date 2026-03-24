@@ -26,29 +26,14 @@ import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { withSpan } from "@atlas/api/lib/tracing";
 import { getConfig, type SandboxBackendName } from "@atlas/api/lib/config";
 import { getSemanticRoot } from "@atlas/api/lib/semantic/sync";
+import { useVercelSandbox, useSidecar } from "./backends/detect";
 
 const log = createLogger("explore");
 
-// --- Backend interface ---
+// --- Backend interface (canonical source: ./backends/types.ts) ---
 
-export interface ExecResult {
-  stdout: string;
-  stderr: string;
-  exitCode: number;
-}
-
-/**
- * Shell backend for the explore tool.
- *
- * Implementations MUST provide read-only filesystem access scoped to the
- * semantic layer directory. Commands execute within /semantic as the working
- * directory. Writes should be silently discarded or cause errors, never
- * modify the host filesystem.
- */
-export interface ExploreBackend {
-  exec(command: string): Promise<ExecResult>;
-  close?(): Promise<void>;
-}
+export type { ExecResult, ExploreBackend } from "./backends/types";
+import type { ExploreBackend } from "./backends/types";
 
 // --- Self-hosted backend (just-bash) ---
 
@@ -95,10 +80,6 @@ async function createBashBackend(
 
 // --- Runtime detection ---
 
-function useVercelSandbox(): boolean {
-  return process.env.ATLAS_RUNTIME === "vercel" || !!process.env.VERCEL;
-}
-
 let _nsjailAvailable: boolean | null = null;
 
 function useNsjail(): boolean {
@@ -107,7 +88,7 @@ function useNsjail(): boolean {
   // Auto-detect nsjail on PATH (deferred require to avoid loading module at startup)
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { isNsjailAvailable } = require("./explore-nsjail");
+    const { isNsjailAvailable } = require("./backends/nsjail");
     _nsjailAvailable = isNsjailAvailable();
   } catch (err) {
     if (
@@ -120,16 +101,12 @@ function useNsjail(): boolean {
     } else {
       log.error(
         { error: err instanceof Error ? err.message : String(err) },
-        "Unexpected error loading explore-nsjail module",
+        "Unexpected error loading nsjail module",
       );
       _nsjailAvailable = false;
     }
   }
   return _nsjailAvailable ?? false;
-}
-
-function useSidecar(): boolean {
-  return !!process.env.ATLAS_SANDBOX_URL;
 }
 
 /** Track nsjail init failures to avoid infinite retry loops. */

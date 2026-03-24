@@ -18,17 +18,14 @@
 
 import type { PythonBackend, PythonResult } from "./python";
 import { PYTHON_SECURITY_AND_SETUP, PYTHON_EXEC_AND_COLLECT } from "./python-wrapper";
+import { sandboxErrorDetail, safeError, MAX_OUTPUT } from "./backends/shared";
 import { randomUUID } from "crypto";
 import { createLogger } from "@atlas/api/lib/logger";
-import { SENSITIVE_PATTERNS } from "@atlas/api/lib/security";
 
 const log = createLogger("python-sandbox");
 
 /** Default Python execution timeout in ms. */
 const DEFAULT_TIMEOUT_MS = 30_000;
-
-/** Maximum bytes to read from stdout/stderr (1 MB). */
-const MAX_OUTPUT = 1024 * 1024;
 
 /** Packages to install in the sandbox. */
 const DATA_SCIENCE_PACKAGES = [
@@ -79,30 +76,6 @@ if _atlas_data:
 
 ${PYTHON_EXEC_AND_COLLECT}
 `;
-
-/** Format an error for logging, with extra detail from @vercel/sandbox APIError. */
-function sandboxErrorDetail(err: unknown): string {
-  if (!(err instanceof Error)) return String(err);
-  const detail = err.message;
-  const json = (err as unknown as Record<string, unknown>).json;
-  const text = (err as unknown as Record<string, unknown>).text;
-  if (json) {
-    try {
-      return `${detail} — response: ${JSON.stringify(json)}`;
-    } catch {
-      return `${detail} — response: [unserializable object]`;
-    }
-  }
-  if (typeof text === "string" && text) return `${detail} — body: ${text.slice(0, 500)}`;
-  return detail;
-}
-
-/** Scrub sensitive data from error messages before exposing. */
-function safeError(detail: string): string {
-  return SENSITIVE_PATTERNS.test(detail)
-    ? "sandbox API error (details in server logs)"
-    : detail;
-}
 
 // Sandbox base dir for relative paths
 const SANDBOX_BASE = "/vercel/sandbox";

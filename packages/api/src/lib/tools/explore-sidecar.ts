@@ -10,7 +10,7 @@
  * Configured via ATLAS_SANDBOX_URL (e.g. http://sandbox-sidecar:8080).
  */
 
-import type { ExploreBackend, ExecResult } from "./explore";
+import type { ExploreBackend, ExecResult } from "./backends/types";
 import type { SidecarExecResponse } from "@atlas/api/lib/sidecar-types";
 import { createLogger } from "@atlas/api/lib/logger";
 

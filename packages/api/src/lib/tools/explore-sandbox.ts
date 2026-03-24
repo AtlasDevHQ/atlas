@@ -9,11 +9,11 @@
  * Files from semantic/ are copied in at creation time.
  */
 
-import type { ExploreBackend, ExecResult } from "./explore";
+import type { ExploreBackend, ExecResult } from "./backends/types";
+import { sandboxErrorDetail, safeError } from "./backends/shared";
 import * as path from "path";
 import * as fs from "fs";
 import { createLogger } from "@atlas/api/lib/logger";
-import { SENSITIVE_PATTERNS } from "@atlas/api/lib/security";
 
 const log = createLogger("explore-sandbox");
 
@@ -74,26 +74,6 @@ function collectSemanticFiles(
 
   walk(localDir, sandboxDir);
   return results;
-}
-
-/** Format an error for logging, with extra detail from @vercel/sandbox APIError json/text fields when present. */
-function sandboxErrorDetail(err: unknown): string {
-  if (!(err instanceof Error)) return String(err);
-  const detail = err.message;
-  // APIError from @vercel/sandbox carries json/text with the server response.
-  // These properties are not in our type stubs — discovered from runtime errors.
-  const json = (err as unknown as Record<string, unknown>).json;
-  const text = (err as unknown as Record<string, unknown>).text;
-  if (json) {
-    try {
-      return `${detail} — response: ${JSON.stringify(json)}`;
-    } catch {
-      // intentionally ignored: JSON.stringify can fail on circular references
-      return `${detail} — response: [unserializable object]`;
-    }
-  }
-  if (typeof text === "string" && text) return `${detail} — body: ${text.slice(0, 500)}`;
-  return detail;
 }
 
 // Prefix for sandbox file paths: the SDK resolves relative paths under /vercel/sandbox/.
@@ -181,11 +161,8 @@ export async function createSandboxBackend(
       } catch (err) {
         const detail = sandboxErrorDetail(err);
         log.error({ err: detail, dir }, "Failed to create directory in sandbox");
-        const safeDetail = SENSITIVE_PATTERNS.test(detail)
-          ? "sandbox API error (details in server logs)"
-          : detail;
         throw new Error(
-          `Failed to create directory "${dir}" in sandbox: ${safeDetail}.`,
+          `Failed to create directory "${dir}" in sandbox: ${safeError(detail)}.`,
           { cause: err },
         );
       }
@@ -196,11 +173,8 @@ export async function createSandboxBackend(
     } catch (err) {
       const detail = sandboxErrorDetail(err);
       log.error({ err: detail, fileCount: files.length }, "Failed to write files into sandbox");
-      const safeDetail = SENSITIVE_PATTERNS.test(detail)
-        ? "sandbox API error (details in server logs)"
-        : detail;
       throw new Error(
-        `Failed to upload ${files.length} semantic files to sandbox: ${safeDetail}.`,
+        `Failed to upload ${files.length} semantic files to sandbox: ${safeError(detail)}.`,
         { cause: err }
       );
     }

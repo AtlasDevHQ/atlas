@@ -271,15 +271,12 @@ export async function wireInteractionPlugins(
 const SANDBOX_DEFAULT_PRIORITY = 60;
 
 /**
- * Minimal interface for a sandbox execution backend.
- * Structurally identical to ExploreBackend in explore.ts — duplicated here
- * to avoid a circular dependency (explore.ts imports from wiring.ts).
- * Changes to either interface should be mirrored.
+ * Sandbox execution backend interface.
+ * Canonical definition lives in backends/types.ts. Re-exported here for
+ * backward compatibility with plugins that reference SandboxExecBackend.
  */
-export interface SandboxExecBackend {
-  exec(command: string): Promise<{ stdout: string; stderr: string; exitCode: number }>;
-  close?(): Promise<void>;
-}
+import type { ExploreBackend } from "@atlas/api/lib/tools/backends/types";
+export type SandboxExecBackend = ExploreBackend;
 
 interface SandboxShape {
   sandbox: {

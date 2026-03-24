@@ -12,15 +12,13 @@
 
 import type { PythonBackend, PythonResult } from "./python";
 import { PYTHON_SECURITY_AND_SETUP, PYTHON_EXEC_AND_COLLECT } from "./python-wrapper";
+import { readLimited, MAX_OUTPUT, parsePositiveInt } from "./backends/shared";
 import { randomUUID } from "crypto";
 import { mkdirSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
 import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("python-nsjail");
-
-/** Maximum bytes to read from stdout/stderr (1 MB). */
-const MAX_OUTPUT = 1024 * 1024;
 
 /** Default Python execution timeout in seconds. */
 const DEFAULT_TIME_LIMIT = 30;
@@ -67,41 +65,6 @@ if _atlas_data:
 ${PYTHON_EXEC_AND_COLLECT}
 `;
 
-/** Read up to `max` bytes from a stream. */
-async function readLimited(stream: ReadableStream, max: number): Promise<string> {
-  const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > max) {
-        chunks.push(value.slice(0, max - (total - value.byteLength)));
-        break;
-      }
-      chunks.push(value);
-    }
-  } finally {
-    // intentionally ignored: stream cancel errors are non-critical during cleanup
-    await reader.cancel().catch(() => {});
-  }
-  return new TextDecoder().decode(Buffer.concat(chunks));
-}
-
-/** Parse a positive integer from an env var, returning defaultValue on invalid input. */
-function parsePositiveInt(envVar: string, defaultValue: number, name: string): number {
-  const raw = process.env[envVar];
-  if (raw === undefined) return defaultValue;
-  const parsed = parseInt(raw, 10);
-  if (isNaN(parsed) || parsed <= 0) {
-    log.warn({ envVar, raw, default: defaultValue }, `Invalid ${envVar} for ${name}, using default`);
-    return defaultValue;
-  }
-  return parsed;
-}
-
 /** Build nsjail args for Python execution. */
 export function buildPythonNsjailArgs(
   nsjailPath: string,
@@ -111,8 +74,8 @@ export function buildPythonNsjailArgs(
   chartDir: string,
   _resultMarker: string,
 ): string[] {
-  const timeLimit = parsePositiveInt("ATLAS_NSJAIL_TIME_LIMIT", DEFAULT_TIME_LIMIT, "time limit");
-  const memoryLimit = parsePositiveInt("ATLAS_NSJAIL_MEMORY_LIMIT", DEFAULT_MEMORY_LIMIT, "memory limit");
+  const timeLimit = parsePositiveInt("ATLAS_NSJAIL_TIME_LIMIT", DEFAULT_TIME_LIMIT, "time limit", log);
+  const memoryLimit = parsePositiveInt("ATLAS_NSJAIL_MEMORY_LIMIT", DEFAULT_MEMORY_LIMIT, "memory limit", log);
   const nproc = DEFAULT_NPROC;
 
   return [

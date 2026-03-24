@@ -1,11 +1,11 @@
 ---
 title: GitHub Bot
-description: Integrate GitHub as an interaction surface for Atlas — @mention the bot in Issues and PR comments to get data answers rendered as GitHub-Flavored Markdown.
+description: Integrate GitHub as an interaction surface for Atlas — @mention the bot in Pull Request comments to get data answers rendered as GitHub-Flavored Markdown.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-The GitHub interaction is provided via the [`@useatlas/chat`](/plugins/interactions/chat) Chat SDK bridge plugin. Users can @mention the bot in Issue comments and Pull Request comments to query data. The bot replies with GitHub-Flavored Markdown containing the answer, SQL in code fences, and data as a Markdown table.
+The GitHub interaction is provided via the [`@useatlas/chat`](/plugins/interactions/chat) Chat SDK bridge plugin. Users can @mention the bot in Pull Request comments — both in the Conversation tab and in review comment threads on the Files Changed tab — to query data. The bot replies with GitHub-Flavored Markdown containing the answer, SQL in code fences, and data as a Markdown table.
 
 The Chat SDK adapter supports both Personal Access Token (PAT) auth and GitHub App auth (single-tenant or multi-tenant). Webhook payloads are verified via HMAC-SHA256 when a webhook secret is configured.
 
@@ -29,10 +29,10 @@ GitHub App auth is recommended for production. It provides fine-grained permissi
    ```
 4. Set a **Webhook secret** and save it securely
 5. Under **Permissions**, grant:
-   - **Issues**: Read & write (to read and reply to issue comments)
-   - **Pull requests**: Read & write (to read and reply to PR comments)
+   - **Issues**: Read & write (required — GitHub's API uses the issues endpoint for PR conversation-tab comments)
+   - **Pull requests**: Read & write (for review comments on the Files Changed tab)
 6. Under **Subscribe to events**, check:
-   - **Issue comments**
+   - **Issue comments** (covers PR conversation-tab comments — standalone issue comments are ignored by the adapter)
    - **Pull request review comments**
 7. Click **Create GitHub App**
 
@@ -147,29 +147,33 @@ The Chat SDK bridge mounts the following route for GitHub:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/webhooks/github` | GitHub webhook — receives issue comments, PR comments, and review comments |
+| `POST` | `/webhooks/github` | GitHub webhook — receives PR conversation comments and review comments |
 
 ## How It Works
 
-### @Mentions in Issues
+### @Mentions in PR Conversation Tab
 
-1. A user @mentions the bot in an issue comment
+1. A user @mentions the bot in a PR conversation comment
 2. GitHub sends an `issue_comment` webhook to the `/webhooks/github` endpoint
-3. The Chat SDK subscribes the issue thread for follow-up comments
+3. The adapter detects it is PR-related, subscribes the thread for follow-ups
 4. The `executeQuery` callback runs the Atlas agent
 5. Results are posted as a GFM comment: answer text, SQL in code fences, data as a Markdown table
 
-### @Mentions in Pull Requests
+<Callout type="info">
+The adapter only processes comments on Pull Requests. Standalone issue comments (on non-PR issues) are silently ignored by the underlying `@chat-adapter/github` adapter.
+</Callout>
 
-1. A user @mentions the bot in a PR comment (Conversation tab or review comment)
-2. GitHub sends an `issue_comment` or `pull_request_review_comment` webhook
-3. The adapter detects the thread type and subscribes for follow-ups
-4. Results are posted as a reply in the same thread
+### @Mentions in Review Comments (Files Changed Tab)
+
+1. A user @mentions the bot in a line-specific review comment
+2. GitHub sends a `pull_request_review_comment` webhook
+3. The adapter subscribes the review comment thread for follow-ups
+4. Results are posted as a reply in the same review thread
 
 ### Threaded Follow-ups
 
 1. After an initial response, the thread is subscribed via the Chat SDK state adapter
-2. Follow-up comments in the same issue or PR thread trigger new queries with conversation history
+2. Follow-up comments in the same PR thread trigger new queries with conversation history
 3. The agent has context from prior messages for multi-turn analysis
 
 ### Response Format
@@ -181,7 +185,7 @@ Responses are rendered as GitHub-Flavored Markdown:
 - **Data tables** as GFM Markdown tables
 - **Reactions** supported (thumbs up/down, etc.)
 
-GitHub does not support rich cards, streaming, or interactive buttons. The Chat SDK adapter automatically uses the markdown fallback format.
+GitHub does not support rich cards or interactive buttons. The Chat SDK adapter automatically uses the markdown fallback format. For streaming, the adapter accumulates the full response and posts it as a single comment rather than progressively editing, so there is no visible incremental update.
 
 ## Environment Variables
 

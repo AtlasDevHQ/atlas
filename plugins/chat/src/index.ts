@@ -473,6 +473,11 @@ function buildChatPlugin(
           adapterInstances.telegram = telegramAdapterInstance;
         }
         if (config.adapters.github) {
+          if (!config.adapters.github.webhookSecret) {
+            ctx.logger.warn(
+              "GitHub adapter configured without webhookSecret — webhook endpoint will accept unauthenticated requests. Set webhookSecret for production deployments.",
+            );
+          }
           githubAdapterInstance = createGitHubAdapter(config.adapters.github) as GitHubAdapter;
           adapterInstances.github = githubAdapterInstance;
         }

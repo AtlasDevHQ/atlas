@@ -80,7 +80,8 @@ export interface TelegramAdapterConfig {
 }
 
 /** GitHub adapter credential configuration.
- * Supports three auth modes: PAT, single-tenant App, multi-tenant App. */
+ * Requires one of: token (PAT), appId+privateKey (single-tenant App), or
+ * appId+privateKey without installationId (multi-tenant App). */
 export interface GitHubAdapterConfig {
   /** Personal Access Token — simplest auth, for personal bots or testing. */
   token?: string;
@@ -293,11 +294,12 @@ const GitHubAdapterSchema = z.object({
   userName: z.string().min(1, "github userName must not be empty").optional(),
 }).refine(
   (c) => {
-    // Must provide either token OR appId+privateKey (or neither for env-var auto-detection)
+    // Must provide either token OR appId+privateKey — at least one credential path required
     if (c.token && c.appId) return false;
     if (c.appId && !c.privateKey) return false;
     if (!c.appId && c.privateKey) return false;
     if (c.installationId && !c.appId) return false;
+    if (!c.token && !c.appId) return false;
     return true;
   },
   "Provide either token (PAT) or appId+privateKey (GitHub App), not both. installationId requires appId",

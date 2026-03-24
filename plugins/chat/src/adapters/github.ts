@@ -14,7 +14,7 @@ import type { GitHubAdapterConfig } from "../config";
 /**
  * Create a Chat SDK GitHub adapter from Atlas plugin config.
  *
- * Supports three auth modes:
+ * Supports three auth modes (at least one credential path required):
  * - Personal Access Token: `{ token }` — simplest, for personal bots
  * - GitHub App (single-tenant): `{ appId, privateKey, installationId }` — fixed org
  * - GitHub App (multi-tenant): `{ appId, privateKey }` — public app, auto-detects installation
@@ -46,8 +46,10 @@ export function createGitHubAdapter(config: GitHubAdapterConfig) {
       privateKey: config.privateKey,
     };
   } else {
-    // Auto-detect from env vars
-    adapterConfig = base;
+    throw new Error(
+      "GitHub adapter requires either 'token' (PAT) or 'appId' + 'privateKey' (GitHub App). " +
+      "No credentials were provided.",
+    );
   }
 
   return createChatGitHubAdapter(adapterConfig);

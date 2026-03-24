@@ -32,7 +32,7 @@ export interface CustomDomain {
   status: DomainStatus;
   /** Railway domain ID — used for Railway API calls. */
   railwayDomainId: string | null;
-  /** CNAME target from Railway (e.g. *.up.railway.app). */
+  /** CNAME target from Railway (e.g. abc123.up.railway.app). */
   cnameTarget: string | null;
   /** Current certificate status from Railway. */
   certificateStatus: CertificateStatus | null;

@@ -106,14 +106,26 @@ async function railwayGraphQL<T>(
   query: string,
   variables: Record<string, unknown>,
 ): Promise<T> {
-  const response = await fetch(RAILWAY_API_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${config.token}`,
-    },
-    body: JSON.stringify({ query, variables }),
-  });
+  let response: Response;
+  try {
+    response = await fetch(RAILWAY_API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.token}`,
+      },
+      body: JSON.stringify({ query, variables }),
+    });
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err) },
+      "Railway API network error — could not reach backboard.railway.com",
+    );
+    throw new DomainError(
+      "Could not reach Railway API. Check network connectivity and RAILWAY_API_TOKEN.",
+      "railway_error",
+    );
+  }
 
   if (!response.ok) {
     const text = await response.text();
@@ -291,13 +303,28 @@ export async function registerDomain(
   const railwayDomain = await createRailwayDomain(config, normalized);
   const cnameTarget = railwayDomain.status.dnsRecords[0]?.requiredValue ?? null;
 
-  // Store in Atlas internal DB
-  const rows = await internalQuery<Record<string, unknown>>(
-    `INSERT INTO custom_domains (workspace_id, domain, railway_domain_id, cname_target, certificate_status)
-     VALUES ($1, $2, $3, $4, $5)
-     RETURNING *`,
-    [workspaceId, normalized, railwayDomain.id, cnameTarget, railwayDomain.status.certificateStatus],
-  );
+  // Store in Atlas internal DB — roll back Railway domain on failure
+  let rows: Record<string, unknown>[];
+  try {
+    rows = await internalQuery<Record<string, unknown>>(
+      `INSERT INTO custom_domains (workspace_id, domain, railway_domain_id, cname_target, certificate_status)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING *`,
+      [workspaceId, normalized, railwayDomain.id, cnameTarget, railwayDomain.status.certificateStatus],
+    );
+  } catch (err) {
+    // Roll back Railway domain to avoid orphaned resources
+    try {
+      await deleteRailwayDomain(config, railwayDomain.id);
+      log.warn({ railwayDomainId: railwayDomain.id }, "Rolled back Railway domain after DB insert failure");
+    } catch (rollbackErr) {
+      log.error(
+        { railwayDomainId: railwayDomain.id, err: rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr) },
+        "Failed to roll back Railway domain — orphaned domain in Railway",
+      );
+    }
+    throw err;
+  }
 
   log.info({ workspaceId, domain: normalized, railwayDomainId: railwayDomain.id }, "Custom domain registered");
   return rowToDomain(rows[0]);
@@ -306,8 +333,9 @@ export async function registerDomain(
 /**
  * Verify a custom domain by checking Railway for DNS + cert status.
  *
- * Polls Railway's `customDomain` query to check DNS propagation and
- * certificate provisioning. Updates local status accordingly.
+ * Queries Railway's `customDomain` endpoint once to check DNS propagation
+ * and certificate provisioning. Updates local status accordingly.
+ * Invalidates the host resolution cache on successful verification.
  */
 export async function verifyDomain(domainId: string): Promise<CustomDomain> {
   requireEnterprise("custom-domains");
@@ -351,6 +379,13 @@ export async function verifyDomain(domainId: string): Promise<CustomDomain> {
      RETURNING *`,
     [newStatus, certStatus, domainId],
   );
+
+  if (updatedRows.length === 0) {
+    throw new DomainError(
+      `Domain "${domainId}" was deleted during verification.`,
+      "domain_not_found",
+    );
+  }
 
   if (verified) {
     log.info({ domainId, domain: record.domain }, "Custom domain verified");
@@ -452,10 +487,10 @@ export async function resolveWorkspaceByHost(hostname: string): Promise<string |
 
   const normalized = hostname.toLowerCase().trim();
 
-  // Check cache
+  // Check cache (empty string = negative cache entry)
   const cached = hostCache.get(normalized);
   if (cached && cached.expiresAt > Date.now()) {
-    return cached.workspaceId;
+    return cached.workspaceId || null;
   }
 
   try {
@@ -469,6 +504,8 @@ export async function resolveWorkspaceByHost(hostname: string): Promise<string |
       return rows[0].workspace_id;
     }
 
+    // Negative cache — avoid DB query on every request for non-custom-domain hostnames
+    hostCache.set(normalized, { workspaceId: "", expiresAt: Date.now() + CACHE_TTL_MS });
     return null;
   } catch (err) {
     log.error(

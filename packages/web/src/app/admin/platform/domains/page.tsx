@@ -102,11 +102,11 @@ function DomainsPageContent() {
     invalidates: refetch,
   });
 
-  const { mutate: verifyDomain, saving: verifying } = useAdminMutation<CustomDomain>({
+  const { mutate: verifyDomain, isMutating: isVerifying, error: verifyError, clearError: clearVerifyError } = useAdminMutation<CustomDomain>({
     invalidates: refetch,
   });
 
-  const { mutate: removeDomain, saving: deleting } = useAdminMutation<{ deleted: boolean }>({
+  const { mutate: removeDomain, saving: deleting, error: deleteError, clearError: clearDeleteError } = useAdminMutation<{ deleted: boolean }>({
     invalidates: refetch,
   });
 
@@ -143,9 +143,11 @@ function DomainsPageContent() {
   }
 
   async function handleVerify(domainId: string) {
+    clearVerifyError();
     await verifyDomain({
       path: `/api/v1/platform/domains/${domainId}/verify`,
       method: "POST",
+      itemId: domainId,
     });
   }
 
@@ -264,10 +266,10 @@ function DomainsPageContent() {
                             size="icon"
                             className="h-8 w-8"
                             onClick={() => handleVerify(d.id)}
-                            disabled={verifying}
+                            disabled={isVerifying(d.id)}
                             title="Check verification status"
                           >
-                            <RefreshCw className={`h-4 w-4 ${verifying ? "animate-spin" : ""}`} />
+                            <RefreshCw className={`h-4 w-4 ${isVerifying(d.id) ? "animate-spin" : ""}`} />
                           </Button>
                         )}
                         <Button
@@ -289,6 +291,10 @@ function DomainsPageContent() {
           </Table>
         </CardContent>
       </Card>
+
+      {/* Verify/delete error banners */}
+      {verifyError && <ErrorBanner message={verifyError} />}
+      {deleteError && <ErrorBanner message={deleteError} />}
 
       {/* Add domain dialog */}
       <Dialog open={addDialog} onOpenChange={(open) => { if (!open) { setAddDialog(false); setNewDomain(""); setNewWorkspaceId(""); clearRegisterError(); } }}>
@@ -333,7 +339,7 @@ function DomainsPageContent() {
       </Dialog>
 
       {/* Delete confirmation dialog */}
-      <Dialog open={!!deleteConfirm} onOpenChange={(open) => { if (!open) setDeleteConfirm(null); }}>
+      <Dialog open={!!deleteConfirm} onOpenChange={(open) => { if (!open) { setDeleteConfirm(null); clearDeleteError(); } }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Delete Domain</DialogTitle>

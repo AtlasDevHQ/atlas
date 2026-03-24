@@ -170,7 +170,11 @@ function handleDomainError(err: unknown, requestId: string): { error: string; me
   if (err instanceof Error && err.name === "DomainError" && "code" in err) {
     const code = (err as { code: string }).code;
     const status = DOMAIN_ERROR_STATUS[code] ?? 500;
-    return { error: code, message, status, requestId };
+    // Sanitize Railway errors to avoid leaking infrastructure details
+    const safeMessage = (code === "railway_error" || code === "railway_not_configured")
+      ? `Railway API error (ref: ${requestId.slice(0, 8)})`
+      : message;
+    return { error: code, message: safeMessage, status, requestId };
   }
 
   // Enterprise license error → 403 (requireEnterprise throws plain Error)

@@ -355,11 +355,12 @@ export async function checkApprovalRequired(
   try {
     requireEnterprise("approval-workflows");
   } catch (err) {
-    if (!(err instanceof EnterpriseError)) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log.warn({ err: msg }, "Unexpected error checking enterprise status in approval check");
+    if (err instanceof EnterpriseError) {
+      return { required: false, matchedRules: [] };
     }
-    return { required: false, matchedRules: [] };
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warn({ err: msg }, "Unexpected error checking enterprise status in approval check — re-throwing");
+    throw err;
   }
 
   const rows = await internalQuery<ApprovalRuleRow>(
@@ -580,11 +581,12 @@ export async function expireStaleRequests(): Promise<number> {
   try {
     requireEnterprise("approval-workflows");
   } catch (err) {
-    if (!(err instanceof EnterpriseError)) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log.warn({ err: msg }, "Unexpected error checking enterprise status in expireStaleRequests");
+    if (err instanceof EnterpriseError) {
+      return 0;
     }
-    return 0;
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warn({ err: msg }, "Unexpected error checking enterprise status in expireStaleRequests — re-throwing");
+    throw err;
   }
 
   const rows = await internalQuery<{ id: string }>(
@@ -607,11 +609,12 @@ export async function getPendingCount(orgId: string): Promise<number> {
   try {
     requireEnterprise("approval-workflows");
   } catch (err) {
-    if (!(err instanceof EnterpriseError)) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log.warn({ err: msg }, "Unexpected error checking enterprise status in getPendingCount");
+    if (err instanceof EnterpriseError) {
+      return 0;
     }
-    return 0;
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warn({ err: msg }, "Unexpected error checking enterprise status in getPendingCount — re-throwing");
+    throw err;
   }
 
   const rows = await internalQuery<{ count: string }>(

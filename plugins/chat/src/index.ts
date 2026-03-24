@@ -150,12 +150,14 @@ function buildChatPlugin(
             return c.json({ error: "Slack adapter not configured" }, 404);
           }
 
+          // Generated before try so both waitUntil errors and handler errors share the same correlation ID
+          const requestId = crypto.randomUUID();
           try {
             const response = await handler(c.req.raw, {
               waitUntil: (task: Promise<unknown>) => {
                 task.catch((err: unknown) => {
                   (log ?? console).error(
-                    { err: err instanceof Error ? err : new Error(String(err)) },
+                    { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "slack" },
                     "Chat SDK Slack webhook background task failed",
                   );
                 });
@@ -163,9 +165,8 @@ function buildChatPlugin(
             });
             return response;
           } catch (err) {
-            const requestId = crypto.randomUUID();
             (log ?? console).error(
-              { err: err instanceof Error ? err : new Error(String(err)), requestId },
+              { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "slack" },
               "Slack webhook handler threw unexpectedly",
             );
             return c.json({ error: "Webhook processing failed", requestId }, 500);
@@ -265,12 +266,13 @@ function buildChatPlugin(
             return c.json({ error: "Teams adapter not configured" }, 404);
           }
 
+          const requestId = crypto.randomUUID();
           try {
             const response = await handler(c.req.raw, {
               waitUntil: (task: Promise<unknown>) => {
                 task.catch((err: unknown) => {
                   (log ?? console).error(
-                    { err: err instanceof Error ? err : new Error(String(err)) },
+                    { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "teams" },
                     "Chat SDK Teams webhook background task failed",
                   );
                 });
@@ -278,9 +280,8 @@ function buildChatPlugin(
             });
             return response;
           } catch (err) {
-            const requestId = crypto.randomUUID();
             (log ?? console).error(
-              { err: err instanceof Error ? err : new Error(String(err)), requestId },
+              { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "teams" },
               "Teams webhook handler threw unexpectedly",
             );
             return c.json({ error: "Webhook processing failed", requestId }, 500);
@@ -299,12 +300,13 @@ function buildChatPlugin(
             return c.json({ error: "Discord adapter not configured" }, 404);
           }
 
+          const requestId = crypto.randomUUID();
           try {
             const response = await handler(c.req.raw, {
               waitUntil: (task: Promise<unknown>) => {
                 task.catch((err: unknown) => {
                   (log ?? console).error(
-                    { err: err instanceof Error ? err : new Error(String(err)) },
+                    { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "discord" },
                     "Chat SDK Discord webhook background task failed",
                   );
                 });
@@ -312,9 +314,8 @@ function buildChatPlugin(
             });
             return response;
           } catch (err) {
-            const requestId = crypto.randomUUID();
             (log ?? console).error(
-              { err: err instanceof Error ? err : new Error(String(err)), requestId },
+              { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "discord" },
               "Discord webhook handler threw unexpectedly",
             );
             return c.json({ error: "Webhook processing failed", requestId }, 500);
@@ -333,12 +334,13 @@ function buildChatPlugin(
             return c.json({ error: "Google Chat adapter not configured" }, 404);
           }
 
+          const requestId = crypto.randomUUID();
           try {
             const response = await handler(c.req.raw, {
               waitUntil: (task: Promise<unknown>) => {
                 task.catch((err: unknown) => {
                   (log ?? console).error(
-                    { err: err instanceof Error ? err : new Error(String(err)) },
+                    { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "gchat" },
                     "Chat SDK Google Chat webhook background task failed",
                   );
                 });
@@ -346,9 +348,8 @@ function buildChatPlugin(
             });
             return response;
           } catch (err) {
-            const requestId = crypto.randomUUID();
             (log ?? console).error(
-              { err: err instanceof Error ? err : new Error(String(err)), requestId },
+              { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "gchat" },
               "Google Chat webhook handler threw unexpectedly",
             );
             return c.json({ error: "Webhook processing failed", requestId }, 500);
@@ -367,12 +368,13 @@ function buildChatPlugin(
             return c.json({ error: "Telegram adapter not configured" }, 404);
           }
 
+          const requestId = crypto.randomUUID();
           try {
             const response = await handler(c.req.raw, {
               waitUntil: (task: Promise<unknown>) => {
                 task.catch((err: unknown) => {
                   (log ?? console).error(
-                    { err: err instanceof Error ? err : new Error(String(err)) },
+                    { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "telegram" },
                     "Chat SDK Telegram webhook background task failed",
                   );
                 });
@@ -380,9 +382,8 @@ function buildChatPlugin(
             });
             return response;
           } catch (err) {
-            const requestId = crypto.randomUUID();
             (log ?? console).error(
-              { err: err instanceof Error ? err : new Error(String(err)), requestId },
+              { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "telegram" },
               "Telegram webhook handler threw unexpectedly",
             );
             return c.json({ error: "Webhook processing failed", requestId }, 500);
@@ -401,12 +402,13 @@ function buildChatPlugin(
             return c.json({ error: "GitHub adapter not configured" }, 404);
           }
 
+          const requestId = crypto.randomUUID();
           try {
             const response = await handler(c.req.raw, {
               waitUntil: (task: Promise<unknown>) => {
                 task.catch((err: unknown) => {
                   (log ?? console).error(
-                    { err: err instanceof Error ? err : new Error(String(err)) },
+                    { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "github" },
                     "Chat SDK GitHub webhook background task failed",
                   );
                 });
@@ -414,9 +416,8 @@ function buildChatPlugin(
             });
             return response;
           } catch (err) {
-            const requestId = crypto.randomUUID();
             (log ?? console).error(
-              { err: err instanceof Error ? err : new Error(String(err)), requestId },
+              { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "github" },
               "GitHub webhook handler threw unexpectedly",
             );
             return c.json({ error: "Webhook processing failed", requestId }, 500);
